@@ -684,53 +684,6 @@ pub(crate) fn actor_state_lock_is_held_for_test(actor: *mut HewActor) -> Option<
     Some(state.held)
 }
 
-#[cfg(target_arch = "wasm32")]
-#[derive(Debug, Default)]
-struct ActorStateLockState {
-    held: bool,
-    poisoned: bool,
-}
-
-#[cfg(target_arch = "wasm32")]
-thread_local! {
-    static ACTOR_STATE_LOCKS: std::cell::RefCell<HashMap<usize, Box<ActorStateLockState>>> =
-        std::cell::RefCell::new(HashMap::new());
-}
-
-#[cfg(target_arch = "wasm32")]
-fn register_actor_state_lock(actor: *mut HewActor) {
-    ACTOR_STATE_LOCKS.with(|locks| {
-        locks
-            .borrow_mut()
-            .insert(actor as usize, Box::new(ActorStateLockState::default()));
-    });
-}
-
-#[cfg(target_arch = "wasm32")]
-pub(crate) fn actor_state_lock_seat(
-    actor: *mut HewActor,
-) -> *mut crate::execution_context::HewActorStateLockState {
-    ACTOR_STATE_LOCKS.with(|locks| {
-        let mut locks = locks.borrow_mut();
-        #[cfg(test)]
-        locks
-            .entry(actor as usize)
-            .or_insert_with(|| Box::new(ActorStateLockState::default()));
-        locks
-            .get_mut(&(actor as usize))
-            .map_or(ptr::null_mut(), |state| {
-                (&raw mut **state).cast::<crate::execution_context::HewActorStateLockState>()
-            })
-    })
-}
-
-#[cfg(target_arch = "wasm32")]
-fn unregister_actor_state_lock(actor: *mut HewActor) {
-    ACTOR_STATE_LOCKS.with(|locks| {
-        locks.borrow_mut().remove(&(actor as usize));
-    });
-}
-
 /// Acquire the compiler-owned actor-state lock for `actor`.
 ///
 /// Generated dispatch wrappers call this before entering a receive handler
@@ -867,124 +820,6 @@ pub unsafe extern "C" fn hew_actor_state_lock_release_after_panic(actor: *mut He
 pub unsafe extern "C" fn hew_actor_state_lock_poison_after_panic(actor: *mut HewActor) -> c_int {
     // SAFETY: this extern entry point forwards its documented raw-pointer
     // contract to the shared implementation.
-    unsafe { actor_state_lock_release_after_panic_impl(actor, true) }
-}
-
-#[cfg(target_arch = "wasm32")]
-#[no_mangle]
-pub unsafe extern "C" fn hew_actor_state_lock_acquire(actor: *mut HewActor) -> c_int {
-    cabi_guard!(actor.is_null(), HEW_ACTOR_STATE_LOCK_ERR);
-    ACTOR_STATE_LOCKS.with(|locks| {
-        let mut locks = locks.borrow_mut();
-        let Some(state) = locks.get_mut(&(actor as usize)) else {
-            crate::set_last_error("actor-state lock acquire: actor has no registered state lock");
-            return HEW_ACTOR_STATE_LOCK_ERR;
-        };
-        acquire_actor_state_lock_state(state)
-    })
-}
-
-#[cfg(target_arch = "wasm32")]
-#[no_mangle]
-pub unsafe extern "C" fn hew_actor_state_lock_release(actor: *mut HewActor) -> c_int {
-    cabi_guard!(actor.is_null(), HEW_ACTOR_STATE_LOCK_ERR);
-    ACTOR_STATE_LOCKS.with(|locks| {
-        let mut locks = locks.borrow_mut();
-        let Some(state) = locks.get_mut(&(actor as usize)) else {
-            crate::set_last_error("actor-state lock release: actor has no registered state lock");
-            return HEW_ACTOR_STATE_LOCK_ERR;
-        };
-        release_actor_state_lock_state(state)
-    })
-}
-
-#[cfg(target_arch = "wasm32")]
-fn acquire_actor_state_lock_state(state: &mut ActorStateLockState) -> c_int {
-    if state.poisoned {
-        crate::set_last_error("actor-state lock acquire: lock poisoned by prior handler panic");
-        return HEW_ACTOR_STATE_LOCK_ERR;
-    }
-    if state.held {
-        crate::set_last_error("actor-state lock acquire: nested WASM actor dispatch");
-        return HEW_ACTOR_STATE_LOCK_ERR;
-    }
-    state.held = true;
-    HEW_ACTOR_STATE_LOCK_OK
-}
-
-#[cfg(target_arch = "wasm32")]
-fn release_actor_state_lock_state(state: &mut ActorStateLockState) -> c_int {
-    if !state.held {
-        crate::set_last_error("actor-state lock release: lock is not held");
-        return HEW_ACTOR_STATE_LOCK_ERR;
-    }
-    state.held = false;
-    HEW_ACTOR_STATE_LOCK_OK
-}
-
-#[cfg(target_arch = "wasm32")]
-pub(crate) unsafe fn hew_actor_state_lock_acquire_for_context(
-    ctx: *mut HewExecutionContext,
-) -> c_int {
-    if ctx.is_null() {
-        crate::set_last_error("actor-state lock acquire: execution context is null");
-        return HEW_ACTOR_STATE_LOCK_ERR;
-    }
-    // SAFETY: `ctx` is non-null and points to the scheduler-owned dispatch context.
-    let seat = unsafe { (*ctx).lock_seat };
-    if seat.is_null() {
-        crate::set_last_error("actor-state lock acquire: ctx lock_seat is null");
-        return HEW_ACTOR_STATE_LOCK_ERR;
-    }
-    // SAFETY: `lock_seat` is a stable Box allocation in ACTOR_STATE_LOCKS.
-    let state = unsafe { &mut *seat.cast::<ActorStateLockState>() };
-    acquire_actor_state_lock_state(state)
-}
-
-#[cfg(target_arch = "wasm32")]
-pub(crate) unsafe fn hew_actor_state_lock_release_for_context(
-    ctx: *mut HewExecutionContext,
-) -> c_int {
-    if ctx.is_null() {
-        crate::set_last_error("actor-state lock release: execution context is null");
-        return HEW_ACTOR_STATE_LOCK_ERR;
-    }
-    // SAFETY: `ctx` is non-null and points to the scheduler-owned dispatch context.
-    let seat = unsafe { (*ctx).lock_seat };
-    if seat.is_null() {
-        crate::set_last_error("actor-state lock release: ctx lock_seat is null");
-        return HEW_ACTOR_STATE_LOCK_ERR;
-    }
-    // SAFETY: `lock_seat` is a stable Box allocation in ACTOR_STATE_LOCKS.
-    let state = unsafe { &mut *seat.cast::<ActorStateLockState>() };
-    release_actor_state_lock_state(state)
-}
-
-#[cfg(target_arch = "wasm32")]
-unsafe fn actor_state_lock_release_after_panic_impl(actor: *mut HewActor, poison: bool) -> c_int {
-    if actor.is_null() {
-        return HEW_ACTOR_STATE_LOCK_OK;
-    }
-    ACTOR_STATE_LOCKS.with(|locks| {
-        let mut locks = locks.borrow_mut();
-        let Some(state) = locks.get_mut(&(actor as usize)) else {
-            return HEW_ACTOR_STATE_LOCK_OK;
-        };
-        state.held = false;
-        state.poisoned |= poison;
-        HEW_ACTOR_STATE_LOCK_OK
-    })
-}
-
-#[cfg(target_arch = "wasm32")]
-#[no_mangle]
-pub unsafe extern "C" fn hew_actor_state_lock_release_after_panic(actor: *mut HewActor) -> c_int {
-    unsafe { actor_state_lock_release_after_panic_impl(actor, false) }
-}
-
-#[cfg(target_arch = "wasm32")]
-#[no_mangle]
-pub unsafe extern "C" fn hew_actor_state_lock_poison_after_panic(actor: *mut HewActor) -> c_int {
     unsafe { actor_state_lock_release_after_panic_impl(actor, true) }
 }
 
@@ -1368,13 +1203,7 @@ pub struct HewActor {
 
     /// Per-actor arena bump allocator. Installed in the dispatch context so
     /// `hew_arena_malloc` routes through it. Reset after each activation.
-    #[cfg(not(target_arch = "wasm32"))]
     pub arena: *mut crate::arena::ActorArena,
-    /// Per-actor arena bump allocator on WASM.  Allocated during spawn via
-    /// `hew_arena_new()`, installed as the current arena during each activation,
-    /// reset after each dispatch cycle, and freed during actor teardown.
-    #[cfg(target_arch = "wasm32")]
-    pub arena: *mut c_void,
 
     // ── Slice-4 suspend/resume executor (appended to preserve C ABI layout) ──
     //
@@ -1467,9 +1296,6 @@ pub struct HewActor {
     /// and preserves the existing default-runtime fallback.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) runtime: *const crate::runtime::RuntimeInner,
-    /// WASM has no native `RuntimeInner`; keep the layout mirror opaque.
-    #[cfg(target_arch = "wasm32")]
-    pub(crate) runtime: *const c_void,
 
     /// Count of in-flight by-ID operations and scheduler queue entries
     /// currently pinning this actor allocation.
@@ -1718,41 +1544,12 @@ pub(crate) fn clear_suspended_cancel_token(actor: &HewActor) {
         // a token: `scheduler_wasm` never writes this slot. The wasm build
         // therefore cannot reach a non-null token, and asserts that rather than
         // silently dropping a retained reference if that ever changes.
-        #[cfg(target_arch = "wasm32")]
-        debug_assert!(
-            false,
-            "wasm stashed a suspend-edge cancel token but has no task_scope to release it"
-        );
         // SAFETY: the actor slot owns a retained task-scope cancellation token.
         #[cfg(not(target_arch = "wasm32"))]
         unsafe {
             crate::cancel_token::hew_cancel_token_release(token.cast());
         }
     }
-}
-
-/// Refuse WASM lifecycle cleanup when the native-only generator-sink slot is
-/// unexpectedly populated.
-///
-/// No legal WASM producer can write this slot. A non-null value therefore
-/// proves invariant corruption, not ownership of a sink this target knows how
-/// to close. Refusing before any frame, debt, or actor allocation is touched is
-/// the only release-build behavior that preserves the evidence and avoids
-/// freeing underneath an unknown owner.
-#[cfg(target_arch = "wasm32")]
-pub(crate) fn refuse_wasm_lifecycle_cleanup_with_gen_sink(actor: &HewActor) -> bool {
-    if actor.gen_sink.load(Ordering::Acquire).is_null() {
-        return false;
-    }
-
-    let message = format!(
-        "WASM actor lifecycle cleanup refused: actor {:#x} carried a native-only \
-         registered generator sink; actor preserved fail-closed",
-        actor.id
-    );
-    crate::set_last_error(&message);
-    eprintln!("hew: runtime error: {message}");
-    true
 }
 
 /// Discharge the reply a parked `ask` handler still owes, on whichever target
@@ -1762,11 +1559,10 @@ pub(crate) fn refuse_wasm_lifecycle_cleanup_with_gen_sink(actor: &HewActor) -> b
 /// on the other, but the obligation is one invariant, so target-neutral
 /// teardown code -- `cleanup_all_actors`, the free paths -- routes through here
 /// rather than repeating the `cfg` split at every call site.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn retire_parked_activation_reply(actor: &HewActor) {
     #[cfg(not(target_arch = "wasm32"))]
     crate::scheduler::retire_suspended_reply_channel(actor);
-    #[cfg(target_arch = "wasm32")]
-    crate::scheduler_wasm::retire_suspended_reply_channel_wasm(actor);
 }
 
 // ── Codegen-mirrored ABI offsets ────────────────────────────────────────
@@ -1811,8 +1607,6 @@ static NEXT_ACTOR_SERIAL: AtomicU64 = AtomicU64::new(1);
 /// bound is the last serial short of the `u64` wrap that would reach it.
 #[cfg(not(target_arch = "wasm32"))]
 const MAX_SPAWN_SERIAL: u64 = crate::pid::MAX_ACTOR_SERIAL;
-#[cfg(target_arch = "wasm32")]
-const MAX_SPAWN_SERIAL: u64 = u64::MAX - 1;
 
 /// Take the next representable actor serial from `counter`, or `None` once the
 /// serial space is exhausted.
@@ -1822,6 +1616,7 @@ const MAX_SPAWN_SERIAL: u64 = u64::MAX - 1;
 /// increment would only walk toward a `u64` wrap that re-enters the valid range
 /// and re-issues ids already live. Refusing is the only outcome that cannot
 /// alias.
+#[cfg(not(target_arch = "wasm32"))]
 fn take_actor_serial(counter: &AtomicU64) -> Option<u64> {
     counter
         .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |serial| {
@@ -1854,6 +1649,7 @@ fn seed_next_actor_serial(serial: u64) {
 }
 
 /// Allocate the next actor serial, or `None` when the serial space is exhausted.
+#[cfg(not(target_arch = "wasm32"))]
 fn allocate_actor_serial() -> Option<u64> {
     #[cfg(test)]
     if let Some(seed) = NEXT_ACTOR_SERIAL_SEED.with(Cell::take) {
@@ -2014,6 +1810,7 @@ fn defer_actor_free_on_background_thread(actor: *mut HewActor) -> c_int {
 /// Callers that run after the runtime has been shut down (such as
 /// `cleanup_all_actors`) may call this whether or not the actor is still
 /// tracked, because no concurrent dispatch is possible.
+#[cfg(not(target_arch = "wasm32"))]
 unsafe fn prepare_quiescent_actor_for_cleanup(actor: *mut HewActor) {
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -2038,13 +1835,6 @@ unsafe fn prepare_quiescent_actor_for_cleanup(actor: *mut HewActor) {
         // spawn and reap many actors.
         crate::parse_error_slot::clear_all_for_actor(actor_id);
     }
-    #[cfg(target_arch = "wasm32")]
-    {
-        // SAFETY: caller guarantees `actor` is valid and not being dispatched.
-        let actor_id = unsafe { (*actor).id };
-        unsafe { crate::timer_periodic_wasm::cancel_all_timers_for_actor(actor) };
-        crate::parse_error_slot::clear_all_for_actor(actor_id);
-    }
 }
 
 /// Remove semantic relationships after actor retirement and pin drain.
@@ -2060,6 +1850,7 @@ unsafe fn prepare_quiescent_actor_for_cleanup(actor: *mut HewActor) {
 ///
 /// `actor` must remain allocated, must no longer be tracked in `LIVE_ACTORS`,
 /// and its `send_pin_count` must be zero.
+#[cfg(not(target_arch = "wasm32"))]
 unsafe fn scrub_actor_relationships_after_pin_drain(actor: *mut HewActor) {
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -2068,8 +1859,6 @@ unsafe fn scrub_actor_relationships_after_pin_drain(actor: *mut HewActor) {
         crate::link::remove_all_links_for_actor(actor_id, actor);
         crate::monitor::remove_all_monitors_for_actor(actor_id, actor);
     }
-    #[cfg(target_arch = "wasm32")]
-    let _ = actor;
 }
 
 /// Release the continuation frame of an actor that is being abandoned mid-suspend,
@@ -2312,6 +2101,7 @@ fn decide_finalize_by_latch(a: &HewActor) -> FinalizeDecision {
 /// # Safety
 ///
 /// `actor` must be valid, quiescent, and no longer tracked in `LIVE_ACTORS`.
+#[cfg(not(target_arch = "wasm32"))]
 unsafe fn finalize_quiescent_actor_cleanup(actor: *mut HewActor, state: i32) {
     if state != HewActorState::Crashed as i32 {
         // SAFETY: caller guarantees the actor is quiescent and not dispatching.
@@ -2329,6 +2119,7 @@ unsafe fn finalize_quiescent_actor_cleanup(actor: *mut HewActor, state: i32) {
 ///
 /// Must only be called after all worker threads have stopped (native)
 /// or when no dispatch is in progress (WASM).
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) unsafe fn cleanup_all_actors() {
     // Join every in-flight background teardown (deferred actor frees AND
     // deferred supervisor stops) before sweeping the registry. A deferred
@@ -2381,10 +2172,6 @@ pub(crate) unsafe fn cleanup_all_actors() {
         // freeing it. This prevents a use-after-free if hew_wasm_timer_tick
         // is called after cleanup but before the timer fires naturally.
         // SAFETY: scheduler is shut down; no concurrent timer-wheel access.
-        #[cfg(target_arch = "wasm32")]
-        unsafe {
-            crate::scheduler_wasm::cancel_actor_sleep_queue_entry(actor);
-        }
 
         // Test-only rendezvous: fires after prepare, before the finalize
         // decision. A test uses this to simulate a concurrent by-ID send
@@ -2473,8 +2260,6 @@ pub(crate) unsafe fn cleanup_all_actors() {
                     pinned = true;
                     break;
                 }
-                #[cfg(target_arch = "wasm32")]
-                std::hint::spin_loop();
                 #[cfg(not(target_arch = "wasm32"))]
                 std::thread::yield_now();
             }
@@ -2507,8 +2292,6 @@ pub(crate) unsafe fn cleanup_all_actors() {
         unsafe { finalize_quiescent_actor_cleanup(actor, finalize_state) };
     }
     crate::lifetime::local_handles::assert_current_actor_routes_empty();
-    #[cfg(target_arch = "wasm32")]
-    crate::lifetime::local_handles::finish_current_shutdown();
 }
 
 /// Free an actor's resources without untracking.
@@ -2712,18 +2495,6 @@ unsafe fn free_actor_resources(actor: *mut HewActor) {
     drop(unsafe { Box::from_raw(actor) });
 }
 
-/// Free an actor's resources (WASM version — delegates to `free_actor_resources_wasm`).
-///
-/// # Safety
-///
-/// `actor` must be a valid pointer to a live `HewActor` that is not
-/// currently being dispatched.
-#[cfg(target_arch = "wasm32")]
-unsafe fn free_actor_resources(actor: *mut HewActor) {
-    // SAFETY: target_arch = wasm32 shares the same invariants as the test helper.
-    unsafe { free_actor_resources_wasm(actor) };
-}
-
 /// Free an actor's resources using the WASM cleanup path.  Always runs
 /// `state_drop_fn` on non-crashed actors (the standard teardown path).
 /// Test-only entry point preserved for unit tests under `cfg(test)`.
@@ -2733,115 +2504,6 @@ unsafe fn free_actor_resources(actor: *mut HewActor) {
 /// `actor` must be a valid pointer to a live `HewActor` that is not
 /// currently being dispatched.
 // live on test — scheduler_wasm tests; dead on non-test wasm build; caller scheduler_wasm.rs:4154
-#[cfg_attr(not(test), allow(dead_code))]
-#[cfg(any(target_arch = "wasm32", test))]
-pub(crate) unsafe fn free_actor_resources_wasm(actor: *mut HewActor) {
-    // SAFETY: Caller guarantees `actor` is valid.
-    let a = unsafe { &*actor };
-
-    // Parked continuation ownership is retired only by the pre-timer shutdown
-    // sweep (or an explicit free/stop cancellation while its machinery is
-    // known live). This choke point can run after the timer wheel has gone, so
-    // it must never make a second destroy attempt. In particular, Done and
-    // Resuming still own a frame even though the actor latch may look terminal.
-    // Preserve the complete actor -- including all reply/cancel/sink debts --
-    // when that earlier ownership proof failed.
-    if crate::coro_exec::has_live_parked_cont(a) {
-        let message = format!(
-            "WASM actor cleanup refused: actor {:#x} retained a live continuation \
-             after pre-timer retirement; actor leaked to avoid UAF",
-            a.id
-        );
-        crate::set_last_error(&message);
-        eprintln!("hew: runtime error: {message}");
-        return;
-    }
-
-    // The stream/sink runtime is intentionally absent from WASM, so no legal
-    // producer can populate this slot. Refuse before retiring any activation
-    // debt or freeing any actor resource if the invariant is ever violated.
-    #[cfg(target_arch = "wasm32")]
-    if refuse_wasm_lifecycle_cleanup_with_gen_sink(a) {
-        return;
-    }
-
-    // Every route into this function abandons the actor: the box is about to go
-    // away. If it was parked mid-`ask`, its suspend edge moved the caller's
-    // reply-sender reference into `suspended_reply_channel` and no resume will
-    // ever consume it. Parity with the native
-    // `free_actor_resources`: discharge the debt at the single
-    // choke point every free route funnels through, so "the box is never freed
-    // with a live reply slot" is a property of this function rather than
-    // something each caller has to remember.
-    crate::scheduler_wasm::retire_suspended_reply_channel_wasm(a);
-
-    // Same choke-point invariant for a receive-gen producer's separate sink on
-    // the native test build. The stream/sink runtime is intentionally absent
-    // from WASM, where the ABI slot therefore has no legal non-null producer.
-    #[cfg(not(target_arch = "wasm32"))]
-    fault_close_registered_gen_sink(a);
-
-    // Run codegen-generated state-drop on the live state so types
-    // implementing `impl Drop` release their resources before the
-    // allocation goes away. The WASM path has identical layout
-    // (compile-time enforced by the offset assertions in
-    // `scheduler_wasm.rs`) and the same `a.init_state` aliasing as the
-    // native path, so state-drop runs on `a.state` only — running it on
-    // `a.init_state` would double-free every owned field. See the SAFETY
-    // block in the native `free_actor_resources` for the full rationale.
-    //
-    // As on native, the explicit escrow-consumed bit—not lifecycle state—is
-    // the typed teardown authority.
-    let state_drop_consumed = a.state_drop_consumed.swap(true, Ordering::AcqRel);
-    if !a.state_drop_borrowed.load(Ordering::Acquire) && !state_drop_consumed {
-        if let Some(state_drop_fn) = a.state_drop_fn {
-            if !a.state.is_null() {
-                // SAFETY: `a.state` is the live state allocation;
-                // `state_drop_fn` is a codegen-emitted function that walks
-                // owned fields and tolerates null sub-pointers.
-                unsafe { state_drop_fn(a.state) };
-            }
-        }
-    }
-
-    // SAFETY: state came from deep_copy_state's sized-block allocation.
-    unsafe {
-        crate::mem::buf_free(a.state);
-        crate::mem::buf_free(a.init_state);
-    }
-
-    if !a.arena.is_null() {
-        let arena_ptr = a.arena;
-        // Null the slot BEFORE freeing — parity with the native
-        // `free_actor_resources` (`raii-native-wasm-parity`
-        // + `raii-null-after-move`).  WASM is single-threaded so the
-        // arena UAF cannot fire here, but the source shape must mirror
-        // native to keep both paths reviewable as one invariant.
-        // SAFETY: caller guarantees exclusive access to `actor` during free.
-        unsafe { (*actor).arena = std::ptr::null_mut() };
-        // SAFETY: Arena was created by hew_arena_new during spawn.
-        unsafe { crate::arena::hew_arena_free_all(arena_ptr.cast::<crate::arena::ActorArena>()) };
-    }
-
-    unregister_actor_state_lock(actor);
-
-    if !a.mailbox.is_null() {
-        let mailbox_ptr = a.mailbox;
-        // Null before free — parity with the native path; covers any
-        // straggler reader that re-reads `a.mailbox` during teardown.
-        // SAFETY: caller guarantees exclusive access to `actor` during free.
-        unsafe { (*actor).mailbox = std::ptr::null_mut() };
-        let mb = mailbox_ptr.cast::<crate::mailbox_wasm::HewMailboxWasm>();
-        // SAFETY: this helper is only used with WASM mailboxes.
-        unsafe { crate::mailbox_wasm::hew_mailbox_free(mb) };
-    }
-
-    // The single site that reclaims an actor box; the balancing half of the
-    // `record_actor_box_alloc` in `spawn_actor_internal`.
-    crate::actor_balance::record_actor_box_free();
-    // SAFETY: Actor was allocated with Box::new / Box::into_raw.
-    drop(unsafe { Box::from_raw(actor) });
-}
 
 // ── Terminate callback invocation ───────────────────────────────────────
 
@@ -2953,47 +2615,6 @@ pub(crate) unsafe fn call_terminate_fn(actor: *mut HewActor) {
     unsafe { crate::actor_native::finish_native_terminal(a) };
     let restored_context = crate::execution_context::set_current_context(prev_context);
     debug_assert_eq!(restored_context, &raw mut execution_context);
-}
-
-/// Run the actor's terminate callback exactly once (WASM version).
-///
-/// No signal recovery on WASM — `catch_unwind` is the only guard.
-///
-/// # Safety
-///
-/// `actor` must be a valid pointer to a live [`HewActor`] in a terminal
-/// state (`Stopped`) that is not currently being dispatched.
-#[cfg(target_arch = "wasm32")]
-pub(crate) unsafe fn call_terminate_fn(actor: *mut HewActor) {
-    let a = unsafe { &*actor };
-
-    if a.terminate_called.swap(true, Ordering::AcqRel) {
-        return;
-    }
-
-    let Some(terminate_fn) = a.terminate_fn else {
-        a.terminate_finished.store(true, Ordering::Release);
-        return;
-    };
-
-    if a.state.is_null() {
-        a.terminate_finished.store(true, Ordering::Release);
-        return;
-    }
-
-    let state = a.state;
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        unsafe { terminate_fn(state) };
-    }));
-    if let Err(panic_payload) = result {
-        // Release any lock the trampoline acquired before the panic.
-        // SAFETY: actor is valid; the release helper tolerates an unheld lock.
-        unsafe {
-            let _ = hew_actor_state_lock_release_after_panic(actor);
-        }
-        crate::util::quarantine_panic_payload(panic_payload);
-    }
-    a.terminate_finished.store(true, Ordering::Release);
 }
 
 /// Actor spawn options for [`hew_actor_spawn_opts`].
@@ -3136,15 +2757,6 @@ unsafe fn free_spawn_mailbox(mailbox: *mut c_void) {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
-unsafe fn free_spawn_mailbox(mailbox: *mut c_void) {
-    let mb = mailbox.cast::<crate::mailbox_wasm::HewMailboxWasm>();
-    if !mb.is_null() {
-        // SAFETY: `mb` came from the WASM mailbox constructors used by spawn.
-        unsafe { crate::mailbox_wasm::hew_mailbox_free(mb) };
-    }
-}
-
 /// Release spawn-owned inputs when actor construction fails before tracking.
 ///
 /// # Safety
@@ -3152,6 +2764,7 @@ unsafe fn free_spawn_mailbox(mailbox: *mut c_void) {
 /// - `config.state` and `init_state` must be allocations owned by the spawn path,
 ///   or null.
 /// - `config.mailbox` must be a mailbox pointer transferred to the spawn path, or null.
+#[cfg(not(target_arch = "wasm32"))]
 unsafe fn cleanup_failed_spawn(config: &ActorSpawnConfig, init_state: *mut c_void) {
     // SAFETY: caller guarantees these pointers are owned by the in-progress spawn.
     unsafe {
@@ -3189,6 +2802,7 @@ struct SpawnIdentity {
 /// whole purpose is to fabricate the out-of-range serial that proves the
 /// downstream identity checks refuse an aliased `id` (`supervisor.rs`
 /// `role_ask_masked_id_alias_refuses_closed_never_enqueues`).
+#[cfg(not(target_arch = "wasm32"))]
 fn next_spawn_actor_identity() -> Option<SpawnIdentity> {
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -3206,17 +2820,13 @@ fn next_spawn_actor_identity() -> Option<SpawnIdentity> {
     // WASM stores the raw serial as the `id` rather than packing a route slot,
     // so `MAX_SPAWN_SERIAL` is the wrap boundary rather than the pack boundary;
     // the refusal keeps `id == 0` (the invalid-actor sentinel) unreachable.
-    #[cfg(target_arch = "wasm32")]
-    {
-        let serial = allocate_actor_serial()?;
-        Some(SpawnIdentity { id: serial, serial })
-    }
 }
 
 #[expect(
     clippy::needless_pass_by_value,
     reason = "config is a lightweight aggregate of Copy fields; consuming it reads clearly at call sites"
 )]
+#[cfg(not(target_arch = "wasm32"))]
 fn build_spawned_actor(
     config: ActorSpawnConfig,
     identity: SpawnIdentity,
@@ -3257,8 +2867,6 @@ fn build_spawned_actor(
         prof_processing_time_ns: AtomicU64::new(0),
         #[cfg(not(target_arch = "wasm32"))]
         arena,
-        #[cfg(target_arch = "wasm32")]
-        arena: arena.cast::<c_void>(),
         suspended_cont: AtomicPtr::new(ptr::null_mut()),
         cont_tag: AtomicI32::new(crate::internal::types::ContTag::Empty as i32),
         pending_wake: AtomicBool::new(false),
@@ -3271,12 +2879,8 @@ fn build_spawned_actor(
         // so it stamps `DEFAULT` directly.
         #[cfg(not(target_arch = "wasm32"))]
         runtime_id: rt.runtime_id(),
-        #[cfg(target_arch = "wasm32")]
-        runtime_id: crate::runtime_id::RuntimeId::DEFAULT,
         #[cfg(not(target_arch = "wasm32"))]
         runtime: rt as *const crate::runtime::RuntimeInner,
-        #[cfg(target_arch = "wasm32")]
-        runtime: ptr::null(),
         send_pin_count: AtomicU32::new(0),
         gen_sink: AtomicPtr::new(ptr::null_mut()),
         local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
@@ -3350,42 +2954,6 @@ unsafe fn finalize_spawned_actor(raw: *mut HewActor, actor_id: u64) -> bool {
     true
 }
 
-#[cfg(target_arch = "wasm32")]
-unsafe fn finalize_spawned_actor(raw: *mut HewActor, actor_id: u64) -> bool {
-    let publication = match crate::lifetime::local_handles::begin_current_actor_publication() {
-        Ok(publication) => publication,
-        Err(error) => {
-            crate::set_last_error(format!(
-                "hew_actor_spawn: local handle publication failed: {error:?}"
-            ));
-            return false;
-        }
-    };
-    let token = match publication.register_actor(crate::runtime_id::RuntimeId::DEFAULT, actor_id) {
-        Ok(token) => token,
-        Err(error) => {
-            crate::set_last_error(format!(
-                "hew_actor_spawn: local handle allocation failed: {error:?}"
-            ));
-            return false;
-        }
-    };
-    unsafe { (*raw).local_pid_id = token };
-    // SAFETY: caller guarantees raw is valid and fully initialised.
-    if !unsafe { live_actors::track_actor(raw) } {
-        let retired = publication.retire_actor(token, actor_id);
-        debug_assert_eq!(
-            retired,
-            crate::lifetime::local_handles::RetireActorResult::Retired
-        );
-        crate::set_last_error(format!(
-            "hew_actor_spawn: actor identity collision: {actor_id}"
-        ));
-        return false;
-    }
-    true
-}
-
 /// Allocate the per-actor arena for a native spawn.
 ///
 /// Centralises the `cap_bytes == 0` / `cap_bytes > 0` branch and provides a
@@ -3444,75 +3012,6 @@ unsafe fn spawn_actor_internal(config: ActorSpawnConfig) -> *mut HewActor {
         unsafe { cleanup_failed_spawn(&config, init_state) };
         return ptr::null_mut();
     }
-    let Some(identity) = next_spawn_actor_identity() else {
-        crate::set_last_error(
-            "hew_actor_spawn: actor serial space exhausted; refusing to mint an aliased actor id",
-        );
-        // SAFETY: the arena was allocated above and its ownership has not been
-        // transferred to an actor.
-        unsafe { crate::arena::hew_arena_free_all(arena) };
-        // SAFETY: `config` still owns the transferred state/mailbox on this failure path.
-        unsafe { cleanup_failed_spawn(&config, init_state) };
-        return ptr::null_mut();
-    };
-    let actor = build_spawned_actor(config, identity, init_state, arena);
-    let raw = Box::into_raw(actor);
-    // The single site that mints an actor box. Counted here, at the allocation
-    // itself, so the balance in `actor_balance` is over the boxes the runtime
-    // actually handed out (see that module for why exit status alone cannot
-    // see a leaked actor).
-    crate::actor_balance::record_actor_box_alloc();
-    register_actor_state_lock(raw);
-    // SAFETY: `raw` comes from `Box::into_raw` and has not yet been tracked.
-    if !unsafe { finalize_spawned_actor(raw, identity.id) } {
-        // SAFETY: registration failed after liveness was rolled back; no caller
-        // or scheduler can observe `raw`.
-        unsafe { free_actor_resources(raw) };
-        return ptr::null_mut();
-    }
-    raw
-}
-
-/// Shared implementation for all WASM actor spawn functions.
-///
-/// # Safety
-///
-/// Same requirements as [`spawn_actor_internal`] but for WASM targets.
-#[cfg(target_arch = "wasm32")]
-unsafe fn spawn_actor_internal(config: ActorSpawnConfig) -> *mut HewActor {
-    // Adopt-state path: see native fork for rationale.
-    let init_state = if config.adopt {
-        ptr::null_mut()
-    } else {
-        // SAFETY: Caller already deep-copied state; make a second copy for restart.
-        unsafe { deep_copy_state(config.state, config.state_size) }
-    };
-
-    // OOM on the restart-state copy: free resources the caller transferred
-    // ownership of and propagate the failure as null. Skipped on the adopt
-    // path because we never allocated `init_state`.
-    if !config.adopt && !config.state.is_null() && config.state_size > 0 && init_state.is_null() {
-        // SAFETY: `config` still owns the transferred state/mailbox on this failure path.
-        unsafe { cleanup_failed_spawn(&config, ptr::null_mut()) };
-        return ptr::null_mut();
-    }
-
-    // Allocate the per-actor arena bump allocator.  Mirror the native path:
-    // if allocation fails, free all resources already owned and return null.
-    let arena = if config.cap_bytes > 0 {
-        crate::arena::hew_arena_new_with_cap(config.cap_bytes)
-    } else {
-        crate::arena::hew_arena_new()
-    };
-    if arena.is_null() {
-        // SAFETY: `init_state` was created above and ownership has not been transferred.
-        // On the adopt path init_state is null (no allocation to release here);
-        // `cleanup_failed_spawn` will still `buf_free` `config.state` (the
-        // adopted clone wrapper).
-        unsafe { cleanup_failed_spawn(&config, init_state) };
-        return ptr::null_mut();
-    }
-
     let Some(identity) = next_spawn_actor_identity() else {
         crate::set_last_error(
             "hew_actor_spawn: actor serial space exhausted; refusing to mint an aliased actor id",
@@ -3991,75 +3490,6 @@ unsafe fn submit_native_request(
     .unwrap_or(mailbox::SendOutcome::Closed)
 }
 
-/// WASM fork of [`hew_actor_spawn_opts_adopt`]. Same contract.
-///
-/// # Safety
-///
-/// Same requirements as the native [`hew_actor_spawn_opts_adopt`].
-#[cfg(target_arch = "wasm32")]
-#[no_mangle]
-pub unsafe extern "C" fn hew_actor_spawn_opts_adopt(
-    opts: *const HewActorOpts,
-    cloned_state: *mut c_void,
-) -> *mut HewActor {
-    if opts.is_null() {
-        return ptr::null_mut();
-    }
-    // SAFETY: Caller guarantees `opts` is valid.
-    let opts = unsafe { &*opts };
-
-    let mailbox = if opts.mailbox_capacity > 0 {
-        let capacity = usize::try_from(opts.mailbox_capacity).unwrap_or(usize::MAX);
-        let policy = parse_overflow_policy(opts.overflow);
-        // SAFETY: Trusted FFI constructor.
-        unsafe { hew_mailbox_new_with_policy(capacity, policy) }
-    } else {
-        // SAFETY: Trusted FFI constructor for an unbounded mailbox.
-        unsafe { hew_mailbox_new() }
-    };
-    let coalesce_fallback = parse_overflow_policy(opts.coalesce_fallback);
-    // SAFETY: mailbox is a valid WASM mailbox pointer created above.
-    unsafe {
-        crate::mailbox_wasm::hew_mailbox_set_coalesce_config(
-            mailbox.cast::<crate::mailbox_wasm::HewMailboxWasm>(),
-            opts.coalesce_key_fn,
-            coalesce_fallback,
-        );
-        crate::mailbox_wasm::hew_mailbox_set_message_drop_fn(
-            mailbox.cast::<crate::mailbox_wasm::HewMailboxWasm>(),
-            opts.message_drop_fn,
-        );
-    }
-
-    let budget = if opts.budget > 0 {
-        opts.budget
-    } else {
-        HEW_MSG_BUDGET
-    };
-
-    // SAFETY: cloned_state ownership has been transferred to us; mailbox is valid.
-    unsafe {
-        spawn_actor_internal(ActorSpawnConfig {
-            #[cfg(not(target_arch = "wasm32"))]
-            native_crash: None,
-            dispatch_ownership: HewDispatchOwnership::CopiedPayload,
-            terminate_fn: None,
-            state_drop_fn: None,
-            state_clone_fn: None,
-            state: cloned_state,
-            state_size: opts.state_size,
-            dispatch: opts.dispatch,
-            sys_dispatch: None,
-            mailbox,
-            budget,
-            coalesce_key_fn: opts.coalesce_key_fn,
-            cycle_capable: opts.cycle_capable != 0,
-            cap_bytes: opts.arena_cap_bytes,
-            adopt: true,
-        })
-    }
-}
-
 /// Spawn a new actor with a bounded mailbox.
 ///
 /// # Safety
@@ -4245,37 +3675,6 @@ pub unsafe extern "C" fn hew_actor_send_aliased(
     }
 }
 
-/// WASM stub for [`hew_actor_send_aliased`] — **fail-closed**.
-///
-// WASM-TODO(alias-messaging): wire alias-send routing through the WASM envelope path.
-/// The native entry above delivers aliased sends via the envelope-mode
-/// enqueue, but the WASM mailbox routing for the alias path is not yet
-/// wired. Until then this stub releases the caller-transferred envelope
-/// refcount (so the buffer container does not leak) and aborts via
-/// [`hew_panic`] rather than silently dropping or mis-delivering. `hew_panic`
-/// is `extern "C-unwind"` and unwinds out of an actor context, so this stub
-/// carries that ABI too.
-///
-/// # Safety
-///
-/// - `envelope` may be null; if non-null it carries exactly one
-///   caller-transferred refcount that this stub releases before aborting.
-#[cfg(target_arch = "wasm32")]
-#[no_mangle]
-pub unsafe extern "C-unwind" fn hew_actor_send_aliased(
-    _actor: *mut HewActor,
-    _msg_type: i32,
-    envelope: *mut crate::mailbox_wasm::HewMsgEnvelope,
-) {
-    if !envelope.is_null() {
-        // SAFETY: caller transferred one refcount on `envelope`;
-        // release it so the buffer container does not leak when we
-        // abort below.
-        unsafe { crate::mailbox_wasm::hew_msg_envelope_release(envelope) };
-    }
-    hew_panic();
-}
-
 /// Send a wire-encoded message to an actor.
 ///
 /// Extracts raw bytes from the `HewVec` (bytes type), deep-copies them
@@ -4299,59 +3698,6 @@ pub unsafe extern "C" fn hew_actor_send_wire(
     let data = unsafe { crate::vec::hwvec_to_u8(bytes) };
     // SAFETY: actor is valid, data slice is valid.
     unsafe { actor_send_internal(actor, msg_type, data.as_ptr() as *mut c_void, data.len()) };
-    // SAFETY: bytes was allocated by hew_vec and is no longer needed.
-    unsafe { crate::vec::hew_vec_free(bytes) };
-}
-
-/// Send a wire-encoded message to an actor on wasm32.
-///
-/// Extracts raw bytes from the `HewVec` (bytes type), deep-copies them into the
-/// cooperative mailbox, wakes the target actor when delivery succeeds, and
-/// frees the temporary `HewVec` in all cases.
-///
-/// # Safety
-///
-/// - `actor` must be a valid pointer returned by a spawn function.
-/// - `bytes` must be a valid `HewVec*` (bytes type) or null.
-#[cfg(target_arch = "wasm32")]
-#[no_mangle]
-pub unsafe extern "C" fn hew_actor_send_wire(
-    actor: *mut HewActor,
-    msg_type: i32,
-    bytes: *mut crate::vec::HewVec,
-) {
-    if bytes.is_null() {
-        return;
-    }
-
-    if actor.is_null() {
-        // SAFETY: bytes was allocated by hew_vec and must be released on early return.
-        unsafe { crate::vec::hew_vec_free(bytes) };
-        return;
-    }
-
-    // SAFETY: bytes is a valid HewVec. Extract raw byte data before freeing it.
-    let data = unsafe { crate::vec::hwvec_to_u8(bytes) };
-    let data_ptr = if data.is_empty() {
-        ptr::null_mut()
-    } else {
-        data.as_ptr().cast_mut().cast()
-    };
-
-    // SAFETY: actor is valid and owns a wasm mailbox for its lifetime.
-    let result = unsafe {
-        crate::mailbox_wasm::hew_mailbox_send(
-            (*actor).mailbox.cast(),
-            msg_type,
-            data_ptr,
-            data.len(),
-        )
-    };
-    if result == HewError::Ok as i32 {
-        // SAFETY: actor is valid and delivery succeeded, so the scheduler may run it.
-        unsafe { wake_wasm_actor(actor) };
-    }
-
     // SAFETY: bytes was allocated by hew_vec and is no longer needed.
     unsafe { crate::vec::hew_vec_free(bytes) };
 }
@@ -4537,69 +3883,6 @@ pub unsafe extern "C" fn hew_actor_detach_await_send_by_id(
     });
 }
 
-/// Cooperative-WASM implementation of by-ID local actor delivery.
-///
-/// The single-threaded runtime still publishes actors in `live_actors`; pin the
-/// exact ID for the complete mailbox copy, then wake the target on successful
-/// delivery. Distributed routing is checker-rejected on wasm32, so a missing
-/// local actor is always the explicit stopped-actor failure.
-///
-/// # Safety
-///
-/// `data` must point to at least `size` readable bytes, or be null when `size`
-/// is zero. `dispatch` is an opaque type key and is not dereferenced.
-#[cfg(target_arch = "wasm32")]
-#[no_mangle]
-pub unsafe extern "C" fn hew_actor_send_by_id(
-    actor_id: u64,
-    _dispatch: *const c_void,
-    msg_type: i32,
-    data: *mut c_void,
-    size: usize,
-) -> c_int {
-    // SAFETY: this wrapper has the same payload contract as the inner seam.
-    unsafe { actor_send_by_id_wasm_internal(actor_id, msg_type, data, size) }
-}
-
-#[cfg(any(target_arch = "wasm32", test))]
-unsafe fn actor_send_by_id_wasm_internal(
-    actor_id: u64,
-    msg_type: i32,
-    data: *mut c_void,
-    size: usize,
-) -> c_int {
-    live_actors::with_actor_send_by_id(actor_id, |actor| {
-        // SAFETY: the live-actor pin keeps `actor` and its cooperative mailbox valid.
-        let mailbox = unsafe {
-            &mut *(*actor)
-                .mailbox
-                .cast::<crate::mailbox_wasm::HewMailboxWasm>()
-        };
-        // SAFETY: the caller supplies the readable payload range.
-        let outcome = unsafe {
-            crate::mailbox_wasm::hew_mailbox_send_fire_and_forget(mailbox, msg_type, data, size)
-        };
-        match outcome {
-            crate::mailbox_wasm::SendOutcome::Enqueued => {
-                // SAFETY: the live-actor pin keeps `actor` valid through wakeup.
-                unsafe { wake_wasm_actor(actor) };
-                HewError::Ok as i32
-            }
-            crate::mailbox_wasm::SendOutcome::Coalesced
-            | crate::mailbox_wasm::SendOutcome::DroppedOld => {
-                // SAFETY: the live-actor pin keeps `actor` valid through wakeup.
-                unsafe { wake_wasm_actor(actor) };
-                HEW_ACTOR_SEND_MESSAGE_LOST
-            }
-            crate::mailbox_wasm::SendOutcome::Dropped => HEW_ACTOR_SEND_MESSAGE_LOST,
-            crate::mailbox_wasm::SendOutcome::Failed => HewError::ErrMailboxFull as i32,
-            crate::mailbox_wasm::SendOutcome::Closed => HewError::ErrActorStopped as i32,
-            crate::mailbox_wasm::SendOutcome::Oom => HewError::ErrOom as i32,
-        }
-    })
-    .unwrap_or(HewError::ErrActorStopped as i32)
-}
-
 /// Resolve the exact actor incarnation behind a stable local handle.
 ///
 /// # Safety
@@ -4627,6 +3910,7 @@ pub unsafe extern "C" fn hew_local_pid_actor_id(
 ///
 /// # Safety
 /// `data` must be readable for `size` bytes, or null when `size` is zero.
+#[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub unsafe extern "C" fn hew_local_pid_send(
     token: crate::lifetime::local_handles::HewLocalPidId,
@@ -4641,11 +3925,6 @@ pub unsafe extern "C" fn hew_local_pid_send(
         #[cfg(not(target_arch = "wasm32"))]
         // SAFETY: the actor is pinned and data follows this function's contract.
         return unsafe { actor_send_result_internal(actor, msg_type, data, size) };
-        #[cfg(target_arch = "wasm32")]
-        // SAFETY: the actor is pinned and data follows this function's contract.
-        unsafe {
-            hew_actor_try_send(actor, msg_type, data, size)
-        }
     })
     .unwrap_or(HewError::ErrActorStopped as i32)
 }
@@ -5376,23 +4655,6 @@ pub fn drain_actors(ids: &[ActorId], deadline: std::time::Instant) -> DrainOutco
     drain_outcome_from_lists(still_live, crashed)
 }
 
-/// WASM-TODO(actor-drain): integrate actor-set draining with the WASM scheduler.
-#[cfg(target_arch = "wasm32")]
-#[must_use]
-pub fn drain_actors(ids: &[ActorId], _deadline: std::time::Instant) -> DrainOutcome {
-    let mut still_live = ids.to_vec();
-    still_live.sort_unstable();
-    still_live.dedup();
-    if still_live.is_empty() {
-        DrainOutcome::Drained
-    } else {
-        DrainOutcome::Incomplete {
-            still_live,
-            crashed: Vec::new(),
-        }
-    }
-}
-
 fn actor_ids_to_malloc(ids: &[ActorId]) -> Result<*mut ActorId, &'static str> {
     if ids.is_empty() {
         return Ok(ptr::null_mut());
@@ -5471,6 +4733,7 @@ pub unsafe extern "C" fn hew_actor_drain_outcome_free(out: *mut DrainOutcomeRepr
 ///
 /// - `ids_ptr` must point to `ids_len` actor IDs when `ids_len > 0`.
 /// - `out` must be a valid mutable pointer to writable [`DrainOutcomeRepr`] storage.
+#[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_drain_set(
     ids_ptr: *const ActorId,
@@ -5823,15 +5086,6 @@ pub unsafe extern "C" fn hew_actor_set_message_drop(
     // guaranteed by the caller.
     unsafe {
         mailbox::hew_mailbox_set_message_drop_fn(mailbox_ptr.cast(), Some(message_drop_fn));
-    }
-    #[cfg(target_arch = "wasm32")]
-    // SAFETY: the actor owns a live WASM mailbox and the callback lifetime is
-    // guaranteed by the caller.
-    unsafe {
-        crate::mailbox_wasm::hew_mailbox_set_message_drop_fn(
-            mailbox_ptr.cast(),
-            Some(message_drop_fn),
-        );
     }
 }
 
@@ -6633,29 +5887,6 @@ pub unsafe extern "C" fn hew_actor_ask_timeout(
     result
 }
 
-#[cfg(any(target_arch = "wasm32", test))]
-const HEW_WASM_ASK_TICK_ACTIVATIONS: i32 = 1;
-
-#[cfg(any(target_arch = "wasm32", test))]
-#[inline]
-fn is_terminal(state: i32) -> bool {
-    state == HewActorState::Stopped as i32 || state == HewActorState::Crashed as i32
-}
-
-#[cfg(any(target_arch = "wasm32", test))]
-pub(crate) unsafe fn wake_wasm_actor(actor: *mut HewActor) {
-    // SAFETY: Caller guarantees `actor` is valid.
-    let a = unsafe { &*actor };
-    if a.actor_state.load(Ordering::Relaxed) == HewActorState::Idle as i32 {
-        a.actor_state
-            .store(HewActorState::Runnable as i32, Ordering::Relaxed);
-        a.idle_count.store(0, Ordering::Relaxed);
-        a.hibernating.store(0, Ordering::Relaxed);
-        // SAFETY: actor is valid and the cooperative scheduler is initialized.
-        unsafe { crate::scheduler_wasm::hew_wasm_sched_enqueue(actor.cast()) };
-    }
-}
-
 /// Send a message with a caller-provided reply channel.
 ///
 /// The reply channel is packed into the message data.
@@ -6815,6 +6046,7 @@ unsafe fn actor_ask_by_id_inner(
 ///
 /// # Safety
 /// `data` must be readable for `size` bytes, or null when `size` is zero.
+#[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub unsafe extern "C" fn hew_local_pid_ask(
     token: crate::lifetime::local_handles::HewLocalPidId,
@@ -6828,17 +6060,13 @@ pub unsafe extern "C" fn hew_local_pid_ask(
     #[cfg(not(target_arch = "wasm32"))]
     // SAFETY: the resolved ActorId is pinned by the by-ID ask send phase.
     return unsafe { hew_actor_ask_by_id(actor_id, msg_type, data, size) };
-    #[cfg(target_arch = "wasm32")]
-    // SAFETY: the helper pins only while submitting, then retains ActorId only.
-    unsafe {
-        actor_ask_wasm_by_id_impl(actor_id, msg_type, data, size, None)
-    }
 }
 
 /// Submit an ask with a caller-owned reply channel through a stable identity.
 ///
 /// # Safety
 /// `data` and `ch` must satisfy [`hew_actor_ask_with_channel`]'s contract.
+#[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub unsafe extern "C" fn hew_local_pid_ask_with_channel(
     token: crate::lifetime::local_handles::HewLocalPidId,
@@ -6861,11 +6089,6 @@ pub unsafe extern "C" fn hew_local_pid_ask_with_channel(
                 |ch| actor_send_result_internal_reply(actor, msg_type, data, size, ch.cast()),
             )
         };
-        #[cfg(target_arch = "wasm32")]
-        // SAFETY: actor is pinned; channel and data follow this function's contract.
-        unsafe {
-            ask_with_channel_wasm_internal(actor, msg_type, data, size, ch)
-        }
     })
     .unwrap_or_else(|| {
         record_ask_error(AskError::ActorStopped);
@@ -7502,10 +6725,6 @@ pub extern "C-unwind" fn hew_actor_exit_unhandled(reason: i32) {
     unsafe {
         crate::supervisor::hew_trap_with_code(crash_code);
     }
-    #[cfg(target_arch = "wasm32")]
-    unsafe {
-        crate::trap_code::hew_trap_with_code(crash_code);
-    }
 }
 
 /// Return the current actor's id, or -1 outside a dispatch context.
@@ -7529,12 +6748,6 @@ pub extern "C" fn hew_actor_self_id() -> i64 {
     unsafe {
         (*actor).id as i64
     }
-}
-
-/// Stamp the WASM actor panic sentinel on the current actor, when present.
-#[cfg(any(target_arch = "wasm32", test))]
-pub(crate) fn stamp_wasm_actor_panic() -> bool {
-    crate::trap_code::stamp_current_actor_error_code(101)
 }
 
 /// Typed payload propagated through generated LLVM cleanup landing pads to the
@@ -7594,17 +6807,6 @@ pub(crate) fn install_hew_panic_hook() {
 #[no_mangle]
 pub extern "C-unwind" fn hew_panic() {
     crate::cont::abort_if_crash_cleanup_finalizer_trap("Hew panic");
-    #[cfg(target_arch = "wasm32")]
-    {
-        if stamp_wasm_actor_panic() {
-            panic!("hew_panic: actor panic");
-        }
-        // JUSTIFIED: wasm32 non-actor Hew panic terminates the process
-        // immediately, so bypassing Rust Drop is deliberate and the WASI host
-        // reclaims process resources. The status is `1`, as it is natively: an
-        // unrecovered panic is a fault under the one exit rule.
-        std::process::exit(1);
-    }
 
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -7734,1015 +6936,10 @@ pub extern "C" fn hew_actor_self_stop() {
     );
 }
 
-/// Self-stop: the currently running actor requests its own shutdown.
-///
-/// Closes the mailbox and CAS transitions from `Running` to `Stopping`.
-/// The WASM scheduler will handle the final transition to `Stopped` after
-/// dispatch returns.
-#[cfg(any(target_arch = "wasm32", test))]
-pub(crate) unsafe fn actor_self_stop_wasm_impl(actor: *mut HewActor) {
-    if actor.is_null() {
-        return;
-    }
-    // SAFETY: caller guarantees `actor` is the currently running actor.
-    let a = unsafe { &*actor };
-
-    let mailbox = a.mailbox.cast::<crate::mailbox_wasm::HewMailboxWasm>();
-    if !mailbox.is_null() {
-        // SAFETY: mailbox is valid for the actor's lifetime.
-        unsafe { crate::mailbox_wasm::hew_mailbox_close(mailbox) };
-    }
-
-    // CAS Running → Stopping.
-    let _ = a.actor_state.compare_exchange(
-        HewActorState::Running as i32,
-        HewActorState::Stopping as i32,
-        Ordering::AcqRel,
-        Ordering::Acquire,
-    );
-}
-
-#[cfg(target_arch = "wasm32")]
-#[no_mangle]
-pub extern "C" fn hew_actor_self_stop() {
-    let actor = hew_actor_self();
-    // SAFETY: the canonical context actor lane is only set during dispatch.
-    unsafe { actor_self_stop_wasm_impl(actor) };
-}
-
 // ── WASM actor API ──────────────────────────────────────────────────────
 // On WASM, spawn/send/ask/stop/close use the WASM mailbox and cooperative
 // scheduler. These provide the same C ABI surface as native so that
 // codegen-emitted calls resolve transparently.
-
-#[cfg(target_arch = "wasm32")]
-extern "C" {
-    fn hew_mailbox_new() -> *mut c_void;
-    fn hew_mailbox_new_bounded(capacity: i32) -> *mut c_void;
-    fn hew_mailbox_new_with_policy(capacity: usize, policy: HewOverflowPolicy) -> *mut c_void;
-    fn hew_mailbox_send(mb: *mut c_void, msg_type: i32, data: *mut c_void, size: usize) -> i32;
-    fn hew_mailbox_close(mb: *mut c_void);
-    fn hew_wasm_sched_enqueue(actor: *mut c_void);
-}
-
-/// Spawn a new actor with an unbounded mailbox (WASM).
-///
-/// # Safety
-///
-/// Same requirements as the native [`hew_actor_spawn`].
-#[cfg(target_arch = "wasm32")]
-#[no_mangle]
-pub unsafe extern "C" fn hew_actor_spawn(
-    state: *mut c_void,
-    state_size: usize,
-    dispatch: Option<HewDispatchFn>,
-) -> *mut HewActor {
-    // SAFETY: Caller guarantees `state` validity.
-    let actor_state = unsafe { deep_copy_state(state, state_size) };
-    if !state.is_null() && state_size > 0 && actor_state.is_null() {
-        return ptr::null_mut();
-    }
-    // SAFETY: hew_mailbox_new is a trusted FFI constructor returning a valid mailbox pointer.
-    let mailbox = unsafe { hew_mailbox_new() };
-
-    // SAFETY: actor_state is a fresh deep-copy; mailbox is valid.
-    unsafe {
-        spawn_actor_internal(ActorSpawnConfig {
-            #[cfg(not(target_arch = "wasm32"))]
-            native_crash: None,
-            dispatch_ownership: HewDispatchOwnership::CopiedPayload,
-            terminate_fn: None,
-            state_drop_fn: None,
-            state_clone_fn: None,
-            state: actor_state,
-            state_size,
-            dispatch,
-            sys_dispatch: None,
-            mailbox,
-            budget: HEW_MSG_BUDGET,
-            coalesce_key_fn: None,
-            cycle_capable: false,
-            cap_bytes: 0,
-            adopt: false,
-        })
-    }
-}
-
-/// Spawn a new actor with a bounded mailbox (WASM).
-///
-/// # Safety
-///
-/// Same requirements as the native [`hew_actor_spawn_bounded`].
-#[cfg(target_arch = "wasm32")]
-#[no_mangle]
-pub unsafe extern "C" fn hew_actor_spawn_bounded(
-    state: *mut c_void,
-    state_size: usize,
-    dispatch: Option<HewDispatchFn>,
-    capacity: i32,
-) -> *mut HewActor {
-    // SAFETY: Caller guarantees `state` validity.
-    let actor_state = unsafe { deep_copy_state(state, state_size) };
-    if !state.is_null() && state_size > 0 && actor_state.is_null() {
-        return ptr::null_mut();
-    }
-    // SAFETY: hew_mailbox_new_bounded is a trusted FFI constructor returning a valid mailbox pointer.
-    let mailbox = unsafe { hew_mailbox_new_bounded(capacity) };
-
-    // SAFETY: actor_state is a fresh deep-copy; mailbox is valid.
-    unsafe {
-        spawn_actor_internal(ActorSpawnConfig {
-            #[cfg(not(target_arch = "wasm32"))]
-            native_crash: None,
-            dispatch_ownership: HewDispatchOwnership::CopiedPayload,
-            terminate_fn: None,
-            state_drop_fn: None,
-            state_clone_fn: None,
-            state: actor_state,
-            state_size,
-            dispatch,
-            sys_dispatch: None,
-            mailbox,
-            budget: HEW_MSG_BUDGET,
-            coalesce_key_fn: None,
-            cycle_capable: false,
-            cap_bytes: 0,
-            adopt: false,
-        })
-    }
-}
-
-/// Spawn a new actor from options (WASM).
-///
-/// # Safety
-///
-/// Same requirements as the native [`hew_actor_spawn_opts`].
-#[cfg(target_arch = "wasm32")]
-#[no_mangle]
-pub unsafe extern "C" fn hew_actor_spawn_opts(opts: *const HewActorOpts) -> *mut HewActor {
-    if opts.is_null() {
-        return ptr::null_mut();
-    }
-    // SAFETY: Caller guarantees `opts` points to a valid HewActorOpts.
-    let opts = unsafe { &*opts };
-
-    // SAFETY: Caller guarantees opts.init_state is readable for opts.state_size bytes.
-    let actor_state = unsafe { deep_copy_state(opts.init_state, opts.state_size) };
-    if !opts.init_state.is_null() && opts.state_size > 0 && actor_state.is_null() {
-        return ptr::null_mut();
-    }
-
-    let mailbox = if opts.mailbox_capacity > 0 {
-        let capacity = usize::try_from(opts.mailbox_capacity).unwrap_or(usize::MAX);
-        let policy = parse_overflow_policy(opts.overflow);
-        // SAFETY: Trusted FFI constructor; capacity/policy were derived from opts above.
-        unsafe { hew_mailbox_new_with_policy(capacity, policy) }
-    } else {
-        // SAFETY: Trusted FFI constructor for an unbounded mailbox.
-        unsafe { hew_mailbox_new() }
-    };
-    let coalesce_fallback = parse_overflow_policy(opts.coalesce_fallback);
-    // SAFETY: mailbox is a valid WASM mailbox pointer created above.
-    unsafe {
-        crate::mailbox_wasm::hew_mailbox_set_coalesce_config(
-            mailbox.cast::<crate::mailbox_wasm::HewMailboxWasm>(),
-            opts.coalesce_key_fn,
-            coalesce_fallback,
-        );
-        crate::mailbox_wasm::hew_mailbox_set_message_drop_fn(
-            mailbox.cast::<crate::mailbox_wasm::HewMailboxWasm>(),
-            opts.message_drop_fn,
-        );
-    }
-
-    let budget = if opts.budget > 0 {
-        opts.budget
-    } else {
-        HEW_MSG_BUDGET
-    };
-
-    // SAFETY: actor_state is a fresh deep-copy; mailbox is valid.
-    unsafe {
-        spawn_actor_internal(ActorSpawnConfig {
-            #[cfg(not(target_arch = "wasm32"))]
-            native_crash: None,
-            dispatch_ownership: HewDispatchOwnership::CopiedPayload,
-            terminate_fn: None,
-            state_drop_fn: None,
-            state_clone_fn: None,
-            state: actor_state,
-            state_size: opts.state_size,
-            dispatch: opts.dispatch,
-            sys_dispatch: None,
-            mailbox,
-            budget,
-            coalesce_key_fn: opts.coalesce_key_fn,
-            cycle_capable: opts.cycle_capable != 0,
-            cap_bytes: opts.arena_cap_bytes,
-            adopt: false,
-        })
-    }
-}
-
-/// Send a message to an actor (WASM, fire-and-forget).
-///
-/// # Safety
-///
-/// Same requirements as the native [`hew_actor_send`].
-#[cfg(target_arch = "wasm32")]
-#[no_mangle]
-pub unsafe extern "C" fn hew_actor_send(
-    actor: *mut HewActor,
-    msg_type: i32,
-    data: *mut c_void,
-    size: usize,
-) {
-    cabi_guard!(actor.is_null());
-    // SAFETY: Caller guarantees `actor` is valid.
-    let a = unsafe { &*actor };
-    // SAFETY: Mailbox is valid for the actor's lifetime.
-    unsafe { hew_mailbox_send(a.mailbox, msg_type, data, size) };
-
-    // Transition IDLE → RUNNABLE and enqueue.
-    if a.actor_state.load(Ordering::Relaxed) == HewActorState::Idle as i32 {
-        a.actor_state
-            .store(HewActorState::Runnable as i32, Ordering::Relaxed);
-        a.idle_count.store(0, Ordering::Relaxed);
-        a.hibernating.store(0, Ordering::Relaxed);
-        // SAFETY: actor is valid.
-        unsafe { hew_wasm_sched_enqueue(actor.cast()) };
-    }
-}
-
-/// Try to send a message (WASM). Identical to [`hew_actor_send`] on WASM
-/// since there is no blocking distinction.
-///
-/// # Safety
-///
-/// Same requirements as [`hew_actor_send`].
-#[cfg(target_arch = "wasm32")]
-#[no_mangle]
-pub unsafe extern "C" fn hew_actor_try_send(
-    actor: *mut HewActor,
-    msg_type: i32,
-    data: *mut c_void,
-    size: usize,
-) -> i32 {
-    cabi_guard!(actor.is_null(), HewError::ErrActorStopped as i32);
-    // SAFETY: Caller guarantees `actor` is a valid pointer.
-    let a = unsafe { &*actor };
-    // SAFETY: a.mailbox is a valid mailbox pointer for the actor's lifetime.
-    let result = unsafe { hew_mailbox_send(a.mailbox, msg_type, data, size) };
-    if result != 0 {
-        return result;
-    }
-
-    if a.actor_state.load(Ordering::Relaxed) == HewActorState::Idle as i32 {
-        a.actor_state
-            .store(HewActorState::Runnable as i32, Ordering::Relaxed);
-        a.idle_count.store(0, Ordering::Relaxed);
-        a.hibernating.store(0, Ordering::Relaxed);
-        // SAFETY: actor is valid.
-        unsafe { hew_wasm_sched_enqueue(actor.cast()) };
-    }
-
-    0
-}
-
-/// Shared WASM send-with-channel primitive for ask/select lowering.
-///
-/// # Safety
-///
-/// Same requirements as the native [`hew_actor_ask_with_channel`].
-#[cfg(any(target_arch = "wasm32", test))]
-pub(crate) unsafe fn ask_with_channel_wasm_internal(
-    actor: *mut HewActor,
-    msg_type: i32,
-    data: *mut c_void,
-    size: usize,
-    ch: *mut c_void,
-) -> i32 {
-    cabi_guard!(actor.is_null(), HewError::ErrActorStopped as i32);
-    // SAFETY: the actor now holds the sender-side reference until it replies.
-    unsafe { crate::reply_channel_wasm::hew_reply_channel_retain(ch.cast()) };
-
-    // SAFETY: Caller guarantees `actor` is valid.
-    let a = unsafe { &*actor };
-    // SAFETY: a.mailbox is a valid mailbox pointer; ch is a valid reply channel.
-    let mut send_result = unsafe {
-        crate::mailbox_wasm::hew_mailbox_send_with_reply(a.mailbox.cast(), msg_type, data, size, ch)
-    };
-    if send_result == HewError::ErrClosed as i32 {
-        send_result = HewError::ErrActorStopped as i32;
-    }
-    if send_result != HewError::Ok as i32 {
-        // Same TLS classification contract as the native
-        // `submit_ask_with_reply_channel`: the with-channel caller reads
-        // `hew_actor_ask_take_last_error` to bind its Err kind.
-        record_ask_error(send_err_to_ask_err(send_result));
-        // SAFETY: release the sender-side reference retained for the failed send.
-        unsafe { crate::reply_channel_wasm::hew_reply_channel_free(ch.cast()) };
-        return send_result;
-    }
-
-    // SAFETY: actor is valid and owned by the runtime.
-    unsafe { wake_wasm_actor(actor) };
-
-    HewError::Ok as i32
-}
-
-#[cfg(any(target_arch = "wasm32", test))]
-#[derive(Clone, Copy)]
-enum WasmAskTarget {
-    Pointer(*mut HewActor),
-    #[cfg_attr(
-        not(target_arch = "wasm32"),
-        allow(dead_code, reason = "ActorId ask targets are WASM-only")
-    )]
-    ActorId(u64),
-}
-
-#[cfg(any(target_arch = "wasm32", test))]
-impl WasmAskTarget {
-    unsafe fn send(self, msg_type: i32, data: *mut c_void, size: usize, ch: *mut c_void) -> i32 {
-        match self {
-            // SAFETY: inherited from the raw-pointer ask caller.
-            Self::Pointer(actor) => unsafe {
-                ask_with_channel_wasm_internal(actor, msg_type, data, size, ch)
-            },
-            Self::ActorId(actor_id) => live_actors::with_actor_send_by_id(actor_id, |actor| {
-                // SAFETY: liveness lookup pins actor for the complete send.
-                unsafe { ask_with_channel_wasm_internal(actor, msg_type, data, size, ch) }
-            })
-            .unwrap_or(HewError::ErrActorStopped as i32),
-        }
-    }
-
-    fn terminal_state(self) -> Option<i32> {
-        match self {
-            Self::Pointer(actor) => {
-                if actor.is_null() {
-                    return None;
-                }
-                // SAFETY: inherited from the raw-pointer ask caller.
-                Some(unsafe { (*actor).actor_state.load(Ordering::Acquire) })
-            }
-            Self::ActorId(actor_id) => live_actors::pin_actor_by_id(actor_id)
-                .map(|pin| pin.actor().actor_state.load(Ordering::Acquire)),
-        }
-    }
-}
-
-#[cfg(any(target_arch = "wasm32", test))]
-unsafe fn actor_ask_wasm_target_impl(
-    target: WasmAskTarget,
-    msg_type: i32,
-    data: *mut c_void,
-    size: usize,
-    timeout_ms: Option<i32>,
-) -> *mut c_void {
-    use crate::reply_channel_wasm;
-
-    let ch = reply_channel_wasm::hew_reply_channel_new();
-
-    // SAFETY: ch is live; target and data inherit this helper's contract.
-    let send_result = unsafe { target.send(msg_type, data, size, ch.cast()) };
-    if send_result != HewError::Ok as i32 {
-        // SAFETY: ch was created above; failed send released its sender retain.
-        unsafe { reply_channel_wasm::hew_reply_channel_free(ch) };
-        return actor_ask_null(send_err_to_ask_err(send_result));
-    }
-
-    let deadline = timeout_ms.map(|ms| {
-        std::time::Instant::now()
-            + std::time::Duration::from_millis(u64::try_from(ms.max(0)).unwrap_or(0))
-    });
-
-    loop {
-        // SAFETY: ch stays live until the caller-side release below.
-        if unsafe { reply_channel_wasm::reply_ready(ch) } {
-            break;
-        }
-
-        if deadline.is_some_and(|limit| std::time::Instant::now() >= limit) {
-            // SAFETY: ch remains live through cancellation and release.
-            unsafe {
-                reply_channel_wasm::hew_reply_channel_cancel(ch);
-                reply_channel_wasm::hew_reply_channel_free(ch);
-            }
-            return actor_ask_null(AskError::Timeout);
-        }
-
-        // SAFETY: scheduler must be initialized by the runtime/host.
-        let remaining = unsafe { crate::bridge::hew_wasm_tick(HEW_WASM_ASK_TICK_ACTIVATIONS) };
-
-        if deadline.is_some_and(|limit| std::time::Instant::now() >= limit) {
-            // SAFETY: ch remains live through cancellation and release.
-            unsafe {
-                reply_channel_wasm::hew_reply_channel_cancel(ch);
-                reply_channel_wasm::hew_reply_channel_free(ch);
-            }
-            return actor_ask_null(AskError::Timeout);
-        }
-
-        // SAFETY: ch stays live until the caller-side release below.
-        if unsafe { reply_channel_wasm::reply_ready(ch) } {
-            break;
-        }
-
-        if remaining == 0 && crate::scheduler_wasm::hew_wasm_sleeping_count() == 0 {
-            // SAFETY: ch remains live through cancellation and release.
-            unsafe {
-                reply_channel_wasm::hew_reply_channel_cancel(ch);
-                reply_channel_wasm::hew_reply_channel_free(ch);
-            }
-            if target.terminal_state().is_none_or(is_terminal) {
-                return actor_ask_null(AskError::OrphanedAsk);
-            }
-            return actor_ask_null(AskError::NoRunnableWork);
-        }
-    }
-
-    // SAFETY: ch is a valid reply channel pointer created above.
-    let reply = unsafe { reply_channel_wasm::reply_take(ch) };
-    if reply.is_null() {
-        // SAFETY: ch remains live until the release immediately below.
-        let is_orphaned = unsafe { reply_channel_wasm::reply_is_orphaned(ch) };
-        // SAFETY: release the caller-side channel reference.
-        unsafe { reply_channel_wasm::hew_reply_channel_free(ch) };
-        if is_orphaned {
-            return actor_ask_null(AskError::OrphanedAsk);
-        }
-        actor_ask_clear();
-    } else {
-        // SAFETY: release the caller-side channel reference.
-        unsafe { reply_channel_wasm::hew_reply_channel_free(ch) };
-        actor_ask_clear();
-    }
-    reply
-}
-
-#[cfg(any(target_arch = "wasm32", test))]
-pub(crate) unsafe fn actor_ask_wasm_impl(
-    actor: *mut HewActor,
-    msg_type: i32,
-    data: *mut c_void,
-    size: usize,
-    timeout_ms: Option<i32>,
-) -> *mut c_void {
-    // SAFETY: preserves the raw-pointer ask contract.
-    unsafe {
-        actor_ask_wasm_target_impl(
-            WasmAskTarget::Pointer(actor),
-            msg_type,
-            data,
-            size,
-            timeout_ms,
-        )
-    }
-}
-
-#[cfg(target_arch = "wasm32")]
-unsafe fn actor_ask_wasm_by_id_impl(
-    actor_id: u64,
-    msg_type: i32,
-    data: *mut c_void,
-    size: usize,
-    timeout_ms: Option<i32>,
-) -> *mut c_void {
-    // SAFETY: ActorId resolution pins only during send/state probes.
-    unsafe {
-        actor_ask_wasm_target_impl(
-            WasmAskTarget::ActorId(actor_id),
-            msg_type,
-            data,
-            size,
-            timeout_ms,
-        )
-    }
-}
-
-/// Send a message with a caller-provided reply channel (WASM).
-///
-/// Mirrors the native send-with-channel contract for `select.add`: retain
-/// the caller-provided reply channel for the queued send, wake an idle actor,
-/// and return a status code without waiting for a reply.
-///
-/// # Safety
-///
-/// Same requirements as the native [`hew_actor_ask_with_channel`].
-#[cfg(target_arch = "wasm32")]
-#[no_mangle]
-pub unsafe extern "C" fn hew_actor_ask_with_channel(
-    actor: *mut HewActor,
-    msg_type: i32,
-    data: *mut c_void,
-    size: usize,
-    ch: *mut c_void,
-) -> i32 {
-    // SAFETY: same preconditions as ask_with_channel_wasm_internal.
-    unsafe { ask_with_channel_wasm_internal(actor, msg_type, data, size, ch) }
-}
-
-/// Cooperative ask: send a request and run the scheduler until a reply
-/// arrives (WASM).
-///
-/// # Safety
-///
-/// Same requirements as the native [`hew_actor_ask`].
-#[cfg(target_arch = "wasm32")]
-#[no_mangle]
-pub unsafe extern "C" fn hew_actor_ask(
-    actor: *mut HewActor,
-    msg_type: i32,
-    data: *mut c_void,
-    size: usize,
-) -> *mut c_void {
-    // SAFETY: same preconditions as actor_ask_wasm_impl.
-    unsafe { actor_ask_wasm_impl(actor, msg_type, data, size, None) }
-}
-
-/// Cooperative ask with timeout: send a request and drive the scheduler in
-/// bounded ticks until the reply arrives or the timeout expires (WASM).
-///
-/// Returns the reply value, or null on timeout / when no runnable work
-/// remains that can satisfy the ask before control returns to the host.
-///
-/// # Safety
-///
-/// Same requirements as the native [`hew_actor_ask_timeout`].
-#[cfg(target_arch = "wasm32")]
-#[no_mangle]
-pub unsafe extern "C" fn hew_actor_ask_timeout(
-    actor: *mut HewActor,
-    msg_type: i32,
-    data: *mut c_void,
-    size: usize,
-    timeout_ms: i32,
-) -> *mut c_void {
-    // SAFETY: same preconditions as actor_ask_wasm_impl.
-    unsafe { actor_ask_wasm_impl(actor, msg_type, data, size, Some(timeout_ms)) }
-}
-
-/// Cooperative await: pump the scheduler until the actor reaches a terminal
-/// state (WASM).
-///
-/// Returns the actor error code (0 for clean stop, non-zero for crash).
-/// Returns `-1` for null actor pointers.
-///
-/// # Safety
-///
-/// `actor` must be a valid pointer returned by a spawn function.
-#[cfg(target_arch = "wasm32")]
-#[no_mangle]
-pub unsafe extern "C" fn hew_actor_await(actor: *mut HewActor) -> i32 {
-    if actor.is_null() {
-        return -1;
-    }
-
-    // SAFETY: caller guarantees `actor` is valid.
-    let a = unsafe { &*actor };
-    if is_terminal(a.actor_state.load(Ordering::Acquire)) {
-        return a.error_code.load(Ordering::Acquire);
-    }
-
-    loop {
-        // SAFETY: scheduler must be initialized by the runtime/host.
-        let remaining = unsafe { crate::bridge::hew_wasm_tick(HEW_WASM_ASK_TICK_ACTIVATIONS) };
-        if is_terminal(a.actor_state.load(Ordering::Acquire)) {
-            return a.error_code.load(Ordering::Acquire);
-        }
-        if remaining == 0 && crate::scheduler_wasm::hew_wasm_sleeping_count() == 0 {
-            return HewError::ErrTimeout as i32;
-        }
-    }
-}
-
-/// Cooperative await-all: wait for all provided actors to reach terminal
-/// states by pumping the WASM scheduler.
-///
-/// Returns `0` if every actor stopped normally, or the first non-zero
-/// error code encountered. Returns `-1` on null/invalid arguments.
-///
-/// # Safety
-///
-/// - `actors` must point to an array of at least `count` valid
-///   `*mut HewActor` pointers (null entries are skipped).
-/// - `count` must be non-negative.
-#[cfg(target_arch = "wasm32")]
-#[no_mangle]
-pub unsafe extern "C" fn hew_actor_await_all(actors: *const *mut HewActor, count: i64) -> i32 {
-    if actors.is_null() || count < 0 {
-        return -1;
-    }
-
-    let mut first_error = 0;
-    #[expect(
-        clippy::cast_sign_loss,
-        clippy::cast_possible_truncation,
-        reason = "count >= 0 checked above; practical array sizes fit in usize"
-    )]
-    for i in 0..count as usize {
-        // SAFETY: caller guarantees the array is valid for `count` elements.
-        let actor = unsafe { *actors.add(i) };
-        if actor.is_null() {
-            continue;
-        }
-        // SAFETY: actor pointer validity follows the caller contract.
-        let rc = unsafe { hew_actor_await(actor) };
-        if first_error == 0 && rc != 0 {
-            first_error = rc;
-        }
-    }
-    first_error
-}
-
-/// Close an actor, rejecting new messages (WASM).
-///
-/// # Safety
-///
-/// `actor` must be a valid pointer returned by a spawn function.
-#[cfg(target_arch = "wasm32")]
-#[no_mangle]
-pub unsafe extern "C" fn hew_actor_close(actor: *mut HewActor) {
-    cabi_guard!(actor.is_null());
-    // SAFETY: Caller guarantees `actor` is valid.
-    let a = unsafe { &*actor };
-
-    // Close the mailbox.
-    if !a.mailbox.is_null() {
-        // SAFETY: a.mailbox is a valid mailbox pointer.
-        unsafe { hew_mailbox_close(a.mailbox) };
-    }
-
-    // If IDLE, transition directly to STOPPED.
-    if a.actor_state
-        .compare_exchange(
-            HewActorState::Idle as i32,
-            HewActorState::Stopped as i32,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        )
-        .is_ok()
-    {
-        // WASM-R37-S2: direct close of an idle actor mirrors native
-        // `hew_actor_close` observability before invoking terminate_fn.
-        crate::tracing::hew_trace_lifecycle(a.id, crate::tracing::SPAN_STOP);
-        // SAFETY: actor just transitioned to Stopped; not being dispatched.
-        unsafe { call_terminate_fn(actor) };
-        return;
-    }
-
-    // If SLEEPING, cancel the sleep-queue entry and transition to STOPPED.
-    // Sleeping actors use a distinct state so message sends don't wake them
-    // early; closing one must still produce an immediate terminal transition.
-    if a.actor_state
-        .compare_exchange(
-            HewActorState::Sleeping as i32,
-            HewActorState::Stopped as i32,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        )
-        .is_ok()
-    {
-        // SAFETY: actor is valid; cancel is safe from the scheduler thread.
-        unsafe { crate::scheduler_wasm::cancel_actor_sleep_queue_entry(actor.cast()) };
-        // WASM-R37-S2: mirror native stop lifecycle observability.
-        crate::tracing::hew_trace_lifecycle(a.id, crate::tracing::SPAN_STOP);
-        // SAFETY: actor just transitioned to Stopped.
-        unsafe { call_terminate_fn(actor) };
-    }
-}
-
-/// Stop an actor, sending a system shutdown message (WASM).
-///
-/// # Safety
-///
-/// `actor` must be a valid pointer returned by a spawn function.
-#[cfg(target_arch = "wasm32")]
-#[no_mangle]
-pub unsafe extern "C" fn hew_actor_stop(actor: *mut HewActor) {
-    // SAFETY: caller forwards the same invariants the impl requires.
-    unsafe { actor_stop_wasm_impl(actor) };
-}
-
-/// The wasm stop body, callable from native test builds.
-///
-/// Split out for the same reason as [`actor_free_wasm_impl`]: the `#[no_mangle]`
-/// entry point above is `wasm32`-only, so nothing could exercise the wasm stop
-/// semantics under the native test harness. The stop-while-parked path is
-/// precisely where the wasm and native lifecycles diverged, so it has to be
-/// reachable by a test.
-///
-/// # Safety
-///
-/// `actor` must be a valid pointer returned by a spawn function.
-#[cfg(any(target_arch = "wasm32", test))]
-pub(crate) unsafe fn actor_stop_wasm_impl(actor: *mut HewActor) {
-    cabi_guard!(actor.is_null());
-    // SAFETY: Caller guarantees `actor` is valid.
-    let a = unsafe { &*actor };
-    if !a.mailbox.is_null() {
-        // SAFETY: a.mailbox is a valid mailbox pointer.
-        unsafe { crate::mailbox_wasm::hew_mailbox_close(a.mailbox.cast()) };
-    }
-
-    if a.actor_state
-        .compare_exchange(
-            HewActorState::Idle as i32,
-            HewActorState::Stopped as i32,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        )
-        .is_ok()
-    {
-        // WASM-R37-S2: direct stop of an idle actor mirrors native
-        // `hew_actor_stop` observability before invoking terminate_fn.
-        crate::tracing::hew_trace_lifecycle(a.id, crate::tracing::SPAN_STOP);
-        // SAFETY: actor just transitioned to Stopped; not being dispatched.
-        unsafe { call_terminate_fn(actor) };
-        return;
-    }
-
-    // If SLEEPING, cancel the sleep-queue entry and stop immediately.
-    if a.actor_state
-        .compare_exchange(
-            HewActorState::Sleeping as i32,
-            HewActorState::Stopped as i32,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        )
-        .is_ok()
-    {
-        // SAFETY: actor is valid; cancel is safe from the scheduler thread.
-        unsafe { crate::scheduler_wasm::cancel_actor_sleep_queue_entry(actor.cast()) };
-        // WASM-R37-S2: mirror native stop lifecycle observability.
-        crate::tracing::hew_trace_lifecycle(a.id, crate::tracing::SPAN_STOP);
-        // SAFETY: actor just transitioned to Stopped.
-        unsafe { call_terminate_fn(actor) };
-        return;
-    }
-
-    let state = a.actor_state.load(Ordering::Acquire);
-    if state != HewActorState::Running as i32 && state != HewActorState::Suspended as i32 {
-        return;
-    }
-
-    // Running actors are already inside a dispatch; latch the stop request out
-    // of band so the next loop iteration -- or, for a resumed continuation, the
-    // resume path's own latch check -- observes it. Assigning a bool cannot
-    // fail, so unlike the former sentinel-node enqueue there is no path on
-    // which the request is silently dropped.
-    // SAFETY: a.mailbox is a valid mailbox pointer (null-tolerant).
-    unsafe { crate::mailbox_wasm::mailbox_request_stop(a.mailbox.cast()) };
-
-    // A `Suspended` actor is parked on a continuation and nothing consults the
-    // latch until something wakes it, so latching alone would strand the stop
-    // forever and never run the terminate callback -- and, if the parked
-    // handler was serving an `ask`, leave the asking side waiting on a reply
-    // that is never coming. Wake it: that activation takes the resume path,
-    // observes the latch, and cancels the park.
-    //
-    // Native needs a latch-then-recheck here because a `Running` continuation
-    // can re-park underneath the stopper between the load and the store. Wasm
-    // is single-threaded, so the state read above cannot go stale: nothing else
-    // runs between it and this transition.
-    if state == HewActorState::Suspended as i32 {
-        a.actor_state
-            .store(HewActorState::Runnable as i32, Ordering::Release);
-        // SAFETY: the actor is live and now Runnable; the cooperative scheduler
-        // drives it on the next tick.
-        unsafe { crate::scheduler_wasm::sched_enqueue(actor.cast()) };
-    }
-}
-
-/// Abandon a parked activation because the actor is being freed (wasm).
-///
-/// Destroy the parked frame so the actor can reach a terminal state through the
-/// normal path, and discharge the reply debt at the same instant rather than
-/// after `actor_free_wasm_impl`'s two-second quiescence spin: once teardown has
-/// committed to abandoning the activation there is no reason to hold a waiter
-/// for the duration. Single-threaded, so `destroy_parked` cannot lose its CAS
-/// to a concurrent resume the way native's can.
-///
-/// Split out of [`actor_free_wasm_impl`] so it is reachable from a native test
-/// build. The rest of that function is not: its tail goes through
-/// `finalize_quiescent_actor_cleanup`, whose `free_actor_resources`
-/// resolves to the NATIVE body under `cfg(test)` and would free a wasm mailbox
-/// with the native destructor. This branch is the part the wasm free path adds,
-/// and it is target-neutral.
-///
-/// # Safety
-///
-/// `actor` is being freed by the caller and no dispatch is in progress.
-#[cfg(any(target_arch = "wasm32", test))]
-pub(crate) unsafe fn cancel_parked_activation_for_free_wasm(a: &HewActor) {
-    if !crate::coro_exec::has_live_parked_cont(a) {
-        return;
-    }
-    // WASM cannot own a registered generator sink. Preserve the complete
-    // activation if that impossible slot state appears.
-    #[cfg(target_arch = "wasm32")]
-    if refuse_wasm_lifecycle_cleanup_with_gen_sink(a) {
-        return;
-    }
-    // SAFETY: the caller owns the teardown; nothing else runs on this thread.
-    let destroyed = unsafe { crate::coro_exec::destroy_parked(a) };
-    if destroyed.is_ok() {
-        clear_suspended_cancel_token(a);
-        crate::scheduler_wasm::retire_suspended_reply_channel_wasm(a);
-        // The parked activation may be a `receive gen fn` pump. Its frame
-        // destroy above releases the generator companion; this releases the
-        // separate registered sink so a consumer observes a fault rather than
-        // waiting on a producer that shutdown has made impossible to resume.
-        // The slot swap is idempotent across stop/free/shutdown overlap.
-        #[cfg(not(target_arch = "wasm32"))]
-        fault_close_registered_gen_sink(a);
-        let _ = a.actor_state.compare_exchange(
-            HewActorState::Suspended as i32,
-            HewActorState::Stopped as i32,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        );
-    }
-}
-
-/// Retire every WASM actor whose only remaining owner is pre-timer scheduler
-/// state: parked continuations and sleeping timer registrations.
-///
-/// This is the WASM ownership point corresponding to native
-/// [`retire_parked_activations`], but its proof is target-specific rather than
-/// cargo-culted from the native worker-join rule:
-///
-/// - `hew_sched_shutdown` is synchronous and single-threaded;
-/// - `drain_run_queue_for_shutdown` has returned, so no queued resume or
-///   activation remains and `ACTIVATING` is false;
-/// - the host cannot interleave a timer tick or `enqueue_resume` until shutdown
-///   returns;
-/// - the timer wheel and periodic registry are torn down only *after* this
-///   sweep, so a `coro.destroy` cleanup may still cancel its registration.
-///
-/// `Sleeping` does not own a coroutine continuation. Its sole external owner is
-/// the timer-wheel registration, so this same window cancels that registration
-/// after winning an exact `Sleeping -> Stopped` transition. Iterating a
-/// snapshot without draining keeps actor-box ownership in
-/// [`cleanup_all_actors`]. A refused continuation destroy leaves the actor and
-/// its debts intact; ordinary cleanup then leaks it fail-closed rather than
-/// guessing at ownership.
-///
-/// # Safety
-///
-/// Must be called from the post-run-queue-drain, pre-timer-teardown window in
-/// the single-threaded WASM scheduler, with no activation in progress.
-#[cfg(target_arch = "wasm32")]
-pub(crate) unsafe fn retire_parked_activations_wasm() {
-    for actor in crate::lifetime::live_actors::snapshot_live_actor_ptrs() {
-        if actor.is_null() {
-            continue;
-        }
-        // SAFETY: the pointer remains tracked for this whole non-draining pass;
-        // single-threaded post-drain shutdown prevents a concurrent free.
-        let a = unsafe { &*actor };
-        if a.actor_state
-            .compare_exchange(
-                HewActorState::Sleeping as i32,
-                HewActorState::Stopped as i32,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            )
-            .is_ok()
-        {
-            // SAFETY: this is the single-threaded pre-wheel shutdown window.
-            unsafe { crate::scheduler_wasm::cancel_actor_sleep_queue_entry(actor) };
-            continue;
-        }
-        // SAFETY: the same snapshot/exclusivity proof applies to the parked
-        // continuation helper.
-        unsafe { cancel_parked_activation_for_free_wasm(a) };
-    }
-}
-
-/// Free an actor and all associated resources (WASM).
-///
-/// Waits until the actor is quiescent (`Stopped`, `Crashed`, or `Idle`)
-/// before untracking and freeing it, mirroring the native free contract.
-///
-/// # Safety
-///
-/// - `actor` must have been returned by a spawn function.
-/// - The actor must not be used after this call.
-#[cfg(any(target_arch = "wasm32", test))]
-pub(crate) unsafe fn actor_free_wasm_impl(actor: *mut HewActor) -> c_int {
-    if actor.is_null() {
-        crate::set_last_error("hew_actor_free: null actor pointer");
-        return -1;
-    }
-
-    // SAFETY: Caller guarantees `actor` is valid.
-    let a = unsafe { &*actor };
-
-    // WASM has no legal generator-sink producer. Refuse before continuation
-    // cancellation (which is intentionally destructive for an ordinary
-    // parked frame) or any quiescent-cleanup preparation.
-    #[cfg(target_arch = "wasm32")]
-    if refuse_wasm_lifecycle_cleanup_with_gen_sink(a) {
-        return -2;
-    }
-
-    // C1 abandonment teardown, parity with `hew_actor_free_inner`. `Suspended`
-    // is not quiescent, so without this the wait below spins to the two-second
-    // deadline and returns `-2`: the free FAILS, the frame and the actor box
-    // leak, and -- if the parked handler was serving an `ask` -- the asking side
-    // waits on a reply that is never coming.
-    // SAFETY: `a` is the actor being freed; no dispatch or resume is in progress
-    // on this single cooperative thread.
-    unsafe { cancel_parked_activation_for_free_wasm(a) };
-
-    // A refused continuation destroy (notably `Resuming -> Destroyed`) leaves
-    // the complete activation owned by the actor. Return while the live-actor
-    // registry still owns the box: reaching `untrack_actor` and relying on the
-    // resource-free choke point to refuse would make the preserved allocation
-    // unreachable while falsely reporting success.
-    if crate::coro_exec::has_live_parked_cont(a) {
-        let message = format!(
-            "hew_actor_free: actor {:#x} retained a live parked continuation; \
-             actor preserved fail-closed",
-            a.id
-        );
-        crate::set_last_error(&message);
-        eprintln!("hew: runtime error: {message}");
-        return -2;
-    }
-
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-    loop {
-        let state = a.actor_state.load(Ordering::Acquire);
-        if actor_free_state_is_quiescent(state) {
-            break;
-        }
-        if std::time::Instant::now() >= deadline {
-            break;
-        }
-        #[cfg(target_arch = "wasm32")]
-        std::hint::spin_loop();
-        #[cfg(not(target_arch = "wasm32"))]
-        std::thread::yield_now();
-    }
-
-    let state = a.actor_state.load(Ordering::Acquire);
-    if !actor_free_state_is_quiescent(state) {
-        return -2;
-    }
-
-    // Quiesce actor-owned producers before untracking. Relationship cleanup is
-    // performed after retirement and pin drain for native/WASM ordering parity.
-    // SAFETY: the wait loop above ensures the actor is quiescent and not dispatching.
-    unsafe { prepare_quiescent_actor_for_cleanup(actor) };
-
-    // Wake-proof + finalize decision by the CAS RESULT — parity with the native
-    // bulk/terminal free paths (`cleanup_all_actors`, `drain_quiesced_actor`)
-    // and the same primitive `hew_actor_free_inner` applies inline. WASM is
-    // single-threaded, so the latch always observes the quiescent state the
-    // gate above checked: `Ok ⇒ Finalize(Idle)` or `Err(Stopped|Crashed) ⇒
-    // Finalize(s)`. The `Skip` arm is unreachable here (no concurrent waker) but
-    // fails closed — leaving the actor tracked and unfreed — if it ever fires.
-    // SAFETY: actor is valid and quiescent.
-    let finalize_state = match decide_finalize_by_latch(a) {
-        FinalizeDecision::Finalize(state) => state,
-        FinalizeDecision::Skip => {
-            crate::set_last_error("hew_actor_free: actor re-enqueued; leaked fail-closed");
-            return -2;
-        }
-    };
-
-    if !live_actors::untrack_actor(actor) {
-        crate::set_last_error("hew_actor_free: actor already freed or not tracked");
-        return -1;
-    }
-
-    // WASM is single-threaded: no concurrent by-ID operations can hold a
-    // pin after we reach this point.
-    debug_assert_eq!(
-        a.send_pin_count.load(Ordering::Acquire),
-        0,
-        "send_pin_count must be 0 before finalize in actor_free_wasm_impl"
-    );
-
-    // SAFETY: the actor is retired and WASM has no concurrent pins.
-    unsafe { scrub_actor_relationships_after_pin_drain(actor) };
-
-    // SAFETY: actor is quiescent, wake-proofed, no longer tracked, and not
-    // being dispatched.
-    unsafe { finalize_quiescent_actor_cleanup(actor, finalize_state) };
-    0
-}
-
-#[cfg(target_arch = "wasm32")]
-#[no_mangle]
-pub unsafe extern "C" fn hew_actor_free(actor: *mut HewActor) -> c_int {
-    // SAFETY: same preconditions as actor_free_wasm_impl.
-    unsafe { actor_free_wasm_impl(actor) }
-}
 
 /// Worker-free actor teardown substrate for cross-crate composition tests.
 ///

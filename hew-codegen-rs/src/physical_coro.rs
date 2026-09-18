@@ -280,7 +280,7 @@ impl<'ctx> Frame<'ctx> {
 pub(super) fn lower(module: &Module<'_>, machine: &TargetMachine) -> CodegenResult<()> {
     module
         .run_passes(
-            "globaldce,coro-early,cgscc(coro-split),coro-cleanup",
+            "globaldce,coro-early,cgscc(coro-split),coro-cleanup,function(instsimplify),globaldce",
             machine,
             inkwell::passes::PassBuilderOptions::create(),
         )
@@ -289,3 +289,7 @@ pub(super) fn lower(module: &Module<'_>, machine: &TargetMachine) -> CodegenResu
         .verify()
         .map_err(|error| CodegenError::LlvmVerify(format!("coroutine lowering: {error}")))
 }
+
+#[cfg(test)]
+#[path = "physical_coro_tests.rs"]
+mod tests;

@@ -4,7 +4,7 @@ use inkwell::module::Module;
 use inkwell::targets::{
     CodeModel, InitializationConfig, RelocMode, Target, TargetMachine, TargetTriple,
 };
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 #[derive(Debug)]
@@ -109,6 +109,48 @@ pub(crate) fn run_module_pipeline(
         CodegenError::LlvmVerify(format!("module rejected after optimization: {error}"))
     })
 }
+/// Link a freestanding `wasm32-unknown-unknown` object into a `.wasm` module.
+///
+/// No runtime archive participates, so every undefined `hew_*` symbol becomes
+/// a host import the embedding host provides. A WASI module takes the other
+/// path: `hew-cli`'s linker resolves those symbols against the wasm32 runtime
+/// and std archives and refuses whatever is left.
+///
+/// # Errors
+/// Returns a link error when neither `wasm-ld` nor `rust-lld` can be run, or
+/// when the linker rejects the object.
+pub fn link_freestanding_wasm_module(obj: &Path, out: &Path) -> CodegenResult<()> {
+    let candidates: &[(&str, &[&str])] = &[("wasm-ld", &[]), ("rust-lld", &["-flavor", "wasm"])];
+    let mut last_error: Option<String> = None;
+    for (command_name, prefix_args) in candidates {
+        let mut command = std::process::Command::new(command_name);
+        command
+            .args(*prefix_args)
+            .arg("--no-entry")
+            .arg("--allow-undefined")
+            .arg("--export-dynamic")
+            .arg("-o")
+            .arg(out)
+            .arg(obj);
+        match command.output() {
+            Ok(output) if output.status.success() => return Ok(()),
+            Ok(output) => {
+                last_error = Some(format!(
+                    "{command_name} failed ({}): {}",
+                    output.status,
+                    String::from_utf8_lossy(&output.stderr).trim()
+                ));
+            }
+            Err(error) => last_error = Some(format!("spawn {command_name}: {error}")),
+        }
+    }
+    Err(CodegenError::Link(format!(
+        "freestanding wasm link failed for {}: {} (install `wasm-ld` with LLVM, or put rustup's `rust-lld` on PATH)",
+        obj.display(),
+        last_error.unwrap_or_else(|| "no linker available".into())
+    )))
+}
+
 /// The private process-entry body symbol; the platform entry remains an adapter.
 #[must_use]
 pub fn entry_body_symbol_for_triple(triple: &str) -> &'static str {

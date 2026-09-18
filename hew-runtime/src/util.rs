@@ -4,10 +4,9 @@
 //! because a panicked thread should not cascade-crash independent actors.
 
 use std::io::Write as _;
+use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
 #[cfg(not(target_arch = "wasm32"))]
-use std::sync::{Condvar, RwLock, RwLockReadGuard, RwLockWriteGuard};
-use std::sync::{Mutex, MutexGuard, PoisonError};
-#[cfg(not(target_arch = "wasm32"))]
+use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::Duration;
 
 /// Build a JSON array by writing each element directly into the output string.
@@ -159,7 +158,6 @@ impl<T> RwLockExt<T> for RwLock<T> {
 }
 
 /// Extension trait for [`Condvar`] that recovers from poisoned waits.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) trait CondvarExt {
     fn wait_or_recover<'a, T>(&self, guard: MutexGuard<'a, T>) -> MutexGuard<'a, T>;
 
@@ -193,7 +191,6 @@ pub(crate) unsafe fn cstr_to_str<'a>(
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 impl CondvarExt for Condvar {
     fn wait_or_recover<'a, T>(&self, guard: MutexGuard<'a, T>) -> MutexGuard<'a, T> {
         self.wait(guard).unwrap_or_else(PoisonError::into_inner)

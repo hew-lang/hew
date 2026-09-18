@@ -14,8 +14,10 @@ use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 
 use crate::actor::HewActor;
+use crate::cancel_token::{
+    hew_cancel_token_release, hew_cancel_token_retain, HewCancellationToken,
+};
 use crate::lifetime::live_actors::ActorIncarnation;
-use crate::task_scope::{hew_cancel_token_release, hew_cancel_token_retain, HewCancellationToken};
 use crate::timer_wheel::{hew_timer_wheel_cancel, hew_timer_wheel_schedule_handle};
 use crate::timer_wheel::{HewTimerEntry, HewTimerWheel};
 
@@ -434,7 +436,7 @@ pub unsafe extern "C" fn hew_await_cancel_observe_token(reg: *mut HewAwaitCancel
         return 0;
     }
     // SAFETY: the registration retained the token.
-    if unsafe { crate::task_scope::hew_cancel_token_is_requested(token) } == 0 {
+    if unsafe { crate::cancel_token::hew_cancel_token_is_requested(token) } == 0 {
         return 0;
     }
     // SAFETY: caller holds a live registration reference.

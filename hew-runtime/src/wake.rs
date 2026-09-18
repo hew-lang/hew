@@ -101,16 +101,20 @@ impl ReadinessRegistrations {
 
 /// A readiness latch for a top-level or task-thread coroutine driver. Actor
 /// workers use their scheduler's readiness target instead of waiting here.
-#[cfg(not(target_arch = "wasm32"))]
 pub mod blocking {
     use super::{HewWaker, OwnedWaker};
-    use crate::util::{CondvarExt, MutexExt};
+    #[cfg(not(target_arch = "wasm32"))]
+    use crate::util::CondvarExt;
+    use crate::util::MutexExt;
     use std::ffi::c_void;
-    use std::sync::{Arc, Condvar, Mutex};
+    #[cfg(not(target_arch = "wasm32"))]
+    use std::sync::Condvar;
+    use std::sync::{Arc, Mutex};
 
     #[derive(Debug, Default)]
     pub struct Readiness {
         pending: Mutex<bool>,
+        #[cfg(not(target_arch = "wasm32"))]
         changed: Condvar,
     }
 
@@ -133,12 +137,27 @@ pub mod blocking {
         }
 
         /// Consume one readiness notification, blocking only if none arrived.
+        #[cfg(not(target_arch = "wasm32"))]
         pub fn wait(&self) {
             let mut pending = self.pending.lock_or_recover();
             while !*pending {
                 pending = self.changed.wait_or_recover(pending);
             }
             *pending = false;
+        }
+
+        /// Consume one readiness notification, driving the process while none
+        /// has arrived.
+        ///
+        /// wasm32 has no worker thread to satisfy this latch, so the waiting
+        /// thread is the one that must make progress: each step advances the
+        /// timer wheel against the WASI clock and fails closed when no
+        /// readiness source is left at all.
+        #[cfg(target_arch = "wasm32")]
+        pub fn wait(&self) {
+            while !self.take_ready() {
+                crate::wasm_driver::step();
+            }
         }
 
         /// Consume an already pending notification without blocking.
@@ -151,6 +170,7 @@ pub mod blocking {
         // SAFETY: descriptor holders retain this Arc allocation.
         let readiness = unsafe { &*context.cast::<Readiness>() };
         *readiness.pending.lock_or_recover() = true;
+        #[cfg(not(target_arch = "wasm32"))]
         readiness.changed.notify_one();
     }
 

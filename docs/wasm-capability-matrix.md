@@ -85,13 +85,13 @@ The **Checker disposition** column documents what the type checker emits when
 
 | ID | Feature surface | Diagnostic label | Checker disposition | Diagnostic reason | Runtime status | Tracking |
 |----|-----------------|------------------|---------------------|-------------------|----------------|----------|
-| `basic-actors` | Basic actors (`spawn`, `send`, `receive`, `ask/await`) | Basic actors (`spawn`, `send`, `receive`, `ask/await`) | Pass | — | Implemented | — |
+| `basic-actors` | Basic actors (`spawn`, `send`, `receive`, `ask/await`) | Basic actors (`spawn`, `send`, `receive`, `ask/await`) | Pass | — | The checker admits actor programs, but the wasm32 process driver does not yet export the actor core, so an actor program fails closed at link on an unresolved `hew_actor_*` import | WASM-TODO(basic-actors): |
 | `actor-crash-containment` | Actor-local panic/trap containment and restart | Actor-local panic/trap containment and restart | WASM-TODO (not checker-gated) | — | Unsupported on the production wasm32-wasip1 panic=abort artifact; a handler panic or canonical trap terminates the module instead of restarting one actor | WASM-TODO(actor-crash-containment): |
 | `generators` | Generators (`gen fn`) | Generators (`gen fn`) | Pass (not checker-gated — Tier 2 has no dedicated `WasmUnsupportedFeature` guard) | — | Scalar-parameter and fn-typed-parameter `gen fn` forms execute and tear down correctly on Tier 2 via the unified `llvm.coro` switched-resume substrate (identical IR to native) | Note below |
 | `patterns-adts-generics` | Pattern matching, ADTs, generics | Pattern matching, ADTs, generics | Pass | — | Implemented | — |
 | `collections-arithmetic` | Standard collections, arithmetic | Standard collections, arithmetic | Pass | — | Implemented | — |
 | `layout-hashmap-hashset` | Layout-backed `HashMap` / `HashSet` | Layout-backed `HashMap` / `HashSet` | Pass | — | Supported on Tier 2; descriptor ABI uses target-width layout fields and descriptor hook pointers are value-correct under wasmtime | #1820 |
-| `actor-ask-reply` | Actor ask/reply (`reply_channel_wasm`) | Actor ask/reply (`reply_channel_wasm`) | Pass | — | Implemented | — |
+| `actor-ask-reply` | Actor ask/reply | Actor ask/reply | Pass | — | Implemented | — |
 | `wasi-sockets` | Raw WASI socket capability (host-provided, no stable Hew stdlib surface yet) | Raw WASI socket capability (host-provided, no stable Hew stdlib surface yet) | WASM-TODO (not checker-gated) | — | Host-/runtime-dependent; Hew does not yet expose a supported cross-target socket layer | WASM-TODO(wasi-sockets): |
 | `select` | `select {}` (any timeout expression, any arm count) | `select {}` (any timeout expression, any arm count) | Pass | — | Implemented | — |
 | `supervision-trees` | Supervision trees (`supervisor`, `supervisor_child`, `supervisor_stop`) | Supervision tree operations | Reject (`SupervisionTrees`) | they require OS threads for restart strategies and child supervision | Educational sandbox subset implements deterministic restart trees; native runtime parity remains gated | WASM-TODO(supervision): |
@@ -132,13 +132,11 @@ runtime implementation.
 These exist as warnings (not errors) to allow gradual migration: a program can
 be partially WASM-compatible and still get useful analysis feedback.
 
-This group includes `sleep`/`sleep_until` and `#[every(duration)]`, which now
-have cooperative semantics on WASM: `sleep` parks the actor at the
-**message boundary** (not mid-handler), while periodic handlers are delivered
-when the host advances the timer queue.  The warning reminds callers that code
-after `sleep` in the same receive handler still executes before the actor
-parks, and that periodic dispatch depends on `hew_wasm_timer_tick` /
-`hew_wasm_sched_tick` driving the queue.
+This group includes `sleep`/`sleep_until` and `#[every(duration)]`. A sleeping
+coroutine arms the shared timer wheel and parks; the wasm32 process driver
+ticks that wheel against the WASI clock while the root waits, so a sleep
+resumes without a host tick.  Periodic actor delivery reaches the driver with
+the actor core.
 
 ### 🚫 Error (compile-time reject)
 
@@ -177,14 +175,11 @@ would otherwise end in a trap or linker failure:
   the non-blocking semaphore subset (`new`, `try_acquire`, `release`, `count`,
   `free`).
 
-- **Timers** (`sleep`, `sleep_until`, `#[every(duration)]`): The runtime now
-  parks sleeping actors at the message boundary, re-enqueues them once the
-  deadline passes, and delivers periodic handler messages through the same
-  host-driven timer loop.  The checker emits a **warning** (not an error) to
-  inform callers of the cooperative semantics difference.  Code after
-  `sleep` in the same receive handler still executes before the park, and
-  periodic dispatch depends on `hew_wasm_timer_tick(now_ms)` /
-  `hew_wasm_sched_tick(...)` advancing the timer queue.
+- **Timers** (`sleep`, `sleep_until`, `#[every(duration)]`): A sleeping
+  coroutine arms the shared timer wheel and parks. The wasm32 process driver
+  ticks the wheel against the WASI clock while the root coroutine waits, so the
+  sleep resumes on the deadline with no host tick. Periodic actor delivery
+  reaches the driver with the actor core.
 
 - **Streams**: The `stream` runtime module is entirely gated out on wasm32
   (`#[cfg(not(target_arch = "wasm32"))]` in `hew-runtime/src/lib.rs`).  Any
@@ -436,7 +431,7 @@ form consumed by browser/playground tooling and the WASI e2e test suite.
 | `types/vec_inclusive_slice` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
 | `types/record_clone` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
 | `types/fn_field_call` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
-| `types/method_clone` | `unsupported` | The wasm32-wasip1 runtime does not yet provide the regex FFI symbols used by this example |
+| `types/method_clone` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
 <!-- END GENERATED: playground-wasi-capability-summary -->
 
 The typed `[[playground_wasi]]` rows in `wasm-capability-manifest.toml` are the

@@ -77,7 +77,6 @@ thread_local! {
     /// The fault a `close` raised during the walk in progress, with the status
     /// it returned. Held so the walk finishes releasing what it owns before
     /// the fault leaves the runtime.
-    #[cfg(not(target_arch = "wasm32"))]
     static HELD: Cell<Option<(i32, *mut crate::fault::HewFault)>> = const { Cell::new(None) };
 }
 
@@ -127,7 +126,6 @@ unsafe fn drain(item: ReleaseItem) {
             unsafe { run(step) };
         }
     }
-    #[cfg(not(target_arch = "wasm32"))]
     {
         if walking() {
             return;
@@ -177,7 +175,6 @@ impl Drop for Walk {
 /// # Safety
 ///
 /// `fault` must transfer one live, unique, non-null fault owner.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) unsafe fn held_fault(code: i32, fault: *mut crate::fault::HewFault) -> bool {
     if !walking() {
         return false;

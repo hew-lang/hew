@@ -325,7 +325,6 @@ fn emit_module(
     pipeline: &hew_mir::VerifiedPhysicalModule,
     module_name: &str,
     emit_dir: &Path,
-    emit_target: CompileEmitTarget,
     link_freestanding_wasm: bool,
     opt_level: hew_codegen_rs::OptLevel,
     emit_llvm: bool,
@@ -334,7 +333,6 @@ fn emit_module(
         pipeline,
         module_name,
         emit_dir,
-        emit_target,
         None,
         link_freestanding_wasm,
         false,
@@ -358,7 +356,6 @@ fn emit_module_with_triple(
     pipeline: &hew_mir::VerifiedPhysicalModule,
     module_name: &str,
     emit_dir: &Path,
-    emit_target: CompileEmitTarget,
     target_triple: Option<&str>,
     link_freestanding_wasm: bool,
     debug: bool,
@@ -366,13 +363,6 @@ fn emit_module_with_triple(
     emit_llvm: bool,
     source_path: Option<&Path>,
 ) -> Result<hew_codegen_rs::EmitArtefacts, DiagChannel> {
-    if emit_target == CompileEmitTarget::Wasm {
-        eprintln!(
-            "E_NOT_YET_IMPLEMENTED: sandbox emission from verified semantics is not implemented"
-        );
-        return Err(DiagChannel::Limitation);
-    }
-    let _ = link_freestanding_wasm;
     hew_codegen_rs::emit_physical_object(
         pipeline,
         &hew_codegen_rs::PhysicalEmitOptions {
@@ -383,6 +373,7 @@ fn emit_module_with_triple(
             emit_llvm,
             address_sanitizer: link::address_sanitizer_requested(),
             debug_source: debug.then_some(source_path).flatten(),
+            link_freestanding_wasm,
         },
     )
     .map_err(|error| {
@@ -395,12 +386,10 @@ fn emit_module_with_triple(
 /// Emit artefacts for an explicit target, threading the target triple into
 /// codegen so cross-arch object/binary emission produces the foreign arch.
 ///
-/// For native targets the codegen triple is `target.linker_triple()` — the
-/// deployment-target form on Darwin (`<arch>-apple-macosx<version>`) so the
-/// emitted object's minimum-OS tag matches the link step and no
-/// "newer macOS version" warning fires — and the normalized triple elsewhere.
-/// Wasm emission does not use a native triple (codegen targets
-/// `wasm32-unknown-unknown` directly), so `None` is passed.
+/// The codegen triple is `target.linker_triple()` — the deployment-target form
+/// on Darwin (`<arch>-apple-macosx<version>`) so the emitted object's
+/// minimum-OS tag matches the link step and no "newer macOS version" warning
+/// fires — and the normalized triple elsewhere, wasm32 included.
 #[allow(
     clippy::too_many_arguments,
     reason = "all args are direct fields of EmitOptions; no grouping improves clarity"
@@ -409,7 +398,6 @@ fn emit_module_for_target(
     pipeline: &hew_mir::VerifiedPhysicalModule,
     module_name: &str,
     emit_dir: &Path,
-    emit_target: CompileEmitTarget,
     target: &target::TargetSpec,
     link_freestanding_wasm: bool,
     debug: bool,
@@ -417,16 +405,11 @@ fn emit_module_for_target(
     emit_llvm: bool,
     source_path: Option<&Path>,
 ) -> Result<hew_codegen_rs::EmitArtefacts, DiagChannel> {
-    let codegen_triple = match emit_target {
-        CompileEmitTarget::Native => Some(target.linker_triple()),
-        CompileEmitTarget::Wasm => None,
-    };
     emit_module_with_triple(
         pipeline,
         module_name,
         emit_dir,
-        emit_target,
-        codegen_triple.as_deref(),
+        Some(&target.linker_triple()),
         link_freestanding_wasm,
         debug,
         opt_level,
@@ -490,7 +473,6 @@ fn compile_native_binary_with_paths(
         &pipeline,
         module_name,
         emit_dir,
-        CompileEmitTarget::Native,
         true,
         hew_codegen_rs::OptLevel::O0,
         false,
@@ -595,7 +577,6 @@ pub(crate) fn compile_native_from_program_with_paths(
         &pipeline,
         module_name,
         emit_dir,
-        emit_target,
         false,
         hew_codegen_rs::OptLevel::O0,
         false,
@@ -721,6 +702,45 @@ fn link_native_object_for_target_with_hew_lib(
         })
 }
 
+/// Produce the `.wasm` module `output_path` names from an emitted wasm object.
+///
+/// A freestanding module was already linked by codegen with no archive; a WASI
+/// module is linked here against the wasm32 runtime and std archives.
+fn link_wasm_module_for_target(
+    artefacts: &hew_codegen_rs::EmitArtefacts,
+    output_path: &Path,
+    target: &target::TargetSpec,
+) -> Result<(), DiagChannel> {
+    let object = artefacts.wasm_obj_path.as_deref().ok_or_else(|| {
+        eprintln!("E_NOT_YET_IMPLEMENTED: physical codegen did not produce a WASM object");
+        DiagChannel::Limitation
+    })?;
+    if target.is_wasm_freestanding() {
+        let linked = artefacts.wasm_path.as_deref().ok_or_else(|| {
+            eprintln!("E_NOT_YET_IMPLEMENTED: freestanding WASM link produced no module");
+            DiagChannel::Limitation
+        })?;
+        if linked != output_path {
+            std::fs::rename(linked, output_path).map_err(|error| {
+                eprintln!(
+                    "Error: cannot move the WASM module to {}: {error}",
+                    output_path.display()
+                );
+                DiagChannel::User
+            })?;
+        }
+        return Ok(());
+    }
+    let (Some(object), Some(output)) = (object.to_str(), output_path.to_str()) else {
+        eprintln!("Error: WASM artefact path is not valid UTF-8");
+        return Err(DiagChannel::User);
+    };
+    crate::link::link_executable(object, output, target, &[], false).map_err(|error| {
+        eprintln!("{error}");
+        DiagChannel::User
+    })
+}
+
 /// Build a native (or wasm) binary for an explicit target, writing it to
 /// `output_path`. Reuses the front-end → MIR → emit → link chain.
 #[allow(
@@ -778,18 +798,16 @@ fn compile_build_binary_with_hew_lib(
         &physical,
         module_name,
         emit_dir,
-        if target.is_wasm() {
-            CompileEmitTarget::Wasm
-        } else {
-            CompileEmitTarget::Native
-        },
         target,
-        false,
+        target.is_wasm_freestanding(),
         debug,
         opt_level,
         emit_llvm,
         Some(input),
     )?;
+    if target.is_wasm() {
+        return link_wasm_module_for_target(&artefacts, output_path, target);
+    }
     let object = artefacts.native_obj_path.as_deref().ok_or_else(|| {
         eprintln!("E_NOT_YET_IMPLEMENTED: physical codegen did not produce a native object");
         DiagChannel::Limitation
@@ -891,7 +909,6 @@ fn emit_obj_only(
         &pipeline,
         stem,
         out_dir,
-        emit_target,
         target,
         false,
         debug,
@@ -1161,11 +1178,6 @@ fn cmd_compile_run(a: &args::CompileArgs) -> i32 {
         return 2;
     };
 
-    let emit_target = if target.is_wasm() {
-        CompileEmitTarget::Wasm
-    } else {
-        CompileEmitTarget::Native
-    };
     if !target.is_wasm() && !target.can_link_with_host_tools() {
         eprintln!("{}", target.unsupported_native_link_error());
         return 2;
@@ -1174,8 +1186,7 @@ fn cmd_compile_run(a: &args::CompileArgs) -> i32 {
         &pipeline,
         module_name,
         emit_dir,
-        emit_target,
-        true,
+        target.is_wasm_freestanding(),
         opt_level,
         a.emit_llvm,
     ) {
@@ -1214,7 +1225,16 @@ fn cmd_compile_run(a: &args::CompileArgs) -> i32 {
             println!("native: {}", bin_path.display());
         }
     }
-    if let Some(wasm) = &artefacts.wasm_path {
+    let wasm_path = if artefacts.wasm_obj_path.is_some() {
+        let module_path = target.executable_path(emit_dir, module_name);
+        if let Err(channel) = link_wasm_module_for_target(&artefacts, &module_path, &target) {
+            return channel.exit_code();
+        }
+        Some(module_path)
+    } else {
+        None
+    };
+    if let Some(wasm) = &wasm_path {
         if !json {
             println!("wasm:   {}", wasm.display());
         }
@@ -1349,7 +1369,6 @@ fn compile_temp_wasi_module(
             &pipeline,
             stem,
             emit_dir,
-            CompileEmitTarget::Wasm,
             &target_spec,
             false,
             false,

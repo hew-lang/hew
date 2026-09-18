@@ -184,18 +184,8 @@ pub extern "C" fn hew_exit(code: i64) {
 }
 
 /// Apply the process exit-status rule to a requested exit code.
-///
-/// wasm32 has no exit-status authority (backlog id `actor-exit-status`; see the
-/// `exit_status` module docs), so the requested code passes through unchanged
-/// there.
-#[cfg(not(target_arch = "wasm32"))]
 fn resolve_exit_code(code: i64) -> i64 {
     crate::exit_status::final_exit_code(code)
-}
-
-#[cfg(target_arch = "wasm32")]
-fn resolve_exit_code(code: i64) -> i64 {
-    code
 }
 
 fn hew_exit_impl(code: i64, terminate: impl FnOnce(i32)) {
@@ -213,7 +203,6 @@ fn hew_exit_impl(code: i64, terminate: impl FnOnce(i32)) {
         eprintln!("hew_exit: exit code {code} is outside the supported i32 range");
         std::process::abort();
     };
-    #[cfg(not(target_arch = "wasm32"))]
     let code = crate::exit_status::to_process_exit_byte(i64::from(code));
 
     if let Err(error) = std::io::stdout().flush() {
@@ -224,9 +213,6 @@ fn hew_exit_impl(code: i64, terminate: impl FnOnce(i32)) {
         eprintln!("hew_exit: failed to flush stderr before exit: {error}");
         std::process::abort();
     }
-
-    #[cfg(target_arch = "wasm32")]
-    crate::scheduler_wasm::hew_wasm_runtime_exit();
 
     terminate(code);
 }
@@ -590,6 +576,11 @@ pub use auto_mutex::{
 };
 pub mod cabi;
 pub mod callable;
+/// Cancellation tokens: the parent-child cancellation authority every target
+/// shares. Holds no thread or scheduler state.
+pub mod cancel_token;
+/// Monotonic clock, blocking sleep and duration arithmetic on every target.
+pub mod clock;
 /// Stackless continuation substrate: `HewCont` heap-frame + C ABI (W6.007).
 /// The runtime side of the unified suspension representation — the coro frame
 /// allocator and the resume/done/poll/destroy verbs the poll/resume executor
@@ -601,15 +592,11 @@ pub mod cont;
 /// `cont` ABI, holds no scheduler queue state.
 pub mod coro_exec;
 
-#[cfg(not(target_arch = "wasm32"))]
 pub mod coro_state;
 
-#[cfg(not(target_arch = "wasm32"))]
 pub mod coro_sleep;
 
-#[cfg(not(target_arch = "wasm32"))]
 pub mod coro_root;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod generator_checked;
 pub mod hashmap;
 pub mod hashset;
@@ -646,144 +633,9 @@ mod trap_code;
 // Arena functions (hew_arena_malloc / hew_arena_free / etc.) are now
 // provided by the wasm32 arena module (pub mod arena below) instead of
 // these stubs.
-#[cfg(target_arch = "wasm32")]
-pub mod wasm_stubs {
-    //! Fail-closed shims for runtime functions that are not implementable on
-    //! the wasm32 cooperative scheduler.
-    //!
-    //! ## Design rules
-    //!
-    //! - **Sleep**: records the wakeup deadline via
-    //!   [`crate::scheduler_wasm::request_sleep`] and returns immediately.
-    //!   The cooperative scheduler parks the actor at the message boundary and
-    //!   re-enqueues it once the deadline passes (host calls
-    //!   [`crate::scheduler_wasm::hew_wasm_timer_tick`] or the implicit drain
-    //!   inside [`crate::scheduler_wasm::hew_wasm_sched_tick`]).
-    //!
-    //! - **Clock**: `hew_now_ms` mirrors the native runtime's monotonic
-    //!   process-relative clock so timeout comparisons stay consistent on
-    //!   `wasm32-wasip1`.
-    //!
-    //! - **Pipes**: `std.stream` is native-only today; the checker refuses
-    //!   `Stream<T>` / `Sink<T>` on wasm32 before code generation.
-
-    use std::ffi::c_void;
-    #[cfg(test)]
-    use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
-
-    // ── Sleep ────────────────────────────────────────────────────────────────
-
-    /// WASM sleep (nanosecond ABI): park until `ns` nanoseconds have elapsed.
-    ///
-    /// Converts to milliseconds and delegates to the ms-granularity sleep queue.
-    ///
-    /// # Safety
-    ///
-    /// No preconditions.
-    #[no_mangle]
-    pub unsafe extern "C" fn hew_sleep_ns(ns: i64) {
-        if ns <= 0 {
-            return;
-        }
-        let ms = (ns / 1_000_000).max(1);
-        // SAFETY: hew_now_ms has no preconditions.
-        let now = unsafe { hew_now_ms() };
-        #[expect(clippy::cast_sign_loss, reason = "guarded by ms > 0")]
-        let deadline_ms = now.saturating_add(ms as u64);
-        crate::scheduler_wasm::request_sleep(deadline_ms);
-    }
-
-    /// WASM sleep_until: park until the given nanosecond `instant`.
-    ///
-    /// Computes remaining ns from `now`, converts to ms, and parks.
-    ///
-    /// # Safety
-    ///
-    /// No preconditions.
-    #[no_mangle]
-    pub unsafe extern "C" fn hew_sleep_until_ns(instant_ns: i64) {
-        // SAFETY: hew_now_ms has no preconditions.
-        let now_ms = unsafe { hew_now_ms() };
-        let now_ns = (now_ms as i64).saturating_mul(1_000_000);
-        let remaining_ns = instant_ns.saturating_sub(now_ns);
-        if remaining_ns <= 0 {
-            return;
-        }
-        let delay_ms = (remaining_ns / 1_000_000).max(1);
-        #[expect(clippy::cast_sign_loss, reason = "guarded by delay_ms > 0")]
-        let deadline_ms = now_ms.saturating_add(delay_ms as u64);
-        crate::scheduler_wasm::request_sleep(deadline_ms);
-    }
-
-    // ── Clock ────────────────────────────────────────────────────────────────
-
-    /// WASM shim: monotonic clock in milliseconds.
-    ///
-    /// Returns monotonic milliseconds since the first call. The native
-    /// `deterministic` simulation-time module is unavailable on `wasm32`, so
-    /// production wasm builds always observe the real monotonic clock.
-    ///
-    /// In **test builds only**, a seam (`pin_virtual_clock`) can freeze this
-    /// clock to a fixed value for the cooperative-scheduler timer-wheel tests.
-    /// Those tests drive explicit deadlines off `hew_now_ms()`, and on the real
-    /// clock the test's anchor `now`, the timer wheel's `current_ms` captured at
-    /// lazy creation, and the `park_actor_sleep` delay are three independent
-    /// reads that drift apart under load and flip exact-deadline assertions. The
-    /// seam does not exist in production builds, so the production path is
-    /// unchanged (a straight monotonic read).
-    ///
-    /// # Safety
-    ///
-    /// No preconditions.
-    #[no_mangle]
-    pub unsafe extern "C" fn hew_now_ms() -> u64 {
-        // Production: the real monotonic clock, unchanged.
-        #[cfg(not(test))]
-        {
-            crate::monotonic::monotonic_ms()
-        }
-        // Test builds: honour a test-pinned virtual clock when one is active;
-        // otherwise the real monotonic clock (default — seam off).
-        #[cfg(test)]
-        match VCLOCK_PINNED_MS.load(AtomicOrdering::Relaxed) {
-            VCLOCK_DISABLED => crate::monotonic::monotonic_ms(),
-            pinned => pinned,
-        }
-    }
-
-    // ── Test-only virtual clock seam ─────────────────────────────────────────
-    //
-    // Exists ONLY in test builds; the production `hew_now_ms` above is a straight
-    // monotonic read with zero added work. The cooperative scheduler is
-    // single-threaded on wasm32, so a plain atomic with a sentinel is race-free.
-    // Pinning collapses the three independent wall-clock reads in the timer-wheel
-    // tests (anchor `now`, wheel `current_ms`, park delay) to one value, making
-    // the tick→wake boundary exact without weakening any assertion.
-
-    /// Sentinel meaning "no virtual time pinned — use the real clock".
-    #[cfg(test)]
-    const VCLOCK_DISABLED: u64 = u64::MAX;
-
-    /// Test-pinned virtual time in ms, or [`VCLOCK_DISABLED`] when off.
-    #[cfg(test)]
-    static VCLOCK_PINNED_MS: AtomicU64 = AtomicU64::new(VCLOCK_DISABLED);
-
-    /// Pin `hew_now_ms()` to `ms` until [`unpin_virtual_clock`] (test-only seam).
-    #[cfg(test)]
-    pub(crate) fn pin_virtual_clock(ms: u64) {
-        VCLOCK_PINNED_MS.store(ms, AtomicOrdering::Relaxed);
-    }
-
-    /// Restore the real monotonic clock (test-only seam).
-    #[cfg(test)]
-    pub(crate) fn unpin_virtual_clock() {
-        VCLOCK_PINNED_MS.store(VCLOCK_DISABLED, AtomicOrdering::Relaxed);
-    }
-}
-
 // ── Actor/scheduling modules ─────────────────────────────────────────────────
-// Native modules require threads, signals, and networking. WASM modules provide
-// cooperative single-threaded alternatives (mailbox_wasm, scheduler_wasm, bridge).
+// These require threads, signals and networking. wasm32 has none of them: the
+// process runs on `wasm_driver`, the single-thread driver of the same core.
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod file_io;
@@ -793,18 +645,14 @@ pub mod io_time;
 pub mod iter;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod path;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod stdio;
 
-#[cfg(any(target_arch = "wasm32", test))]
-pub mod bridge;
 /// Target-neutral COW mailbox payload envelope lifecycle.
 pub mod cow_envelope;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod crash;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod deque;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod fault;
 pub mod host_api;
 #[cfg(not(target_arch = "wasm32"))]
@@ -813,8 +661,6 @@ pub mod mailbox;
 pub mod mailbox_envelope;
 /// Target-independent in-process mailbox message-header bit logic.
 pub mod mailbox_header;
-#[cfg(any(target_arch = "wasm32", test))]
-pub mod mailbox_wasm;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod mpsc;
 /// Key-derived distributed node identity and carried actor-location values.
@@ -834,13 +680,10 @@ pub mod runtime_handle;
 pub mod runtime_id;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod scheduler;
-#[cfg(any(target_arch = "wasm32", test))]
-pub mod scheduler_wasm;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod shutdown;
 // One authority for "what exit status must this program report": read on every
 // native shutdown path, not just the implicit actor-drain one.
-#[cfg(not(target_arch = "wasm32"))]
 pub mod exit_status;
 // `signal` owns native signal recovery and the target-neutral state-field
 // finalizer depth guard used by continuation cleanup on every target. The
@@ -856,16 +699,7 @@ pub mod actor_call_native;
 pub mod actor_group;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod actor_native;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod arena;
-#[cfg(target_arch = "wasm32")]
-#[path = "arena_wasm.rs"]
-pub mod arena;
-// Expose arena_wasm as a distinct module in native test builds so its unit
-// tests run under CI.  The #[cfg_attr(target_arch = "wasm32", no_mangle)]
-// guard in arena_wasm.rs prevents duplicate symbol collisions with arena.rs.
-#[cfg(all(not(target_arch = "wasm32"), test))]
-pub mod arena_wasm;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod duplex;
 pub mod execution_context;
@@ -873,8 +707,6 @@ pub mod execution_context;
 pub mod read_slot;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod reply_channel;
-#[cfg(any(target_arch = "wasm32", test))]
-pub mod reply_channel_wasm;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod semaphore;
 
@@ -888,17 +720,15 @@ pub mod blocking_pool;
 pub mod task_scope;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod timer_periodic;
-#[cfg(any(target_arch = "wasm32", test))]
-pub mod timer_periodic_wasm;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod wake;
+/// The single-threaded wasm32 process driver: the timer wheel and the root
+/// readiness latch the WASI process runs inline while it waits.
+#[cfg(target_arch = "wasm32")]
+pub mod wasm_driver;
 // timer_wheel compiles on every target: native uses it with the background
 // ticker thread (timer_periodic); WASM uses it with a host-driven tick
 // (scheduler_wasm + timer_periodic_wasm).
 pub mod timer_wheel;
-
-#[cfg(all(test, not(target_arch = "wasm32")))]
-mod wasm_parity_tests;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod hew_node;
@@ -921,7 +751,6 @@ pub mod channel_core;
 pub mod cluster;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod connection;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod deterministic;
 /// Distributed messaging is native-only; mailbox monitor delivery shares the
 /// process-local `monitor` authority.
@@ -1170,5 +999,4 @@ mod exit_code_resolution_tests {
 #[cfg(test)]
 mod test_string;
 
-#[cfg(not(target_arch = "wasm32"))]
 pub mod value_close;

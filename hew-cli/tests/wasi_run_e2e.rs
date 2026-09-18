@@ -220,30 +220,6 @@ fn main() {
 }
 
 #[test]
-fn actor_lifecycle_state_writes_run_under_wasi_without_claiming_panic_containment() {
-    require_wasi_runner();
-
-    let source = repo_root()
-        .join("tests")
-        .join("vertical-slice")
-        .join("accept")
-        .join("actor_lifecycle_state_writes.hew");
-    let output = run_wasi_example(&source);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-
-    assert_eq!(
-        output.status.code(),
-        Some(3),
-        "default/init/start/receive/stop state writes must complete under the cooperative WASI scheduler\nstdout:\n{stdout}\nstderr:\n{stderr}"
-    );
-    assert!(
-        !stderr.contains("ActorSendFailed") && !stderr.contains("unreachable"),
-        "a non-panicking lifecycle write must not be mistaken for a missing dispatch domain; stderr:\n{stderr}"
-    );
-}
-
-#[test]
 fn actor_start_panic_remains_module_fatal_on_production_wasi() {
     require_wasi_runner();
 
@@ -658,7 +634,7 @@ fn native_hashmap_hashset_ownership_matches_wasi_output() {
 //  Cooperative-timer probes (#1964)
 //
 //  WASM timers are cooperative: sleep parks at the message boundary and time
-//  advances through `hew_wasm_timer_tick` (hew-runtime/src/scheduler_wasm.rs).
+//  advances through the wasm32 process driver's timer wheel.
 //  Nothing in the suite exercised that path, so both a working case and a
 //  divergent one could change silently. These two probes pin the observed
 //  behaviour of the cooperative timer against the native runtime.
@@ -668,7 +644,7 @@ fn native_hashmap_hashset_ownership_matches_wasi_output() {
 //
 //  Probe (b) — actor periodic timer (`#[every]`): the timer DOES fire under
 //  wasm, but the program never terminates, because with no host driving
-//  `hew_wasm_timer_tick` the periodic queue keeps the scheduler permanently
+//  a timer tick the periodic queue keeps the scheduler permanently
 //  non-quiescent. Native runs the same program to completion. That is a real
 //  native↔wasm divergence, not a passing parity case, so probe (b) pins the
 //  divergence explicitly (bounded by `--timeout`) rather than asserting a

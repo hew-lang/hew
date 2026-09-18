@@ -376,19 +376,22 @@ fn clear_reply_channel_on(ctx: *mut crate::execution_context::HewExecutionContex
     }
 }
 
-fn stash_suspended_cancel_token(a: &HewActor, token: *mut crate::task_scope::HewCancellationToken) {
+fn stash_suspended_cancel_token(
+    a: &HewActor,
+    token: *mut crate::cancel_token::HewCancellationToken,
+) {
     if token.is_null() {
         return;
     }
     // SAFETY: the dispatch execution context holds a live token; retain it for
     // the parked continuation's resume context.
-    unsafe { crate::task_scope::hew_cancel_token_retain(token) };
+    unsafe { crate::cancel_token::hew_cancel_token_retain(token) };
     let old = a
         .suspended_cancel_token
         .swap(token.cast(), Ordering::AcqRel);
     if !old.is_null() {
         // SAFETY: the actor slot owned the old retained token.
-        unsafe { crate::task_scope::hew_cancel_token_release(old.cast()) };
+        unsafe { crate::cancel_token::hew_cancel_token_release(old.cast()) };
     }
 }
 
@@ -398,7 +401,7 @@ fn clear_suspended_cancel_token(a: &HewActor) {
         .swap(std::ptr::null_mut(), Ordering::AcqRel);
     if !token.is_null() {
         // SAFETY: the actor slot owned this retained token.
-        unsafe { crate::task_scope::hew_cancel_token_release(token.cast()) };
+        unsafe { crate::cancel_token::hew_cancel_token_release(token.cast()) };
     }
 }
 
@@ -4491,7 +4494,7 @@ pub extern "C" fn hew_actor_cooperate() -> c_int {
 
     if !cancel_token.is_null() {
         // SAFETY: cancel_token is owned by the installed task scope.
-        if unsafe { crate::task_scope::hew_cancel_token_is_requested(cancel_token) } != 0 {
+        if unsafe { crate::cancel_token::hew_cancel_token_is_requested(cancel_token) } != 0 {
             return 2;
         }
     }

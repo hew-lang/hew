@@ -129,10 +129,10 @@ pub(crate) fn fmt_decimal_i64(value: i64, buf: &mut [u8; 20]) -> &[u8] {
 /// outside actor dispatch so callers can preserve their target-specific
 /// non-actor fallback (native `llvm.trap`, WASM `llvm.trap`, or explicit panic).
 #[cfg_attr(
-    not(any(target_arch = "wasm32", test)),
+    not(test),
     allow(
         dead_code,
-        reason = "native exports hew_trap_with_code from supervisor.rs; this helper is used by wasm32 and native parity tests"
+        reason = "native exports hew_trap_with_code from supervisor.rs; wasm32 reaches it once the actor core lands"
     )
 )]
 pub(crate) fn stamp_current_actor_error_code(code: c_int) -> bool {
@@ -185,45 +185,38 @@ pub(crate) unsafe fn runtime_bounds_trap(code: c_int) -> ! {
 
     #[cfg(target_arch = "wasm32")]
     {
-        // SAFETY: the wasm bridge records actor context or exits known
-        // non-actor canonical traps. Unknown codes must still fail closed.
-        unsafe { hew_trap_with_code(code) };
+        // SAFETY: the shared bridge reports and ends the run; it never returns
+        // for a non-actor trap.
+        unsafe { fault_trap_bridge(code, false) };
         std::process::abort();
     }
 }
 
-/// WASM trap-code bridge used by codegen before `llvm.trap`.
+/// The trap bridge a raised fault routes through, per target.
 ///
-/// Native implements the exported symbol in `supervisor.rs` because it routes
-/// through the language-unwind recovery seam. wasm32 has no portable EH seam, so the bridge
-/// stamps the current actor's `error_code` and panics. The production
-/// wasm32-wasip1 sysroot is `panic=abort`, making this a module-fatal trap; it
-/// is not a contained actor crash. Host-side parity builds may unwind only to
-/// test bookkeeping that production reaches through non-panic failure edges.
-///
-/// Outside an actor context, canonical Hew trap codes become WASI process exit
-/// statuses. Unknown codes return so the caller's following `llvm.trap` remains
-/// the fail-closed non-actor fallback, matching native's unknown-code sink.
+/// `reported` says the caller already wrote the typed diagnostic line, which
+/// [`crate::fault::hew_fault_trap`] does so its fault's message survives.
 ///
 /// # Safety
-///
-/// May be called from generated code in or out of actor dispatch. The current
-/// execution context, if present, is scheduler-installed and valid for the
-/// duration of the call.
-#[cfg(target_arch = "wasm32")]
-#[no_mangle]
-pub unsafe extern "C-unwind" fn hew_trap_with_code(code: c_int) {
-    crate::cont::abort_if_crash_cleanup_finalizer_trap("WASM cooperative trap");
-    if stamp_current_actor_error_code(code) {
-        panic!("hew_trap_with_code: trap code {code}");
+/// May be called in or out of actor dispatch; the installed execution context,
+/// if any, is scheduler-owned and valid for the call.
+pub(crate) unsafe fn fault_trap_bridge(code: c_int, reported: bool) {
+    #[cfg(not(target_arch = "wasm32"))]
+    // SAFETY: forwarded caller contract.
+    unsafe {
+        crate::supervisor::trap_with_code(code, reported);
     }
-    if let Some(exit_code) = crate::internal::types::canonical_trap_wasi_exit_code(code) {
-        eprintln!("__hew_wasi_trap_exit_code={exit_code}");
-        // JUSTIFIED: wasm32 non-actor traps terminate the process immediately,
-        // so bypassing Rust Drop is deliberate and the WASI host reclaims
-        // process resources. Wasmtime rejects WASI proc_exit statuses above
-        // 126, so the Hew CLI captures the sentinel above and maps this
-        // transport status back to the canonical trap code.
+    #[cfg(target_arch = "wasm32")]
+    {
+        if !reported {
+            crate::fault::report_trap_code(code);
+        }
+        let _ = std::io::Write::flush(&mut std::io::stdout());
+        let _ = std::io::Write::flush(&mut std::io::stderr());
+        // An unrecovered fault ends the run with status 1 (HEW-SPEC-2026 5.8);
+        // the trap code in the reported line is the runtime's internal tag and
+        // is never the process exit status.
+        // JUSTIFIED: no recovery authority exists; the host reclaims the module.
         std::process::exit(1);
     }
 }

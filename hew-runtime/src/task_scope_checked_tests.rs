@@ -693,8 +693,14 @@ fn race_selection_uses_completion_order_and_drain_suppresses_only_its_cancellati
             hew_checked_task_select_free(select);
             let drain = hew_checked_scope_wait_new(scope, waker.descriptor());
             hew_checked_scope_wait_cancel_losers(drain);
-            assert_eq!(super::super::cancel_token_reason((*scope).cancel_token), 0);
-            assert_eq!(super::super::cancel_token_reason((*second).cancel_token), 0);
+            assert_eq!(
+                crate::cancel_token::cancel_token_reason((*scope).cancel_token),
+                0
+            );
+            assert_eq!(
+                crate::cancel_token::cancel_token_reason((*second).cancel_token),
+                0
+            );
             if parent_code != 0 {
                 hew_cancel_token_cancel(parent, parent_code);
             }

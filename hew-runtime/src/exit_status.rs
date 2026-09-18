@@ -563,9 +563,9 @@ pub(crate) fn final_exit_code(user_code: i64) -> i64 {
 /// 32-bit exit code instead, so the same program previously reported a
 /// different exit status depending on the host. Applying the truncation here
 /// makes it a portable runtime rule rather than a POSIX kernel accident: the
-/// observed status is one byte on every target. Not applied on WASM, which
-/// has no process-exit-status authority (see the module doc).
-#[cfg(not(target_arch = "wasm32"))]
+/// observed status is one byte on every target, `wasm32-wasip1` included --
+/// wasmtime hands `proc_exit`'s code to the host process, which masks it the
+/// same way.
 pub(crate) fn to_process_exit_byte(code: i64) -> i32 {
     to_process_exit_byte_impl(code)
 }
@@ -576,23 +576,12 @@ pub(crate) fn to_process_exit_byte(code: i64) -> i32 {
 /// never calls `hew_native_runtime_finish` (codegen skips it entirely to
 /// avoid pulling in the scheduler for a program that never needs it), so its
 /// native `main` returns its raw status straight to the OS. Codegen calls
-/// this symbol on that return value unconditionally (native and WASM alike,
-/// same as `hew_native_runtime_finish`); on WASM it passes the code through
-/// unchanged, since WASM has no process-exit-status authority (see the
-/// module doc).
+/// this symbol on that return value unconditionally, on every target.
 #[no_mangle]
 pub extern "C" fn hew_process_exit_byte(code: i32) -> i32 {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        to_process_exit_byte_impl(i64::from(code))
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        code
-    }
+    to_process_exit_byte_impl(i64::from(code))
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn to_process_exit_byte_impl(code: i64) -> i32 {
     // Intentional wraparound truncation to the low byte, matching what
     // `waitpid` already does on unix regardless of the value `exit(3)` is

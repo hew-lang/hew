@@ -124,7 +124,6 @@ pub mod websocket;
 mod websocket_string_result_retention;
 
 // text
-#[cfg(not(target_family = "wasm"))]
 pub mod regex;
 
 // time

@@ -592,13 +592,7 @@ pub unsafe extern "C" fn hew_actor_schedule_periodic(
     // SAFETY: `actor` and `tw` were validated above; hew_now_ms has no
     // preconditions on native targets.
     let handle = unsafe {
-        schedule_periodic_on_wheel(
-            actor,
-            msg_type,
-            interval_ms,
-            tw,
-            crate::io_time::hew_now_ms(),
-        )
+        schedule_periodic_on_wheel(actor, msg_type, interval_ms, tw, crate::clock::hew_now_ms())
     };
 
     // Debug-only liveness check (see `assert_ticker_alive` doc comment): a
@@ -706,7 +700,7 @@ unsafe fn assert_ticker_alive(context: &str, tw: *mut HewTimerWheel) {
     if !ticker_running || handle_finished == Some(true) {
         // SAFETY: caller guarantees `tw` is valid.
         let wheel_cursor_ms = unsafe { timer_wheel_cursor_ms(tw) };
-        let wall_clock_ms = crate::io_time::hew_now_ms();
+        let wall_clock_ms = crate::clock::hew_now_ms();
         panic!(
             "hew periodic-timer liveness check failed ({context}): TICKER_RUNNING={ticker_running}, \
              ticker thread finished={handle_finished:?} — the ticker thread is not alive right \
@@ -814,7 +808,7 @@ pub(crate) fn shutdown_ticker() {
             let (wheel_cursor_ms, wall_clock_ms) = unsafe {
                 (
                     timer_wheel_cursor_ms(global_wheel()),
-                    crate::io_time::hew_now_ms(),
+                    crate::clock::hew_now_ms(),
                 )
             };
             eprintln!(

@@ -18,11 +18,10 @@ use crate::actor::HewActor;
 pub use crate::arena::ActorArena as HewArena;
 use crate::tracing::HewTraceContext;
 
+pub use crate::cancel_token::HewCancellationToken as HewCancelToken;
 #[cfg(not(target_arch = "wasm32"))]
-pub use crate::task_scope::{HewCancellationToken as HewCancelToken, HewTaskScope};
+pub use crate::task_scope::HewTaskScope;
 
-#[cfg(target_arch = "wasm32")]
-pub type HewCancelToken = c_void;
 #[cfg(target_arch = "wasm32")]
 pub type HewTaskScope = c_void;
 
@@ -329,7 +328,6 @@ pub fn current_context() -> *mut HewExecutionContext {
 ///
 /// The scheduler dispatch carrier owns the boundary marker. This is the only
 /// function that answers whether a typed language unwind may start here.
-#[cfg(not(target_arch = "wasm32"))]
 #[must_use]
 pub(crate) fn current_context_can_unwind() -> bool {
     let ctx = current_context();

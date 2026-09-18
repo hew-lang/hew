@@ -92,7 +92,7 @@ pub unsafe extern "C" fn hew_cancel_unobserve(observer: *mut HewCancelObserver) 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::task_scope::{hew_cancel_token_cancel, hew_cancel_token_new_child};
+    use crate::cancel_token::{hew_cancel_token_cancel, hew_cancel_token_new_child};
     use crate::wake::blocking::Readiness;
 
     #[test]

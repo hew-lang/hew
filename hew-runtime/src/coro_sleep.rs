@@ -9,6 +9,19 @@ use std::ffi::c_void;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Arc;
 
+/// The process-wide wheel this target's driver ticks: a background ticker
+/// thread natively, the parked root itself on wasm32.
+fn process_timer_wheel() -> *mut HewTimerWheel {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        crate::timer_periodic::global_wheel()
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        crate::wasm_driver::global_wheel()
+    }
+}
+
 #[derive(Debug)]
 struct SleepReady {
     status: AtomicI32,
@@ -128,13 +141,13 @@ pub unsafe extern "C" fn hew_coro_sleep_new(
         return std::ptr::null_mut();
     }
     let wheel = if duration_ns > 0 {
-        crate::timer_periodic::global_wheel()
+        process_timer_wheel()
     } else {
         std::ptr::null_mut()
     };
     // SAFETY: the clock has no preconditions, the wheel is runtime-owned and
     // the caller provides a valid descriptor.
-    unsafe { start_on_wheel(duration_ns, crate::io_time::hew_now_ms(), &*waker, wheel) }
+    unsafe { start_on_wheel(duration_ns, crate::clock::hew_now_ms(), &*waker, wheel) }
 }
 
 /// Start a nonblocking sleep that ends at a monotonic `instant`.
@@ -155,10 +168,10 @@ pub unsafe extern "C" fn hew_coro_sleep_until_new(
         return std::ptr::null_mut();
     }
     // SAFETY: hew_instant_now has no preconditions.
-    let now_ns = unsafe { crate::io_time::hew_instant_now() };
+    let now_ns = unsafe { crate::clock::hew_instant_now() };
     let remaining_ns = deadline_ns.saturating_sub(now_ns);
     let wheel = if remaining_ns > 0 {
-        crate::timer_periodic::global_wheel()
+        process_timer_wheel()
     } else {
         std::ptr::null_mut()
     };

@@ -6753,7 +6753,6 @@ pub extern "C" fn hew_actor_self_id() -> i64 {
 
 /// Typed payload propagated through generated LLVM cleanup landing pads to the
 /// scheduler's actor-dispatch `catch_unwind` boundary.
-#[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct HewPanic {
     pub(crate) code: i32,
@@ -6809,7 +6808,6 @@ pub(crate) fn install_hew_panic_hook() {
 pub extern "C-unwind" fn hew_panic() {
     crate::cont::abort_if_crash_cleanup_finalizer_trap("Hew panic");
 
-    #[cfg(not(target_arch = "wasm32"))]
     {
         // The stamp publishes the crash code to the actor the scheduler is about
         // to transition to Crashed. Outside an actor it is a no-op read of a

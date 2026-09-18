@@ -399,9 +399,8 @@ pub unsafe extern "C-unwind" fn hew_arena_malloc(size: usize) -> *mut c_void {
         // If the allocation failed under a cap, propagate the typed logical
         // failure through the normal unwind boundary. Returning null would
         // merely defer it into an unrelated pointer fault.
-        #[cfg(not(target_arch = "wasm32"))]
         if ptr.is_null() && arena.cap > 0 {
-            let code = crate::supervisor::HEW_TRAP_HEAP_EXCEEDED;
+            let code = crate::internal::types::HEW_TRAP_HEAP_EXCEEDED;
             let _ = crate::trap_code::stamp_current_actor_error_code(code);
             if crate::execution_context::current_context_can_unwind() {
                 std::panic::panic_any(crate::actor::HewPanic { code });

@@ -328,7 +328,6 @@ pub fn current_context() -> *mut HewExecutionContext {
 ///
 /// The scheduler dispatch carrier owns the boundary marker. This is the only
 /// function that answers whether a typed language unwind may start here.
-#[cfg(not(target_arch = "wasm32"))]
 #[must_use]
 pub(crate) fn current_context_can_unwind() -> bool {
     let ctx = current_context();

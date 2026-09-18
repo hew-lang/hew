@@ -57,7 +57,9 @@ pub use value_class::{
     named_type_names, LifecycleRegistry, NamedTypeComponent, OpaqueResourceLifecycle,
     ResourceMarker, ResourceRecordLifecycle, TypeClassTable, ValueClass,
 };
-pub use verify::{collect_site_spans, verify_hir, HirSiteSource};
+pub use verify::{
+    collect_scope_extents, collect_site_spans, verify_hir, HirScopeExtent, HirSiteSource,
+};
 
 /// Convert a dotted module-qualified name to a native-object-safe symbol.
 ///

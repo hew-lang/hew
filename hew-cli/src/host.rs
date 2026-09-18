@@ -73,6 +73,7 @@ pub(super) fn emit(
             opt_level,
             emit_llvm,
             address_sanitizer: crate::link::address_sanitizer_requested(),
+            debug_source: None,
         },
     )
     .map_err(|error| {

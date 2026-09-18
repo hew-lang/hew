@@ -93,6 +93,7 @@ fn edge(target: u32, values: &[u32]) -> sir::Edge {
 
 fn block(id: u32, ops: Vec<sir::SemOp>, terminator: sir::SemTerminator) -> sir::SemBlock {
     sir::SemBlock {
+        terminator_provenance: hew_sir::Provenance::Synthesized,
         id: sir::BlockId(id),
         args: vec![],
         ops,
@@ -237,6 +238,7 @@ pub fn module(case: Case) -> sir::SemModule {
         facts.require(&ty).unwrap();
     }
     sir::SemModule {
+        debug: hew_sir::SemDebugFacts::default(),
         regex_patterns: Vec::new(),
         actors: Vec::new(),
         supervisors: Vec::new(),

@@ -154,6 +154,7 @@ fn add_recipe_callback<'ctx>(
         None,
     );
     let parent = ModuleEmitter {
+        debug: None,
         ctx,
         module: physical,
         llvm,
@@ -498,6 +499,7 @@ fn user_fault_preserves_status_pointer_and_unwritten_callback_result() {
         let llvm = ctx.create_module("key_fault");
         llvm.set_data_layout(&TargetData::create(&physical.target.data_layout).get_data_layout());
         let mut emitter = ModuleEmitter {
+            debug: None,
             ctx: &ctx,
             module: &physical,
             llvm,
@@ -654,6 +656,7 @@ fn key_descriptors_require_construction_and_complete_selected_plans() {
         .value_capabilities
         .remove(&(ResolvedTy::I64, ValueCapability::Hash));
     let emitter = ModuleEmitter {
+        debug: None,
         ctx: &ctx,
         module: &physical,
         llvm: ctx.create_module("missing_key"),
@@ -765,6 +768,7 @@ fn absent_components_and_unadmitted_collection_recipes_fail_closed() {
         .value_capabilities
         .remove(&(ResolvedTy::I64, ValueCapability::Hash));
     let emitter = ModuleEmitter {
+        debug: None,
         ctx: &ctx,
         module: &physical,
         llvm: ctx.create_module("missing_component"),
@@ -789,6 +793,7 @@ fn absent_components_and_unadmitted_collection_recipes_fail_closed() {
             .retain(|candidate, _| candidate == &key);
         malformed.value_capabilities.get_mut(&key).unwrap().method = method;
         let emitter = ModuleEmitter {
+            debug: None,
             ctx: &ctx,
             module: &malformed,
             llvm: ctx.create_module("unadmitted_recipe"),

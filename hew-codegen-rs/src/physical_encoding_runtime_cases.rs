@@ -123,6 +123,7 @@ fn unit_member_module() -> hew_sir::SemModule {
     let tuple = ResolvedTy::Tuple(vec![ResolvedTy::Unit, fixture::value(FORMAT)]);
     let mut semantic = fixture::skeleton(vec![fixture::value(FORMAT)], tuple.clone());
     semantic.functions[0].blocks = vec![SemBlock {
+        terminator_provenance: hew_sir::Provenance::Synthesized,
         id: hew_sir::BlockId(0),
         args: vec![],
         ops: vec![

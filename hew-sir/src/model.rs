@@ -233,6 +233,10 @@ pub struct SemBlock {
     pub args: Vec<BlockArg>,
     pub ops: Vec<SemOp>,
     pub terminator: SemTerminator,
+    /// Source attribution for the terminator. A call is a terminator in SIR,
+    /// so without this a statement whose only effect is a call has no source
+    /// point of its own.
+    pub terminator_provenance: Provenance,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -700,6 +704,8 @@ pub struct SemModule {
     /// HIR's deduplicated table. Each is compiled once into the module's
     /// handle array; a `RegexMatch` call selects its slot by index.
     pub regex_patterns: Vec<String>,
+    /// Root-unit lexical scopes and site offsets, for native debug metadata.
+    pub debug: crate::SemDebugFacts,
 }
 
 impl SemModule {

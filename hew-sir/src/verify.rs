@@ -5640,6 +5640,7 @@ mod cfg_discard_safety_tests {
             bindings: Vec::new(),
             blocks: vec![
                 SemBlock {
+                    terminator_provenance: crate::Provenance::Synthesized,
                     id: BlockId(0),
                     args: Vec::new(),
                     ops: Vec::new(),
@@ -5656,6 +5657,7 @@ mod cfg_discard_safety_tests {
                     },
                 },
                 SemBlock {
+                    terminator_provenance: crate::Provenance::Synthesized,
                     id: BlockId(1),
                     args: Vec::new(),
                     ops: Vec::new(),
@@ -5664,6 +5666,7 @@ mod cfg_discard_safety_tests {
                     },
                 },
                 SemBlock {
+                    terminator_provenance: crate::Provenance::Synthesized,
                     id: BlockId(2),
                     args: Vec::new(),
                     ops: vec![SemOp {
@@ -5715,6 +5718,7 @@ mod cfg_discard_safety_tests {
             bindings: Vec::new(),
             blocks: vec![
                 SemBlock {
+                    terminator_provenance: crate::Provenance::Synthesized,
                     id: BlockId(0),
                     args: Vec::new(),
                     ops: Vec::new(),
@@ -5731,6 +5735,7 @@ mod cfg_discard_safety_tests {
                     },
                 },
                 SemBlock {
+                    terminator_provenance: crate::Provenance::Synthesized,
                     id: BlockId(1),
                     args: Vec::new(),
                     ops: Vec::new(),
@@ -5739,6 +5744,7 @@ mod cfg_discard_safety_tests {
                     },
                 },
                 SemBlock {
+                    terminator_provenance: crate::Provenance::Synthesized,
                     id: BlockId(2),
                     args: Vec::new(),
                     ops: vec![SemOp {
@@ -5805,6 +5811,7 @@ mod parameter_own_kind_tests {
             places: Vec::new(),
             bindings: Vec::new(),
             blocks: vec![SemBlock {
+                terminator_provenance: crate::Provenance::Synthesized,
                 id: BlockId(0),
                 args: Vec::new(),
                 ops: Vec::new(),
@@ -5945,6 +5952,7 @@ mod binding_table_tests {
             places: Vec::new(),
             bindings,
             blocks: vec![SemBlock {
+                terminator_provenance: crate::Provenance::Synthesized,
                 id: BlockId(0),
                 args: Vec::new(),
                 ops: Vec::new(),
@@ -6020,12 +6028,14 @@ mod defer_close_suffix_tests {
         let check = |terminator| {
             let blocks = [
                 crate::SemBlock {
+                    terminator_provenance: crate::Provenance::Synthesized,
                     id: BlockId(0),
                     args: Vec::new(),
                     ops: Vec::new(),
                     terminator,
                 },
                 crate::SemBlock {
+                    terminator_provenance: crate::Provenance::Synthesized,
                     id: BlockId(1),
                     args: Vec::new(),
                     ops: Vec::new(),
@@ -6035,6 +6045,7 @@ mod defer_close_suffix_tests {
                     },
                 },
                 crate::SemBlock {
+                    terminator_provenance: crate::Provenance::Synthesized,
                     id: BlockId(2),
                     args: Vec::new(),
                     ops: Vec::new(),

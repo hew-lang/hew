@@ -346,6 +346,7 @@ mod tests {
             service.require(required).unwrap();
         }
         SemModule {
+            debug: crate::SemDebugFacts::default(),
             regex_patterns: Vec::new(),
             actors: Vec::new(),
             supervisors: Vec::new(),
@@ -464,6 +465,7 @@ mod tests {
                 },
             }],
             blocks: vec![SemBlock {
+                terminator_provenance: crate::Provenance::Synthesized,
                 id: BlockId(0),
                 args: vec![],
                 ops: vec![
@@ -561,6 +563,7 @@ mod tests {
             bindings: vec![],
             blocks: vec![
                 SemBlock {
+                    terminator_provenance: crate::Provenance::Synthesized,
                     id: BlockId(0),
                     args: vec![],
                     ops: vec![
@@ -612,6 +615,7 @@ mod tests {
                     },
                 },
                 SemBlock {
+                    terminator_provenance: crate::Provenance::Synthesized,
                     id: BlockId(1),
                     args: vec![BlockArg {
                         value: ValueId(3),
@@ -627,6 +631,7 @@ mod tests {
                     },
                 },
                 SemBlock {
+                    terminator_provenance: crate::Provenance::Synthesized,
                     id: BlockId(2),
                     args: vec![],
                     ops: vec![drop_callable(4, 1)],

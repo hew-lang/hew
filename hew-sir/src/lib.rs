@@ -11,6 +11,7 @@ mod actor;
 mod analysis;
 mod callable;
 mod capability;
+mod debug;
 mod defer;
 mod dump;
 mod lifetime;
@@ -39,6 +40,7 @@ pub use callable::{
     ClosureInstanceKey, SemCaptureField, SemClosure,
 };
 pub use capability::{derived_capability_components, SemValueMethodPlan};
+pub use debug::{SemDebugFacts, SemDebugScope};
 pub use dump::{dump_lowering, dump_sir};
 pub use lifetime::{CleanupMode, LeafContents, PlaceLifetimes};
 pub use lower::{

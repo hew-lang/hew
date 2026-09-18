@@ -75,6 +75,7 @@ fn module(function: SemFunction) -> SemModule {
         let _ = fact_service.require(ty);
     }
     SemModule {
+        debug: hew_sir::SemDebugFacts::default(),
         regex_patterns: Vec::new(),
         actors: Vec::new(),
         supervisors: Vec::new(),
@@ -156,6 +157,7 @@ fn false_same_target_diamond() -> SemFunction {
         ResolvedTy::I64,
         vec![
             SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(0),
                 args: Vec::new(),
                 ops: vec![SemOp {
@@ -177,6 +179,7 @@ fn false_same_target_diamond() -> SemFunction {
                 },
             },
             SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(1),
                 args: Vec::new(),
                 ops: vec![SemOp {
@@ -190,6 +193,7 @@ fn false_same_target_diamond() -> SemFunction {
                 },
             },
             SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(2),
                 args: vec![BlockArg {
                     value: ValueId(4),
@@ -290,6 +294,7 @@ fn discard_safety_preserves_a_trapping_arm_that_structural_verification_accepts(
         ResolvedTy::Unit,
         vec![
             SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(0),
                 args: Vec::new(),
                 ops: vec![SemOp {
@@ -311,12 +316,14 @@ fn discard_safety_preserves_a_trapping_arm_that_structural_verification_accepts(
                 },
             },
             SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(1),
                 args: Vec::new(),
                 ops: Vec::new(),
                 terminator: SemTerminator::Return { value: None },
             },
             SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(2),
                 args: Vec::new(),
                 ops: Vec::new(),
@@ -357,6 +364,7 @@ fn constant_branch_preserves_a_reachable_semantic_unreachable_endpoint() {
         ResolvedTy::Unit,
         vec![
             SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(0),
                 args: Vec::new(),
                 ops: vec![SemOp {
@@ -378,12 +386,14 @@ fn constant_branch_preserves_a_reachable_semantic_unreachable_endpoint() {
                 },
             },
             SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(1),
                 args: Vec::new(),
                 ops: Vec::new(),
                 terminator: SemTerminator::Return { value: None },
             },
             SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(2),
                 args: Vec::new(),
                 ops: Vec::new(),
@@ -421,6 +431,7 @@ fn compaction_accepts_a_newly_dead_block_that_reads_an_entry_parameter() {
         ResolvedTy::Bool,
         vec![
             SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(0),
                 args: Vec::new(),
                 ops: vec![SemOp {
@@ -442,6 +453,7 @@ fn compaction_accepts_a_newly_dead_block_that_reads_an_entry_parameter() {
                 },
             },
             SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(1),
                 args: Vec::new(),
                 ops: Vec::new(),
@@ -453,6 +465,7 @@ fn compaction_accepts_a_newly_dead_block_that_reads_an_entry_parameter() {
             // second structural stage removes it. Its entry-param use remains
             // semantically valid during that verifier boundary.
             SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(2),
                 args: Vec::new(),
                 ops: Vec::new(),
@@ -479,6 +492,7 @@ fn compaction_remaps_reachable_self_loops() {
         ResolvedTy::Unit,
         vec![
             SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(0),
                 args: Vec::new(),
                 ops: vec![SemOp {
@@ -500,12 +514,14 @@ fn compaction_remaps_reachable_self_loops() {
                 },
             },
             SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(1),
                 args: Vec::new(),
                 ops: Vec::new(),
                 terminator: SemTerminator::Return { value: None },
             },
             SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(2),
                 args: Vec::new(),
                 ops: Vec::new(),
@@ -546,6 +562,7 @@ fn compaction_remaps_multiblock_loop_edges_after_dead_block_removal() {
         ResolvedTy::Unit,
         vec![
             SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(0),
                 args: Vec::new(),
                 ops: vec![SemOp {
@@ -567,12 +584,14 @@ fn compaction_remaps_multiblock_loop_edges_after_dead_block_removal() {
                 },
             },
             SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(1),
                 args: Vec::new(),
                 ops: Vec::new(),
                 terminator: SemTerminator::Return { value: None },
             },
             SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(2),
                 args: Vec::new(),
                 ops: Vec::new(),
@@ -582,6 +601,7 @@ fn compaction_remaps_multiblock_loop_edges_after_dead_block_removal() {
                 }),
             },
             SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(3),
                 args: Vec::new(),
                 ops: Vec::new(),
@@ -598,6 +618,7 @@ fn compaction_remaps_multiblock_loop_edges_after_dead_block_removal() {
                 },
             },
             SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(4),
                 args: Vec::new(),
                 ops: Vec::new(),
@@ -672,6 +693,7 @@ fn dynamic_branch_is_a_byte_for_byte_noop() {
         ResolvedTy::I64,
         vec![
             SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(0),
                 args: Vec::new(),
                 ops: Vec::new(),
@@ -688,6 +710,7 @@ fn dynamic_branch_is_a_byte_for_byte_noop() {
                 },
             },
             SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(1),
                 args: Vec::new(),
                 ops: vec![SemOp {
@@ -701,6 +724,7 @@ fn dynamic_branch_is_a_byte_for_byte_noop() {
                 },
             },
             SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(2),
                 args: Vec::new(),
                 ops: vec![SemOp {
@@ -731,6 +755,7 @@ fn malformed_input_is_rejected_atomically() {
         Vec::new(),
         ResolvedTy::Unit,
         vec![SemBlock {
+            terminator_provenance: hew_sir::Provenance::Synthesized,
             id: BlockId(0),
             args: Vec::new(),
             ops: Vec::new(),
@@ -772,6 +797,7 @@ fn noncanonical_unique_block_order_is_rejected_atomically() {
         ResolvedTy::Unit,
         vec![
             SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(0),
                 args: Vec::new(),
                 ops: Vec::new(),
@@ -781,6 +807,7 @@ fn noncanonical_unique_block_order_is_rejected_atomically() {
                 }),
             },
             SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(2),
                 args: Vec::new(),
                 ops: Vec::new(),
@@ -805,18 +832,21 @@ fn compaction_canonicalizes_a_nonzero_entry_block() {
         ResolvedTy::Unit,
         vec![
             SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(0),
                 args: Vec::new(),
                 ops: Vec::new(),
                 terminator: SemTerminator::Unreachable,
             },
             SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(1),
                 args: Vec::new(),
                 ops: Vec::new(),
                 terminator: SemTerminator::Return { value: None },
             },
             SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(2),
                 args: Vec::new(),
                 ops: Vec::new(),
@@ -871,6 +901,7 @@ fn module_canonicalization_rejects_an_invalid_body_atomically() {
         Vec::new(),
         ResolvedTy::Unit,
         vec![SemBlock {
+            terminator_provenance: hew_sir::Provenance::Synthesized,
             id: BlockId(0),
             args: Vec::new(),
             ops: Vec::new(),
@@ -885,6 +916,7 @@ fn module_canonicalization_rejects_an_invalid_body_atomically() {
     invalid.callable = CallableId(1);
 
     let mut module = SemModule {
+        debug: hew_sir::SemDebugFacts::default(),
         regex_patterns: Vec::new(),
         actors: Vec::new(),
         supervisors: Vec::new(),

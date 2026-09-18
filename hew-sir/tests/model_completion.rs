@@ -24,6 +24,7 @@ fn function(bindings: Vec<Binding>, places: Vec<PlaceDecl>) -> SemFunction {
         return_ty: ResolvedTy::Unit,
         entry: BlockId(0),
         blocks: vec![SemBlock {
+            terminator_provenance: hew_sir::Provenance::Synthesized,
             id: BlockId(0),
             args: Vec::new(),
             ops: Vec::new(),
@@ -119,6 +120,7 @@ fn invoke_value_result_flows_to_the_normal_block_and_visits_both_cfg_edges() {
     function.return_ty = ResolvedTy::I64;
     function.blocks = vec![
         SemBlock {
+            terminator_provenance: hew_sir::Provenance::Synthesized,
             id: BlockId(0),
             args: Vec::new(),
             ops: Vec::new(),
@@ -146,6 +148,7 @@ fn invoke_value_result_flows_to_the_normal_block_and_visits_both_cfg_edges() {
             },
         },
         SemBlock {
+            terminator_provenance: hew_sir::Provenance::Synthesized,
             id: BlockId(1),
             args: vec![BlockArg {
                 value: ValueId(9),
@@ -158,6 +161,7 @@ fn invoke_value_result_flows_to_the_normal_block_and_visits_both_cfg_edges() {
             },
         },
         SemBlock {
+            terminator_provenance: hew_sir::Provenance::Synthesized,
             id: BlockId(2),
             args: Vec::new(),
             ops: Vec::new(),

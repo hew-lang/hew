@@ -426,6 +426,11 @@ fn debugger_hits_await_body_before_and_after_suspend_with_live_local() {
             "run",
             "-o",
             "frame variable before",
+            // Resuming re-enters the body at the await line, so the suspend
+            // breakpoint would take the continue. Disabling it lands the next
+            // stop on the statement after the await.
+            "-o",
+            "breakpoint disable 1",
             "-o",
             "continue",
             "-o",
@@ -447,6 +452,10 @@ fn debugger_hits_await_body_before_and_after_suspend_with_live_local() {
             "run",
             "-ex",
             "print before",
+            // See the lldb branch: the suspend breakpoint would take the
+            // continue when the coroutine resumes at the await line.
+            "-ex",
+            "disable 1",
             "-ex",
             "continue",
             "-ex",
@@ -930,8 +939,11 @@ fn debugger_names_suspended_actor_handler_frame_at_runtime_boundary() {
         "{dbg} failed while reading handler backtrace:\n{text}\n{}",
         String::from_utf8_lossy(&out.stderr)
     );
+    // The physical lowerer emits a handler as `__hew_actor_<n>_<Actor>__<fn>`;
+    // the actor index is a module-local allocation, so the assertion names the
+    // handler, not the index.
     assert!(
-        text.contains("Handler__recv__run"),
+        text.contains("Handler__run"),
         "backtrace must name the Hew handler frame:\n{text}"
     );
     assert!(

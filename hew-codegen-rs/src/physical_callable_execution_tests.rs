@@ -103,6 +103,7 @@ fn counter_body(module: &sir::SemModule, mode: CallableCallMode, fault: bool) ->
     let mut body = function(
         &module.callables[1],
         vec![sir::SemBlock {
+            terminator_provenance: hew_sir::Provenance::Synthesized,
             id: BlockId(0),
             args: vec![],
             ops,
@@ -180,6 +181,7 @@ fn factory_body(module: &sir::SemModule, weak_once: bool, invoke: bool) -> sir::
         return function(
             &module.callables[0],
             vec![sir::SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(0),
                 args: vec![],
                 ops,
@@ -211,6 +213,7 @@ fn factory_body(module: &sir::SemModule, weak_once: bool, invoke: bool) -> sir::
         &module.callables[0],
         vec![
             sir::SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(0),
                 args: vec![],
                 ops,
@@ -231,6 +234,7 @@ fn factory_body(module: &sir::SemModule, weak_once: bool, invoke: bool) -> sir::
                 },
             },
             sir::SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(1),
                 args: vec![sir::BlockArg {
                     value: sir::ValueId(5),
@@ -243,6 +247,7 @@ fn factory_body(module: &sir::SemModule, weak_once: bool, invoke: bool) -> sir::
                 },
             },
             sir::SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(2),
                 args: vec![],
                 ops: cleanup(6),
@@ -330,6 +335,7 @@ fn counter_module(
         facts.require(required).unwrap();
     }
     let mut module = sir::SemModule {
+        debug: hew_sir::SemDebugFacts::default(),
         actors: Vec::new(),
         supervisors: Vec::new(),
         callables: vec![parent, body],

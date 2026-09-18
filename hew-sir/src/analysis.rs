@@ -516,6 +516,7 @@ mod tests {
 
     fn block(id: u32, terminator: SemTerminator) -> SemBlock {
         SemBlock {
+            terminator_provenance: crate::Provenance::Synthesized,
             id: BlockId(id),
             args: Vec::new(),
             ops: Vec::new(),
@@ -570,6 +571,7 @@ mod tests {
             let _ = fact_service.require(ty);
         }
         SemModule {
+            debug: crate::SemDebugFacts::default(),
             actors: Vec::new(),
             supervisors: Vec::new(),
             resources: BTreeMap::new(),

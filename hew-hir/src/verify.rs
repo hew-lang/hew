@@ -12,7 +12,7 @@ use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
 use crate::diagnostic::{HirDiagnostic, HirDiagnosticKind};
-use crate::ids::{BindingId, HirNodeId, ResolvedRef, SiteId};
+use crate::ids::{BindingId, HirNodeId, ResolvedRef, ScopeId, SiteId};
 use crate::node::{
     HirBlock, HirExpr, HirExprKind, HirGenCaptureSource, HirItem, HirLiteral, HirMatchArmPredicate,
     HirModule, HirStmtKind, HirVarSelfMethodTarget,
@@ -32,6 +32,14 @@ pub struct HirSiteSource {
     pub source_module: Option<String>,
 }
 
+/// One lexical block scope: its source extent and the scope enclosing it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HirScopeExtent {
+    pub span: Range<usize>,
+    pub parent: Option<ScopeId>,
+    pub source_module: Option<String>,
+}
+
 #[must_use]
 pub fn collect_site_spans(module: &HirModule) -> HashMap<SiteId, HirSiteSource> {
     let mut verifier = Verifier::default();
@@ -43,6 +51,17 @@ pub fn collect_site_spans(module: &HirModule) -> HashMap<SiteId, HirSiteSource> 
 /// logical AST spans; HIR may clone those spans during desugaring, so consumers
 /// pair a dependency only with the candidate inside the current occurrence's
 /// structural subtree.
+/// Lexical extent and parent of every HIR block scope, for debug metadata.
+///
+/// A `DILexicalBlock` tree needs each scope's source extent and its enclosing
+/// scope; both are properties of the `HirBlock` this walk already visits.
+#[must_use]
+pub fn collect_scope_extents(module: &HirModule) -> HashMap<ScopeId, HirScopeExtent> {
+    let mut verifier = Verifier::default();
+    verifier.module(module);
+    verifier.scope_extents
+}
+
 #[must_use]
 pub fn collect_site_parents(module: &HirModule) -> HashMap<SiteId, Option<SiteId>> {
     let mut verifier = Verifier::default();
@@ -60,6 +79,8 @@ struct Verifier {
     site_spans: HashMap<SiteId, HirSiteSource>,
     current_expr_parent: Option<SiteId>,
     site_parents: HashMap<SiteId, Option<SiteId>>,
+    current_scope: Option<ScopeId>,
+    scope_extents: HashMap<ScopeId, HirScopeExtent>,
 }
 
 impl Verifier {
@@ -236,6 +257,19 @@ impl Verifier {
 
     fn block(&mut self, block: &HirBlock) {
         self.node(block.node, 0..0);
+        let enclosing = self.current_scope.replace(block.scope);
+        self.scope_extents
+            .entry(block.scope)
+            .or_insert_with(|| HirScopeExtent {
+                span: block.span.clone(),
+                parent: enclosing,
+                source_module: self.current_source_module.clone(),
+            });
+        self.block_body(block);
+        self.current_scope = enclosing;
+    }
+
+    fn block_body(&mut self, block: &HirBlock) {
         for stmt in &block.statements {
             self.node(stmt.node, stmt.span.clone());
             match &stmt.kind {

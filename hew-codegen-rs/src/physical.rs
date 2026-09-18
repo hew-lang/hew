@@ -27,6 +27,8 @@ mod tcp;
 
 #[path = "physical_coro.rs"]
 mod coro;
+#[path = "physical_debug.rs"]
+mod debug;
 #[path = "physical_generators.rs"]
 mod generators;
 #[path = "physical_io.rs"]
@@ -50,6 +52,7 @@ mod host;
 #[path = "physical_shared.rs"]
 mod shared;
 
+pub use debug::DebugSource;
 pub use host::HostExport;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -109,6 +112,9 @@ pub struct PhysicalEmitOptions<'a> {
     pub opt_level: OptLevel,
     pub emit_llvm: bool,
     pub address_sanitizer: bool,
+    /// Source file whose text attributes native debug metadata; `None` emits
+    /// no debug info at all.
+    pub debug_source: Option<&'a Path>,
 }
 
 /// Resolve primitive physical layouts from the exact LLVM target machine.
@@ -532,6 +538,7 @@ fn emit_physical_object_with_host(
         ll_path.as_deref(),
         Some(&object_path),
         host,
+        options.debug_source,
     )?;
     Ok(EmitArtefacts {
         ll_path,
@@ -559,6 +566,7 @@ pub fn validate_physical_codegen(
         None,
         None,
         None,
+        None,
     )
 }
 
@@ -575,10 +583,19 @@ fn emit_physical_to_paths(
     ll_path: Option<&Path>,
     object_path: Option<&Path>,
     host: Option<&HostExport<'_>>,
+    debug_source: Option<&Path>,
 ) -> CodegenResult<()> {
     let machine = crate::llvm::target_machine_for_triple_with_opt_level(triple, opt_level)?;
     let ctx = Context::create();
-    let llvm_module = build_module_with_host(&ctx, verified.module(), module_name, &machine, host)?;
+    // Fail closed: `-g` against an unreadable source emits a location-free
+    // object rather than a fabricated line table.
+    let debug_text = debug_source.and_then(|path| std::fs::read_to_string(path).ok());
+    let debug = match (debug_source, &debug_text) {
+        (Some(path), Some(text)) => Some(DebugSource { path, text }),
+        _ => None,
+    };
+    let llvm_module =
+        build_module_with_host(&ctx, verified.module(), module_name, &machine, host, debug)?;
     crate::llvm::run_module_pipeline(&llvm_module, &machine, opt_level)?;
     if address_sanitizer {
         crate::sanitizer::instrument_address_sanitizer(&llvm_module, &machine)
@@ -806,6 +823,7 @@ struct ModuleEmitter<'ctx, 'm> {
     functions: BTreeMap<CallableId, FunctionValue<'ctx>>,
     ramps: BTreeMap<CallableId, FunctionValue<'ctx>>,
     value_callbacks: key::CallbackTable<'ctx>,
+    debug: Option<debug::DebugEmitter<'ctx>>,
 }
 
 struct FunctionEmitter<'a, 'ctx> {
@@ -828,6 +846,13 @@ struct FunctionEmitter<'a, 'ctx> {
     ramps: &'a BTreeMap<CallableId, FunctionValue<'ctx>>,
     frame: Option<coro::Frame<'ctx>>,
     task_scopes: BTreeMap<hew_mir::physical::TaskScopeId, PointerValue<'ctx>>,
+    debug: Option<(
+        &'a debug::DebugEmitter<'ctx>,
+        debug::FunctionDebug<'ctx>,
+        &'a hew_mir::physical::PhysicalDebugFunction,
+    )>,
+    prologue: BasicBlock<'ctx>,
+    pending_locals: Vec<debug::PendingLocal<'ctx>>,
 }
 
 /// Execute verified type recipes in either a language body or a container
@@ -1916,7 +1941,7 @@ fn build_module<'ctx>(
     name: &str,
     machine: &TargetMachine,
 ) -> CodegenResult<Module<'ctx>> {
-    build_module_with_host(ctx, physical, name, machine, None)
+    build_module_with_host(ctx, physical, name, machine, None, None)
 }
 
 fn build_module_with_host<'ctx>(
@@ -1925,6 +1950,7 @@ fn build_module_with_host<'ctx>(
     name: &str,
     machine: &TargetMachine,
     host: Option<&HostExport<'_>>,
+    debug_source: Option<DebugSource<'_>>,
 ) -> CodegenResult<Module<'ctx>> {
     let triple = machine.get_triple();
     let triple_text = triple.as_str().to_string_lossy();
@@ -1945,6 +1971,8 @@ fn build_module_with_host<'ctx>(
     let llvm = ctx.create_module(name);
     llvm.set_triple(&triple);
     llvm.set_data_layout(&data_layout);
+    let debug = debug_source
+        .map(|source| debug::DebugEmitter::new(ctx, &llvm, &triple_text, source, &physical.debug));
     let mut emitter = ModuleEmitter {
         ctx,
         module: physical,
@@ -1952,6 +1980,7 @@ fn build_module_with_host<'ctx>(
         functions: BTreeMap::new(),
         ramps: BTreeMap::new(),
         value_callbacks: BTreeMap::new(),
+        debug,
     };
     emitter.declare_functions()?;
     emitter.emit_regex_handles()?;
@@ -1969,6 +1998,10 @@ fn build_module_with_host<'ctx>(
     emitter.emit_entry()?;
     if let Some(export) = host {
         host::emit(&emitter, export)?;
+    }
+    // Forward references must resolve before the verifier walks the module.
+    if let Some(debug) = &emitter.debug {
+        debug.finalize();
     }
     emitter
         .llvm
@@ -2492,6 +2525,24 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         let builder = ctx.create_builder();
         let prologue = ctx.append_basic_block(value, "physical.prologue");
         builder.position_at_end(prologue);
+        // A body with debug info keeps a current location for every
+        // instruction it builds: LLVM requires one on each inlinable call.
+        let debug = match (
+            &module.debug,
+            module.module.debug.functions.get(&callable.id),
+        ) {
+            (Some(emitter), Some(attribution)) => {
+                let function_debug = emitter.function(value, &callable.symbol, attribution);
+                builder.set_current_debug_location(emitter.declaration_location(
+                    ctx,
+                    &function_debug,
+                    attribution.decl,
+                ));
+                debug::pin_for_inspection(ctx, value, callable.is_resumable);
+                Some((emitter, function_debug, attribution))
+            }
+            _ => None,
+        };
         let frame = if callable.is_resumable {
             let state = value
                 .get_last_param()
@@ -2504,6 +2555,19 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             None
         };
         let slots = partial::allocate_storage(module, function, callable, value, &builder)?;
+        let pending_locals = match &debug {
+            Some((emitter, function_debug, attribution)) => debug::declare_locals(
+                ctx,
+                emitter,
+                function_debug,
+                attribution,
+                function,
+                &slots,
+                prologue,
+                callable.is_resumable,
+            ),
+            None => Vec::new(),
+        };
         let place_flags = partial::allocate_flags(module, function, &builder)?;
         let active_fault = builder
             .build_alloca(ctx.ptr_type(AddressSpace::default()), "active.fault")
@@ -2629,18 +2693,79 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             ramps: &module.ramps,
             frame,
             task_scopes,
+            debug,
+            prologue,
+            pending_locals,
         })
     }
 
     fn emit(self) -> CodegenResult<()> {
+        let inspectable = self.debug.is_some();
+        let value = self.value;
         for block in &self.function.blocks {
             self.builder.position_at_end(self.blocks[&block.id]);
-            for operation in &block.ops {
+            // Blocks are emitted in id order, not execution order, so a block
+            // opens on its own first source point rather than inheriting the
+            // line of whichever block was emitted before it.
+            self.enter_block(block.id);
+            for (index, operation) in block.ops.iter().enumerate() {
+                self.locate(block.id, index);
                 self.emit_op(operation)?;
             }
+            self.locate(block.id, block.ops.len());
             self.emit_terminator(block)?;
         }
+        if let Some((emitter, _, _)) = &self.debug {
+            debug::resolve_coroutine_locals(
+                emitter,
+                self.llvm,
+                value,
+                self.prologue,
+                &self.pending_locals,
+            );
+        }
+        if inspectable {
+            debug::order_blocks_for_inspection(value);
+        }
         Ok(())
+    }
+
+    /// Open a block at the earliest source point anything in it names, or at
+    /// the body's declaration when it names none.
+    fn enter_block(&self, block: BlockId) {
+        let Some((emitter, function_debug, attribution)) = &self.debug else {
+            return;
+        };
+        let first = attribution
+            .sites
+            .range((block, 0)..=(block, u32::MAX))
+            .next()
+            .map(|(_, offset)| *offset);
+        let location = first.map_or_else(
+            || emitter.declaration_location(self.ctx, function_debug, attribution.decl),
+            |offset| emitter.location(self.ctx, function_debug, offset),
+        );
+        self.builder.set_current_debug_location(location);
+    }
+
+    /// Point the builder at the source this operation lowered from. An
+    /// operation with no source point keeps the location of the last one in
+    /// this block that had one.
+    fn locate(&self, block: BlockId, index: usize) {
+        let Some((emitter, function_debug, attribution)) = &self.debug else {
+            return;
+        };
+        let Ok(index) = u32::try_from(index) else {
+            return;
+        };
+        let Some(offset) = attribution.sites.get(&(block, index)) else {
+            return;
+        };
+        self.builder.set_current_debug_location(emitter.location(
+            self.ctx,
+            function_debug,
+            *offset,
+        ));
     }
 
     fn load(&self, id: StorageId, name: &str) -> CodegenResult<BasicValueEnum<'ctx>> {
@@ -8610,6 +8735,10 @@ fn get_or_declare_external<'ctx>(
 }
 
 #[cfg(test)]
+#[path = "physical_debug_tests.rs"]
+mod debug_tests;
+
+#[cfg(test)]
 #[path = "physical_resource_tests.rs"]
 mod resource_tests;
 
@@ -8933,6 +9062,7 @@ mod tests {
         };
         function.blocks = vec![
             SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(0),
                 args: vec![],
                 ops: copies,
@@ -8953,6 +9083,7 @@ mod tests {
                 },
             },
             SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(1),
                 args: vec![BlockArg {
                     value,
@@ -8985,6 +9116,7 @@ mod tests {
         ];
         if let Some(failure) = contract.failures.first() {
             function.blocks.push(SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(2),
                 args: vec![],
                 ops: failed_inputs,
@@ -9477,6 +9609,7 @@ mod tests {
             return_ty: ResolvedTy::I64,
             entry: BlockId(0),
             blocks: vec![SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(0),
                 args: vec![],
                 ops: vec![SemOp {
@@ -9500,6 +9633,7 @@ mod tests {
             bindings: vec![],
         };
         SemModule {
+            debug: hew_sir::SemDebugFacts::default(),
             regex_patterns: Vec::new(),
             actors: Vec::new(),
             supervisors: Vec::new(),
@@ -9542,6 +9676,7 @@ mod tests {
         let mut module = scalar_entry_module();
         module.functions[0].blocks = vec![
             SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(0),
                 args: vec![],
                 ops: vec![
@@ -9590,6 +9725,7 @@ mod tests {
                 },
             },
             SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(1),
                 args: vec![BlockArg {
                     value: ValueId(3),
@@ -9605,6 +9741,7 @@ mod tests {
                 },
             },
             SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(2),
                 args: vec![],
                 ops: vec![],
@@ -9644,6 +9781,7 @@ mod tests {
             return_ty: ResolvedTy::Bytes,
             entry: BlockId(0),
             blocks: vec![SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(0),
                 args: vec![],
                 ops: vec![
@@ -9689,6 +9827,7 @@ mod tests {
             bindings: vec![],
         };
         SemModule {
+            debug: hew_sir::SemDebugFacts::default(),
             regex_patterns: Vec::new(),
             actors: Vec::new(),
             supervisors: Vec::new(),
@@ -10023,6 +10162,7 @@ mod tests {
                 opt_level: OptLevel::O0,
                 emit_llvm: true,
                 address_sanitizer: true,
+                debug_source: None,
             },
         )
         .expect("emit ASan-instrumented physical module");

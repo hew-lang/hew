@@ -94,6 +94,7 @@ pub fn skeleton(params: Vec<ResolvedTy>, return_ty: ResolvedTy) -> sir::SemModul
         blocks: vec![],
     };
     sir::SemModule {
+        debug: hew_sir::SemDebugFacts::default(),
         regex_patterns: Vec::new(),
         actors: Vec::new(),
         supervisors: Vec::new(),
@@ -150,6 +151,7 @@ pub fn operation(family: RuntimeCallFamily) -> sir::SemModule {
         .collect();
     function.blocks = vec![
         sir::SemBlock {
+            terminator_provenance: hew_sir::Provenance::Synthesized,
             id: sir::BlockId(0),
             args: vec![],
             ops: vec![],
@@ -189,6 +191,7 @@ pub fn operation(family: RuntimeCallFamily) -> sir::SemModule {
             },
         },
         sir::SemBlock {
+            terminator_provenance: hew_sir::Provenance::Synthesized,
             id: sir::BlockId(1),
             args: if has_result {
                 vec![sir::BlockArg {
@@ -223,6 +226,7 @@ pub fn copy(format: EncodingFormat) -> sir::SemModule {
     let function = &mut module.functions[0];
     function.params[0].own = sir::OwnKind::Guaranteed;
     function.blocks = vec![sir::SemBlock {
+        terminator_provenance: hew_sir::Provenance::Synthesized,
         id: sir::BlockId(0),
         args: vec![],
         ops: vec![op(
@@ -251,6 +255,7 @@ pub fn local_copy(format: EncodingFormat) -> sir::SemModule {
         origin: sir::PlaceOrigin::Local,
     }];
     function.blocks = vec![sir::SemBlock {
+        terminator_provenance: hew_sir::Provenance::Synthesized,
         id: sir::BlockId(0),
         args: vec![],
         ops: vec![

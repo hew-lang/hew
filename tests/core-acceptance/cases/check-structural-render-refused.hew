@@ -1,0 +1,15 @@
+// `:?` renders a value from its own parts. A callable has no parts to spell
+// and no `Display` impl, so the render is refused at the source rather than
+// reaching a compiler limitation later. The second interpolation is the
+// control: plain `{v}` still demands `Display` and says so in its own words.
+
+type Ticket {
+    code: string,
+}
+
+fn main() {
+    let render = |value: i64| -> i64 { value + 1 };
+    println(f"{render:?}");
+    let ticket = Ticket { code: "A1" };
+    println(f"{ticket}");
+}

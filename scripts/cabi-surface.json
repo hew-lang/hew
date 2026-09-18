@@ -15714,6 +15714,21 @@
         "wasm32-wasip1"
       ],
       "classification": "stable",
+      "extent": "length-or-count",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_string_builder_append_literal( *mut c_void, *const u8, u32, )",
+        "wasm32-wasip1": "fn hew_string_builder_append_literal( *mut c_void, *const u8, u32, )"
+      },
+      "symbol": "hew_string_builder_append_literal"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -16367,21 +16382,6 @@
         "wasm32-wasip1": "fn hew_string_trim( *const HewString) -> *mut HewString"
       },
       "symbol": "hew_string_trim"
-    },
-    {
-      "availability": [
-        "native",
-        "wasm32-wasip1"
-      ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_structural_format( *const c_void) -> *mut c_char",
-        "wasm32-wasip1": "fn hew_structural_format( *const c_void) -> *mut c_char"
-      },
-      "symbol": "hew_structural_format"
     },
     {
       "availability": [

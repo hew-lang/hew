@@ -183,6 +183,11 @@ pub enum RuntimeValueKind {
     Applied(BuiltinType, &'static [Self]),
     /// Ordinary product results, including receiver replacement with a value.
     Tuple(&'static [Self]),
+    /// The rendered operand of `f"{v:?}"`. Structural rendering is defined for
+    /// every type the checker admits under `:?`, so this kind matches whatever
+    /// concrete type the call site carries; the rendering recipe comes from
+    /// that type's physical layout, not from this kind.
+    StructuralOperand,
 }
 
 impl RuntimeValueKind {
@@ -190,7 +195,8 @@ impl RuntimeValueKind {
     pub const fn matches(self, ty: &ResolvedTy) -> bool {
         matches!(
             (self, ty),
-            (Self::Unit, ResolvedTy::Unit)
+            (Self::StructuralOperand, _)
+                | (Self::Unit, ResolvedTy::Unit)
                 | (Self::Bool, ResolvedTy::Bool)
                 | (Self::I8, ResolvedTy::I8)
                 | (Self::I16, ResolvedTy::I16)
@@ -212,6 +218,10 @@ impl RuntimeValueKind {
 
     /// Resolve a type expression using the signature's one receiver binding.
     #[must_use]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one arm per value kind; splitting the dispatch hides the binding rules"
+    )]
     pub fn resolve(self, receiver: Option<&ResolvedTy>) -> Option<ResolvedTy> {
         Some(match self {
             Self::IoHandle(kind) => {
@@ -246,6 +256,7 @@ impl RuntimeValueKind {
             Self::ActorRequestAdmission => {
                 ResolvedTy::named_opaque("std.builtins.ActorRequestAdmission", Vec::new())
             }
+            Self::StructuralOperand => receiver?.clone(),
             Self::Named(name) => ResolvedTy::named_user(name, Vec::new()),
             Self::NamedOpaque(name) => ResolvedTy::named_opaque(name, Vec::new()),
             Self::BuiltinNominal(builtin) => {
@@ -589,12 +600,14 @@ impl RuntimeSemanticContract {
             .map(|(expected, actual)| {
                 // An actor handle and a pipe half bind to their own argument:
                 // `stream.forward(from, to)` names both halves in one contract.
-                // An actor handle and a pipe half bind to their own argument:
-                // `stream.forward(from, to)` names both halves in one contract.
+                // A rendered operand binds to itself the same way: `:?` has no
+                // canonical receiver, only the value the call site carries.
                 let binding = if expected.ty == RuntimeValueKind::ActorHandle
                     || matches!(
                         expected.ty,
-                        RuntimeValueKind::PipeHalf(_) | RuntimeValueKind::BuiltinArgument(_)
+                        RuntimeValueKind::PipeHalf(_)
+                            | RuntimeValueKind::BuiltinArgument(_)
+                            | RuntimeValueKind::StructuralOperand
                     ) {
                     Some(actual)
                 } else {
@@ -8329,20 +8342,25 @@ impl RuntimeCallFamily {
                 c_return: RuntimeCReturn::TruthBool,
             },
             Self::StructuralFormat => RuntimeOpRow {
+                // The render dispatches per type, so this names the operation
+                // rather than a linker symbol: physical MIR selects the
+                // operand's recipe tree and codegen emits one borrow-only
+                // formatter thunk per participating type.
                 symbol: "hew_structural_format",
                 // Rendering reads the value's layout and allocates the text.
                 // The receiver stays the caller's: `f"{holder:?}"` twice over
                 // one binding renders twice and releases nothing.
-                // No contract yet, and a contract alone would not help: the
-                // row's symbol is an abort-only sentinel (`hew_structural_format`
-                // in hew-runtime/src/string.rs), the real render dispatches per
-                // type, and `NotAnAction` has no physical action to lower to.
-                // Giving this a contract only moves the refusal from SIR to
-                // physical MIR. #3441 needs the render's physical path.
-                contract: None,
-                staging: RuntimeStaging::Declared,
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::StructuralOperand,
+                        effect: E::Borrow,
+                    }],
+                    result: R::FreshOwned(K::String),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::NotAnAction,
+                physical: RuntimePhysicalForm::StructuralFormat,
                 c_return: RuntimeCReturn::Storage,
             },
             Self::StringFind => RuntimeOpRow {
@@ -11489,7 +11507,8 @@ impl RuntimeCallFamily {
                     | RuntimeValueKind::FileReadHandle(_)
                     | RuntimeValueKind::Named(_)
                     | RuntimeValueKind::NamedOpaque(_)
-                    | RuntimeValueKind::MonomorphicBuiltin(_),
+                    | RuntimeValueKind::MonomorphicBuiltin(_)
+                    | RuntimeValueKind::StructuralOperand,
                 ) => RuntimeResultOwnership::Untracked,
             };
         }
@@ -11990,6 +12009,9 @@ pub enum RuntimePhysicalForm {
     /// loads the payload back out of the shared allocation and `Rc.set`
     /// stages a replacement for the runtime to swap in.
     SharedHandle,
+    /// Structural rendering glue: the operand's recipe tree, which codegen
+    /// realizes as one borrow-only formatter thunk per participating type.
+    StructuralFormat,
 }
 
 /// How the backend reaches one runtime operation.

@@ -3714,17 +3714,29 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 }
                 if matches!(self.ty(&body.ty), ResolvedTy::Unit | ResolvedTy::Never) {
                     self.lower_discarded_expr(body)?;
-                    Ok(None)
-                } else {
-                    Ok(Some(Operand {
-                        value: lower_initial_value_transfer(
-                            self,
-                            body,
-                            "closure body result",
-                            OwnedBindingUse::Return,
-                        )?,
-                    }))
+                    return Ok(None);
                 }
+                // A body block with no tail expression carries its value out
+                // through a `return` instead, which already sealed the
+                // callable's return. There is nothing to transfer here and the
+                // divergence doctrine forbids inventing a placeholder, so the
+                // body is complete without a tail: `{ ...; return v; }` and
+                // `{ ...; v }` are the same callable.
+                if let HirExprKind::Block(block) = &body.kind {
+                    if block.tail.is_none() {
+                        let block = block.clone();
+                        self.lower_scoped_block(&block, OwnedBindingUse::Return)?;
+                        return Ok(None);
+                    }
+                }
+                Ok(Some(Operand {
+                    value: lower_initial_value_transfer(
+                        self,
+                        body,
+                        "closure body result",
+                        OwnedBindingUse::Return,
+                    )?,
+                }))
             }
         }
     }

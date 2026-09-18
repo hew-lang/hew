@@ -1,0 +1,13 @@
+[[case]]
+id = "gen_block_return_tail_parity"
+intent = "A `gen { }` block ending in `return` produces the same generator as one ending in a tail expression."
+source = "../vertical-slice/accept/gen_block_return_tail_parity.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "3\n3\n"
+exit = 0

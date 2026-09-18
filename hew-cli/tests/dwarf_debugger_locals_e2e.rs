@@ -39,7 +39,7 @@ use std::path::Path;
 use std::process::Command;
 
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
-use support::{hew_binary, require_codegen, run_bounded_command, tempdir};
+use support::{hew_binary, require_codegen, run_bounded_command, tempdir, try_run_bounded_command};
 
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 const SHADOW_SRC: &str = "\
@@ -250,11 +250,41 @@ fn build_debug_fixture(slug: &str, source: &str) -> DebugFixture {
         String::from_utf8_lossy(&build.stderr)
     );
     assert!(binary.exists(), "binary not produced");
+    warm_debug_symbols(&binary);
     DebugFixture {
         _dir: dir,
         src,
         binary,
     }
+}
+
+/// Read the fixture's debug info once before anything is measured.
+///
+/// A debugger parses the whole `.debug_*` section the first time it opens a
+/// binary, and on a cold cache that costs tens of seconds against a fixture
+/// this size - more than the deadline the measured commands run under, so the
+/// test would fail on the parse rather than on what it asserts. Opening and
+/// quitting here pays that once, outside any measurement, and leaves every
+/// later invocation answering its query in well under a second.
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+fn warm_debug_symbols(binary: &Path) {
+    let Some(dbg) = debugger() else {
+        return;
+    };
+    let path = binary.to_str().expect("binary path utf8");
+    let mut command = Command::new(dbg);
+    if dbg == "lldb" {
+        command.args(["-b", "-o", "quit", path]);
+    } else {
+        command.args(["--batch", "-ex", "quit", path]);
+    }
+    // A wedged debugger here is still a failure, just not one this fixture can
+    // describe, so it gets a budget of its own rather than the measured one.
+    let _ = try_run_bounded_command(
+        command,
+        format!("warm debug symbols for {path}"),
+        std::time::Duration::from_mins(5),
+    );
 }
 
 /// First available batch debugger, preferring each platform's native one.

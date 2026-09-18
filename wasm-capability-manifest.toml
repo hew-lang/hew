@@ -93,6 +93,14 @@ tracking = "WASM-TODO"
 tracking_label = "WASM-TODO(basic-actors):"
 
 [[feature]]
+id = "exit-status-range"
+label = "Process exit statuses above 125"
+checker = "pass"
+runtime = "host-dependent"
+runtime_status = "WASI `proc_exit` refuses a status above 125, so `exit(n)` for n greater than 125 reaches the host as 1 rather than n. Every other status matches native, including the exit-1 rule an unrecovered fault follows (HEW-SPEC-2026 5.8), whose trap code is a diagnostic tag and never the status"
+categories = ["runtime", "failure"]
+
+[[feature]]
 id = "actor-crash-containment"
 label = "Actor-local panic/trap containment and restart"
 checker = "todo"

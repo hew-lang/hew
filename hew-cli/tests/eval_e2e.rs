@@ -1913,6 +1913,51 @@ fn eval_wasm_inline_runtime_failure_exits_with_child_exit_code() {
     );
 }
 
+/// `exit(code)` round-trips on both targets up to the WASI ceiling, and the
+/// documented limit above it holds.
+///
+/// WASI `proc_exit` refuses a status above 125, so a Hew program that asks for
+/// one reaches the host as 1. The runtime does not remap the status to hide
+/// that: the manifest's `exit-status-range` row states the limit, and this
+/// case is what states it in code.
+#[test]
+fn exit_status_matches_native_up_to_the_wasi_ceiling() {
+    require_codegen();
+    support::require_wasi_runner();
+
+    let status_for = |code: &str, target: Option<&str>| {
+        let mut args = vec!["eval"];
+        if let Some(target) = target {
+            args.extend_from_slice(&["--target", target]);
+        }
+        let expression = format!("exit({code})");
+        args.push(&expression);
+        Command::new(hew_binary())
+            .args(&args)
+            .current_dir(repo_root())
+            .output()
+            .unwrap()
+            .status
+            .code()
+    };
+
+    for code in ["0", "3", "125"] {
+        assert_eq!(
+            status_for(code, Some("wasm32-wasi")),
+            status_for(code, None),
+            "exit({code}) must round-trip identically on both targets"
+        );
+    }
+
+    assert_eq!(status_for("200", None), Some(200), "native exit(200)");
+    assert_eq!(
+        status_for("200", Some("wasm32-wasi")),
+        Some(1),
+        "WASI refuses a proc_exit status above 125; the program's own code does \
+         not reach the host and the module ends as a failure"
+    );
+}
+
 /// An unrecovered trap reports the same typed line and the same process status
 /// on both targets. HEW-SPEC-2026 5.8: the trap code in `hew: failure: ...` is
 /// the runtime's internal fault tag and is never the process exit status, so an

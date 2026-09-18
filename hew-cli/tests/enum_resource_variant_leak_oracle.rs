@@ -406,9 +406,12 @@ fn returned_bytes_loan_releases_once_on_success_and_crash() {
         describe_output(&output)
     );
     assert!(String::from_utf8_lossy(&output.stderr).contains("crash during returned bytes loan"));
+    // `push_then_maybe_crash` takes `var value: bytes`, which is the callee's
+    // own copy, so the packet the caller returns is still empty and the sum is
+    // the gate's seed alone.
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
-        "ok=8\nhandled-crash\nsurvived\n",
+        "ok=7\nhandled-crash\nsurvived\n",
         "the normal return and recovered crash must both complete"
     );
     #[cfg(target_os = "macos")]

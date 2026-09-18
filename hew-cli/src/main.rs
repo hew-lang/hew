@@ -702,6 +702,45 @@ fn link_native_object_for_target_with_hew_lib(
         })
 }
 
+/// Produce the `.wasm` module `output_path` names from an emitted wasm object.
+///
+/// A freestanding module was already linked by codegen with no archive; a WASI
+/// module is linked here against the wasm32 runtime and std archives.
+fn link_wasm_module_for_target(
+    artefacts: &hew_codegen_rs::EmitArtefacts,
+    output_path: &Path,
+    target: &target::TargetSpec,
+) -> Result<(), DiagChannel> {
+    let object = artefacts.wasm_obj_path.as_deref().ok_or_else(|| {
+        eprintln!("E_NOT_YET_IMPLEMENTED: physical codegen did not produce a WASM object");
+        DiagChannel::Limitation
+    })?;
+    if target.is_wasm_freestanding() {
+        let linked = artefacts.wasm_path.as_deref().ok_or_else(|| {
+            eprintln!("E_NOT_YET_IMPLEMENTED: freestanding WASM link produced no module");
+            DiagChannel::Limitation
+        })?;
+        if linked != output_path {
+            std::fs::rename(linked, output_path).map_err(|error| {
+                eprintln!(
+                    "Error: cannot move the WASM module to {}: {error}",
+                    output_path.display()
+                );
+                DiagChannel::User
+            })?;
+        }
+        return Ok(());
+    }
+    let (Some(object), Some(output)) = (object.to_str(), output_path.to_str()) else {
+        eprintln!("Error: WASM artefact path is not valid UTF-8");
+        return Err(DiagChannel::User);
+    };
+    crate::link::link_executable(object, output, target, &[], false).map_err(|error| {
+        eprintln!("{error}");
+        DiagChannel::User
+    })
+}
+
 /// Build a native (or wasm) binary for an explicit target, writing it to
 /// `output_path`. Reuses the front-end → MIR → emit → link chain.
 #[allow(
@@ -760,12 +799,15 @@ fn compile_build_binary_with_hew_lib(
         module_name,
         emit_dir,
         target,
-        false,
+        target.is_wasm_freestanding(),
         debug,
         opt_level,
         emit_llvm,
         Some(input),
     )?;
+    if target.is_wasm() {
+        return link_wasm_module_for_target(&artefacts, output_path, target);
+    }
     let object = artefacts.native_obj_path.as_deref().ok_or_else(|| {
         eprintln!("E_NOT_YET_IMPLEMENTED: physical codegen did not produce a native object");
         DiagChannel::Limitation
@@ -1183,25 +1225,12 @@ fn cmd_compile_run(a: &args::CompileArgs) -> i32 {
             println!("native: {}", bin_path.display());
         }
     }
-    // A WASI module is linked here against the wasm32 runtime and std
-    // archives, the same way `hew build` and `hew run` link it; a freestanding
-    // module was already linked by codegen with no archive at all.
-    let wasm_path = if let Some(obj) = &artefacts.wasm_obj_path {
-        if target.is_wasm_freestanding() {
-            artefacts.wasm_path.clone()
-        } else {
-            let module_path = target.executable_path(emit_dir, module_name);
-            let (Some(obj_str), Some(out_str)) = (obj.to_str(), module_path.to_str()) else {
-                eprintln!("Error: WASM artefact path is not valid UTF-8");
-                return 1;
-            };
-            if let Err(error) = crate::link::link_executable(obj_str, out_str, &target, &[], false)
-            {
-                eprintln!("{error}");
-                return 1;
-            }
-            Some(module_path)
+    let wasm_path = if artefacts.wasm_obj_path.is_some() {
+        let module_path = target.executable_path(emit_dir, module_name);
+        if let Err(channel) = link_wasm_module_for_target(&artefacts, &module_path, &target) {
+            return channel.exit_code();
         }
+        Some(module_path)
     } else {
         None
     };

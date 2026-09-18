@@ -286,7 +286,11 @@ impl Checker {
             let handle = self.check_spawn(&target, &child.type_args, &child.args, &child.span);
             self.record_type(&child.span, &handle);
             if let Some(child_ty) = handle.as_actor_handle() {
-                if let Some(children) = self.supervisor_children.get_mut(&sd.name) {
+                // Keyed by the declaration identity, as registration writes it:
+                // a module supervisor answers to `{module}.{name}`, and this is
+                // where each child's refined handle carrier is published.
+                let identity = self.declaration_identity(&sd.name);
+                if let Some(children) = self.supervisor_children.get_mut(&identity) {
                     let entries = if child.is_pool {
                         &mut children.pools
                     } else {

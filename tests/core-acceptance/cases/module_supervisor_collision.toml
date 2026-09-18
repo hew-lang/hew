@@ -1,0 +1,10 @@
+[[case]]
+id = "module_supervisor_collision"
+intent = "A supervisor declared in a module spawns and reaches its own children; two modules declaring a same-named supervisor over a same-named actor keep separate declarations."
+source = "../vertical-slice/accept/module_supervisor_collision/main.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "1\n2\n"
+exit = 0

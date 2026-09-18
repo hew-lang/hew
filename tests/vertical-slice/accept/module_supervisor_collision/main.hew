@@ -1,0 +1,22 @@
+// Two modules each declare a supervisor named `Rack` over an actor named
+// `Worker`. Each registers under its own declaration identity, so each spawn
+// reaches its own module's child rather than whichever declaration was
+// registered last.
+import alpha.rack as first_rack;
+import beta.rack as second_rack;
+
+fn main() {
+    let first = spawn first_rack.Rack;
+    match first.worker.identify() {
+        .Ok(id) => println(id),
+        .Err(_) => println("alpha unreachable"),
+    }
+    close(first);
+
+    let second = spawn second_rack.Rack;
+    match second.worker.identify() {
+        .Ok(id) => println(id),
+        .Err(_) => println("beta unreachable"),
+    }
+    close(second);
+}

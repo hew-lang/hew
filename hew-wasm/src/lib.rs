@@ -543,7 +543,7 @@ fn collect_semantic_diagnostics(
     tco: &hew_types::TypeCheckOutput,
 ) -> Vec<WasmDiagnostic> {
     let session = hew_compile::Session::new(
-        hew_compile::SessionTarget::wasm32(),
+        hew_compile::SessionTarget::browser(),
         hew_compile::DiagnosticPolicy::default(),
     );
     let result = hew_compile::Session::source_roots(program, tco)
@@ -2289,7 +2289,7 @@ mod tests {
             hew_hir::TargetArch::X86_64,
         );
         let wasm = hew_compile::Session::new(
-            hew_compile::SessionTarget::wasm32(),
+            hew_compile::SessionTarget::browser(),
             hew_compile::DiagnosticPolicy::default(),
         );
         let build = hew_compile::Session::new(

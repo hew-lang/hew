@@ -112,8 +112,12 @@ non-trapping family: wrapping arithmetic, bitwise, logical and comparison.
 Arithmetic that can fail is the `checked.binary` **terminator**, because its
 failures are CFG edges.
 
-`cast` carries both the source and target scalar names, because the VM's value
-representation does not record integer width. Native width, truncation,
+`ty` on `const.int`, `unary`, `binary` and `checked.binary` is the operand's
+own scalar type, so wrapping, overflow and shift-range behaviour use the width
+the program declared. The VM's value representation does not record integer
+width, so it reads the width from the package rather than assuming 64 bits.
+
+`cast` carries both the source and target scalar names for the same reason. Native width, truncation,
 extension and saturation semantics apply.
 
 ## Callables
@@ -150,14 +154,14 @@ stays closed against `SemOpKind`.
 
 ## Control-flow terminators
 
-| Opcode           | Fields                                                    | Notes                                                                                                                       |
-| ---------------- | --------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `return`         | `value` (boundary operand or `null`)                      |                                                                                                                             |
-| `goto`           | `edge`                                                    |                                                                                                                             |
-| `branch`         | `condition`, `then`, `else`                               |                                                                                                                             |
-| `switch.variant` | `shape`, `scrutinee`, `arms`                              | Each arm is `{ "variant": <tag>, "fields": [<result>...], "edge": <edge> }`. The arms cover every tag; there is no default. |
-| `checked.binary` | `binary_op`, `lhs`, `rhs`, `result`, `normal`, `failures` | Each failure is `{ "trap": <trap kind>, "edge": <edge> }`. Take the named edge; never trap implicitly.                      |
-| `unreachable`    | —                                                         | A semantically unreachable endpoint, not a language-visible trap. Reaching it is an internal error.                         |
+| Opcode           | Fields                                                          | Notes                                                                                                                       |
+| ---------------- | --------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `return`         | `value` (boundary operand or `null`)                            |                                                                                                                             |
+| `goto`           | `edge`                                                          |                                                                                                                             |
+| `branch`         | `condition`, `then`, `else`                                     |                                                                                                                             |
+| `switch.variant` | `shape`, `scrutinee`, `arms`                                    | Each arm is `{ "variant": <tag>, "fields": [<result>...], "edge": <edge> }`. The arms cover every tag; there is no default. |
+| `checked.binary` | `binary_op`, `lhs`, `rhs`, `ty`, `result`, `normal`, `failures` | Each failure is `{ "trap": <trap kind>, "edge": <edge> }`. Take the named edge; never trap implicitly.                      |
+| `unreachable`    | —                                                               | A semantically unreachable endpoint, not a language-visible trap. Reaching it is an internal error.                         |
 
 ## Call terminators
 
@@ -175,11 +179,19 @@ unwind successor.
 | `actor.call`    | `operation`, `args`, `result`, `normal`, `unwind`                              |
 | `wire.codec`    | `direction`, `plan`, `args`, `result`, `normal`, `unwind`                      |
 
+`result_shape` is the `variants` id of the demanded enum descriptor a runtime
+or extern result is built against, or `null` when the result is not an enum. A
+shim that returns `Option` or `Result` constructs the tag from that descriptor's
+declaration order; it never assumes a variant order of its own.
+
 `normal` is absent exactly when `result` is `never`. `unwind` is `null` when
 the call cannot raise a fault; a C-ABI `extern.call` is always `null`.
 
-`value.call` names a `ValueCapability` the checker selected for a concrete
-type: the VM resolves it through the package's capability table, never by
+`value.call` names a `plan`: an index into the package's `value_capabilities`
+table, which is the checker's selection for one `(type, capability)` pair. An
+entry with a `callable` is a user implementation and the VM calls that
+function; an entry without one is the derived structural operation and the VM
+performs it over its own value representation. The VM never decides which by
 inspecting the receiver at run time.
 
 ## Faults and cleanup
@@ -223,8 +235,10 @@ one edge per outcome — `await` one, `select` one per arm, a deadline form two,
 abandon op. `unwind` is the logical failure path taken after abandoning a
 pending registration.
 
-`kind` is the `SuspendKind` variant name and `detail` its payload. The kinds a
-sequential package may carry:
+`kind` is the `SuspendKind` variant name and `detail` its payload. Every kind
+the instruction stream reaches is also listed in the package's top-level
+`suspend_kinds`, so load-time admission stays a walk of the manifest. The kinds
+a sequential package may carry:
 
 | `kind`       | The VM does                                                                                                           |
 | ------------ | --------------------------------------------------------------------------------------------------------------------- |

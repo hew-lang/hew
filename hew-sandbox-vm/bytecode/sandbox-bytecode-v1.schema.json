@@ -17,31 +17,64 @@
     "variants",
     "runtime_families",
     "externs",
-    "functions"
+    "suspend_kinds",
+    "functions",
+    "value_capabilities",
+    "closures",
+    "vtables"
   ],
   "properties": {
-    "schema_version": { "const": "hew.sandbox.bytecode.v1" },
-    "hew_version": { "type": "string", "minLength": 1 },
-    "compiler_version": { "type": "string", "minLength": 1 },
-    "profile": { "type": "string", "minLength": 1 },
+    "schema_version": {
+      "const": "hew.sandbox.bytecode.v1"
+    },
+    "hew_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "compiler_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "profile": {
+      "type": "string",
+      "minLength": 1
+    },
     "entry": {
       "type": "object",
       "additionalProperties": false,
       "required": ["function", "exit"],
       "properties": {
-        "function": { "$ref": "#/$defs/id" },
-        "exit": { "enum": ["unit", "status"] }
+        "function": {
+          "$ref": "#/$defs/id"
+        },
+        "exit": {
+          "enum": ["unit", "status"]
+        }
       }
     },
-    "strings": { "type": "array", "items": { "type": "string" } },
+    "strings": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
     "bytes": {
       "type": "array",
       "items": {
         "type": "array",
-        "items": { "type": "integer", "minimum": 0, "maximum": 255 }
+        "items": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+        }
       }
     },
-    "regex_patterns": { "type": "array", "items": { "type": "string" } },
+    "regex_patterns": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
     "aggregates": {
       "type": "array",
       "items": {
@@ -49,9 +82,18 @@
         "additionalProperties": false,
         "required": ["id", "name", "fields"],
         "properties": {
-          "id": { "$ref": "#/$defs/id" },
-          "name": { "type": "string" },
-          "fields": { "type": "array", "items": { "type": "string" } }
+          "id": {
+            "$ref": "#/$defs/id"
+          },
+          "name": {
+            "type": "string"
+          },
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
         }
       }
     },
@@ -62,8 +104,12 @@
         "additionalProperties": false,
         "required": ["id", "name", "cases"],
         "properties": {
-          "id": { "$ref": "#/$defs/id" },
-          "name": { "type": "string" },
+          "id": {
+            "$ref": "#/$defs/id"
+          },
+          "name": {
+            "type": "string"
+          },
           "cases": {
             "type": "array",
             "items": {
@@ -71,8 +117,15 @@
               "additionalProperties": false,
               "required": ["name", "fields"],
               "properties": {
-                "name": { "type": "string" },
-                "fields": { "type": "array", "items": { "type": "string" } }
+                "name": {
+                  "type": "string"
+                },
+                "fields": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
               }
             }
           }
@@ -84,13 +137,16 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["id", "family", "admission"],
+        "required": ["id", "family"],
         "properties": {
-          "id": { "$ref": "#/$defs/id" },
-          "family": { "type": "string", "minLength": 1 },
-          "detail": {},
-          "admission": { "$ref": "#/$defs/admission" },
-          "reason": { "type": "string" }
+          "id": {
+            "$ref": "#/$defs/id"
+          },
+          "family": {
+            "type": "string",
+            "minLength": 1
+          },
+          "detail": {}
         }
       }
     },
@@ -99,59 +155,148 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["id", "symbol", "admission"],
+        "required": ["id", "symbol"],
         "properties": {
-          "id": { "$ref": "#/$defs/id" },
-          "symbol": { "type": "string", "minLength": 1 },
-          "admission": { "$ref": "#/$defs/admission" },
-          "reason": { "type": "string" }
+          "id": {
+            "$ref": "#/$defs/id"
+          },
+          "symbol": {
+            "type": "string",
+            "minLength": 1
+          }
         }
       }
     },
-    "capabilities": {
+    "suspend_kinds": {
       "type": "array",
       "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["id", "disposition"],
-        "properties": {
-          "id": { "type": "string" },
-          "disposition": { "enum": ["allowed", "rejected"] },
-          "reason": { "type": "string" },
-          "required_by": { "type": "array", "items": { "type": "string" } }
-        }
+        "type": "string",
+        "minLength": 1
       }
     },
     "functions": {
       "type": "array",
-      "items": { "$ref": "#/$defs/function" }
+      "items": {
+        "$ref": "#/$defs/function"
+      }
+    },
+    "value_capabilities": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "capability", "ty"],
+        "properties": {
+          "id": {
+            "$ref": "#/$defs/id"
+          },
+          "capability": {
+            "enum": ["Eq", "Hash"]
+          },
+          "ty": {
+            "type": "string"
+          },
+          "callable": {
+            "$ref": "#/$defs/id"
+          }
+        }
+      }
+    },
+    "closures": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "body", "fields"],
+        "properties": {
+          "id": {
+            "$ref": "#/$defs/id"
+          },
+          "body": {
+            "$ref": "#/$defs/id"
+          },
+          "fields": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      }
+    },
+    "vtables": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "slots"],
+        "properties": {
+          "id": {
+            "$ref": "#/$defs/id"
+          },
+          "slots": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["slot", "method", "callee"],
+              "properties": {
+                "slot": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "method": {
+                  "type": "string"
+                },
+                "callee": {
+                  "$ref": "#/$defs/id"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "$defs": {
-    "id": { "type": "integer", "minimum": 0 },
-    "admission": { "enum": ["allowed", "native_only", "sandbox_out_of_scope"] },
+    "id": {
+      "type": "integer",
+      "minimum": 0
+    },
     "span": {
       "oneOf": [
-        { "type": "null" },
+        {
+          "type": "null"
+        },
         {
           "type": "object",
           "additionalProperties": false,
           "required": ["start", "end"],
           "properties": {
-            "start": { "type": "integer", "minimum": 0 },
-            "end": { "type": "integer", "minimum": 0 }
+            "start": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "end": {
+              "type": "integer",
+              "minimum": 0
+            }
           }
         }
       ]
     },
-    "own": { "enum": ["none", "owned", "guaranteed"] },
-    "operand": { "$ref": "#/$defs/id" },
+    "own": {
+      "enum": ["none", "owned", "guaranteed"]
+    },
+    "operand": {
+      "$ref": "#/$defs/id"
+    },
     "boundary": {
       "type": "object",
       "additionalProperties": false,
       "required": ["value", "decision"],
       "properties": {
-        "value": { "$ref": "#/$defs/id" },
+        "value": {
+          "$ref": "#/$defs/id"
+        },
         "decision": {
           "enum": ["borrow", "borrow_mut", "copy", "move", "snapshot"]
         }
@@ -162,8 +307,15 @@
       "additionalProperties": false,
       "required": ["to", "args"],
       "properties": {
-        "to": { "$ref": "#/$defs/id" },
-        "args": { "type": "array", "items": { "$ref": "#/$defs/operand" } }
+        "to": {
+          "$ref": "#/$defs/id"
+        },
+        "args": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/operand"
+          }
+        }
       }
     },
     "valueDef": {
@@ -171,15 +323,25 @@
       "additionalProperties": false,
       "required": ["value", "own"],
       "properties": {
-        "value": { "$ref": "#/$defs/id" },
-        "own": { "$ref": "#/$defs/own" }
+        "value": {
+          "$ref": "#/$defs/id"
+        },
+        "own": {
+          "$ref": "#/$defs/own"
+        }
       }
     },
     "result": {
       "oneOf": [
-        { "type": "null" },
-        { "const": "never" },
-        { "$ref": "#/$defs/valueDef" }
+        {
+          "type": "null"
+        },
+        {
+          "const": "never"
+        },
+        {
+          "$ref": "#/$defs/valueDef"
+        }
       ]
     },
     "trap": {
@@ -195,20 +357,40 @@
       "additionalProperties": false,
       "required": ["id", "name", "params", "entry", "places", "blocks"],
       "properties": {
-        "id": { "$ref": "#/$defs/id" },
-        "name": { "type": "string" },
-        "params": { "type": "array", "items": { "$ref": "#/$defs/valueDef" } },
-        "entry": { "$ref": "#/$defs/id" },
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "name": {
+          "type": "string"
+        },
+        "params": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/valueDef"
+          }
+        },
+        "entry": {
+          "$ref": "#/$defs/id"
+        },
         "places": {
           "type": "array",
           "items": {
             "type": "object",
             "additionalProperties": false,
             "required": ["id"],
-            "properties": { "id": { "$ref": "#/$defs/id" } }
+            "properties": {
+              "id": {
+                "$ref": "#/$defs/id"
+              }
+            }
           }
         },
-        "blocks": { "type": "array", "items": { "$ref": "#/$defs/block" } }
+        "blocks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/block"
+          }
+        }
       }
     },
     "block": {
@@ -216,10 +398,24 @@
       "additionalProperties": false,
       "required": ["id", "params", "ops", "term"],
       "properties": {
-        "id": { "$ref": "#/$defs/id" },
-        "params": { "type": "array", "items": { "$ref": "#/$defs/valueDef" } },
-        "ops": { "type": "array", "items": { "$ref": "#/$defs/op" } },
-        "term": { "$ref": "#/$defs/term" }
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "params": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/valueDef"
+          }
+        },
+        "ops": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/op"
+          }
+        },
+        "term": {
+          "$ref": "#/$defs/term"
+        }
       }
     },
     "op": {
@@ -282,9 +478,18 @@
           ]
         },
         "dst": {
-          "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/id" }]
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/id"
+            }
+          ]
         },
-        "span": { "$ref": "#/$defs/span" }
+        "span": {
+          "$ref": "#/$defs/span"
+        }
       }
     },
     "term": {
@@ -318,7 +523,9 @@
             "suspend"
           ]
         },
-        "span": { "$ref": "#/$defs/span" }
+        "span": {
+          "$ref": "#/$defs/span"
+        }
       }
     }
   }

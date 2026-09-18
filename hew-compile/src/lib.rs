@@ -165,14 +165,29 @@ impl SessionTarget {
         }
     }
 
+    /// The browser sandbox VM.
+    ///
+    /// The VM interprets verified semantics with its own deterministic
+    /// scheduler and has no machine layout at all, so this is not a codegen
+    /// target and carries no triple. It is pinned to a 64-bit architecture
+    /// because `isize` and `usize` are 64-bit in the VM, matching the native
+    /// execution the parity oracle compares against, and pinned to one exact
+    /// architecture so a browser result does not vary with the host that built
+    /// the wasm package.
     #[must_use]
-    pub fn wasm32() -> Self {
+    pub fn browser() -> Self {
         Self {
-            // WHY: the browser sandbox supports actors and machines even
-            // though the wasm codegen target rejects them. WHEN: the browser
-            // executes the same wasm substrate as native builds. REAL FIX:
-            // use TargetArch::Wasm32 here and remove this analysis-only split.
             hir_arch: hew_hir::TargetArch::X86_64,
+            pointer_width: hew_mir::PointerWidth::Bits64,
+            codegen_triple: None,
+        }
+    }
+
+    /// The `wasm32-wasi` codegen target.
+    #[must_use]
+    pub fn wasi() -> Self {
+        Self {
+            hir_arch: hew_hir::TargetArch::Wasm32,
             pointer_width: hew_mir::PointerWidth::Bits32,
             codegen_triple: None,
         }

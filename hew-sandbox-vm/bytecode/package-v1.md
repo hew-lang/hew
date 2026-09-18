@@ -17,18 +17,23 @@ symbol spelling.
 | Cleanup on the failing path | every call's `unwind` edge, `cleanup.dispatch`, `resume_unwind`              | Follow the edge the package names; never synthesize one                                                       |
 | Checked arithmetic outcomes | `checked.binary` with `normal` and one edge per failure                      | Take the named failure edge; never trap implicitly                                                            |
 | Enum dispatch               | `switch.variant` with one edge per tag plus `otherwise`                      | Dispatch on the tag the package records                                                                       |
-| Runtime behaviour           | `runtime.call` by family identity, `extern.call` by declared symbol identity | Resolve to a shim by identity or reject the package at load                                                   |
+| Runtime behaviour           | `runtime.call` by family identity, `extern.call` by declared symbol identity | Resolve to a shim by identity or reject the package at load; the VM's shim table is the admission authority   |
 | Suspension and resumption   | `suspend` with `resumes`, `cancel` and `unwind` edges                        | Park `(function, block, args)`; the scheduler owns readiness                                                  |
 | Process exit                | `entry.exit`                                                                 | Publish the status the entry plan names                                                                       |
 
 ## Admission
 
-Admission is a load-time decision, before any instruction runs. The VM's
-package validator walks `runtime_families` and `externs`; an entry whose
-`admission` is not `allowed` is reported as a `sandbox.rejected` trace event
-with the package's own reason and the program does not start. A family or
-symbol the validator does not know is rejected the same way: unknown is not
-allowed.
+Admission is a load-time decision, before any instruction runs, and the VM's
+package validator is its only authority. The package declares what it needs:
+`runtime_families` names every runtime-call family the instruction stream
+reaches, and `externs` names every declared C-ABI symbol. The validator matches
+each against the table of shims it implements. A family or symbol it has no
+shim for is rejected as a `sandbox.rejected` trace event naming the family or
+symbol, and the program does not start. Unknown is rejected, never allowed.
+
+The package carries no verdict of its own. Putting an "allowed" flag in the
+package would make the emitter a second admission authority, and the two would
+drift; the VM knows what it can execute, so the VM decides.
 
 The validator keys on the family identity and the declared extern symbol the
 compiler recorded. It never inspects an instruction stream to guess a
@@ -66,12 +71,9 @@ capability, and it never matches a symbol prefix.
       "id": 0,
       "family": "Print",
       "detail": { "kind": "Str", "newline": true },
-      "admission": "allowed",
     },
   ],
-  "externs": [
-    { "id": 0, "symbol": "hew_io_read_line", "admission": "allowed" },
-  ],
+  "externs": [{ "id": 0, "symbol": "hew_io_read_line" }],
 
   "functions": [
     /* see below */
@@ -113,7 +115,27 @@ One entry per distinct `hew_types::RuntimeCallFamily` a `runtime.call` in this
 package names. `family` is the variant name; `detail` carries the variant's
 payload as JSON when it has one (`Print` carries `kind` and `newline`;
 `Vector` carries its operation). A `runtime.call` instruction names the entry
-by `id`, never by the spelling of `family`.
+by `id`, never by the spelling of `family`. The table is the manifest the VM's
+validator reads at load; it carries no verdict.
+
+### `suspend_kinds`
+
+Every `SuspendKind` variant name the instruction stream reaches. A suspension is
+not a call, so it appears in neither of the tables above; this list keeps
+load-time admission a walk of the package's own manifest rather than a scan of
+the instruction stream.
+
+### `value_capabilities`
+
+The checker's selection for each `(type, capability)` pair the module demands.
+An entry with a `callable` is a user implementation; without one it is the
+derived structural operation. `value.call` names an entry by its `id`.
+
+### `closures` and `vtables`
+
+`closures` names each concrete environment and the function that is its body.
+`vtables` names each demanded trait-object table; `dyn.call` selects a slot by
+the checker's index, which SIR never recomputes.
 
 ### `externs`
 

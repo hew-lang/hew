@@ -6,12 +6,14 @@
 mod bytecode;
 mod emit;
 mod profile;
+mod sir_emit;
 
 use bytecode::{Block, Capability, Instruction, Local, Operand, StdlibSymbol, Terminator};
 use serde::{Deserialize, Serialize};
 
 pub use bytecode::SandboxBytecodePackage;
 pub use profile::{canonical_profile, DEFAULT_PROFILE_ALIAS, DEFAULT_PROFILE_CANONICAL};
+pub use sir_emit::Package as SandboxBytecodePackageV1;
 
 /// The required native↔sandbox parity-case names — the teeth of the parity
 /// ratchet (see `tests/parity.rs` and `tests/parity_ratchet.rs`).
@@ -214,10 +216,22 @@ impl Diagnostic {
     }
 }
 
+/// The bytecode package this compilation produced.
+///
+/// Untagged so the `CompileOutput` JSON wrapper keeps its shape: `bytecode` is
+/// an object or `null`, and the VM selects its executor from the package's own
+/// `schema_version`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum SandboxPackage {
+    V1(Box<SandboxBytecodePackageV1>),
+    V0(Box<SandboxBytecodePackage>),
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CompileOutput {
     pub diagnostics: Vec<Diagnostic>,
-    pub bytecode: Option<SandboxBytecodePackage>,
+    pub bytecode: Option<SandboxPackage>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -246,6 +260,17 @@ pub fn compile_to_sandbox_bytecode(
     source: &str,
     profile: Option<&str>,
 ) -> Result<CompileOutput, CompileError> {
+    // WHY: the AST emitter below still owns actors, supervisors, tasks, select
+    // and pipes; a sequential program is lowered from verified semantics
+    // instead. The split is a structural SIR fact, not a failed attempt at the
+    // walker, so neither path is a fallback for the other. WHEN OBSOLETE: the
+    // actor change lands those constructs in the walker. REAL FIX: the change
+    // after it deletes `emit.rs`, `profile.rs` and everything below this call.
+    match compile_from_semantics(source, profile)? {
+        SemanticOutcome::Compiled(output) => return Ok(output),
+        SemanticOutcome::Concurrency => {}
+    }
+
     let rewritten_source = source_with_sandbox_stdin_helper(source);
     let source_text = rewritten_source.as_deref().unwrap_or(source);
     let canonical_profile = match canonical_profile(profile) {
@@ -300,7 +325,7 @@ pub fn compile_to_sandbox_bytecode(
     }
     Ok(CompileOutput {
         diagnostics,
-        bytecode: Some(bytecode),
+        bytecode: Some(SandboxPackage::V0(Box::new(bytecode))),
     })
 }
 
@@ -340,6 +365,112 @@ fn has_error_diagnostics(diagnostics: &[Diagnostic]) -> bool {
     diagnostics
         .iter()
         .any(|diagnostic| diagnostic.severity == "error")
+}
+
+/// What the semantic path produced for a source.
+enum SemanticOutcome {
+    /// A finished result: the v1 package, or the diagnostics that stopped it.
+    Compiled(CompileOutput),
+    /// The module reaches actors, supervisors, tasks, select or pipes, which
+    /// the AST emitter still owns.
+    Concurrency,
+}
+
+/// Compile through the shared semantic boundary and project the verified
+/// module into a `hew.sandbox.bytecode.v1` package.
+///
+/// The sandbox profile still gates admission here, ahead of lowering, so both
+/// paths refuse the same sources while the AST emitter exists.
+fn compile_from_semantics(
+    source: &str,
+    profile: Option<&str>,
+) -> Result<SemanticOutcome, CompileError> {
+    let canonical_profile = match canonical_profile(profile) {
+        Ok(profile) => profile,
+        Err(diagnostic) => {
+            return Ok(SemanticOutcome::Compiled(CompileOutput {
+                diagnostics: vec![diagnostic],
+                bytecode: None,
+            }))
+        }
+    };
+
+    let parse_result = hew_parser::parse(source);
+    let mut diagnostics = convert_parse_diagnostics(&parse_result.errors);
+    if has_error_diagnostics(&diagnostics) {
+        return Ok(SemanticOutcome::Compiled(CompileOutput {
+            diagnostics,
+            bytecode: None,
+        }));
+    }
+
+    let mut checker = hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(
+        hew_types::module_registry::build_module_search_paths(),
+    ));
+    let type_output = checker.check_program(&parse_result.program);
+    diagnostics.extend(convert_type_diagnostics(&type_output));
+    if has_error_diagnostics(&diagnostics) {
+        return Ok(SemanticOutcome::Compiled(CompileOutput {
+            diagnostics,
+            bytecode: None,
+        }));
+    }
+
+    let profile_report =
+        profile::check_program(&parse_result.program, &type_output, &canonical_profile);
+    diagnostics.extend(profile_report.diagnostics);
+    if has_error_diagnostics(&diagnostics) {
+        return Ok(SemanticOutcome::Compiled(CompileOutput {
+            diagnostics,
+            bytecode: None,
+        }));
+    }
+
+    let session = hew_compile::Session::new(
+        hew_compile::SessionTarget::browser(),
+        hew_compile::DiagnosticPolicy::default(),
+    );
+    let semantics = match session.lower_program(&parse_result.program, &type_output) {
+        Ok(output) => output,
+        Err(error) => {
+            diagnostics.push(Diagnostic {
+                severity: "error".to_string(),
+                phase: "sir".to_string(),
+                message: error.to_string(),
+                span: DiagnosticSpan { start: 0, end: 0 },
+                start_offset: 0,
+                end_offset: 0,
+                kind: "E_SIR_VERIFY".to_string(),
+                notes: Vec::new(),
+                suggestions: Vec::new(),
+                source_module: None,
+            });
+            return Ok(SemanticOutcome::Compiled(CompileOutput {
+                diagnostics,
+                bytecode: None,
+            }));
+        }
+    };
+
+    let module = &semantics.semantics().module;
+    if sir_emit::uses_concurrency(module) {
+        return Ok(SemanticOutcome::Concurrency);
+    }
+
+    let package = sir_emit::emit_package(
+        module,
+        &canonical_profile,
+        env!("CARGO_PKG_VERSION"),
+        &format!("hew-sandbox-wasm-{}", env!("CARGO_PKG_VERSION")),
+    )
+    .map_err(|error| CompileError {
+        message: error.message,
+    })?;
+
+    Ok(SemanticOutcome::Compiled(CompileOutput {
+        diagnostics,
+        bytecode: Some(SandboxPackage::V1(Box::new(package))),
+    }))
 }
 
 fn source_with_sandbox_stdin_helper(source: &str) -> Option<String> {

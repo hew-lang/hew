@@ -1,0 +1,325 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hew.sh/schemas/sandbox/bytecode-v1.schema.json",
+  "title": "Hew Sandbox Bytecode Package v1",
+  "description": "A projection of verified ownership SIR. See package-v1.md and opcodes-v1.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "hew_version",
+    "compiler_version",
+    "profile",
+    "strings",
+    "bytes",
+    "regex_patterns",
+    "aggregates",
+    "variants",
+    "runtime_families",
+    "externs",
+    "functions"
+  ],
+  "properties": {
+    "schema_version": { "const": "hew.sandbox.bytecode.v1" },
+    "hew_version": { "type": "string", "minLength": 1 },
+    "compiler_version": { "type": "string", "minLength": 1 },
+    "profile": { "type": "string", "minLength": 1 },
+    "entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["function", "exit"],
+      "properties": {
+        "function": { "$ref": "#/$defs/id" },
+        "exit": { "enum": ["unit", "status"] }
+      }
+    },
+    "strings": { "type": "array", "items": { "type": "string" } },
+    "bytes": {
+      "type": "array",
+      "items": {
+        "type": "array",
+        "items": { "type": "integer", "minimum": 0, "maximum": 255 }
+      }
+    },
+    "regex_patterns": { "type": "array", "items": { "type": "string" } },
+    "aggregates": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "name", "fields"],
+        "properties": {
+          "id": { "$ref": "#/$defs/id" },
+          "name": { "type": "string" },
+          "fields": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "variants": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "name", "cases"],
+        "properties": {
+          "id": { "$ref": "#/$defs/id" },
+          "name": { "type": "string" },
+          "cases": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["name", "fields"],
+              "properties": {
+                "name": { "type": "string" },
+                "fields": { "type": "array", "items": { "type": "string" } }
+              }
+            }
+          }
+        }
+      }
+    },
+    "runtime_families": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "family", "admission"],
+        "properties": {
+          "id": { "$ref": "#/$defs/id" },
+          "family": { "type": "string", "minLength": 1 },
+          "detail": {},
+          "admission": { "$ref": "#/$defs/admission" },
+          "reason": { "type": "string" }
+        }
+      }
+    },
+    "externs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "symbol", "admission"],
+        "properties": {
+          "id": { "$ref": "#/$defs/id" },
+          "symbol": { "type": "string", "minLength": 1 },
+          "admission": { "$ref": "#/$defs/admission" },
+          "reason": { "type": "string" }
+        }
+      }
+    },
+    "capabilities": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "disposition"],
+        "properties": {
+          "id": { "type": "string" },
+          "disposition": { "enum": ["allowed", "rejected"] },
+          "reason": { "type": "string" },
+          "required_by": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "functions": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/function" }
+    }
+  },
+  "$defs": {
+    "id": { "type": "integer", "minimum": 0 },
+    "admission": { "enum": ["allowed", "native_only", "sandbox_out_of_scope"] },
+    "span": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["start", "end"],
+          "properties": {
+            "start": { "type": "integer", "minimum": 0 },
+            "end": { "type": "integer", "minimum": 0 }
+          }
+        }
+      ]
+    },
+    "own": { "enum": ["none", "owned", "guaranteed"] },
+    "operand": { "$ref": "#/$defs/id" },
+    "boundary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["value", "decision"],
+      "properties": {
+        "value": { "$ref": "#/$defs/id" },
+        "decision": {
+          "enum": ["borrow", "borrow_mut", "copy", "move", "snapshot"]
+        }
+      }
+    },
+    "edge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["to", "args"],
+      "properties": {
+        "to": { "$ref": "#/$defs/id" },
+        "args": { "type": "array", "items": { "$ref": "#/$defs/operand" } }
+      }
+    },
+    "valueDef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["value", "own"],
+      "properties": {
+        "value": { "$ref": "#/$defs/id" },
+        "own": { "$ref": "#/$defs/own" }
+      }
+    },
+    "result": {
+      "oneOf": [
+        { "type": "null" },
+        { "const": "never" },
+        { "$ref": "#/$defs/valueDef" }
+      ]
+    },
+    "trap": {
+      "enum": [
+        "integer_overflow",
+        "divide_by_zero",
+        "shift_out_of_range",
+        "vector_bounds"
+      ]
+    },
+    "function": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "params", "entry", "places", "blocks"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "name": { "type": "string" },
+        "params": { "type": "array", "items": { "$ref": "#/$defs/valueDef" } },
+        "entry": { "$ref": "#/$defs/id" },
+        "places": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id"],
+            "properties": { "id": { "$ref": "#/$defs/id" } }
+          }
+        },
+        "blocks": { "type": "array", "items": { "$ref": "#/$defs/block" } }
+      }
+    },
+    "block": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "params", "ops", "term"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "params": { "type": "array", "items": { "$ref": "#/$defs/valueDef" } },
+        "ops": { "type": "array", "items": { "$ref": "#/$defs/op" } },
+        "term": { "$ref": "#/$defs/term" }
+      }
+    },
+    "op": {
+      "type": "object",
+      "required": ["op"],
+      "properties": {
+        "op": {
+          "enum": [
+            "const.int",
+            "const.bool",
+            "const.float",
+            "const.char",
+            "const.unit",
+            "const.duration",
+            "const.str",
+            "const.bytes",
+            "copy_value",
+            "move",
+            "fork",
+            "destroy_value",
+            "begin_borrow",
+            "end_borrow",
+            "finish_linear_receiver",
+            "alloc_place",
+            "store.init",
+            "store.assign",
+            "load.copy",
+            "load.take",
+            "load.borrow",
+            "end_lifetime",
+            "tuple.make",
+            "tuple.get",
+            "aggregate.make",
+            "aggregate.project_copy",
+            "aggregate.project_borrow",
+            "destructure",
+            "array.make",
+            "array.repeat",
+            "variant.make",
+            "variant.is",
+            "variant.project_copy",
+            "variant.project_borrow",
+            "variant.destructure",
+            "unary",
+            "binary",
+            "cast",
+            "str.eq",
+            "bytes.eq",
+            "function.make",
+            "closure.make",
+            "callable.coerce",
+            "dyn.make",
+            "register_defer",
+            "generator.make",
+            "stream.pipe",
+            "task_scope.enter",
+            "task_scope.close",
+            "task.spawn",
+            "actor.ingress_adapter"
+          ]
+        },
+        "dst": {
+          "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/id" }]
+        },
+        "span": { "$ref": "#/$defs/span" }
+      }
+    },
+    "term": {
+      "type": "object",
+      "required": ["op"],
+      "properties": {
+        "op": {
+          "enum": [
+            "return",
+            "goto",
+            "branch",
+            "switch.variant",
+            "checked.binary",
+            "unreachable",
+            "call",
+            "indirect.call",
+            "dyn.call",
+            "value.call",
+            "runtime.call",
+            "extern.call",
+            "actor.call",
+            "wire.codec",
+            "panic",
+            "trap",
+            "checked_raise",
+            "cleanup.dispatch",
+            "resume_unwind",
+            "enter_defer",
+            "finish_defer",
+            "recover_fault",
+            "suspend"
+          ]
+        },
+        "span": { "$ref": "#/$defs/span" }
+      }
+    }
+  }
+}

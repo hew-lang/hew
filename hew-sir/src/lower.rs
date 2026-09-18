@@ -8652,23 +8652,20 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 source
             } else {
                 transformed_root = staged_root;
-                // A state seat leaves by take, and the call publishes the
-                // updated receiver back into it on every edge the call owns.
-                // That needs the contract to return the receiver on its failure
-                // edge as well; where it does not, the seat keeps its value and
-                // the call runs on a copy.
+                // A state seat leaves by take, and the call publishes a
+                // receiver back into it on every edge the call owns: the
+                // updated one where the contract keeps it, and a fresh empty
+                // collection where the runtime consumed it. The seat never
+                // needs a copy of its own value and never stays uninitialized.
                 seat_taken = matches!(
                     self.places[projected.0 as usize].origin,
                     crate::PlaceOrigin::ActorState { .. }
-                ) && (contract.failures.is_empty()
-                    || contract.preserves_inputs_on_failure());
-                let receiver_kind =
-                    if !seat_taken && self.state_field_leaves_as_copy(projected, args[0])? {
-                        SemOpKind::LoadCopy { place: projected }
-                    } else {
-                        SemOpKind::LoadTake { place: projected }
-                    };
-                self.emit_typed(provenance.clone(), &receiver_ty, receiver_kind)?
+                );
+                self.emit_typed(
+                    provenance.clone(),
+                    &receiver_ty,
+                    SemOpKind::LoadTake { place: projected },
+                )?
             };
             if matches!(
                 family,
@@ -8857,11 +8854,16 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         if let (Some(failure), Some(block)) = (failure, failure_block) {
             self.current = block;
             self.owned_live = live_on_failure;
-            // The call kept the receiver on this edge, so the seat is
-            // re-published here too: a handler never leaves its state
-            // uninitialized, and the actor's teardown releases the field once.
+            // Where the contract keeps the receiver on this edge, the seat is
+            // re-published here and the actor's teardown releases the field
+            // once. Where the runtime consumed and released it instead, the
+            // seat keeps the empty carrier the take left in it: nothing but
+            // releases may run on a failure edge, and the actor's release
+            // reads that carrier as an empty collection.
             if let Some((place, value)) = taken_seat {
-                self.restore_taken_place(place, value, Provenance::Site(expr.site))?;
+                if contract.preserves_inputs_on_failure() {
+                    self.restore_taken_place(place, value, Provenance::Site(expr.site))?;
+                }
             }
             self.end_call_loans(&loans)?;
             if contract.propagates_fault() {

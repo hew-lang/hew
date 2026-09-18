@@ -1319,18 +1319,23 @@ impl<'a> Flow<'a> {
                     });
                 }
             }
-            // A seat a body took is re-published before the body leaves, on the
-            // fault edge as much as on the ordinary one: the actor's teardown
-            // releases every field it still owns.
-            for place in self.state_places.difference(&self.deferred_places) {
-                if state.places[self.place_indices[place]] != LIVE {
-                    emit(Violation {
-                        linear_obligation: false,
-                        block: id,
-                        value: None,
-                        place: Some(*place),
-                        reason: "actor state field is not re-published at this exit",
-                    });
+            // A seat a body took is re-published before the body returns: the
+            // next dispatch reads the field. An unwinding body may leave one
+            // empty, because nothing but releases runs on a failure edge and
+            // a call that consumed the receiver has nothing to hand back. The
+            // take leaves the carrier empty and the actor's release reads it
+            // that way, so the field is still released exactly once.
+            if matches!(terminator, SemTerminator::Return { .. }) {
+                for place in self.state_places.difference(&self.deferred_places) {
+                    if state.places[self.place_indices[place]] != LIVE {
+                        emit(Violation {
+                            linear_obligation: false,
+                            block: id,
+                            value: None,
+                            place: Some(*place),
+                            reason: "actor state field is not re-published at this exit",
+                        });
+                    }
                 }
             }
         }

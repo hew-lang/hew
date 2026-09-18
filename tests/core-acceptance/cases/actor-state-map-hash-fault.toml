@@ -1,0 +1,11 @@
+[[case]]
+id = "actor-state-map-hash-fault"
+intent = "A trapping key hash consumes an actor state map on the failure edge, so the handler unwinds with the seat empty and the actor's release closes the field exactly once."
+source = "cases/actor-state-map-hash-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "faulted\n"
+stderr = "hew: failure: DivideByZero (202)\nhew: actor crash in Store.put (actor 1): DivideByZero\n"
+exit = 1

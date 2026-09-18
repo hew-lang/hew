@@ -1,0 +1,10 @@
+[[case]]
+id = "actor_state_map_affine_value"
+intent = "An actor state map and set whose element types have no copy are mutated in place, and every seat survives insert, removal and lookup."
+source = "../vertical-slice/accept/actor_state_map_affine_value.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = ""
+exit = 42

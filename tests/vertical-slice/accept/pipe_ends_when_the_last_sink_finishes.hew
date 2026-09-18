@@ -1,0 +1,28 @@
+// Accept + run: a cloned sink adds a producer, so the read half reaches end
+// of data only after the last one finishes.
+import std.stream;
+
+fn main() {
+    let (tx, rx): (stream.Sink<i64>, stream.Stream<i64>) = match stream.pipe(4) {
+        .Ok(pair) => pair,
+        .Err(error) => panic(f"stream.pipe failed: {error}"),
+    };
+    let second = tx.clone();
+    tx.send(1).expect("send");
+    second.send(2).expect("send");
+    tx.finish();
+    match rx.recv() {
+        .Some(item) => println(f"first {item}"),
+        .None => println("first closed"),
+    }
+    match rx.recv() {
+        .Some(item) => println(f"second {item}"),
+        .None => println("second closed"),
+    }
+    second.finish();
+    match rx.recv() {
+        .Some(item) => println(f"third {item}"),
+        .None => println("third closed"),
+    }
+    rx.close();
+}

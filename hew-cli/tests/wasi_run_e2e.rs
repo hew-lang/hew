@@ -261,6 +261,182 @@ fn actor_lifecycle_state_writes_match_on_native_and_wasi() {
     );
 }
 
+/// Run one `tests/vertical-slice/accept` program on both targets and require
+/// identical stdout and exit status.
+fn assert_accept_fixture_parity(name: &str) {
+    require_wasi_runner();
+    support::require_codegen();
+
+    let source = repo_root()
+        .join("tests")
+        .join("vertical-slice")
+        .join("accept")
+        .join(format!("{name}.hew"));
+    let native = support::run_bounded_hew_run(&source, repo_root());
+    let wasi = run_wasi_example(&source);
+
+    let native_stdout = String::from_utf8_lossy(&native.stdout);
+    let wasi_stdout = String::from_utf8_lossy(&wasi.stdout);
+    let wasi_stderr = String::from_utf8_lossy(&wasi.stderr);
+
+    assert_eq!(
+        wasi_stdout, native_stdout,
+        "{name}: WASI stdout must match native\nWASI stderr:\n{wasi_stderr}"
+    );
+    assert_eq!(
+        wasi.status.code(),
+        native.status.code(),
+        "{name}: WASI exit status must match native\nWASI stderr:\n{wasi_stderr}"
+    );
+}
+
+/// The read half waits on an empty pipe while an actor still holds the live
+/// sink. On wasm32 the waiting stack is the process driver, so this is the case
+/// that proves the driver runs the producer instead of parking forever.
+#[test]
+fn pipe_recv_waits_for_an_actor_send_on_native_and_wasi() {
+    assert_accept_fixture_parity("pipe_recv_waits_for_an_actor_send");
+}
+
+/// Backpressure: a producer blocked on a full ring resumes once the consumer
+/// drains it, with every item delivered exactly once.
+#[test]
+fn pipe_backpressure_matches_on_native_and_wasi() {
+    assert_accept_fixture_parity("pipe_send_waits_for_a_full_ring_to_drain");
+}
+
+/// A cloned sink adds a producer; end of data waits for the last finish.
+#[test]
+fn pipe_clone_and_finish_match_on_native_and_wasi() {
+    assert_accept_fixture_parity("pipe_ends_when_the_last_sink_finishes");
+}
+
+/// `for item in stream` over a pipe drains and releases the read half.
+#[test]
+fn pipe_for_loop_matches_on_native_and_wasi() {
+    assert_accept_fixture_parity("channel_for_loop_drains_receiver");
+}
+
+/// A sink released by a crashing handler faults the pipe, so the consumer
+/// traps on its next read instead of reading a clean end. The handler panic is
+/// contained on both targets (`actor-crash-containment`); the fault the
+/// released sink publishes is what ends the process.
+#[test]
+fn pipe_faulted_by_a_crashed_producer_traps_the_consumer_on_native_and_wasi() {
+    require_wasi_runner();
+    support::require_codegen();
+
+    let dir = tempdir();
+    let source = dir.path().join("pipe_fault.hew");
+    fs::write(
+        &source,
+        r#"import std.stream;
+
+actor Producer {
+    receive fn go(tx: stream.Sink<i64>) {
+        tx.send(1).expect("send");
+        panic("producer down");
+    }
+}
+
+fn main() {
+    let (tx, rx): (stream.Sink<i64>, stream.Stream<i64>) = match stream.pipe(4) {
+        .Ok(pair) => pair,
+        .Err(error) => panic(f"stream.pipe failed: {error}"),
+    };
+    let producer = spawn Producer;
+    let _ = producer.go(tx);
+    match rx.recv() {
+        .Some(item) => println(f"first {item}"),
+        .None => println("first closed"),
+    }
+    match rx.recv() {
+        .Some(item) => println(f"second {item}"),
+        .None => println("second closed"),
+    }
+    rx.close();
+}
+"#,
+    )
+    .expect("write pipe fault source");
+
+    let native = support::run_bounded_hew_run(&source, repo_root());
+    let wasi = run_wasi_example(&source);
+
+    let native_stdout = String::from_utf8_lossy(&native.stdout);
+    let wasi_stdout = String::from_utf8_lossy(&wasi.stdout);
+    let wasi_stderr = String::from_utf8_lossy(&wasi.stderr);
+
+    assert_eq!(
+        wasi_stdout, native_stdout,
+        "faulted pipe stdout must match native\nWASI stderr:\n{wasi_stderr}"
+    );
+    assert_eq!(
+        wasi.status.code(),
+        native.status.code(),
+        "faulted pipe exit status must match native\nWASI stderr:\n{wasi_stderr}"
+    );
+    assert_eq!(
+        wasi.status.code(),
+        Some(1),
+        "a faulted pipe must end the process\nWASI stderr:\n{wasi_stderr}"
+    );
+    assert!(
+        native_stdout.contains("first 1"),
+        "the item queued before the crash is still delivered; stdout:\n{native_stdout}"
+    );
+}
+
+/// `select {}` builds its readiness waitset in the task-scope runtime, which
+/// wasm32 does not compile. The manifest rejects it before code generation, so
+/// a select never reaches the linker with an unresolved carrier.
+#[test]
+fn select_stays_on_the_unsupported_diagnostic_path_under_wasi() {
+    let dir = tempdir();
+    let source = dir.path().join("select_pipe.hew");
+    fs::write(
+        &source,
+        r#"import std.stream;
+
+fn main() {
+    let (tx, rx): (stream.Sink<i64>, stream.Stream<i64>) = match stream.pipe(4) {
+        .Ok(pair) => pair,
+        .Err(error) => panic(f"stream.pipe failed: {error}"),
+    };
+    tx.send(7).expect("send");
+    select {
+        item from rx.recv() => {
+            match item {
+                .Some(value) => println(f"got {value}"),
+                .None => println("closed"),
+            }
+        },
+        after 1s => println("timeout"),
+    };
+    tx.close();
+    rx.close();
+}
+"#,
+    )
+    .expect("write select source");
+
+    let output = run_wasi_example(&source);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        !output.status.success(),
+        "select must not compile for wasm32; stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("`select {}` operations are not supported on WASM32"),
+        "the manifest row, not the linker, must refuse select; stderr:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("undefined symbol"),
+        "no select carrier may reach the linker unresolved; stderr:\n{stderr}"
+    );
+}
+
 #[test]
 fn actor_start_panic_remains_module_fatal_on_production_wasi() {
     require_wasi_runner();

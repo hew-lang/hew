@@ -1,0 +1,26 @@
+// Accept + run: a producer fills a one-slot ring and waits for the consumer
+// to drain it, so every item arrives exactly once under backpressure.
+import std.stream;
+
+actor Producer {
+    receive fn go(tx: stream.Sink<i64>) {
+        for i in 1..6 {
+            tx.send(i).expect("send");
+        }
+        tx.finish();
+    }
+}
+
+fn main() {
+    let (tx, rx): (stream.Sink<i64>, stream.Stream<i64>) = match stream.pipe(1) {
+        .Ok(pair) => pair,
+        .Err(error) => panic(f"stream.pipe failed: {error}"),
+    };
+    let producer = spawn Producer;
+    let _ = mailbox(producer, on_full: .Reject).go(tx);
+    var total = 0;
+    for item in rx {
+        total = total + item;
+    }
+    println(f"total {total}");
+}

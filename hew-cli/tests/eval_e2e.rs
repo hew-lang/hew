@@ -1765,11 +1765,9 @@ fn eval_wasm_fast_typecheck_rejects_wasm_unsupported_ops() {
 }
 
 // `compile_wasm_rejects_for_await_receiver_before_link` was deleted with the
-// old `std.channel` surface: the one pipe family (`stream.pipe`/`Sink`/
-// `Stream`) that replaced it is native-only end to end and is rejected
-// before code generation on wasm32 for any use, not specifically `for` over
-// a `Stream` (`wasm-capability-manifest.toml`, id `streams`). There is no
-// wasm-channel-shaped compile path left to pin here.
+// old `std.channel` surface. The one pipe family (`stream.pipe`/`Sink`/
+// `Stream`) that replaced it now runs on wasm32 as well, so there is no
+// rejection to pin here; the parity cases live in `wasi_run_e2e.rs`.
 
 // ── Runtime-failure output contract ──────────────────────────────────────────
 //

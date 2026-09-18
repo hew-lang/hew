@@ -562,7 +562,6 @@ stable = [
   "hew_sleep_until_ns",
   "hew_stderr_write",
   "hew_stdin_read_line",
-  "hew_stream_cancel_pending_read",
   "hew_stream_await_next",
   "hew_stream_detach_await",
   "hew_stream_channel",
@@ -589,7 +588,6 @@ stable = [
   "hew_stream_pair_sink",
   "hew_stream_pair_stream",
   "hew_stream_pipe",
-  "hew_stream_poll",
   "hew_stream_pop_layout",
   "hew_stream_send_layout",
   "hew_stream_take",
@@ -1913,6 +1911,15 @@ symbol acquiring a sys-lane capability - every caller in the reported closure \
 reaches it by blocking, and blocking is what hands the process back to the \
 driver. The graph is name-keyed, so this edge also absorbs `Condvar::wait`, \
 which calls nothing of the sort."""
+
+"wait_for_peer -> step" = """
+Same edge as `wait -> step`, for a caller whose condition lives in its own \
+lock rather than in a readiness latch: a producer blocked on a full pipe ring \
+re-checks the ring, and on wasm32 the only thing that can drain it is the \
+consumer the process driver runs. Releasing the lock and stepping the driver \
+is what native code gets from a worker thread plus `Condvar::wait`; it gives \
+the blocked producer no sys-lane capability it did not already reach by \
+blocking."""
 
 "worker_loop -> activate_queued_actor" = """
 The native scheduler worker is the system lane's one legitimate consumer: \

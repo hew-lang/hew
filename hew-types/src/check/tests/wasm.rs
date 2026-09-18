@@ -290,14 +290,13 @@ mod wasm_rejects {
         );
     }
 
-    // The former channel-specific `wasm_rejects_blocking_channel_recv` and
-    // `wasm_rejects_for_await_receiver` tests are gone with the channel
-    // family: `wasm_rejects_for_await_stream` and `wasm_rejects_stream_method`
-    // below already pin the single `WasmUnsupportedFeature::Streams` gate
-    // that any `Stream<T>` method call goes through on wasm32.
+    // The pipe runs on wasm32, so the `for` loop and the `Stream<T>` methods
+    // are admitted on both targets; the pair below is the parity oracle. The
+    // backings that still need the native I/O reactor are rejected by their own
+    // rows (`filesystem-streams`, `tcp-networking`).
 
     #[test]
-    fn wasm_rejects_for_await_stream() {
+    fn wasm_admits_for_await_pipe_stream() {
         let source = concat!(
             "import std.stream;\n",
             "fn main() {\n",
@@ -318,13 +317,8 @@ mod wasm_rejects {
         checker.enable_wasm_target();
         let output = checker.check_program(&result.program);
         assert!(
-            has_platform_limitation_error(&output),
-            "`for` over Stream<T> should be a compile-time error on WASM; got errors: {:?}",
-            output.errors
-        );
-        assert!(
-            platform_error_contains(&output, "Stream operations"),
-            "error message should mention Stream operations; got: {:?}",
+            !has_platform_limitation_error(&output),
+            "`for` over a pipe stream should compile on WASM; got errors: {:?}",
             output.errors
         );
     }
@@ -450,7 +444,7 @@ mod wasm_rejects {
     // ── Stream<T> methods ────────────────────────────────────────────────────
 
     #[test]
-    fn wasm_rejects_stream_method() {
+    fn wasm_admits_pipe_stream_method() {
         // Use a function that accepts a Stream<string> and calls .next().
         // The stream module must be imported to register Stream types.
         let source = concat!(
@@ -469,13 +463,63 @@ mod wasm_rejects {
         checker.enable_wasm_target();
         let output = checker.check_program(&result.program);
         assert!(
-            has_platform_limitation_error(&output),
-            "Stream<T>::next should be a compile-time error on WASM; got errors: {:?}",
+            !has_platform_limitation_error(&output),
+            "Stream<T>::next should compile on WASM; got errors: {:?}",
             output.errors
         );
+    }
+
+    #[test]
+    fn wasm_rejects_file_backed_stream_open() {
+        let source = concat!(
+            "import std.stream;\n",
+            "fn main() {\n",
+            "    let _ = stream.open(\"data.txt\");\n",
+            "}\n",
+        );
+        let result = hew_parser::parse(source);
         assert!(
-            platform_error_contains(&output, "Stream"),
-            "error message should mention Stream feature; got: {:?}",
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new(test_registry());
+        checker.enable_wasm_target();
+        let output = checker.check_program(&result.program);
+        assert!(
+            platform_error_contains(&output, "File-backed stream operations"),
+            "stream.open reads through the native I/O reactor and must stay rejected; got: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn wasm_rejects_select() {
+        let source = concat!(
+            "actor Pinger {\n",
+            "    receive fn ping() -> i64 { 7 }\n",
+            "}\n",
+            "fn main() {\n",
+            "    let p = spawn Pinger;\n",
+            "    select {\n",
+            "        v from p.ping() => { let _ = v; },\n",
+            "        after 1s => {},\n",
+            "    };\n",
+            "}\n",
+        );
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new(test_registry());
+        checker.enable_wasm_target();
+        let output = checker.check_program(&result.program);
+        assert!(
+            platform_error_contains(&output, "`select {}` operations"),
+            "select builds its waitset in the task-scope runtime and must be \
+             rejected before link; got: {:?}",
             output.errors
         );
     }

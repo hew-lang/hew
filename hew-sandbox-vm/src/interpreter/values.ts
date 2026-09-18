@@ -29,7 +29,12 @@ export type VmValue =
   /** A first-class function reference materialised by `const.function`.
    *  `id` is the bytecode function id (e.g. `"fn:my_handler"`).
    *  Function values are immutable: `cloneValue` is identity. */
-  | { kind: "function"; id: string };
+  | { kind: "function"; id: string }
+  /** A closure: the function that is its body, and the environment holding its
+   *  captures. Calling it passes `environment` to the body's first parameter,
+   *  which is where a `capture` place reaches its field. The environment is
+   *  owned by the closure, so `cloneValue` clones it. */
+  | { kind: "closure"; body: number; environment: VmValue };
 
 export const UNIT: VmValue = { kind: "unit" };
 
@@ -84,6 +89,12 @@ export function cloneValue(value: VmValue): VmValue {
         kind: "dyn",
         vtable: value.vtable,
         value: cloneValue(value.value),
+      };
+    case "closure":
+      return {
+        kind: "closure",
+        body: value.body,
+        environment: cloneValue(value.environment),
       };
     case "map":
       return {
@@ -243,6 +254,8 @@ export function renderStdout(value: VmValue): string {
       return renderStdout(value.value);
     case "function":
       return value.id;
+    case "closure":
+      return `closure:${value.body}`;
   }
 }
 
@@ -287,6 +300,8 @@ export function toJsonValue(value: VmValue): JsonValue {
       return toJsonValue(value.value);
     case "function":
       return value.id;
+    case "closure":
+      return `closure:${value.body}`;
   }
 }
 

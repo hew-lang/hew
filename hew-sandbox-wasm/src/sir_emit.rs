@@ -62,6 +62,8 @@ pub struct Package {
     pub aggregates: Vec<AggregateShape>,
     pub variants: Vec<VariantShape>,
     pub closures: Vec<Closure>,
+    pub actors: Vec<Actor>,
+    pub supervisors: Vec<Supervisor>,
     pub vtables: Vec<Vtable>,
     pub value_capabilities: Vec<ValueCapabilityPlan>,
     pub runtime_families: Vec<RuntimeFamily>,
@@ -103,6 +105,84 @@ pub struct Closure {
     pub id: u32,
     pub body: u32,
     pub fields: u32,
+}
+
+/// One demanded actor: its state seats, its lifecycle callables and the
+/// handlers its mailbox dispatches, all as function indexes.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Actor {
+    pub id: u32,
+    pub state_fields: Vec<ActorField>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub init: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub start: Option<u32>,
+    pub stop: Vec<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub crash: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exit: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub down: Option<u32>,
+    pub handlers: Vec<ActorHandler>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mailbox_capacity: Option<u32>,
+    pub overflow: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub coalesce: Option<Coalesce>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_heap_bytes: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ActorField {
+    pub mutable: bool,
+    pub deferred: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ActorHandler {
+    pub name: String,
+    pub message_id: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub every_ns: Option<i64>,
+    pub callable: u32,
+    pub params: u32,
+    pub streams: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Coalesce {
+    pub fallback: String,
+    pub keys: Vec<CoalesceKey>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CoalesceKey {
+    pub message: u32,
+    pub param: u32,
+    pub kind: String,
+}
+
+/// One demanded supervisor: its restart policy and the children it starts.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Supervisor {
+    pub id: u32,
+    pub strategy: String,
+    pub max_restarts: u32,
+    pub window_secs: u32,
+    pub children: Vec<SupervisorChild>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SupervisorChild {
+    pub name: String,
+    /// The role this child plays, as `{"actor": id}` or `{"supervisor": id}`.
+    pub role: serde_json::Value,
+    pub restart: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pool_count: Option<u32>,
+    pub spawn: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -181,9 +261,14 @@ pub struct Place {
     /// `aggregate`, `capture` and `actor_state`: the field index.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub field: Option<u32>,
-    /// `capture`: the closure environment receiver.
+    /// `capture` and `actor_state`: the value whose field this place is - the
+    /// closure environment, or the state the actor's turn holds.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub environment: Option<u32>,
+    /// `actor_state`: false only for a seat the actor's `init` body owns,
+    /// which holds no value until init's first store.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub initialized: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -451,6 +536,8 @@ impl<'m> Walker<'m> {
             regex_patterns: self.module.regex_patterns.clone(),
             aggregates: self.aggregate_shapes(),
             variants: self.variant_shapes(),
+            actors: self.actors()?,
+            supervisors: self.supervisors()?,
             closures: self
                 .module
                 .closures
@@ -507,6 +594,102 @@ impl<'m> Walker<'m> {
             suspend_kinds: self.suspend_kinds,
             functions,
         })
+    }
+
+    /// Project each demanded actor. Every callable becomes a function index,
+    /// so the VM reaches a handler the way it reaches any other body.
+    fn actors(&self) -> Result<Vec<Actor>, EmitError> {
+        self.module
+            .actors
+            .iter()
+            .map(|actor| {
+                Ok(Actor {
+                    id: actor.id.0,
+                    state_fields: actor
+                        .fields
+                        .iter()
+                        .map(|field| ActorField {
+                            mutable: field.mutable,
+                            deferred: field.deferred,
+                        })
+                        .collect(),
+                    init: actor.init.map(|id| self.function_id(id)).transpose()?,
+                    start: actor.start.map(|id| self.function_id(id)).transpose()?,
+                    stop: actor
+                        .stop
+                        .iter()
+                        .map(|id| self.function_id(*id))
+                        .collect::<Result<Vec<_>, _>>()?,
+                    crash: actor.crash.map(|id| self.function_id(id)).transpose()?,
+                    exit: actor.exit.map(|id| self.function_id(id)).transpose()?,
+                    down: actor.down.map(|id| self.function_id(id)).transpose()?,
+                    handlers: actor
+                        .handlers
+                        .iter()
+                        .map(|handler| {
+                            Ok(ActorHandler {
+                                name: handler.name.clone(),
+                                message_id: handler.message_id,
+                                every_ns: handler.every_ns,
+                                callable: self.function_id(handler.callable)?,
+                                params: table_index(handler.params.len()),
+                                streams: handler.stream.is_some(),
+                            })
+                        })
+                        .collect::<Result<Vec<_>, EmitError>>()?,
+                    mailbox_capacity: actor.mailbox_capacity,
+                    overflow: overflow_name(actor.overflow).to_string(),
+                    coalesce: actor.coalesce.as_ref().map(|coalesce| Coalesce {
+                        fallback: coalesce_fallback_name(coalesce.fallback).to_string(),
+                        keys: coalesce
+                            .keys
+                            .iter()
+                            .map(|key| CoalesceKey {
+                                message: key.message,
+                                param: key.param,
+                                kind: coalesce_key_name(key.kind).to_string(),
+                            })
+                            .collect(),
+                    }),
+                    max_heap_bytes: actor.max_heap_bytes,
+                })
+            })
+            .collect()
+    }
+
+    fn supervisors(&self) -> Result<Vec<Supervisor>, EmitError> {
+        self.module
+            .supervisors
+            .iter()
+            .map(|supervisor| {
+                Ok(Supervisor {
+                    id: supervisor.id.0,
+                    strategy: strategy_name(supervisor.strategy).to_string(),
+                    max_restarts: supervisor.max_restarts,
+                    window_secs: supervisor.window_secs,
+                    children: supervisor
+                        .children
+                        .iter()
+                        .map(|child| {
+                            Ok(SupervisorChild {
+                                name: child.name.clone(),
+                                role: match child.role {
+                                    hew_sir::SemSupervisedRole::Actor(actor) => {
+                                        serde_json::json!({ "actor": actor.0 })
+                                    }
+                                    hew_sir::SemSupervisedRole::Supervisor(supervisor) => {
+                                        serde_json::json!({ "supervisor": supervisor.0 })
+                                    }
+                                },
+                                restart: restart_name(child.restart).to_string(),
+                                pool_count: child.pool_count,
+                                spawn: self.function_id(child.spawn)?,
+                            })
+                        })
+                        .collect::<Result<Vec<_>, EmitError>>()?,
+                })
+            })
+            .collect()
     }
 
     fn aggregate_shapes(&self) -> Vec<AggregateShape> {
@@ -934,20 +1117,37 @@ impl<'m> Walker<'m> {
                 "dependencies": dependencies.iter().map(|place| place.0).collect::<Vec<_>>(),
             }),
 
-            // The concurrency constructs. `uses_concurrency` routes a module
-            // that reaches one of these away from this walker, so these arms
-            // keep the match closed against `SemOpKind` without claiming
-            // support the package's tables do not carry.
-            SemOpKind::GeneratorMake { .. }
-            | SemOpKind::StreamPipe { .. }
-            | SemOpKind::TaskScopeEnter { .. }
-            | SemOpKind::TaskScopeClose { .. }
-            | SemOpKind::TaskSpawn { .. }
-            | SemOpKind::ActorIngressAdapter(_) => {
-                return Err(EmitError::new(
-                    "a concurrency operation reached the sequential package walker",
-                ))
+            SemOpKind::GeneratorMake { closure, callable } => serde_json::json!({
+                "op": "generator.make",
+                "closure": closure.0,
+                "callable": operand(callable),
+            }),
+            SemOpKind::StreamPipe { capacity } => {
+                serde_json::json!({ "op": "stream.pipe", "capacity": capacity })
             }
+            SemOpKind::TaskScopeEnter {
+                scope,
+                parent,
+                duration,
+            } => serde_json::json!({
+                "op": "task_scope.enter",
+                "scope": scope.0,
+                "parent": parent.map(|parent| parent.0),
+                "duration": duration.as_ref().map(operand),
+            }),
+            SemOpKind::TaskScopeClose { scope } => {
+                serde_json::json!({ "op": "task_scope.close", "scope": scope.0 })
+            }
+            SemOpKind::TaskSpawn { scope, callable } => serde_json::json!({
+                "op": "task.spawn",
+                "scope": scope.0,
+                "callable": operand(callable),
+            }),
+            SemOpKind::ActorIngressAdapter(adapter) => serde_json::json!({
+                "op": "actor.ingress_adapter",
+                "actor": adapter.actor.0,
+                "message": adapter.message,
+            }),
         };
         encoded["dst"] = match dst {
             Some(dst) => dst.into(),
@@ -1172,7 +1372,7 @@ impl<'m> Walker<'m> {
                 cancel,
                 unwind,
             } => {
-                let (name, detail) = suspend_shape(kind)?;
+                let (name, detail) = suspend_shape(kind);
                 self.suspend_kind_id(name);
                 serde_json::json!({
                     "op": "suspend",
@@ -1186,11 +1386,22 @@ impl<'m> Walker<'m> {
                 })
             }
 
-            SemTerminator::ActorCall { .. } => {
-                return Err(EmitError::new(
-                    "an actor operation reached the sequential package walker",
-                ))
-            }
+            SemTerminator::ActorCall {
+                operation,
+                args,
+                result,
+                normal,
+                unwind,
+                ..
+            } => serde_json::json!({
+                "op": "actor.call",
+                "operation": actor_operation(operation),
+                "args": boundaries(args),
+                "result": call_result(result),
+                "result_shape": self.result_shape(result),
+                "normal": encode_edge(normal),
+                "unwind": encode_unwind(unwind),
+            }),
             SemTerminator::WireCodec { .. } => {
                 return Err(EmitError::new(
                     "wire codec calls have no sandbox package table",
@@ -1226,6 +1437,7 @@ fn place_decl(place: &hew_sir::PlaceDecl) -> Place {
         shape: None,
         field: None,
         environment: None,
+        initialized: None,
     };
     match &place.origin {
         hew_sir::PlaceOrigin::Local => encoded.origin = "local".to_string(),
@@ -1247,9 +1459,21 @@ fn place_decl(place: &hew_sir::PlaceDecl) -> Place {
             encoded.environment = Some(environment.0);
             encoded.field = Some(*field);
         }
-        hew_sir::PlaceOrigin::ActorState { field, .. } => {
+        hew_sir::PlaceOrigin::ActorState {
+            state,
+            field,
+            initialized,
+            ..
+        } => {
+            // The seat is a field of the state value the turn holds, so the
+            // state's own identity is what makes the place resolvable - the
+            // same fact `capture` carries as `environment`. `initialized` is
+            // false only in the actor's `init` body for a seat init owns: it
+            // holds no value until init's first store.
             encoded.origin = "actor_state".to_string();
+            encoded.environment = Some(state.0);
             encoded.field = Some(*field);
+            encoded.initialized = Some(*initialized);
         }
     }
     encoded
@@ -1352,6 +1576,163 @@ const fn passing_name(passing: hew_sir::SemParamPassing) -> &'static str {
     }
 }
 
+/// One actor or supervisor operation, named by its own variant.
+///
+/// The VM dispatches on this name and its payload; it never infers an
+/// operation from a symbol or from the shape of the arguments.
+fn actor_operation(operation: &hew_sir::ActorOperation) -> serde_json::Value {
+    use hew_sir::ActorOperation as Op;
+    fn protocol(protocol: &hew_sir::ActorCallProtocol) -> serde_json::Value {
+        serde_json::json!({
+            "actor": protocol.actor.0,
+            "message": protocol.message,
+            "policy": send_policy_name(protocol.policy),
+            "deadline_ns": protocol.deadline_ns,
+            "sealed": protocol.sealed,
+        })
+    }
+    match operation {
+        Op::Spawn(actor) => serde_json::json!({ "op": "spawn", "actor": actor.0 }),
+        Op::SelfHandle(actor) => serde_json::json!({ "op": "self_handle", "actor": actor.0 }),
+        Op::Close(actor) => serde_json::json!({ "op": "close", "actor": actor.0 }),
+        Op::AwaitClosed(actor) => serde_json::json!({ "op": "await_closed", "actor": actor.0 }),
+        Op::CallStart(p) => serde_json::json!({ "op": "call_start", "protocol": protocol(p) }),
+        Op::CallTake(p) => serde_json::json!({ "op": "call_take", "protocol": protocol(p) }),
+        Op::Submit { actor, policy, .. } => serde_json::json!({
+            "op": "submit",
+            "actor": actor.0,
+            "policy": send_policy_name(*policy),
+        }),
+        Op::StreamStart { actor, message, .. } => serde_json::json!({
+            "op": "stream_start",
+            "actor": actor.0,
+            "message": message,
+        }),
+        Op::LocalObservation { kind, .. } => serde_json::json!({
+            "op": "local_observation",
+            "kind": observation_name(*kind),
+        }),
+        Op::SupervisorSpawn(supervisor) => {
+            serde_json::json!({ "op": "supervisor_spawn", "supervisor": supervisor.0 })
+        }
+        Op::SupervisorStop(supervisor) => {
+            serde_json::json!({ "op": "supervisor_stop", "supervisor": supervisor.0 })
+        }
+        Op::SupervisorAwaitClosed(supervisor) => {
+            serde_json::json!({ "op": "supervisor_await_closed", "supervisor": supervisor.0 })
+        }
+        Op::SupervisorChild {
+            supervisor,
+            child,
+            owner_is_role,
+        } => serde_json::json!({
+            "op": "supervisor_child",
+            "supervisor": supervisor.0,
+            "child": child,
+            "owner_is_role": owner_is_role,
+        }),
+        Op::SupervisorRoleAwaitClosed {
+            supervisor,
+            closing,
+        } => serde_json::json!({
+            "op": "supervisor_role_await_closed",
+            "supervisor": supervisor.0,
+            "closing": closing,
+        }),
+        Op::SupervisorAwaitRestart {
+            supervisor,
+            child,
+            owner_is_role,
+        } => serde_json::json!({
+            "op": "supervisor_await_restart",
+            "supervisor": supervisor.0,
+            "child": child,
+            "owner_is_role": owner_is_role,
+        }),
+        Op::SupervisorPoolView {
+            supervisor,
+            child,
+            owner_is_role,
+        } => serde_json::json!({
+            "op": "supervisor_pool_view",
+            "supervisor": supervisor.0,
+            "child": child,
+            "owner_is_role": owner_is_role,
+        }),
+    }
+}
+
+/// How a scope's join treats a losing task and a fault.
+const fn join_mode_name(mode: hew_sir::TaskScopeJoinMode) -> &'static str {
+    match mode {
+        hew_sir::TaskScopeJoinMode::Wait => "wait",
+        hew_sir::TaskScopeJoinMode::PropagateFault => "propagate_fault",
+        hew_sir::TaskScopeJoinMode::CancelLosers => "cancel_losers",
+        hew_sir::TaskScopeJoinMode::CancelLosersAfterFault => "cancel_losers_after_fault",
+    }
+}
+
+const fn send_policy_name(policy: hew_types::actor_delivery::SendPolicy) -> &'static str {
+    match policy {
+        hew_types::actor_delivery::SendPolicy::Reject => "reject",
+        hew_types::actor_delivery::SendPolicy::Wait => "wait",
+        hew_types::actor_delivery::SendPolicy::DropNewest => "drop_newest",
+        hew_types::actor_delivery::SendPolicy::ReplaceLatest => "replace_latest",
+    }
+}
+
+const fn observation_name(kind: hew_sir::LocalObservationKind) -> &'static str {
+    match kind {
+        hew_sir::LocalObservationKind::Link => "link",
+        hew_sir::LocalObservationKind::Monitor => "monitor",
+        hew_sir::LocalObservationKind::Unlink => "unlink",
+        hew_sir::LocalObservationKind::Demonitor => "demonitor",
+    }
+}
+
+const fn overflow_name(overflow: hew_sir::SemActorOverflow) -> &'static str {
+    match overflow {
+        hew_sir::SemActorOverflow::Block => "block",
+        hew_sir::SemActorOverflow::DropNew => "drop_new",
+        hew_sir::SemActorOverflow::DropOld => "drop_old",
+        hew_sir::SemActorOverflow::Fail => "fail",
+        hew_sir::SemActorOverflow::Coalesce => "coalesce",
+    }
+}
+
+const fn coalesce_fallback_name(fallback: hew_sir::SemCoalesceFallback) -> &'static str {
+    match fallback {
+        hew_sir::SemCoalesceFallback::DropNew => "drop_new",
+        hew_sir::SemCoalesceFallback::DropOld => "drop_old",
+        hew_sir::SemCoalesceFallback::Fail => "fail",
+    }
+}
+
+const fn coalesce_key_name(kind: hew_sir::SemCoalesceKeyKind) -> &'static str {
+    match kind {
+        hew_sir::SemCoalesceKeyKind::Integer => "integer",
+        hew_sir::SemCoalesceKeyKind::Boolean => "boolean",
+        hew_sir::SemCoalesceKeyKind::String => "string",
+    }
+}
+
+const fn strategy_name(strategy: hew_sir::SemRestartStrategy) -> &'static str {
+    match strategy {
+        hew_sir::SemRestartStrategy::OneForOne => "one_for_one",
+        hew_sir::SemRestartStrategy::OneForAll => "one_for_all",
+        hew_sir::SemRestartStrategy::RestForOne => "rest_for_one",
+        hew_sir::SemRestartStrategy::SimpleOneForOne => "simple_one_for_one",
+    }
+}
+
+const fn restart_name(policy: hew_sir::SemRestartPolicy) -> &'static str {
+    match policy {
+        hew_sir::SemRestartPolicy::Permanent => "permanent",
+        hew_sir::SemRestartPolicy::Transient => "transient",
+        hew_sir::SemRestartPolicy::Temporary => "temporary",
+    }
+}
+
 const fn capability_name(capability: hew_types::ValueCapability) -> &'static str {
     match capability {
         hew_types::ValueCapability::Hash => "Hash",
@@ -1373,9 +1754,10 @@ const fn trap_name(kind: TrapKind) -> &'static str {
     }
 }
 
-fn suspend_shape(kind: &SuspendKind) -> Result<(&'static str, serde_json::Value), EmitError> {
+/// Every suspension kind the compiler can produce, named with its payload.
+fn suspend_shape(kind: &SuspendKind) -> (&'static str, serde_json::Value) {
     match kind {
-        SuspendKind::ValueClose { place, selection } => Ok((
+        SuspendKind::ValueClose { place, selection } => (
             "ValueClose",
             serde_json::json!({
                 "place": place.map(|place| place.0),
@@ -1384,14 +1766,55 @@ fn suspend_shape(kind: &SuspendKind) -> Result<(&'static str, serde_json::Value)
                     hew_sir::ValueCloseSelection::VectorElement => "vector_element",
                 },
             }),
-        )),
-        SuspendKind::Sleep => Ok(("Sleep", serde_json::Value::Null)),
-        SuspendKind::NativeIo { operation } => Ok((
+        ),
+        SuspendKind::Sleep => ("Sleep", serde_json::Value::Null),
+        SuspendKind::SleepUntil => ("SleepUntil", serde_json::Value::Null),
+        SuspendKind::NativeIo { operation } => (
             "NativeIo",
             serde_json::json!({ "operation": format!("{operation:?}") }),
-        )),
-        _ => Err(EmitError::new(
-            "a scheduler suspension reached the sequential package walker",
-        )),
+        ),
+        SuspendKind::Ask {
+            actor,
+            message,
+            policy,
+            deadline_ns,
+            sealed,
+        } => (
+            "Ask",
+            serde_json::json!({
+                "actor": actor.0,
+                "message": message,
+                "policy": send_policy_name(*policy),
+                "deadline_ns": deadline_ns,
+                "sealed": sealed,
+            }),
+        ),
+        SuspendKind::Await => ("Await", serde_json::Value::Null),
+        SuspendKind::Join { scope, mode } => (
+            "Join",
+            serde_json::json!({ "scope": scope.0, "mode": join_mode_name(*mode) }),
+        ),
+        SuspendKind::ActorSend => ("ActorSend", serde_json::Value::Null),
+        SuspendKind::RestartWait => ("RestartWait", serde_json::Value::Null),
+        SuspendKind::RemoteAsk => ("RemoteAsk", serde_json::Value::Null),
+        SuspendKind::Read => ("Read", serde_json::Value::Null),
+        SuspendKind::Accept => ("Accept", serde_json::Value::Null),
+        SuspendKind::StreamSend { park } => ("StreamSend", serde_json::json!({ "park": park })),
+        SuspendKind::CallClosure => ("CallClosure", serde_json::Value::Null),
+        SuspendKind::Select { has_timeout, order } => (
+            "Select",
+            serde_json::json!({
+                "has_timeout": has_timeout,
+                "order": match order {
+                    hew_sir::TaskSelectionOrder::Source => "source",
+                    hew_sir::TaskSelectionOrder::Completion => "completion",
+                },
+            }),
+        ),
+        SuspendKind::Timeout => ("Timeout", serde_json::Value::Null),
+        SuspendKind::ScopeDeadline => ("ScopeDeadline", serde_json::Value::Null),
+        SuspendKind::Yield => ("Yield", serde_json::Value::Null),
+        SuspendKind::GeneratorNext => ("GeneratorNext", serde_json::Value::Null),
+        SuspendKind::StreamNext { park } => ("StreamNext", serde_json::json!({ "park": park })),
     }
 }

@@ -320,6 +320,19 @@ const MAP_SHIMS: Record<string, RuntimeShim | undefined> = {
     target.entries.set(comparable(key), { key, value: arg(args, 2) });
     return target;
   },
+  Get: (host, args, shape) => {
+    if (!shape) {
+      throw new TypeError(
+        "Map::Get names no result shape to build its Option against",
+      );
+    }
+    const entry = map(args, 0).entries.get(comparable(arg(args, 1)));
+    return entry
+      ? host.enumValue(shape, "Some", [cloneValue(entry.value)])
+      : host.enumValue(shape, "None", []);
+  },
+  ContainsKey: (_host, args) =>
+    bool(map(args, 0).entries.has(comparable(arg(args, 1)))),
 };
 
 // ── externs ─────────────────────────────────────────────────────────────────

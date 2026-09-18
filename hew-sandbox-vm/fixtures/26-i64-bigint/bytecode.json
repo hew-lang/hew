@@ -1,279 +1,331 @@
 {
-  "capabilities": [
-    {
-      "disposition": "allowed",
-      "id": "core.stdout",
-      "reason": "page stdout shim",
-      "required_by": [
-        "sym:core.stdout.println"
-      ]
-    }
-  ],
-  "compiler_version": "handcrafted-pending-match-trap-parser-emitter",
+  "aggregates": [],
+  "bytes": [],
+  "closures": [],
+  "compiler_version": "hew-sandbox-wasm-0.6.0-rc4",
+  "entry": {
+    "exit": "unit",
+    "function": 0
+  },
+  "externs": [],
   "functions": [
     {
       "blocks": [
         {
-          "id": "block:main.entry",
-          "instructions": [
+          "id": 0,
+          "ops": [
             {
-              "args": [
-                {
-                  "kind": "literal",
-                  "value": "9007199254740993"
-                }
-              ],
-              "dst": "local:main.big",
-              "op": "const.i64",
-              "span": null
+              "dst": 0,
+              "op": "const.int",
+              "span": {
+                "end": 29,
+                "start": 29
+              },
+              "ty": "i64",
+              "value": "9007199254740993"
             },
             {
-              "args": [
-                {
-                  "kind": "literal",
-                  "value": 1
-                }
-              ],
-              "dst": "local:main.one",
-              "op": "const.i64",
-              "span": null
-            },
-            {
-              "args": [
-                {
-                  "kind": "local",
-                  "value": "local:main.big"
-                },
-                {
-                  "kind": "local",
-                  "value": "local:main.one"
-                }
-              ],
-              "dst": "local:main.sum",
-              "op": "i64.checked_add",
-              "span": null
-            },
-            {
-              "args": [
-                {
-                  "kind": "literal",
-                  "value": "9007199254740994"
-                }
-              ],
-              "dst": "local:main.expected",
-              "op": "const.i64",
-              "span": null
-            },
-            {
-              "args": [
-                {
-                  "kind": "local",
-                  "value": "local:main.sum"
-                },
-                {
-                  "kind": "local",
-                  "value": "local:main.expected"
-                }
-              ],
-              "dst": "local:main.ok",
-              "op": "cmp.eq",
-              "span": null
+              "dst": 1,
+              "op": "const.int",
+              "span": {
+                "end": 63,
+                "start": 63
+              },
+              "ty": "i64",
+              "value": "1"
             }
           ],
           "params": [],
-          "span": null,
-          "terminator": {
-            "args": [],
-            "condition": {
-              "kind": "local",
-              "value": "local:main.ok"
+          "term": {
+            "binary_op": "Add",
+            "failures": [
+              {
+                "edge": {
+                  "args": [],
+                  "to": 2
+                },
+                "trap": "integer_overflow"
+              }
+            ],
+            "lhs": 0,
+            "normal": {
+              "args": [
+                2
+              ],
+              "to": 1
             },
-            "else_target": "block:main.failed",
-            "op": "br_if",
-            "span": null,
-            "target": "block:main.matched"
+            "op": "checked.binary",
+            "result": {
+              "own": "none",
+              "value": 2
+            },
+            "rhs": 1,
+            "span": {
+              "end": 63,
+              "start": 63
+            },
+            "ty": "i64"
           }
         },
         {
-          "id": "block:main.matched",
-          "instructions": [
+          "id": 1,
+          "ops": [],
+          "params": [
             {
-              "args": [
-                {
-                  "kind": "symbol",
-                  "value": "sym:core.stdout.println"
-                },
-                {
-                  "kind": "local",
-                  "value": "local:main.sum"
-                }
-              ],
-              "dst": null,
-              "op": "call.stdlib",
-              "span": null
+              "own": "none",
+              "value": 3
+            }
+          ],
+          "term": {
+            "args": [
+              {
+                "decision": "copy",
+                "value": 3
+              }
+            ],
+            "family": 0,
+            "normal": {
+              "args": [],
+              "to": 5
+            },
+            "op": "runtime.call",
+            "result": null,
+            "result_shape": null,
+            "span": {
+              "end": 70,
+              "start": 70
+            },
+            "unwind": null
+          }
+        },
+        {
+          "id": 2,
+          "ops": [],
+          "params": [],
+          "term": {
+            "cleanup": {
+              "args": [],
+              "to": 3
+            },
+            "op": "checked_raise",
+            "span": {
+              "end": 63,
+              "start": 63
+            },
+            "trap": "integer_overflow"
+          }
+        },
+        {
+          "id": 3,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 4
+            },
+            "op": "goto",
+            "span": {
+              "end": 63,
+              "start": 63
+            }
+          }
+        },
+        {
+          "id": 4,
+          "ops": [],
+          "params": [],
+          "term": {
+            "op": "resume_unwind",
+            "span": {
+              "end": 63,
+              "start": 63
+            }
+          }
+        },
+        {
+          "id": 5,
+          "ops": [
+            {
+              "dst": 4,
+              "op": "const.int",
+              "span": {
+                "end": 94,
+                "start": 94
+              },
+              "ty": "i64",
+              "value": "9007199254740994"
             },
             {
-              "args": [
-                {
-                  "kind": "literal",
-                  "value": "matched"
-                }
-              ],
-              "dst": "local:main.matched",
-              "op": "const.string",
-              "span": null
-            },
-            {
-              "args": [
-                {
-                  "kind": "symbol",
-                  "value": "sym:core.stdout.println"
-                },
-                {
-                  "kind": "local",
-                  "value": "local:main.matched"
-                }
-              ],
-              "dst": null,
-              "op": "call.stdlib",
-              "span": null
+              "binary_op": "Equal",
+              "dst": 5,
+              "lhs": 3,
+              "op": "binary",
+              "rhs": 4,
+              "span": {
+                "end": 89,
+                "start": 89
+              },
+              "ty": "i64"
             }
           ],
           "params": [],
-          "span": null,
-          "terminator": {
-            "args": [],
+          "term": {
+            "condition": 5,
+            "else": {
+              "args": [],
+              "to": 7
+            },
+            "op": "branch",
+            "span": {
+              "end": 94,
+              "start": 94
+            },
+            "then": {
+              "args": [],
+              "to": 6
+            }
+          }
+        },
+        {
+          "id": 6,
+          "ops": [
+            {
+              "dst": 6,
+              "op": "const.str",
+              "span": {
+                "end": 129,
+                "start": 129
+              },
+              "str": 0
+            }
+          ],
+          "params": [],
+          "term": {
+            "args": [
+              {
+                "decision": "borrow",
+                "value": 6
+              }
+            ],
+            "family": 1,
+            "normal": {
+              "args": [],
+              "to": 8
+            },
+            "op": "runtime.call",
+            "result": null,
+            "result_shape": null,
+            "span": {
+              "end": 129,
+              "start": 129
+            },
+            "unwind": null
+          }
+        },
+        {
+          "id": 7,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 9
+            },
+            "op": "goto",
+            "span": {
+              "end": 129,
+              "start": 129
+            }
+          }
+        },
+        {
+          "id": 8,
+          "ops": [
+            {
+              "dst": null,
+              "op": "destroy_value",
+              "span": null,
+              "value": 6
+            }
+          ],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 9
+            },
+            "op": "goto",
+            "span": {
+              "end": 129,
+              "start": 129
+            }
+          }
+        },
+        {
+          "id": 9,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 10
+            },
+            "op": "goto",
+            "span": {
+              "end": 129,
+              "start": 129
+            }
+          }
+        },
+        {
+          "id": 10,
+          "ops": [],
+          "params": [],
+          "term": {
             "op": "return",
-            "span": null
-          }
-        },
-        {
-          "id": "block:main.failed",
-          "instructions": [],
-          "params": [],
-          "span": null,
-          "terminator": {
-            "args": [],
-            "op": "trap",
-            "span": null,
-            "trap_kind": "invalid_block"
+            "span": {
+              "end": 129,
+              "start": 129
+            },
+            "value": null
           }
         }
       ],
-      "id": "fn:main",
-      "locals": [
-        {
-          "id": "local:main.big",
-          "mutable": false,
-          "name": null,
-          "span": null,
-          "type": "type:i64"
-        },
-        {
-          "id": "local:main.one",
-          "mutable": false,
-          "name": null,
-          "span": null,
-          "type": "type:i64"
-        },
-        {
-          "id": "local:main.sum",
-          "mutable": false,
-          "name": null,
-          "span": null,
-          "type": "type:i64"
-        },
-        {
-          "id": "local:main.expected",
-          "mutable": false,
-          "name": null,
-          "span": null,
-          "type": "type:i64"
-        },
-        {
-          "id": "local:main.ok",
-          "mutable": false,
-          "name": null,
-          "span": null,
-          "type": "type:bool"
-        },
-        {
-          "id": "local:main.matched",
-          "mutable": false,
-          "name": null,
-          "span": null,
-          "type": "type:string"
-        }
-      ],
-      "module": "mod:main",
-      "name": "main",
+      "entry": 0,
+      "id": 0,
+      "name": "__hew_fn_main",
       "params": [],
-      "result": "type:unit",
-      "span": null
+      "places": []
     }
   ],
   "hew_version": "0.6.0-rc4",
-  "layouts": {
-    "actors": [],
-    "enums": [],
-    "machines": [],
-    "records": [],
-    "supervisors": [],
-    "types": [
-      {
-        "id": "type:unit",
-        "kind": "unit",
-        "name": "()"
-      },
-      {
-        "id": "type:i64",
-        "kind": "integer",
-        "name": "i64"
-      },
-      {
-        "id": "type:bool",
-        "kind": "bool",
-        "name": "bool"
-      },
-      {
-        "id": "type:string",
-        "kind": "string",
-        "name": "String"
-      }
-    ]
-  },
-  "module_graph": {
-    "entry": "mod:main",
-    "modules": [
-      {
-        "functions": [
-          "fn:main"
-        ],
-        "id": "mod:main",
-        "imports": [],
-        "path": "main.hew",
-        "source_id": "src:main"
-      }
-    ]
-  },
-  "package_id": "pkg:i64-bigint",
-  "profile": "sandbox.educational.v0",
-  "schema_version": "hew.sandbox.bytecode.v0",
-  "source_map": {
-    "sources": [],
-    "spans": []
-  },
-  "stdlib_symbols": [
+  "profile": "sandbox.sandbox-vm-export.v0",
+  "regex_patterns": [],
+  "runtime_families": [
     {
-      "admission": "allowed",
-      "capability": "core.stdout",
-      "id": "sym:core.stdout.println",
-      "module": "core.stdout",
-      "name": "println",
-      "params": [
-        "type:any"
-      ],
-      "result": "type:unit"
+      "detail": {
+        "kind": "I64",
+        "newline": true
+      },
+      "family": "Print",
+      "id": 0
+    },
+    {
+      "detail": {
+        "kind": "Str",
+        "newline": true
+      },
+      "family": "Print",
+      "id": 1
     }
-  ]
+  ],
+  "schema_version": "hew.sandbox.bytecode.v1",
+  "strings": [
+    "matched"
+  ],
+  "suspend_kinds": [],
+  "value_capabilities": [],
+  "variants": [],
+  "vtables": []
 }

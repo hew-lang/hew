@@ -1,531 +1,115 @@
 {
-  "capabilities": [
-    {
-      "disposition": "allowed",
-      "id": "core.stdout",
-      "reason": "stdout is captured by the educational sandbox trace",
-      "required_by": [
-        "sym:core.stdout.println"
-      ]
-    }
-  ],
+  "aggregates": [],
+  "bytes": [],
+  "closures": [],
   "compiler_version": "hew-sandbox-wasm-0.6.0-rc4",
+  "entry": {
+    "exit": "unit",
+    "function": 0
+  },
+  "externs": [],
   "functions": [
     {
       "blocks": [
         {
-          "id": "block:entry",
-          "instructions": [
+          "id": 0,
+          "ops": [
             {
-              "args": [
-                {
-                  "kind": "literal",
-                  "value": "Hello, sandbox!"
-                }
-              ],
-              "dst": "local:main.0",
-              "op": "const.string",
-              "span": "span:24-41"
-            },
-            {
-              "args": [
-                {
-                  "kind": "symbol",
-                  "value": "sym:core.stdout.println"
-                },
-                {
-                  "kind": "local",
-                  "value": "local:main.0"
-                }
-              ],
-              "dst": null,
-              "op": "call.stdlib",
-              "span": "span:16-42"
-            },
-            {
-              "args": [],
-              "dst": "local:main.1",
-              "op": "const.unit",
-              "span": "span:16-42"
-            },
-            {
-              "args": [],
-              "dst": "local:main.2",
-              "op": "const.unit",
-              "span": "span:0-45"
+              "dst": 0,
+              "op": "const.str",
+              "span": {
+                "end": 24,
+                "start": 24
+              },
+              "str": 0
             }
           ],
           "params": [],
-          "span": null,
-          "terminator": {
+          "term": {
             "args": [
               {
-                "kind": "local",
-                "value": "local:main.2"
+                "decision": "borrow",
+                "value": 0
               }
             ],
+            "family": 0,
+            "normal": {
+              "args": [],
+              "to": 1
+            },
+            "op": "runtime.call",
+            "result": null,
+            "result_shape": null,
+            "span": {
+              "end": 24,
+              "start": 24
+            },
+            "unwind": null
+          }
+        },
+        {
+          "id": 1,
+          "ops": [
+            {
+              "dst": null,
+              "op": "destroy_value",
+              "span": null,
+              "value": 0
+            }
+          ],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 2
+            },
+            "op": "goto",
+            "span": {
+              "end": 24,
+              "start": 24
+            }
+          }
+        },
+        {
+          "id": 2,
+          "ops": [],
+          "params": [],
+          "term": {
             "op": "return",
-            "span": "span:0-45"
+            "span": {
+              "end": 24,
+              "start": 24
+            },
+            "value": null
           }
         }
       ],
-      "id": "fn:main",
-      "locals": [
-        {
-          "id": "local:main.0",
-          "mutable": false,
-          "name": null,
-          "span": "span:24-41",
-          "type": "type:string"
-        },
-        {
-          "id": "local:main.1",
-          "mutable": false,
-          "name": null,
-          "span": "span:16-42",
-          "type": "type:unit"
-        },
-        {
-          "id": "local:main.2",
-          "mutable": false,
-          "name": null,
-          "span": "span:0-45",
-          "type": "type:unit"
-        }
-      ],
-      "module": "mod:main",
-      "name": "main",
+      "entry": 0,
+      "id": 0,
+      "name": "__hew_fn_main",
       "params": [],
-      "result": "type:unit",
-      "span": "span:0-45"
+      "places": []
     }
   ],
   "hew_version": "0.6.0-rc4",
-  "layouts": {
-    "actors": [],
-    "enums": [],
-    "machines": [],
-    "records": [],
-    "supervisors": [],
-    "types": [
-      {
-        "id": "type:ActorError",
-        "kind": "enum",
-        "name": "ActorError"
-      },
-      {
-        "id": "type:ActorMailbox",
-        "kind": "record",
-        "name": "ActorMailbox"
-      },
-      {
-        "id": "type:ActorPolicy",
-        "kind": "record",
-        "name": "ActorPolicy"
-      },
-      {
-        "id": "type:ActorRequest",
-        "kind": "record",
-        "name": "ActorRequest"
-      },
-      {
-        "id": "type:ActorRequestAdmission",
-        "kind": "record",
-        "name": "ActorRequestAdmission"
-      },
-      {
-        "id": "type:ActorRequestOwner",
-        "kind": "record",
-        "name": "ActorRequestOwner"
-      },
-      {
-        "id": "type:ChildRef",
-        "kind": "record",
-        "name": "ChildRef"
-      },
-      {
-        "id": "type:Delivery",
-        "kind": "enum",
-        "name": "Delivery"
-      },
-      {
-        "id": "type:DropNewestSend",
-        "kind": "record",
-        "name": "DropNewestSend"
-      },
-      {
-        "id": "type:HashMapIter",
-        "kind": "record",
-        "name": "HashMapIter"
-      },
-      {
-        "id": "type:Location",
-        "kind": "record",
-        "name": "Location"
-      },
-      {
-        "id": "type:Message",
-        "kind": "record",
-        "name": "Message"
-      },
-      {
-        "id": "type:Never",
-        "kind": "enum",
-        "name": "Never"
-      },
-      {
-        "id": "type:NodeConfig",
-        "kind": "record",
-        "name": "NodeConfig"
-      },
-      {
-        "id": "type:NodeId",
-        "kind": "record",
-        "name": "NodeId"
-      },
-      {
-        "id": "type:OnFull",
-        "kind": "enum",
-        "name": "OnFull"
-      },
-      {
-        "id": "type:RejectSend",
-        "kind": "record",
-        "name": "RejectSend"
-      },
-      {
-        "id": "type:RemotePid",
-        "kind": "record",
-        "name": "RemotePid"
-      },
-      {
-        "id": "type:ReplaceLatestSend",
-        "kind": "record",
-        "name": "ReplaceLatestSend"
-      },
-      {
-        "id": "type:ScopeFailure",
-        "kind": "enum",
-        "name": "ScopeFailure"
-      },
-      {
-        "id": "type:SendError",
-        "kind": "enum",
-        "name": "SendError"
-      },
-      {
-        "id": "type:SendFailure",
-        "kind": "record",
-        "name": "SendFailure"
-      },
-      {
-        "id": "type:VecIter",
-        "kind": "record",
-        "name": "VecIter"
-      },
-      {
-        "id": "type:WaitSend",
-        "kind": "record",
-        "name": "WaitSend"
-      },
-      {
-        "id": "type:bool",
-        "kind": "bool",
-        "name": "bool"
-      },
-      {
-        "id": "type:char",
-        "kind": "string",
-        "name": "char"
-      },
-      {
-        "id": "type:duration",
-        "kind": "integer",
-        "name": "duration"
-      },
-      {
-        "id": "type:f64",
-        "kind": "float",
-        "name": "f64"
-      },
-      {
-        "id": "type:i64",
-        "kind": "integer",
-        "name": "i64"
-      },
-      {
-        "id": "type:never",
-        "kind": "never",
-        "name": "never"
-      },
-      {
-        "id": "type:regex",
-        "kind": "regex",
-        "name": "regex"
-      },
-      {
-        "id": "type:reply",
-        "kind": "opaque",
-        "name": "ReplyToken"
-      },
-      {
-        "id": "type:std.builtins.ActorError",
-        "kind": "enum",
-        "name": "std.builtins.ActorError"
-      },
-      {
-        "id": "type:std.builtins.ActorMailbox",
-        "kind": "record",
-        "name": "std.builtins.ActorMailbox"
-      },
-      {
-        "id": "type:std.builtins.ActorPolicy",
-        "kind": "record",
-        "name": "std.builtins.ActorPolicy"
-      },
-      {
-        "id": "type:std.builtins.ActorRequest",
-        "kind": "record",
-        "name": "std.builtins.ActorRequest"
-      },
-      {
-        "id": "type:std.builtins.ActorRequestAdmission",
-        "kind": "record",
-        "name": "std.builtins.ActorRequestAdmission"
-      },
-      {
-        "id": "type:std.builtins.ActorRequestOwner",
-        "kind": "record",
-        "name": "std.builtins.ActorRequestOwner"
-      },
-      {
-        "id": "type:std.builtins.ChildRef",
-        "kind": "record",
-        "name": "std.builtins.ChildRef"
-      },
-      {
-        "id": "type:std.builtins.Delivery",
-        "kind": "enum",
-        "name": "std.builtins.Delivery"
-      },
-      {
-        "id": "type:std.builtins.DropNewestSend",
-        "kind": "record",
-        "name": "std.builtins.DropNewestSend"
-      },
-      {
-        "id": "type:std.builtins.HashMapIter",
-        "kind": "record",
-        "name": "std.builtins.HashMapIter"
-      },
-      {
-        "id": "type:std.builtins.LinkError",
-        "kind": "enum",
-        "name": "std.builtins.LinkError"
-      },
-      {
-        "id": "type:std.builtins.Location",
-        "kind": "record",
-        "name": "std.builtins.Location"
-      },
-      {
-        "id": "type:std.builtins.LookupError",
-        "kind": "enum",
-        "name": "std.builtins.LookupError"
-      },
-      {
-        "id": "type:std.builtins.Message",
-        "kind": "record",
-        "name": "std.builtins.Message"
-      },
-      {
-        "id": "type:std.builtins.Never",
-        "kind": "enum",
-        "name": "std.builtins.Never"
-      },
-      {
-        "id": "type:std.builtins.NodeConfig",
-        "kind": "record",
-        "name": "std.builtins.NodeConfig"
-      },
-      {
-        "id": "type:std.builtins.NodeError",
-        "kind": "enum",
-        "name": "std.builtins.NodeError"
-      },
-      {
-        "id": "type:std.builtins.NodeId",
-        "kind": "record",
-        "name": "std.builtins.NodeId"
-      },
-      {
-        "id": "type:std.builtins.OnFull",
-        "kind": "enum",
-        "name": "std.builtins.OnFull"
-      },
-      {
-        "id": "type:std.builtins.RejectSend",
-        "kind": "record",
-        "name": "std.builtins.RejectSend"
-      },
-      {
-        "id": "type:std.builtins.RemotePid",
-        "kind": "record",
-        "name": "std.builtins.RemotePid"
-      },
-      {
-        "id": "type:std.builtins.ReplaceLatestSend",
-        "kind": "record",
-        "name": "std.builtins.ReplaceLatestSend"
-      },
-      {
-        "id": "type:std.builtins.ScopeFailure",
-        "kind": "enum",
-        "name": "std.builtins.ScopeFailure"
-      },
-      {
-        "id": "type:std.builtins.SendError",
-        "kind": "enum",
-        "name": "std.builtins.SendError"
-      },
-      {
-        "id": "type:std.builtins.SendFailure",
-        "kind": "record",
-        "name": "std.builtins.SendFailure"
-      },
-      {
-        "id": "type:std.builtins.TimeoutError",
-        "kind": "enum",
-        "name": "std.builtins.TimeoutError"
-      },
-      {
-        "id": "type:std.builtins.VecIter",
-        "kind": "record",
-        "name": "std.builtins.VecIter"
-      },
-      {
-        "id": "type:std.builtins.WaitSend",
-        "kind": "record",
-        "name": "std.builtins.WaitSend"
-      },
-      {
-        "id": "type:std.failure.CrashAction",
-        "kind": "enum",
-        "name": "std.failure.CrashAction"
-      },
-      {
-        "id": "type:std.failure.CrashInfo",
-        "kind": "record",
-        "name": "std.failure.CrashInfo"
-      },
-      {
-        "id": "type:std.failure.CrashKind",
-        "kind": "enum",
-        "name": "std.failure.CrashKind"
-      },
-      {
-        "id": "type:std.failure.CrashNotification",
-        "kind": "record",
-        "name": "std.failure.CrashNotification"
-      },
-      {
-        "id": "type:string",
-        "kind": "string",
-        "name": "string"
-      },
-      {
-        "id": "type:u64",
-        "kind": "integer",
-        "name": "u64"
-      },
-      {
-        "id": "type:unit",
-        "kind": "unit",
-        "name": "unit"
-      }
-    ]
-  },
-  "module_graph": {
-    "entry": "mod:main",
-    "modules": [
-      {
-        "functions": [
-          "fn:main"
-        ],
-        "id": "mod:main",
-        "imports": [],
-        "path": "main",
-        "source_id": "src:main"
-      }
-    ]
-  },
-  "package_id": "pkg:d85cb8167eac3319",
   "profile": "sandbox.sandbox-vm-export.v0",
-  "schema_version": "hew.sandbox.bytecode.v0",
-  "source_map": {
-    "sources": [
-      {
-        "content_sha256": "477ccc20b20004b89e5344db71a40ac9cddf2cdcf5b4c399529966ba435119b7",
-        "id": "src:main",
-        "path": "main.hew"
-      }
-    ],
-    "spans": [
-      {
-        "end": {
-          "byte_offset": 45,
-          "column": 2,
-          "line": 3
-        },
-        "id": "span:0-45",
-        "source_id": "src:main",
-        "start": {
-          "byte_offset": 0,
-          "column": 1,
-          "line": 1
-        }
-      },
-      {
-        "end": {
-          "byte_offset": 42,
-          "column": 31,
-          "line": 2
-        },
-        "id": "span:16-42",
-        "source_id": "src:main",
-        "start": {
-          "byte_offset": 16,
-          "column": 5,
-          "line": 2
-        }
-      },
-      {
-        "end": {
-          "byte_offset": 41,
-          "column": 30,
-          "line": 2
-        },
-        "id": "span:24-41",
-        "source_id": "src:main",
-        "start": {
-          "byte_offset": 24,
-          "column": 13,
-          "line": 2
-        }
-      }
-    ]
-  },
-  "stdlib_symbols": [
+  "regex_patterns": [],
+  "runtime_families": [
     {
-      "admission": "allowed",
-      "capability": "core.stdout",
-      "id": "sym:core.stdout.println",
-      "module": "core.stdout",
-      "name": "println",
-      "params": [
-        "type:string"
-      ],
-      "result": "type:unit"
+      "detail": {
+        "kind": "Str",
+        "newline": true
+      },
+      "family": "Print",
+      "id": 0
     }
-  ]
+  ],
+  "schema_version": "hew.sandbox.bytecode.v1",
+  "strings": [
+    "Hello, sandbox!"
+  ],
+  "suspend_kinds": [],
+  "value_capabilities": [],
+  "variants": [],
+  "vtables": []
 }

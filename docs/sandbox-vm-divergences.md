@@ -1,16 +1,15 @@
 # Sandbox VM divergences
 
-> Native cutover note: this is a target-capability reference, not current
-> native/sandbox parity evidence. The native actor-call and ownership changes
-> still need sandbox integration. Source syntax follows the
-> [language guide](hew-language-guide.md); older runtime dispositions below
-> do not authorize retired source forms.
+> Source syntax follows the [language guide](hew-language-guide.md); older
+> runtime dispositions below do not authorize retired source forms.
 
 
 The sandbox VM is deterministic by design. It admits programs whose observable behavior can be reproduced in a browser-hosted runtime and rejects native-only APIs that require host operating-system authority. This document is the public catalog for accepted runtime divergences and out-of-scope native surfaces.
 
 ## Contents
 
+- [One lowering, two engines](#one-lowering-two-engines)
+- [The standard library travels in the browser package](#the-standard-library-travels-in-the-browser-package)
 - [Scheduler determinism vs native preemption](#scheduler-determinism-vs-native-preemption)
 - [Virtual clock vs wall-clock](#virtual-clock-vs-wall-clock)
 - [Seeded PRNG vs host entropy](#seeded-prng-vs-host-entropy)
@@ -27,6 +26,20 @@ The sandbox VM is deterministic by design. It admits programs whose observable b
 - [v0.5 substrate surface admission](#v05-substrate-surface-admission)
 - [Admitted-but-not-yet-runnable constructs](#admitted-but-not-yet-runnable-constructs)
 - [Out-of-scope native surfaces](#out-of-scope-native-surfaces)
+
+## One lowering, two engines
+
+The sandbox VM executes bytecode emitted from the same verified ownership semantics the native compiler uses. The bytecode package is a projection of `hew_sir::SemModule`, so copies, transfers, releases, cleanup edges, checked-arithmetic failures and suspension points are facts the compiler proved and the VM executes, not decisions the VM makes for itself. There is no second lowering of the source and no separate set of semantics for the browser. What the VM adds is the execution model below: determinism, a virtual clock and a page-hosted environment.
+
+Source spans in a sandbox trace are carets rather than extents. Semantic lowering records one source byte per operation site, so a trace names where an operation began and not how wide its expression was.
+
+## The standard library travels in the browser package
+
+Module resolution reads `.hew` sources through filesystem paths, and the browser has no filesystem, so the shipped standard-library sources travel inside the wasm package and resolution reads them from there. The browser therefore compiles against the same standard library the native compiler does, from the same sources, rather than a browser-specific subset. A module present on disk but missing from the package would compile natively and fail in the browser, so the package's copy is generated from the shipped tree and pinned against it.
+
+What a standard-library module can then *do* in the sandbox is a separate question, answered by the capability entries below: the sources resolve, and a function reaching a native-only authority is still refused.
+
+One module is refused in the browser for a reason that is not a capability. A compiler intrinsic may only be declared by a module the compiler can prove is the shipped source, and that proof is the file's canonical path. The browser has no paths to canonicalize, so `std.math` — whose functions are `#[intrinsic]` declarations — compiles natively and is refused in the browser build, although the VM implements every one of its intrinsics and matches native on all of them. Closing this means giving compiled-in sources a provenance of their own, which is a question about who may declare an intrinsic rather than about what the sandbox can execute.
 
 ## Scheduler determinism vs native preemption
 

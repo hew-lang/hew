@@ -180,17 +180,37 @@ export type RuntimeStatus =
   | "trap";
 
 export interface RuntimeFailure {
-  kind: "panic" | "trap" | "budget_exhausted" | "unsupported" | "internal_error";
+  kind:
+    | "panic"
+    | "trap"
+    | "budget_exhausted"
+    | "unsupported"
+    | "internal_error";
   message: string;
   span: TraceSpan | null;
   trap_kind: TrapKind | null;
   unsupported?: UnsupportedDiagnostic;
 }
 
+/// A load-time admission refusal. `capability` names the runtime family or
+/// extern symbol the VM has no shim for.
+export interface SandboxRejection {
+  code: string;
+  capability: string | null;
+  message: string;
+  span: TraceSpan | null;
+}
+
 export interface UnsupportedDiagnostic {
-  kind: "Unsupported::SANDBOX_OUT_OF_SCOPE" | "Unsupported::M7_DEFERRED" | "Unsupported::NATIVE_ONLY";
+  kind:
+    | "Unsupported::SANDBOX_OUT_OF_SCOPE"
+    | "Unsupported::M7_DEFERRED"
+    | "Unsupported::NATIVE_ONLY";
   symbol: string;
-  status: "unsupported_out_of_scope" | "unsupported_m7_deferred_to_post_v05" | "unsupported_native_only";
+  status:
+    | "unsupported_out_of_scope"
+    | "unsupported_m7_deferred_to_post_v05"
+    | "unsupported_native_only";
   reason: string;
 }
 
@@ -215,6 +235,7 @@ export interface TraceEvent {
   message?: string;
   text?: string;
   failure?: RuntimeFailure;
+  rejection?: SandboxRejection;
   replay_input?: { kind: string; data: JsonValue };
   id_kind?: "actor" | "channel" | "task" | "supervisor" | "machine";
   id?: string;
@@ -278,7 +299,7 @@ export interface SandboxTrace {
       machines: string[];
     };
     diagnostics: unknown[];
-    sandbox_rejections: unknown[];
+    sandbox_rejections: SandboxRejection[];
     runtime_failures: RuntimeFailure[];
     globals: Array<{ name: string; type: string; value: JsonValue }>;
   };

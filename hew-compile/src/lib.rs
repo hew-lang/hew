@@ -165,14 +165,29 @@ impl SessionTarget {
         }
     }
 
+    /// The browser sandbox VM.
+    ///
+    /// The VM interprets verified semantics with its own deterministic
+    /// scheduler and has no machine layout at all, so this is not a codegen
+    /// target and carries no triple. It is pinned to a 64-bit architecture
+    /// because `isize` and `usize` are 64-bit in the VM, matching the native
+    /// execution the parity oracle compares against, and pinned to one exact
+    /// architecture so a browser result does not vary with the host that built
+    /// the wasm package.
     #[must_use]
-    pub fn wasm32() -> Self {
+    pub fn browser() -> Self {
         Self {
-            // WHY: the browser sandbox supports actors and machines even
-            // though the wasm codegen target rejects them. WHEN: the browser
-            // executes the same wasm substrate as native builds. REAL FIX:
-            // use TargetArch::Wasm32 here and remove this analysis-only split.
             hir_arch: hew_hir::TargetArch::X86_64,
+            pointer_width: hew_mir::PointerWidth::Bits64,
+            codegen_triple: None,
+        }
+    }
+
+    /// The `wasm32-wasi` codegen target.
+    #[must_use]
+    pub fn wasi() -> Self {
+        Self {
+            hir_arch: hew_hir::TargetArch::Wasm32,
             pointer_width: hew_mir::PointerWidth::Bits32,
             codegen_triple: None,
         }
@@ -3488,7 +3503,18 @@ struct LockedEntry {
 fn load_optional_toml<T: DeserializeOwned>(path: &Path) -> Result<Option<T>, FrontendFailure> {
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        // An optional project file is absent both when the directory does not
+        // hold one and when the host has no filesystem to hold it: the browser
+        // compiles a buffer with no project behind it, and wasm32 reports that
+        // as `Unsupported` rather than `NotFound`.
+        Err(err)
+            if matches!(
+                err.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::Unsupported
+            ) =>
+        {
+            return Ok(None)
+        }
         Err(err) => {
             return Err(FrontendFailure::message_only(format!(
                 "Error: cannot read {}: {err}",

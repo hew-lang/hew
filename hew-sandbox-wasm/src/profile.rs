@@ -81,6 +81,44 @@ pub fn canonical_profile(profile: Option<&str>) -> Result<String, Diagnostic> {
     }
 }
 
+/// The module-qualified functions the sandbox admits.
+///
+/// `std::io` is the page's standard streams, `std::random` is the VM's seeded
+/// generator and `std::math` is pure computation, so their imports are
+/// admitted and each function is named here. `random.crypto_bytes` and
+/// `random.crypto_u64` are deliberately absent: they read host entropy the
+/// browser sandbox has no authority for.
+fn module_function_is_admitted(module: &str, function: &str) -> bool {
+    matches!(
+        (module, function),
+        ("regex", "new" | "is_match" | "find" | "replace")
+            | ("io", "read_line")
+            | ("random", "seed" | "randint")
+            | (
+                "math",
+                "pi" | "e"
+                    | "abs"
+                    | "min"
+                    | "max"
+                    | "clamp"
+                    | "sign"
+                    | "sqrt"
+                    | "pow"
+                    | "floor"
+                    | "ceil"
+                    | "round"
+                    | "exp"
+                    | "log"
+                    | "sin"
+                    | "cos"
+                    | "tan"
+                    | "asin"
+                    | "acos"
+                    | "atan"
+            )
+    )
+}
+
 pub fn check_program(
     program: &Program,
     type_output: &hew_types::TypeCheckOutput,
@@ -104,6 +142,8 @@ struct ProfileChecker<'a> {
     actors: BTreeSet<String>,
     /// Receive-function names across all actors (admits `await ref.method(...)` asks).
     actor_methods: BTreeSet<String>,
+    /// Methods this program declares on a trait or in an impl block.
+    declared_methods: BTreeSet<String>,
     /// Machine type names declared in the program (admits `.step`/`.state_name`).
     machines: BTreeSet<String>,
     type_output: &'a hew_types::TypeCheckOutput,
@@ -122,6 +162,7 @@ impl<'a> ProfileChecker<'a> {
             enum_variants: BTreeSet::new(),
             actors: BTreeSet::new(),
             actor_methods: BTreeSet::new(),
+            declared_methods: BTreeSet::new(),
             machines: BTreeSet::new(),
             type_output,
             in_receive_handler: false,
@@ -155,6 +196,22 @@ impl<'a> ProfileChecker<'a> {
                 }
                 Item::Machine(machine) => {
                     self.machines.insert(machine.name.clone());
+                }
+                // A method this program declares on a trait or in an impl
+                // block: the checker resolves its dispatch and the package
+                // carries the slot, so the name is the program's own rather
+                // than a host symbol the sandbox must vouch for.
+                Item::Trait(trait_decl) => {
+                    for item in &trait_decl.items {
+                        if let hew_parser::ast::TraitItem::Method(method) = item {
+                            self.declared_methods.insert(method.name.clone());
+                        }
+                    }
+                }
+                Item::Impl(impl_decl) => {
+                    for method in &impl_decl.methods {
+                        self.declared_methods.insert(method.name.clone());
+                    }
                 }
                 _ => {}
             }
@@ -213,11 +270,16 @@ impl<'a> ProfileChecker<'a> {
                     }
                 }
                 Item::Machine(machine) => self.check_machine(machine, span),
-                Item::Trait(_) | Item::Impl(_) => self.reject(
-                    span.clone(),
-                    "reserved_runtime_feature",
-                    "this declaration requires runtime features that are reserved for a later sandbox VM milestone",
-                ),
+                // A trait's dispatch is resolved by the checker and carried in
+                // the package's own table, so the declaration asks the sandbox
+                // for no authority of its own; its methods are checked through
+                // the impl that supplies them.
+                Item::Impl(impl_decl) => {
+                    for method in &impl_decl.methods {
+                        self.check_return_clause(method.return_type.as_ref());
+                        self.check_block(&method.body);
+                    }
+                }
                 Item::Const(const_decl) => self.check_expr(&const_decl.value),
                 Item::TypeDecl(type_decl) => {
                     for item in &type_decl.body {
@@ -257,7 +319,7 @@ impl<'a> ProfileChecker<'a> {
                     "top-level type aliases are not yet supported by the native engine, so they \
                      are not admitted to sandbox bytecode export",
                 ),
-                Item::Record(_) => {}
+                Item::Record(_) | Item::Trait(_) => {}
             }
         }
     }
@@ -265,13 +327,20 @@ impl<'a> ProfileChecker<'a> {
     fn check_import(&mut self, import: &ImportDecl, span: &std::ops::Range<usize>) {
         let path = import.path.join("::");
         self.imports.insert(path.clone());
-        if path == "std::text::regex" {
+        // `std::io` is the page's standard streams rather than file-backed
+        // I/O, `std::random` is the VM's seeded generator and `std::math` is
+        // pure computation. Each is admitted here and gated per function
+        // below, so a module stays usable without admitting the parts the
+        // sandbox has no authority for.
+        if matches!(
+            path.as_str(),
+            "std::text::regex" | "std::io" | "std::random" | "std::math"
+        ) {
             return;
         }
 
         let rejected_prefixes = [
             ("std::fs", NativeOnlySurface::FileIo),
-            ("std::io", NativeOnlySurface::FileIo),
             ("std::net", NativeOnlySurface::NetworkSockets),
             ("std::process", NativeOnlySurface::OsProcesses),
             ("std::os", NativeOnlySurface::OsEnvironment),
@@ -1000,7 +1069,15 @@ impl<'a> ProfileChecker<'a> {
                     || self.enum_variants.contains(name)
                     || matches!(
                         name.as_str(),
-                        "print" | "println" | "panic" | "Some" | "None" | "Ok" | "Err" | "Vec::new"
+                        "print"
+                            | "println"
+                            | "panic"
+                            | "sleep"
+                            | "Some"
+                            | "None"
+                            | "Ok"
+                            | "Err"
+                            | "Vec::new"
                     )
                 {
                     return;
@@ -1014,13 +1091,7 @@ impl<'a> ProfileChecker<'a> {
             Expr::FieldAccess { object, field } => {
                 if let Expr::Identifier(module) = &object.0 {
                     let symbol = format!("{module}.{field}");
-                    if symbol == "regex.new"
-                        || symbol == "Vec.new"
-                        || matches!(
-                            symbol.as_str(),
-                            "regex.is_match" | "regex.find" | "regex.replace"
-                        )
-                    {
+                    if symbol == "Vec.new" || module_function_is_admitted(module, field) {
                         return;
                     }
                 }
@@ -1143,6 +1214,13 @@ impl<'a> ProfileChecker<'a> {
     }
 
     fn method_is_admitted(&self, receiver: &Spanned<Expr>, method: &str) -> bool {
+        // `module.function(..)` parses as a method call when the module name is
+        // a bare identifier, so both shapes read the one admission list.
+        if let Expr::Identifier(module) = &receiver.0 {
+            if module_function_is_admitted(module, method) {
+                return true;
+            }
+        }
         if let Expr::Identifier(type_name) = &receiver.0 {
             if self.user_types.contains(type_name) && self.enum_variants.contains(method) {
                 return true;
@@ -1168,6 +1246,9 @@ impl<'a> ProfileChecker<'a> {
         // declared actors set.
         // A name-only check without the receiver type would admit spurious method
         // calls on non-actor receivers that happen to share a handler name.
+        if self.declared_methods.contains(method) {
+            return true;
+        }
         if self.actor_methods.contains(method) {
             if let Some(receiver_ty) = self.ty_for_expr(receiver) {
                 if self.ty_is_actor_handle(&receiver_ty) {
@@ -1211,6 +1292,12 @@ impl<'a> ProfileChecker<'a> {
                     method,
                     "len" | "push" | "get" | "contains" | "to_string" | "clone"
                 )
+            }
+            // A map's size is the operation the VM carries a shim for. Reads
+            // and removals join as their shims land, so a lesson that reaches
+            // one is refused rather than answered approximately.
+            Ty::Named { name, .. } if name == "Map" || name == "HashMap" => {
+                matches!(method, "len")
             }
             Ty::Named { name, .. }
                 if matches!(name.as_str(), "regex.Pattern" | "std.text.regex.Pattern") =>

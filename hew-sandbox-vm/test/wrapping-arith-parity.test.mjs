@@ -1,157 +1,113 @@
+// Wrapping arithmetic (`&+`, `&-`, `&*`) must truncate to two's complement at
+// the operand's width, matching native LLVM, which wraps silently on overflow.
+// Regression coverage for #2341, where an overflowing wrap produced a
+// mathematically unbounded value instead of the wrapped one.
+//
+// Every expected value here was measured by running the equivalent Hew source
+// through `hew run`. The package is assembled here so the cases run without the
+// wasm bridge; the skeleton is the one the emitter produces for
+// `println(a &+ b)`: two constants, the `binary` op carrying its operand type,
+// then a `Print` of that type's kind.
+
 import assert from "node:assert/strict";
 import test from "node:test";
 import { runBytecode } from "../dist/interpreter/index.js";
 
-// Regression coverage for #2341: the sandbox VM's wrapping arithmetic opcodes
-// (`&+`/`&-`/`&*` -> i64.add/sub/mul) must truncate their result to
-// two's-complement 64 bits, matching native LLVM which wraps silently on
-// overflow. Before the fix these opcodes fed the raw (unbounded) BigInt to
-// `this.i64()`, so an overflowing operation produced a mathematically
-// unbounded value (e.g. `i64::MAX &+ 1` yielded 2^63 instead of `i64::MIN`).
-//
-// These fixtures are handcrafted inline bytecode (same approach as
-// unsupported-gates.test.mjs) rather than compiler output, so they run without
-// the wasm bridge. Each pins one boundary case where wrapping and native
-// arithmetic diverge; ordinary non-overflow wrapping is already covered by the
-// arithmetic parity fixtures.
-
 const I64_MIN = "-9223372036854775808";
 const I64_MAX = "9223372036854775807";
 
-// Build a minimal single-function package: two i64 constants, one wrapping
-// op, then println(result). `lhs`/`rhs` are decimal string literals so the
-// full 64-bit range is expressible (const.i64 accepts string literals for
-// values outside the JS safe-integer range, as in fixture 26-i64-bigint).
-function wrappingOpPackage(op, lhs, rhs) {
+function wrappingPackage(binaryOp, lhs, rhs, ty, printKind) {
   return {
-    schema_version: "hew.sandbox.bytecode.v0",
-    package_id: "pkg:wrapping-arith",
-    hew_version: "0.6.0-rc1",
-    compiler_version: "test",
-    profile: "sandbox.educational.v0",
-    source_map: { sources: [], spans: [] },
-    module_graph: {
-      entry: "mod:main",
-      modules: [{ id: "mod:main", path: "main.hew", source_id: "src:main", imports: [], functions: ["fn:main"] }]
-    },
-    layouts: {
-      types: [
-        { id: "type:unit", kind: "unit", name: "()" },
-        { id: "type:i64", kind: "integer", name: "i64" },
-        { id: "type:string", kind: "string", name: "String" }
-      ],
-      records: [],
-      enums: [],
-      actors: [],
-      supervisors: [],
-      machines: []
-    },
-    stdlib_symbols: [
-      {
-        id: "sym:core.stdout.println",
-        module: "core.stdout",
-        name: "println",
-        params: ["type:i64"],
-        result: "type:unit",
-        capability: "core.stdout",
-        admission: "allowed"
-      }
-    ],
-    capabilities: [
-      {
-        id: "core.stdout",
-        disposition: "allowed",
-        reason: "wrapping-arith parity test stdout",
-        required_by: ["sym:core.stdout.println"]
-      }
-    ],
+    schema_version: "hew.sandbox.bytecode.v1",
+    hew_version: "0.6.0-rc4",
+    compiler_version: "wrapping-arith-parity-test",
+    profile: "sandbox-vm-export",
+    entry: { function: 0, exit: "unit" },
+    strings: [],
+    bytes: [],
+    regex_patterns: [],
+    aggregates: [],
+    variants: [],
+    runtime_families: [{ id: 0, family: "Print", detail: { kind: printKind, newline: true } }],
+    externs: [],
+    suspend_kinds: [],
+    value_capabilities: [],
+    closures: [],
+    vtables: [],
     functions: [
       {
-        id: "fn:main",
-        module: "mod:main",
+        id: 0,
         name: "main",
         params: [],
-        result: "type:unit",
-        locals: [
-          { id: "local:main.lhs", name: null, type: "type:i64", mutable: false, span: null },
-          { id: "local:main.rhs", name: null, type: "type:i64", mutable: false, span: null },
-          { id: "local:main.res", name: null, type: "type:i64", mutable: false, span: null },
-          { id: "local:main.unit", name: null, type: "type:unit", mutable: false, span: null }
-        ],
+        entry: 0,
+        places: [],
         blocks: [
           {
-            id: "block:main.entry",
+            id: 0,
             params: [],
-            instructions: [
-              { op: "const.i64", dst: "local:main.lhs", args: [{ kind: "literal", value: lhs }], span: null },
-              { op: "const.i64", dst: "local:main.rhs", args: [{ kind: "literal", value: rhs }], span: null },
-              {
-                op,
-                dst: "local:main.res",
-                args: [
-                  { kind: "local", value: "local:main.lhs" },
-                  { kind: "local", value: "local:main.rhs" }
-                ],
-                span: null
-              },
-              {
-                op: "call.stdlib",
-                dst: null,
-                args: [
-                  { kind: "symbol", value: "sym:core.stdout.println" },
-                  { kind: "local", value: "local:main.res" }
-                ],
-                span: null
-              },
-              { op: "const.unit", dst: "local:main.unit", args: [], span: null }
+            ops: [
+              { op: "const.int", dst: 0, value: lhs, ty, span: null },
+              { op: "const.int", dst: 1, value: rhs, ty, span: null },
+              { op: "binary", dst: 2, binary_op: binaryOp, lhs: 0, rhs: 1, ty, span: null }
             ],
-            terminator: { op: "return", args: [{ kind: "local", value: "local:main.unit" }], span: null },
-            span: null
-          }
-        ],
-        span: null
+            term: {
+              op: "runtime.call",
+              family: 0,
+              args: [{ value: 2, decision: "borrow" }],
+              result: null,
+              result_shape: null,
+              normal: { to: 1, args: [] },
+              unwind: null,
+              span: null
+            }
+          },
+          { id: 1, params: [], ops: [], term: { op: "return", value: null, span: null } }
+        ]
       }
     ]
   };
 }
 
-function runWrapping(op, lhs, rhs) {
-  const trace = runBytecode(wrappingOpPackage(op, lhs, rhs), {
+function runWrapping(binaryOp, lhs, rhs, ty = "i64", printKind = "I64") {
+  const trace = runBytecode(wrappingPackage(binaryOp, lhs, rhs, ty, printKind), {
     fixtureId: "wrapping-arith",
     traceId: "trace:wrapping-arith",
     replay: { seed: 42, step_budget: 1000, virtual_clock: { epoch_ms: 0, tick_ms: 1, current_ms: 0 }, inputs: [] }
   });
-  assert.equal(
-    trace.result,
-    "ok",
-    `expected ok but got ${trace.result}: ${JSON.stringify(trace.final_state.runtime_failures)}`
-  );
+  assert.equal(trace.result, "ok", JSON.stringify(trace.final_state.runtime_failures));
   assert.deepEqual(trace.final_state.runtime_failures, []);
   return trace.final_state.stdout.join("").trim();
 }
 
-test("i64.add wraps i64::MAX &+ 1 to i64::MIN (two's-complement)", () => {
-  assert.equal(runWrapping("i64.add", I64_MAX, "1"), I64_MIN);
+test("WrappingAdd wraps i64::MAX &+ 1 to i64::MIN", () => {
+  assert.equal(runWrapping("WrappingAdd", I64_MAX, "1"), I64_MIN);
 });
 
-test("i64.sub wraps i64::MIN &- 1 to i64::MAX (two's-complement)", () => {
-  assert.equal(runWrapping("i64.sub", I64_MIN, "1"), I64_MAX);
+test("WrappingSub wraps i64::MIN &- 1 to i64::MAX", () => {
+  assert.equal(runWrapping("WrappingSub", I64_MIN, "1"), I64_MAX);
 });
 
-test("i64.mul wraps i64::MAX &* 2 to -2 (two's-complement)", () => {
-  // i64::MAX * 2 = 2^64 - 2; asIntN(64) -> -2.
-  assert.equal(runWrapping("i64.mul", I64_MAX, "2"), "-2");
+test("WrappingMul wraps i64::MAX &* 2 to -2", () => {
+  // i64::MAX * 2 is 2^64 - 2, which truncates to -2.
+  assert.equal(runWrapping("WrappingMul", I64_MAX, "2"), "-2");
 });
 
-test("i64.mul wraps i64::MIN &* -1 back to i64::MIN (magnitude unrepresentable)", () => {
-  // -(i64::MIN) = 2^63 is unrepresentable; two's-complement leaves i64::MIN.
-  assert.equal(runWrapping("i64.mul", I64_MIN, "-1"), I64_MIN);
+test("WrappingMul wraps i64::MIN &* -1 back to i64::MIN", () => {
+  // -(i64::MIN) is 2^63, unrepresentable, so two's complement leaves i64::MIN.
+  assert.equal(runWrapping("WrappingMul", I64_MIN, "-1"), I64_MIN);
+});
+
+test("wrapping arithmetic truncates at the operand's own width", () => {
+  // The operand type the package records is what wraps, so a narrower type
+  // wraps sooner: 127 &+ 1 leaves i8 at its minimum rather than reaching 128.
+  assert.equal(runWrapping("WrappingAdd", "127", "1", "i8", "I32"), "-128");
+  assert.equal(runWrapping("WrappingAdd", "255", "1", "u8", "U8"), "0");
+  assert.equal(runWrapping("WrappingMul", "2147483647", "2", "i32", "I32"), "-2");
 });
 
 test("non-overflow wrapping arithmetic still matches native", () => {
-  // Negative control: ordinary in-range wrapping ops are unchanged by the
-  // truncation (asIntN(64) is the identity on values already in range).
-  assert.equal(runWrapping("i64.add", "2", "3"), "5");
-  assert.equal(runWrapping("i64.sub", "10", "4"), "6");
-  assert.equal(runWrapping("i64.mul", "-6", "7"), "-42");
+  // Negative controls: in-range wrapping ops are unchanged by the truncation.
+  assert.equal(runWrapping("WrappingAdd", "2", "3"), "5");
+  assert.equal(runWrapping("WrappingSub", "10", "4"), "6");
+  assert.equal(runWrapping("WrappingMul", "-6", "7"), "-42");
 });

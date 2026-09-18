@@ -24,9 +24,19 @@ const m3FixtureDirs = [
 
 const ajv = new Ajv2020({ allErrors: true, strict: true, validateFormats: false });
 const traceSchema = readJson("specs/trace-schema-v0.schema.json");
-const bytecodeSchema = readJson("bytecode/sandbox-bytecode-v0.schema.json");
 const validateTrace = ajv.compile(traceSchema);
-const validateBytecode = ajv.compile(bytecodeSchema);
+// A package declares which schema describes it, so the suite validates each
+// fixture against its own rather than against one the emitter may have left.
+const validateBytecodeBySchema = {
+  "hew.sandbox.bytecode.v0": ajv.compile(readJson("bytecode/sandbox-bytecode-v0.schema.json")),
+  "hew.sandbox.bytecode.v1": ajv.compile(readJson("bytecode/sandbox-bytecode-v1.schema.json"))
+};
+
+function validateBytecodePackage(bytecode, label) {
+  const validate = validateBytecodeBySchema[bytecode.schema_version];
+  assert.ok(validate, `${label} declares an unknown schema ${bytecode.schema_version}`);
+  assert.ok(validate(bytecode), ajv.errorsText(validate.errors));
+}
 
 for (const dir of m3FixtureDirs) {
   test(`M3 conformance: ${dir}`, () => {
@@ -34,7 +44,7 @@ for (const dir of m3FixtureDirs) {
     const expected = readJson(`fixtures/${dir}/expected.trace.json`);
 
     assert.ok(bytecode.functions.length > 0, `${dir} bytecode fixture must not be empty`);
-    assert.ok(validateBytecode(bytecode), ajv.errorsText(validateBytecode.errors));
+    validateBytecodePackage(bytecode, dir);
 
     const actual = runBytecode(bytecode, {
       fixtureId: expected.fixture_id,
@@ -68,19 +78,27 @@ test("M3 fixture subset is explicit and complete", () => {
   }
 });
 
-test("Vec::get returns Option::None instead of trapping out of bounds", () => {
+test("Vec::get returns None rather than trapping when the index is past the end", () => {
   const bytecode = readJson("fixtures/06-vector-basics/bytecode.json");
-  const get = bytecode.functions
+  // The fixture reads index 1, which is in range. Move the read past the end
+  // through the constant that feeds it: `get` answers None, where an indexing
+  // read of the same element would take its out-of-bounds unwind edge.
+  const index = bytecode.functions
     .flatMap((fn) => fn.blocks)
-    .flatMap((block) => block.instructions)
-    .find((instruction) => instruction.op === "vector.get");
-  assert.ok(get, "vector fixture must contain vector.get");
-  get.args[1] = { kind: "literal", value: 99 };
+    .flatMap((block) => block.ops)
+    .find((op) => op.op === "const.int" && op.value === "1");
+  assert.ok(index, "vector fixture must read a constant index");
+  index.value = "99";
 
   const trace = runBytecode(bytecode, {
     fixtureId: "vector-get-none",
     traceId: "trace:vector-get-none",
-    replay: { seed: 6, step_budget: 1000, virtual_clock: { epoch_ms: 0, tick_ms: 1, current_ms: 0 }, inputs: [] }
+    replay: {
+      seed: 6,
+      step_budget: 1000,
+      virtual_clock: { epoch_ms: 0, tick_ms: 1, current_ms: 0 },
+      inputs: []
+    }
   });
 
   assert.equal(trace.result, "ok");
@@ -88,31 +106,27 @@ test("Vec::get returns Option::None instead of trapping out of bounds", () => {
   assert.deepEqual(trace.final_state.runtime_failures, []);
 });
 
-test("published bytecode schema admits vector.index and vector.get but rejects unknown opcodes", () => {
-  const emittedIndexing = structuredClone(readJson("fixtures/06-vector-basics/bytecode.json"));
-  const indexedInstruction = emittedIndexing.functions
+test("the published schema admits the emitted package and rejects an unknown opcode", () => {
+  const emitted = readJson("fixtures/06-vector-basics/bytecode.json");
+  validateBytecodePackage(emitted, "06-vector-basics");
+
+  const unknownOp = structuredClone(emitted);
+  const op = unknownOp.functions
     .flatMap((fn) => fn.blocks)
-    .flatMap((block) => block.instructions)
-    .find((instruction) => instruction.op === "vector.get");
-  assert.ok(indexedInstruction, "vector fixture must contain compiler-shaped vector access");
+    .flatMap((block) => block.ops)
+    .find((entry) => entry.op === "const.int");
+  assert.ok(op, "vector fixture must carry an instruction to corrupt");
+  op.op = "const.not_real";
+  const validate = validateBytecodeBySchema[unknownOp.schema_version];
+  assert.equal(validate(unknownOp), false, "an opcode outside the registry must not validate");
 
-  // The compiler's direct indexing lowering uses the same vector/index operand
-  // shape as this emitted Vec::get fixture, but changes the opcode to the raw,
-  // bounds-trapping `vector.index` contract.
-  indexedInstruction.op = "vector.index";
-  assert.ok(validateBytecode(emittedIndexing), ajv.errorsText(validateBytecode.errors));
-
-  const optionGet = structuredClone(emittedIndexing);
-  optionGet.functions[0].blocks[0].instructions.find(
-    (instruction) => instruction.op === "vector.index"
-  ).op = "vector.get";
-  assert.ok(validateBytecode(optionGet), ajv.errorsText(validateBytecode.errors));
-
-  const unknownOpcode = structuredClone(emittedIndexing);
-  unknownOpcode.functions[0].blocks[0].instructions.find(
-    (instruction) => instruction.op === "vector.index"
-  ).op = "vector.not_real";
-  assert.equal(validateBytecode(unknownOpcode), false);
+  const unknownTerminator = structuredClone(emitted);
+  unknownTerminator.functions[0].blocks[0].term.op = "goto.not_real";
+  assert.equal(
+    validate(unknownTerminator),
+    false,
+    "a terminator outside the registry must not validate"
+  );
 });
 
 function readJson(relativePath) {

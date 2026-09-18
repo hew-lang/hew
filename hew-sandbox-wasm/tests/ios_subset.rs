@@ -4,7 +4,7 @@ use std::process::Output;
 use std::sync::OnceLock;
 
 use assert_cmd::Command;
-use hew_sandbox_wasm::{compile_to_sandbox_bytecode, Diagnostic, SandboxBytecodePackage};
+use hew_sandbox_wasm::{compile_to_sandbox_bytecode, Diagnostic, SandboxPackage};
 use serde::Deserialize;
 
 const SANDBOX_PROFILE: &str = "sandbox-vm-export";
@@ -175,7 +175,6 @@ fn load_cases() -> Vec<IosCase> {
             .map(|fixture| {
                 let expectation = match fixture.id.as_str() {
                     "higher-order-functions" => Expectation::FailClosedProfile("unknown_symbol"),
-                    "import" => Expectation::FailClosedProfile("Unsupported::NATIVE_ONLY"),
                     _ => Expectation::Parity,
                 };
                 IosCase {
@@ -294,7 +293,7 @@ fn run_native(source: &str, id: &str) -> Output {
         .unwrap_or_else(|err| panic!("failed to spawn native `hew run` for {id}: {err}"))
 }
 
-fn run_sandbox(bytecode: &SandboxBytecodePackage, id: &str) -> Output {
+fn run_sandbox(bytecode: &SandboxPackage, id: &str) -> Output {
     let bytecode_json = serde_json::to_string_pretty(bytecode)
         .unwrap_or_else(|err| panic!("failed to serialize bytecode for {id}: {err}"));
     let tempdir = tempfile::tempdir()

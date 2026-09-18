@@ -6,12 +6,18 @@
 mod bytecode;
 mod emit;
 mod profile;
+mod sir_emit;
 
-use bytecode::{Block, Capability, Instruction, Local, Operand, StdlibSymbol, Terminator};
+/// The shipped standard-library sources, as `("std/<relative path>", source)`.
+mod std_sources {
+    include!(concat!(env!("OUT_DIR"), "/std_sources.rs"));
+}
+
 use serde::{Deserialize, Serialize};
 
 pub use bytecode::SandboxBytecodePackage;
 pub use profile::{canonical_profile, DEFAULT_PROFILE_ALIAS, DEFAULT_PROFILE_CANONICAL};
+pub use sir_emit::Package as SandboxBytecodePackageV1;
 
 /// The required native↔sandbox parity-case names — the teeth of the parity
 /// ratchet (see `tests/parity.rs` and `tests/parity_ratchet.rs`).
@@ -150,11 +156,54 @@ pub const REQUIRED_PARITY_TEST_NAMES: &[&str] = &[
     // AST-emitter residuals: array repeat, checker-admitted scalar casts, and
     // Result/Option postfix-try now execute at native parity.
     "trap_residual",
+    // Families the published lessons need and the VM now executes: a map
+    // literal's storage and lookup, the pure `std.math` intrinsics, dynamic
+    // dispatch through a trait object's table, a sleep on the virtual clock,
+    // and a seeded generator whose sequence matches the runtime's own.
+    "map_literal",
+    "math_intrinsics",
+    "trait_objects",
+    "virtual_sleep",
+    "seeded_random",
 ];
 
-const SANDBOX_STDIN_HELPER: &str = "__hew_sandbox_stdin_read_line";
-const SANDBOX_STDIN_SYMBOL: &str = "sym:core.stdin.read_line";
-const SANDBOX_STDIN_CAPABILITY: &str = "core.stdin";
+/// Names the editor buffer in frontend diagnostics and anchors its imports.
+const SANDBOX_BUFFER_LABEL: &str = "playground.hew";
+
+/// The standard library as a document set.
+///
+/// Import resolution builds candidate paths relative to the buffer and reads
+/// them through this set before the filesystem, so the browser resolves the
+/// shipped sources it has no filesystem to read. Natively the files are on
+/// disk and win, so this changes nothing there.
+///
+/// The working-directory spelling is the one recorded, because it is the
+/// candidate both shapes reach: the buffer's own import tries it after its
+/// relative form, and a standard-library module importing a sibling tries it
+/// after a form relative to that module's own directory. Recording both
+/// spellings would make every import ambiguous, since a candidate the
+/// filesystem cannot canonicalize stays the distinct path it was written as.
+#[must_use]
+pub fn embedded_standard_library() -> &'static [(&'static str, &'static str)] {
+    std_sources::STD_SOURCES
+}
+
+/// The paths of [`embedded_standard_library`], as resolution spells them.
+#[must_use]
+pub fn embedded_standard_library_paths() -> Vec<&'static str> {
+    std_sources::STD_SOURCES
+        .iter()
+        .map(|(path, _)| *path)
+        .collect()
+}
+
+fn embedded_standard_library_documents() -> hew_compile::DocumentSet {
+    let mut documents = hew_compile::DocumentSet::new();
+    for (path, source) in std_sources::STD_SOURCES {
+        documents.insert(*path, *source);
+    }
+    documents
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DiagnosticSpan {
@@ -214,10 +263,33 @@ impl Diagnostic {
     }
 }
 
+/// The bytecode package this compilation produced.
+///
+/// Untagged so the `CompileOutput` JSON wrapper keeps its shape: `bytecode` is
+/// an object or `null`, and the VM selects its executor from the package's own
+/// `schema_version`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum SandboxPackage {
+    V1(Box<SandboxBytecodePackageV1>),
+    V0(Box<SandboxBytecodePackage>),
+}
+
+impl SandboxPackage {
+    /// The compiler that produced this package, for fixture provenance.
+    #[must_use]
+    pub fn compiler_version(&self) -> &str {
+        match self {
+            Self::V1(package) => &package.compiler_version,
+            Self::V0(package) => &package.compiler_version,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CompileOutput {
     pub diagnostics: Vec<Diagnostic>,
-    pub bytecode: Option<SandboxBytecodePackage>,
+    pub bytecode: Option<SandboxPackage>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -246,8 +318,17 @@ pub fn compile_to_sandbox_bytecode(
     source: &str,
     profile: Option<&str>,
 ) -> Result<CompileOutput, CompileError> {
-    let rewritten_source = source_with_sandbox_stdin_helper(source);
-    let source_text = rewritten_source.as_deref().unwrap_or(source);
+    // WHY: the AST emitter below still owns actors, supervisors, tasks, select
+    // and pipes; a sequential program is lowered from verified semantics
+    // instead. The split is a structural SIR fact, not a failed attempt at the
+    // walker, so neither path is a fallback for the other. WHEN OBSOLETE: the
+    // actor change lands those constructs in the walker. REAL FIX: the change
+    // after it deletes `emit.rs`, `profile.rs` and everything below this call.
+    match compile_from_semantics(source, profile)? {
+        SemanticOutcome::Compiled(output) => return Ok(output),
+        SemanticOutcome::Concurrency => {}
+    }
+
     let canonical_profile = match canonical_profile(profile) {
         Ok(profile) => profile,
         Err(diagnostic) => {
@@ -258,7 +339,7 @@ pub fn compile_to_sandbox_bytecode(
         }
     };
 
-    let parse_result = hew_parser::parse(source_text);
+    let parse_result = hew_parser::parse(source);
     let mut diagnostics = convert_parse_diagnostics(&parse_result.errors);
     if has_error_diagnostics(&diagnostics) {
         return Ok(CompileOutput {
@@ -289,18 +370,15 @@ pub fn compile_to_sandbox_bytecode(
         });
     }
 
-    let mut bytecode = emit::emit_package(
-        source_text,
+    let bytecode = emit::emit_package(
+        source,
         &canonical_profile,
         &parse_result.program,
         &type_output,
     )?;
-    if rewritten_source.is_some() {
-        install_sandbox_stdin_helper(&mut bytecode);
-    }
     Ok(CompileOutput {
         diagnostics,
-        bytecode: Some(bytecode),
+        bytecode: Some(SandboxPackage::V0(Box::new(bytecode))),
     })
 }
 
@@ -342,80 +420,146 @@ fn has_error_diagnostics(diagnostics: &[Diagnostic]) -> bool {
         .any(|diagnostic| diagnostic.severity == "error")
 }
 
-fn source_with_sandbox_stdin_helper(source: &str) -> Option<String> {
-    if !source.contains("io.read_line()") {
-        return None;
-    }
-    let mut body = String::new();
-    for line in source.lines() {
-        if line.trim() == "import std.io;" {
-            continue;
-        }
-        body.push_str(line);
-        body.push('\n');
-    }
-    let body = body.replace("io.read_line()", &format!("{SANDBOX_STDIN_HELPER}()"));
-    Some(format!(
-        "fn {SANDBOX_STDIN_HELPER}() -> string {{ \"\" }}\n{body}"
-    ))
+/// What the semantic path produced for a source.
+enum SemanticOutcome {
+    /// A finished result: the v1 package, or the diagnostics that stopped it.
+    Compiled(CompileOutput),
+    /// The module reaches actors, supervisors, tasks, select or pipes, which
+    /// the AST emitter still owns.
+    Concurrency,
 }
 
-fn install_sandbox_stdin_helper(bytecode: &mut SandboxBytecodePackage) {
-    if !bytecode
-        .capabilities
-        .iter()
-        .any(|capability| capability.id == SANDBOX_STDIN_CAPABILITY)
-    {
-        bytecode.capabilities.push(Capability {
-            id: SANDBOX_STDIN_CAPABILITY.to_string(),
-            disposition: "allowed".to_string(),
-            reason: "stdin is supplied by the educational sandbox page input buffer".to_string(),
-            required_by: vec![SANDBOX_STDIN_SYMBOL.to_string()],
-        });
-    }
-    if !bytecode
-        .stdlib_symbols
-        .iter()
-        .any(|symbol| symbol.id == SANDBOX_STDIN_SYMBOL)
-    {
-        bytecode.stdlib_symbols.push(StdlibSymbol {
-            id: SANDBOX_STDIN_SYMBOL.to_string(),
-            module: "core.stdin".to_string(),
-            name: "read_line".to_string(),
-            params: Vec::new(),
-            result: "type:string".to_string(),
-            capability: Some(SANDBOX_STDIN_CAPABILITY.to_string()),
-            admission: "allowed".to_string(),
-        });
-    }
-    let Some(function) = bytecode
-        .functions
-        .iter_mut()
-        .find(|function| function.name == SANDBOX_STDIN_HELPER)
-    else {
-        return;
+/// Compile through the shared semantic boundary and project the verified
+/// module into a `hew.sandbox.bytecode.v1` package.
+///
+/// The sandbox profile still gates admission here, ahead of lowering, so both
+/// paths refuse the same sources while the AST emitter exists.
+fn compile_from_semantics(
+    source: &str,
+    profile: Option<&str>,
+) -> Result<SemanticOutcome, CompileError> {
+    let canonical_profile = match canonical_profile(profile) {
+        Ok(profile) => profile,
+        Err(diagnostic) => {
+            return Ok(SemanticOutcome::Compiled(CompileOutput {
+                diagnostics: vec![diagnostic],
+                bytecode: None,
+            }))
+        }
     };
-    let local = "local:stdin.line".to_string();
-    function.locals = vec![Local {
-        id: local.clone(),
-        name: Some("stdin_line".to_string()),
-        ty: "type:string".to_string(),
-        mutable: false,
-        span: function.span.clone(),
-    }];
-    function.blocks = vec![Block {
-        id: "block:entry".to_string(),
-        params: Vec::new(),
-        instructions: vec![Instruction {
-            op: "call.stdlib".to_string(),
-            dst: Some(local.clone()),
-            args: vec![Operand::symbol(SANDBOX_STDIN_SYMBOL)],
-            span: function.span.clone(),
-            metadata: None,
-        }],
-        terminator: Terminator::ret(vec![Operand::local(local)], function.span.clone()),
-        span: function.span.clone(),
-    }];
+
+    // The shared frontend, not a second one: it resolves this buffer's imports
+    // into the module graph, so an imported declaration reaches HIR with a
+    // body instead of an unresolved binding.
+    let state = hew_compile::run_source_frontend(
+        source,
+        SANDBOX_BUFFER_LABEL,
+        &hew_compile::FrontendOptions {
+            documents: embedded_standard_library_documents(),
+            ..Default::default()
+        },
+    );
+    let mut diagnostics = state
+        .parse_result
+        .as_ref()
+        .map(|parse| convert_parse_diagnostics(&parse.errors))
+        .unwrap_or_default();
+    if has_error_diagnostics(&diagnostics) {
+        return Ok(SemanticOutcome::Compiled(CompileOutput {
+            diagnostics,
+            bytecode: None,
+        }));
+    }
+
+    let Some(type_output) = state
+        .typecheck_result
+        .as_ref()
+        .and_then(|result| result.tco.as_ref())
+    else {
+        diagnostics.push(Diagnostic::profile_error(
+            0..0,
+            "frontend_stopped",
+            state
+                .stopped
+                .as_ref()
+                .map_or("type checking did not run", |failure| {
+                    failure.message.as_str()
+                }),
+        ));
+        return Ok(SemanticOutcome::Compiled(CompileOutput {
+            diagnostics,
+            bytecode: None,
+        }));
+    };
+    diagnostics.extend(convert_type_diagnostics(type_output));
+    if has_error_diagnostics(&diagnostics) {
+        return Ok(SemanticOutcome::Compiled(CompileOutput {
+            diagnostics,
+            bytecode: None,
+        }));
+    }
+    let program = &state.program;
+
+    let profile_report = profile::check_program(program, type_output, &canonical_profile);
+    diagnostics.extend(profile_report.diagnostics);
+    if has_error_diagnostics(&diagnostics) {
+        return Ok(SemanticOutcome::Compiled(CompileOutput {
+            diagnostics,
+            bytecode: None,
+        }));
+    }
+
+    let session = hew_compile::Session::new(
+        hew_compile::SessionTarget::browser(),
+        hew_compile::DiagnosticPolicy::default(),
+    );
+    let semantics = match session.lower_program(program, type_output) {
+        Ok(output) => output,
+        Err(error) => {
+            diagnostics.push(semantic_diagnostic(&error));
+            return Ok(SemanticOutcome::Compiled(CompileOutput {
+                diagnostics,
+                bytecode: None,
+            }));
+        }
+    };
+
+    let module = &semantics.semantics().module;
+    if sir_emit::uses_concurrency(module) {
+        return Ok(SemanticOutcome::Concurrency);
+    }
+
+    let package = sir_emit::emit_package(
+        module,
+        &canonical_profile,
+        env!("CARGO_PKG_VERSION"),
+        &format!("hew-sandbox-wasm-{}", env!("CARGO_PKG_VERSION")),
+    )
+    .map_err(|error| CompileError {
+        message: error.message,
+    })?;
+
+    Ok(SemanticOutcome::Compiled(CompileOutput {
+        diagnostics,
+        bytecode: Some(SandboxPackage::V1(Box::new(package))),
+    }))
+}
+
+/// Render a semantic boundary failure the way the browser analysis surface
+/// does, so an editor and a run report the same thing.
+fn semantic_diagnostic(error: &hew_compile::SessionError) -> Diagnostic {
+    Diagnostic {
+        severity: "error".to_string(),
+        phase: "sir".to_string(),
+        message: error.to_string(),
+        span: DiagnosticSpan { start: 0, end: 0 },
+        start_offset: 0,
+        end_offset: 0,
+        kind: "E_SIR_VERIFY".to_string(),
+        notes: Vec::new(),
+        suggestions: Vec::new(),
+        source_module: None,
+    }
 }
 
 fn convert_parse_diagnostics(parse_errors: &[hew_parser::ParseError]) -> Vec<Diagnostic> {
@@ -527,13 +671,17 @@ mod tests {
             "unexpected diagnostics: {:#?}",
             output.diagnostics
         );
-        let bytecode = output.bytecode.expect("bytecode should be emitted");
-        assert_eq!(bytecode.profile, DEFAULT_PROFILE_CANONICAL);
-        assert_eq!(bytecode.schema_version, "hew.sandbox.bytecode.v0");
-        assert!(bytecode
-            .stdlib_symbols
-            .iter()
-            .any(|symbol| symbol.id == "sym:core.stdout.println"));
+        let package = v1(output);
+        assert_eq!(package.profile, DEFAULT_PROFILE_CANONICAL);
+        assert_eq!(package.schema_version, "hew.sandbox.bytecode.v1");
+        assert!(
+            package
+                .runtime_families
+                .iter()
+                .any(|family| family.family == "Print"),
+            "println must reach the runtime through the Print family: {:#?}",
+            package.runtime_families
+        );
     }
 
     #[test]
@@ -548,9 +696,18 @@ mod tests {
             "unexpected diagnostics: {:#?}",
             output.diagnostics
         );
-        let bytecode = output.bytecode.expect("bytecode should be emitted");
-        let ops = all_instruction_ops(&bytecode);
-        assert!(ops.contains(&"i64.checked_add"));
+        let package = v1(output);
+        assert!(
+            package
+                .functions
+                .iter()
+                .flat_map(|f| &f.blocks)
+                .any(|block| {
+                    block.term["op"] == "checked.binary" && block.term["binary_op"] == "Add"
+                }),
+            "checked addition must lower to a checked.binary terminator: {:#?}",
+            package.functions
+        );
     }
 
     #[test]
@@ -569,31 +726,24 @@ mod tests {
             "i64::MIN must be admitted: {:#?}",
             output.diagnostics
         );
-        let bytecode = output.bytecode.expect("bytecode should be emitted");
-        let opcodes: Vec<&str> = bytecode
-            .functions
-            .iter()
-            .flat_map(|function| &function.blocks)
-            .flat_map(|block| &block.instructions)
-            .map(|instruction| instruction.op.as_str())
-            .collect();
+        let package = v1(output);
+        let ops = v1_op_names(&package);
         assert!(
-            !opcodes.contains(&"i64.neg"),
-            "the literal must be folded, not negated at runtime: {opcodes:?}"
+            !ops.iter().any(|op| op == "unary"),
+            "the literal must be folded, not negated at runtime: {ops:?}"
         );
-        let constants: Vec<String> = bytecode
+        let constants: Vec<String> = package
             .functions
             .iter()
             .flat_map(|function| &function.blocks)
-            .flat_map(|block| &block.instructions)
-            .filter(|instruction| instruction.op == "const.i64")
-            .flat_map(|instruction| &instruction.args)
-            .map(|operand| format!("{operand:?}"))
+            .flat_map(|block| &block.ops)
+            .filter(|op| op["op"] == "const.int")
+            .map(|op| format!("{}", op["value"]))
             .collect();
         assert!(
             constants
                 .iter()
-                .any(|operand| operand.contains("-9223372036854775808")),
+                .any(|value| value.contains("-9223372036854775808")),
             "i64::MIN must appear as one constant: {constants:?}"
         );
     }
@@ -637,7 +787,7 @@ mod tests {
             "unexpected diagnostics: {:#?}",
             output.diagnostics
         );
-        let bytecode = output.bytecode.expect("bytecode should be emitted");
+        let bytecode = v0(output);
         let mut functions = bytecode.functions;
         for function in &mut functions {
             function.span = None;
@@ -716,11 +866,11 @@ fn main() {
             "unexpected diagnostics: {:#?}",
             output.diagnostics
         );
-        let bytecode = output.bytecode.expect("bytecode should be emitted");
-        let ops = all_instruction_ops(&bytecode);
-        assert!(ops.contains(&"const.bool"));
-        assert!(ops.contains(&"const.f64"));
-        assert!(ops.contains(&"const.string"));
+        let package = v1(output);
+        let ops = v1_op_names(&package);
+        assert!(ops.contains("const.bool"));
+        assert!(ops.contains("const.float"));
+        assert!(ops.contains("const.str"));
     }
 
     #[test]
@@ -733,19 +883,21 @@ fn main() {
             "unexpected diagnostics: {:#?}",
             output.diagnostics
         );
-        let bytecode = output.bytecode.expect("bytecode should be emitted");
+        let package = v1(output);
         assert!(
-            bytecode
-                .layouts
-                .records
+            package
+                .aggregates
                 .iter()
                 .any(|record| record.name == "Point"),
-            "Point record layout missing: {:#?}",
-            bytecode.layouts.records
+            "Point aggregate shape missing: {:#?}",
+            package.aggregates
         );
-        let ops = all_instruction_ops(&bytecode);
-        assert!(ops.contains(&"record.new"));
-        assert!(ops.contains(&"record.get"));
+        let ops = v1_op_names(&package);
+        assert!(ops.contains("aggregate.make"));
+        assert!(
+            ops.contains("aggregate.project_copy") || ops.contains("aggregate.project_borrow"),
+            "field access must project the aggregate: {ops:?}"
+        );
     }
 
     #[test]
@@ -758,139 +910,38 @@ fn main() {
             "unexpected diagnostics: {:#?}",
             output.diagnostics
         );
-        let bytecode = output.bytecode.expect("bytecode should be emitted");
+        let package = v1(output);
         assert!(
-            bytecode
-                .layouts
-                .enums
+            package
+                .variants
                 .iter()
-                .any(|enum_layout| enum_layout.name == "Shape"),
-            "Shape enum layout missing: {:#?}",
-            bytecode.layouts.enums
+                .any(|variant| variant.name == "Shape"),
+            "Shape variant shape missing: {:#?}",
+            package.variants
         );
-        let ops = all_instruction_ops(&bytecode);
-        assert!(ops.contains(&"enum.new"));
-        assert!(ops.contains(&"enum.tag"));
-        assert!(ops.contains(&"enum.payload"));
-        assert!(bytecode
-            .functions
-            .iter()
-            .flat_map(|function| &function.blocks)
-            .any(|block| block.terminator.op == "br_if"));
-    }
-
-    #[test]
-    fn match_arm_guard_gates_arm_body() {
-        set_test_hewpath();
-        let source = r#"
-enum Score { High(i64), Low(i64), Zero, }
-
-fn classify(s: Score) -> string {
-    match s {
-        .High(n) if n > 90 => "excellent",
-        .High(_) => "good",
-        .Low(n) if n < 10 => "very low",
-        .Low(_) => "low",
-        .Zero => "zero",
-    }
-}
-
-fn main() {
-    println(classify(.High(95)));
-    println(classify(.High(70)));
-    println(classify(.Low(5)));
-    println(classify(.Low(40)));
-    println(classify(.Zero));
-}
-"#;
-        let output = compile_to_sandbox_bytecode(source, Some("sandbox-vm-export"))
-            .expect("compile should not throw");
+        let ops = v1_op_names(&package);
+        assert!(ops.contains("variant.make"));
         assert!(
-            output.diagnostics.iter().all(|d| d.severity != "error"),
-            "unexpected diagnostics: {:#?}",
-            output.diagnostics
-        );
-        let bytecode = output.bytecode.expect("bytecode should be emitted");
-        let classify = bytecode
-            .functions
-            .iter()
-            .find(|function| function.name.contains("classify"))
-            .expect("classify function should be emitted");
-        let guard_blocks = classify
-            .blocks
-            .iter()
-            .filter(|block| block.id.contains("match_guard_"))
-            .count();
-        assert_eq!(
-            guard_blocks, 2,
-            "guarded arms must lower to explicit guard blocks: {:#?}",
-            classify.blocks
-        );
-        let br_if_count = classify
-            .blocks
-            .iter()
-            .filter(|block| block.terminator.op == "br_if")
-            .count();
-        assert!(
-            br_if_count > 5,
-            "guarded match must branch for arm guards as well as arm patterns: {:#?}",
-            classify.blocks
+            package
+                .functions
+                .iter()
+                .flat_map(|function| &function.blocks)
+                .any(|block| block.term["op"] == "switch.variant"),
+            "matching an enum must lower to a switch.variant terminator: {:#?}",
+            package.functions
         );
     }
 
-    #[test]
-    fn guarded_catch_all_guard_failure_falls_through_to_next_check() {
-        set_test_hewpath();
-        let source = r#"
-enum Score { High(i64), Low(i64), }
-
-fn classify(s: Score) -> string {
-    match s {
-        .High(n) if n > 90 => "excellent",
-        _ if false => "never",
-        _ => "fallback",
-    }
-}
-
-fn main() {
-    println(classify(.Low(5)));
-}
-"#;
-        let output = compile_to_sandbox_bytecode(source, Some("sandbox-vm-export"))
-            .expect("compile should not throw");
-        assert!(
-            output.diagnostics.iter().all(|d| d.severity != "error"),
-            "unexpected diagnostics: {:#?}",
-            output.diagnostics
-        );
-        let bytecode = output.bytecode.expect("bytecode should be emitted");
-        let classify = bytecode
-            .functions
-            .iter()
-            .find(|function| function.name.contains("classify"))
-            .expect("classify function should be emitted");
-        let guard_block = classify
-            .blocks
-            .iter()
-            .find(|block| block.id.contains("match_guard_1"))
-            .expect("guarded catch-all arm should emit a guard block");
-
-        assert_ne!(
-            guard_block.terminator.else_target.as_deref(),
-            Some(guard_block.id.as_str()),
-            "guard failure must not loop back to the same guard block: {:#?}",
-            classify.blocks
-        );
-        assert!(
-            guard_block
-                .terminator
-                .else_target
-                .as_deref()
-                .is_some_and(|target| target.contains("match_check_2")),
-            "guard failure must fall through to the next check block: {:#?}",
-            classify.blocks
-        );
-    }
+    // `match_arm_guard_gates_arm_body` and
+    // `guarded_catch_all_guard_failure_falls_through_to_next_check` are
+    // deleted here: both pinned the AST emitter's block-id spelling
+    // (`match_guard_N`, `match_check_N`) and its `br_if` terminator, which the
+    // v1 package does not carry (blocks are numeric ids; the switch/branch
+    // structure is a `switch.variant` and `branch` terminator instead).
+    // Guarded-match behaviour is proved end to end by the `match_guard_parity`
+    // and `match_guard_catch_all_fallthrough` parity cases
+    // (`tests/parity.rs`), which this unit pin duplicated without adding
+    // coverage.
 
     #[test]
     fn generic_call_exports_bytecode_without_rejecting_type_params() {
@@ -911,9 +962,16 @@ fn main() {
             "unexpected diagnostics: {:#?}",
             output.diagnostics
         );
-        let bytecode = output.bytecode.expect("bytecode should be emitted");
-        let ops = all_instruction_ops(&bytecode);
-        assert!(ops.contains(&"call.direct"));
+        let package = v1(output);
+        assert!(
+            package
+                .functions
+                .iter()
+                .flat_map(|function| &function.blocks)
+                .any(|block| block.term["op"] == "call"),
+            "a call is a terminator in v1: {:#?}",
+            package.functions
+        );
     }
 
     #[test]
@@ -935,14 +993,18 @@ fn main() {
             "unexpected diagnostics: {:#?}",
             output.diagnostics
         );
-        let bytecode = output.bytecode.expect("bytecode should be emitted");
-        let ops = all_instruction_ops(&bytecode);
-        assert!(ops.contains(&"call.direct"));
-        assert!(bytecode
-            .functions
-            .iter()
-            .flat_map(|function| &function.blocks)
-            .any(|block| block.terminator.op == "return"));
+        let package = v1(output);
+        let ops = v1_op_names(&package);
+        assert!(
+            package
+                .functions
+                .iter()
+                .flat_map(|function| &function.blocks)
+                .any(|block| block.term["op"] == "call"),
+            "a call is a terminator in v1: {:#?}",
+            package.functions
+        );
+        assert!(ops.contains("return"));
     }
 
     /// `opt.expect(reason)` is the sandbox's only Option/Result extraction with
@@ -963,17 +1025,21 @@ fn main() {
             "unexpected diagnostics: {:#?}",
             output.diagnostics
         );
-        let bytecode = output.bytecode.expect("bytecode should be emitted");
-        let ops = all_instruction_ops(&bytecode);
+        let package = v1(output);
+        let ops = v1_op_names(&package);
         assert!(
-            ops.contains(&"panic"),
+            ops.contains("panic"),
             "expect must emit a panic arm: {ops:?}"
         );
         assert!(
-            ops.contains(&"string.concat"),
-            "the panic message concatenates the reason: {ops:?}"
+            package
+                .runtime_families
+                .iter()
+                .any(|family| family.family == "StringConcat"),
+            "the panic message concatenates the reason: {:#?}",
+            package.runtime_families
         );
-        let serialized = serde_json::to_string(&bytecode).expect("bytecode should serialize");
+        let serialized = serde_json::to_string(&package).expect("bytecode should serialize");
         assert!(
             serialized.contains("expect failed: "),
             "the panic message must match the native prefix"
@@ -994,12 +1060,19 @@ fn main() {
             "unexpected diagnostics: {:#?}",
             output.diagnostics
         );
-        let bytecode = output.bytecode.expect("bytecode should be emitted");
-        let ops = all_instruction_ops(&bytecode);
-        assert!(ops.contains(&"vector.new"));
-        assert!(ops.contains(&"vector.push"));
-        assert!(ops.contains(&"vector.len"));
-        assert!(ops.contains(&"vector.get"));
+        let package = v1(output);
+        for operation in ["New", "Push", "Len", "Get"] {
+            assert!(
+                package
+                    .runtime_families
+                    .iter()
+                    .any(|family| family.family == "Vector"
+                        && family.detail.as_ref().and_then(serde_json::Value::as_str)
+                            == Some(operation)),
+                "Vector({operation}) must appear in the runtime family table: {:#?}",
+                package.runtime_families
+            );
+        }
     }
 
     #[test]
@@ -1018,59 +1091,28 @@ fn main() {
             "unexpected diagnostics: {:#?}",
             output.diagnostics
         );
-        let bytecode = output.bytecode.expect("bytecode should be emitted");
-        let ops = all_instruction_ops(&bytecode);
-        assert!(ops.contains(&"vector.index"));
-        assert!(!ops.contains(&"vector.get"));
+        let package = v1(output);
+        let index_family = package
+            .runtime_families
+            .iter()
+            .find(|family| {
+                family.family == "Vector"
+                    && family.detail.as_ref().and_then(serde_json::Value::as_str) == Some("Index")
+            })
+            .expect("Vector(Index) must be named in the runtime family table");
 
-        let index_instruction = bytecode
+        let index_call = package
             .functions
             .iter()
             .flat_map(|function| &function.blocks)
-            .flat_map(|block| &block.instructions)
-            .find(|instruction| instruction.op == "vector.index")
-            .expect("direct vector indexing must emit a vector.index instruction");
-        assert_eq!(index_instruction.args.len(), 2);
-        assert!(
-            index_instruction.args.iter().all(|operand| operand.kind == "local"),
-            "vector.index must receive the evaluated vector and index locals: {index_instruction:#?}"
-        );
-
-        assert_published_schema_admits_emitted_instruction_and_rejects_unknown_opcode(
-            index_instruction,
-        );
-    }
-
-    fn assert_published_schema_admits_emitted_instruction_and_rejects_unknown_opcode(
-        instruction: &Instruction,
-    ) {
-        let schema: serde_json::Value = serde_json::from_str(include_str!(
-            "../../hew-sandbox-vm/bytecode/sandbox-bytecode-v0.schema.json"
-        ))
-        .expect("published sandbox bytecode schema must be valid JSON");
-        let published_ops = schema
-            .pointer("/$defs/instruction_op/enum")
-            .and_then(serde_json::Value::as_array)
-            .expect("published schema must declare its instruction opcode enum")
-            .iter()
-            .map(|opcode| {
-                opcode
-                    .as_str()
-                    .expect("published instruction opcode entries must be strings")
+            .find(|block| {
+                block.term["op"] == "runtime.call" && block.term["family"] == index_family.id
             })
-            .collect::<std::collections::BTreeSet<_>>();
-
+            .expect("direct vector indexing must emit a runtime.call to Vector(Index)");
         assert!(
-            published_ops.contains(instruction.op.as_str()),
-            "published bytecode schema must admit compiler-emitted opcode {:?}",
-            instruction.op
-        );
-
-        let mut unknown_opcode = instruction.clone();
-        unknown_opcode.op = "vector.not_real".to_string();
-        assert!(
-            !published_ops.contains(unknown_opcode.op.as_str()),
-            "published bytecode schema must reject a mutated unknown opcode"
+            !index_call.term["unwind"].is_null(),
+            "index is bounds-trapping and must carry an unwind edge: {:#?}",
+            index_call.term
         );
     }
 
@@ -1091,10 +1133,17 @@ fn main() {
             "unexpected diagnostics: {:#?}",
             output.diagnostics
         );
-        let bytecode = output.bytecode.expect("bytecode should be emitted");
-        let ops = all_instruction_ops(&bytecode);
-        assert!(ops.contains(&"string.len"));
-        assert!(ops.contains(&"string.slice"));
+        let package = v1(output);
+        for family_name in ["StringLen", "StringSlice"] {
+            assert!(
+                package
+                    .runtime_families
+                    .iter()
+                    .any(|family| family.family == family_name),
+                "{family_name} must appear in the runtime family table: {:#?}",
+                package.runtime_families
+            );
+        }
     }
 
     #[test]
@@ -1107,19 +1156,35 @@ fn main() {
             "unexpected diagnostics: {:#?}",
             output.diagnostics
         );
-        let bytecode = output.bytecode.expect("bytecode should be emitted");
-        let ops = all_instruction_ops(&bytecode);
-        assert!(ops.contains(&"regex.compile"));
-        assert!(ops.contains(&"regex.find"));
-        assert!(ops.contains(&"regex.free"));
-        assert!(bytecode
-            .capabilities
-            .iter()
-            .any(|cap| cap.id == "std.text.regex.compile" && cap.disposition == "reserved"));
+        let package = v1(output);
+        // `regex.new("...")` is a runtime call over an ordinary string
+        // argument, not a `re"..."` literal, so the pattern lands in the
+        // string pool rather than the `regex_patterns` table (which is for
+        // literal regex syntax only).
+        assert!(
+            package.strings.iter().any(|literal| literal == "[0-9]+"),
+            "the pattern argument must be interned as a string: {:#?}",
+            package.strings
+        );
+        // `std.text.regex` is implemented as ordinary Hew functions over
+        // `extern "rt"` FFI declarations, not a synthesized runtime-call
+        // family, so the reachable regex symbols show up in `externs`.
+        assert!(
+            package
+                .externs
+                .iter()
+                .any(|extern_| extern_.symbol.starts_with("hew_regex_")),
+            "regex.new/find must route through a hew_regex_* extern: {:#?}",
+            package.externs
+        );
     }
 
     #[test]
-    fn user_pattern_cannot_mint_regex_profile_authority() {
+    /// A user type that happens to share the standard library's name keeps its
+    /// own methods and gains none of the standard library's authority. The
+    /// package proves it: the call reaches the user's own function and the
+    /// package names no regex symbol at all.
+    fn a_user_pattern_keeps_its_own_methods_and_gains_no_regex_authority() {
         set_test_hewpath();
         let source = r#"
 type Pattern {
@@ -1137,20 +1202,29 @@ fn main() {
     println(pattern.find("input"));
 }
 "#;
-        let output = compile_to_sandbox_bytecode(source, Some("sandbox-vm-export"))
-            .expect("compile should not throw");
-        assert!(
-            output.bytecode.is_none(),
-            "a user-defined Pattern must not emit regex bytecode"
+        let package = v1(
+            compile_to_sandbox_bytecode(source, Some("sandbox-vm-export"))
+                .expect("compile should not throw"),
         );
         assert!(
-            output.diagnostics.iter().any(|diagnostic| {
-                diagnostic.phase == "profile"
-                    && diagnostic.kind == "unknown_method_symbol"
-                    && diagnostic.message.contains("method `find`")
-            }),
-            "a user-defined Pattern must not gain regex method authority: {:#?}",
-            output.diagnostics
+            !package
+                .externs
+                .iter()
+                .any(|symbol| symbol.symbol.starts_with("hew_regex")),
+            "a user-defined Pattern must reach no regex symbol: {:#?}",
+            package.externs
+        );
+        assert!(
+            package
+                .functions
+                .iter()
+                .any(|function| function.name.contains("find")),
+            "the call must reach the user's own `find`: {:#?}",
+            package
+                .functions
+                .iter()
+                .map(|function| &function.name)
+                .collect::<Vec<_>>()
         );
     }
 
@@ -1177,16 +1251,17 @@ fn main() {
             "unexpected diagnostics: {:#?}",
             output.diagnostics
         );
-        let bytecode = output.bytecode.expect("bytecode should be emitted");
-        let layout = bytecode
-            .layouts
-            .types
+        let package = v1(output);
+        let shape = package
+            .aggregates
             .iter()
-            .find(|layout| layout.name == "Regex")
-            .expect("user Regex type layout");
+            .find(|aggregate| aggregate.name == "Regex")
+            .expect("user Regex aggregate shape");
         assert_eq!(
-            layout.kind, "record",
-            "a user type whose presentation name resembles the internal regex shim must not mint regex layout authority"
+            shape.fields,
+            vec!["value".to_string()],
+            "a user type whose presentation name resembles the internal regex shim must \
+             still be an ordinary aggregate, not mint regex runtime authority"
         );
     }
 
@@ -1218,29 +1293,38 @@ fn main() {
             "unexpected diagnostics: {:#?}",
             output.diagnostics
         );
-        let bytecode = output.bytecode.expect("bytecode should be emitted");
-        let user = bytecode
-            .layouts
-            .types
+        let package = v1(output);
+        // v1 aggregates are keyed by declaration-order id, not by name, so
+        // the user's `Regex` record and the stdlib `Pattern` handle cannot
+        // collide by name the way the v0 layout table's name-keyed lookup
+        // could: each simply gets its own shape and its own fields.
+        let user = package
+            .aggregates
             .iter()
-            .find(|layout| layout.name == "Regex")
-            .expect("user Regex record layout");
-        assert_eq!(user.kind, "record");
-        assert_eq!(user.id, "type:Regex");
-
-        let builtin = bytecode
-            .layouts
-            .types
+            .find(|aggregate| aggregate.name == "Regex")
+            .expect("user Regex aggregate shape missing");
+        assert_eq!(user.fields, vec!["value".to_string()]);
+        let builtin = package
+            .aggregates
             .iter()
-            .find(|layout| layout.name == "std.text.regex.Pattern")
-            .expect("canonical stdlib regex handle layout");
-        assert_eq!(builtin.kind, "regex");
-        assert_eq!(builtin.id, "type:std.text.regex.Pattern");
+            .find(|aggregate| aggregate.name == "std.text.regex.Pattern")
+            .expect("stdlib regex handle aggregate shape missing");
         assert_ne!(user.id, builtin.id);
+        assert_ne!(user.fields, builtin.fields);
+        assert!(
+            package
+                .externs
+                .iter()
+                .any(|extern_| extern_.symbol.starts_with("hew_regex_")),
+            "regex.new/find must still route through a hew_regex_* extern: {:#?}",
+            package.externs
+        );
     }
 
     #[test]
-    fn user_regex_name_cannot_mint_regex_method_authority() {
+    /// The same for a user type named `Regex`: sharing the module's name gives
+    /// it none of the module's authority, and the package shows it.
+    fn a_user_regex_keeps_its_own_methods_and_gains_no_regex_authority() {
         set_test_hewpath();
         let source = r#"
 type Regex {
@@ -1258,20 +1342,17 @@ fn main() {
     println(pattern.find("input"));
 }
 "#;
-        let output = compile_to_sandbox_bytecode(source, Some("sandbox-vm-export"))
-            .expect("compile should not throw");
-        assert!(
-            output.bytecode.is_none(),
-            "a user-defined Regex must not emit regex bytecode"
+        let package = v1(
+            compile_to_sandbox_bytecode(source, Some("sandbox-vm-export"))
+                .expect("compile should not throw"),
         );
         assert!(
-            output.diagnostics.iter().any(|diagnostic| {
-                diagnostic.phase == "profile"
-                    && diagnostic.kind == "unknown_method_symbol"
-                    && diagnostic.message.contains("method `find`")
-            }),
-            "a user-defined Regex must not gain regex method authority: {:#?}",
-            output.diagnostics
+            !package
+                .externs
+                .iter()
+                .any(|symbol| symbol.symbol.starts_with("hew_regex")),
+            "a user-defined Regex must reach no regex symbol: {:#?}",
+            package.externs
         );
     }
 
@@ -1285,9 +1366,9 @@ fn main() {
             "unexpected diagnostics: {:#?}",
             output.diagnostics
         );
-        let bytecode = output.bytecode.expect("bytecode should be emitted");
-        let ops = all_instruction_ops(&bytecode);
-        assert!(ops.contains(&"panic"));
+        let package = v1(output);
+        let ops = v1_op_names(&package);
+        assert!(ops.contains("panic"));
     }
 
     #[test]
@@ -1302,9 +1383,18 @@ fn main() {
             "unexpected diagnostics: {:#?}",
             output.diagnostics
         );
-        let bytecode = output.bytecode.expect("bytecode should be emitted");
-        let ops = all_instruction_ops(&bytecode);
-        assert!(ops.contains(&"i64.checked_div"));
+        let package = v1(output);
+        assert!(
+            package
+                .functions
+                .iter()
+                .flat_map(|f| &f.blocks)
+                .any(|block| {
+                    block.term["op"] == "checked.binary" && block.term["binary_op"] == "Divide"
+                }),
+            "division must lower to a checked.binary terminator with a failure edge: {:#?}",
+            package.functions
+        );
     }
 
     #[test]
@@ -1322,14 +1412,38 @@ fn main() {
             "unexpected diagnostics: {:#?}",
             output.diagnostics
         );
-        let bytecode = output.bytecode.expect("bytecode should be emitted");
-        let machine = bytecode
-            .layouts
-            .machines
+        let package = v1(output);
+        // A machine's states are a variant shape; its `step` dispatch is an
+        // ordinary `switch.variant` over that shape, one arm per transition.
+        // v1 carries no separate machine/transition table: the transition
+        // count is provable as the arm count of the state-switch it desugars
+        // to.
+        let shape = package
+            .variants
             .iter()
-            .find(|machine| machine.name == "TrafficLight")
-            .expect("the machine layout should be recorded");
-        assert_eq!(machine.transitions.len(), 3);
+            .find(|variant| variant.name == "TrafficLight")
+            .expect("TrafficLight variant shape should be recorded");
+        assert_eq!(
+            shape.cases.len(),
+            3,
+            "the machine's three states are the TrafficLight variant's cases: {shape:#?}"
+        );
+        let step = package
+            .functions
+            .iter()
+            .find(|function| function.name.contains("step"))
+            .expect("the step transition function should be emitted");
+        assert!(
+            step.blocks.iter().any(|block| {
+                block.term["op"] == "switch.variant"
+                    && block.term["shape"] == shape.id
+                    && block.term["arms"]
+                        .as_array()
+                        .is_some_and(|arms| arms.len() == 3)
+            }),
+            "step must dispatch on the current state with one arm per state: {:#?}",
+            step.blocks
+        );
     }
 
     #[test]
@@ -1469,7 +1583,7 @@ fn main() {
         // matching the wasm32 target guard in the type checker and maintaining
         // native/wasm parity for the full native-only module set.
         set_test_hewpath();
-        let source = "import std.net.net;\nfn main() { let f = net.connect; }";
+        let source = "import std.net;\nfn main() { let f = net.connect; }";
         let output = compile_to_sandbox_bytecode(source, Some("sandbox-vm-export"))
             .expect("compile should not throw");
         assert!(
@@ -1643,7 +1757,7 @@ fn main() {
         // End-to-end: sample three modules with well-known import paths.
         set_test_hewpath();
         let sample: &[(&str, &str, &str)] = &[
-            ("net", "std.net.net", "connect"),
+            ("net", "std.net", "connect"),
             ("tls", "std.net.tls", "connect"),
             ("dns", "std.net.dns", "resolve"),
             ("websocket", "std.net.websocket", "connect"),
@@ -1927,8 +2041,57 @@ fn main() {
 ";
 
     #[test]
-    fn impl_where_clause_is_reserved_runtime_feature() {
-        assert_profile_rejection(IMPL_WHERE_SOURCE, "reserved_runtime_feature");
+    /// Admitting an impl admits its declarations, not its contents: a body
+    /// still meets every expression gate. Without this an `unsafe` block hid
+    /// inside a method where the same block at top level is refused.
+    fn an_impl_method_body_still_meets_the_expression_gates() {
+        set_test_hewpath();
+        let source = r"
+type Worker { id: i64 }
+
+impl Worker {
+    fn run(self) {
+        unsafe { }
+    }
+}
+
+fn main() {
+    let w = Worker { id: 1 };
+    w.run();
+}
+";
+        let output = compile_to_sandbox_bytecode(source, Some("sandbox-vm-export"))
+            .expect("compile should not throw");
+        assert!(
+            output.bytecode.is_none(),
+            "an unsafe block inside an impl method must not emit a package"
+        );
+        assert!(
+            output.diagnostics.iter().any(|diagnostic| {
+                diagnostic.phase == "profile" && diagnostic.kind == "unsafe_rejected"
+            }),
+            "the refusal must name the unsafe block: {:#?}",
+            output.diagnostics
+        );
+    }
+
+    #[test]
+    /// A generic impl with a where clause is ordinary code the checker
+    /// resolves; it runs natively and the sandbox admits it.
+    fn generic_impl_with_a_where_clause_is_admitted() {
+        set_test_hewpath();
+        let output = compile_to_sandbox_bytecode(IMPL_WHERE_SOURCE, Some("sandbox-vm-export"))
+            .expect("compile should not throw");
+        let errors: Vec<_> = output
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.severity == "error")
+            .collect();
+        assert!(errors.is_empty(), "unexpected diagnostics: {errors:#?}");
+        assert!(
+            output.bytecode.is_some(),
+            "an admitted impl emits a package"
+        );
     }
 
     fn assert_profile_rejection(source: &str, expected_kind: &str) {
@@ -1949,28 +2112,62 @@ fn main() {
         );
     }
 
-    fn all_instruction_ops(bytecode: &SandboxBytecodePackage) -> std::collections::BTreeSet<&str> {
-        bytecode
+    /// Unwrap an admitted compilation's package as v1, panicking if the
+    /// source actually routed through the concurrency (v0) path.
+    fn v1(output: CompileOutput) -> SandboxBytecodePackageV1 {
+        match output.bytecode.expect("admitted source emits bytecode") {
+            SandboxPackage::V1(package) => *package,
+            SandboxPackage::V0(_) => panic!("a sequential program lowers from verified semantics"),
+        }
+    }
+
+    /// Unwrap an admitted compilation's package as v0, panicking if the
+    /// source actually routed through the sequential (v1) path.
+    fn v0(output: CompileOutput) -> SandboxBytecodePackage {
+        match output.bytecode.expect("admitted source emits bytecode") {
+            SandboxPackage::V0(package) => *package,
+            SandboxPackage::V1(_) => panic!(
+                "a program using actors, supervisors, tasks, select or pipes lowers through \
+                 the AST emitter"
+            ),
+        }
+    }
+
+    /// Every op name a v1 package's instruction stream reaches: each block's
+    /// `ops` plus its one `term`.
+    fn v1_op_names(package: &SandboxBytecodePackageV1) -> std::collections::BTreeSet<String> {
+        let mut names = std::collections::BTreeSet::new();
+        for function in &package.functions {
+            for block in &function.blocks {
+                for op in &block.ops {
+                    if let Some(name) = op.get("op").and_then(serde_json::Value::as_str) {
+                        names.insert(name.to_string());
+                    }
+                }
+                if let Some(name) = block.term.get("op").and_then(serde_json::Value::as_str) {
+                    names.insert(name.to_string());
+                }
+            }
+        }
+        names
+    }
+
+    /// Every `const.int` op's decimal-string `value` in a v1 package.
+    fn v1_const_int_values(package: &SandboxBytecodePackageV1) -> Vec<String> {
+        package
             .functions
             .iter()
             .flat_map(|function| &function.blocks)
-            .flat_map(|block| &block.instructions)
-            .map(|instruction| instruction.op.as_str())
+            .flat_map(|block| &block.ops)
+            .filter(|op| op["op"] == "const.int")
+            .filter_map(|op| op["value"].as_str().map(str::to_string))
             .collect()
     }
 
-    /// Collect the first-argument `Value` of every `const.i64` instruction.
-    fn const_i64_operand_values(bytecode: &SandboxBytecodePackage) -> Vec<serde_json::Value> {
-        bytecode
-            .functions
-            .iter()
-            .flat_map(|function| &function.blocks)
-            .flat_map(|block| &block.instructions)
-            .filter(|instruction| instruction.op == "const.i64")
-            .filter_map(|instruction| instruction.args.first())
-            .map(|operand| operand.value.clone())
-            .collect()
-    }
+    // `all_instruction_ops` and `const_i64_operand_values` (v0-only helpers)
+    // are deleted here: every remaining v0 test now reads its actor/supervisor
+    // program's fields directly, and every sequential-program test moved to
+    // `v1_op_names` / `v1_const_int_values` above.
 
     #[test]
     fn large_i64_literal_is_string_encoded_to_survive_json_transport() {
@@ -1992,23 +2189,19 @@ fn main() {
             "unexpected diagnostics: {:#?}",
             output.diagnostics
         );
-        let bytecode = output.bytecode.expect("bytecode should be emitted");
-        let values = const_i64_operand_values(&bytecode);
+        let package = v1(output);
+        let values = v1_const_int_values(&package);
         assert!(
-            values
-                .iter()
-                .any(|v| v == &serde_json::json!("9223372036854775807")),
+            values.iter().any(|v| v == "9223372036854775807"),
             "i64::MAX must be string-encoded, got: {values:#?}"
         );
         assert!(
-            values
-                .iter()
-                .any(|v| v == &serde_json::json!("-9223372036854775808")),
+            values.iter().any(|v| v == "-9223372036854775808"),
             "i64::MIN must be string-encoded, got: {values:#?}"
         );
         // Regression guard: the raw JSON must not contain the imprecise
         // number-encoded form of i64::MAX.
-        let serialized = serde_json::to_string(&bytecode).expect("serialize");
+        let serialized = serde_json::to_string(&package).expect("serialize");
         assert!(
             !serialized.contains(":9223372036854775807,")
                 && !serialized.contains(":9223372036854775807}"),
@@ -2016,42 +2209,12 @@ fn main() {
         );
     }
 
-    #[test]
-    fn small_i64_literal_stays_numeric() {
-        // In-safe-range values stay compact JSON numbers so common-case
-        // bytecode remains small and diff-friendly.
-        set_test_hewpath();
-        let source = r#"
-fn main() {
-    let small = 42;
-    let boundary = 9007199254740991;
-    println("small literals");
-}
-"#;
-        let output = compile_to_sandbox_bytecode(source, Some("sandbox-vm-export"))
-            .expect("compile should not throw");
-        assert!(
-            output.diagnostics.iter().all(|d| d.severity != "error"),
-            "unexpected diagnostics: {:#?}",
-            output.diagnostics
-        );
-        let bytecode = output.bytecode.expect("bytecode should be emitted");
-        let values = const_i64_operand_values(&bytecode);
-        assert!(
-            values.iter().any(|v| v == &serde_json::json!(42)),
-            "small literal must stay numeric, got: {values:#?}"
-        );
-        assert!(
-            values
-                .iter()
-                .any(|v| v == &serde_json::json!(9_007_199_254_740_991_i64)),
-            "safe-int boundary must stay numeric, got: {values:#?}"
-        );
-        assert!(
-            !values.iter().any(|v| v == &serde_json::json!("42")),
-            "small literal must not be string-encoded, got: {values:#?}"
-        );
-    }
+    // `small_i64_literal_stays_numeric` is deleted here: it pinned a v0-only
+    // optimization (small ints stay compact JSON numbers, only out-of-range
+    // ints become decimal strings). The v1 package always string-encodes
+    // `const.int`'s `value` regardless of magnitude (package-v1.md), so the
+    // "stays numeric" behaviour this test asserted no longer exists by
+    // design; every other v1 test already exercises small integer literals.
 
     #[test]
     fn supervisor_i64_bounds_are_tagged_in_serialized_bytecode() {
@@ -2079,7 +2242,7 @@ fn main() {
             "unexpected diagnostics: {:#?}",
             output.diagnostics
         );
-        let bytecode = output.bytecode.expect("bytecode should be emitted");
+        let bytecode = v0(output);
         let serialized = serde_json::to_string(&bytecode).expect("bytecode should serialize");
         let decoded: SandboxBytecodePackage =
             serde_json::from_str(&serialized).expect("serialized bytecode should deserialize");
@@ -2118,19 +2281,16 @@ fn main() {
             "unexpected error diagnostics: {:?}",
             output.diagnostics
         );
-        let bc = output
-            .bytecode
-            .as_ref()
-            .expect("for-range should produce bytecode");
-        let main_fn = bc
+        let package = v1(output);
+        let main_fn = package
             .functions
             .iter()
-            .find(|f| f.name == "main")
+            .find(|f| f.name.contains("main"))
             .expect("main");
         assert!(
             main_fn.blocks.len() > 1,
             "for-loop should produce multiple blocks, got: {:?}",
-            main_fn.blocks.iter().map(|b| &b.id).collect::<Vec<_>>()
+            main_fn.blocks.iter().map(|b| b.id).collect::<Vec<_>>()
         );
     }
 
@@ -2208,19 +2368,16 @@ fn main() {
             "statement-position control flow must be admitted, got error diagnostics: {:#?}",
             output.diagnostics
         );
-        let bc = output
-            .bytecode
-            .as_ref()
-            .expect("admitted statement-position control flow should emit bytecode");
-        let main_fn = bc
+        let package = v1(output);
+        let main_fn = package
             .functions
             .iter()
-            .find(|f| f.name == "main")
+            .find(|f| f.name.contains("main"))
             .expect("main");
         assert!(
             main_fn.blocks.len() > 1,
             "statement-position control flow should lower to multiple blocks, got: {:?}",
-            main_fn.blocks.iter().map(|b| &b.id).collect::<Vec<_>>()
+            main_fn.blocks.iter().map(|b| b.id).collect::<Vec<_>>()
         );
     }
 
@@ -2359,9 +2516,7 @@ fn main() {
             "stateful early-return must be admitted; diagnostics: {:#?}",
             output.diagnostics
         );
-        let bytecode = output
-            .bytecode
-            .expect("stateful early-return must emit bytecode");
+        let bytecode = v0(output);
 
         // The `bump` handler must contain an `actor.reply` instruction.
         // Before the emitter fix, early-return lowers to `ret([n])` only —
@@ -2441,9 +2596,7 @@ fn main() {
             "multi-field early-return must be admitted; diagnostics: {:#?}",
             output.diagnostics
         );
-        let bytecode = output
-            .bytecode
-            .expect("multi-field early-return must emit bytecode");
+        let bytecode = v0(output);
 
         // The `set_a_return_b` handler must contain an `actor.reply` instruction.
         let handler_fn = bytecode
@@ -2544,13 +2697,13 @@ fn main() {
             "unexpected diagnostics: {:#?}",
             output.diagnostics
         );
-        let bytecode = output.bytecode.expect("bytecode must be emitted");
-        let ops = all_instruction_ops(&bytecode);
-        // `enum.new` must appear: the dotted `Add`/`Sub` used as call
+        let package = v1(output);
+        let ops = v1_op_names(&package);
+        // `variant.make` must appear: the dotted `Add`/`Sub` used as call
         // arguments must be lowered as unit-variant constructions, not const.unit.
         assert!(
-            ops.contains(&"enum.new"),
-            "dotted unit-variant as call arg must emit enum.new; ops: {ops:?}"
+            ops.contains("variant.make"),
+            "dotted unit-variant as call arg must emit variant.make; ops: {ops:?}"
         );
     }
 

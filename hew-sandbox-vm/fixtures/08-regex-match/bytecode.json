@@ -1,826 +1,1265 @@
 {
-  "capabilities": [
+  "aggregates": [
     {
-      "disposition": "allowed",
-      "id": "core.stdout",
-      "reason": "stdout is captured by the educational sandbox trace",
-      "required_by": [
-        "sym:core.stdout.println"
-      ]
-    },
-    {
-      "disposition": "reserved",
-      "id": "std.text.regex.compile",
-      "reason": "regex execution waits for the sandbox-safe regex shim",
-      "required_by": [
-        "sym:std.text.regex.compile",
-        "sym:std.text.regex.find",
-        "sym:std.text.regex.free"
-      ]
+      "fields": [
+        "handle"
+      ],
+      "id": 0,
+      "name": "std.text.regex.Pattern"
     }
   ],
+  "bytes": [],
+  "closures": [],
   "compiler_version": "hew-sandbox-wasm-0.6.0-rc4",
+  "entry": {
+    "exit": "unit",
+    "function": 0
+  },
+  "externs": [
+    {
+      "id": 0,
+      "symbol": "hew_regex_new"
+    },
+    {
+      "id": 1,
+      "symbol": "hew_regex_is_valid"
+    },
+    {
+      "id": 2,
+      "symbol": "hew_regex_find"
+    },
+    {
+      "id": 3,
+      "symbol": "hew_regex_free"
+    }
+  ],
   "functions": [
     {
       "blocks": [
         {
-          "id": "block:entry",
-          "instructions": [
+          "id": 0,
+          "ops": [
             {
-              "args": [
-                {
-                  "kind": "literal",
-                  "value": "[0-9]+"
-                }
-              ],
-              "dst": "local:main.0",
-              "op": "const.string",
-              "span": "span:59-67"
-            },
-            {
-              "args": [
-                {
-                  "kind": "local",
-                  "value": "local:main.0"
-                }
-              ],
-              "dst": "local:main.1",
-              "op": "regex.compile",
-              "span": "span:49-68"
-            },
-            {
-              "args": [
-                {
-                  "kind": "local",
-                  "value": "local:main.2"
-                },
-                {
-                  "kind": "local",
-                  "value": "local:main.1"
-                }
-              ],
-              "dst": null,
-              "op": "local.set",
-              "span": "span:44-47"
-            },
-            {
-              "args": [
-                {
-                  "kind": "local",
-                  "value": "local:main.2"
-                }
-              ],
-              "dst": "local:main.3",
-              "op": "local.get",
-              "span": "span:82-84"
-            },
-            {
-              "args": [
-                {
-                  "kind": "literal",
-                  "value": "abc123"
-                }
-              ],
-              "dst": "local:main.4",
-              "op": "const.string",
-              "span": "span:90-98"
-            },
-            {
-              "args": [
-                {
-                  "kind": "local",
-                  "value": "local:main.3"
-                },
-                {
-                  "kind": "local",
-                  "value": "local:main.4"
-                }
-              ],
-              "dst": "local:main.5",
-              "op": "regex.find",
-              "span": "span:82-99"
-            },
-            {
-              "args": [
-                {
-                  "kind": "symbol",
-                  "value": "sym:core.stdout.println"
-                },
-                {
-                  "kind": "local",
-                  "value": "local:main.5"
-                }
-              ],
-              "dst": null,
-              "op": "call.stdlib",
-              "span": "span:74-100"
-            },
-            {
-              "args": [],
-              "dst": "local:main.6",
-              "op": "const.unit",
-              "span": "span:74-100"
-            },
-            {
-              "args": [
-                {
-                  "kind": "local",
-                  "value": "local:main.2"
-                }
-              ],
-              "dst": "local:main.7",
-              "op": "local.get",
-              "span": "span:106-108"
-            },
-            {
-              "args": [
-                {
-                  "kind": "local",
-                  "value": "local:main.7"
-                }
-              ],
-              "dst": null,
-              "op": "regex.free",
-              "span": "span:106-116"
-            },
-            {
-              "args": [],
-              "dst": "local:main.8",
-              "op": "const.unit",
-              "span": "span:106-116"
-            },
-            {
-              "args": [],
-              "dst": "local:main.9",
-              "op": "const.unit",
-              "span": "span:24-119"
+              "dst": 0,
+              "op": "const.str",
+              "span": {
+                "end": 59,
+                "start": 59
+              },
+              "str": 0
             }
           ],
           "params": [],
-          "span": null,
-          "terminator": {
+          "term": {
             "args": [
               {
-                "kind": "local",
-                "value": "local:main.9"
+                "decision": "borrow",
+                "value": 0
               }
             ],
+            "callee": 1,
+            "normal": {
+              "args": [
+                1
+              ],
+              "to": 1
+            },
+            "op": "call",
+            "result": {
+              "own": "owned",
+              "value": 1
+            },
+            "span": {
+              "end": 59,
+              "start": 59
+            },
+            "unwind": {
+              "args": [],
+              "to": 2
+            }
+          }
+        },
+        {
+          "id": 1,
+          "ops": [
+            {
+              "dst": null,
+              "op": "destroy_value",
+              "span": null,
+              "value": 0
+            },
+            {
+              "dst": null,
+              "op": "alloc_place",
+              "place": 0,
+              "span": null
+            },
+            {
+              "dst": null,
+              "op": "store.init",
+              "place": 0,
+              "span": null,
+              "value": 2
+            },
+            {
+              "dst": 3,
+              "op": "load.borrow",
+              "place": 0,
+              "span": {
+                "end": 82,
+                "start": 82
+              }
+            },
+            {
+              "dst": 4,
+              "op": "const.str",
+              "span": {
+                "end": 90,
+                "start": 90
+              },
+              "str": 1
+            }
+          ],
+          "params": [
+            {
+              "own": "owned",
+              "value": 2
+            }
+          ],
+          "term": {
+            "args": [
+              {
+                "decision": "borrow",
+                "value": 3
+              },
+              {
+                "decision": "borrow",
+                "value": 4
+              }
+            ],
+            "callee": 2,
+            "normal": {
+              "args": [
+                5
+              ],
+              "to": 4
+            },
+            "op": "call",
+            "result": {
+              "own": "owned",
+              "value": 5
+            },
+            "span": {
+              "end": 90,
+              "start": 90
+            },
+            "unwind": {
+              "args": [],
+              "to": 5
+            }
+          }
+        },
+        {
+          "id": 2,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 3
+            },
+            "op": "goto",
+            "span": {
+              "end": 59,
+              "start": 59
+            }
+          }
+        },
+        {
+          "id": 3,
+          "ops": [
+            {
+              "dst": null,
+              "op": "destroy_value",
+              "span": null,
+              "value": 0
+            }
+          ],
+          "params": [],
+          "term": {
+            "op": "resume_unwind",
+            "span": {
+              "end": 59,
+              "start": 59
+            }
+          }
+        },
+        {
+          "id": 4,
+          "ops": [
+            {
+              "borrow": 3,
+              "dst": null,
+              "op": "end_borrow",
+              "span": null
+            },
+            {
+              "dst": null,
+              "op": "destroy_value",
+              "span": null,
+              "value": 4
+            }
+          ],
+          "params": [
+            {
+              "own": "owned",
+              "value": 6
+            }
+          ],
+          "term": {
+            "args": [
+              {
+                "decision": "borrow",
+                "value": 6
+              }
+            ],
+            "family": 0,
+            "normal": {
+              "args": [],
+              "to": 8
+            },
+            "op": "runtime.call",
+            "result": null,
+            "result_shape": null,
+            "span": {
+              "end": 90,
+              "start": 90
+            },
+            "unwind": null
+          }
+        },
+        {
+          "id": 5,
+          "ops": [
+            {
+              "borrow": 3,
+              "dst": null,
+              "op": "end_borrow",
+              "span": null
+            }
+          ],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 6
+            },
+            "op": "goto",
+            "span": {
+              "end": 90,
+              "start": 90
+            }
+          }
+        },
+        {
+          "id": 6,
+          "ops": [
+            {
+              "dst": null,
+              "op": "destroy_value",
+              "span": null,
+              "value": 4
+            },
+            {
+              "dst": null,
+              "op": "end_lifetime",
+              "place": 0,
+              "span": null
+            }
+          ],
+          "params": [],
+          "term": {
+            "fault": {
+              "args": [],
+              "to": 7
+            },
+            "normal": {
+              "args": [],
+              "to": 7
+            },
+            "op": "cleanup.dispatch",
+            "span": {
+              "end": 90,
+              "start": 90
+            }
+          }
+        },
+        {
+          "id": 7,
+          "ops": [],
+          "params": [],
+          "term": {
+            "op": "resume_unwind",
+            "span": {
+              "end": 90,
+              "start": 90
+            }
+          }
+        },
+        {
+          "id": 8,
+          "ops": [
+            {
+              "dst": null,
+              "op": "destroy_value",
+              "span": null,
+              "value": 6
+            },
+            {
+              "dst": 7,
+              "op": "load.take",
+              "place": 0,
+              "span": {
+                "end": 106,
+                "start": 106
+              }
+            },
+            {
+              "dst": 8,
+              "op": "move",
+              "source": 7,
+              "span": {
+                "end": 106,
+                "start": 106
+              }
+            }
+          ],
+          "params": [],
+          "term": {
+            "args": [
+              {
+                "decision": "move",
+                "value": 8
+              }
+            ],
+            "callee": 3,
+            "normal": {
+              "args": [],
+              "to": 9
+            },
+            "op": "call",
+            "result": null,
+            "span": {
+              "end": 106,
+              "start": 106
+            },
+            "unwind": {
+              "args": [],
+              "to": 10
+            }
+          }
+        },
+        {
+          "id": 9,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 13
+            },
+            "op": "goto",
+            "span": {
+              "end": 106,
+              "start": 106
+            }
+          }
+        },
+        {
+          "id": 10,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 11
+            },
+            "op": "goto",
+            "span": {
+              "end": 106,
+              "start": 106
+            }
+          }
+        },
+        {
+          "id": 11,
+          "ops": [
+            {
+              "dst": null,
+              "op": "end_lifetime",
+              "place": 0,
+              "span": null
+            }
+          ],
+          "params": [],
+          "term": {
+            "fault": {
+              "args": [],
+              "to": 12
+            },
+            "normal": {
+              "args": [],
+              "to": 12
+            },
+            "op": "cleanup.dispatch",
+            "span": {
+              "end": 106,
+              "start": 106
+            }
+          }
+        },
+        {
+          "id": 12,
+          "ops": [],
+          "params": [],
+          "term": {
+            "op": "resume_unwind",
+            "span": {
+              "end": 106,
+              "start": 106
+            }
+          }
+        },
+        {
+          "id": 13,
+          "ops": [
+            {
+              "dst": null,
+              "op": "end_lifetime",
+              "place": 0,
+              "span": null
+            }
+          ],
+          "params": [],
+          "term": {
+            "fault": {
+              "args": [],
+              "to": 15
+            },
+            "normal": {
+              "args": [],
+              "to": 14
+            },
+            "op": "cleanup.dispatch",
+            "span": {
+              "end": 106,
+              "start": 106
+            }
+          }
+        },
+        {
+          "id": 14,
+          "ops": [],
+          "params": [],
+          "term": {
             "op": "return",
-            "span": "span:24-119"
+            "span": {
+              "end": 106,
+              "start": 106
+            },
+            "value": null
+          }
+        },
+        {
+          "id": 15,
+          "ops": [],
+          "params": [],
+          "term": {
+            "op": "resume_unwind",
+            "span": {
+              "end": 106,
+              "start": 106
+            }
           }
         }
       ],
-      "id": "fn:main",
-      "locals": [
+      "entry": 0,
+      "id": 0,
+      "name": "__hew_fn_main",
+      "params": [],
+      "places": [
         {
-          "id": "local:main.0",
-          "mutable": false,
-          "name": null,
-          "span": "span:59-67",
-          "type": "type:string"
+          "id": 0,
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "blocks": [
+        {
+          "id": 0,
+          "ops": [],
+          "params": [],
+          "term": {
+            "args": [
+              {
+                "decision": "borrow",
+                "value": 0
+              }
+            ],
+            "extern": 0,
+            "normal": {
+              "args": [
+                1
+              ],
+              "to": 1
+            },
+            "op": "extern.call",
+            "result": {
+              "own": "none",
+              "value": 1
+            },
+            "result_shape": null,
+            "span": null,
+            "unwind": null
+          }
         },
         {
-          "id": "local:main.1",
-          "mutable": false,
-          "name": null,
-          "span": "span:49-68",
-          "type": "type:std.text.regex.Pattern"
+          "id": 1,
+          "ops": [
+            {
+              "dst": 3,
+              "fields": [
+                2
+              ],
+              "op": "aggregate.make",
+              "shape": 0,
+              "span": null
+            },
+            {
+              "dst": null,
+              "op": "alloc_place",
+              "place": 0,
+              "span": null
+            },
+            {
+              "dst": null,
+              "op": "store.init",
+              "place": 0,
+              "span": null,
+              "value": 3
+            },
+            {
+              "dst": 4,
+              "op": "load.borrow",
+              "place": 0,
+              "span": null
+            },
+            {
+              "aggregate": 4,
+              "dst": 5,
+              "field": 0,
+              "op": "aggregate.project_copy",
+              "shape": 0,
+              "span": null
+            }
+          ],
+          "params": [
+            {
+              "own": "none",
+              "value": 2
+            }
+          ],
+          "term": {
+            "args": [
+              {
+                "decision": "copy",
+                "value": 5
+              }
+            ],
+            "extern": 1,
+            "normal": {
+              "args": [
+                6
+              ],
+              "to": 2
+            },
+            "op": "extern.call",
+            "result": {
+              "own": "none",
+              "value": 6
+            },
+            "result_shape": null,
+            "span": null,
+            "unwind": null
+          }
         },
         {
-          "id": "local:main.2",
-          "mutable": false,
-          "name": "re",
-          "span": "span:44-47",
-          "type": "type:std.text.regex.Pattern"
+          "id": 2,
+          "ops": [
+            {
+              "borrow": 4,
+              "dst": null,
+              "op": "end_borrow",
+              "span": null
+            },
+            {
+              "dst": 8,
+              "op": "unary",
+              "span": null,
+              "ty": "bool",
+              "unary_op": "Not",
+              "value": 7
+            }
+          ],
+          "params": [
+            {
+              "own": "none",
+              "value": 7
+            }
+          ],
+          "term": {
+            "condition": 8,
+            "else": {
+              "args": [],
+              "to": 4
+            },
+            "op": "branch",
+            "span": null,
+            "then": {
+              "args": [],
+              "to": 3
+            }
+          }
         },
         {
-          "id": "local:main.3",
-          "mutable": false,
-          "name": null,
-          "span": "span:82-84",
-          "type": "type:std.text.regex.Pattern"
+          "id": 3,
+          "ops": [
+            {
+              "dst": 9,
+              "op": "const.str",
+              "span": null,
+              "str": 2
+            }
+          ],
+          "params": [],
+          "term": {
+            "args": [
+              {
+                "decision": "borrow",
+                "value": 0
+              }
+            ],
+            "callee": 4,
+            "normal": {
+              "args": [
+                10
+              ],
+              "to": 5
+            },
+            "op": "call",
+            "result": {
+              "own": "owned",
+              "value": 10
+            },
+            "span": null,
+            "unwind": {
+              "args": [],
+              "to": 6
+            }
+          }
         },
         {
-          "id": "local:main.4",
-          "mutable": false,
-          "name": null,
-          "span": "span:90-98",
-          "type": "type:string"
+          "id": 4,
+          "ops": [
+            {
+              "dst": 14,
+              "op": "load.take",
+              "place": 0,
+              "span": null
+            },
+            {
+              "dst": null,
+              "op": "end_lifetime",
+              "place": 0,
+              "span": null
+            }
+          ],
+          "params": [],
+          "term": {
+            "fault": {
+              "args": [],
+              "to": 14
+            },
+            "normal": {
+              "args": [],
+              "to": 13
+            },
+            "op": "cleanup.dispatch",
+            "span": null
+          }
         },
         {
-          "id": "local:main.5",
-          "mutable": false,
-          "name": null,
-          "span": "span:82-99",
-          "type": "type:string"
+          "id": 5,
+          "ops": [],
+          "params": [
+            {
+              "own": "owned",
+              "value": 11
+            }
+          ],
+          "term": {
+            "args": [
+              {
+                "decision": "borrow",
+                "value": 9
+              },
+              {
+                "decision": "borrow",
+                "value": 11
+              }
+            ],
+            "family": 1,
+            "normal": {
+              "args": [
+                12
+              ],
+              "to": 9
+            },
+            "op": "runtime.call",
+            "result": {
+              "own": "owned",
+              "value": 12
+            },
+            "result_shape": null,
+            "span": null,
+            "unwind": null
+          }
         },
         {
-          "id": "local:main.6",
-          "mutable": false,
-          "name": null,
-          "span": "span:74-100",
-          "type": "type:unit"
+          "id": 6,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 7
+            },
+            "op": "goto",
+            "span": null
+          }
         },
         {
-          "id": "local:main.7",
-          "mutable": false,
-          "name": null,
-          "span": "span:106-108",
-          "type": "type:std.text.regex.Pattern"
+          "id": 7,
+          "ops": [
+            {
+              "dst": null,
+              "op": "destroy_value",
+              "span": null,
+              "value": 9
+            },
+            {
+              "dst": null,
+              "op": "end_lifetime",
+              "place": 0,
+              "span": null
+            }
+          ],
+          "params": [],
+          "term": {
+            "fault": {
+              "args": [],
+              "to": 8
+            },
+            "normal": {
+              "args": [],
+              "to": 8
+            },
+            "op": "cleanup.dispatch",
+            "span": null
+          }
         },
         {
-          "id": "local:main.8",
-          "mutable": false,
-          "name": null,
-          "span": "span:106-116",
-          "type": "type:unit"
+          "id": 8,
+          "ops": [],
+          "params": [],
+          "term": {
+            "op": "resume_unwind",
+            "span": null
+          }
         },
         {
-          "id": "local:main.9",
-          "mutable": false,
-          "name": null,
-          "span": "span:24-119",
-          "type": "type:unit"
+          "id": 9,
+          "ops": [
+            {
+              "dst": null,
+              "op": "destroy_value",
+              "span": null,
+              "value": 11
+            },
+            {
+              "dst": null,
+              "op": "destroy_value",
+              "span": null,
+              "value": 9
+            }
+          ],
+          "params": [
+            {
+              "own": "owned",
+              "value": 13
+            }
+          ],
+          "term": {
+            "cleanup": {
+              "args": [],
+              "to": 10
+            },
+            "message": {
+              "decision": "borrow",
+              "value": 13
+            },
+            "op": "panic",
+            "span": null
+          }
+        },
+        {
+          "id": 10,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 11
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 11,
+          "ops": [
+            {
+              "dst": null,
+              "op": "destroy_value",
+              "span": null,
+              "value": 13
+            },
+            {
+              "dst": null,
+              "op": "end_lifetime",
+              "place": 0,
+              "span": null
+            }
+          ],
+          "params": [],
+          "term": {
+            "fault": {
+              "args": [],
+              "to": 12
+            },
+            "normal": {
+              "args": [],
+              "to": 12
+            },
+            "op": "cleanup.dispatch",
+            "span": null
+          }
+        },
+        {
+          "id": 12,
+          "ops": [],
+          "params": [],
+          "term": {
+            "op": "resume_unwind",
+            "span": null
+          }
+        },
+        {
+          "id": 13,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 17
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 14,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 15
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 15,
+          "ops": [
+            {
+              "dst": null,
+              "op": "destroy_value",
+              "span": null,
+              "value": 14
+            }
+          ],
+          "params": [],
+          "term": {
+            "fault": {
+              "args": [],
+              "to": 16
+            },
+            "normal": {
+              "args": [],
+              "to": 16
+            },
+            "op": "cleanup.dispatch",
+            "span": null
+          }
+        },
+        {
+          "id": 16,
+          "ops": [],
+          "params": [],
+          "term": {
+            "op": "resume_unwind",
+            "span": null
+          }
+        },
+        {
+          "id": 17,
+          "ops": [],
+          "params": [],
+          "term": {
+            "op": "return",
+            "span": null,
+            "value": {
+              "decision": "move",
+              "value": 14
+            }
+          }
         }
       ],
-      "module": "mod:main",
-      "name": "main",
-      "params": [],
-      "result": "type:unit",
-      "span": "span:24-119"
+      "entry": 0,
+      "id": 1,
+      "name": "__hew_fn_std$text$regex$new",
+      "params": [
+        {
+          "own": "guaranteed",
+          "value": 0
+        }
+      ],
+      "places": [
+        {
+          "id": 0,
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "blocks": [
+        {
+          "id": 0,
+          "ops": [
+            {
+              "aggregate": 0,
+              "dst": 2,
+              "field": 0,
+              "op": "aggregate.project_copy",
+              "shape": 0,
+              "span": null
+            }
+          ],
+          "params": [],
+          "term": {
+            "args": [
+              {
+                "decision": "copy",
+                "value": 2
+              },
+              {
+                "decision": "borrow",
+                "value": 1
+              }
+            ],
+            "extern": 2,
+            "normal": {
+              "args": [
+                3
+              ],
+              "to": 1
+            },
+            "op": "extern.call",
+            "result": {
+              "own": "owned",
+              "value": 3
+            },
+            "result_shape": null,
+            "span": null,
+            "unwind": null
+          }
+        },
+        {
+          "id": 1,
+          "ops": [],
+          "params": [
+            {
+              "own": "owned",
+              "value": 4
+            }
+          ],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 2
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 2,
+          "ops": [],
+          "params": [],
+          "term": {
+            "op": "return",
+            "span": null,
+            "value": {
+              "decision": "move",
+              "value": 4
+            }
+          }
+        }
+      ],
+      "entry": 0,
+      "id": 2,
+      "name": "__hew_fn_std.text.regex.Pattern::find",
+      "params": [
+        {
+          "own": "guaranteed",
+          "value": 0
+        },
+        {
+          "own": "guaranteed",
+          "value": 1
+        }
+      ],
+      "places": []
+    },
+    {
+      "blocks": [
+        {
+          "id": 0,
+          "ops": [
+            {
+              "dst": null,
+              "op": "alloc_place",
+              "place": 0,
+              "span": null
+            },
+            {
+              "dst": null,
+              "op": "store.init",
+              "place": 0,
+              "span": null,
+              "value": 0
+            },
+            {
+              "dst": 1,
+              "op": "load.borrow",
+              "place": 0,
+              "span": null
+            },
+            {
+              "aggregate": 1,
+              "dst": 2,
+              "field": 0,
+              "op": "aggregate.project_copy",
+              "shape": 0,
+              "span": null
+            }
+          ],
+          "params": [],
+          "term": {
+            "args": [
+              {
+                "decision": "copy",
+                "value": 2
+              }
+            ],
+            "extern": 3,
+            "normal": {
+              "args": [],
+              "to": 1
+            },
+            "op": "extern.call",
+            "result": null,
+            "result_shape": null,
+            "span": null,
+            "unwind": null
+          }
+        },
+        {
+          "id": 1,
+          "ops": [
+            {
+              "borrow": 1,
+              "dst": null,
+              "op": "end_borrow",
+              "span": null
+            }
+          ],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 2
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 2,
+          "ops": [
+            {
+              "dst": null,
+              "op": "end_lifetime",
+              "place": 0,
+              "span": null
+            }
+          ],
+          "params": [],
+          "term": {
+            "fault": {
+              "args": [],
+              "to": 4
+            },
+            "normal": {
+              "args": [],
+              "to": 3
+            },
+            "op": "cleanup.dispatch",
+            "span": null
+          }
+        },
+        {
+          "id": 3,
+          "ops": [],
+          "params": [],
+          "term": {
+            "op": "return",
+            "span": null,
+            "value": null
+          }
+        },
+        {
+          "id": 4,
+          "ops": [],
+          "params": [],
+          "term": {
+            "op": "resume_unwind",
+            "span": null
+          }
+        }
+      ],
+      "entry": 0,
+      "id": 3,
+      "name": "__hew_fn_std.text.regex.Pattern::close",
+      "params": [
+        {
+          "own": "owned",
+          "value": 0
+        }
+      ],
+      "places": [
+        {
+          "id": 0,
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "blocks": [
+        {
+          "id": 0,
+          "ops": [
+            {
+              "dst": 1,
+              "op": "copy_value",
+              "source": 0,
+              "span": null
+            }
+          ],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 1
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 1,
+          "ops": [],
+          "params": [],
+          "term": {
+            "op": "return",
+            "span": null,
+            "value": {
+              "decision": "move",
+              "value": 1
+            }
+          }
+        }
+      ],
+      "entry": 0,
+      "id": 4,
+      "name": "__hew_fn_std.builtins.string::fmt",
+      "params": [
+        {
+          "own": "guaranteed",
+          "value": 0
+        }
+      ],
+      "places": []
     }
   ],
   "hew_version": "0.6.0-rc4",
-  "layouts": {
-    "actors": [],
-    "enums": [],
-    "machines": [],
-    "records": [],
-    "supervisors": [],
-    "types": [
-      {
-        "id": "type:ActorError",
-        "kind": "enum",
-        "name": "ActorError"
-      },
-      {
-        "id": "type:ActorMailbox",
-        "kind": "record",
-        "name": "ActorMailbox"
-      },
-      {
-        "id": "type:ActorPolicy",
-        "kind": "record",
-        "name": "ActorPolicy"
-      },
-      {
-        "id": "type:ActorRequest",
-        "kind": "record",
-        "name": "ActorRequest"
-      },
-      {
-        "id": "type:ActorRequestAdmission",
-        "kind": "record",
-        "name": "ActorRequestAdmission"
-      },
-      {
-        "id": "type:ActorRequestOwner",
-        "kind": "record",
-        "name": "ActorRequestOwner"
-      },
-      {
-        "id": "type:ChildRef",
-        "kind": "record",
-        "name": "ChildRef"
-      },
-      {
-        "id": "type:Delivery",
-        "kind": "enum",
-        "name": "Delivery"
-      },
-      {
-        "id": "type:DropNewestSend",
-        "kind": "record",
-        "name": "DropNewestSend"
-      },
-      {
-        "id": "type:HashMapIter",
-        "kind": "record",
-        "name": "HashMapIter"
-      },
-      {
-        "id": "type:Location",
-        "kind": "record",
-        "name": "Location"
-      },
-      {
-        "id": "type:Message",
-        "kind": "record",
-        "name": "Message"
-      },
-      {
-        "id": "type:Never",
-        "kind": "enum",
-        "name": "Never"
-      },
-      {
-        "id": "type:NodeConfig",
-        "kind": "record",
-        "name": "NodeConfig"
-      },
-      {
-        "id": "type:NodeId",
-        "kind": "record",
-        "name": "NodeId"
-      },
-      {
-        "id": "type:OnFull",
-        "kind": "enum",
-        "name": "OnFull"
-      },
-      {
-        "id": "type:RejectSend",
-        "kind": "record",
-        "name": "RejectSend"
-      },
-      {
-        "id": "type:RemotePid",
-        "kind": "record",
-        "name": "RemotePid"
-      },
-      {
-        "id": "type:ReplaceLatestSend",
-        "kind": "record",
-        "name": "ReplaceLatestSend"
-      },
-      {
-        "id": "type:ScopeFailure",
-        "kind": "enum",
-        "name": "ScopeFailure"
-      },
-      {
-        "id": "type:SendError",
-        "kind": "enum",
-        "name": "SendError"
-      },
-      {
-        "id": "type:SendFailure",
-        "kind": "record",
-        "name": "SendFailure"
-      },
-      {
-        "id": "type:VecIter",
-        "kind": "record",
-        "name": "VecIter"
-      },
-      {
-        "id": "type:WaitSend",
-        "kind": "record",
-        "name": "WaitSend"
-      },
-      {
-        "id": "type:bool",
-        "kind": "bool",
-        "name": "bool"
-      },
-      {
-        "id": "type:char",
-        "kind": "string",
-        "name": "char"
-      },
-      {
-        "id": "type:duration",
-        "kind": "integer",
-        "name": "duration"
-      },
-      {
-        "id": "type:f64",
-        "kind": "float",
-        "name": "f64"
-      },
-      {
-        "id": "type:i64",
-        "kind": "integer",
-        "name": "i64"
-      },
-      {
-        "id": "type:never",
-        "kind": "never",
-        "name": "never"
-      },
-      {
-        "id": "type:regex",
-        "kind": "regex",
-        "name": "regex"
-      },
-      {
-        "id": "type:reply",
-        "kind": "opaque",
-        "name": "ReplyToken"
-      },
-      {
-        "id": "type:std.builtins.ActorError",
-        "kind": "enum",
-        "name": "std.builtins.ActorError"
-      },
-      {
-        "id": "type:std.builtins.ActorMailbox",
-        "kind": "record",
-        "name": "std.builtins.ActorMailbox"
-      },
-      {
-        "id": "type:std.builtins.ActorPolicy",
-        "kind": "record",
-        "name": "std.builtins.ActorPolicy"
-      },
-      {
-        "id": "type:std.builtins.ActorRequest",
-        "kind": "record",
-        "name": "std.builtins.ActorRequest"
-      },
-      {
-        "id": "type:std.builtins.ActorRequestAdmission",
-        "kind": "record",
-        "name": "std.builtins.ActorRequestAdmission"
-      },
-      {
-        "id": "type:std.builtins.ActorRequestOwner",
-        "kind": "record",
-        "name": "std.builtins.ActorRequestOwner"
-      },
-      {
-        "id": "type:std.builtins.ChildRef",
-        "kind": "record",
-        "name": "std.builtins.ChildRef"
-      },
-      {
-        "id": "type:std.builtins.Delivery",
-        "kind": "enum",
-        "name": "std.builtins.Delivery"
-      },
-      {
-        "id": "type:std.builtins.DropNewestSend",
-        "kind": "record",
-        "name": "std.builtins.DropNewestSend"
-      },
-      {
-        "id": "type:std.builtins.HashMapIter",
-        "kind": "record",
-        "name": "std.builtins.HashMapIter"
-      },
-      {
-        "id": "type:std.builtins.LinkError",
-        "kind": "enum",
-        "name": "std.builtins.LinkError"
-      },
-      {
-        "id": "type:std.builtins.Location",
-        "kind": "record",
-        "name": "std.builtins.Location"
-      },
-      {
-        "id": "type:std.builtins.LookupError",
-        "kind": "enum",
-        "name": "std.builtins.LookupError"
-      },
-      {
-        "id": "type:std.builtins.Message",
-        "kind": "record",
-        "name": "std.builtins.Message"
-      },
-      {
-        "id": "type:std.builtins.Never",
-        "kind": "enum",
-        "name": "std.builtins.Never"
-      },
-      {
-        "id": "type:std.builtins.NodeConfig",
-        "kind": "record",
-        "name": "std.builtins.NodeConfig"
-      },
-      {
-        "id": "type:std.builtins.NodeError",
-        "kind": "enum",
-        "name": "std.builtins.NodeError"
-      },
-      {
-        "id": "type:std.builtins.NodeId",
-        "kind": "record",
-        "name": "std.builtins.NodeId"
-      },
-      {
-        "id": "type:std.builtins.OnFull",
-        "kind": "enum",
-        "name": "std.builtins.OnFull"
-      },
-      {
-        "id": "type:std.builtins.RejectSend",
-        "kind": "record",
-        "name": "std.builtins.RejectSend"
-      },
-      {
-        "id": "type:std.builtins.RemotePid",
-        "kind": "record",
-        "name": "std.builtins.RemotePid"
-      },
-      {
-        "id": "type:std.builtins.ReplaceLatestSend",
-        "kind": "record",
-        "name": "std.builtins.ReplaceLatestSend"
-      },
-      {
-        "id": "type:std.builtins.ScopeFailure",
-        "kind": "enum",
-        "name": "std.builtins.ScopeFailure"
-      },
-      {
-        "id": "type:std.builtins.SendError",
-        "kind": "enum",
-        "name": "std.builtins.SendError"
-      },
-      {
-        "id": "type:std.builtins.SendFailure",
-        "kind": "record",
-        "name": "std.builtins.SendFailure"
-      },
-      {
-        "id": "type:std.builtins.TimeoutError",
-        "kind": "enum",
-        "name": "std.builtins.TimeoutError"
-      },
-      {
-        "id": "type:std.builtins.VecIter",
-        "kind": "record",
-        "name": "std.builtins.VecIter"
-      },
-      {
-        "id": "type:std.builtins.WaitSend",
-        "kind": "record",
-        "name": "std.builtins.WaitSend"
-      },
-      {
-        "id": "type:std.failure.CrashAction",
-        "kind": "enum",
-        "name": "std.failure.CrashAction"
-      },
-      {
-        "id": "type:std.failure.CrashInfo",
-        "kind": "record",
-        "name": "std.failure.CrashInfo"
-      },
-      {
-        "id": "type:std.failure.CrashKind",
-        "kind": "enum",
-        "name": "std.failure.CrashKind"
-      },
-      {
-        "id": "type:std.failure.CrashNotification",
-        "kind": "record",
-        "name": "std.failure.CrashNotification"
-      },
-      {
-        "id": "type:std.text.regex.CaptureMatches",
-        "kind": "record",
-        "name": "std.text.regex.CaptureMatches"
-      },
-      {
-        "id": "type:std.text.regex.Pattern",
-        "kind": "regex",
-        "name": "std.text.regex.Pattern"
-      },
-      {
-        "id": "type:std.text.regex.PatternHandle",
-        "kind": "record",
-        "name": "std.text.regex.PatternHandle"
-      },
-      {
-        "id": "type:string",
-        "kind": "string",
-        "name": "string"
-      },
-      {
-        "id": "type:u64",
-        "kind": "integer",
-        "name": "u64"
-      },
-      {
-        "id": "type:unit",
-        "kind": "unit",
-        "name": "unit"
-      }
-    ]
-  },
-  "module_graph": {
-    "entry": "mod:main",
-    "modules": [
-      {
-        "functions": [
-          "fn:main"
-        ],
-        "id": "mod:main",
-        "imports": [
-          {
-            "path": "std::text::regex",
-            "resolved_module": "mod:std.text.regex"
-          }
-        ],
-        "path": "main",
-        "source_id": "src:main"
-      }
-    ]
-  },
-  "package_id": "pkg:cce3b4a702067d60",
   "profile": "sandbox.sandbox-vm-export.v0",
-  "schema_version": "hew.sandbox.bytecode.v0",
-  "source_map": {
-    "sources": [
-      {
-        "content_sha256": "36ca58c52bca6352837c9faaccf5056d6f1a1078de44852edca1406a9478008d",
-        "id": "src:main",
-        "path": "main.hew"
-      }
-    ],
-    "spans": [
-      {
-        "end": {
-          "byte_offset": 119,
-          "column": 2,
-          "line": 7
-        },
-        "id": "span:24-119",
-        "source_id": "src:main",
-        "start": {
-          "byte_offset": 24,
-          "column": 1,
-          "line": 3
-        }
-      },
-      {
-        "end": {
-          "byte_offset": 47,
-          "column": 12,
-          "line": 4
-        },
-        "id": "span:44-47",
-        "source_id": "src:main",
-        "start": {
-          "byte_offset": 44,
-          "column": 9,
-          "line": 4
-        }
-      },
-      {
-        "end": {
-          "byte_offset": 68,
-          "column": 33,
-          "line": 4
-        },
-        "id": "span:49-68",
-        "source_id": "src:main",
-        "start": {
-          "byte_offset": 49,
-          "column": 14,
-          "line": 4
-        }
-      },
-      {
-        "end": {
-          "byte_offset": 67,
-          "column": 32,
-          "line": 4
-        },
-        "id": "span:59-67",
-        "source_id": "src:main",
-        "start": {
-          "byte_offset": 59,
-          "column": 24,
-          "line": 4
-        }
-      },
-      {
-        "end": {
-          "byte_offset": 100,
-          "column": 31,
-          "line": 5
-        },
-        "id": "span:74-100",
-        "source_id": "src:main",
-        "start": {
-          "byte_offset": 74,
-          "column": 5,
-          "line": 5
-        }
-      },
-      {
-        "end": {
-          "byte_offset": 84,
-          "column": 15,
-          "line": 5
-        },
-        "id": "span:82-84",
-        "source_id": "src:main",
-        "start": {
-          "byte_offset": 82,
-          "column": 13,
-          "line": 5
-        }
-      },
-      {
-        "end": {
-          "byte_offset": 99,
-          "column": 30,
-          "line": 5
-        },
-        "id": "span:82-99",
-        "source_id": "src:main",
-        "start": {
-          "byte_offset": 82,
-          "column": 13,
-          "line": 5
-        }
-      },
-      {
-        "end": {
-          "byte_offset": 98,
-          "column": 29,
-          "line": 5
-        },
-        "id": "span:90-98",
-        "source_id": "src:main",
-        "start": {
-          "byte_offset": 90,
-          "column": 21,
-          "line": 5
-        }
-      },
-      {
-        "end": {
-          "byte_offset": 108,
-          "column": 7,
-          "line": 6
-        },
-        "id": "span:106-108",
-        "source_id": "src:main",
-        "start": {
-          "byte_offset": 106,
-          "column": 5,
-          "line": 6
-        }
-      },
-      {
-        "end": {
-          "byte_offset": 116,
-          "column": 15,
-          "line": 6
-        },
-        "id": "span:106-116",
-        "source_id": "src:main",
-        "start": {
-          "byte_offset": 106,
-          "column": 5,
-          "line": 6
-        }
-      }
-    ]
-  },
-  "stdlib_symbols": [
+  "regex_patterns": [],
+  "runtime_families": [
     {
-      "admission": "allowed",
-      "capability": "core.stdout",
-      "id": "sym:core.stdout.println",
-      "module": "core.stdout",
-      "name": "println",
-      "params": [
-        "type:string"
-      ],
-      "result": "type:unit"
+      "detail": {
+        "kind": "Str",
+        "newline": true
+      },
+      "family": "Print",
+      "id": 0
     },
     {
-      "admission": "reserved",
-      "capability": "std.text.regex.compile",
-      "id": "sym:std.text.regex.compile",
-      "module": "std.text.regex",
-      "name": "compile",
-      "params": [],
-      "result": "type:regex"
-    },
-    {
-      "admission": "reserved",
-      "capability": "std.text.regex.compile",
-      "id": "sym:std.text.regex.find",
-      "module": "std.text.regex",
-      "name": "find",
-      "params": [],
-      "result": "type:string"
-    },
-    {
-      "admission": "reserved",
-      "capability": "std.text.regex.compile",
-      "id": "sym:std.text.regex.free",
-      "module": "std.text.regex",
-      "name": "free",
-      "params": [],
-      "result": "type:unit"
+      "family": "StringConcat",
+      "id": 1
     }
-  ]
+  ],
+  "schema_version": "hew.sandbox.bytecode.v1",
+  "strings": [
+    "[0-9]+",
+    "abc123",
+    "regex.new: invalid pattern: "
+  ],
+  "suspend_kinds": [],
+  "value_capabilities": [],
+  "variants": [],
+  "vtables": []
 }

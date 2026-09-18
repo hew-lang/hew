@@ -1,0 +1,475 @@
+{
+  "aggregates": [],
+  "bytes": [],
+  "closures": [],
+  "compiler_version": "hew-sandbox-wasm-0.6.0-rc4",
+  "entry": {
+    "exit": "unit",
+    "function": 0
+  },
+  "externs": [
+    {
+      "id": 0,
+      "symbol": "hew_io_read_line"
+    }
+  ],
+  "functions": [
+    {
+      "blocks": [
+        {
+          "id": 0,
+          "ops": [],
+          "params": [],
+          "term": {
+            "args": [],
+            "callee": 1,
+            "normal": {
+              "args": [
+                0
+              ],
+              "to": 1
+            },
+            "op": "call",
+            "result": {
+              "own": "owned",
+              "value": 0
+            },
+            "span": {
+              "end": 43,
+              "start": 43
+            },
+            "unwind": {
+              "args": [],
+              "to": 2
+            }
+          }
+        },
+        {
+          "id": 1,
+          "ops": [
+            {
+              "dst": null,
+              "op": "alloc_place",
+              "place": 0,
+              "span": null
+            },
+            {
+              "dst": null,
+              "op": "store.init",
+              "place": 0,
+              "span": null,
+              "value": 1
+            },
+            {
+              "dst": 2,
+              "op": "const.str",
+              "span": {
+                "end": 71,
+                "start": 71
+              },
+              "str": 0
+            },
+            {
+              "dst": 3,
+              "op": "load.borrow",
+              "place": 0,
+              "span": {
+                "end": 80,
+                "start": 80
+              }
+            }
+          ],
+          "params": [
+            {
+              "own": "owned",
+              "value": 1
+            }
+          ],
+          "term": {
+            "args": [
+              {
+                "decision": "borrow",
+                "value": 3
+              }
+            ],
+            "callee": 2,
+            "normal": {
+              "args": [
+                4
+              ],
+              "to": 4
+            },
+            "op": "call",
+            "result": {
+              "own": "owned",
+              "value": 4
+            },
+            "span": {
+              "end": 80,
+              "start": 80
+            },
+            "unwind": {
+              "args": [],
+              "to": 5
+            }
+          }
+        },
+        {
+          "id": 2,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 3
+            },
+            "op": "goto",
+            "span": {
+              "end": 43,
+              "start": 43
+            }
+          }
+        },
+        {
+          "id": 3,
+          "ops": [],
+          "params": [],
+          "term": {
+            "op": "resume_unwind",
+            "span": {
+              "end": 43,
+              "start": 43
+            }
+          }
+        },
+        {
+          "id": 4,
+          "ops": [
+            {
+              "borrow": 3,
+              "dst": null,
+              "op": "end_borrow",
+              "span": null
+            }
+          ],
+          "params": [
+            {
+              "own": "owned",
+              "value": 5
+            }
+          ],
+          "term": {
+            "args": [
+              {
+                "decision": "borrow",
+                "value": 2
+              },
+              {
+                "decision": "borrow",
+                "value": 5
+              }
+            ],
+            "family": 0,
+            "normal": {
+              "args": [
+                6
+              ],
+              "to": 7
+            },
+            "op": "runtime.call",
+            "result": {
+              "own": "owned",
+              "value": 6
+            },
+            "result_shape": null,
+            "span": {
+              "end": 80,
+              "start": 80
+            },
+            "unwind": null
+          }
+        },
+        {
+          "id": 5,
+          "ops": [
+            {
+              "borrow": 3,
+              "dst": null,
+              "op": "end_borrow",
+              "span": null
+            }
+          ],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 6
+            },
+            "op": "goto",
+            "span": {
+              "end": 80,
+              "start": 80
+            }
+          }
+        },
+        {
+          "id": 6,
+          "ops": [
+            {
+              "dst": null,
+              "op": "destroy_value",
+              "span": null,
+              "value": 2
+            },
+            {
+              "dst": null,
+              "op": "end_lifetime",
+              "place": 0,
+              "span": null
+            }
+          ],
+          "params": [],
+          "term": {
+            "op": "resume_unwind",
+            "span": {
+              "end": 80,
+              "start": 80
+            }
+          }
+        },
+        {
+          "id": 7,
+          "ops": [
+            {
+              "dst": null,
+              "op": "destroy_value",
+              "span": null,
+              "value": 5
+            },
+            {
+              "dst": null,
+              "op": "destroy_value",
+              "span": null,
+              "value": 2
+            }
+          ],
+          "params": [
+            {
+              "own": "owned",
+              "value": 7
+            }
+          ],
+          "term": {
+            "args": [
+              {
+                "decision": "borrow",
+                "value": 7
+              }
+            ],
+            "family": 1,
+            "normal": {
+              "args": [],
+              "to": 8
+            },
+            "op": "runtime.call",
+            "result": null,
+            "result_shape": null,
+            "span": {
+              "end": 80,
+              "start": 80
+            },
+            "unwind": null
+          }
+        },
+        {
+          "id": 8,
+          "ops": [
+            {
+              "dst": null,
+              "op": "destroy_value",
+              "span": null,
+              "value": 7
+            }
+          ],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 9
+            },
+            "op": "goto",
+            "span": {
+              "end": 80,
+              "start": 80
+            }
+          }
+        },
+        {
+          "id": 9,
+          "ops": [
+            {
+              "dst": null,
+              "op": "end_lifetime",
+              "place": 0,
+              "span": null
+            }
+          ],
+          "params": [],
+          "term": {
+            "op": "return",
+            "span": {
+              "end": 80,
+              "start": 80
+            },
+            "value": null
+          }
+        }
+      ],
+      "entry": 0,
+      "id": 0,
+      "name": "__hew_fn_main",
+      "params": [],
+      "places": [
+        {
+          "id": 0,
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "blocks": [
+        {
+          "id": 0,
+          "ops": [],
+          "params": [],
+          "term": {
+            "args": [],
+            "extern": 0,
+            "normal": {
+              "args": [
+                0
+              ],
+              "to": 1
+            },
+            "op": "extern.call",
+            "result": {
+              "own": "owned",
+              "value": 0
+            },
+            "result_shape": null,
+            "span": null,
+            "unwind": null
+          }
+        },
+        {
+          "id": 1,
+          "ops": [],
+          "params": [
+            {
+              "own": "owned",
+              "value": 1
+            }
+          ],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 2
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 2,
+          "ops": [],
+          "params": [],
+          "term": {
+            "op": "return",
+            "span": null,
+            "value": {
+              "decision": "move",
+              "value": 1
+            }
+          }
+        }
+      ],
+      "entry": 0,
+      "id": 1,
+      "name": "__hew_fn_std$io$read_line",
+      "params": [],
+      "places": []
+    },
+    {
+      "blocks": [
+        {
+          "id": 0,
+          "ops": [
+            {
+              "dst": 1,
+              "op": "copy_value",
+              "source": 0,
+              "span": null
+            }
+          ],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 1
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 1,
+          "ops": [],
+          "params": [],
+          "term": {
+            "op": "return",
+            "span": null,
+            "value": {
+              "decision": "move",
+              "value": 1
+            }
+          }
+        }
+      ],
+      "entry": 0,
+      "id": 2,
+      "name": "__hew_fn_std.builtins.string::fmt",
+      "params": [
+        {
+          "own": "guaranteed",
+          "value": 0
+        }
+      ],
+      "places": []
+    }
+  ],
+  "hew_version": "0.6.0-rc4",
+  "profile": "sandbox.sandbox-vm-export.v0",
+  "regex_patterns": [],
+  "runtime_families": [
+    {
+      "family": "StringConcat",
+      "id": 0
+    },
+    {
+      "detail": {
+        "kind": "Str",
+        "newline": true
+      },
+      "family": "Print",
+      "id": 1
+    }
+  ],
+  "schema_version": "hew.sandbox.bytecode.v1",
+  "strings": [
+    "hello "
+  ],
+  "suspend_kinds": [],
+  "value_capabilities": [],
+  "variants": [],
+  "vtables": []
+}

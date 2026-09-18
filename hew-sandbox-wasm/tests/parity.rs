@@ -11,6 +11,42 @@ const HEW_SEED: &str = "42";
 
 const PARITY_CASES: &[ParityCase] = &[
     ParityCase {
+        // A map literal's storage and lookup, which the VM now models with a
+        // value kind of its own rather than approximating with a record.
+        test_name: "map_literal",
+        source_rel: "examples/sandbox-graduation/map_literal.hew",
+        accepted_divergences: &[],
+    },
+    ParityCase {
+        // The pure `std.math` intrinsics. Native emits the LLVM intrinsic, so
+        // a shim that rounds differently shows up here rather than in a lesson.
+        test_name: "math_intrinsics",
+        source_rel: "examples/sandbox-graduation/math_intrinsics.hew",
+        accepted_divergences: &[],
+    },
+    ParityCase {
+        // Dynamic dispatch through a trait object: the checker picks the slot
+        // and the package carries the table, so neither engine resolves the
+        // method by name.
+        test_name: "trait_objects",
+        source_rel: "examples/sandbox-graduation/trait_objects.hew",
+        accepted_divergences: &[],
+    },
+    ParityCase {
+        // A sleep advances the virtual clock and the program continues, so the
+        // sandbox observes what native observes without waiting for it.
+        test_name: "virtual_sleep",
+        source_rel: "examples/sandbox-graduation/virtual_sleep.hew",
+        accepted_divergences: &[],
+    },
+    ParityCase {
+        // A seeded generator: the VM runs the runtime's own MT19937, so the
+        // same seed yields the same sequence on both engines.
+        test_name: "seeded_random",
+        source_rel: "examples/sandbox-graduation/seeded_random.hew",
+        accepted_divergences: &[],
+    },
+    ParityCase {
         test_name: "hello_world",
         source_rel: "examples/playground/basics/hello_world.hew",
         accepted_divergences: &[],

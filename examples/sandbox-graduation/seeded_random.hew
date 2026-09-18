@@ -1,0 +1,10 @@
+// A seeded generator is reproducible: the same seed yields the same sequence on
+// both engines, which is what makes randomness teachable.
+import std.random;
+
+fn main() {
+    random.seed(1);
+    for i in 0 .. 5 {
+        println(random.randint(0, 99));
+    }
+}

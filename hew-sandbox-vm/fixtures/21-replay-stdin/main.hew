@@ -1,4 +1,6 @@
+import std.io;
+
 fn main() {
-    let name = read_line();
+    let name = io.read_line();
     println(f"hello {name}");
 }

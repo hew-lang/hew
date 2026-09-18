@@ -20,6 +20,8 @@ enum Mode {
     Update,
     Check,
     Probe,
+    /// Regenerate bytecode and the golden trace by running the VM.
+    Record,
 }
 
 #[derive(Debug, Clone)]
@@ -170,7 +172,7 @@ fn run_sandbox_fixtures(options: &Options) -> Result<()> {
 
 fn parse_options(args: &[String]) -> Result<Options> {
     if args.first().map(String::as_str) != Some("sandbox-fixtures") {
-        return Err("usage: cargo run -p xtask -- sandbox-fixtures [--check|--probe] [--fixtures-dir <path>]".to_string());
+        return Err("usage: cargo run -p xtask -- sandbox-fixtures [--check|--probe|--record] [--fixtures-dir <path>]".to_string());
     }
 
     let mut mode = Mode::Update;
@@ -186,6 +188,10 @@ fn parse_options(args: &[String]) -> Result<Options> {
                 mode = Mode::Probe;
                 index += 1;
             }
+            "--record" => {
+                mode = Mode::Record;
+                index += 1;
+            }
             "--fixtures-dir" => {
                 let Some(path) = args.get(index + 1) else {
                     return Err("--fixtures-dir requires a path".to_string());
@@ -195,7 +201,7 @@ fn parse_options(args: &[String]) -> Result<Options> {
             }
             "--help" | "-h" => {
                 println!(
-                    "usage: cargo run -p xtask -- sandbox-fixtures [--check|--probe] [--fixtures-dir <path>]"
+                    "usage: cargo run -p xtask -- sandbox-fixtures [--check|--probe|--record] [--fixtures-dir <path>]"
                 );
                 std::process::exit(0);
             }
@@ -355,8 +361,16 @@ fn process_fixture(
             .map(|diag| format!("{}:{}: {}", diag.phase, diag.kind, diag.message))
             .collect::<Vec<_>>()
             .join("; ");
-        if fixture.has_bytecode || *mode == Mode::Probe {
+        if *mode == Mode::Probe || (fixture.has_bytecode && *mode != Mode::Record) {
             return Err(format!("compiler produced diagnostics: {diagnostics}"));
+        }
+        if *mode == Mode::Record && fixture.has_bytecode {
+            // A fixture that now refuses to compile is a diagnostics fixture;
+            // its stale bytecode must not stay behind as a runnable artefact.
+            fs::remove_file(fixture.path.join("bytecode.json"))
+                .map_err(|err| format!("remove stale bytecode.json: {err}"))?;
+            println!("DIAGNOSTIC {} (removed stale bytecode)", fixture.name);
+            return Ok(FixtureStatus::DiagnosticsOnly);
         }
         println!("DIAGNOSTIC {} {diagnostics}", fixture.name);
         return Ok(FixtureStatus::DiagnosticsOnly);
@@ -376,7 +390,7 @@ fn process_fixture(
 
     match mode {
         Mode::Probe => {
-            println!("COMPILES {} {}", fixture.name, bytecode.compiler_version);
+            println!("COMPILES {} {}", fixture.name, bytecode.compiler_version());
         }
         Mode::Check => {
             let current = read_json(&bytecode_path)?;
@@ -392,9 +406,45 @@ fn process_fixture(
                 println!("OK {}", fixture.name);
             }
         }
+        Mode::Record => {
+            write_json_if_changed(&bytecode_path, &expected)?;
+            record_trace(fixture, &bytecode_path)?;
+            println!("RECORDED {}", fixture.name);
+        }
     }
 
     Ok(FixtureStatus::Compiled)
+}
+
+/// Run a fixture's bytecode on the VM and write back its golden trace.
+///
+/// The replay configuration belongs to the fixture and is carried through from
+/// the existing golden, so a recording changes only what the VM observed.
+fn record_trace(fixture: &FixtureDir, bytecode_path: &Path) -> Result<()> {
+    let trace_path = fixture.path.join("expected.trace.json");
+    if !trace_path.is_file() {
+        return Err(format!(
+            "{} has no expected.trace.json to record against",
+            fixture.name
+        ));
+    }
+    let recorder = workspace_root()?.join("hew-sandbox-vm/scaffolding/scripts/record-trace.mjs");
+    let output = std::process::Command::new("node")
+        .arg(&recorder)
+        .arg(bytecode_path)
+        .arg(&trace_path)
+        .output()
+        .map_err(|err| format!("run the trace recorder: {err}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "trace recorder failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let trace: Value = serde_json::from_slice(&output.stdout)
+        .map_err(|err| format!("parse the recorded trace: {err}"))?;
+    write_json_if_changed(&trace_path, &trace)?;
+    Ok(())
 }
 
 fn process_deferred_fixture(

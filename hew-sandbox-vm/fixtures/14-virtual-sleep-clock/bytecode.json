@@ -1,0 +1,218 @@
+{
+  "aggregates": [],
+  "bytes": [],
+  "closures": [],
+  "compiler_version": "hew-sandbox-wasm-0.6.0-rc4",
+  "entry": {
+    "exit": "unit",
+    "function": 0
+  },
+  "externs": [],
+  "functions": [
+    {
+      "blocks": [
+        {
+          "id": 0,
+          "ops": [
+            {
+              "dst": 0,
+              "nanos": "25000000",
+              "op": "const.duration",
+              "span": {
+                "end": 22,
+                "start": 22
+              }
+            }
+          ],
+          "params": [],
+          "term": {
+            "cancel": {
+              "args": [],
+              "to": 2
+            },
+            "detail": null,
+            "inputs": [
+              {
+                "decision": "copy",
+                "value": 0
+              }
+            ],
+            "kind": "Sleep",
+            "op": "suspend",
+            "result": null,
+            "resumes": [
+              {
+                "args": [],
+                "to": 1
+              }
+            ],
+            "span": {
+              "end": 22,
+              "start": 22
+            },
+            "unwind": {
+              "args": [],
+              "to": 3
+            }
+          }
+        },
+        {
+          "id": 1,
+          "ops": [
+            {
+              "dst": 1,
+              "op": "const.str",
+              "span": {
+                "end": 41,
+                "start": 41
+              },
+              "str": 0
+            }
+          ],
+          "params": [],
+          "term": {
+            "args": [
+              {
+                "decision": "borrow",
+                "value": 1
+              }
+            ],
+            "family": 0,
+            "normal": {
+              "args": [],
+              "to": 6
+            },
+            "op": "runtime.call",
+            "result": null,
+            "result_shape": null,
+            "span": {
+              "end": 41,
+              "start": 41
+            },
+            "unwind": null
+          }
+        },
+        {
+          "id": 2,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 4
+            },
+            "op": "goto",
+            "span": {
+              "end": 22,
+              "start": 22
+            }
+          }
+        },
+        {
+          "id": 3,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 5
+            },
+            "op": "goto",
+            "span": {
+              "end": 22,
+              "start": 22
+            }
+          }
+        },
+        {
+          "id": 4,
+          "ops": [],
+          "params": [],
+          "term": {
+            "op": "resume_unwind",
+            "span": {
+              "end": 22,
+              "start": 22
+            }
+          }
+        },
+        {
+          "id": 5,
+          "ops": [],
+          "params": [],
+          "term": {
+            "op": "resume_unwind",
+            "span": {
+              "end": 22,
+              "start": 22
+            }
+          }
+        },
+        {
+          "id": 6,
+          "ops": [
+            {
+              "dst": null,
+              "op": "destroy_value",
+              "span": null,
+              "value": 1
+            }
+          ],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 7
+            },
+            "op": "goto",
+            "span": {
+              "end": 41,
+              "start": 41
+            }
+          }
+        },
+        {
+          "id": 7,
+          "ops": [],
+          "params": [],
+          "term": {
+            "op": "return",
+            "span": {
+              "end": 41,
+              "start": 41
+            },
+            "value": null
+          }
+        }
+      ],
+      "entry": 0,
+      "id": 0,
+      "name": "__hew_fn_main",
+      "params": [],
+      "places": []
+    }
+  ],
+  "hew_version": "0.6.0-rc4",
+  "profile": "sandbox.sandbox-vm-export.v0",
+  "regex_patterns": [],
+  "runtime_families": [
+    {
+      "detail": {
+        "kind": "Str",
+        "newline": true
+      },
+      "family": "Print",
+      "id": 0
+    }
+  ],
+  "schema_version": "hew.sandbox.bytecode.v1",
+  "strings": [
+    "awake"
+  ],
+  "suspend_kinds": [
+    "Sleep"
+  ],
+  "value_capabilities": [],
+  "variants": [],
+  "vtables": []
+}

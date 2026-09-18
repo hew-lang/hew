@@ -1,4 +1,6 @@
+import std.random;
+
 fn main() {
-    let n = random_u32();
-    println(n);
+    random.seed(1);
+    println(random.randint(0, 99));
 }

@@ -1,443 +1,648 @@
 {
-  "capabilities": [
-    {
-      "disposition": "allowed",
-      "id": "core.stdout",
-      "reason": "page stdout shim",
-      "required_by": [
-        "sym:core.stdout.println"
-      ]
-    }
-  ],
-  "compiler_version": "handcrafted-pending-control-flow-emitter",
+  "aggregates": [],
+  "bytes": [],
+  "closures": [],
+  "compiler_version": "hew-sandbox-wasm-0.6.0-rc4",
+  "entry": {
+    "exit": "unit",
+    "function": 0
+  },
+  "externs": [],
   "functions": [
     {
       "blocks": [
         {
-          "id": "block:main.entry",
-          "instructions": [
+          "id": 0,
+          "ops": [
             {
-              "args": [
-                {
-                  "kind": "literal",
-                  "value": 0
-                }
-              ],
-              "dst": "local:main.0",
-              "op": "const.i64",
-              "span": null
-            },
-            {
-              "args": [
-                {
-                  "kind": "literal",
-                  "value": 1
-                }
-              ],
-              "dst": "local:main.1",
-              "op": "const.i64",
-              "span": null
-            },
-            {
-              "args": [
-                {
-                  "kind": "local",
-                  "value": "local:main.0"
-                },
-                {
-                  "kind": "local",
-                  "value": "local:main.1"
-                }
-              ],
-              "dst": "local:main.2",
-              "op": "i64.checked_add",
-              "span": null
-            }
-          ],
-          "params": [],
-          "span": null,
-          "terminator": {
-            "args": [],
-            "op": "br",
-            "span": null,
-            "target": "block:main.check"
-          }
-        },
-        {
-          "id": "block:main.check",
-          "instructions": [
-            {
-              "args": [
-                {
-                  "kind": "literal",
-                  "value": true
-                }
-              ],
-              "dst": "local:main.4",
-              "op": "const.bool",
-              "span": null
-            }
-          ],
-          "params": [],
-          "span": null,
-          "terminator": {
-            "args": [],
-            "condition": {
-              "kind": "local",
-              "value": "local:main.4"
-            },
-            "else_target": "block:main.exit",
-            "op": "br_if",
-            "span": null,
-            "target": "block:main.body"
-          }
-        },
-        {
-          "id": "block:main.body",
-          "instructions": [
-            {
-              "args": [
-                {
-                  "kind": "literal",
-                  "value": 1
-                }
-              ],
-              "dst": "local:main.5",
-              "op": "const.i64",
-              "span": null
-            },
-            {
-              "args": [
-                {
-                  "kind": "literal",
-                  "value": 2
-                }
-              ],
-              "dst": "local:main.6",
-              "op": "const.i64",
-              "span": null
-            },
-            {
-              "args": [
-                {
-                  "kind": "local",
-                  "value": "local:main.5"
-                },
-                {
-                  "kind": "local",
-                  "value": "local:main.6"
-                }
-              ],
-              "dst": "local:main.7",
-              "op": "i64.checked_add",
-              "span": null
-            },
-            {
-              "args": [
-                {
-                  "kind": "literal",
-                  "value": 3
-                }
-              ],
-              "dst": "local:main.8",
-              "op": "const.i64",
-              "span": null
-            },
-            {
-              "args": [
-                {
-                  "kind": "local",
-                  "value": "local:main.7"
-                },
-                {
-                  "kind": "local",
-                  "value": "local:main.8"
-                }
-              ],
-              "dst": "local:main.9",
-              "op": "i64.checked_add",
-              "span": null
-            },
-            {
-              "args": [
-                {
-                  "kind": "local",
-                  "value": "local:main.0"
-                },
-                {
-                  "kind": "local",
-                  "value": "local:main.9"
-                }
-              ],
-              "dst": null,
-              "op": "local.set",
-              "span": null
-            }
-          ],
-          "params": [],
-          "span": null,
-          "terminator": {
-            "args": [],
-            "op": "br",
-            "span": null,
-            "target": "block:main.exit"
-          }
-        },
-        {
-          "id": "block:main.exit",
-          "instructions": [
-            {
-              "args": [
-                {
-                  "kind": "local",
-                  "value": "local:main.0"
-                }
-              ],
-              "dst": "local:main.3",
-              "op": "local.get",
-              "span": null
-            },
-            {
-              "args": [
-                {
-                  "kind": "literal",
-                  "value": 0
-                }
-              ],
-              "dst": "local:main.11",
-              "op": "const.i64",
-              "span": null
-            },
-            {
-              "args": [
-                {
-                  "kind": "local",
-                  "value": "local:main.3"
-                },
-                {
-                  "kind": "local",
-                  "value": "local:main.11"
-                }
-              ],
-              "dst": "local:main.10",
-              "op": "cmp.ge",
-              "span": null
-            },
-            {
-              "args": [
-                {
-                  "kind": "local",
-                  "value": "local:main.3"
-                }
-              ],
-              "dst": "local:main.13",
-              "op": "local.get",
-              "span": null
-            },
-            {
-              "args": [
-                {
-                  "kind": "local",
-                  "value": "local:main.13"
-                }
-              ],
-              "dst": "local:main.12",
-              "metadata": {
-                "trace_step": true
+              "dst": 0,
+              "op": "const.int",
+              "span": {
+                "end": 28,
+                "start": 28
               },
-              "op": "local.get",
+              "ty": "i64",
+              "value": "0"
+            },
+            {
+              "dst": null,
+              "op": "alloc_place",
+              "place": 0,
               "span": null
             },
             {
-              "args": [
-                {
-                  "kind": "symbol",
-                  "value": "sym:core.stdout.println"
-                },
-                {
-                  "kind": "local",
-                  "value": "local:main.12"
-                }
-              ],
               "dst": null,
-              "op": "call.stdlib",
+              "op": "store.init",
+              "place": 0,
+              "span": null,
+              "value": 0
+            },
+            {
+              "dst": 1,
+              "op": "const.int",
+              "span": {
+                "end": 44,
+                "start": 44
+              },
+              "ty": "i64",
+              "value": "0"
+            },
+            {
+              "dst": 2,
+              "op": "const.int",
+              "span": {
+                "end": 49,
+                "start": 49
+              },
+              "ty": "i64",
+              "value": "4"
+            },
+            {
+              "dst": 3,
+              "op": "const.int",
+              "span": {
+                "end": 44,
+                "start": 44
+              },
+              "ty": "i64",
+              "value": "1"
+            },
+            {
+              "dst": 4,
+              "op": "const.int",
+              "span": null,
+              "ty": "i64",
+              "value": "0"
+            },
+            {
+              "binary_op": "Greater",
+              "dst": 5,
+              "lhs": 3,
+              "op": "binary",
+              "rhs": 4,
+              "span": null,
+              "ty": "i64"
+            }
+          ],
+          "params": [],
+          "term": {
+            "condition": 5,
+            "else": {
+              "args": [],
+              "to": 2
+            },
+            "op": "branch",
+            "span": {
+              "end": 44,
+              "start": 44
+            },
+            "then": {
+              "args": [],
+              "to": 1
+            }
+          }
+        },
+        {
+          "id": 1,
+          "ops": [
+            {
+              "binary_op": "Less",
+              "dst": 10,
+              "lhs": 1,
+              "op": "binary",
+              "rhs": 2,
+              "span": null,
+              "ty": "i64"
+            }
+          ],
+          "params": [],
+          "term": {
+            "condition": 10,
+            "else": {
+              "args": [
+                1
+              ],
+              "to": 7
+            },
+            "op": "branch",
+            "span": {
+              "end": 44,
+              "start": 44
+            },
+            "then": {
+              "args": [],
+              "to": 8
+            }
+          }
+        },
+        {
+          "id": 2,
+          "ops": [
+            {
+              "dst": 6,
+              "op": "const.str",
+              "span": {
+                "end": 44,
+                "start": 44
+              },
+              "str": 0
+            }
+          ],
+          "params": [],
+          "term": {
+            "cleanup": {
+              "args": [],
+              "to": 3
+            },
+            "message": {
+              "decision": "borrow",
+              "value": 6
+            },
+            "op": "panic",
+            "span": {
+              "end": 44,
+              "start": 44
+            }
+          }
+        },
+        {
+          "id": 3,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 4
+            },
+            "op": "goto",
+            "span": {
+              "end": 44,
+              "start": 44
+            }
+          }
+        },
+        {
+          "id": 4,
+          "ops": [
+            {
+              "dst": null,
+              "op": "destroy_value",
+              "span": null,
+              "value": 6
+            },
+            {
+              "dst": null,
+              "op": "end_lifetime",
+              "place": 0,
               "span": null
             }
           ],
           "params": [],
-          "span": null,
-          "terminator": {
-            "args": [],
+          "term": {
+            "op": "resume_unwind",
+            "span": {
+              "end": 44,
+              "start": 44
+            }
+          }
+        },
+        {
+          "id": 5,
+          "ops": [
+            {
+              "binary_op": "Less",
+              "dst": 11,
+              "lhs": 7,
+              "op": "binary",
+              "rhs": 2,
+              "span": null,
+              "ty": "i64"
+            }
+          ],
+          "params": [
+            {
+              "own": "none",
+              "value": 7
+            }
+          ],
+          "term": {
+            "condition": 11,
+            "else": {
+              "args": [
+                7
+              ],
+              "to": 7
+            },
+            "op": "branch",
+            "span": {
+              "end": 44,
+              "start": 44
+            },
+            "then": {
+              "args": [],
+              "to": 9
+            }
+          }
+        },
+        {
+          "id": 6,
+          "ops": [
+            {
+              "binary_op": "WrappingAdd",
+              "dst": 17,
+              "lhs": 8,
+              "op": "binary",
+              "rhs": 3,
+              "span": null,
+              "ty": "i64"
+            },
+            {
+              "binary_op": "Greater",
+              "dst": 18,
+              "lhs": 17,
+              "op": "binary",
+              "rhs": 8,
+              "span": null,
+              "ty": "i64"
+            }
+          ],
+          "params": [
+            {
+              "own": "none",
+              "value": 8
+            }
+          ],
+          "term": {
+            "condition": 18,
+            "else": {
+              "args": [
+                8
+              ],
+              "to": 7
+            },
+            "op": "branch",
+            "span": {
+              "end": 100,
+              "start": 100
+            },
+            "then": {
+              "args": [],
+              "to": 17
+            }
+          }
+        },
+        {
+          "id": 7,
+          "ops": [
+            {
+              "dst": 19,
+              "op": "load.copy",
+              "place": 0,
+              "span": {
+                "end": 131,
+                "start": 131
+              }
+            }
+          ],
+          "params": [
+            {
+              "own": "none",
+              "value": 9
+            }
+          ],
+          "term": {
+            "args": [
+              {
+                "decision": "copy",
+                "value": 19
+              }
+            ],
+            "family": 0,
+            "normal": {
+              "args": [],
+              "to": 18
+            },
+            "op": "runtime.call",
+            "result": null,
+            "result_shape": null,
+            "span": {
+              "end": 123,
+              "start": 123
+            },
+            "unwind": null
+          }
+        },
+        {
+          "id": 8,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [
+                1
+              ],
+              "to": 5
+            },
+            "op": "goto",
+            "span": {
+              "end": 44,
+              "start": 44
+            }
+          }
+        },
+        {
+          "id": 9,
+          "ops": [
+            {
+              "dst": 12,
+              "op": "const.int",
+              "span": {
+                "end": 68,
+                "start": 68
+              },
+              "ty": "i64",
+              "value": "0"
+            },
+            {
+              "binary_op": "Greater",
+              "dst": 13,
+              "lhs": 7,
+              "op": "binary",
+              "rhs": 12,
+              "span": {
+                "end": 64,
+                "start": 64
+              },
+              "ty": "i64"
+            }
+          ],
+          "params": [],
+          "term": {
+            "condition": 13,
+            "else": {
+              "args": [],
+              "to": 11
+            },
+            "op": "branch",
+            "span": {
+              "end": 68,
+              "start": 68
+            },
+            "then": {
+              "args": [],
+              "to": 10
+            }
+          }
+        },
+        {
+          "id": 10,
+          "ops": [
+            {
+              "dst": 14,
+              "op": "load.copy",
+              "place": 0,
+              "span": {
+                "end": 92,
+                "start": 92
+              }
+            }
+          ],
+          "params": [],
+          "term": {
+            "binary_op": "Add",
+            "failures": [
+              {
+                "edge": {
+                  "args": [],
+                  "to": 13
+                },
+                "trap": "integer_overflow"
+              }
+            ],
+            "lhs": 14,
+            "normal": {
+              "args": [
+                15
+              ],
+              "to": 12
+            },
+            "op": "checked.binary",
+            "result": {
+              "own": "none",
+              "value": 15
+            },
+            "rhs": 7,
+            "span": {
+              "end": 100,
+              "start": 100
+            },
+            "ty": "i64"
+          }
+        },
+        {
+          "id": 11,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 16
+            },
+            "op": "goto",
+            "span": {
+              "end": 100,
+              "start": 100
+            }
+          }
+        },
+        {
+          "id": 12,
+          "ops": [
+            {
+              "dst": null,
+              "op": "store.assign",
+              "place": 0,
+              "span": {
+                "end": 92,
+                "start": 92
+              },
+              "value": 16
+            }
+          ],
+          "params": [
+            {
+              "own": "none",
+              "value": 16
+            }
+          ],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 16
+            },
+            "op": "goto",
+            "span": {
+              "end": 100,
+              "start": 100
+            }
+          }
+        },
+        {
+          "id": 13,
+          "ops": [],
+          "params": [],
+          "term": {
+            "cleanup": {
+              "args": [],
+              "to": 14
+            },
+            "op": "checked_raise",
+            "span": {
+              "end": 100,
+              "start": 100
+            },
+            "trap": "integer_overflow"
+          }
+        },
+        {
+          "id": 14,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 15
+            },
+            "op": "goto",
+            "span": {
+              "end": 100,
+              "start": 100
+            }
+          }
+        },
+        {
+          "id": 15,
+          "ops": [
+            {
+              "dst": null,
+              "op": "end_lifetime",
+              "place": 0,
+              "span": null
+            }
+          ],
+          "params": [],
+          "term": {
+            "op": "resume_unwind",
+            "span": {
+              "end": 100,
+              "start": 100
+            }
+          }
+        },
+        {
+          "id": 16,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [
+                7
+              ],
+              "to": 6
+            },
+            "op": "goto",
+            "span": {
+              "end": 100,
+              "start": 100
+            }
+          }
+        },
+        {
+          "id": 17,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [
+                17
+              ],
+              "to": 5
+            },
+            "op": "goto",
+            "span": {
+              "end": 100,
+              "start": 100
+            }
+          }
+        },
+        {
+          "id": 18,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 19
+            },
+            "op": "goto",
+            "span": {
+              "end": 123,
+              "start": 123
+            }
+          }
+        },
+        {
+          "id": 19,
+          "ops": [
+            {
+              "dst": null,
+              "op": "end_lifetime",
+              "place": 0,
+              "span": null
+            }
+          ],
+          "params": [],
+          "term": {
             "op": "return",
-            "span": null
+            "span": {
+              "end": 123,
+              "start": 123
+            },
+            "value": null
           }
         }
       ],
-      "id": "fn:main",
-      "locals": [
-        {
-          "id": "local:main.0",
-          "mutable": true,
-          "name": "total",
-          "span": null,
-          "type": "type:i64"
-        },
-        {
-          "id": "local:main.1",
-          "mutable": false,
-          "name": null,
-          "span": null,
-          "type": "type:i64"
-        },
-        {
-          "id": "local:main.2",
-          "mutable": false,
-          "name": null,
-          "span": null,
-          "type": "type:i64"
-        },
-        {
-          "id": "local:main.3",
-          "mutable": false,
-          "name": null,
-          "span": null,
-          "type": "type:i64"
-        },
-        {
-          "id": "local:main.4",
-          "mutable": false,
-          "name": null,
-          "span": null,
-          "type": "type:bool"
-        },
-        {
-          "id": "local:main.5",
-          "mutable": false,
-          "name": null,
-          "span": null,
-          "type": "type:i64"
-        },
-        {
-          "id": "local:main.6",
-          "mutable": false,
-          "name": null,
-          "span": null,
-          "type": "type:i64"
-        },
-        {
-          "id": "local:main.7",
-          "mutable": false,
-          "name": null,
-          "span": null,
-          "type": "type:i64"
-        },
-        {
-          "id": "local:main.8",
-          "mutable": false,
-          "name": null,
-          "span": null,
-          "type": "type:i64"
-        },
-        {
-          "id": "local:main.9",
-          "mutable": false,
-          "name": null,
-          "span": null,
-          "type": "type:i64"
-        },
-        {
-          "id": "local:main.10",
-          "mutable": false,
-          "name": null,
-          "span": null,
-          "type": "type:bool"
-        },
-        {
-          "id": "local:main.11",
-          "mutable": false,
-          "name": null,
-          "span": null,
-          "type": "type:i64"
-        },
-        {
-          "id": "local:main.12",
-          "mutable": false,
-          "name": null,
-          "span": null,
-          "type": "type:i64"
-        },
-        {
-          "id": "local:main.13",
-          "mutable": false,
-          "name": null,
-          "span": null,
-          "type": "type:i64"
-        }
-      ],
-      "module": "mod:main",
-      "name": "main",
+      "entry": 0,
+      "id": 0,
+      "name": "__hew_fn_main",
       "params": [],
-      "result": "type:unit",
-      "span": null
+      "places": [
+        {
+          "id": 0,
+          "origin": "local"
+        }
+      ]
     }
   ],
   "hew_version": "0.6.0-rc4",
-  "layouts": {
-    "actors": [],
-    "enums": [],
-    "machines": [],
-    "records": [],
-    "supervisors": [],
-    "types": [
-      {
-        "id": "type:unit",
-        "kind": "unit",
-        "name": "()"
-      },
-      {
-        "id": "type:i64",
-        "kind": "integer",
-        "name": "i64"
-      },
-      {
-        "id": "type:bool",
-        "kind": "bool",
-        "name": "bool"
-      }
-    ]
-  },
-  "module_graph": {
-    "entry": "mod:main",
-    "modules": [
-      {
-        "functions": [
-          "fn:main"
-        ],
-        "id": "mod:main",
-        "imports": [],
-        "path": "main.hew",
-        "source_id": "src:main"
-      }
-    ]
-  },
-  "package_id": "pkg:branch-loop",
-  "profile": "sandbox.educational.v0",
-  "schema_version": "hew.sandbox.bytecode.v0",
-  "source_map": {
-    "sources": [],
-    "spans": []
-  },
-  "stdlib_symbols": [
+  "profile": "sandbox.sandbox-vm-export.v0",
+  "regex_patterns": [],
+  "runtime_families": [
     {
-      "admission": "allowed",
-      "capability": "core.stdout",
-      "id": "sym:core.stdout.println",
-      "module": "core.stdout",
-      "name": "println",
-      "params": [
-        "type:i64"
-      ],
-      "result": "type:unit"
+      "detail": {
+        "kind": "I64",
+        "newline": true
+      },
+      "family": "Print",
+      "id": 0
     }
-  ]
+  ],
+  "schema_version": "hew.sandbox.bytecode.v1",
+  "strings": [
+    "step_by requires a positive step"
+  ],
+  "suspend_kinds": [],
+  "value_capabilities": [],
+  "variants": [],
+  "vtables": []
 }

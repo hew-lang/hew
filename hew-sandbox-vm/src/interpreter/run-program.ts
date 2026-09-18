@@ -1,4 +1,6 @@
 import { runBytecode } from "./interpreter.js";
+import { isPackageV1 } from "./v1/package.js";
+import type { PackageV1 } from "./v1/package.js";
 import type {
   Instruction,
   JsonValue,
@@ -27,7 +29,7 @@ export interface RunProgramResult {
 
 interface CompileOutput {
   diagnostics: Diagnostic[];
-  bytecode: SandboxBytecodePackage | null;
+  bytecode: SandboxBytecodePackage | PackageV1 | null;
 }
 
 type SandboxCompiler = (
@@ -55,7 +57,13 @@ export function runProgram(source: string, stdin: string): RunProgramResult {
 
   // stdin travels as a replay input and is read line by line at run time by
   // the `io.stdin.read_line` shim, so a loop sees successive lines.
-  const bytecode = withPageExit(compileOutput.bytecode);
+  //
+  // A v1 package carries its own `entry.exit` plan, so the process status is
+  // already the entry's; only a v0 package needs `main`'s return wired to an
+  // exit call.
+  const bytecode = isPackageV1(compileOutput.bytecode)
+    ? compileOutput.bytecode
+    : withPageExit(compileOutput.bytecode);
   const trace = runBytecode(bytecode, {
     fixtureId: "page-run",
     traceId: "trace:page-run",
@@ -253,14 +261,25 @@ function exitCodeForTrace(trace: SandboxTrace): number {
 }
 
 function runtimeDiagnostics(trace: SandboxTrace): Diagnostic[] {
-  return trace.final_state.runtime_failures.map((failure) => ({
-    severity: "error",
-    phase: "run",
-    message: failure.message,
-    kind: failure.trap_kind ?? failure.kind,
-    ...(failure.span ? { span: failure.span as unknown as JsonValue } : {}),
-    ...(failure.trap_kind ? { trap_kind: failure.trap_kind } : {}),
-  }));
+  return [
+    // A package refused at load has no runtime failure to report, so the
+    // refusal is what the page shows instead of an empty result.
+    ...trace.final_state.sandbox_rejections.map((rejection) => ({
+      severity: "error",
+      phase: "profile",
+      message: rejection.message,
+      kind: rejection.code,
+      ...(rejection.capability ? { capability: rejection.capability } : {}),
+    })),
+    ...trace.final_state.runtime_failures.map((failure) => ({
+      severity: "error",
+      phase: "run",
+      message: failure.message,
+      kind: failure.trap_kind ?? failure.kind,
+      ...(failure.span ? { span: failure.span as unknown as JsonValue } : {}),
+      ...(failure.trap_kind ? { trap_kind: failure.trap_kind } : {}),
+    })),
+  ];
 }
 
 function hasErrorDiagnostics(diagnostics: readonly Diagnostic[]): boolean {

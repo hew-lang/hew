@@ -1,1397 +1,606 @@
 {
-  "capabilities": [
-    {
-      "disposition": "allowed",
-      "id": "core.stdout",
-      "reason": "stdout is captured by the educational sandbox trace",
-      "required_by": [
-        "sym:core.stdout.println"
-      ]
-    }
-  ],
+  "aggregates": [],
+  "bytes": [],
+  "closures": [],
   "compiler_version": "hew-sandbox-wasm-0.6.0-rc4",
+  "entry": {
+    "exit": "unit",
+    "function": 0
+  },
+  "externs": [],
   "functions": [
     {
       "blocks": [
         {
-          "id": "block:entry",
-          "instructions": [
-            {
-              "args": [
-                {
-                  "kind": "type",
-                  "value": "type:i64"
-                }
-              ],
-              "dst": "local:main.1",
-              "op": "vector.new",
-              "span": "span:29-43"
-            },
-            {
-              "args": [
-                {
-                  "kind": "local",
-                  "value": "local:main.0"
-                },
-                {
-                  "kind": "local",
-                  "value": "local:main.1"
-                }
-              ],
-              "dst": null,
-              "op": "local.set",
-              "span": "span:16-49"
-            },
-            {
-              "args": [
-                {
-                  "kind": "local",
-                  "value": "local:main.0"
-                }
-              ],
-              "dst": "local:main.2",
-              "op": "local.get",
-              "span": "span:49-55"
-            },
-            {
-              "args": [
-                {
-                  "kind": "literal",
-                  "value": 10
-                }
-              ],
-              "dst": "local:main.3",
-              "op": "const.i64",
-              "span": "span:61-63"
-            },
-            {
-              "args": [
-                {
-                  "kind": "local",
-                  "value": "local:main.2"
-                },
-                {
-                  "kind": "local",
-                  "value": "local:main.3"
-                }
-              ],
-              "dst": null,
-              "op": "vector.push",
-              "span": "span:49-64"
-            },
-            {
-              "args": [],
-              "dst": "local:main.4",
-              "op": "const.unit",
-              "span": "span:49-64"
-            },
-            {
-              "args": [
-                {
-                  "kind": "local",
-                  "value": "local:main.0"
-                }
-              ],
-              "dst": "local:main.5",
-              "op": "local.get",
-              "span": "span:70-76"
-            },
-            {
-              "args": [
-                {
-                  "kind": "literal",
-                  "value": 20
-                }
-              ],
-              "dst": "local:main.6",
-              "op": "const.i64",
-              "span": "span:82-84"
-            },
-            {
-              "args": [
-                {
-                  "kind": "local",
-                  "value": "local:main.5"
-                },
-                {
-                  "kind": "local",
-                  "value": "local:main.6"
-                }
-              ],
-              "dst": null,
-              "op": "vector.push",
-              "span": "span:70-85"
-            },
-            {
-              "args": [],
-              "dst": "local:main.7",
-              "op": "const.unit",
-              "span": "span:70-85"
-            },
-            {
-              "args": [
-                {
-                  "kind": "local",
-                  "value": "local:main.0"
-                }
-              ],
-              "dst": "local:main.8",
-              "op": "local.get",
-              "span": "span:99-105"
-            },
-            {
-              "args": [
-                {
-                  "kind": "local",
-                  "value": "local:main.8"
-                }
-              ],
-              "dst": "local:main.9",
-              "op": "vector.len",
-              "span": "span:99-111"
-            },
-            {
-              "args": [
-                {
-                  "kind": "symbol",
-                  "value": "sym:core.stdout.println"
-                },
-                {
-                  "kind": "local",
-                  "value": "local:main.9"
-                }
-              ],
-              "dst": null,
-              "op": "call.stdlib",
-              "span": "span:91-112"
-            },
-            {
-              "args": [],
-              "dst": "local:main.10",
-              "op": "const.unit",
-              "span": "span:91-112"
-            },
-            {
-              "args": [
-                {
-                  "kind": "local",
-                  "value": "local:main.0"
-                }
-              ],
-              "dst": "local:main.11",
-              "op": "local.get",
-              "span": "span:124-130"
-            },
-            {
-              "args": [
-                {
-                  "kind": "literal",
-                  "value": 1
-                }
-              ],
-              "dst": "local:main.12",
-              "op": "const.i64",
-              "span": "span:135-136"
-            },
-            {
-              "args": [
-                {
-                  "kind": "local",
-                  "value": "local:main.11"
-                },
-                {
-                  "kind": "local",
-                  "value": "local:main.12"
-                }
-              ],
-              "dst": "local:main.13",
-              "op": "vector.get",
-              "span": "span:124-138"
-            },
-            {
-              "args": [
-                {
-                  "kind": "local",
-                  "value": "local:main.13"
-                }
-              ],
-              "dst": "local:main.15",
-              "op": "enum.tag",
-              "span": "span:124-138"
-            }
-          ],
+          "id": 0,
+          "ops": [],
           "params": [],
-          "span": null,
-          "terminator": {
+          "term": {
             "args": [],
-            "op": "br",
-            "span": "span:118-208",
-            "target": "block:main.match_check_0.2"
+            "family": 0,
+            "normal": {
+              "args": [
+                0
+              ],
+              "to": 1
+            },
+            "op": "runtime.call",
+            "result": {
+              "own": "owned",
+              "value": 0
+            },
+            "result_shape": null,
+            "span": {
+              "end": 29,
+              "start": 29
+            },
+            "unwind": null
           }
         },
         {
-          "id": "block:main.match_exit.1",
-          "instructions": [],
-          "params": [],
-          "span": "span:118-208",
-          "terminator": {
+          "id": 1,
+          "ops": [
+            {
+              "dst": null,
+              "op": "alloc_place",
+              "place": 0,
+              "span": null
+            },
+            {
+              "dst": null,
+              "op": "store.init",
+              "place": 0,
+              "span": null,
+              "value": 1
+            },
+            {
+              "dst": 2,
+              "op": "const.int",
+              "span": {
+                "end": 61,
+                "start": 61
+              },
+              "ty": "i64",
+              "value": "10"
+            },
+            {
+              "dst": 3,
+              "op": "load.take",
+              "place": 0,
+              "span": {
+                "end": 49,
+                "start": 49
+              }
+            },
+            {
+              "dst": 4,
+              "op": "move",
+              "source": 3,
+              "span": {
+                "end": 49,
+                "start": 49
+              }
+            }
+          ],
+          "params": [
+            {
+              "own": "owned",
+              "value": 1
+            }
+          ],
+          "term": {
             "args": [
               {
-                "kind": "local",
-                "value": "local:main.14"
+                "decision": "move",
+                "value": 4
+              },
+              {
+                "decision": "borrow",
+                "value": 2
               }
             ],
+            "family": 1,
+            "normal": {
+              "args": [
+                5
+              ],
+              "to": 2
+            },
+            "op": "runtime.call",
+            "result": {
+              "own": "owned",
+              "value": 5
+            },
+            "result_shape": null,
+            "span": {
+              "end": 61,
+              "start": 61
+            },
+            "unwind": null
+          }
+        },
+        {
+          "id": 2,
+          "ops": [
+            {
+              "dst": null,
+              "op": "store.assign",
+              "place": 0,
+              "span": {
+                "end": 49,
+                "start": 49
+              },
+              "value": 6
+            },
+            {
+              "dst": 7,
+              "op": "const.int",
+              "span": {
+                "end": 82,
+                "start": 82
+              },
+              "ty": "i64",
+              "value": "20"
+            },
+            {
+              "dst": 8,
+              "op": "load.take",
+              "place": 0,
+              "span": {
+                "end": 70,
+                "start": 70
+              }
+            },
+            {
+              "dst": 9,
+              "op": "move",
+              "source": 8,
+              "span": {
+                "end": 70,
+                "start": 70
+              }
+            }
+          ],
+          "params": [
+            {
+              "own": "owned",
+              "value": 6
+            }
+          ],
+          "term": {
+            "args": [
+              {
+                "decision": "move",
+                "value": 9
+              },
+              {
+                "decision": "borrow",
+                "value": 7
+              }
+            ],
+            "family": 1,
+            "normal": {
+              "args": [
+                10
+              ],
+              "to": 3
+            },
+            "op": "runtime.call",
+            "result": {
+              "own": "owned",
+              "value": 10
+            },
+            "result_shape": null,
+            "span": {
+              "end": 82,
+              "start": 82
+            },
+            "unwind": null
+          }
+        },
+        {
+          "id": 3,
+          "ops": [
+            {
+              "dst": null,
+              "op": "store.assign",
+              "place": 0,
+              "span": {
+                "end": 70,
+                "start": 70
+              },
+              "value": 11
+            },
+            {
+              "dst": 12,
+              "op": "load.borrow",
+              "place": 0,
+              "span": {
+                "end": 99,
+                "start": 99
+              }
+            }
+          ],
+          "params": [
+            {
+              "own": "owned",
+              "value": 11
+            }
+          ],
+          "term": {
+            "args": [
+              {
+                "decision": "borrow",
+                "value": 12
+              }
+            ],
+            "family": 2,
+            "normal": {
+              "args": [
+                13
+              ],
+              "to": 4
+            },
+            "op": "runtime.call",
+            "result": {
+              "own": "none",
+              "value": 13
+            },
+            "result_shape": null,
+            "span": {
+              "end": 99,
+              "start": 99
+            },
+            "unwind": null
+          }
+        },
+        {
+          "id": 4,
+          "ops": [
+            {
+              "borrow": 12,
+              "dst": null,
+              "op": "end_borrow",
+              "span": null
+            }
+          ],
+          "params": [
+            {
+              "own": "none",
+              "value": 14
+            }
+          ],
+          "term": {
+            "args": [
+              {
+                "decision": "copy",
+                "value": 14
+              }
+            ],
+            "family": 3,
+            "normal": {
+              "args": [],
+              "to": 5
+            },
+            "op": "runtime.call",
+            "result": null,
+            "result_shape": null,
+            "span": {
+              "end": 99,
+              "start": 99
+            },
+            "unwind": null
+          }
+        },
+        {
+          "id": 5,
+          "ops": [
+            {
+              "dst": 15,
+              "op": "load.borrow",
+              "place": 0,
+              "span": {
+                "end": 124,
+                "start": 124
+              }
+            },
+            {
+              "dst": 16,
+              "op": "const.int",
+              "span": {
+                "end": 135,
+                "start": 135
+              },
+              "ty": "i64",
+              "value": "1"
+            }
+          ],
+          "params": [],
+          "term": {
+            "args": [
+              {
+                "decision": "borrow",
+                "value": 15
+              },
+              {
+                "decision": "copy",
+                "value": 16
+              }
+            ],
+            "family": 4,
+            "normal": {
+              "args": [
+                17
+              ],
+              "to": 6
+            },
+            "op": "runtime.call",
+            "result": {
+              "own": "none",
+              "value": 17
+            },
+            "result_shape": 0,
+            "span": {
+              "end": 135,
+              "start": 135
+            },
+            "unwind": null
+          }
+        },
+        {
+          "id": 6,
+          "ops": [
+            {
+              "borrow": 15,
+              "dst": null,
+              "op": "end_borrow",
+              "span": null
+            }
+          ],
+          "params": [
+            {
+              "own": "none",
+              "value": 18
+            }
+          ],
+          "term": {
+            "arms": [
+              {
+                "edge": {
+                  "args": [
+                    19
+                  ],
+                  "to": 7
+                },
+                "fields": [
+                  {
+                    "own": "none",
+                    "value": 19
+                  }
+                ],
+                "variant": 0
+              },
+              {
+                "edge": {
+                  "args": [],
+                  "to": 8
+                },
+                "fields": [],
+                "variant": 1
+              }
+            ],
+            "op": "switch.variant",
+            "scrutinee": 18,
+            "shape": 0,
+            "span": {
+              "end": 135,
+              "start": 135
+            }
+          }
+        },
+        {
+          "id": 7,
+          "ops": [],
+          "params": [
+            {
+              "own": "none",
+              "value": 20
+            }
+          ],
+          "term": {
+            "args": [
+              {
+                "decision": "copy",
+                "value": 20
+              }
+            ],
+            "family": 3,
+            "normal": {
+              "args": [],
+              "to": 9
+            },
+            "op": "runtime.call",
+            "result": null,
+            "result_shape": null,
+            "span": {
+              "end": 160,
+              "start": 160
+            },
+            "unwind": null
+          }
+        },
+        {
+          "id": 8,
+          "ops": [
+            {
+              "dst": 21,
+              "op": "const.int",
+              "span": {
+                "end": 197,
+                "start": 197
+              },
+              "ty": "i64",
+              "value": "-1"
+            }
+          ],
+          "params": [],
+          "term": {
+            "args": [
+              {
+                "decision": "copy",
+                "value": 21
+              }
+            ],
+            "family": 3,
+            "normal": {
+              "args": [],
+              "to": 10
+            },
+            "op": "runtime.call",
+            "result": null,
+            "result_shape": null,
+            "span": {
+              "end": 197,
+              "start": 197
+            },
+            "unwind": null
+          }
+        },
+        {
+          "id": 9,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 11
+            },
+            "op": "goto",
+            "span": {
+              "end": 197,
+              "start": 197
+            }
+          }
+        },
+        {
+          "id": 10,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 11
+            },
+            "op": "goto",
+            "span": {
+              "end": 197,
+              "start": 197
+            }
+          }
+        },
+        {
+          "id": 11,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 12
+            },
+            "op": "goto",
+            "span": {
+              "end": 197,
+              "start": 197
+            }
+          }
+        },
+        {
+          "id": 12,
+          "ops": [
+            {
+              "dst": null,
+              "op": "end_lifetime",
+              "place": 0,
+              "span": null
+            }
+          ],
+          "params": [],
+          "term": {
             "op": "return",
-            "span": "span:0-209"
-          }
-        },
-        {
-          "id": "block:main.match_check_0.2",
-          "instructions": [
-            {
-              "args": [
-                {
-                  "kind": "literal",
-                  "value": 0
-                }
-              ],
-              "dst": "local:main.16",
-              "op": "const.i64",
-              "span": "span:148-157"
+            "span": {
+              "end": 197,
+              "start": 197
             },
-            {
-              "args": [
-                {
-                  "kind": "local",
-                  "value": "local:main.15"
-                },
-                {
-                  "kind": "local",
-                  "value": "local:main.16"
-                }
-              ],
-              "dst": "local:main.17",
-              "op": "cmp.eq",
-              "span": "span:148-157"
-            }
-          ],
-          "params": [],
-          "span": "span:148-157",
-          "terminator": {
-            "args": [],
-            "condition": {
-              "kind": "local",
-              "value": "local:main.17"
-            },
-            "else_target": "block:main.match_check_1.4",
-            "op": "br_if",
-            "span": "span:148-157",
-            "target": "block:main.match_arm_0.3"
-          }
-        },
-        {
-          "id": "block:main.match_arm_0.3",
-          "instructions": [
-            {
-              "args": [
-                {
-                  "kind": "local",
-                  "value": "local:main.13"
-                },
-                {
-                  "kind": "literal",
-                  "value": 0
-                }
-              ],
-              "dst": "local:main.18",
-              "op": "enum.payload",
-              "span": "span:154-155"
-            },
-            {
-              "args": [
-                {
-                  "kind": "local",
-                  "value": "local:main.18"
-                }
-              ],
-              "dst": "local:main.19",
-              "op": "local.get",
-              "span": "span:168-169"
-            },
-            {
-              "args": [
-                {
-                  "kind": "symbol",
-                  "value": "sym:core.stdout.println"
-                },
-                {
-                  "kind": "local",
-                  "value": "local:main.19"
-                }
-              ],
-              "dst": null,
-              "op": "call.stdlib",
-              "span": "span:160-170"
-            },
-            {
-              "args": [],
-              "dst": "local:main.20",
-              "op": "const.unit",
-              "span": "span:160-170"
-            },
-            {
-              "args": [
-                {
-                  "kind": "local",
-                  "value": "local:main.14"
-                },
-                {
-                  "kind": "local",
-                  "value": "local:main.20"
-                }
-              ],
-              "dst": null,
-              "op": "local.set",
-              "span": "span:160-170"
-            }
-          ],
-          "params": [],
-          "span": "span:160-170",
-          "terminator": {
-            "args": [],
-            "op": "br",
-            "span": "span:160-170",
-            "target": "block:main.match_exit.1"
-          }
-        },
-        {
-          "id": "block:main.match_check_1.4",
-          "instructions": [
-            {
-              "args": [
-                {
-                  "kind": "literal",
-                  "value": 1
-                }
-              ],
-              "dst": "local:main.21",
-              "op": "const.i64",
-              "span": "span:180-186"
-            },
-            {
-              "args": [
-                {
-                  "kind": "local",
-                  "value": "local:main.15"
-                },
-                {
-                  "kind": "local",
-                  "value": "local:main.21"
-                }
-              ],
-              "dst": "local:main.22",
-              "op": "cmp.eq",
-              "span": "span:180-186"
-            }
-          ],
-          "params": [],
-          "span": "span:180-186",
-          "terminator": {
-            "args": [],
-            "condition": {
-              "kind": "local",
-              "value": "local:main.22"
-            },
-            "else_target": "block:main.match_arm_1.5",
-            "op": "br_if",
-            "span": "span:180-186",
-            "target": "block:main.match_arm_1.5"
-          }
-        },
-        {
-          "id": "block:main.match_arm_1.5",
-          "instructions": [
-            {
-              "args": [
-                {
-                  "kind": "literal",
-                  "value": -1
-                }
-              ],
-              "dst": "local:main.23",
-              "op": "const.i64",
-              "span": "span:197-199"
-            },
-            {
-              "args": [
-                {
-                  "kind": "symbol",
-                  "value": "sym:core.stdout.println"
-                },
-                {
-                  "kind": "local",
-                  "value": "local:main.23"
-                }
-              ],
-              "dst": null,
-              "op": "call.stdlib",
-              "span": "span:189-200"
-            },
-            {
-              "args": [],
-              "dst": "local:main.24",
-              "op": "const.unit",
-              "span": "span:189-200"
-            },
-            {
-              "args": [
-                {
-                  "kind": "local",
-                  "value": "local:main.14"
-                },
-                {
-                  "kind": "local",
-                  "value": "local:main.24"
-                }
-              ],
-              "dst": null,
-              "op": "local.set",
-              "span": "span:189-200"
-            }
-          ],
-          "params": [],
-          "span": "span:189-200",
-          "terminator": {
-            "args": [],
-            "op": "br",
-            "span": "span:189-200",
-            "target": "block:main.match_exit.1"
+            "value": null
           }
         }
       ],
-      "id": "fn:main",
-      "locals": [
-        {
-          "id": "local:main.0",
-          "mutable": true,
-          "name": "values",
-          "span": "span:16-49",
-          "type": "type:Vec.type.i64"
-        },
-        {
-          "id": "local:main.1",
-          "mutable": false,
-          "name": null,
-          "span": "span:29-43",
-          "type": "type:Vec.type.i64"
-        },
-        {
-          "id": "local:main.2",
-          "mutable": false,
-          "name": null,
-          "span": "span:49-55",
-          "type": "type:Vec.type.i64"
-        },
-        {
-          "id": "local:main.3",
-          "mutable": false,
-          "name": null,
-          "span": "span:61-63",
-          "type": "type:i64"
-        },
-        {
-          "id": "local:main.4",
-          "mutable": false,
-          "name": null,
-          "span": "span:49-64",
-          "type": "type:unit"
-        },
-        {
-          "id": "local:main.5",
-          "mutable": false,
-          "name": null,
-          "span": "span:70-76",
-          "type": "type:Vec.type.i64"
-        },
-        {
-          "id": "local:main.6",
-          "mutable": false,
-          "name": null,
-          "span": "span:82-84",
-          "type": "type:i64"
-        },
-        {
-          "id": "local:main.7",
-          "mutable": false,
-          "name": null,
-          "span": "span:70-85",
-          "type": "type:unit"
-        },
-        {
-          "id": "local:main.8",
-          "mutable": false,
-          "name": null,
-          "span": "span:99-105",
-          "type": "type:Vec.type.i64"
-        },
-        {
-          "id": "local:main.9",
-          "mutable": false,
-          "name": null,
-          "span": "span:99-111",
-          "type": "type:i64"
-        },
-        {
-          "id": "local:main.10",
-          "mutable": false,
-          "name": null,
-          "span": "span:91-112",
-          "type": "type:unit"
-        },
-        {
-          "id": "local:main.11",
-          "mutable": false,
-          "name": null,
-          "span": "span:124-130",
-          "type": "type:Vec.type.i64"
-        },
-        {
-          "id": "local:main.12",
-          "mutable": false,
-          "name": null,
-          "span": "span:135-136",
-          "type": "type:i64"
-        },
-        {
-          "id": "local:main.13",
-          "mutable": false,
-          "name": null,
-          "span": "span:124-138",
-          "type": "type:Option.type.i64"
-        },
-        {
-          "id": "local:main.14",
-          "mutable": true,
-          "name": null,
-          "span": "span:118-208",
-          "type": "type:unit"
-        },
-        {
-          "id": "local:main.15",
-          "mutable": false,
-          "name": null,
-          "span": "span:124-138",
-          "type": "type:i64"
-        },
-        {
-          "id": "local:main.16",
-          "mutable": false,
-          "name": null,
-          "span": "span:148-157",
-          "type": "type:i64"
-        },
-        {
-          "id": "local:main.17",
-          "mutable": false,
-          "name": null,
-          "span": "span:148-157",
-          "type": "type:bool"
-        },
-        {
-          "id": "local:main.18",
-          "mutable": false,
-          "name": "v",
-          "span": "span:154-155",
-          "type": "type:i64"
-        },
-        {
-          "id": "local:main.19",
-          "mutable": false,
-          "name": null,
-          "span": "span:168-169",
-          "type": "type:i64"
-        },
-        {
-          "id": "local:main.20",
-          "mutable": false,
-          "name": null,
-          "span": "span:160-170",
-          "type": "type:unit"
-        },
-        {
-          "id": "local:main.21",
-          "mutable": false,
-          "name": null,
-          "span": "span:180-186",
-          "type": "type:i64"
-        },
-        {
-          "id": "local:main.22",
-          "mutable": false,
-          "name": null,
-          "span": "span:180-186",
-          "type": "type:bool"
-        },
-        {
-          "id": "local:main.23",
-          "mutable": false,
-          "name": null,
-          "span": "span:197-199",
-          "type": "type:i64"
-        },
-        {
-          "id": "local:main.24",
-          "mutable": false,
-          "name": null,
-          "span": "span:189-200",
-          "type": "type:unit"
-        }
-      ],
-      "module": "mod:main",
-      "name": "main",
+      "entry": 0,
+      "id": 0,
+      "name": "__hew_fn_main",
       "params": [],
-      "result": "type:unit",
-      "span": "span:0-209"
+      "places": [
+        {
+          "id": 0,
+          "origin": "local"
+        }
+      ]
     }
   ],
   "hew_version": "0.6.0-rc4",
-  "layouts": {
-    "actors": [],
-    "enums": [
-      {
-        "id": "type:Option.type.i64",
-        "name": "Option",
-        "variants": [
-          {
-            "name": "Some",
-            "payload": [
-              "type:i64"
-            ],
-            "tag": 0
-          },
-          {
-            "name": "None",
-            "payload": [],
-            "tag": 1
-          }
-        ]
-      }
-    ],
-    "machines": [],
-    "records": [],
-    "supervisors": [],
-    "types": [
-      {
-        "id": "type:ActorError",
-        "kind": "enum",
-        "name": "ActorError"
-      },
-      {
-        "id": "type:ActorMailbox",
-        "kind": "record",
-        "name": "ActorMailbox"
-      },
-      {
-        "id": "type:ActorPolicy",
-        "kind": "record",
-        "name": "ActorPolicy"
-      },
-      {
-        "id": "type:ActorRequest",
-        "kind": "record",
-        "name": "ActorRequest"
-      },
-      {
-        "id": "type:ActorRequestAdmission",
-        "kind": "record",
-        "name": "ActorRequestAdmission"
-      },
-      {
-        "id": "type:ActorRequestOwner",
-        "kind": "record",
-        "name": "ActorRequestOwner"
-      },
-      {
-        "id": "type:ChildRef",
-        "kind": "record",
-        "name": "ChildRef"
-      },
-      {
-        "id": "type:Delivery",
-        "kind": "enum",
-        "name": "Delivery"
-      },
-      {
-        "id": "type:DropNewestSend",
-        "kind": "record",
-        "name": "DropNewestSend"
-      },
-      {
-        "id": "type:HashMapIter",
-        "kind": "record",
-        "name": "HashMapIter"
-      },
-      {
-        "id": "type:Location",
-        "kind": "record",
-        "name": "Location"
-      },
-      {
-        "id": "type:Message",
-        "kind": "record",
-        "name": "Message"
-      },
-      {
-        "id": "type:Never",
-        "kind": "enum",
-        "name": "Never"
-      },
-      {
-        "id": "type:NodeConfig",
-        "kind": "record",
-        "name": "NodeConfig"
-      },
-      {
-        "id": "type:NodeId",
-        "kind": "record",
-        "name": "NodeId"
-      },
-      {
-        "id": "type:OnFull",
-        "kind": "enum",
-        "name": "OnFull"
-      },
-      {
-        "id": "type:Option.type.i64",
-        "kind": "enum",
-        "name": "Option"
-      },
-      {
-        "id": "type:RejectSend",
-        "kind": "record",
-        "name": "RejectSend"
-      },
-      {
-        "id": "type:RemotePid",
-        "kind": "record",
-        "name": "RemotePid"
-      },
-      {
-        "id": "type:ReplaceLatestSend",
-        "kind": "record",
-        "name": "ReplaceLatestSend"
-      },
-      {
-        "id": "type:ScopeFailure",
-        "kind": "enum",
-        "name": "ScopeFailure"
-      },
-      {
-        "id": "type:SendError",
-        "kind": "enum",
-        "name": "SendError"
-      },
-      {
-        "id": "type:SendFailure",
-        "kind": "record",
-        "name": "SendFailure"
-      },
-      {
-        "id": "type:Vec.type.i64",
-        "kind": "vector",
-        "name": "Vec",
-        "parameters": [
-          "type:i64"
-        ]
-      },
-      {
-        "id": "type:VecIter",
-        "kind": "record",
-        "name": "VecIter"
-      },
-      {
-        "id": "type:WaitSend",
-        "kind": "record",
-        "name": "WaitSend"
-      },
-      {
-        "id": "type:bool",
-        "kind": "bool",
-        "name": "bool"
-      },
-      {
-        "id": "type:char",
-        "kind": "string",
-        "name": "char"
-      },
-      {
-        "id": "type:duration",
-        "kind": "integer",
-        "name": "duration"
-      },
-      {
-        "id": "type:f64",
-        "kind": "float",
-        "name": "f64"
-      },
-      {
-        "id": "type:i64",
-        "kind": "integer",
-        "name": "i64"
-      },
-      {
-        "id": "type:never",
-        "kind": "never",
-        "name": "never"
-      },
-      {
-        "id": "type:regex",
-        "kind": "regex",
-        "name": "regex"
-      },
-      {
-        "id": "type:reply",
-        "kind": "opaque",
-        "name": "ReplyToken"
-      },
-      {
-        "id": "type:std.builtins.ActorError",
-        "kind": "enum",
-        "name": "std.builtins.ActorError"
-      },
-      {
-        "id": "type:std.builtins.ActorMailbox",
-        "kind": "record",
-        "name": "std.builtins.ActorMailbox"
-      },
-      {
-        "id": "type:std.builtins.ActorPolicy",
-        "kind": "record",
-        "name": "std.builtins.ActorPolicy"
-      },
-      {
-        "id": "type:std.builtins.ActorRequest",
-        "kind": "record",
-        "name": "std.builtins.ActorRequest"
-      },
-      {
-        "id": "type:std.builtins.ActorRequestAdmission",
-        "kind": "record",
-        "name": "std.builtins.ActorRequestAdmission"
-      },
-      {
-        "id": "type:std.builtins.ActorRequestOwner",
-        "kind": "record",
-        "name": "std.builtins.ActorRequestOwner"
-      },
-      {
-        "id": "type:std.builtins.ChildRef",
-        "kind": "record",
-        "name": "std.builtins.ChildRef"
-      },
-      {
-        "id": "type:std.builtins.Delivery",
-        "kind": "enum",
-        "name": "std.builtins.Delivery"
-      },
-      {
-        "id": "type:std.builtins.DropNewestSend",
-        "kind": "record",
-        "name": "std.builtins.DropNewestSend"
-      },
-      {
-        "id": "type:std.builtins.HashMapIter",
-        "kind": "record",
-        "name": "std.builtins.HashMapIter"
-      },
-      {
-        "id": "type:std.builtins.LinkError",
-        "kind": "enum",
-        "name": "std.builtins.LinkError"
-      },
-      {
-        "id": "type:std.builtins.Location",
-        "kind": "record",
-        "name": "std.builtins.Location"
-      },
-      {
-        "id": "type:std.builtins.LookupError",
-        "kind": "enum",
-        "name": "std.builtins.LookupError"
-      },
-      {
-        "id": "type:std.builtins.Message",
-        "kind": "record",
-        "name": "std.builtins.Message"
-      },
-      {
-        "id": "type:std.builtins.Never",
-        "kind": "enum",
-        "name": "std.builtins.Never"
-      },
-      {
-        "id": "type:std.builtins.NodeConfig",
-        "kind": "record",
-        "name": "std.builtins.NodeConfig"
-      },
-      {
-        "id": "type:std.builtins.NodeError",
-        "kind": "enum",
-        "name": "std.builtins.NodeError"
-      },
-      {
-        "id": "type:std.builtins.NodeId",
-        "kind": "record",
-        "name": "std.builtins.NodeId"
-      },
-      {
-        "id": "type:std.builtins.OnFull",
-        "kind": "enum",
-        "name": "std.builtins.OnFull"
-      },
-      {
-        "id": "type:std.builtins.RejectSend",
-        "kind": "record",
-        "name": "std.builtins.RejectSend"
-      },
-      {
-        "id": "type:std.builtins.RemotePid",
-        "kind": "record",
-        "name": "std.builtins.RemotePid"
-      },
-      {
-        "id": "type:std.builtins.ReplaceLatestSend",
-        "kind": "record",
-        "name": "std.builtins.ReplaceLatestSend"
-      },
-      {
-        "id": "type:std.builtins.ScopeFailure",
-        "kind": "enum",
-        "name": "std.builtins.ScopeFailure"
-      },
-      {
-        "id": "type:std.builtins.SendError",
-        "kind": "enum",
-        "name": "std.builtins.SendError"
-      },
-      {
-        "id": "type:std.builtins.SendFailure",
-        "kind": "record",
-        "name": "std.builtins.SendFailure"
-      },
-      {
-        "id": "type:std.builtins.TimeoutError",
-        "kind": "enum",
-        "name": "std.builtins.TimeoutError"
-      },
-      {
-        "id": "type:std.builtins.VecIter",
-        "kind": "record",
-        "name": "std.builtins.VecIter"
-      },
-      {
-        "id": "type:std.builtins.WaitSend",
-        "kind": "record",
-        "name": "std.builtins.WaitSend"
-      },
-      {
-        "id": "type:std.failure.CrashAction",
-        "kind": "enum",
-        "name": "std.failure.CrashAction"
-      },
-      {
-        "id": "type:std.failure.CrashInfo",
-        "kind": "record",
-        "name": "std.failure.CrashInfo"
-      },
-      {
-        "id": "type:std.failure.CrashKind",
-        "kind": "enum",
-        "name": "std.failure.CrashKind"
-      },
-      {
-        "id": "type:std.failure.CrashNotification",
-        "kind": "record",
-        "name": "std.failure.CrashNotification"
-      },
-      {
-        "id": "type:string",
-        "kind": "string",
-        "name": "string"
-      },
-      {
-        "id": "type:u64",
-        "kind": "integer",
-        "name": "u64"
-      },
-      {
-        "id": "type:unit",
-        "kind": "unit",
-        "name": "unit"
-      }
-    ]
-  },
-  "module_graph": {
-    "entry": "mod:main",
-    "modules": [
-      {
-        "functions": [
-          "fn:main"
-        ],
-        "id": "mod:main",
-        "imports": [],
-        "path": "main",
-        "source_id": "src:main"
-      }
-    ]
-  },
-  "package_id": "pkg:cd7d1887fc34efea",
   "profile": "sandbox.sandbox-vm-export.v0",
-  "schema_version": "hew.sandbox.bytecode.v0",
-  "source_map": {
-    "sources": [
-      {
-        "content_sha256": "9a28ff03a634e0f2136447d17dc7ba1141aecd254566bbafe873318c8e6effc7",
-        "id": "src:main",
-        "path": "main.hew"
-      }
-    ],
-    "spans": [
-      {
-        "end": {
-          "byte_offset": 209,
-          "column": 2,
-          "line": 10
-        },
-        "id": "span:0-209",
-        "source_id": "src:main",
-        "start": {
-          "byte_offset": 0,
-          "column": 1,
-          "line": 1
-        }
-      },
-      {
-        "end": {
-          "byte_offset": 49,
-          "column": 5,
-          "line": 3
-        },
-        "id": "span:16-49",
-        "source_id": "src:main",
-        "start": {
-          "byte_offset": 16,
-          "column": 5,
-          "line": 2
-        }
-      },
-      {
-        "end": {
-          "byte_offset": 43,
-          "column": 32,
-          "line": 2
-        },
-        "id": "span:29-43",
-        "source_id": "src:main",
-        "start": {
-          "byte_offset": 29,
-          "column": 18,
-          "line": 2
-        }
-      },
-      {
-        "end": {
-          "byte_offset": 55,
-          "column": 11,
-          "line": 3
-        },
-        "id": "span:49-55",
-        "source_id": "src:main",
-        "start": {
-          "byte_offset": 49,
-          "column": 5,
-          "line": 3
-        }
-      },
-      {
-        "end": {
-          "byte_offset": 64,
-          "column": 20,
-          "line": 3
-        },
-        "id": "span:49-64",
-        "source_id": "src:main",
-        "start": {
-          "byte_offset": 49,
-          "column": 5,
-          "line": 3
-        }
-      },
-      {
-        "end": {
-          "byte_offset": 63,
-          "column": 19,
-          "line": 3
-        },
-        "id": "span:61-63",
-        "source_id": "src:main",
-        "start": {
-          "byte_offset": 61,
-          "column": 17,
-          "line": 3
-        }
-      },
-      {
-        "end": {
-          "byte_offset": 76,
-          "column": 11,
-          "line": 4
-        },
-        "id": "span:70-76",
-        "source_id": "src:main",
-        "start": {
-          "byte_offset": 70,
-          "column": 5,
-          "line": 4
-        }
-      },
-      {
-        "end": {
-          "byte_offset": 85,
-          "column": 20,
-          "line": 4
-        },
-        "id": "span:70-85",
-        "source_id": "src:main",
-        "start": {
-          "byte_offset": 70,
-          "column": 5,
-          "line": 4
-        }
-      },
-      {
-        "end": {
-          "byte_offset": 84,
-          "column": 19,
-          "line": 4
-        },
-        "id": "span:82-84",
-        "source_id": "src:main",
-        "start": {
-          "byte_offset": 82,
-          "column": 17,
-          "line": 4
-        }
-      },
-      {
-        "end": {
-          "byte_offset": 112,
-          "column": 26,
-          "line": 5
-        },
-        "id": "span:91-112",
-        "source_id": "src:main",
-        "start": {
-          "byte_offset": 91,
-          "column": 5,
-          "line": 5
-        }
-      },
-      {
-        "end": {
-          "byte_offset": 105,
-          "column": 19,
-          "line": 5
-        },
-        "id": "span:99-105",
-        "source_id": "src:main",
-        "start": {
-          "byte_offset": 99,
-          "column": 13,
-          "line": 5
-        }
-      },
-      {
-        "end": {
-          "byte_offset": 111,
-          "column": 25,
-          "line": 5
-        },
-        "id": "span:99-111",
-        "source_id": "src:main",
-        "start": {
-          "byte_offset": 99,
-          "column": 13,
-          "line": 5
-        }
-      },
-      {
-        "end": {
-          "byte_offset": 208,
-          "column": 1,
-          "line": 10
-        },
-        "id": "span:118-208",
-        "source_id": "src:main",
-        "start": {
-          "byte_offset": 118,
-          "column": 5,
-          "line": 6
-        }
-      },
-      {
-        "end": {
-          "byte_offset": 130,
-          "column": 17,
-          "line": 6
-        },
-        "id": "span:124-130",
-        "source_id": "src:main",
-        "start": {
-          "byte_offset": 124,
-          "column": 11,
-          "line": 6
-        }
-      },
-      {
-        "end": {
-          "byte_offset": 138,
-          "column": 25,
-          "line": 6
-        },
-        "id": "span:124-138",
-        "source_id": "src:main",
-        "start": {
-          "byte_offset": 124,
-          "column": 11,
-          "line": 6
-        }
-      },
-      {
-        "end": {
-          "byte_offset": 136,
-          "column": 23,
-          "line": 6
-        },
-        "id": "span:135-136",
-        "source_id": "src:main",
-        "start": {
-          "byte_offset": 135,
-          "column": 22,
-          "line": 6
-        }
-      },
-      {
-        "end": {
-          "byte_offset": 157,
-          "column": 18,
-          "line": 7
-        },
-        "id": "span:148-157",
-        "source_id": "src:main",
-        "start": {
-          "byte_offset": 148,
-          "column": 9,
-          "line": 7
-        }
-      },
-      {
-        "end": {
-          "byte_offset": 155,
-          "column": 16,
-          "line": 7
-        },
-        "id": "span:154-155",
-        "source_id": "src:main",
-        "start": {
-          "byte_offset": 154,
-          "column": 15,
-          "line": 7
-        }
-      },
-      {
-        "end": {
-          "byte_offset": 170,
-          "column": 31,
-          "line": 7
-        },
-        "id": "span:160-170",
-        "source_id": "src:main",
-        "start": {
-          "byte_offset": 160,
-          "column": 21,
-          "line": 7
-        }
-      },
-      {
-        "end": {
-          "byte_offset": 169,
-          "column": 30,
-          "line": 7
-        },
-        "id": "span:168-169",
-        "source_id": "src:main",
-        "start": {
-          "byte_offset": 168,
-          "column": 29,
-          "line": 7
-        }
-      },
-      {
-        "end": {
-          "byte_offset": 186,
-          "column": 15,
-          "line": 8
-        },
-        "id": "span:180-186",
-        "source_id": "src:main",
-        "start": {
-          "byte_offset": 180,
-          "column": 9,
-          "line": 8
-        }
-      },
-      {
-        "end": {
-          "byte_offset": 200,
-          "column": 29,
-          "line": 8
-        },
-        "id": "span:189-200",
-        "source_id": "src:main",
-        "start": {
-          "byte_offset": 189,
-          "column": 18,
-          "line": 8
-        }
-      },
-      {
-        "end": {
-          "byte_offset": 199,
-          "column": 28,
-          "line": 8
-        },
-        "id": "span:197-199",
-        "source_id": "src:main",
-        "start": {
-          "byte_offset": 197,
-          "column": 26,
-          "line": 8
-        }
-      }
-    ]
-  },
-  "stdlib_symbols": [
+  "regex_patterns": [],
+  "runtime_families": [
     {
-      "admission": "allowed",
-      "capability": "core.stdout",
-      "id": "sym:core.stdout.println",
-      "module": "core.stdout",
-      "name": "println",
-      "params": [
-        "type:string"
-      ],
-      "result": "type:unit"
+      "detail": "New",
+      "family": "Vector",
+      "id": 0
+    },
+    {
+      "detail": "Push",
+      "family": "Vector",
+      "id": 1
+    },
+    {
+      "detail": "Len",
+      "family": "Vector",
+      "id": 2
+    },
+    {
+      "detail": {
+        "kind": "I64",
+        "newline": true
+      },
+      "family": "Print",
+      "id": 3
+    },
+    {
+      "detail": "Get",
+      "family": "Vector",
+      "id": 4
     }
-  ]
+  ],
+  "schema_version": "hew.sandbox.bytecode.v1",
+  "strings": [],
+  "suspend_kinds": [],
+  "value_capabilities": [],
+  "variants": [
+    {
+      "cases": [
+        {
+          "fields": [
+            "0"
+          ],
+          "name": "Some"
+        },
+        {
+          "fields": [],
+          "name": "None"
+        }
+      ],
+      "id": 0,
+      "name": "Option<i64>"
+    }
+  ],
+  "vtables": []
 }

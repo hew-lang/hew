@@ -24,7 +24,9 @@ workspace = true
 wasm-opt = ["-O1", "--enable-bulk-memory"]
 
 [dependencies]
+hew-compile = { path = "../hew-compile" }
 hew-parser = { path = "../hew-parser" }
+hew-sir = { path = "../hew-sir" }
 hew-types = { path = "../hew-types" }
 serde.workspace = true
 serde_json.workspace = true

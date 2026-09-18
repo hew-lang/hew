@@ -1,0 +1,7 @@
+// Sleeping advances the sandbox's virtual clock rather than real time, so a
+// lesson about waiting replays identically.
+fn main() {
+    println("before");
+    sleep(25ms);
+    println("after");
+}

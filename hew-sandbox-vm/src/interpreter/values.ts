@@ -19,6 +19,13 @@ export type VmValue =
   | { kind: "record"; typeId: string; fields: VmValue[] }
   | { kind: "enum"; typeId: string; tag: number; payload: VmValue[] }
   | { kind: "vector"; elementType: string; items: VmValue[] }
+  /** A hash map. Keys are canonical renderings of the key value, so lookup is
+   *  structural; `entries` keeps insertion order so iteration is stable. */
+  | { kind: "map"; entries: Map<string, { key: VmValue; value: VmValue }> }
+  /** A trait object: the vtable the checker selected, and the value it wraps.
+   *  A `dyn.call` resolves its method through `vtable`, never through the
+   *  wrapped value's shape. */
+  | { kind: "dyn"; vtable: number; value: VmValue }
   /** A first-class function reference materialised by `const.function`.
    *  `id` is the bytecode function id (e.g. `"fn:my_handler"`).
    *  Function values are immutable: `cloneValue` is identity. */
@@ -45,16 +52,49 @@ export function cloneValue(value: VmValue): VmValue {
     case "stream":
     case "sink":
     case "duplex":
-    case "function":  // function values are immutable — identity clone
+    case "function": // function values are immutable — identity clone
       return { ...value };
     case "regex":
-      return { kind: "regex", source: value.source, regex: new RegExp(value.source, value.regex.flags) };
+      return {
+        kind: "regex",
+        source: value.source,
+        regex: new RegExp(value.source, value.regex.flags),
+      };
     case "record":
-      return { kind: "record", typeId: value.typeId, fields: value.fields.map(cloneValue) };
+      return {
+        kind: "record",
+        typeId: value.typeId,
+        fields: value.fields.map(cloneValue),
+      };
     case "enum":
-      return { kind: "enum", typeId: value.typeId, tag: value.tag, payload: value.payload.map(cloneValue) };
+      return {
+        kind: "enum",
+        typeId: value.typeId,
+        tag: value.tag,
+        payload: value.payload.map(cloneValue),
+      };
     case "vector":
-      return { kind: "vector", elementType: value.elementType, items: value.items.map(cloneValue) };
+      return {
+        kind: "vector",
+        elementType: value.elementType,
+        items: value.items.map(cloneValue),
+      };
+    case "dyn":
+      return {
+        kind: "dyn",
+        vtable: value.vtable,
+        value: cloneValue(value.value),
+      };
+    case "map":
+      return {
+        kind: "map",
+        entries: new Map(
+          [...value.entries].map(([key, entry]) => [
+            key,
+            { key: cloneValue(entry.key), value: cloneValue(entry.value) },
+          ]),
+        ),
+      };
   }
 }
 
@@ -70,7 +110,9 @@ export function valueFromLiteral(value: JsonValue): VmValue {
     case "boolean":
       return { kind: "bool", value };
     case "number":
-      return Number.isInteger(value) ? { kind: "i64", value: BigInt(value) } : { kind: "f64", value };
+      return Number.isInteger(value)
+        ? { kind: "i64", value: BigInt(value) }
+        : { kind: "f64", value };
     case "string":
       return { kind: "string", value };
     default:
@@ -185,16 +227,20 @@ export function renderStdout(value: VmValue): string {
     case "record":
       return canonicalJson({
         type: value.typeId,
-        fields: value.fields.map((field) => toJsonValue(field))
+        fields: value.fields.map((field) => toJsonValue(field)),
       });
     case "enum":
       return canonicalJson({
         type: value.typeId,
         tag: value.tag,
-        payload: value.payload.map((field) => toJsonValue(field))
+        payload: value.payload.map((field) => toJsonValue(field)),
       });
     case "vector":
       return canonicalJson(value.items.map((item) => toJsonValue(item)));
+    case "map":
+      return canonicalJson(mapEntriesJson(value));
+    case "dyn":
+      return renderStdout(value.value);
     case "function":
       return value.id;
   }
@@ -228,12 +274,30 @@ export function toJsonValue(value: VmValue): JsonValue {
     case "record":
       return { type: value.typeId, fields: value.fields.map(toJsonValue) };
     case "enum":
-      return { type: value.typeId, tag: value.tag, payload: value.payload.map(toJsonValue) };
+      return {
+        type: value.typeId,
+        tag: value.tag,
+        payload: value.payload.map(toJsonValue),
+      };
     case "vector":
       return value.items.map(toJsonValue);
+    case "map":
+      return mapEntriesJson(value);
+    case "dyn":
+      return toJsonValue(value.value);
     case "function":
       return value.id;
   }
+}
+
+/// A map renders as its entries in insertion order, each a `[key, value]` pair.
+export function mapEntriesJson(
+  value: Extract<VmValue, { kind: "map" }>,
+): JsonValue {
+  return [...value.entries.values()].map((entry) => [
+    toJsonValue(entry.key),
+    toJsonValue(entry.value),
+  ]);
 }
 
 export function canonicalJson(value: JsonValue): string {
@@ -243,12 +307,17 @@ export function canonicalJson(value: JsonValue): string {
   if (Array.isArray(value)) {
     return `[${value.map(canonicalJson).join(",")}]`;
   }
-  const entries = Object.entries(value).sort(([left], [right]) => left.localeCompare(right));
+  const entries = Object.entries(value).sort(([left], [right]) =>
+    left.localeCompare(right),
+  );
   return `{${entries.map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`).join(",")}}`;
 }
 
 export function i64ToJsonValue(value: bigint): JsonValue {
-  if (value >= BigInt(Number.MIN_SAFE_INTEGER) && value <= BigInt(Number.MAX_SAFE_INTEGER)) {
+  if (
+    value >= BigInt(Number.MIN_SAFE_INTEGER) &&
+    value <= BigInt(Number.MAX_SAFE_INTEGER)
+  ) {
     return Number(value);
   }
   return value.toString();

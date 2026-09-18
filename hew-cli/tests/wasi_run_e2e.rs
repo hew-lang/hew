@@ -819,14 +819,47 @@ fn main() {
 }
 "#;
 
+/// The shape a periodic run must have on either target: the spawn line first,
+/// a contiguous run of ticks from 1, and the main activation's own line.
+///
+/// How many ticks a 120ms sleep sees, and whether the last one lands before or
+/// after `done`, is wall-clock: a loaded runner delivers a different number.
+/// Byte equality between the two targets would pin that race, so this reads the
+/// properties that do hold.
+fn periodic_run_shape(stdout: &str) -> (usize, bool) {
+    let mut ticks = 0usize;
+    let mut saw_done = false;
+    let mut lines = stdout.lines();
+    assert_eq!(
+        lines.next(),
+        Some("spawned"),
+        "the spawn line comes first\nstdout:\n{stdout}"
+    );
+    for line in lines {
+        if let Some(number) = line.strip_prefix("tick ") {
+            ticks += 1;
+            assert_eq!(
+                number.parse::<usize>().ok(),
+                Some(ticks),
+                "periodic ticks must be contiguous from 1\nstdout:\n{stdout}"
+            );
+        } else if line == "done" {
+            saw_done = true;
+        } else {
+            panic!("unexpected line {line:?}\nstdout:\n{stdout}");
+        }
+    }
+    (ticks, saw_done)
+}
+
 /// An `#[every]` handler fires and the program becomes quiescent on both
 /// targets.
 ///
 /// The wasm32 process driver ticks the shared timer wheel between readiness
-/// steps and drains the run queue, so a periodic actor that stops itself ends
-/// the run the same way it does natively. The oracle this replaces asserted
-/// that the wasm run had to be killed by `--timeout`, which was the runtime
-/// twin's host-driven timer queue, not the language.
+/// steps and drains the run queue, so a periodic actor ends the run the same
+/// way it does natively. The oracle this replaces asserted that the wasm run
+/// had to be killed by `--timeout`, which was the runtime twin's host-driven
+/// timer queue, not the language.
 #[test]
 fn actor_periodic_timer_reaches_quiescence_on_native_and_wasi() {
     require_wasi_runner();
@@ -843,18 +876,26 @@ fn actor_periodic_timer_reaches_quiescence_on_native_and_wasi() {
     let wasi_stdout = String::from_utf8_lossy(&wasi.stdout);
     let wasi_stderr = String::from_utf8_lossy(&wasi.stderr);
 
+    let (native_ticks, native_done) = periodic_run_shape(&native_stdout);
+    let (wasi_ticks, wasi_done) = periodic_run_shape(&wasi_stdout);
+
     assert!(
-        native_stdout.contains("tick 1"),
-        "the native periodic handler never fired\nstdout:\n{native_stdout}"
+        native_ticks >= 1 && native_done,
+        "the native periodic handler must fire and the run must finish\nstdout:\n{native_stdout}"
     );
-    assert_eq!(
-        wasi_stdout, native_stdout,
-        "WASI periodic stdout must match native\nWASI stderr:\n{wasi_stderr}"
+    assert!(
+        wasi_ticks >= 1 && wasi_done,
+        "the WASI periodic handler must fire and the run must reach quiescence\nstdout:\n{wasi_stdout}\nstderr:\n{wasi_stderr}"
     );
     assert_eq!(
         wasi.status.code(),
         native.status.code(),
         "WASI periodic exit status must match native\nWASI stderr:\n{wasi_stderr}"
+    );
+    assert_eq!(
+        wasi.status.code(),
+        Some(0),
+        "a periodic actor must not need a timeout to end\nWASI stderr:\n{wasi_stderr}"
     );
 }
 

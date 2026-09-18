@@ -1180,7 +1180,11 @@ fn main() {
     }
 
     #[test]
-    fn user_pattern_cannot_mint_regex_profile_authority() {
+    /// A user type that happens to share the standard library's name keeps its
+    /// own methods and gains none of the standard library's authority. The
+    /// package proves it: the call reaches the user's own function and the
+    /// package names no regex symbol at all.
+    fn a_user_pattern_keeps_its_own_methods_and_gains_no_regex_authority() {
         set_test_hewpath();
         let source = r#"
 type Pattern {
@@ -1198,20 +1202,29 @@ fn main() {
     println(pattern.find("input"));
 }
 "#;
-        let output = compile_to_sandbox_bytecode(source, Some("sandbox-vm-export"))
-            .expect("compile should not throw");
-        assert!(
-            output.bytecode.is_none(),
-            "a user-defined Pattern must not emit regex bytecode"
+        let package = v1(
+            compile_to_sandbox_bytecode(source, Some("sandbox-vm-export"))
+                .expect("compile should not throw"),
         );
         assert!(
-            output.diagnostics.iter().any(|diagnostic| {
-                diagnostic.phase == "profile"
-                    && diagnostic.kind == "unknown_method_symbol"
-                    && diagnostic.message.contains("method `find`")
-            }),
-            "a user-defined Pattern must not gain regex method authority: {:#?}",
-            output.diagnostics
+            !package
+                .externs
+                .iter()
+                .any(|symbol| symbol.symbol.starts_with("hew_regex")),
+            "a user-defined Pattern must reach no regex symbol: {:#?}",
+            package.externs
+        );
+        assert!(
+            package
+                .functions
+                .iter()
+                .any(|function| function.name.contains("find")),
+            "the call must reach the user's own `find`: {:#?}",
+            package
+                .functions
+                .iter()
+                .map(|function| &function.name)
+                .collect::<Vec<_>>()
         );
     }
 
@@ -1309,7 +1322,9 @@ fn main() {
     }
 
     #[test]
-    fn user_regex_name_cannot_mint_regex_method_authority() {
+    /// The same for a user type named `Regex`: sharing the module's name gives
+    /// it none of the module's authority, and the package shows it.
+    fn a_user_regex_keeps_its_own_methods_and_gains_no_regex_authority() {
         set_test_hewpath();
         let source = r#"
 type Regex {
@@ -1327,20 +1342,17 @@ fn main() {
     println(pattern.find("input"));
 }
 "#;
-        let output = compile_to_sandbox_bytecode(source, Some("sandbox-vm-export"))
-            .expect("compile should not throw");
-        assert!(
-            output.bytecode.is_none(),
-            "a user-defined Regex must not emit regex bytecode"
+        let package = v1(
+            compile_to_sandbox_bytecode(source, Some("sandbox-vm-export"))
+                .expect("compile should not throw"),
         );
         assert!(
-            output.diagnostics.iter().any(|diagnostic| {
-                diagnostic.phase == "profile"
-                    && diagnostic.kind == "unknown_method_symbol"
-                    && diagnostic.message.contains("method `find`")
-            }),
-            "a user-defined Regex must not gain regex method authority: {:#?}",
-            output.diagnostics
+            !package
+                .externs
+                .iter()
+                .any(|symbol| symbol.symbol.starts_with("hew_regex")),
+            "a user-defined Regex must reach no regex symbol: {:#?}",
+            package.externs
         );
     }
 
@@ -2029,8 +2041,22 @@ fn main() {
 ";
 
     #[test]
-    fn impl_where_clause_is_reserved_runtime_feature() {
-        assert_profile_rejection(IMPL_WHERE_SOURCE, "reserved_runtime_feature");
+    /// A generic impl with a where clause is ordinary code the checker
+    /// resolves; it runs natively and the sandbox admits it.
+    fn generic_impl_with_a_where_clause_is_admitted() {
+        set_test_hewpath();
+        let output = compile_to_sandbox_bytecode(IMPL_WHERE_SOURCE, Some("sandbox-vm-export"))
+            .expect("compile should not throw");
+        let errors: Vec<_> = output
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.severity == "error")
+            .collect();
+        assert!(errors.is_empty(), "unexpected diagnostics: {errors:#?}");
+        assert!(
+            output.bytecode.is_some(),
+            "an admitted impl emits a package"
+        );
     }
 
     fn assert_profile_rejection(source: &str, expected_kind: &str) {

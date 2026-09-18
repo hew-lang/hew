@@ -339,13 +339,42 @@ pub fn is_canonical_stdlib_module_source(
     )
 }
 
+/// Does this path spell the shipped source of `dotted_module`?
+///
+/// A host with no filesystem serves the standard library from the sources
+/// compiled into it, at the shipped relative spelling. That is a stronger
+/// proof of provenance than a path, not a weaker one: a source compiled into
+/// the binary cannot be user-controlled at all, which is the property the
+/// canonical-path comparison approximates on a host that has one.
+fn shipped_module_spelling(source_file: &std::path::Path, dotted_module: &str) -> bool {
+    let segments = dotted_module.split('.').collect::<Vec<_>>();
+    let Some(last) = segments.last() else {
+        return false;
+    };
+    let rel = segments.iter().collect::<PathBuf>();
+    let spelled = source_file
+        .components()
+        .filter(|component| !matches!(component, std::path::Component::CurDir))
+        .collect::<PathBuf>();
+    spelled == rel.join(format!("{last}.hew")) || spelled == rel.with_extension("hew")
+}
+
 fn canonical_stdlib_module_source_in_roots(
     source_file: &std::path::Path,
     dotted_module: &str,
     roots: &[PathBuf],
 ) -> bool {
-    let Ok(input_canonical) = std::fs::canonicalize(source_file) else {
-        return false;
+    let input_canonical = match std::fs::canonicalize(source_file) {
+        Ok(canonical) => canonical,
+        // A host with no filesystem cannot canonicalize any path, so a
+        // shipped source has no canonical form to compare. Its provenance is
+        // that it was compiled in, which the shipped spelling names. A host
+        // that does have a filesystem never reaches this arm: an absent file
+        // reports `NotFound` and stays refused.
+        Err(error) if error.kind() == std::io::ErrorKind::Unsupported => {
+            return shipped_module_spelling(source_file, dotted_module);
+        }
+        Err(_) => return false,
     };
     let segments = dotted_module.split('.').collect::<Vec<_>>();
     let Some(last) = segments.last() else {
@@ -1237,6 +1266,76 @@ mod tests {
         fs::write(&user_source, "pub fn len() -> i64 { 0 }\n").expect("write lookalike source");
 
         assert_eq!(canonical_stdlib_module_for_source(&user_source), None);
+    }
+
+    #[test]
+    fn a_compiled_in_source_is_the_shipped_module_it_spells() {
+        // A host with no filesystem serves the standard library from sources
+        // compiled into it, at the shipped relative spelling, in both the
+        // directory and flat layouts.
+        assert!(shipped_module_spelling(
+            std::path::Path::new("./std/math/math.hew"),
+            "std.math"
+        ));
+        assert!(shipped_module_spelling(
+            std::path::Path::new("std/math/math.hew"),
+            "std.math"
+        ));
+        assert!(shipped_module_spelling(
+            std::path::Path::new("./std/io.hew"),
+            "std.io"
+        ));
+        assert!(shipped_module_spelling(
+            std::path::Path::new("./std/text/regex/regex.hew"),
+            "std.text.regex"
+        ));
+    }
+
+    #[test]
+    fn a_compiled_in_spelling_names_only_its_own_module() {
+        // The spelling proves which module a compiled-in source is, so it must
+        // not vouch for a neighbour or for a source parked under another path.
+        assert!(!shipped_module_spelling(
+            std::path::Path::new("./std/math/math.hew"),
+            "std.mem"
+        ));
+        assert!(!shipped_module_spelling(
+            std::path::Path::new("./mine/std/math/math.hew"),
+            "std.math"
+        ));
+        assert!(!shipped_module_spelling(
+            std::path::Path::new("./std/math/helper.hew"),
+            "std.math"
+        ));
+    }
+
+    #[test]
+    fn a_user_file_spelling_a_shipped_module_path_is_still_refused() {
+        // On a host with a filesystem the compiled-in arm is never reached: an
+        // absent file reports `NotFound`, and a user file that spells the same
+        // module path canonicalizes to somewhere no search root owns.
+        let user_dir = TestDir::new("module-registry-user-math-lookalike");
+        let user_source = user_dir.root.join("std/math/math.hew");
+        fs::create_dir_all(user_source.parent().expect("lookalike has a parent"))
+            .expect("create lookalike directory");
+        fs::write(
+            &user_source,
+            "pub fn sqrt(x: f64) -> f64 { x }
+",
+        )
+        .expect("write lookalike source");
+
+        assert!(
+            !is_canonical_stdlib_module_source(&user_source, "std.math"),
+            "a user file must not acquire the shipped module's provenance"
+        );
+        assert_eq!(canonical_stdlib_module_for_source(&user_source), None);
+
+        // The same spelling, with nothing behind it, stays refused too.
+        assert!(!is_canonical_stdlib_module_source(
+            &user_dir.root.join("std/math/absent.hew"),
+            "std.math"
+        ));
     }
 
     #[test]

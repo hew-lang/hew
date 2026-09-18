@@ -1,0 +1,45 @@
+import std.stream;
+
+// The same forked-sink shape without a crash: the task finishes, the scope
+// exits cleanly and the closed actor releases its own handle cleanly. Every
+// item arrives and the pipe ends with a clean close, not a disclosed fault.
+fn hold(consume out: stream.Sink<i64>) -> i64 {
+    out.send(2).expect("send");
+    out.close();
+    0
+}
+
+actor Producer {
+    var out: stream.Sink<i64>,
+
+    receive fn go() {
+        out.send(1).expect("send");
+        scope {
+            let writer = fork hold(out.clone());
+            let _ = await writer;
+        }
+    }
+}
+
+fn main() -> i64 {
+    let (sink, data) = stream.pipe(4).expect("pipe");
+    let p = spawn Producer(out: sink);
+    match p.go() {
+        .Ok(_v) => println("handler returned"),
+        .Err(_e) => println("handler crashed"),
+    }
+    close(p);
+    match data.recv() {
+        .Some(v) => println(f"first={v}"),
+        .None => println("clean-none-1"),
+    }
+    match data.recv() {
+        .Some(v) => println(f"second={v}"),
+        .None => println("clean-none-2"),
+    }
+    match data.recv() {
+        .Some(v) => println(f"third={v}"),
+        .None => println("clean-none-3"),
+    }
+    0
+}

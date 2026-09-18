@@ -1208,6 +1208,9 @@ pub unsafe extern "C" fn hew_task_spawn_thread(task: *mut HewTask, task_fn: Task
     // We must pass raw pointers across the thread boundary.
     let task_raw = task as usize;
     let fn_raw = task_fn as usize;
+    // Read the owner here, on the spawning thread: the task's own thread has
+    // no actor identity by design.
+    let owning_actor = crate::fault::owning_actor_at_spawn();
 
     let handle = std::thread::spawn(move || {
         let task_ptr = task_raw as *mut HewTask;
@@ -1237,9 +1240,13 @@ pub unsafe extern "C" fn hew_task_spawn_thread(task: *mut HewTask, task_fn: Task
         let installed_previous =
             crate::execution_context::set_current_context(&raw mut execution_context);
         debug_assert_eq!(installed_previous, previous_context);
+        // The task is not its owning actor, so actor identity stays empty in
+        // its context. It still releases that actor's resources: a release
+        // here while the owner unwinds a crash discloses the crash rather
+        // than closing cleanly.
         // SAFETY: fn_ptr is the validated TaskFn supplied to
         // hew_task_spawn_thread, and task_ptr stays live until scope teardown.
-        unsafe { fn_ptr(task_ptr) };
+        crate::fault::with_owning_actor(owning_actor, || unsafe { fn_ptr(task_ptr) });
         let restored_context = crate::execution_context::set_current_context(previous_context);
         debug_assert_eq!(restored_context, &raw mut execution_context);
 
@@ -1255,7 +1262,9 @@ pub unsafe extern "C" fn hew_task_spawn_thread(task: *mut HewTask, task_fn: Task
 ///
 /// The child inherits cancellation lineage, supervisor lineage, and trace
 /// context by value. Actor identity, actor-local arena, and lock seat remain
-/// empty for the spawned task's own execution context.
+/// empty for the spawned task's own execution context; the owning actor is
+/// recorded for the task's thread so a resource it releases still answers to
+/// that actor's crash.
 ///
 /// Returns `0` on success and `-1` on fail-closed rejection.
 ///
@@ -1288,6 +1297,7 @@ pub unsafe extern "C" fn hew_task_spawn_thread_with_inherited_context(
             parent.cancel_token,
         )
     };
+    let owning_actor = crate::fault::owning_actor_at_spawn();
 
     // SAFETY: task is valid. If the parent has a cancellation token, make the
     // task own a child token linked to that parent; otherwise keep the token
@@ -1339,9 +1349,15 @@ pub unsafe extern "C" fn hew_task_spawn_thread_with_inherited_context(
             crate::execution_context::set_current_context(&raw mut execution_context);
         debug_assert!(installed_previous.is_null());
 
+        // The task is not its owning actor, so actor identity stays empty in
+        // its context. It still releases that actor's resources: a release
+        // here while the owner unwinds a crash discloses the crash rather
+        // than closing cleanly.
         // SAFETY: fn_ptr is the validated ContextTaskFn supplied to this
         // helper, and task_ptr stays live until scope teardown.
-        unsafe { fn_ptr(&raw mut execution_context, task_ptr) };
+        crate::fault::with_owning_actor(owning_actor, || unsafe {
+            fn_ptr(&raw mut execution_context, task_ptr);
+        });
 
         let restored_context = crate::execution_context::set_current_context(ptr::null_mut());
         debug_assert_eq!(restored_context, &raw mut execution_context);

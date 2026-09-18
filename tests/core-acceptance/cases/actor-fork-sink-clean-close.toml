@@ -1,0 +1,10 @@
+[[case]]
+id = "actor-fork-sink-clean-close"
+intent = "The same forked-sink shape without a crash delivers every item and ends with a clean close, so disclosure never fires on an ordinary scope exit."
+source = "cases/actor-fork-sink-clean-close.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "handler returned\nfirst=1\nsecond=2\nclean-none-3\n"
+exit = 0

@@ -1,1 +1,70 @@
-{"schema_version":"hew.sandbox.trace.v0","trace_id":"trace:string-interpolation","fixture_id":"string-interpolation","profile":"sandbox.sandbox-vm-export.v0","hew_version": "0.6.0-rc4","sandbox_version":"0.0.0-spec","result":"ok","replay":{"seed":7,"step_budget":1000,"virtual_clock":{"epoch_ms":0,"tick_ms":1,"current_ms":0},"inputs":[]},"events":[{"seq":0,"type":"trace.started","phase":"run","span":null,"message":"fixture start"},{"seq":1,"type":"io.stdout","phase":"run","span":{"source_id":"src:main","path":"main.hew","start":{"byte_offset":38,"column":5,"line":3},"end":{"byte_offset":71,"column":38,"line":3}},"text":"Hello, Hew sandbox\n"},{"seq":2,"type":"trace.ended","phase":"run","span":null,"message":"ok"}],"final_state":{"status":"ok","exit_code":0,"step_count":11,"budget_remaining":989,"virtual_clock":{"epoch_ms":0,"tick_ms":1,"current_ms":0},"stdout":["Hello, Hew sandbox\n"],"stderr":[],"ids":{"actors":["actor:root"],"channels":[],"tasks":[],"supervisors":[],"machines":[]},"diagnostics":[],"sandbox_rejections":[],"runtime_failures":[],"globals":[]}}
+{
+  "events": [
+    {
+      "message": "fixture start",
+      "phase": "run",
+      "seq": 0,
+      "span": null,
+      "type": "trace.started"
+    },
+    {
+      "phase": "run",
+      "seq": 1,
+      "span": null,
+      "text": "Hello, Hew sandbox\n",
+      "type": "io.stdout"
+    },
+    {
+      "message": "ok",
+      "phase": "run",
+      "seq": 2,
+      "span": null,
+      "type": "trace.ended"
+    }
+  ],
+  "final_state": {
+    "budget_remaining": 978,
+    "diagnostics": [],
+    "exit_code": 0,
+    "globals": [],
+    "ids": {
+      "actors": [
+        "actor:root"
+      ],
+      "channels": [],
+      "machines": [],
+      "supervisors": [],
+      "tasks": []
+    },
+    "runtime_failures": [],
+    "sandbox_rejections": [],
+    "status": "ok",
+    "stderr": [],
+    "stdout": [
+      "Hello, Hew sandbox\n"
+    ],
+    "step_count": 22,
+    "virtual_clock": {
+      "current_ms": 0,
+      "epoch_ms": 0,
+      "tick_ms": 1
+    }
+  },
+  "fixture_id": "string-interpolation",
+  "hew_version": "0.6.0-rc4",
+  "profile": "sandbox.sandbox-vm-export.v0",
+  "replay": {
+    "inputs": [],
+    "seed": 7,
+    "step_budget": 1000,
+    "virtual_clock": {
+      "current_ms": 0,
+      "epoch_ms": 0,
+      "tick_ms": 1
+    }
+  },
+  "result": "ok",
+  "sandbox_version": "0.0.0-spec",
+  "schema_version": "hew.sandbox.trace.v0",
+  "trace_id": "trace:string-interpolation"
+}

@@ -16,72 +16,78 @@
           "ops": [
             {
               "dst": 0,
-              "op": "const.int",
+              "nanos": "25000000",
+              "op": "const.duration",
               "span": {
-                "end": 66,
-                "start": 66
+                "end": 22,
+                "start": 22
+              }
+            }
+          ],
+          "params": [],
+          "term": {
+            "cancel": {
+              "args": [],
+              "to": 2
+            },
+            "detail": null,
+            "inputs": [
+              {
+                "decision": "copy",
+                "value": 0
+              }
+            ],
+            "kind": "Sleep",
+            "op": "suspend",
+            "result": null,
+            "resumes": [
+              {
+                "args": [],
+                "to": 1
+              }
+            ],
+            "span": {
+              "end": 22,
+              "start": 22
+            },
+            "unwind": {
+              "args": [],
+              "to": 3
+            }
+          }
+        },
+        {
+          "id": 1,
+          "ops": [
+            {
+              "dst": 1,
+              "op": "const.str",
+              "span": {
+                "end": 41,
+                "start": 41
               },
-              "ty": "i64",
-              "value": "42"
+              "str": 0
             }
           ],
           "params": [],
           "term": {
             "args": [
               {
-                "decision": "copy",
-                "value": 0
-              }
-            ],
-            "callee": 1,
-            "normal": {
-              "args": [
-                1
-              ],
-              "to": 1
-            },
-            "op": "call",
-            "result": {
-              "own": "none",
-              "value": 1
-            },
-            "span": {
-              "end": 66,
-              "start": 66
-            },
-            "unwind": {
-              "args": [],
-              "to": 2
-            }
-          }
-        },
-        {
-          "id": 1,
-          "ops": [],
-          "params": [
-            {
-              "own": "none",
-              "value": 2
-            }
-          ],
-          "term": {
-            "args": [
-              {
-                "decision": "copy",
-                "value": 2
+                "decision": "borrow",
+                "value": 1
               }
             ],
             "family": 0,
             "normal": {
               "args": [],
-              "to": 4
+              "to": 6
             },
             "op": "runtime.call",
             "result": null,
             "result_shape": null,
             "span": {
-              "end": 66,
-              "start": 66
+              "end": 41,
+              "start": 41
             },
             "unwind": null
           }
@@ -93,29 +99,17 @@
           "term": {
             "edge": {
               "args": [],
-              "to": 3
+              "to": 4
             },
             "op": "goto",
             "span": {
-              "end": 66,
-              "start": 66
+              "end": 22,
+              "start": 22
             }
           }
         },
         {
           "id": 3,
-          "ops": [],
-          "params": [],
-          "term": {
-            "op": "resume_unwind",
-            "span": {
-              "end": 66,
-              "start": 66
-            }
-          }
-        },
-        {
-          "id": 4,
           "ops": [],
           "params": [],
           "term": {
@@ -125,8 +119,20 @@
             },
             "op": "goto",
             "span": {
-              "end": 66,
-              "start": 66
+              "end": 22,
+              "start": 22
+            }
+          }
+        },
+        {
+          "id": 4,
+          "ops": [],
+          "params": [],
+          "term": {
+            "op": "resume_unwind",
+            "span": {
+              "end": 22,
+              "start": 22
             }
           }
         },
@@ -135,10 +141,45 @@
           "ops": [],
           "params": [],
           "term": {
+            "op": "resume_unwind",
+            "span": {
+              "end": 22,
+              "start": 22
+            }
+          }
+        },
+        {
+          "id": 6,
+          "ops": [
+            {
+              "dst": null,
+              "op": "destroy_value",
+              "span": null,
+              "value": 1
+            }
+          ],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 7
+            },
+            "op": "goto",
+            "span": {
+              "end": 41,
+              "start": 41
+            }
+          }
+        },
+        {
+          "id": 7,
+          "ops": [],
+          "params": [],
+          "term": {
             "op": "return",
             "span": {
-              "end": 66,
-              "start": 66
+              "end": 41,
+              "start": 41
             },
             "value": null
           }
@@ -149,52 +190,6 @@
       "name": "__hew_fn_main",
       "params": [],
       "places": []
-    },
-    {
-      "blocks": [
-        {
-          "id": 0,
-          "ops": [],
-          "params": [],
-          "term": {
-            "edge": {
-              "args": [],
-              "to": 1
-            },
-            "op": "goto",
-            "span": {
-              "end": 30,
-              "start": 30
-            }
-          }
-        },
-        {
-          "id": 1,
-          "ops": [],
-          "params": [],
-          "term": {
-            "op": "return",
-            "span": {
-              "end": 30,
-              "start": 30
-            },
-            "value": {
-              "decision": "move",
-              "value": 0
-            }
-          }
-        }
-      ],
-      "entry": 0,
-      "id": 1,
-      "name": "__hew_fn_id$$i64",
-      "params": [
-        {
-          "own": "none",
-          "value": 0
-        }
-      ],
-      "places": []
     }
   ],
   "hew_version": "0.6.0-rc4",
@@ -203,7 +198,7 @@
   "runtime_families": [
     {
       "detail": {
-        "kind": "I64",
+        "kind": "Str",
         "newline": true
       },
       "family": "Print",
@@ -211,8 +206,12 @@
     }
   ],
   "schema_version": "hew.sandbox.bytecode.v1",
-  "strings": [],
-  "suspend_kinds": [],
+  "strings": [
+    "awake"
+  ],
+  "suspend_kinds": [
+    "Sleep"
+  ],
   "value_capabilities": [],
   "variants": [],
   "vtables": []

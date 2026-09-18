@@ -66,6 +66,21 @@ pub struct ProfileReport {
     clippy::result_large_err,
     reason = "profile selection failures are surfaced as the same diagnostic shape as compile gates"
 )]
+/// The module-qualified functions the sandbox admits.
+///
+/// `std::io` is the page's standard streams and `std::random` is the VM's
+/// seeded generator, so their imports are admitted and each function is named
+/// here. `random.crypto_bytes` and `random.crypto_u64` are deliberately absent:
+/// they read host entropy the browser sandbox has no authority for.
+fn module_function_is_admitted(module: &str, function: &str) -> bool {
+    matches!(
+        (module, function),
+        ("regex", "new" | "is_match" | "find" | "replace")
+            | ("io", "read_line")
+            | ("random", "seed" | "randint")
+    )
+}
+
 pub fn canonical_profile(profile: Option<&str>) -> Result<String, Diagnostic> {
     match profile.unwrap_or(DEFAULT_PROFILE_ALIAS).trim() {
         "" | DEFAULT_PROFILE_ALIAS | DEFAULT_PROFILE_CANONICAL => {
@@ -265,13 +280,19 @@ impl<'a> ProfileChecker<'a> {
     fn check_import(&mut self, import: &ImportDecl, span: &std::ops::Range<usize>) {
         let path = import.path.join("::");
         self.imports.insert(path.clone());
-        if path == "std::text::regex" {
+        // `std::io` is the page's standard streams, not file-backed I/O, and
+        // `std::random` is the VM's seeded generator. Both are admitted here
+        // and gated per function below, so a module stays usable without
+        // admitting the parts the sandbox has no authority for.
+        if matches!(
+            path.as_str(),
+            "std::text::regex" | "std::io" | "std::random"
+        ) {
             return;
         }
 
         let rejected_prefixes = [
             ("std::fs", NativeOnlySurface::FileIo),
-            ("std::io", NativeOnlySurface::FileIo),
             ("std::net", NativeOnlySurface::NetworkSockets),
             ("std::process", NativeOnlySurface::OsProcesses),
             ("std::os", NativeOnlySurface::OsEnvironment),
@@ -1022,13 +1043,7 @@ impl<'a> ProfileChecker<'a> {
             Expr::FieldAccess { object, field } => {
                 if let Expr::Identifier(module) = &object.0 {
                     let symbol = format!("{module}.{field}");
-                    if symbol == "regex.new"
-                        || symbol == "Vec.new"
-                        || matches!(
-                            symbol.as_str(),
-                            "regex.is_match" | "regex.find" | "regex.replace"
-                        )
-                    {
+                    if symbol == "Vec.new" || module_function_is_admitted(module, field) {
                         return;
                     }
                 }
@@ -1151,6 +1166,13 @@ impl<'a> ProfileChecker<'a> {
     }
 
     fn method_is_admitted(&self, receiver: &Spanned<Expr>, method: &str) -> bool {
+        // `module.function(..)` parses as a method call when the module name is
+        // a bare identifier, so both shapes read the one admission list.
+        if let Expr::Identifier(module) = &receiver.0 {
+            if module_function_is_admitted(module, method) {
+                return true;
+            }
+        }
         if let Expr::Identifier(type_name) = &receiver.0 {
             if self.user_types.contains(type_name) && self.enum_variants.contains(method) {
                 return true;

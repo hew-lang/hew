@@ -126,7 +126,7 @@ fn run_sandbox_fixtures(options: &Options) -> Result<()> {
     let repo_root = workspace_root()?;
     std::env::set_var("HEWPATH", &repo_root);
 
-    let deferred = if matches!(options.mode, Mode::Probe | Mode::Record) {
+    let deferred = if options.mode == Mode::Probe {
         BTreeMap::new()
     } else {
         load_deferred_manifest(&options.fixtures_dir)?
@@ -328,7 +328,7 @@ fn process_fixture(
     mode: &Mode,
     deferred: Option<&DeferredFixture>,
 ) -> Result<FixtureStatus> {
-    if !matches!(mode, Mode::Probe | Mode::Record) {
+    if *mode != Mode::Probe {
         if let Some(entry) = deferred {
             return process_deferred_fixture(fixture, mode, entry);
         }

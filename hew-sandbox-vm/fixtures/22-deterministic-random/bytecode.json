@@ -1,0 +1,404 @@
+{
+  "aggregates": [],
+  "bytes": [],
+  "closures": [],
+  "compiler_version": "hew-sandbox-wasm-0.6.0-rc4",
+  "entry": {
+    "exit": "unit",
+    "function": 0
+  },
+  "externs": [
+    {
+      "id": 0,
+      "symbol": "hew_random_seed"
+    },
+    {
+      "id": 1,
+      "symbol": "hew_random_randint"
+    }
+  ],
+  "functions": [
+    {
+      "blocks": [
+        {
+          "id": 0,
+          "ops": [
+            {
+              "dst": 0,
+              "op": "const.int",
+              "span": {
+                "end": 48,
+                "start": 48
+              },
+              "ty": "i64",
+              "value": "1"
+            }
+          ],
+          "params": [],
+          "term": {
+            "args": [
+              {
+                "decision": "copy",
+                "value": 0
+              }
+            ],
+            "callee": 1,
+            "normal": {
+              "args": [],
+              "to": 1
+            },
+            "op": "call",
+            "result": null,
+            "span": {
+              "end": 48,
+              "start": 48
+            },
+            "unwind": {
+              "args": [],
+              "to": 2
+            }
+          }
+        },
+        {
+          "id": 1,
+          "ops": [
+            {
+              "dst": 1,
+              "op": "const.int",
+              "span": {
+                "end": 79,
+                "start": 79
+              },
+              "ty": "i64",
+              "value": "0"
+            },
+            {
+              "dst": 2,
+              "op": "const.int",
+              "span": {
+                "end": 82,
+                "start": 82
+              },
+              "ty": "i64",
+              "value": "99"
+            }
+          ],
+          "params": [],
+          "term": {
+            "args": [
+              {
+                "decision": "copy",
+                "value": 1
+              },
+              {
+                "decision": "copy",
+                "value": 2
+              }
+            ],
+            "callee": 2,
+            "normal": {
+              "args": [
+                3
+              ],
+              "to": 4
+            },
+            "op": "call",
+            "result": {
+              "own": "none",
+              "value": 3
+            },
+            "span": {
+              "end": 82,
+              "start": 82
+            },
+            "unwind": {
+              "args": [],
+              "to": 5
+            }
+          }
+        },
+        {
+          "id": 2,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 3
+            },
+            "op": "goto",
+            "span": {
+              "end": 48,
+              "start": 48
+            }
+          }
+        },
+        {
+          "id": 3,
+          "ops": [],
+          "params": [],
+          "term": {
+            "op": "resume_unwind",
+            "span": {
+              "end": 48,
+              "start": 48
+            }
+          }
+        },
+        {
+          "id": 4,
+          "ops": [],
+          "params": [
+            {
+              "own": "none",
+              "value": 4
+            }
+          ],
+          "term": {
+            "args": [
+              {
+                "decision": "copy",
+                "value": 4
+              }
+            ],
+            "family": 0,
+            "normal": {
+              "args": [],
+              "to": 7
+            },
+            "op": "runtime.call",
+            "result": null,
+            "result_shape": null,
+            "span": {
+              "end": 82,
+              "start": 82
+            },
+            "unwind": null
+          }
+        },
+        {
+          "id": 5,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 6
+            },
+            "op": "goto",
+            "span": {
+              "end": 82,
+              "start": 82
+            }
+          }
+        },
+        {
+          "id": 6,
+          "ops": [],
+          "params": [],
+          "term": {
+            "op": "resume_unwind",
+            "span": {
+              "end": 82,
+              "start": 82
+            }
+          }
+        },
+        {
+          "id": 7,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 8
+            },
+            "op": "goto",
+            "span": {
+              "end": 82,
+              "start": 82
+            }
+          }
+        },
+        {
+          "id": 8,
+          "ops": [],
+          "params": [],
+          "term": {
+            "op": "return",
+            "span": {
+              "end": 82,
+              "start": 82
+            },
+            "value": null
+          }
+        }
+      ],
+      "entry": 0,
+      "id": 0,
+      "name": "__hew_fn_main",
+      "params": [],
+      "places": []
+    },
+    {
+      "blocks": [
+        {
+          "id": 0,
+          "ops": [],
+          "params": [],
+          "term": {
+            "args": [
+              {
+                "decision": "copy",
+                "value": 0
+              }
+            ],
+            "extern": 0,
+            "normal": {
+              "args": [],
+              "to": 1
+            },
+            "op": "extern.call",
+            "result": null,
+            "result_shape": null,
+            "span": null,
+            "unwind": null
+          }
+        },
+        {
+          "id": 1,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 2
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 2,
+          "ops": [],
+          "params": [],
+          "term": {
+            "op": "return",
+            "span": null,
+            "value": null
+          }
+        }
+      ],
+      "entry": 0,
+      "id": 1,
+      "name": "__hew_fn_std$random$seed",
+      "params": [
+        {
+          "own": "none",
+          "value": 0
+        }
+      ],
+      "places": []
+    },
+    {
+      "blocks": [
+        {
+          "id": 0,
+          "ops": [],
+          "params": [],
+          "term": {
+            "args": [
+              {
+                "decision": "copy",
+                "value": 0
+              },
+              {
+                "decision": "copy",
+                "value": 1
+              }
+            ],
+            "extern": 1,
+            "normal": {
+              "args": [
+                2
+              ],
+              "to": 1
+            },
+            "op": "extern.call",
+            "result": {
+              "own": "none",
+              "value": 2
+            },
+            "result_shape": null,
+            "span": null,
+            "unwind": null
+          }
+        },
+        {
+          "id": 1,
+          "ops": [],
+          "params": [
+            {
+              "own": "none",
+              "value": 3
+            }
+          ],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 2
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 2,
+          "ops": [],
+          "params": [],
+          "term": {
+            "op": "return",
+            "span": null,
+            "value": {
+              "decision": "move",
+              "value": 3
+            }
+          }
+        }
+      ],
+      "entry": 0,
+      "id": 2,
+      "name": "__hew_fn_std$random$randint",
+      "params": [
+        {
+          "own": "none",
+          "value": 0
+        },
+        {
+          "own": "none",
+          "value": 1
+        }
+      ],
+      "places": []
+    }
+  ],
+  "hew_version": "0.6.0-rc4",
+  "profile": "sandbox.sandbox-vm-export.v0",
+  "regex_patterns": [],
+  "runtime_families": [
+    {
+      "detail": {
+        "kind": "I64",
+        "newline": true
+      },
+      "family": "Print",
+      "id": 0
+    }
+  ],
+  "schema_version": "hew.sandbox.bytecode.v1",
+  "strings": [],
+  "suspend_kinds": [],
+  "value_capabilities": [],
+  "variants": [],
+  "vtables": []
+}

@@ -7,77 +7,36 @@
     "exit": "unit",
     "function": 0
   },
-  "externs": [],
+  "externs": [
+    {
+      "id": 0,
+      "symbol": "hew_io_read_line"
+    }
+  ],
   "functions": [
     {
       "blocks": [
         {
           "id": 0,
-          "ops": [
-            {
-              "dst": 0,
-              "op": "const.str",
-              "span": {
-                "end": 27,
-                "start": 27
-              },
-              "str": 0
-            },
-            {
-              "dst": null,
-              "op": "alloc_place",
-              "place": 0,
-              "span": null
-            },
-            {
-              "dst": null,
-              "op": "store.init",
-              "place": 0,
-              "span": null,
-              "value": 0
-            },
-            {
-              "dst": 1,
-              "op": "const.str",
-              "span": {
-                "end": 46,
-                "start": 46
-              },
-              "str": 1
-            },
-            {
-              "dst": 2,
-              "op": "load.borrow",
-              "place": 0,
-              "span": {
-                "end": 56,
-                "start": 56
-              }
-            }
-          ],
+          "ops": [],
           "params": [],
           "term": {
-            "args": [
-              {
-                "decision": "borrow",
-                "value": 2
-              }
-            ],
+            "args": [],
             "callee": 1,
             "normal": {
               "args": [
-                3
+                0
               ],
               "to": 1
             },
             "op": "call",
             "result": {
               "own": "owned",
-              "value": 3
+              "value": 0
             },
             "span": {
-              "end": 56,
-              "start": 56
+              "end": 43,
+              "start": 43
             },
             "unwind": {
               "args": [],
@@ -89,7 +48,105 @@
           "id": 1,
           "ops": [
             {
-              "borrow": 2,
+              "dst": null,
+              "op": "alloc_place",
+              "place": 0,
+              "span": null
+            },
+            {
+              "dst": null,
+              "op": "store.init",
+              "place": 0,
+              "span": null,
+              "value": 1
+            },
+            {
+              "dst": 2,
+              "op": "const.str",
+              "span": {
+                "end": 71,
+                "start": 71
+              },
+              "str": 0
+            },
+            {
+              "dst": 3,
+              "op": "load.borrow",
+              "place": 0,
+              "span": {
+                "end": 80,
+                "start": 80
+              }
+            }
+          ],
+          "params": [
+            {
+              "own": "owned",
+              "value": 1
+            }
+          ],
+          "term": {
+            "args": [
+              {
+                "decision": "borrow",
+                "value": 3
+              }
+            ],
+            "callee": 2,
+            "normal": {
+              "args": [
+                4
+              ],
+              "to": 4
+            },
+            "op": "call",
+            "result": {
+              "own": "owned",
+              "value": 4
+            },
+            "span": {
+              "end": 80,
+              "start": 80
+            },
+            "unwind": {
+              "args": [],
+              "to": 5
+            }
+          }
+        },
+        {
+          "id": 2,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 3
+            },
+            "op": "goto",
+            "span": {
+              "end": 43,
+              "start": 43
+            }
+          }
+        },
+        {
+          "id": 3,
+          "ops": [],
+          "params": [],
+          "term": {
+            "op": "resume_unwind",
+            "span": {
+              "end": 43,
+              "start": 43
+            }
+          }
+        },
+        {
+          "id": 4,
+          "ops": [
+            {
+              "borrow": 3,
               "dst": null,
               "op": "end_borrow",
               "span": null
@@ -98,45 +155,45 @@
           "params": [
             {
               "own": "owned",
-              "value": 4
+              "value": 5
             }
           ],
           "term": {
             "args": [
               {
                 "decision": "borrow",
-                "value": 1
+                "value": 2
               },
               {
                 "decision": "borrow",
-                "value": 4
+                "value": 5
               }
             ],
             "family": 0,
             "normal": {
               "args": [
-                5
+                6
               ],
-              "to": 4
+              "to": 7
             },
             "op": "runtime.call",
             "result": {
               "own": "owned",
-              "value": 5
+              "value": 6
             },
             "result_shape": null,
             "span": {
-              "end": 56,
-              "start": 56
+              "end": 80,
+              "start": 80
             },
             "unwind": null
           }
         },
         {
-          "id": 2,
+          "id": 5,
           "ops": [
             {
-              "borrow": 2,
+              "borrow": 3,
               "dst": null,
               "op": "end_borrow",
               "span": null
@@ -146,23 +203,23 @@
           "term": {
             "edge": {
               "args": [],
-              "to": 3
+              "to": 6
             },
             "op": "goto",
             "span": {
-              "end": 56,
-              "start": 56
+              "end": 80,
+              "start": 80
             }
           }
         },
         {
-          "id": 3,
+          "id": 6,
           "ops": [
             {
               "dst": null,
               "op": "destroy_value",
               "span": null,
-              "value": 1
+              "value": 2
             },
             {
               "dst": null,
@@ -175,142 +232,80 @@
           "term": {
             "op": "resume_unwind",
             "span": {
-              "end": 56,
-              "start": 56
+              "end": 80,
+              "start": 80
             }
           }
         },
         {
-          "id": 4,
+          "id": 7,
           "ops": [
             {
               "dst": null,
               "op": "destroy_value",
               "span": null,
-              "value": 4
+              "value": 5
             },
             {
               "dst": null,
               "op": "destroy_value",
               "span": null,
-              "value": 1
-            },
-            {
-              "dst": 7,
-              "op": "const.str",
-              "span": {
-                "end": 46,
-                "start": 46
-              },
-              "str": 2
+              "value": 2
             }
           ],
           "params": [
             {
               "own": "owned",
-              "value": 6
+              "value": 7
             }
           ],
           "term": {
             "args": [
               {
                 "decision": "borrow",
-                "value": 6
-              },
-              {
-                "decision": "borrow",
                 "value": 7
               }
             ],
-            "family": 0,
+            "family": 1,
             "normal": {
-              "args": [
-                8
-              ],
-              "to": 5
+              "args": [],
+              "to": 8
             },
             "op": "runtime.call",
-            "result": {
-              "own": "owned",
-              "value": 8
-            },
+            "result": null,
             "result_shape": null,
             "span": {
-              "end": 46,
-              "start": 46
+              "end": 80,
+              "start": 80
             },
             "unwind": null
           }
         },
         {
-          "id": 5,
+          "id": 8,
           "ops": [
             {
               "dst": null,
               "op": "destroy_value",
               "span": null,
               "value": 7
-            },
-            {
-              "dst": null,
-              "op": "destroy_value",
-              "span": null,
-              "value": 6
-            }
-          ],
-          "params": [
-            {
-              "own": "owned",
-              "value": 9
-            }
-          ],
-          "term": {
-            "args": [
-              {
-                "decision": "borrow",
-                "value": 9
-              }
-            ],
-            "family": 1,
-            "normal": {
-              "args": [],
-              "to": 6
-            },
-            "op": "runtime.call",
-            "result": null,
-            "result_shape": null,
-            "span": {
-              "end": 46,
-              "start": 46
-            },
-            "unwind": null
-          }
-        },
-        {
-          "id": 6,
-          "ops": [
-            {
-              "dst": null,
-              "op": "destroy_value",
-              "span": null,
-              "value": 9
             }
           ],
           "params": [],
           "term": {
             "edge": {
               "args": [],
-              "to": 7
+              "to": 9
             },
             "op": "goto",
             "span": {
-              "end": 46,
-              "start": 46
+              "end": 80,
+              "start": 80
             }
           }
         },
         {
-          "id": 7,
+          "id": 9,
           "ops": [
             {
               "dst": null,
@@ -323,8 +318,8 @@
           "term": {
             "op": "return",
             "span": {
-              "end": 46,
-              "start": 46
+              "end": 80,
+              "start": 80
             },
             "value": null
           }
@@ -340,6 +335,69 @@
           "origin": "local"
         }
       ]
+    },
+    {
+      "blocks": [
+        {
+          "id": 0,
+          "ops": [],
+          "params": [],
+          "term": {
+            "args": [],
+            "extern": 0,
+            "normal": {
+              "args": [
+                0
+              ],
+              "to": 1
+            },
+            "op": "extern.call",
+            "result": {
+              "own": "owned",
+              "value": 0
+            },
+            "result_shape": null,
+            "span": null,
+            "unwind": null
+          }
+        },
+        {
+          "id": 1,
+          "ops": [],
+          "params": [
+            {
+              "own": "owned",
+              "value": 1
+            }
+          ],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 2
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 2,
+          "ops": [],
+          "params": [],
+          "term": {
+            "op": "return",
+            "span": null,
+            "value": {
+              "decision": "move",
+              "value": 1
+            }
+          }
+        }
+      ],
+      "entry": 0,
+      "id": 1,
+      "name": "__hew_fn_std$io$read_line",
+      "params": [],
+      "places": []
     },
     {
       "blocks": [
@@ -378,7 +436,7 @@
         }
       ],
       "entry": 0,
-      "id": 1,
+      "id": 2,
       "name": "__hew_fn_std.builtins.string::fmt",
       "params": [
         {
@@ -408,9 +466,7 @@
   ],
   "schema_version": "hew.sandbox.bytecode.v1",
   "strings": [
-    "Hew",
-    "Hello, ",
-    " sandbox"
+    "hello "
   ],
   "suspend_kinds": [],
   "value_capabilities": [],

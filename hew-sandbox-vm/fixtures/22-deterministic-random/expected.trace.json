@@ -1,1 +1,70 @@
-{"schema_version":"hew.sandbox.trace.v0","trace_id":"trace:deterministic-random","fixture_id":"deterministic-random","profile":"sandbox.educational.v0","hew_version": "0.6.0-rc4","sandbox_version":"0.0.0-spec","result":"ok","replay":{"seed":12345,"step_budget":1000,"virtual_clock":{"epoch_ms":0,"tick_ms":1,"current_ms":0},"inputs":[{"kind":"random_bytes","data":{"bytes":[1,2,3,4]}}]},"events":[{"seq":0,"type":"trace.started","phase":"run","span":null,"message":"fixture start"},{"seq":1,"type":"replay.input","phase":"replay","span":null,"replay_input":{"kind":"random_bytes","data":{"bytes":[1,2,3,4]}}},{"seq":2,"type":"io.stdout","phase":"run","span":null,"text":"67305985\n"},{"seq":3,"type":"trace.ended","phase":"run","span":null,"message":"ok"}],"final_state":{"status":"ok","exit_code":0,"step_count":6,"budget_remaining":994,"virtual_clock":{"epoch_ms":0,"tick_ms":1,"current_ms":0},"stdout":["67305985\n"],"stderr":[],"ids":{"actors":["actor:root"],"channels":[],"tasks":[],"supervisors":[],"machines":[]},"diagnostics":[],"sandbox_rejections":[],"runtime_failures":[],"globals":[]}}
+{
+  "events": [
+    {
+      "message": "fixture start",
+      "phase": "run",
+      "seq": 0,
+      "span": null,
+      "type": "trace.started"
+    },
+    {
+      "phase": "run",
+      "seq": 1,
+      "span": null,
+      "text": "17\n",
+      "type": "io.stdout"
+    },
+    {
+      "message": "ok",
+      "phase": "run",
+      "seq": 2,
+      "span": null,
+      "type": "trace.ended"
+    }
+  ],
+  "final_state": {
+    "budget_remaining": 986,
+    "diagnostics": [],
+    "exit_code": 0,
+    "globals": [],
+    "ids": {
+      "actors": [
+        "actor:root"
+      ],
+      "channels": [],
+      "machines": [],
+      "supervisors": [],
+      "tasks": []
+    },
+    "runtime_failures": [],
+    "sandbox_rejections": [],
+    "status": "ok",
+    "stderr": [],
+    "stdout": [
+      "17\n"
+    ],
+    "step_count": 14,
+    "virtual_clock": {
+      "current_ms": 0,
+      "epoch_ms": 0,
+      "tick_ms": 1
+    }
+  },
+  "fixture_id": "deterministic-random",
+  "hew_version": "0.6.0-rc4",
+  "profile": "sandbox.sandbox-vm-export.v0",
+  "replay": {
+    "inputs": [],
+    "seed": 12345,
+    "step_budget": 1000,
+    "virtual_clock": {
+      "current_ms": 0,
+      "epoch_ms": 0,
+      "tick_ms": 1
+    }
+  },
+  "result": "ok",
+  "sandbox_version": "0.0.0-spec",
+  "schema_version": "hew.sandbox.trace.v0",
+  "trace_id": "trace:deterministic-random"
+}

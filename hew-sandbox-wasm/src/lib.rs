@@ -705,13 +705,17 @@ mod tests {
             "unexpected diagnostics: {:#?}",
             output.diagnostics
         );
-        let bytecode = output.bytecode.expect("bytecode should be emitted");
-        assert_eq!(bytecode.profile, DEFAULT_PROFILE_CANONICAL);
-        assert_eq!(bytecode.schema_version, "hew.sandbox.bytecode.v0");
-        assert!(bytecode
-            .stdlib_symbols
-            .iter()
-            .any(|symbol| symbol.id == "sym:core.stdout.println"));
+        let package = v1(output);
+        assert_eq!(package.profile, DEFAULT_PROFILE_CANONICAL);
+        assert_eq!(package.schema_version, "hew.sandbox.bytecode.v1");
+        assert!(
+            package
+                .runtime_families
+                .iter()
+                .any(|family| family.family == "Print"),
+            "println must reach the runtime through the Print family: {:#?}",
+            package.runtime_families
+        );
     }
 
     #[test]
@@ -726,9 +730,18 @@ mod tests {
             "unexpected diagnostics: {:#?}",
             output.diagnostics
         );
-        let bytecode = output.bytecode.expect("bytecode should be emitted");
-        let ops = all_instruction_ops(&bytecode);
-        assert!(ops.contains(&"i64.checked_add"));
+        let package = v1(output);
+        assert!(
+            package
+                .functions
+                .iter()
+                .flat_map(|f| &f.blocks)
+                .any(|block| {
+                    block.term["op"] == "checked.binary" && block.term["binary_op"] == "Add"
+                }),
+            "checked addition must lower to a checked.binary terminator: {:#?}",
+            package.functions
+        );
     }
 
     #[test]
@@ -747,31 +760,24 @@ mod tests {
             "i64::MIN must be admitted: {:#?}",
             output.diagnostics
         );
-        let bytecode = output.bytecode.expect("bytecode should be emitted");
-        let opcodes: Vec<&str> = bytecode
-            .functions
-            .iter()
-            .flat_map(|function| &function.blocks)
-            .flat_map(|block| &block.instructions)
-            .map(|instruction| instruction.op.as_str())
-            .collect();
+        let package = v1(output);
+        let ops = v1_op_names(&package);
         assert!(
-            !opcodes.contains(&"i64.neg"),
-            "the literal must be folded, not negated at runtime: {opcodes:?}"
+            !ops.iter().any(|op| op == "unary"),
+            "the literal must be folded, not negated at runtime: {ops:?}"
         );
-        let constants: Vec<String> = bytecode
+        let constants: Vec<String> = package
             .functions
             .iter()
             .flat_map(|function| &function.blocks)
-            .flat_map(|block| &block.instructions)
-            .filter(|instruction| instruction.op == "const.i64")
-            .flat_map(|instruction| &instruction.args)
-            .map(|operand| format!("{operand:?}"))
+            .flat_map(|block| &block.ops)
+            .filter(|op| op["op"] == "const.int")
+            .map(|op| format!("{}", op["value"]))
             .collect();
         assert!(
             constants
                 .iter()
-                .any(|operand| operand.contains("-9223372036854775808")),
+                .any(|value| value.contains("-9223372036854775808")),
             "i64::MIN must appear as one constant: {constants:?}"
         );
     }
@@ -815,7 +821,7 @@ mod tests {
             "unexpected diagnostics: {:#?}",
             output.diagnostics
         );
-        let bytecode = output.bytecode.expect("bytecode should be emitted");
+        let bytecode = v0(output);
         let mut functions = bytecode.functions;
         for function in &mut functions {
             function.span = None;
@@ -894,11 +900,11 @@ fn main() {
             "unexpected diagnostics: {:#?}",
             output.diagnostics
         );
-        let bytecode = output.bytecode.expect("bytecode should be emitted");
-        let ops = all_instruction_ops(&bytecode);
-        assert!(ops.contains(&"const.bool"));
-        assert!(ops.contains(&"const.f64"));
-        assert!(ops.contains(&"const.string"));
+        let package = v1(output);
+        let ops = v1_op_names(&package);
+        assert!(ops.contains("const.bool"));
+        assert!(ops.contains("const.float"));
+        assert!(ops.contains("const.str"));
     }
 
     #[test]
@@ -911,19 +917,21 @@ fn main() {
             "unexpected diagnostics: {:#?}",
             output.diagnostics
         );
-        let bytecode = output.bytecode.expect("bytecode should be emitted");
+        let package = v1(output);
         assert!(
-            bytecode
-                .layouts
-                .records
+            package
+                .aggregates
                 .iter()
                 .any(|record| record.name == "Point"),
-            "Point record layout missing: {:#?}",
-            bytecode.layouts.records
+            "Point aggregate shape missing: {:#?}",
+            package.aggregates
         );
-        let ops = all_instruction_ops(&bytecode);
-        assert!(ops.contains(&"record.new"));
-        assert!(ops.contains(&"record.get"));
+        let ops = v1_op_names(&package);
+        assert!(ops.contains("aggregate.make"));
+        assert!(
+            ops.contains("aggregate.project_copy") || ops.contains("aggregate.project_borrow"),
+            "field access must project the aggregate: {ops:?}"
+        );
     }
 
     #[test]
@@ -936,139 +944,44 @@ fn main() {
             "unexpected diagnostics: {:#?}",
             output.diagnostics
         );
-        let bytecode = output.bytecode.expect("bytecode should be emitted");
+        let package = v1(output);
         assert!(
-            bytecode
-                .layouts
-                .enums
+            package
+                .variants
                 .iter()
-                .any(|enum_layout| enum_layout.name == "Shape"),
-            "Shape enum layout missing: {:#?}",
-            bytecode.layouts.enums
+                .any(|variant| variant.name == "Shape"),
+            "Shape variant shape missing: {:#?}",
+            package.variants
         );
-        let ops = all_instruction_ops(&bytecode);
-        assert!(ops.contains(&"enum.new"));
-        assert!(ops.contains(&"enum.tag"));
-        assert!(ops.contains(&"enum.payload"));
-        assert!(bytecode
-            .functions
-            .iter()
-            .flat_map(|function| &function.blocks)
-            .any(|block| block.terminator.op == "br_if"));
-    }
-
-    #[test]
-    fn match_arm_guard_gates_arm_body() {
-        set_test_hewpath();
-        let source = r#"
-enum Score { High(i64), Low(i64), Zero, }
-
-fn classify(s: Score) -> string {
-    match s {
-        .High(n) if n > 90 => "excellent",
-        .High(_) => "good",
-        .Low(n) if n < 10 => "very low",
-        .Low(_) => "low",
-        .Zero => "zero",
-    }
-}
-
-fn main() {
-    println(classify(.High(95)));
-    println(classify(.High(70)));
-    println(classify(.Low(5)));
-    println(classify(.Low(40)));
-    println(classify(.Zero));
-}
-"#;
-        let output = compile_to_sandbox_bytecode(source, Some("sandbox-vm-export"))
-            .expect("compile should not throw");
+        let ops = v1_op_names(&package);
+        assert!(ops.contains("variant.make"));
         assert!(
-            output.diagnostics.iter().all(|d| d.severity != "error"),
-            "unexpected diagnostics: {:#?}",
-            output.diagnostics
-        );
-        let bytecode = output.bytecode.expect("bytecode should be emitted");
-        let classify = bytecode
-            .functions
-            .iter()
-            .find(|function| function.name.contains("classify"))
-            .expect("classify function should be emitted");
-        let guard_blocks = classify
-            .blocks
-            .iter()
-            .filter(|block| block.id.contains("match_guard_"))
-            .count();
-        assert_eq!(
-            guard_blocks, 2,
-            "guarded arms must lower to explicit guard blocks: {:#?}",
-            classify.blocks
-        );
-        let br_if_count = classify
-            .blocks
-            .iter()
-            .filter(|block| block.terminator.op == "br_if")
-            .count();
-        assert!(
-            br_if_count > 5,
-            "guarded match must branch for arm guards as well as arm patterns: {:#?}",
-            classify.blocks
-        );
-    }
-
-    #[test]
-    fn guarded_catch_all_guard_failure_falls_through_to_next_check() {
-        set_test_hewpath();
-        let source = r#"
-enum Score { High(i64), Low(i64), }
-
-fn classify(s: Score) -> string {
-    match s {
-        .High(n) if n > 90 => "excellent",
-        _ if false => "never",
-        _ => "fallback",
-    }
-}
-
-fn main() {
-    println(classify(.Low(5)));
-}
-"#;
-        let output = compile_to_sandbox_bytecode(source, Some("sandbox-vm-export"))
-            .expect("compile should not throw");
-        assert!(
-            output.diagnostics.iter().all(|d| d.severity != "error"),
-            "unexpected diagnostics: {:#?}",
-            output.diagnostics
-        );
-        let bytecode = output.bytecode.expect("bytecode should be emitted");
-        let classify = bytecode
-            .functions
-            .iter()
-            .find(|function| function.name.contains("classify"))
-            .expect("classify function should be emitted");
-        let guard_block = classify
-            .blocks
-            .iter()
-            .find(|block| block.id.contains("match_guard_1"))
-            .expect("guarded catch-all arm should emit a guard block");
-
-        assert_ne!(
-            guard_block.terminator.else_target.as_deref(),
-            Some(guard_block.id.as_str()),
-            "guard failure must not loop back to the same guard block: {:#?}",
-            classify.blocks
+            ops.contains("variant.is")
+                || ops.contains("variant.project_copy")
+                || ops.contains("variant.project_borrow"),
+            "matching a variant must dispatch on its tag: {ops:?}"
         );
         assert!(
-            guard_block
-                .terminator
-                .else_target
-                .as_deref()
-                .is_some_and(|target| target.contains("match_check_2")),
-            "guard failure must fall through to the next check block: {:#?}",
-            classify.blocks
+            package
+                .functions
+                .iter()
+                .flat_map(|function| &function.blocks)
+                .any(|block| block.term["op"] == "switch.variant"),
+            "matching an enum must lower to a switch.variant terminator: {:#?}",
+            package.functions
         );
     }
+
+    // `match_arm_guard_gates_arm_body` and
+    // `guarded_catch_all_guard_failure_falls_through_to_next_check` are
+    // deleted here: both pinned the AST emitter's block-id spelling
+    // (`match_guard_N`, `match_check_N`) and its `br_if` terminator, which the
+    // v1 package does not carry (blocks are numeric ids; the switch/branch
+    // structure is a `switch.variant` and `branch` terminator instead).
+    // Guarded-match behaviour is proved end to end by the `match_guard_parity`
+    // and `match_guard_catch_all_fallthrough` parity cases
+    // (`tests/parity.rs`), which this unit pin duplicated without adding
+    // coverage.
 
     #[test]
     fn generic_call_exports_bytecode_without_rejecting_type_params() {
@@ -1089,9 +1002,16 @@ fn main() {
             "unexpected diagnostics: {:#?}",
             output.diagnostics
         );
-        let bytecode = output.bytecode.expect("bytecode should be emitted");
-        let ops = all_instruction_ops(&bytecode);
-        assert!(ops.contains(&"call.direct"));
+        let package = v1(output);
+        assert!(
+            package
+                .functions
+                .iter()
+                .flat_map(|function| &function.blocks)
+                .any(|block| block.term["op"] == "call"),
+            "a call is a terminator in v1: {:#?}",
+            package.functions
+        );
     }
 
     #[test]
@@ -1113,14 +1033,18 @@ fn main() {
             "unexpected diagnostics: {:#?}",
             output.diagnostics
         );
-        let bytecode = output.bytecode.expect("bytecode should be emitted");
-        let ops = all_instruction_ops(&bytecode);
-        assert!(ops.contains(&"call.direct"));
-        assert!(bytecode
-            .functions
-            .iter()
-            .flat_map(|function| &function.blocks)
-            .any(|block| block.terminator.op == "return"));
+        let package = v1(output);
+        let ops = v1_op_names(&package);
+        assert!(
+            package
+                .functions
+                .iter()
+                .flat_map(|function| &function.blocks)
+                .any(|block| block.term["op"] == "call"),
+            "a call is a terminator in v1: {:#?}",
+            package.functions
+        );
+        assert!(ops.contains("return"));
     }
 
     /// `opt.expect(reason)` is the sandbox's only Option/Result extraction with
@@ -1141,17 +1065,21 @@ fn main() {
             "unexpected diagnostics: {:#?}",
             output.diagnostics
         );
-        let bytecode = output.bytecode.expect("bytecode should be emitted");
-        let ops = all_instruction_ops(&bytecode);
+        let package = v1(output);
+        let ops = v1_op_names(&package);
         assert!(
-            ops.contains(&"panic"),
+            ops.contains("panic"),
             "expect must emit a panic arm: {ops:?}"
         );
         assert!(
-            ops.contains(&"string.concat"),
-            "the panic message concatenates the reason: {ops:?}"
+            package
+                .runtime_families
+                .iter()
+                .any(|family| family.family == "StringConcat"),
+            "the panic message concatenates the reason: {:#?}",
+            package.runtime_families
         );
-        let serialized = serde_json::to_string(&bytecode).expect("bytecode should serialize");
+        let serialized = serde_json::to_string(&package).expect("bytecode should serialize");
         assert!(
             serialized.contains("expect failed: "),
             "the panic message must match the native prefix"
@@ -1172,12 +1100,19 @@ fn main() {
             "unexpected diagnostics: {:#?}",
             output.diagnostics
         );
-        let bytecode = output.bytecode.expect("bytecode should be emitted");
-        let ops = all_instruction_ops(&bytecode);
-        assert!(ops.contains(&"vector.new"));
-        assert!(ops.contains(&"vector.push"));
-        assert!(ops.contains(&"vector.len"));
-        assert!(ops.contains(&"vector.get"));
+        let package = v1(output);
+        for operation in ["New", "Push", "Len", "Get"] {
+            assert!(
+                package
+                    .runtime_families
+                    .iter()
+                    .any(|family| family.family == "Vector"
+                        && family.detail.as_ref().and_then(serde_json::Value::as_str)
+                            == Some(operation)),
+                "Vector({operation}) must appear in the runtime family table: {:#?}",
+                package.runtime_families
+            );
+        }
     }
 
     #[test]
@@ -1196,59 +1131,28 @@ fn main() {
             "unexpected diagnostics: {:#?}",
             output.diagnostics
         );
-        let bytecode = output.bytecode.expect("bytecode should be emitted");
-        let ops = all_instruction_ops(&bytecode);
-        assert!(ops.contains(&"vector.index"));
-        assert!(!ops.contains(&"vector.get"));
+        let package = v1(output);
+        let index_family = package
+            .runtime_families
+            .iter()
+            .find(|family| {
+                family.family == "Vector"
+                    && family.detail.as_ref().and_then(serde_json::Value::as_str) == Some("Index")
+            })
+            .expect("Vector(Index) must be named in the runtime family table");
 
-        let index_instruction = bytecode
+        let index_call = package
             .functions
             .iter()
             .flat_map(|function| &function.blocks)
-            .flat_map(|block| &block.instructions)
-            .find(|instruction| instruction.op == "vector.index")
-            .expect("direct vector indexing must emit a vector.index instruction");
-        assert_eq!(index_instruction.args.len(), 2);
-        assert!(
-            index_instruction.args.iter().all(|operand| operand.kind == "local"),
-            "vector.index must receive the evaluated vector and index locals: {index_instruction:#?}"
-        );
-
-        assert_published_schema_admits_emitted_instruction_and_rejects_unknown_opcode(
-            index_instruction,
-        );
-    }
-
-    fn assert_published_schema_admits_emitted_instruction_and_rejects_unknown_opcode(
-        instruction: &Instruction,
-    ) {
-        let schema: serde_json::Value = serde_json::from_str(include_str!(
-            "../../hew-sandbox-vm/bytecode/sandbox-bytecode-v0.schema.json"
-        ))
-        .expect("published sandbox bytecode schema must be valid JSON");
-        let published_ops = schema
-            .pointer("/$defs/instruction_op/enum")
-            .and_then(serde_json::Value::as_array)
-            .expect("published schema must declare its instruction opcode enum")
-            .iter()
-            .map(|opcode| {
-                opcode
-                    .as_str()
-                    .expect("published instruction opcode entries must be strings")
+            .find(|block| {
+                block.term["op"] == "runtime.call" && block.term["family"] == index_family.id
             })
-            .collect::<std::collections::BTreeSet<_>>();
-
+            .expect("direct vector indexing must emit a runtime.call to Vector(Index)");
         assert!(
-            published_ops.contains(instruction.op.as_str()),
-            "published bytecode schema must admit compiler-emitted opcode {:?}",
-            instruction.op
-        );
-
-        let mut unknown_opcode = instruction.clone();
-        unknown_opcode.op = "vector.not_real".to_string();
-        assert!(
-            !published_ops.contains(unknown_opcode.op.as_str()),
-            "published bytecode schema must reject a mutated unknown opcode"
+            !index_call.term["unwind"].is_null(),
+            "index is bounds-trapping and must carry an unwind edge: {:#?}",
+            index_call.term
         );
     }
 
@@ -1269,10 +1173,17 @@ fn main() {
             "unexpected diagnostics: {:#?}",
             output.diagnostics
         );
-        let bytecode = output.bytecode.expect("bytecode should be emitted");
-        let ops = all_instruction_ops(&bytecode);
-        assert!(ops.contains(&"string.len"));
-        assert!(ops.contains(&"string.slice"));
+        let package = v1(output);
+        for family_name in ["StringLen", "StringSlice"] {
+            assert!(
+                package
+                    .runtime_families
+                    .iter()
+                    .any(|family| family.family == family_name),
+                "{family_name} must appear in the runtime family table: {:#?}",
+                package.runtime_families
+            );
+        }
     }
 
     #[test]
@@ -1285,15 +1196,23 @@ fn main() {
             "unexpected diagnostics: {:#?}",
             output.diagnostics
         );
-        let bytecode = output.bytecode.expect("bytecode should be emitted");
-        let ops = all_instruction_ops(&bytecode);
-        assert!(ops.contains(&"regex.compile"));
-        assert!(ops.contains(&"regex.find"));
-        assert!(ops.contains(&"regex.free"));
-        assert!(bytecode
-            .capabilities
-            .iter()
-            .any(|cap| cap.id == "std.text.regex.compile" && cap.disposition == "reserved"));
+        let package = v1(output);
+        assert!(
+            package
+                .regex_patterns
+                .iter()
+                .any(|pattern| pattern == "[0-9]+"),
+            "the pattern literal must be interned: {:#?}",
+            package.regex_patterns
+        );
+        assert!(
+            package
+                .runtime_families
+                .iter()
+                .any(|family| family.family.starts_with("Regex")),
+            "regex.new/find must route through a Regex runtime family: {:#?}",
+            package.runtime_families
+        );
     }
 
     #[test]
@@ -1355,16 +1274,17 @@ fn main() {
             "unexpected diagnostics: {:#?}",
             output.diagnostics
         );
-        let bytecode = output.bytecode.expect("bytecode should be emitted");
-        let layout = bytecode
-            .layouts
-            .types
+        let package = v1(output);
+        let shape = package
+            .aggregates
             .iter()
-            .find(|layout| layout.name == "Regex")
-            .expect("user Regex type layout");
+            .find(|aggregate| aggregate.name == "Regex")
+            .expect("user Regex aggregate shape");
         assert_eq!(
-            layout.kind, "record",
-            "a user type whose presentation name resembles the internal regex shim must not mint regex layout authority"
+            shape.fields,
+            vec!["value".to_string()],
+            "a user type whose presentation name resembles the internal regex shim must \
+             still be an ordinary aggregate, not mint regex runtime authority"
         );
     }
 
@@ -1396,25 +1316,36 @@ fn main() {
             "unexpected diagnostics: {:#?}",
             output.diagnostics
         );
-        let bytecode = output.bytecode.expect("bytecode should be emitted");
-        let user = bytecode
-            .layouts
-            .types
-            .iter()
-            .find(|layout| layout.name == "Regex")
-            .expect("user Regex record layout");
-        assert_eq!(user.kind, "record");
-        assert_eq!(user.id, "type:Regex");
-
-        let builtin = bytecode
-            .layouts
-            .types
-            .iter()
-            .find(|layout| layout.name == "std.text.regex.Pattern")
-            .expect("canonical stdlib regex handle layout");
-        assert_eq!(builtin.kind, "regex");
-        assert_eq!(builtin.id, "type:std.text.regex.Pattern");
-        assert_ne!(user.id, builtin.id);
+        let package = v1(output);
+        // The user's `Regex` record gets its own aggregate shape...
+        assert!(
+            package
+                .aggregates
+                .iter()
+                .any(|aggregate| aggregate.name == "Regex"),
+            "user Regex aggregate shape missing: {:#?}",
+            package.aggregates
+        );
+        // ...and the stdlib regex handle mints no aggregate at all: it is an
+        // opaque runtime-owned value manipulated through the Regex* runtime
+        // family, so the two identities cannot collide by name the way the
+        // v0 layout table's name-keyed lookup could.
+        assert!(
+            !package
+                .aggregates
+                .iter()
+                .any(|aggregate| aggregate.name.contains("Pattern")),
+            "the stdlib regex handle must not mint an aggregate shape: {:#?}",
+            package.aggregates
+        );
+        assert!(
+            package
+                .runtime_families
+                .iter()
+                .any(|family| family.family.starts_with("Regex")),
+            "regex.new/find must still route through a Regex runtime family: {:#?}",
+            package.runtime_families
+        );
     }
 
     #[test]
@@ -1463,9 +1394,9 @@ fn main() {
             "unexpected diagnostics: {:#?}",
             output.diagnostics
         );
-        let bytecode = output.bytecode.expect("bytecode should be emitted");
-        let ops = all_instruction_ops(&bytecode);
-        assert!(ops.contains(&"panic"));
+        let package = v1(output);
+        let ops = v1_op_names(&package);
+        assert!(ops.contains("panic"));
     }
 
     #[test]
@@ -1480,9 +1411,18 @@ fn main() {
             "unexpected diagnostics: {:#?}",
             output.diagnostics
         );
-        let bytecode = output.bytecode.expect("bytecode should be emitted");
-        let ops = all_instruction_ops(&bytecode);
-        assert!(ops.contains(&"i64.checked_div"));
+        let package = v1(output);
+        assert!(
+            package
+                .functions
+                .iter()
+                .flat_map(|f| &f.blocks)
+                .any(|block| {
+                    block.term["op"] == "checked.binary" && block.term["binary_op"] == "Divide"
+                }),
+            "division must lower to a checked.binary terminator with a failure edge: {:#?}",
+            package.functions
+        );
     }
 
     #[test]
@@ -1500,14 +1440,33 @@ fn main() {
             "unexpected diagnostics: {:#?}",
             output.diagnostics
         );
-        let bytecode = output.bytecode.expect("bytecode should be emitted");
-        let machine = bytecode
-            .layouts
-            .machines
+        let package = v1(output);
+        // A machine's states are a variant shape; its `step` dispatch is an
+        // ordinary `switch.variant` over that shape, one arm per transition.
+        // v1 carries no separate machine/transition table: the transition
+        // count is provable as the arm count of the state-switch it desugars
+        // to.
+        let shape = package
+            .variants
             .iter()
-            .find(|machine| machine.name == "TrafficLight")
-            .expect("the machine layout should be recorded");
-        assert_eq!(machine.transitions.len(), 3);
+            .find(|variant| variant.name == "TrafficLight")
+            .expect("TrafficLight variant shape should be recorded");
+        let step = package
+            .functions
+            .iter()
+            .find(|function| function.name.contains("step"))
+            .expect("the step transition function should be emitted");
+        let arm_count = step
+            .blocks
+            .iter()
+            .filter(|block| block.term["op"] == "switch.variant" && block.term["shape"] == shape.id)
+            .flat_map(|block| block.term["arms"].as_array().cloned().unwrap_or_default())
+            .count();
+        assert_eq!(
+            arm_count, 3,
+            "each of the machine's three transitions should be one switch.variant arm: {:#?}",
+            step.blocks
+        );
     }
 
     #[test]
@@ -2170,23 +2129,19 @@ fn main() {
             "unexpected diagnostics: {:#?}",
             output.diagnostics
         );
-        let bytecode = output.bytecode.expect("bytecode should be emitted");
-        let values = const_i64_operand_values(&bytecode);
+        let package = v1(output);
+        let values = v1_const_int_values(&package);
         assert!(
-            values
-                .iter()
-                .any(|v| v == &serde_json::json!("9223372036854775807")),
+            values.iter().any(|v| v == "9223372036854775807"),
             "i64::MAX must be string-encoded, got: {values:#?}"
         );
         assert!(
-            values
-                .iter()
-                .any(|v| v == &serde_json::json!("-9223372036854775808")),
+            values.iter().any(|v| v == "-9223372036854775808"),
             "i64::MIN must be string-encoded, got: {values:#?}"
         );
         // Regression guard: the raw JSON must not contain the imprecise
         // number-encoded form of i64::MAX.
-        let serialized = serde_json::to_string(&bytecode).expect("serialize");
+        let serialized = serde_json::to_string(&package).expect("serialize");
         assert!(
             !serialized.contains(":9223372036854775807,")
                 && !serialized.contains(":9223372036854775807}"),
@@ -2194,42 +2149,12 @@ fn main() {
         );
     }
 
-    #[test]
-    fn small_i64_literal_stays_numeric() {
-        // In-safe-range values stay compact JSON numbers so common-case
-        // bytecode remains small and diff-friendly.
-        set_test_hewpath();
-        let source = r#"
-fn main() {
-    let small = 42;
-    let boundary = 9007199254740991;
-    println("small literals");
-}
-"#;
-        let output = compile_to_sandbox_bytecode(source, Some("sandbox-vm-export"))
-            .expect("compile should not throw");
-        assert!(
-            output.diagnostics.iter().all(|d| d.severity != "error"),
-            "unexpected diagnostics: {:#?}",
-            output.diagnostics
-        );
-        let bytecode = output.bytecode.expect("bytecode should be emitted");
-        let values = const_i64_operand_values(&bytecode);
-        assert!(
-            values.iter().any(|v| v == &serde_json::json!(42)),
-            "small literal must stay numeric, got: {values:#?}"
-        );
-        assert!(
-            values
-                .iter()
-                .any(|v| v == &serde_json::json!(9_007_199_254_740_991_i64)),
-            "safe-int boundary must stay numeric, got: {values:#?}"
-        );
-        assert!(
-            !values.iter().any(|v| v == &serde_json::json!("42")),
-            "small literal must not be string-encoded, got: {values:#?}"
-        );
-    }
+    // `small_i64_literal_stays_numeric` is deleted here: it pinned a v0-only
+    // optimization (small ints stay compact JSON numbers, only out-of-range
+    // ints become decimal strings). The v1 package always string-encodes
+    // `const.int`'s `value` regardless of magnitude (package-v1.md), so the
+    // "stays numeric" behaviour this test asserted no longer exists by
+    // design; every other v1 test already exercises small integer literals.
 
     #[test]
     fn supervisor_i64_bounds_are_tagged_in_serialized_bytecode() {
@@ -2257,7 +2182,7 @@ fn main() {
             "unexpected diagnostics: {:#?}",
             output.diagnostics
         );
-        let bytecode = output.bytecode.expect("bytecode should be emitted");
+        let bytecode = v0(output);
         let serialized = serde_json::to_string(&bytecode).expect("bytecode should serialize");
         let decoded: SandboxBytecodePackage =
             serde_json::from_str(&serialized).expect("serialized bytecode should deserialize");
@@ -2296,11 +2221,8 @@ fn main() {
             "unexpected error diagnostics: {:?}",
             output.diagnostics
         );
-        let bc = output
-            .bytecode
-            .as_ref()
-            .expect("for-range should produce bytecode");
-        let main_fn = bc
+        let package = v1(output);
+        let main_fn = package
             .functions
             .iter()
             .find(|f| f.name == "main")
@@ -2308,7 +2230,7 @@ fn main() {
         assert!(
             main_fn.blocks.len() > 1,
             "for-loop should produce multiple blocks, got: {:?}",
-            main_fn.blocks.iter().map(|b| &b.id).collect::<Vec<_>>()
+            main_fn.blocks.iter().map(|b| b.id).collect::<Vec<_>>()
         );
     }
 

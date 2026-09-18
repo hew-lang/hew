@@ -1,1 +1,82 @@
-{"schema_version":"hew.sandbox.trace.v0","trace_id":"trace:step-budget-exhausted","fixture_id":"step-budget-exhausted","profile":"sandbox.educational.v0","hew_version": "0.6.0-rc4","sandbox_version":"0.0.0-spec","result":"budget_exhausted","replay":{"seed":13,"step_budget":25,"virtual_clock":{"epoch_ms":0,"tick_ms":1,"current_ms":0},"inputs":[]},"events":[{"seq":0,"type":"trace.started","phase":"run","span":null,"message":"fixture start"},{"seq":1,"type":"budget.exhausted","phase":"run","span":null,"step_count":25,"budget_remaining":0,"failure":{"kind":"budget_exhausted","message":"step budget exhausted","span":null,"trap_kind":"budget_exhausted"}},{"seq":2,"type":"trace.ended","phase":"run","span":null,"message":"budget_exhausted"}],"final_state":{"status":"budget_exhausted","exit_code":null,"step_count":25,"budget_remaining":0,"virtual_clock":{"epoch_ms":0,"tick_ms":1,"current_ms":0},"stdout":[],"stderr":[],"ids":{"actors":["actor:root"],"channels":[],"tasks":[],"supervisors":[],"machines":[]},"diagnostics":[],"sandbox_rejections":[],"runtime_failures":[{"kind":"budget_exhausted","message":"step budget exhausted","span":null,"trap_kind":"budget_exhausted"}],"globals":[]}}
+{
+  "events": [
+    {
+      "message": "fixture start",
+      "phase": "run",
+      "seq": 0,
+      "span": null,
+      "type": "trace.started"
+    },
+    {
+      "budget_remaining": 0,
+      "failure": {
+        "kind": "budget_exhausted",
+        "message": "step budget exhausted",
+        "span": null,
+        "trap_kind": "budget_exhausted"
+      },
+      "phase": "run",
+      "seq": 1,
+      "span": null,
+      "step_count": 25,
+      "type": "budget.exhausted"
+    },
+    {
+      "message": "budget_exhausted",
+      "phase": "run",
+      "seq": 2,
+      "span": null,
+      "type": "trace.ended"
+    }
+  ],
+  "final_state": {
+    "budget_remaining": 0,
+    "diagnostics": [],
+    "exit_code": null,
+    "globals": [],
+    "ids": {
+      "actors": [
+        "actor:root"
+      ],
+      "channels": [],
+      "machines": [],
+      "supervisors": [],
+      "tasks": []
+    },
+    "runtime_failures": [
+      {
+        "kind": "budget_exhausted",
+        "message": "step budget exhausted",
+        "span": null,
+        "trap_kind": "budget_exhausted"
+      }
+    ],
+    "sandbox_rejections": [],
+    "status": "budget_exhausted",
+    "stderr": [],
+    "stdout": [],
+    "step_count": 25,
+    "virtual_clock": {
+      "current_ms": 0,
+      "epoch_ms": 0,
+      "tick_ms": 1
+    }
+  },
+  "fixture_id": "step-budget-exhausted",
+  "hew_version": "0.6.0-rc4",
+  "profile": "sandbox.sandbox-vm-export.v0",
+  "replay": {
+    "inputs": [],
+    "seed": 13,
+    "step_budget": 25,
+    "virtual_clock": {
+      "current_ms": 0,
+      "epoch_ms": 0,
+      "tick_ms": 1
+    }
+  },
+  "result": "budget_exhausted",
+  "sandbox_version": "0.0.0-spec",
+  "schema_version": "hew.sandbox.trace.v0",
+  "trace_id": "trace:step-budget-exhausted"
+}

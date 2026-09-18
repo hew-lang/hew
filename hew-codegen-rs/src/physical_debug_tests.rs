@@ -1,10 +1,15 @@
-//! DWARF written into the emitted object, and the absence of debug metadata
-//! without `-g`.
+//! Debug records written into the emitted object, and the absence of debug
+//! metadata without `-g`.
 //!
 //! The textual IR proves what codegen requests; only the object proves what
-//! LLVM's DWARF emitter wrote. The shadowed-local case is the one a flat
-//! subprogram scope silently gets wrong: both bindings exist as DIEs, and a
-//! debugger reads whichever it finds first.
+//! LLVM's emitter wrote. The shadowed-local case is the one a flat subprogram
+//! scope silently gets wrong: both bindings exist as DIEs, and a debugger reads
+//! whichever it finds first.
+//!
+//! The object's format follows the host target. An MSVC-environment target
+//! writes CodeView into `.debug$S`/`.debug$T` and no DWARF at all, so the DIE
+//! assertions here run where the emitter writes DWARF and a CodeView twin
+//! covers the same ground on Windows.
 
 use std::path::Path;
 use std::process::Command;
@@ -100,7 +105,12 @@ fn hew_codegen_emit(
     .expect("emit physical object")
 }
 
+fn llvm_tool(name: &str) -> std::path::PathBuf {
+    Path::new(env!("HEW_LLVM_BINDIR")).join(name)
+}
+
 /// One DIE row of an `llvm-dwarfdump --debug-info` listing.
+#[cfg(not(target_env = "msvc"))]
 struct Die {
     depth: usize,
     tag: String,
@@ -112,8 +122,9 @@ struct Die {
     discr_value: Option<u64>,
 }
 
+#[cfg(not(target_env = "msvc"))]
 fn dwarf_dies(object: &Path) -> Vec<Die> {
-    let dwarfdump = Path::new(env!("HEW_LLVM_BINDIR")).join("llvm-dwarfdump");
+    let dwarfdump = llvm_tool("llvm-dwarfdump");
     let output = Command::new(&dwarfdump)
         .arg("--debug-info")
         .arg(object)
@@ -169,6 +180,7 @@ fn dwarf_dies(object: &Path) -> Vec<Die> {
 /// blocks, so a debugger at a PC inside the inner block resolves the inner
 /// binding and one outside it resolves the outer.
 #[test]
+#[cfg(not(target_env = "msvc"))]
 fn shadowed_locals_emit_nested_lexical_block_dies() {
     let dir = tempfile::tempdir().expect("temp dir");
     let artefacts = emit(dir.path(), true);
@@ -251,6 +263,7 @@ fn a_build_without_debug_emits_no_debug_metadata() {
 /// payload record's own field names. Describing the `{ tag, payload }` carrier
 /// instead hands every variant's bytes over at once.
 #[test]
+#[cfg(not(target_env = "msvc"))]
 fn an_enum_emits_a_variant_part_selected_by_its_discriminant() {
     let dir = tempfile::tempdir().expect("temp dir");
     let artefacts = emit_source(dir.path(), "enum", ENUM, true);
@@ -295,6 +308,7 @@ fn an_enum_emits_a_variant_part_selected_by_its_discriminant() {
 /// Negative control: a body with no enum emits no variant part, so the
 /// assertion above cannot pass on debug metadata every build happens to carry.
 #[test]
+#[cfg(not(target_env = "msvc"))]
 fn a_body_without_an_enum_emits_no_variant_part() {
     let dir = tempfile::tempdir().expect("temp dir");
     let artefacts = emit(dir.path(), true);
@@ -305,4 +319,151 @@ fn a_body_without_an_enum_emits_no_variant_part() {
             .all(|die| die.tag != "DW_TAG_variant_part"),
         "a build with no enum local must not describe one"
     );
+}
+
+/// The CodeView twins of the DIE assertions above.
+///
+/// An MSVC-environment object carries `.debug$S` symbols and `.debug$T` types
+/// and no DWARF, so the same claims are read with `llvm-pdbutil` instead. Each
+/// pair is gated so exactly one side runs on a given host and neither platform
+/// is left with a test that passes without asserting.
+#[cfg(target_env = "msvc")]
+mod codeview {
+    use super::*;
+
+    /// `llvm-pdbutil dump -<section>` over an object, as text.
+    fn pdb_dump(object: &Path, section: &str) -> String {
+        let pdbutil = llvm_tool("llvm-pdbutil");
+        let output = Command::new(&pdbutil)
+            .arg("dump")
+            .arg(format!("-{section}"))
+            .arg(object)
+            .output()
+            .unwrap_or_else(|error| panic!("run {}: {error}", pdbutil.display()));
+        assert!(
+            output.status.success(),
+            "llvm-pdbutil failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    }
+
+    /// The nesting claim the DWARF twin makes about lexical blocks: both
+    /// shadowed bindings survive as their own `S_LOCAL`, the inner one inside a
+    /// block nested in the outer one's.
+    #[test]
+    fn shadowed_locals_emit_nested_codeview_block_scopes() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let artefacts = emit(dir.path(), true);
+        let object = artefacts.native_obj_path.expect("native object");
+        let symbols = pdb_dump(&object, "symbols");
+
+        let records: Vec<&str> = symbols
+            .lines()
+            .filter_map(|line| line.split_once('|').map(|(_, record)| record.trim()))
+            .collect();
+        let probe = records
+            .iter()
+            .position(|record| record.contains("S_GPROC32_ID") && record.contains("__hew_fn_probe"))
+            .expect("the probe body is described by its symbol name");
+        let body: Vec<&&str> = records[probe..]
+            .iter()
+            .take_while(|record| !record.contains("S_GPROC32_ID") || records[probe] == **record)
+            .collect();
+
+        let blocks: Vec<usize> = body
+            .iter()
+            .enumerate()
+            .filter(|(_, record)| record.contains("S_BLOCK32"))
+            .map(|(index, _)| index)
+            .collect();
+        assert_eq!(
+            blocks.len(),
+            2,
+            "the body's block and the nested one must each open a scope:\n{symbols}"
+        );
+        let locals: Vec<usize> = body
+            .iter()
+            .enumerate()
+            .filter(|(_, record)| record.contains("S_LOCAL") && record.contains("`first`"))
+            .map(|(index, _)| index)
+            .collect();
+        assert_eq!(
+            locals.len(),
+            2,
+            "both shadowed bindings must survive as their own local:\n{symbols}"
+        );
+        assert!(
+            blocks[0] < locals[0] && locals[0] < blocks[1] && blocks[1] < locals[1],
+            "the inner binding must sit in a block opened inside the outer one's:\n{symbols}"
+        );
+    }
+
+    /// CodeView has no variant-part record, so the enum is described by the
+    /// carrier the emitter falls back to: a complete `LF_STRUCTURE` named for
+    /// the source type, sized to the whole enum, with its members in a field
+    /// list. Emitting the variant part here instead leaves `Status` with one
+    /// unnamed `LF_NESTTYPE` and no members at all.
+    #[test]
+    fn an_enum_emits_a_complete_codeview_structure_for_its_carrier() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let artefacts = emit_source(dir.path(), "enum", ENUM, true);
+        let object = artefacts.native_obj_path.expect("native object");
+        let types = pdb_dump(&object, "types");
+
+        // A record is its `0x....` header line plus the indented lines under
+        // it, so the type index of the next record ends this one.
+        let records: Vec<String> = types
+            .split("\n0x")
+            .map(|record| record.trim_end().to_owned())
+            .collect();
+        let status: Vec<&String> = records
+            .iter()
+            .filter(|record| record.contains("LF_STRUCTURE") && record.contains("`Status`"))
+            .collect();
+        assert!(
+            !status.is_empty(),
+            "the enum must be described by its source name:\n{types}"
+        );
+        let complete = status
+            .iter()
+            .find(|record| !record.contains("forward ref"))
+            .unwrap_or_else(|| {
+                panic!("the enum needs a complete record, not only a forward reference:\n{types}")
+            });
+        assert!(
+            complete.contains("sizeof 16"),
+            "the enum record must be sized to the whole carrier:\n{complete}"
+        );
+        let field_list = complete
+            .lines()
+            .find_map(|line| line.split("field list: ").nth(1))
+            .and_then(|rest| rest.split_whitespace().next())
+            .expect("the complete record names its field list");
+        let fields = records
+            .iter()
+            .find(|record| record.starts_with(field_list.trim_start_matches("0x")))
+            .unwrap_or_else(|| panic!("field list {field_list} is in the dump:\n{types}"));
+        assert!(
+            fields.contains("LF_MEMBER"),
+            "the carrier's tag and payload must reach the field list:\n{fields}"
+        );
+        assert!(
+            !fields.contains("LF_NESTTYPE"),
+            "a variant part CodeView cannot resolve must not stand in for the members:\n{fields}"
+        );
+    }
+
+    /// Negative control: a build without `-g` writes no CodeView at all.
+    #[test]
+    fn a_build_without_debug_emits_no_codeview() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let artefacts = emit(dir.path(), false);
+        let object = artefacts.native_obj_path.expect("native object");
+        let types = pdb_dump(&object, "types");
+        assert!(
+            !types.contains("LF_FUNC_ID"),
+            "a build without -g must not describe any type:\n{types}"
+        );
+    }
 }

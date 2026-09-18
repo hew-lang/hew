@@ -154,6 +154,9 @@ pub const REQUIRED_PARITY_TEST_NAMES: &[&str] = &[
     "trap_residual",
 ];
 
+/// Names the editor buffer in frontend diagnostics and anchors its imports.
+const SANDBOX_BUFFER_LABEL: &str = "playground.hew";
+
 const SANDBOX_STDIN_HELPER: &str = "__hew_sandbox_stdin_read_line";
 const SANDBOX_STDIN_SYMBOL: &str = "sym:core.stdin.read_line";
 const SANDBOX_STDIN_CAPABILITY: &str = "core.stdin";
@@ -395,8 +398,19 @@ fn compile_from_semantics(
         }
     };
 
-    let parse_result = hew_parser::parse(source);
-    let mut diagnostics = convert_parse_diagnostics(&parse_result.errors);
+    // The shared frontend, not a second one: it resolves this buffer's imports
+    // into the module graph, so an imported declaration reaches HIR with a
+    // body instead of an unresolved binding.
+    let state = hew_compile::run_source_frontend(
+        source,
+        SANDBOX_BUFFER_LABEL,
+        &hew_compile::FrontendOptions::default(),
+    );
+    let mut diagnostics = state
+        .parse_result
+        .as_ref()
+        .map(|parse| convert_parse_diagnostics(&parse.errors))
+        .unwrap_or_default();
     if has_error_diagnostics(&diagnostics) {
         return Ok(SemanticOutcome::Compiled(CompileOutput {
             diagnostics,
@@ -404,20 +418,36 @@ fn compile_from_semantics(
         }));
     }
 
-    let mut checker = hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(
-        hew_types::module_registry::build_module_search_paths(),
-    ));
-    let type_output = checker.check_program(&parse_result.program);
-    diagnostics.extend(convert_type_diagnostics(&type_output));
+    let Some(type_output) = state
+        .typecheck_result
+        .as_ref()
+        .and_then(|result| result.tco.as_ref())
+    else {
+        diagnostics.push(Diagnostic::profile_error(
+            0..0,
+            "frontend_stopped",
+            state
+                .stopped
+                .as_ref()
+                .map_or("type checking did not run", |failure| {
+                    failure.message.as_str()
+                }),
+        ));
+        return Ok(SemanticOutcome::Compiled(CompileOutput {
+            diagnostics,
+            bytecode: None,
+        }));
+    };
+    diagnostics.extend(convert_type_diagnostics(type_output));
     if has_error_diagnostics(&diagnostics) {
         return Ok(SemanticOutcome::Compiled(CompileOutput {
             diagnostics,
             bytecode: None,
         }));
     }
+    let program = &state.program;
 
-    let profile_report =
-        profile::check_program(&parse_result.program, &type_output, &canonical_profile);
+    let profile_report = profile::check_program(program, type_output, &canonical_profile);
     diagnostics.extend(profile_report.diagnostics);
     if has_error_diagnostics(&diagnostics) {
         return Ok(SemanticOutcome::Compiled(CompileOutput {
@@ -430,7 +460,7 @@ fn compile_from_semantics(
         hew_compile::SessionTarget::browser(),
         hew_compile::DiagnosticPolicy::default(),
     );
-    let semantics = match session.lower_program(&parse_result.program, &type_output) {
+    let semantics = match session.lower_program(program, type_output) {
         Ok(output) => output,
         Err(error) => {
             diagnostics.push(Diagnostic {

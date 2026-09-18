@@ -78,8 +78,11 @@ function validateMarkdownLinks() {
 
 function validateSchemas() {
   const traceSchema = readJson("specs/trace-schema-v0.schema.json");
-  const bytecodeSchema = readJson("bytecode/sandbox-bytecode-v0.schema.json");
-  if (!traceSchema || !bytecodeSchema) {
+  const bytecodeSchemas = [
+    readJson("bytecode/sandbox-bytecode-v0.schema.json"),
+    readJson("bytecode/sandbox-bytecode-v1.schema.json")
+  ];
+  if (!traceSchema || bytecodeSchemas.some((schema) => !schema)) {
     return undefined;
   }
 
@@ -91,7 +94,8 @@ function validateSchemas() {
 
   for (const [name, schema] of [
     ["trace schema", traceSchema],
-    ["bytecode schema", bytecodeSchema]
+    ["bytecode v0 schema", bytecodeSchemas[0]],
+    ["bytecode v1 schema", bytecodeSchemas[1]]
   ]) {
     if (!ajv.validateSchema(schema)) {
       fail(`${name}: ${ajv.errorsText(ajv.errors, { separator: "\n" })}`);
@@ -101,7 +105,9 @@ function validateSchemas() {
   let validateTrace;
   try {
     validateTrace = ajv.compile(traceSchema);
-    ajv.compile(bytecodeSchema);
+    for (const schema of bytecodeSchemas) {
+      ajv.compile(schema);
+    }
   } catch (error) {
     fail(`schema compilation: ${error.message}`);
     return undefined;

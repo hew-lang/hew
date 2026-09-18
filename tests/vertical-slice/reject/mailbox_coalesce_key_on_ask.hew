@@ -1,0 +1,9 @@
+// A coalesce key on a value-returning handler can never take effect: a call
+// that waits for a reply is never superseded or discarded.
+actor Worker {
+    mailbox 1 overflow coalesce(channel) fallback drop_new,
+
+    receive fn read(channel: i64) -> i64 { channel }
+}
+
+fn main() {}

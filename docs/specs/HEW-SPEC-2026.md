@@ -134,10 +134,11 @@ operator: an ordinary call waits, `fork` starts concurrent work, and `await`
 joins a task. The handler does not run locally; the call returns when the
 handler's turn has finished, which means processed, not durable.
 
-One-way delivery is a separate, explicit surface: `mailbox(target, on_full:
-...)` yields a view whose calls submit and return as soon as the message is
-accepted, with the value `Result<Delivery, SendFailure<Req>>`. `Delivery`
-reports `.Accepted` or an explicitly chosen `.Discarded`. A value-returning
+One-way delivery is a separate, explicit surface: `mailbox(target)` yields a
+view whose calls submit and return as soon as the message is accepted, with
+the value `Result<Delivery, SendFailure<Req>>`. `Delivery` reports
+`.Accepted`, or `.Discarded` for a loss chosen by the destination's declared
+policy or by the sender's own `on_full`. A value-returning
 handler cannot be called through a mailbox view; the diagnostic names
 `fork target.m(..)` for concurrency. A `fails` handler that returns no value
 may be submitted this way: with no caller to receive its declared error, an
@@ -147,7 +148,7 @@ render — `string`, or a type with an `impl Display` body — or the submission
 is refused.
 
 A completion call chooses its own admission through the other view:
-`policy(target, on_full: ...)` yields a view whose calls complete exactly as a
+`policy(target)` yields a view whose calls complete exactly as a
 call on the handle does, with `Result<R, ActorError<E, Req>>`. `.Wait` is
 the bare-handle behaviour and parks the caller while the destination mailbox is
 full; `.Reject` refuses instead, and the call reports
@@ -176,18 +177,27 @@ An accidentally discarded actor-call or submission Result is
 `E_SEND_RESULT_DROPPED`. Neither an unbounded mailbox nor a unit-returning
 handler removes the obligation to handle the outcome.
 
-**Mailbox policy at the sender.** `mailbox(worker, on_full: .Wait)` yields an
-immutable typed one-way view of the same actor and mailbox; a receive call
-through that view submits under that policy. It mutates nothing and grants no
-authority over other senders' work; it selects what *this* sender does when
-the mailbox is full. The mailbox-view default is `.Reject`, which fails
-immediately and hands the unaccepted payload back — transferred resources
-included — so the caller can retry, redirect, or discard. `.Wait` parks until
-the message is accepted, cancelled, closed, or timed out, and is the one
-policy under which a submission suspends. `.DropNewest` drops the submitted
-message and reports that disposition distinctly. Coalescing requires the
-actor's own mailbox support for its key policy (§6.3). Capacity and queue-wide
-eviction belong to the actor and its supervisor, never to a sender view.
+**Mailbox policy at the sender.** `mailbox(worker)` yields an immutable typed
+one-way view of the same actor and mailbox; a receive call through that view
+submits under the destination's declared admission. It mutates nothing and
+grants no authority over other senders' work; it selects what *this* sender
+does when the mailbox is full. Without `on_full`, a destination declaring
+`overflow fail` gives the view `.Reject`, and every other declaration —
+including no `mailbox` clause at all — gives it `.Wait`; `on_full` overrides
+that derivation (§6.2). `.Reject` fails immediately and hands the unaccepted
+payload back — transferred resources included — so the caller can retry,
+redirect, or discard. `.Wait` parks until the message is accepted, cancelled,
+closed, or timed out, and is the one policy under which a submission suspends.
+`.DropNewest` drops the submitted message and reports that disposition
+distinctly. Coalescing requires the actor's own mailbox support for its key
+policy (§6.3). Capacity and queue-wide eviction belong to the actor and its
+supervisor, never to a sender view.
+
+A declared discarding policy — `drop_new`, `drop_old`, `coalesce(k)` — governs
+one-way submission only. A completion call parks for admission whether or not
+it returns a value, because superseding or discarding it would leave its
+caller waiting for a reply no handler will send. An actor may not declare a
+coalesce key on a value-returning handler.
 
 No token marks an actor call site: an unmarked call on a handle waits for
 completion, and the receiver type — handle or mailbox view — decides whether
@@ -5012,11 +5022,13 @@ queue's permitted behaviour; public delivery outcomes follow §2.1.1.
 | `mailbox(actor, on_full: .Reject)` | refuse without accepting the request | submission envelope |
 | `mailbox(actor, on_full: .DropNewest)` | explicitly discard this submission | `Delivery.Discarded` on that disposition |
 | `mailbox(actor, on_full: .ReplaceLatest)` | use the actor's opted-in coalescing protocol | submission envelope |
+| `mailbox(actor)`, `policy(actor)` | the destination's declared admission: `overflow fail` refuses, every other declaration waits | as for the derived policy |
 
 Completion views admit only Wait and Reject: a caller cannot wait for the
 completion of a request the policy intentionally discards. A sender cannot
 unilaterally evict other senders' work. ReplaceLatest requires actor-declared
-coalescing support. Write `on_full` explicitly when constructing a view.
+coalescing support. Write `on_full` to override the destination's declared
+admission; omit it to take that declaration.
 
 Waiting for capacity suspends the calling execution context. It must not
 silently become dropping or a blocking wait on a scheduler worker. A terminal
@@ -5030,6 +5042,10 @@ message of the same handler and key. An example declaration is
 `mailbox 100 overflow coalesce(request_id),`. The actor must define the key
 on the relevant payload; a sender view cannot invent a key or replacement
 policy for an unrelated protocol.
+
+A coalesce key on a value-returning handler is refused: such a call waits for
+a reply, so it is never superseded or discarded and the key could never take
+effect.
 
 Matching work is replaced in its queue position and the old payload is
 released. With no match, the declared fallback governs admission; the default

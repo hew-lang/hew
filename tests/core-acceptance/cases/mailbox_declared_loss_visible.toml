@@ -1,0 +1,13 @@
+[[case]]
+id = "mailbox_declared_loss_visible"
+intent = "A loss the destination's declared coalescing policy chose - a superseded submission and a fallback discard - is reported as `Delivery.Discarded`, never as acceptance."
+source = "../vertical-slice/accept/mailbox_declared_loss_visible.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "1"
+
+[case.expected]
+stdout = "accepted\nsuperseded\ndropped\n"
+exit = 0

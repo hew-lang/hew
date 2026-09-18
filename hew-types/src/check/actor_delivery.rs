@@ -25,6 +25,56 @@ impl Checker {
         .then_some(view)
     }
 
+    /// The admission a delivery view takes when its call site states none.
+    ///
+    /// The destination's `mailbox` declaration is the one authority: a
+    /// declared `fail` refuses a full queue, so its senders refuse too;
+    /// every other declaration - `block`, `drop_new`, `drop_old`,
+    /// `coalesce`, and no declaration at all - parks for a slot. A
+    /// discarding declaration resolves a full queue itself, so the sender's
+    /// slot only answers what happens when it did not, and parking is the
+    /// answer. Both views derive alike, and both admit these two.
+    fn declared_admission(&self, target: &Ty) -> SendPolicy {
+        let declared = target.as_local_actor_ref().and_then(|actor| match actor {
+            Ty::Named { name, .. } => self.actor_overflow_policies.get(name),
+            _ => None,
+        });
+        match declared {
+            Some(hew_parser::ast::OverflowPolicy::Fail) => SendPolicy::Reject,
+            _ => SendPolicy::Wait,
+        }
+    }
+
+    /// The destination and the optional admission override a view is written
+    /// with. Anything else is refused here, so the view body sees one shape.
+    fn delivery_view_args<'a>(
+        &mut self,
+        view: &str,
+        args: &'a [CallArg],
+        span: &Span,
+    ) -> Option<(&'a Spanned<Expr>, Option<&'a Spanned<Expr>>)> {
+        match args {
+            [CallArg::Positional(target)] => Some((target, None)),
+            [CallArg::Positional(target), CallArg::Named { name, value }] => {
+                if name == "on_full" {
+                    Some((target, Some(value)))
+                } else {
+                    self.report_error(
+                        TypeErrorKind::InvalidOperation,
+                        span,
+                        "the delivery view option is named `on_full`".to_string(),
+                    );
+                    None
+                }
+            }
+            _ => {
+                self.report_error(TypeErrorKind::InvalidOperation, span,
+                    format!("a delivery view requires `{view}(actor)`, or `{view}(actor, on_full: .Reject|.Wait|.DropNewest|.ReplaceLatest)` to override the destination's declared admission"));
+                None
+            }
+        }
+    }
+
     pub(super) fn check_actor_delivery_view(
         &mut self,
         view: &str,
@@ -32,19 +82,9 @@ impl Checker {
         span: &Span,
     ) -> Ty {
         let completes = view == "policy";
-        let [CallArg::Positional(target), CallArg::Named { name, value }] = args else {
-            self.report_error(TypeErrorKind::InvalidOperation, span,
-                format!("a delivery view requires `{view}(actor, on_full: .Reject|.Wait|.DropNewest|.ReplaceLatest)`"));
+        let Some((target, on_full)) = self.delivery_view_args(view, args, span) else {
             return Ty::Error;
         };
-        if name != "on_full" {
-            self.report_error(
-                TypeErrorKind::InvalidOperation,
-                span,
-                "the delivery view option is named `on_full`".to_string(),
-            );
-            return Ty::Error;
-        }
         let target_ty = self.synthesize(&target.0, &target.1);
         let target_ty = self.subst.resolve(&target_ty);
         let target_ty = delivery::sender_parts(&target_ty)
@@ -62,6 +102,22 @@ impl Checker {
             );
             return Ty::Error;
         }
+        // Without an explicit `on_full`, the destination's own `mailbox`
+        // declaration chooses: a declared `fail` refuses a full queue, and
+        // every other declaration - including none at all - parks for a slot.
+        let Some(value) = on_full else {
+            let policy = self.declared_admission(&target_ty);
+            self.actor_delivery_calls.insert(
+                SpanKey::in_module(span, self.current_module_idx),
+                ActorDeliveryCall::Policy { policy },
+            );
+            self.record_submission_suspension(span, false);
+            return if completes {
+                delivery::policy_view_type(target_ty, policy)
+            } else {
+                delivery::sender_type(target_ty, policy)
+            };
+        };
         let on_full_ty = delivery::nominal(delivery::ON_FULL_TYPE, Vec::new());
         self.check_against(&value.0, &value.1, &on_full_ty);
         let policy = match &value.0 {

@@ -174,7 +174,9 @@ pub unsafe extern "C" fn hew_actor_payload_free(payload: *mut std::ffi::c_void) 
 
 /// Try to transfer a generated message wrapper into its exact destination.
 /// Returns 0 for acceptance, 1 for full, 2 for closed, 3 for allocation failure,
-/// and 4 for an explicitly selected newest-message discard.
+/// and 4 for a discard - either the sender's own newest-message policy or the
+/// destination's declared coalescing. Both 0 and 4 mean the destination owns the
+/// typed fields; every other status leaves them with the caller.
 ///
 /// # Safety
 /// `payload` is an unpublished malloc wrapper containing shallowly transferred
@@ -239,14 +241,14 @@ unsafe fn submit_native(
             crate::actor::try_submit_native_envelope(token, message, envelope)
         }
     };
-    // `Enqueued` is plain admission. A coalescing mailbox also accepts under its
-    // declared policy - replacing the message this one supersedes, or discarding
-    // it - and owns the envelope either way, so the sender has nothing to
-    // release or retry.
+    // `Enqueued` is plain admission. A coalescing mailbox instead resolves the
+    // full queue under its declared policy - replacing the message this one
+    // supersedes, or discarding it - and owns the envelope either way, so the
+    // sender has nothing to release or retry. The loss is still a loss, so it
+    // reports as a discard (4) rather than as acceptance.
     let status = match outcome {
-        crate::mailbox::SendOutcome::Enqueued
-        | crate::mailbox::SendOutcome::Coalesced
-        | crate::mailbox::SendOutcome::Dropped => return 0,
+        crate::mailbox::SendOutcome::Enqueued => return 0,
+        crate::mailbox::SendOutcome::Coalesced | crate::mailbox::SendOutcome::Dropped => return 4,
         crate::mailbox::SendOutcome::Failed if policy == 2 => {
             // SAFETY: explicit DropNewest transfers the typed payload for destruction.
             unsafe {

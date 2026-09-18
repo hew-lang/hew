@@ -279,7 +279,6 @@ tests/pkg-import/two_module_same_generic_valueclass_accept.hew
 # lower yet
 tests/vertical-slice/accept/actor_state_field_reinit.hew E_SIR_UNSUPPORTED
 tests/vertical-slice/accept/branch_join_diverging_guard.hew E_SIR_UNSUPPORTED
-tests/vertical-slice/accept/coalesce_owned_payload_leak.hew E_SIR_UNSUPPORTED
 tests/vertical-slice/accept/free_fn_actor_scope_spawn.hew E_SIR_UNSUPPORTED
 tests/vertical-slice/accept/gen_block_explicit_return.hew E_SIR_UNSUPPORTED
 tests/vertical-slice/accept/generic_spawn_unit.hew E_SIR_UNSUPPORTED
@@ -290,8 +289,6 @@ tests/vertical-slice/accept/hashset_for_in_call.hew E_SIR_UNSUPPORTED
 # `RemotePid<T>.node_id()` the one std/builtins.hew declares, so comparing them
 # reads as `expected NodeId, found NodeId`
 tests/vertical-slice/accept/identity_aggregates.hew
-tests/vertical-slice/accept/imported_actor_msg_discriminants.hew E_SIR_UNSUPPORTED
-tests/vertical-slice/accept/imported_supervisor_child_identity.hew E_SIR_UNSUPPORTED
 tests/vertical-slice/accept/link_monitor_value_monitor.hew E_SIR_UNSUPPORTED
 tests/vertical-slice/accept/link_monitor_value_monitor_in_actor.hew E_SIR_UNSUPPORTED
 tests/vertical-slice/accept/link_monitor_value_result.hew E_SIR_UNSUPPORTED

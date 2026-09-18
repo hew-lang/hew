@@ -7458,6 +7458,31 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         Ok(true)
     }
 
+    /// A state seat the runtime consumed on a failure edge keeps whatever the
+    /// take left in it until the actor's release reads the field, so its
+    /// carrier must have an empty form that release accepts.
+    ///
+    /// Map and set carriers do: their release treats an empty carrier as an
+    /// empty collection. Nothing else reaches here today, and a family that
+    /// starts to must say what its empty carrier means before it does.
+    fn require_empty_carrier_seat(&mut self, place: PlaceId) -> Result<(), String> {
+        let ty = self.places[place.0 as usize].ty.clone();
+        if matches!(
+            collection_type_arguments(&ty),
+            Some((
+                hew_types::BuiltinType::HashMap | hew_types::BuiltinType::HashSet,
+                _
+            ))
+        ) {
+            return Ok(());
+        }
+        Err(format!(
+            "an actor state field of type `{}` cannot be taken by a call that keeps nothing on \
+             its failure edge: its carrier has no empty form the actor's release accepts",
+            ty.user_facing()
+        ))
+    }
+
     /// A `Vec` state seat consumed by value is drained rather than copied: the
     /// buffer moves to the consumer and the seat keeps a valid empty vector
     /// with its element representation intact, which a later dispatch refills.
@@ -8863,6 +8888,8 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             if let Some((place, value)) = taken_seat {
                 if contract.preserves_inputs_on_failure() {
                     self.restore_taken_place(place, value, Provenance::Site(expr.site))?;
+                } else {
+                    self.require_empty_carrier_seat(place)?;
                 }
             }
             self.end_call_loans(&loans)?;

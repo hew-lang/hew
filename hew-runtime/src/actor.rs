@@ -10024,6 +10024,67 @@ mod tests {
         }
     }
 
+    /// An injected drop fault discards the message before it reaches the
+    /// queue. That is loss, not delivery: a checked send reads the
+    /// declared-loss code and an ask refuses instead of waiting for a reply
+    /// that cannot arrive. The control is the same send with no fault armed.
+    #[test]
+    fn injected_drop_fault_reports_loss_not_delivery() {
+        let _guard = crate::runtime_test_guard();
+        let actor_id = 0xD40Bu64;
+        let (actor, mailbox) = make_stop_test_actor_with_id(actor_id, HewActorState::Idle);
+
+        // Two drops: one for the tell below, one for the ask.
+        crate::deterministic::hew_fault_clear_all();
+        crate::deterministic::hew_fault_inject_drop(actor_id, 2);
+
+        // SAFETY: the test exclusively owns `actor`; null payload, zero size.
+        let dropped = unsafe { actor_send_result_internal(actor, 1, ptr::null_mut(), 0) };
+        assert_eq!(
+            dropped, HEW_ACTOR_SEND_MESSAGE_LOST,
+            "a dropped send must report declared loss, not delivery"
+        );
+        // SAFETY: `mailbox` is valid and owned by this test.
+        let queued_after_drop = unsafe { mailbox::hew_mailbox_has_messages(mailbox) };
+        assert_eq!(
+            queued_after_drop, 0,
+            "a dropped send must not enqueue a message"
+        );
+
+        // The ask half returns rather than blocking on a reply that the
+        // discarded message can never produce.
+        // SAFETY: as above.
+        let reply = unsafe { hew_actor_ask(actor, 1, ptr::null_mut(), 0) };
+        assert!(reply.is_null(), "a dropped ask produces no reply");
+        assert_eq!(
+            hew_actor_ask_take_last_error(),
+            AskError::ActorStopped as i32,
+            "a dropped ask reports the actor as unreachable"
+        );
+
+        // Control: the fault budget is spent, so the same send delivers.
+        // SAFETY: as above.
+        let delivered = unsafe { actor_send_result_internal(actor, 1, ptr::null_mut(), 0) };
+        assert_eq!(
+            delivered,
+            HewError::Ok as i32,
+            "an unfaulted send must still report delivery"
+        );
+        // SAFETY: `mailbox` is valid and owned by this test.
+        let queued_after_delivery = unsafe { mailbox::hew_mailbox_has_messages(mailbox) };
+        assert_eq!(
+            queued_after_delivery, 1,
+            "an unfaulted send must enqueue its message"
+        );
+
+        crate::deterministic::hew_deterministic_reset();
+        // SAFETY: the test fully owns the actor and its mailbox.
+        unsafe {
+            drop(Box::from_raw(actor));
+            mailbox::hew_mailbox_free(mailbox);
+        }
+    }
+
     /// V2(a–c): the off-dispatch producer choke point `enter_actor_runtime`
     /// binds the actor's OWNING runtime, not the process default. A second
     /// worker-less runtime is minted carrying `RuntimeId(1)`, and an actor is

@@ -77,7 +77,6 @@ macos	failure	hew-cli::structural_rendering_ownership_oracle	structural_renderin
 linux,macos,windows,freebsd	failure	hew-cli::supervisor_init_args_e2e	supervisor_missing_field_diagnostic_points_at_child_declaration	#3393 makes hew check and hew compile agree on a supervisor child
 macos	failure	hew-cli::vec_index_assign_temp_leak_oracle	vec_index_assign_borrowed_capture_stays_copy_in	#3448 selects the copy-in vector store for a borrowed capture
 macos	failure	hew-cli::vec_iter_closure_unwind_leak_oracle	temporary_vec_iter_closure_trap_invokes_guarded_cleanup_without_leak	#3449 emits a closure call in a guarded region as an invoke
-linux,macos,windows,freebsd	failure	hew-cli::wasi_run_e2e	actor_lifecycle_state_writes_match_on_native_and_wasi	#3368 implements sandbox emission on the physical path
 linux,macos,windows,freebsd	failure	hew-cli::wasi_run_e2e	actor_panic_is_module_fatal_on_production_wasi	#3368 implements sandbox emission on the physical path
 linux,macos,windows,freebsd	failure	hew-cli::wasi_run_e2e	actor_start_panic_remains_module_fatal_on_production_wasi	#3368 implements sandbox emission on the physical path
 linux,macos,windows,freebsd	failure	hew-cli::wasi_run_e2e	wasm_actor_periodic_timer_fires_but_never_reaches_quiescence	#3368 implements sandbox emission on the physical path

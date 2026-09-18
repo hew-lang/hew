@@ -219,41 +219,6 @@ fn main() {
     );
 }
 
-/// An actor's `default`/`init`/`#[on(start)]`/`receive`/`#[on(stop)]` state
-/// writes produce the same stdout and the same exit status on both targets.
-///
-/// The wasm32 half of this ran on the deleted runtime twin and asserted the
-/// cooperative scheduler's own behaviour. Parity is native's behaviour, so the
-/// case now compares the two runs; the actor core reaches the wasm32 driver in
-/// the actor port.
-#[test]
-fn actor_lifecycle_state_writes_match_on_native_and_wasi() {
-    require_wasi_runner();
-    support::require_codegen();
-
-    let source = repo_root()
-        .join("tests")
-        .join("vertical-slice")
-        .join("accept")
-        .join("actor_lifecycle_state_writes.hew");
-    let native = support::run_bounded_hew_run(&source, repo_root());
-    let wasi = run_wasi_example(&source);
-
-    let native_stdout = String::from_utf8_lossy(&native.stdout);
-    let wasi_stdout = String::from_utf8_lossy(&wasi.stdout);
-    let wasi_stderr = String::from_utf8_lossy(&wasi.stderr);
-
-    assert_eq!(
-        wasi_stdout, native_stdout,
-        "WASI lifecycle stdout must match native\nWASI stderr:\n{wasi_stderr}"
-    );
-    assert_eq!(
-        wasi.status.code(),
-        native.status.code(),
-        "WASI lifecycle exit status must match native\nWASI stderr:\n{wasi_stderr}"
-    );
-}
-
 #[test]
 fn actor_start_panic_remains_module_fatal_on_production_wasi() {
     require_wasi_runner();

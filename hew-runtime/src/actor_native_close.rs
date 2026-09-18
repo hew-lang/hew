@@ -85,6 +85,7 @@ pub(crate) unsafe fn finish_native_terminal(actor: &HewActor) {
             };
             let previous = crate::execution_context::set_current_context(&raw mut context);
             // SAFETY: the terminal actor pins its owning runtime across cleanup.
+            #[cfg(not(target_arch = "wasm32"))]
             let _runtime = unsafe { actor.runtime.as_ref() }.map(|runtime| {
                 // SAFETY: the actor retains this runtime until terminal cleanup returns.
                 unsafe { crate::runtime::enter(runtime) }
@@ -147,6 +148,9 @@ pub unsafe extern "C" fn hew_actor_wait_new(
         })
         .flatten()
     });
+    // A supervised child's completion is reachable through the local-PID
+    // control table, which is native-only; wasm32 admits no supervisor.
+    #[cfg(not(target_arch = "wasm32"))]
     let completion = completion.or_else(|| local_handles::current_supervisor_completion(token));
     if let Some(completion) = &completion {
         completion.ready.register(&waker);

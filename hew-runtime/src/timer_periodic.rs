@@ -80,9 +80,25 @@ fn ticker_park_notify() {
     park.cv.notify_one();
 }
 
-/// Return (or create) the global timer wheel and ensure the ticker thread
-/// is running.
+/// Return (or create) the process timer wheel, ensuring something ticks it.
+///
+/// Natively that is a background ticker thread parked on the next deadline.
+/// wasm32 has no thread to park: the process drives the wheel itself between
+/// readiness steps, so the wheel lives with the driver and nothing is started
+/// here.
 pub(crate) fn global_wheel() -> *mut HewTimerWheel {
+    #[cfg(target_arch = "wasm32")]
+    {
+        crate::wasm_driver::global_wheel()
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        native_global_wheel()
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn native_global_wheel() -> *mut HewTimerWheel {
     GLOBAL_WHEEL.access(|guard| {
         if guard.0.is_null() {
             // SAFETY: hew_timer_wheel_new has no preconditions.

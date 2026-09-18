@@ -47,19 +47,23 @@ pub(crate) fn global_wheel() -> *mut HewTimerWheel {
 thread_local! {
     /// Actors this target has made runnable, in the order they became so.
     ///
-    /// The native scheduler hands an entry to a work-stealing deque and wakes a
-    /// worker; wasm32 has no worker, so the entry waits here until the process
-    /// next looks. One thread, so a `RefCell` is the whole synchronisation
-    /// story.
-    static RUN_QUEUE: RefCell<VecDeque<SchedulerQueueEntry>> = RefCell::new(VecDeque::new());
+    /// The native scheduler pushes the actor pointer onto a work-stealing deque
+    /// and wakes a worker; wasm32 has no worker, so the pointer waits here until
+    /// the process next looks. The queue holds the pointer rather than the entry
+    /// for the same reason the deque does: publishing transfers the entry's
+    /// reference to the queue, and whoever pops it owns that reference. One
+    /// thread, so a `RefCell` is the whole synchronisation story.
+    static RUN_QUEUE: RefCell<VecDeque<*mut crate::actor::HewActor>> =
+        RefCell::new(VecDeque::new());
 }
 
 /// Accept a runnable actor from [`crate::resume`].
 pub(crate) fn publish_queue_entry(mut entry: SchedulerQueueEntry) {
-    entry.disarm();
     let actor = entry.actor;
-    RUN_QUEUE.with(|queue| queue.borrow_mut().push_back(entry));
-    let _ = actor;
+    RUN_QUEUE.with(|queue| queue.borrow_mut().push_back(actor));
+    // Disarm last: it clears the entry's pointer, which is what keeps `Drop`
+    // from releasing the reference the queue now owns.
+    entry.disarm();
 }
 
 /// Run one queued activation, if any. Returns whether one ran.
@@ -67,11 +71,9 @@ pub(crate) fn publish_queue_entry(mut entry: SchedulerQueueEntry) {
 /// The queue borrow is released before the activation, because an activation
 /// that yields or exhausts its budget re-publishes the same actor.
 fn run_one_queued_activation() -> bool {
-    let Some(entry) = RUN_QUEUE.with(|queue| queue.borrow_mut().pop_front()) else {
+    let Some(actor) = RUN_QUEUE.with(|queue| queue.borrow_mut().pop_front()) else {
         return false;
     };
-    let actor = entry.actor;
-    std::mem::forget(entry);
     activate_queued_actor(actor);
     true
 }

@@ -1475,7 +1475,6 @@ pub struct HewMailbox {
     /// Separate from `slow_path` because close may be invoked by a callback
     /// while that queue lock is already held.
     blocked_senders: Mutex<VecDeque<BlockedSender>>,
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) native_capacity: crate::wake::ReadinessRegistrations,
     /// Queued user messages plus bounded fast-path slots reserved by in-flight
     /// producers.
@@ -1622,7 +1621,6 @@ pub unsafe extern "C" fn hew_mailbox_new() -> *mut HewMailbox {
             user_queue: VecDeque::new(),
         }),
         blocked_senders: Mutex::new(VecDeque::new()),
-        #[cfg(not(target_arch = "wasm32"))]
         native_capacity: crate::wake::ReadinessRegistrations::default(),
         count: AtomicI64::new(0),
         sys_count: AtomicUsize::new(0),
@@ -1665,7 +1663,6 @@ pub unsafe extern "C" fn hew_mailbox_new_bounded(capacity: i32) -> *mut HewMailb
             user_queue: VecDeque::new(),
         }),
         blocked_senders: Mutex::new(VecDeque::new()),
-        #[cfg(not(target_arch = "wasm32"))]
         native_capacity: crate::wake::ReadinessRegistrations::default(),
         count: AtomicI64::new(0),
         sys_count: AtomicUsize::new(0),
@@ -1717,7 +1714,6 @@ pub unsafe extern "C" fn hew_mailbox_new_with_policy(
             user_queue: VecDeque::new(),
         }),
         blocked_senders: Mutex::new(VecDeque::new()),
-        #[cfg(not(target_arch = "wasm32"))]
         native_capacity: crate::wake::ReadinessRegistrations::default(),
         count: AtomicI64::new(0),
         sys_count: AtomicUsize::new(0),
@@ -1761,7 +1757,6 @@ pub unsafe extern "C" fn hew_mailbox_new_coalesce(capacity: u32) -> *mut HewMail
             user_queue: VecDeque::new(),
         }),
         blocked_senders: Mutex::new(VecDeque::new()),
-        #[cfg(not(target_arch = "wasm32"))]
         native_capacity: crate::wake::ReadinessRegistrations::default(),
         count: AtomicI64::new(0),
         sys_count: AtomicUsize::new(0),
@@ -2351,7 +2346,6 @@ pub(crate) unsafe fn admit_native_terminal(
 /// carries no key projection never matches. On a match the queued node takes
 /// the incoming envelope and releases the superseded one exactly once; the
 /// caller's envelope reference is consumed.
-#[cfg(not(target_arch = "wasm32"))]
 unsafe fn coalesce_native_request(
     mb: &HewMailbox,
     queue: &SlowPathQueue,
@@ -2431,7 +2425,6 @@ pub(crate) const fn declared_admission(policy: HewOverflowPolicy) -> DeclaredAdm
 /// evicted: dropping it would leave that caller waiting for a reply no handler
 /// will send. When every queued message is a completion call there is nothing
 /// this policy may discard and the submission reports a full queue instead.
-#[cfg(not(target_arch = "wasm32"))]
 fn evict_oldest_one_way(mb: &HewMailbox, queue: &mut SlowPathQueue) -> bool {
     let Some(index) = queue.user_queue.iter().position(|&node| {
         // SAFETY: every queued node is live while the queue lock is held.

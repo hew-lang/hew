@@ -715,7 +715,6 @@ pub mod await_cancel;
 pub mod blocking_pool;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod task_scope;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod timer_periodic;
 pub mod wake;
 /// The single-threaded wasm32 process driver: the timer wheel and the root

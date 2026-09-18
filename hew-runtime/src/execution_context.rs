@@ -297,7 +297,6 @@ pub struct HewExecutionContext {
     pub reply_channel: *mut c_void,
     /// Checked native completion, consumed by the activation's scheduler.
     /// The slot releases an unconsumed owner during exceptional teardown.
-    #[cfg(not(target_arch = "wasm32"))]
     pub checked_fault: crate::actor_native::CheckedActorFault,
 }
 

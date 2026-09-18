@@ -92,9 +92,14 @@ impl Builder<'_, '_> {
         root: PlaceId,
         replacement: ValueId,
         staged_root: Option<(PlaceId, ValueId)>,
+        taken: bool,
         provenance: &Provenance,
     ) -> Result<(), String> {
-        self.store_projected(root, replacement, provenance.clone())?;
+        if taken {
+            self.restore_taken_place(root, replacement, provenance.clone())?;
+        } else {
+            self.store_projected(root, replacement, provenance.clone())?;
+        }
         if let Some((root, staged)) = staged_root {
             self.store_projected(root, staged, provenance.clone())?;
         }
@@ -228,6 +233,7 @@ impl Builder<'_, '_> {
             writeback.root,
             replacement,
             writeback.staged_root,
+            false,
             provenance,
         )
     }

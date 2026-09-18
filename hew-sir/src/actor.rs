@@ -680,9 +680,21 @@ pub(crate) fn verify_operation(
                     return Err("actor state replacement requires one exact field value".into());
                 }
             }
+            // A transform empties the seat for the length of one call and
+            // publishes the updated receiver back with `StoreInit`. The flow
+            // rules own the pairing: a take leaves the seat uninitialized, and
+            // the seat must be initialized again at every exit.
+            SemOpKind::LoadTake { .. } => {
+                let [result] = op.results.as_slice() else {
+                    return Err("actor state take needs one result".into());
+                };
+                if result.ty != field.ty || result.own != crate::OwnKind::Owned {
+                    return Err("actor state take changes field type or ownership".into());
+                }
+            }
             SemOpKind::StoreInit { value, .. } => {
-                if !(field.deferred && actor.init == Some(function.callable)) {
-                    return Err("only init initializes a deferred actor state field".into());
+                if !field.mutable && actor.init != Some(function.callable) {
+                    return Err("actor state assignment requires a mutable field".into());
                 }
                 if !op.results.is_empty() || types.get(&value.value) != Some(&field.ty) {
                     return Err("actor state initialization requires one exact field value".into());

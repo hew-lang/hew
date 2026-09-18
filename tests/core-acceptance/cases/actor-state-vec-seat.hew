@@ -1,0 +1,86 @@
+import std.failure;
+
+// A state `Vec` is mutated and drained in its own seat: the handler takes the
+// seat, the runtime call updates the receiver, and the updated receiver is
+// published back. The element type here has no copy, so a staged copy has
+// nothing to stage and the take is the only admitted shape.
+
+trait Formatter {
+    fn format(val: Self, msg: string) -> string;
+}
+
+type TagFormatter {
+    tag: string,
+}
+
+impl Formatter for TagFormatter {
+    fn format(f: TagFormatter, msg: string) -> string {
+        f"{f.tag}:{msg}"
+    }
+}
+
+fn make_formatter(tag: string) -> dyn Formatter {
+    let f: dyn Formatter = TagFormatter { tag: tag };
+    f
+}
+
+actor Plugins {
+    var plugins: Vec<dyn Formatter> = Vec.new(),
+    receive fn add(tag: string) {
+        plugins.push(make_formatter(tag));
+    }
+    receive fn count() -> i64 {
+        plugins.len()
+    }
+    receive fn drain(msg: string) -> string {
+        var line: string = "";
+        for p in plugins.into_iter() {
+            line = line + p.format(msg) + " ";
+        }
+        line
+    }
+    #[on(start)]
+    fn boot() {
+        plugins.push(make_formatter("U"));
+        plugins.push(make_formatter("V"));
+    }
+}
+
+// The crash hook reads the seat the faulting turn left behind. `remove` past
+// the end faults between the take and the publish, so the seat is only intact
+// there because the failure edge re-published it.
+actor Labels {
+    var items: Vec<string> = Vec.new(),
+    receive fn fail_in_transform() -> string {
+        items.push("gamma");
+        items.remove(9)
+    }
+    receive fn fail_before_transform() -> i64 {
+        panic("before the take")
+    }
+    #[on(start)]
+    fn boot() {
+        items.push("alpha");
+        items.push("beta");
+    }
+    #[on(crash)]
+    fn crashed(info: failure.CrashInfo) -> failure.CrashAction {
+        println(f"seat {items.len()}");
+        failure.CrashAction.Kill
+    }
+}
+
+fn main() {
+    let plugins = spawn Plugins;
+    println(plugins.drain("m1").expect("drain"));
+    println(f"after drain {plugins.count().expect("count")}");
+    plugins.add("W").expect("add");
+    println(f"after refill {plugins.count().expect("count")}");
+    println(plugins.drain("m2").expect("drain"));
+
+    let faulting = spawn Labels;
+    let _ = faulting.fail_in_transform();
+    let quiet = spawn Labels;
+    let _ = quiet.fail_before_transform();
+    println("done");
+}

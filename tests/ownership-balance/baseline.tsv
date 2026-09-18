@@ -26,7 +26,12 @@
 # argument evaluates; early exit releases it in the caller, while the completed
 # call transfers it to the callee.
 #
+# actor_state_vec_seat.hew pins the actor state seat: a mutating call and a
+# consuming drain each take the seat and publish the updated receiver back, so
+# one dispatch leaves exactly one owner of the buffer and of every element.
+#
 # fixture	under_release	other_blocking_mir	exit_code	runtime
+actor_state_vec_seat.hew	0	0	clean
 cross_module_result/main.hew	0	0	check
 direct_call_terminal_carriers.hew	0	0	clean
 e_generation_ended.hew	0	0	check

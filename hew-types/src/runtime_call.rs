@@ -819,6 +819,12 @@ pub enum VecValueOp {
     /// the consuming iterator's step for an element with no clone: the vector
     /// shrinks by one and ends empty when the drain runs to completion.
     TakeFirst,
+    /// Move the whole buffer out and leave the receiver a valid empty vector
+    /// with its element representation intact. This is how a `Vec` living in
+    /// persistent storage - an actor state field - is drained by a consuming
+    /// iteration: the cursor owns the elements and the seat keeps a usable
+    /// vector a later dispatch can refill.
+    TakeAll,
     /// `v[a..b]` - a fresh independent `Vec<T>` over the selected range.
     Slice,
     /// `v[a..]` - the open-ended form; the runtime supplies the end bound so
@@ -9260,6 +9266,24 @@ impl RuntimeCallFamily {
                         K::TypeArgument(0),
                     ])),
                     failures: &[RuntimeLogicalFailure::IndexOutOfBounds],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Vector,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::Vector(VecValueOp::TakeAll) => RuntimeOpRow {
+                symbol: "vec.value.take_all",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::Receiver(BuiltinType::Vec),
+                        effect: E::Move,
+                    }],
+                    result: R::UpdatedReceiverAndValue(K::Tuple(&[
+                        K::Receiver(BuiltinType::Vec),
+                        K::Receiver(BuiltinType::Vec),
+                    ])),
+                    failures: &[],
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,

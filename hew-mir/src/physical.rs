@@ -635,6 +635,11 @@ pub enum PhysicalVectorOp {
     TakeFirst {
         result: PhysicalAggregateId,
     },
+    /// The whole buffer moves out to the caller and the receiver is left a
+    /// valid empty vector with its element representation intact.
+    TakeAll {
+        result: PhysicalAggregateId,
+    },
     Slice,
     SliceFrom,
     /// Bulk add: every element of argument one joins the receiver.
@@ -4086,6 +4091,9 @@ impl FunctionLowerer<'_> {
                 result: self.variant_id(&value.ty)?,
             },
             VecValueOp::TakeFirst => PhysicalVectorOp::TakeFirst {
+                result: self.aggregate_id(&value.ty)?,
+            },
+            VecValueOp::TakeAll => PhysicalVectorOp::TakeAll {
                 result: self.aggregate_id(&value.ty)?,
             },
             VecValueOp::Slice => PhysicalVectorOp::Slice,
@@ -8539,6 +8547,34 @@ fn verify_terminator(
     }
 }
 
+/// A removal returns the receiver and the element it took; a whole-buffer
+/// drain returns the emptied receiver and the vector that moved out of it.
+fn verify_vector_pair_result(
+    module: &PhysicalModule,
+    operation: PhysicalVectorOp,
+    tuple: PhysicalAggregateId,
+    glue: &PhysicalVectorGlue,
+    result: &ResolvedTy,
+) -> Result<(), PhysicalError> {
+    let tuple = aggregate_glue(module, tuple)?;
+    let value = if matches!(operation, PhysicalVectorOp::TakeAll { .. }) {
+        tuple.fields.get(1).map(|field| &field.ty) == Some(&glue.ty)
+    } else {
+        tuple.fields.get(1) == Some(&glue.element)
+    };
+    if &tuple.ty != result
+        || tuple.own != OwnKind::Owned
+        || tuple.fields.len() != 2
+        || tuple.fields[0].ty != glue.ty
+        || !value
+    {
+        return Err(PhysicalError::new(
+            "physical vector removal result descriptor is not its exact (Vec<T>, value) pair",
+        ));
+    }
+    Ok(())
+}
+
 fn verify_vector_call(
     module: &PhysicalModule,
     operation: PhysicalVectorOp,
@@ -8599,18 +8635,9 @@ fn verify_vector_call(
         }
         PhysicalVectorOp::Pop { result: tuple }
         | PhysicalVectorOp::Remove { result: tuple }
-        | PhysicalVectorOp::TakeFirst { result: tuple } => {
-            let tuple = aggregate_glue(module, tuple)?;
-            if &tuple.ty != result
-                || tuple.own != OwnKind::Owned
-                || tuple.fields.len() != 2
-                || tuple.fields[0].ty != glue.ty
-                || tuple.fields[1] != glue.element
-            {
-                return Err(PhysicalError::new(
-                    "physical vector removal result descriptor is not its exact (Vec<T>, T) value",
-                ));
-            }
+        | PhysicalVectorOp::TakeFirst { result: tuple }
+        | PhysicalVectorOp::TakeAll { result: tuple } => {
+            verify_vector_pair_result(module, operation, tuple, glue, result)?;
         }
         PhysicalVectorOp::New
         | PhysicalVectorOp::Len

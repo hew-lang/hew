@@ -1,0 +1,39 @@
+// An actor state `Vec` mutated and drained in its own seat. The handler takes
+// the seat, the runtime call updates the receiver and the updated receiver is
+// published back, so each turn must leave exactly one owner of the buffer and
+// of every element. A seat that kept a staged copy, or a publish that did not
+// release what it replaced, shows up here as a slope: one string and one
+// element slot per dispatch.
+
+actor Basket {
+    var items: Vec<string> = Vec.new(),
+    receive fn add(label: string) {
+        items.push(label);
+    }
+    receive fn drain() -> i64 {
+        var seen: i64 = 0;
+        for item in items.into_iter() {
+            seen = seen + item.len();
+        }
+        seen
+    }
+    #[on(start)]
+    fn boot() {
+        items.push("seed");
+    }
+}
+
+fn main() {
+    // Driven 200k times so the leak oracle reads a slope, not one dispatch: a
+    // per-turn residue of one allocation is invisible at a single iteration.
+    let basket = spawn Basket;
+    var total = 0;
+    var k = 0;
+    while k < 200000 {
+        basket.add("alpha").expect("add");
+        basket.add("beta").expect("add");
+        total = total + basket.drain().expect("drain");
+        k = k + 1;
+    }
+    println(total);
+}

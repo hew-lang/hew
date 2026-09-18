@@ -198,7 +198,6 @@ fn main() {{
                 println(message.text().len());
                 message.close();
             }}
-            }}
             match client.finished() {{
                 .Ok(done) => {{
                     if done != 1 {{
@@ -208,6 +207,7 @@ fn main() {{
                 .Err(_) => panic("WebSocket retention client failed"),
             }}
             connection.close();
+            }}
             server.close();
         }},
         .Err(_) => panic("WebSocket retention listener failed"),

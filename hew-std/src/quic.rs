@@ -288,6 +288,12 @@ fn resolve_connect_addr(addr: &str) -> Result<SocketAddr, String> {
     resolve_addr(addr, "127.0.0.1", "connect").or_else(set_constructor_error_and_return)
 }
 
+/// A handle-taking QUIC operation refused its argument before reaching the
+/// network: the handle is absent, so the call never became a transport
+/// attempt and has no transport error to report. Kept distinct from `-1`,
+/// which is a real failure with a reason in the handle's `last_error`.
+pub const HEW_QUIC_ERR_ABSENT_HANDLE: c_int = -2;
+
 fn build_runtime() -> Result<Arc<Runtime>, String> {
     tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
@@ -943,7 +949,7 @@ pub unsafe extern "C" fn hew_quic_conn_accept_stream(conn: *mut HewQuicConn) -> 
 /// not already been disconnected.
 pub unsafe extern "C" fn hew_quic_conn_disconnect(conn: *mut HewQuicConn) -> c_int {
     if conn.is_null() {
-        return -1;
+        return HEW_QUIC_ERR_ABSENT_HANDLE;
     }
     // SAFETY: `conn` is non-null and ownership is transferred back exactly once
     // on disconnect.
@@ -1147,7 +1153,7 @@ pub unsafe extern "C" fn hew_quic_stream_send(
     data: *const BytesTriple,
 ) -> c_int {
     if stream.is_null() {
-        return -1;
+        return HEW_QUIC_ERR_ABSENT_HANDLE;
     }
     // SAFETY: `stream` is non-null and must come from this module per caller
     // contract.
@@ -1501,7 +1507,7 @@ pub unsafe extern "C" fn hew_quic_stream_send_timeout_hew(
 /// `stream` must be null or a live stream pointer returned by this module.
 pub unsafe extern "C" fn hew_quic_stream_finish(stream: *mut HewQuicStream) -> c_int {
     if stream.is_null() {
-        return -1;
+        return HEW_QUIC_ERR_ABSENT_HANDLE;
     }
     // SAFETY: `stream` is non-null and must come from this module per caller
     // contract.
@@ -1540,7 +1546,7 @@ pub unsafe extern "C" fn hew_quic_stream_stop(
     error_code: i64,
 ) -> c_int {
     if stream.is_null() {
-        return -1;
+        return HEW_QUIC_ERR_ABSENT_HANDLE;
     }
     // SAFETY: `stream` is non-null and must come from this module per caller
     // contract.

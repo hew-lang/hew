@@ -545,11 +545,19 @@ pub fn connection_observe(conn: QUICConnection) -> QUICConnectionObservation {
 /// QUIC-level error string because QUIC errors carry no OS errno.
 /// After calling `connection_disconnect`, the connection handle must
 /// not be used again.
+/// A handle-taking QUIC operation refused its argument before reaching the
+/// network. The handle is absent, so the call never became a transport
+/// attempt and there is no `last_error` to read: the rejection is the whole
+/// story, and it is reported as an argument error rather than as `Other(0)`.
+const QUIC_ABSENT_HANDLE: i64 = 0 - 2;
+
 pub fn connection_disconnect(consume conn: QUICConnection) -> Result<(), net.NetError> {
     // QUIC errors carry no OS errno; error string available via conn.observe().last_error
     unsafe {
         let status = hew_quic_conn_disconnect(conn);
-        if status < 0 {
+        if status == QUIC_ABSENT_HANDLE {
+            Err(NetError.InvalidArgument("this QUIC connection was never established"))
+        } else if status < 0 {
             Err(net.net_error_from_errno(0))
         } else {
             Ok(())
@@ -590,7 +598,9 @@ pub fn stream_send(strm: QUICStream, data: bytes) -> Result<(), net.NetError> {
     // QUIC errors carry no OS errno; error string available via stream.observe().last_error
     unsafe {
         let status = hew_quic_stream_send(strm, data);
-        if status < 0 {
+        if status == QUIC_ABSENT_HANDLE {
+            Err(NetError.InvalidArgument("this QUIC stream was never opened"))
+        } else if status < 0 {
             Err(net.net_error_from_errno(0))
         } else {
             Ok(())
@@ -660,7 +670,9 @@ pub fn stream_finish(strm: QUICStream) -> Result<(), net.NetError> {
     // QUIC errors carry no OS errno; error string available via stream.observe().last_error
     unsafe {
         let status = hew_quic_stream_finish(strm);
-        if status < 0 {
+        if status == QUIC_ABSENT_HANDLE {
+            Err(NetError.InvalidArgument("this QUIC stream was never opened"))
+        } else if status < 0 {
             Err(net.net_error_from_errno(0))
         } else {
             Ok(())
@@ -681,7 +693,9 @@ pub fn stream_stop(strm: QUICStream, error_code: i64) -> Result<(), net.NetError
     // QUIC errors carry no OS errno; error string available via stream.observe().last_error
     unsafe {
         let status = hew_quic_stream_stop(strm, error_code);
-        if status < 0 {
+        if status == QUIC_ABSENT_HANDLE {
+            Err(NetError.InvalidArgument("this QUIC stream was never opened"))
+        } else if status < 0 {
             Err(net.net_error_from_errno(0))
         } else {
             Ok(())

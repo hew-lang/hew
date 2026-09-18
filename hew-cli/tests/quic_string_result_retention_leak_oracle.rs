@@ -62,6 +62,13 @@ actor Client {{
     }}
 }}
 
+fn drive_client(client: Client) -> i64 {{
+    match client.run(0) {{
+        .Ok(_) => 0,
+        .Err(_) => panic("QUIC retention client failed"),
+    }}
+}}
+
 fn main() {{
     let endpoint = quic.new_server("127.0.0.1:0");
 
@@ -79,7 +86,11 @@ fn main() {{
 
     let address = endpoint.observe().local_addr;
     let client = spawn Client(address: address, complete: 0);
-    let _ = client.run(0);
+    // The client's turn drives the whole peer side and blocks on this side's
+    // reply, so it runs concurrently with the server work below. Calling it
+    // inline would leave nobody to accept the connection it is waiting on.
+    scope {{
+        let _driver = fork drive_client(client);
 
     let connection = endpoint.accept();
     let endpoint_after_accept = endpoint.observe();
@@ -148,6 +159,7 @@ fn main() {{
 
     require_ok(connection.disconnect());
     endpoint.close();
+    }}
     match client.finished() {{
         .Ok(done) => {{
             if done != 1 {{

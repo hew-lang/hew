@@ -1728,48 +1728,10 @@ fn main() {
     }
 
     #[test]
-    fn wasm_multi_arm_literal_timed_select_is_not_warning() {
-        let output = check_wasm(
-            r"
-            actor Responder {
-                let value: i64,
-                receive fn get() -> i64 {
-                    value
-                }
-            }
-
-            fn main() {
-                let a = spawn Responder(value: 1);
-                let b = spawn Responder(value: 2);
-                let result = select {
-                    x from a.get() => match x { .Ok(value) => value, .Err(_) => -2 },
-                    y from b.get() => match y { .Ok(value) => value, .Err(_) => -2 },
-                    after 1ms => -1,
-                };
-                println(result);
-            }
-        ",
-        );
-        assert!(
-            !output
-                .warnings
-                .iter()
-                .any(|w| w.kind == TypeErrorKind::PlatformLimitation),
-            "literal timed select should no longer warn on WASM; got warnings: {:?}",
-            output.warnings
-        );
-        assert!(
-            !output
-                .errors
-                .iter()
-                .any(|e| e.kind == TypeErrorKind::PlatformLimitation),
-            "literal timed select should not error on WASM; got errors: {:?}",
-            output.errors
-        );
-    }
-
-    #[test]
     fn wasm_rejects_a_computed_timed_select_like_any_other() {
+        // The literal-timeout twin of this case is gone: both existed to pin
+        // that a select emitted no spurious warning on wasm32, and the reject
+        // that replaced that claim does not read the timeout expression at all.
         let output = check_wasm(
             r"
             actor Responder {

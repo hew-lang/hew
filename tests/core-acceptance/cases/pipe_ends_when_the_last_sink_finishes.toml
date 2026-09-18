@@ -1,0 +1,13 @@
+[[case]]
+id = "pipe_ends_when_the_last_sink_finishes"
+intent = "A cloned sink adds a producer, so the read half reaches end of data only after the last one finishes."
+source = "../vertical-slice/accept/pipe_ends_when_the_last_sink_finishes.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "first 1\nsecond 2\nthird closed\n"
+exit = 0

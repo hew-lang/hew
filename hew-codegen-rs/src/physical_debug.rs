@@ -730,8 +730,12 @@ pub(super) fn resolve_coroutine_locals<'ctx>(
         return;
     }
     let expression = emitter.builder.create_expression(vec![]);
-    // `DW_OP_deref`: the variable's value is whatever its own slot holds.
-    let through_slot = emitter.builder.create_expression(vec![0x06]);
+    // `DW_OP_deref, DW_OP_stack_value`: the variable's value IS the slot's
+    // contents, restated after every store. A bare trailing `DW_OP_deref`
+    // described a location instead, and LLVM appends it to the slot's own
+    // address on the ramp copy, so a debugger read the variable out of
+    // whatever address the slot's contents spell.
+    let through_slot = emitter.builder.create_expression(vec![0x06, 0x9f]);
     let suspend = llvm
         .get_function("llvm.coro.suspend")
         .map(|function| function.as_value_ref());

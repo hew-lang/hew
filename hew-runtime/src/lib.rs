@@ -689,6 +689,9 @@ pub mod exit_status;
 // on wasm32, while the shared finalizer guard keeps this module available.
 pub mod signal;
 
+/// One actor's dispatch turn: the same code on every target, published to the
+/// native work-stealing queue or the wasm32 driver's queue by `resume`.
+pub(crate) mod activation;
 pub mod actor;
 pub mod actor_balance;
 pub mod actor_call_native;
@@ -700,6 +703,8 @@ pub mod duplex;
 pub mod execution_context;
 pub mod read_slot;
 pub mod reply_channel;
+/// Where a runnable actor goes, per target.
+pub(crate) mod resume;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod semaphore;
 

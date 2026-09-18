@@ -1,6 +1,7 @@
 // A `mailbox(..)` view submits without waiting: the loop finishes before the
-// consumer has drained its bounded queue. `.Wait` parks the producer while the
-// mailbox is full, so every item is accepted and processed exactly once.
+// consumer has drained its bounded queue. `Sink` declares a plain bound, so the
+// view parks the producer while the mailbox is full and every item is accepted
+// and processed exactly once.
 actor Sink {
     mailbox 4,
     var count: i64 = 0,
@@ -12,7 +13,7 @@ actor Sink {
 
 fn main() {
     let sink = spawn Sink();
-    let inbox = mailbox(sink, on_full: .Wait);
+    let inbox = mailbox(sink);
     for _ in 0..1000 {
         match inbox.take(1) {
             .Ok(_) => {},

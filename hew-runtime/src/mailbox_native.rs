@@ -220,8 +220,10 @@ pub unsafe extern "C" fn hew_actor_ask_wait_resume(
     }))
 }
 
-/// Return -1 while full, 0 after transferring the message, 2 when closed, or 3
-/// on allocation failure. Terminal failures preserve the caller's typed fields.
+/// Return -1 while full, 0 after transferring the message, 2 when closed, 3 on
+/// allocation failure, or 4 when the destination's declared mailbox policy took
+/// the message and discarded it. Terminal failures preserve the caller's typed
+/// fields; 0 and 4 both mean the destination owns them.
 ///
 /// # Safety
 /// The handle is null or uniquely borrowed until a terminal poll and release.
@@ -236,14 +238,17 @@ pub unsafe extern "C" fn hew_actor_send_wait_poll(wait: *mut HewNativeSend) -> i
         crate::actor::try_submit_native_envelope(wait.token, wait.message, wait.envelope)
     };
     match outcome {
-        // A coalescing mailbox admits by replacing the message this one
-        // supersedes, and a `drop_new` fallback discards it: both consumed the
-        // envelope and neither leaves the sender anything to retry.
-        super::SendOutcome::Enqueued
-        | super::SendOutcome::Coalesced
-        | super::SendOutcome::Dropped => {
+        super::SendOutcome::Enqueued => {
             wait.envelope = std::ptr::null_mut();
             0
+        }
+        // A coalescing mailbox admits by replacing the message this one
+        // supersedes, and a `drop_new` fallback discards it: both consumed the
+        // envelope and neither leaves the sender anything to retry. The
+        // destination's declaration chose the loss, so it reports as a discard.
+        super::SendOutcome::Coalesced | super::SendOutcome::Dropped => {
+            wait.envelope = std::ptr::null_mut();
+            4
         }
         super::SendOutcome::Failed => -1,
         super::SendOutcome::Closed => 2,

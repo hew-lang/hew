@@ -16765,10 +16765,18 @@ impl LowerCtx {
                     ActorDeliveryCall::Close | ActorDeliveryCall::AwaitClosed,
                     Expr::MethodCall { receiver, args, .. },
                 ) if args.is_empty() => (self.lower_expr(receiver, IntentKind::Read), Vec::new()),
-                (ActorDeliveryCall::Policy { .. }, Expr::Call { args, .. }) if args.len() == 2 => (
-                    self.lower_expr(args[0].expr(), IntentKind::Read),
-                    Vec::new(),
-                ),
+                // `view(actor)` derives its admission from the destination's
+                // declaration; `view(actor, on_full: ..)` overrides it. The
+                // checker resolved both to one policy, so only the target
+                // survives into HIR.
+                (ActorDeliveryCall::Policy { .. }, Expr::Call { args, .. })
+                    if matches!(args.len(), 1 | 2) =>
+                {
+                    (
+                        self.lower_expr(args[0].expr(), IntentKind::Read),
+                        Vec::new(),
+                    )
+                }
                 (
                     ActorDeliveryCall::Readdress { .. } | ActorDeliveryCall::Resume { .. },
                     Expr::MethodCall { receiver, args, .. },

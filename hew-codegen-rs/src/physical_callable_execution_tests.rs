@@ -92,17 +92,26 @@ fn counter_body(module: &sir::SemModule, mode: CallableCallMode, fault: bool) ->
         ops.push(drop_receiver(2, 0));
     }
     // A consuming receiver releases the environment here, and that release can
-    // run a capture's `close`, so the normal exit dispatches on its outcome.
-    let releases = mode == CallableCallMode::Once && !fault;
-    let terminator = if fault {
+    // run a capture's `close`, so the body's own exit sits behind a dispatch on
+    // the release outcome rather than following it in the same block.
+    let releases = mode == CallableCallMode::Once;
+    let exit = if fault {
         sir::SemTerminator::Trap {
             kind: TrapKind::DivideByZero,
         }
-    } else if releases {
+    } else {
+        sir::SemTerminator::Return {
+            value: Some(boundary(
+                if releases { 3 } else { 2 },
+                sir::BoundaryDecision::Copy,
+            )),
+        }
+    };
+    let terminator = if releases {
         sir::SemTerminator::CleanupDispatch {
             normal: sir::Edge {
                 target: BlockId(1),
-                args: vec![operand(2)],
+                args: if fault { vec![] } else { vec![operand(2)] },
             },
             fault: sir::Edge {
                 target: BlockId(2),
@@ -110,9 +119,7 @@ fn counter_body(module: &sir::SemModule, mode: CallableCallMode, fault: bool) ->
             },
         }
     } else {
-        sir::SemTerminator::Return {
-            value: Some(boundary(2, sir::BoundaryDecision::Copy)),
-        }
+        exit.clone()
     };
     let mut blocks = vec![sir::SemBlock {
         terminator_provenance: hew_sir::Provenance::Synthesized,
@@ -125,15 +132,17 @@ fn counter_body(module: &sir::SemModule, mode: CallableCallMode, fault: bool) ->
         blocks.push(sir::SemBlock {
             terminator_provenance: hew_sir::Provenance::Synthesized,
             id: BlockId(1),
-            args: vec![sir::BlockArg {
-                value: sir::ValueId(3),
-                ty: ResolvedTy::I64,
-                own: OwnKind::None,
-            }],
-            ops: vec![],
-            terminator: sir::SemTerminator::Return {
-                value: Some(boundary(3, sir::BoundaryDecision::Copy)),
+            args: if fault {
+                vec![]
+            } else {
+                vec![sir::BlockArg {
+                    value: sir::ValueId(3),
+                    ty: ResolvedTy::I64,
+                    own: OwnKind::None,
+                }]
             },
+            ops: vec![],
+            terminator: exit,
         });
         blocks.push(sir::SemBlock {
             terminator_provenance: hew_sir::Provenance::Synthesized,

@@ -104,8 +104,8 @@ fn env_of_env_loop_source(frames: usize) -> String {
 /// the box free thunk, not a stack scope exit.
 fn owned_type_param_loop_source(frames: usize) -> String {
     format!(
-        "fn hold<T>(x: T) -> fn() -> i64 {{\n\
-         \x20   || {{ let _h = x; 0 }}\n\
+        "fn hold<T>(consume x: T) -> fn() -> i64 {{\n\
+         \x20   move || {{ let _h = x; 0 }}\n\
          }}\n\
          fn main() -> i64 {{\n\
          \x20   var i: i64 = 0;\n\

@@ -51,7 +51,7 @@ unsafe extern "C" fn clone_record(source: *const c_void, destination: *mut c_voi
     0
 }
 
-unsafe extern "C" fn drop_record(slot: *mut c_void) {
+unsafe extern "C-unwind" fn drop_record(slot: *mut c_void) {
     assert!(slot.cast::<Record>().is_aligned());
     // SAFETY: the collection transfers one complete Record owner to this callback.
     unsafe {
@@ -133,7 +133,7 @@ unsafe extern "C" fn clone_pair(source: *const c_void, destination: *mut c_void)
     0
 }
 
-unsafe extern "C" fn drop_pair(slot: *mut c_void) {
+unsafe extern "C-unwind" fn drop_pair(slot: *mut c_void) {
     assert!(slot.cast::<Pair>().is_aligned());
     // SAFETY: the pair owns both complete fields, whose inline slots stay allocated here.
     unsafe {
@@ -444,7 +444,7 @@ unsafe extern "C" fn clone_zero(source: *const c_void, destination: *mut c_void)
     0
 }
 
-unsafe extern "C" fn drop_zero(slot: *mut c_void) {
+unsafe extern "C-unwind" fn drop_zero(slot: *mut c_void) {
     assert!(!slot.is_null());
     ZERO_OWNERS.fetch_sub(1, Ordering::SeqCst);
 }
@@ -528,7 +528,7 @@ unsafe extern "C" fn clone_aligned_zero(source: *const c_void, destination: *mut
     unsafe { clone_zero(source, destination) }
 }
 
-unsafe extern "C" fn drop_aligned_zero(slot: *mut c_void) {
+unsafe extern "C-unwind" fn drop_aligned_zero(slot: *mut c_void) {
     assert!(slot.cast::<AlignedUnit>().is_aligned());
     // SAFETY: the vector transfers this logical owner to the drop callback.
     unsafe { drop_zero(slot) }

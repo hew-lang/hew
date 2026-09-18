@@ -5395,7 +5395,7 @@ mod vec_owned_tests {
 
     /// Drop thunk: release the element's owned heap exactly once. Does NOT free
     /// the slot bytes (the Vec owns the buffer).
-    unsafe extern "C" fn drop_thunk(slot: *mut c_void) {
+    unsafe extern "C-unwind" fn drop_thunk(slot: *mut c_void) {
         DROP_CALLS.fetch_add(1, Ordering::SeqCst);
         // SAFETY: slot points to a live OwnedElem with a heap payload.
         unsafe {
@@ -5407,7 +5407,7 @@ mod vec_owned_tests {
 
     /// Drop-only aggregate callback used for moved-from slots. A null payload
     /// is the descriptor-level moved state, matching the trait-object callback.
-    unsafe extern "C" fn drop_thunk_if_live(slot: *mut c_void) {
+    unsafe extern "C-unwind" fn drop_thunk_if_live(slot: *mut c_void) {
         // SAFETY: the descriptor supplies an OwnedElem-sized slot.
         let elem = unsafe { &*slot.cast::<OwnedElem>() };
         if elem.payload.is_null() {

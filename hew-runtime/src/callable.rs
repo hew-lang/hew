@@ -251,7 +251,7 @@ mod tests {
         drop_fn: Some(drop_environment),
     };
 
-    unsafe extern "C" fn drop_environment(raw: *mut c_void) {
+    unsafe extern "C-unwind" fn drop_environment(raw: *mut c_void) {
         // SAFETY: This descriptor is used only with Environment allocations.
         // A zeroed mask has no capture obligations and permits null counters.
         unsafe {

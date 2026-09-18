@@ -53,7 +53,7 @@ unsafe extern "C" fn clone_value(src: *const c_void, dst: *mut c_void) -> i32 {
     0
 }
 
-extern "C" fn drop_value(blob: *mut c_void) {
+extern "C-unwind" fn drop_value(blob: *mut c_void) {
     let value = unsafe { &mut *blob.cast::<OwnedValue>() };
     if !value.heap.is_null() {
         unsafe { drop(Box::from_raw(value.heap)) };
@@ -74,7 +74,7 @@ unsafe extern "C" fn clone_pair(src: *const c_void, dst: *mut c_void) -> i32 {
     0
 }
 
-unsafe extern "C" fn drop_pair(blob: *mut c_void) {
+unsafe extern "C-unwind" fn drop_pair(blob: *mut c_void) {
     let value = unsafe { &mut (*blob.cast::<Pair>()).value };
     drop_value((value as *mut OwnedValue).cast());
 }

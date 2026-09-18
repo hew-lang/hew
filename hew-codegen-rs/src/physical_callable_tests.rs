@@ -293,7 +293,7 @@ unsafe extern "C" fn counted_vector_drop(value: *mut hew_runtime::vec::HewVec) {
 unsafe extern "C" fn fail_nested_clone(_: *const c_void, _: *mut c_void) -> i32 {
     17
 }
-unsafe extern "C" fn count_nested_drop(_: *mut c_void) {
+unsafe extern "C-unwind" fn count_nested_drop(_: *mut c_void) {
     NESTED_DROPS.set(NESTED_DROPS.get() + 1);
 }
 

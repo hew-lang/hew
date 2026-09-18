@@ -38,11 +38,11 @@ static TEST_MUTEX: Mutex<()> = Mutex::new(());
 static K_DROP_COUNT: AtomicUsize = AtomicUsize::new(0);
 static V_DROP_COUNT: AtomicUsize = AtomicUsize::new(0);
 
-extern "C" fn k_drop_count(_blob: *mut c_void) {
+extern "C-unwind" fn k_drop_count(_blob: *mut c_void) {
     K_DROP_COUNT.fetch_add(1, Ordering::SeqCst);
 }
 
-extern "C" fn v_drop_count(_blob: *mut c_void) {
+extern "C-unwind" fn v_drop_count(_blob: *mut c_void) {
     V_DROP_COUNT.fetch_add(1, Ordering::SeqCst);
 }
 

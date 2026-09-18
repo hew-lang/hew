@@ -5069,7 +5069,7 @@ mod tests {
         0
     }
 
-    unsafe extern "C" fn st_owned_drop(slot: *mut c_void) {
+    unsafe extern "C-unwind" fn st_owned_drop(slot: *mut c_void) {
         // SAFETY: thunk contract — slot is a live element being released.
         let e = unsafe { &mut *slot.cast::<StOwnedElem>() };
         if !e.heap.is_null() {

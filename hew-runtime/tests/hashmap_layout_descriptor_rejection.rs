@@ -88,7 +88,7 @@ unsafe extern "C" fn eq_i64(
 
 static SNAPSHOT_DROP_COUNT: AtomicUsize = AtomicUsize::new(0);
 
-extern "C" fn snapshot_drop(_blob: *mut c_void) {
+extern "C-unwind" fn snapshot_drop(_blob: *mut c_void) {
     SNAPSHOT_DROP_COUNT.fetch_add(1, Ordering::SeqCst);
 }
 

@@ -1432,7 +1432,7 @@ mod tests {
         cv.notify_all();
     }
 
-    unsafe extern "C" fn blocking_elem_drop(slot: *mut core::ffi::c_void) {
+    unsafe extern "C-unwind" fn blocking_elem_drop(slot: *mut core::ffi::c_void) {
         let tag = unsafe { std::ptr::read_unaligned(slot.cast::<u64>()) };
         match tag {
             1 => &BLOCKING_DROP_QUEUED,
@@ -1616,7 +1616,7 @@ mod tests {
         0
     }
 
-    unsafe extern "C" fn owned_elem_drop(slot: *mut core::ffi::c_void) {
+    unsafe extern "C-unwind" fn owned_elem_drop(slot: *mut core::ffi::c_void) {
         let e = &mut *slot.cast::<OwnedElem>();
         if !e.heap.is_null() {
             crate::mem::buf_free(e.heap.cast());

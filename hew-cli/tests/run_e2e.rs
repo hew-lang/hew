@@ -5542,8 +5542,8 @@ fn run_private_imported_actor_does_not_route_to_root_actor() {
         "private imported actor spawn must be rejected before any actor runs; got: {combined}"
     );
     assert!(
-        combined.contains("has no exported actor `Account`") && combined.contains("secret"),
-        "expected a fail-closed diagnostic that `secret` has no exported actor `Account`; \
+        combined.contains("has no exported actor or supervisor `Account`") && combined.contains("secret"),
+        "expected a fail-closed diagnostic that `secret` has no exported actor or supervisor `Account`; \
          got: {combined}"
     );
 }
@@ -5606,8 +5606,8 @@ fn run_non_actor_export_does_not_route_to_root_actor() {
         "non-actor export must not route to the root actor; got: {combined}"
     );
     assert!(
-        combined.contains("has no exported actor `Account`") && combined.contains("secret"),
-        "expected a fail-closed diagnostic that `secret` has no exported actor `Account`; \
+        combined.contains("has no exported actor or supervisor `Account`") && combined.contains("secret"),
+        "expected a fail-closed diagnostic that `secret` has no exported actor or supervisor `Account`; \
          got: {combined}"
     );
 }

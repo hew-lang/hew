@@ -6466,13 +6466,13 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
             matches!(
                 &diagnostic.kind,
                 FrontendDiagnosticKind::Type(error)
-                    if error.message.contains("has no exported actor `Account`")
+                    if error.message.contains("has no exported actor or supervisor `Account`")
                         && error.message.contains("secret")
             )
         });
         assert!(
             has_export_diag,
-            "expected a fail-closed `has no exported actor `Account`` diagnostic \
+            "expected a fail-closed `has no exported actor or supervisor `Account`` diagnostic \
              naming `secret`, got: {:?}",
             failure.diagnostics
         );
@@ -6507,13 +6507,13 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
             matches!(
                 &diagnostic.kind,
                 FrontendDiagnosticKind::Type(error)
-                    if error.message.contains("has no exported actor `Account`")
+                    if error.message.contains("has no exported actor or supervisor `Account`")
                         && error.message.contains("secret")
             )
         });
         assert!(
             has_export_diag,
-            "expected a fail-closed `has no exported actor `Account`` diagnostic \
+            "expected a fail-closed `has no exported actor or supervisor `Account`` diagnostic \
              naming `secret`, got: {:?}",
             failure.diagnostics
         );

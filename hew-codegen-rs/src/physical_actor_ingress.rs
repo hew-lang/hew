@@ -184,6 +184,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 llvm: &self.llvm,
                 builder: &builder,
                 value: function,
+                fault_sink: None,
             }
             .destroy_loaded_value(value, layout, action)?;
             builder

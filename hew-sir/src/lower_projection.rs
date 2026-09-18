@@ -200,6 +200,7 @@ impl Builder<'_, '_> {
             self.close_value(Some(place), None)?;
             self.dispatch_value_cleanup()?;
         }
+        self.note_release_may_fault(&self.places[place.0 as usize].ty.clone());
         self.emit_place_operation(
             SemOpKind::StoreAssign {
                 place,
@@ -208,6 +209,9 @@ impl Builder<'_, '_> {
             provenance,
         )?;
         self.owned_live.remove(&value);
+        if self.cleanup_may_fail && !self.cleanup_draining {
+            self.dispatch_value_cleanup()?;
+        }
         Ok(())
     }
 }

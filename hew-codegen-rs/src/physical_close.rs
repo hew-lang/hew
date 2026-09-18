@@ -36,6 +36,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             llvm: &self.llvm,
             builder: &builder,
             value: function,
+            fault_sink: None,
         };
         emitter.visit_close(
             function.get_nth_param(0).unwrap().into_pointer_value(),

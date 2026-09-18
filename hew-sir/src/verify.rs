@@ -672,6 +672,7 @@ pub fn check_module(module: &SemModule) -> Result<CheckedModule<'_>, Vec<SirDiag
             &module.type_facts,
             &module.aggregate_shapes,
             &module.variant_shapes,
+            &module.resources,
         );
         diagnostics.extend(function_diagnostics);
         if let Some(analysis) = analysis {
@@ -848,6 +849,7 @@ pub fn verify_function_in_module(module: &SemModule, function: &SemFunction) -> 
         &module.type_facts,
         &module.aggregate_shapes,
         &module.variant_shapes,
+        &module.resources,
     ));
     diagnostics
 }
@@ -886,6 +888,7 @@ pub fn place_lifetimes(
         &module.type_facts,
         &module.aggregate_shapes,
         &module.variant_shapes,
+        &module.resources,
     );
     diagnostics.extend(function_diagnostics);
     if diagnostics.is_empty() {
@@ -926,7 +929,7 @@ pub(crate) fn verify_function_with_facts(
     function: &SemFunction,
     facts: &TypeFactTable,
 ) -> Vec<SirDiagnostic> {
-    verify_function_with_context(function, None, facts, &[], &[])
+    verify_function_with_context(function, None, facts, &[], &[], &BTreeMap::new())
 }
 
 /// Verify the semantic precondition for discarding blocks during a CFG rewrite.
@@ -1045,6 +1048,7 @@ pub(crate) fn verify_function_with_context(
     facts: &TypeFactTable,
     aggregate_shapes: &[SemAggregateShape],
     variant_shapes: &[SemVariantShape],
+    resources: &BTreeMap<ResolvedTy, crate::ResourceRelease>,
 ) -> Vec<SirDiagnostic> {
     check_function_with_context(
         function,
@@ -1052,6 +1056,7 @@ pub(crate) fn verify_function_with_context(
         facts,
         aggregate_shapes,
         variant_shapes,
+        resources,
     )
     .0
 }
@@ -1066,6 +1071,7 @@ fn check_function_with_context(
     facts: &TypeFactTable,
     aggregate_shapes: &[SemAggregateShape],
     variant_shapes: &[SemVariantShape],
+    resources: &BTreeMap<ResolvedTy, crate::ResourceRelease>,
 ) -> (Vec<SirDiagnostic>, Option<CheckedFunction>) {
     let mut diagnostics = Vec::new();
     if let Err(reason) = crate::defer::plan(function)
@@ -1439,7 +1445,15 @@ fn check_function_with_context(
     }
     let mut lifetimes = None;
     if let Ok(projections) = projections {
-        let analysis = crate::lifetime::verify(function, &projections, facts, aggregate_shapes);
+        let analysis =
+            crate::lifetime::verify(function, &projections, facts, aggregate_shapes, &|ty| {
+                crate::resource::release_may_fault(
+                    &crate::resource::authored_close_in_module(resources),
+                    aggregate_shapes,
+                    variant_shapes,
+                    ty,
+                )
+            });
         diagnostics.extend(analysis.violations.into_iter().map(|violation| {
             if violation.linear_obligation {
                 let binding = violation

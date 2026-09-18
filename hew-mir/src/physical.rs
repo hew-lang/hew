@@ -38,7 +38,7 @@ mod defer_tests;
 mod partial;
 #[path = "physical_release.rs"]
 mod release;
-pub use release::PureDataReleases;
+pub use release::ReleaseEffects;
 #[cfg(test)]
 #[path = "physical_select_tests.rs"]
 mod select_tests;
@@ -1281,9 +1281,11 @@ pub struct PhysicalModule {
     pub map_glue: Vec<PhysicalMapGlue>,
     pub set_glue: Vec<PhysicalSetGlue>,
     pub shared_glue: Vec<PhysicalSharedGlue>,
-    /// Which releases run no user-visible action, so the runtime may walk them
-    /// iteratively instead of nesting a native frame per level.
-    pub pure_releases: PureDataReleases,
+    /// What releasing each glue identity does: whether it runs user-visible
+    /// action, so the runtime may walk it iteratively instead of nesting a
+    /// native frame per level, and whether it can raise a fault the enclosing
+    /// frame must own.
+    pub releases: ReleaseEffects,
     /// Retained semantic authority for verification, never a physical classifier.
     type_facts: BTreeMap<TypeInstanceKey, hew_types::TypeFacts>,
     pub callables: Vec<PhysicalCallable>,
@@ -1586,7 +1588,7 @@ pub fn lower_physical_module(
         .collect::<Result<Vec<_>, PhysicalError>>()?;
 
     let mut physical = PhysicalModule {
-        pure_releases: PureDataReleases::default(),
+        releases: ReleaseEffects::default(),
         actor_recipes: actor_value_recipes(module, &ids)?,
         actors: module.actors.clone(),
         supervisors: module.supervisors.clone(),
@@ -1621,7 +1623,7 @@ pub fn lower_physical_module(
         regex_patterns: module.regex_patterns.clone(),
         debug,
     };
-    physical.pure_releases = PureDataReleases::compute(&physical);
+    physical.releases = ReleaseEffects::compute(&physical);
     verify_physical_module(&physical)?;
     Ok(VerifiedPhysicalModule(physical))
 }
@@ -6542,20 +6544,28 @@ fn apply_operation(
             define(function, borrows, state, *dest, block, "copy or borrow")?;
         }
         PhysicalOp::Destroy {
-            source, cleanup, ..
+            source,
+            action,
+            cleanup,
         } => {
             defer::require_unreserved(function, state, *source)?;
             partial::require_root(function, state, *source, block, "destroy")?;
             partial::require_droppable(module, function, state, *source, cleanup.mode())?;
             require_no_live_borrows(function, borrows, state, *source)?;
             invalidate_storage(function, borrows, state, *source);
+            arm_release_fault(module, function, state, *source, Some(*action));
         }
         PhysicalOp::EndBorrow { source } => {
             initialized(function, state, *source, block, "end-borrow")?;
             require_no_live_borrows(function, borrows, state, *source)?;
             invalidate_storage(function, borrows, state, *source);
         }
-        PhysicalOp::Assign { dest, source, .. } => {
+        PhysicalOp::Assign {
+            dest,
+            source,
+            destroy_old,
+            ..
+        } => {
             partial::require_root(function, state, *dest, block, "assignment destination")?;
             initialized(function, state, *source, block, "assignment source")?;
             partial::require_droppable(
@@ -6566,18 +6576,20 @@ fn apply_operation(
                 hew_sir::CleanupMode::Ordinary,
             )?;
             require_no_live_borrows(function, borrows, state, *dest)?;
+            arm_release_fault(module, function, state, *dest, *destroy_old);
             consume_if_owned(function, borrows, state, *source)?;
             partial::set_leaves(function, state, *dest, InitState::Initialized);
         }
         PhysicalOp::StorageDead {
             storage: id,
+            destroy,
             cleanup,
-            ..
         } => {
             defer::require_unreserved(function, state, *id)?;
             partial::require_root(function, state, *id, block, "end-lifetime")?;
             partial::require_droppable(module, function, state, *id, cleanup.mode())?;
             require_no_live_borrows(function, borrows, state, *id)?;
+            arm_release_fault(module, function, state, *id, *destroy);
             partial::set_leaves(function, state, *id, InitState::Uninitialized);
             if matches!(
                 storage(function, *id)?.origin,
@@ -6594,6 +6606,38 @@ fn apply_operation(
         }
     }
     Ok(())
+}
+
+/// Arm the frame's fault slot for a release that can run an authored `close`.
+///
+/// The release is the frame's fault edge (D516): a failing close fills the
+/// frame's fault record, the frame keeps releasing what it still owns, and the
+/// outcome leaves through a cleanup dispatch. Marking the fault possible here
+/// is what makes every other rule in this verifier - no call, no suspension
+/// and no normal return while a fault is owned - hold SIR to emitting that
+/// dispatch.
+fn arm_release_fault(
+    module: &PhysicalModule,
+    function: &PhysicalFunction,
+    state: &mut FlowState,
+    id: StorageId,
+    destroy: Option<DestroyAction>,
+) {
+    if state.fault != FaultState::None {
+        // A release under a fault already owned only adds a secondary line.
+        return;
+    }
+    let raises = |action: &DestroyAction| module.releases.raises_fault(*action);
+    if destroy.as_ref().is_some_and(raises)
+        || function.place_storage.get(&id).is_some_and(|place| {
+            place
+                .leaves
+                .iter()
+                .any(|leaf| leaf.destroy.as_ref().is_some_and(raises))
+        })
+    {
+        state.fault = FaultState::MaybeActive;
+    }
 }
 
 fn invalidate_storage(
@@ -11036,7 +11080,7 @@ mod tests {
         let physical = PhysicalModule {
             debug: PhysicalDebug::default(),
             regex_patterns: Vec::new(),
-            pure_releases: PureDataReleases::default(),
+            releases: ReleaseEffects::default(),
             actors: Vec::new(),
             supervisors: Vec::new(),
             actor_recipes: BTreeMap::new(),

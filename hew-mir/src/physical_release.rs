@@ -1,22 +1,34 @@
-//! Which destroy recipes release nothing a program can observe.
+//! What releasing a value does, per release glue identity.
 //!
-//! The runtime releases a descriptor-backed collection through an iterative
-//! walker so a deep structure costs no native stack (D457). Joining a walk
-//! already in progress reorders a release against the rest of its parent's
-//! cleanup, which only stays invisible while the released subtree runs no user
-//! code. Physical MIR decides that here, once per glue identity, and codegen
-//! emits the walker entry only where it holds.
+//! Two questions share one fixpoint, because both are decided by the leaves a
+//! release recipe can reach and both propagate upward through the same glue
+//! graph. Recursive types make that graph cyclic, so each answer starts at no
+//! and is raised only by a leaf that says yes.
 //!
-//! Impurity comes from three leaves and propagates upward: a resource close is
-//! user code, a callable environment may capture one, and an erased vtable drop
-//! is not known until run time. Recursive types make the glue graph cyclic, so
-//! the answer is the greatest fixpoint: assume pure, then retract.
+//! * **Runs user-visible action.** The runtime releases a descriptor-backed
+//!   collection through an iterative walker so a deep structure costs no
+//!   native stack (D457). Joining a walk already in progress reorders a
+//!   release against the rest of its parent's cleanup, which only stays
+//!   invisible while the released subtree runs no user code. Codegen emits the
+//!   walker entry only where this answers no.
+//!
+//! * **Raises a fault.** A release that can run an authored `close` is the
+//!   enclosing frame's fault edge (D516): a failing close fills the frame's
+//!   fault record and the frame dispatches that outcome instead of resuming
+//!   the source exit. Only a `#[resource]` record or an authored opaque handle
+//!   runs a body with the fault ABI; every other resource protocol releases
+//!   through a C endpoint that cannot raise one.
+//!
+//! The two differ at exactly one leaf. A callable environment may capture a
+//! resource and an erased vtable drop is not known until run time, so both
+//! answer yes to both questions.
 
 use super::{DestroyAction, PhysicalModule, PhysicalValueRecipe};
 
-/// Per-glue answer to "does releasing this run any user-visible action?".
+/// Per-glue answers to one question, in glue-id order.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct PureDataReleases {
+struct Tables {
+    resource: Vec<bool>,
     aggregate: Vec<bool>,
     variant: Vec<bool>,
     vector: Vec<bool>,
@@ -25,67 +37,113 @@ pub struct PureDataReleases {
     shared: Vec<bool>,
 }
 
-impl PureDataReleases {
-    /// Resolve the fixpoint over one module's release glue.
+/// What releasing a value does, resolved once per module.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ReleaseEffects {
+    user_code: Tables,
+    faults: Tables,
+}
+
+impl ReleaseEffects {
+    /// Resolve both fixpoints over one module's release glue.
     #[must_use]
     pub fn compute(module: &PhysicalModule) -> Self {
+        Self {
+            // Every resource release runs the program's own close body or its
+            // declared release endpoint, so all of them are user-visible.
+            user_code: Tables::compute(module, &vec![true; module.resources.len()]),
+            faults: Tables::compute(module, &authored_closes(module)),
+        }
+    }
+
+    /// Whether releasing a value through `action` runs any user-visible
+    /// action, so the runtime must not defer it into a walk in progress.
+    #[must_use]
+    pub fn runs_user_code(&self, action: DestroyAction) -> bool {
+        self.user_code.holds(action)
+    }
+
+    /// Whether releasing a value through `action` can raise a fault the
+    /// enclosing frame must own.
+    #[must_use]
+    pub fn raises_fault(&self, action: DestroyAction) -> bool {
+        self.faults.holds(action)
+    }
+}
+
+/// Which resources release through a body that can fault. A record's and an
+/// authored opaque handle's `close` is an ordinary callable with the fault
+/// ABI; every other protocol releases through a C endpoint.
+fn authored_closes(module: &PhysicalModule) -> Vec<bool> {
+    module
+        .resources
+        .iter()
+        .map(|resource| {
+            matches!(
+                resource.release,
+                hew_sir::ResourceRelease::RecordClose { .. }
+                    | hew_sir::ResourceRelease::OpaqueClose { .. }
+            )
+        })
+        .collect()
+}
+
+impl Tables {
+    fn compute(module: &PhysicalModule, resource: &[bool]) -> Self {
         let mut table = Self {
-            aggregate: vec![true; module.aggregate_glue.len()],
-            variant: vec![true; module.variant_glue.len()],
-            vector: vec![true; module.vector_glue.len()],
-            map: vec![true; module.map_glue.len()],
-            set: vec![true; module.set_glue.len()],
-            shared: vec![true; module.shared_glue.len()],
+            resource: resource.to_vec(),
+            aggregate: vec![false; module.aggregate_glue.len()],
+            variant: vec![false; module.variant_glue.len()],
+            vector: vec![false; module.vector_glue.len()],
+            map: vec![false; module.map_glue.len()],
+            set: vec![false; module.set_glue.len()],
+            shared: vec![false; module.shared_glue.len()],
         };
         let mut settled = false;
         while !settled {
             settled = true;
             for glue in &module.aggregate_glue {
-                let pure = table.recipes_are_pure(&glue.fields);
-                settled &= !retract(&mut table.aggregate[glue.id.0 as usize], pure);
+                let holds = table.any_recipe(&glue.fields);
+                settled &= !raise(&mut table.aggregate[glue.id.0 as usize], holds);
             }
             for glue in &module.variant_glue {
-                let pure = glue
+                let holds = glue
                     .variants
                     .iter()
-                    .all(|case| table.recipes_are_pure(&case.fields));
-                settled &= !retract(&mut table.variant[glue.id.0 as usize], pure);
+                    .any(|case| table.any_recipe(&case.fields));
+                settled &= !raise(&mut table.variant[glue.id.0 as usize], holds);
             }
             for glue in &module.vector_glue {
-                let pure = table.recipe_is_pure(&glue.element);
-                settled &= !retract(&mut table.vector[glue.id.0 as usize], pure);
+                let holds = table.recipe(&glue.element);
+                settled &= !raise(&mut table.vector[glue.id.0 as usize], holds);
             }
             for glue in &module.map_glue {
-                let pure = table.recipe_is_pure(&glue.key) && table.recipe_is_pure(&glue.value);
-                settled &= !retract(&mut table.map[glue.id.0 as usize], pure);
+                let holds = table.recipe(&glue.key) || table.recipe(&glue.value);
+                settled &= !raise(&mut table.map[glue.id.0 as usize], holds);
             }
             for glue in &module.set_glue {
-                let pure = table.recipe_is_pure(&glue.element);
-                settled &= !retract(&mut table.set[glue.id.0 as usize], pure);
+                let holds = table.recipe(&glue.element);
+                settled &= !raise(&mut table.set[glue.id.0 as usize], holds);
             }
             // Releasing the last strong reference runs the payload's own
-            // release, so a shared handle is pure exactly when its payload is.
+            // release, so a shared handle answers exactly as its payload does.
             for glue in &module.shared_glue {
-                let pure = table.recipe_is_pure(&glue.payload);
-                settled &= !retract(&mut table.shared[glue.id.0 as usize], pure);
+                let holds = table.recipe(&glue.payload);
+                settled &= !raise(&mut table.shared[glue.id.0 as usize], holds);
             }
         }
         table
     }
 
-    /// Whether releasing a value through `action` runs no user-visible action,
-    /// so the runtime may defer it into a walk already in progress.
-    #[must_use]
-    pub fn action_is_pure(&self, action: DestroyAction) -> bool {
+    fn holds(&self, action: DestroyAction) -> bool {
         match action {
             DestroyAction::Encoding(_)
             | DestroyAction::StringRelease
             | DestroyAction::BytesRelease
             // A weak handle owns no payload; dropping one only decrements.
-            | DestroyAction::WeakRelease => true,
-            DestroyAction::Resource(_) | DestroyAction::Callable | DestroyAction::TraitObject => {
-                false
-            }
+            | DestroyAction::WeakRelease => false,
+            DestroyAction::Callable | DestroyAction::TraitObject => true,
+            DestroyAction::Resource(id) => self.resource[id.0 as usize],
             DestroyAction::Aggregate(id) => self.aggregate[id.0 as usize],
             DestroyAction::Variant(id) => self.variant[id.0 as usize],
             DestroyAction::Vector(id) | DestroyAction::Array(id) => self.vector[id.0 as usize],
@@ -95,22 +153,20 @@ impl PureDataReleases {
         }
     }
 
-    fn recipe_is_pure(&self, recipe: &PhysicalValueRecipe) -> bool {
-        recipe
-            .destroy
-            .is_none_or(|action| self.action_is_pure(action))
+    fn recipe(&self, recipe: &PhysicalValueRecipe) -> bool {
+        recipe.destroy.is_some_and(|action| self.holds(action))
     }
 
-    fn recipes_are_pure(&self, recipes: &[PhysicalValueRecipe]) -> bool {
-        recipes.iter().all(|recipe| self.recipe_is_pure(recipe))
+    fn any_recipe(&self, recipes: &[PhysicalValueRecipe]) -> bool {
+        recipes.iter().any(|recipe| self.recipe(recipe))
     }
 }
 
-/// Retract one entry when this round found it impure. Reports whether the
+/// Raise one entry when this round found the answer yes. Reports whether the
 /// answer moved, which is what keeps the fixpoint iterating.
-fn retract(entry: &mut bool, pure: bool) -> bool {
-    if *entry && !pure {
-        *entry = false;
+fn raise(entry: &mut bool, holds: bool) -> bool {
+    if !*entry && holds {
+        *entry = true;
         return true;
     }
     false

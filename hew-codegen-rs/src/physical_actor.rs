@@ -153,6 +153,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             llvm: &self.llvm,
             builder,
             value: function,
+            fault_sink: None,
         };
         let inspect = self.ctx.append_basic_block(function, "reply.oneway");
         let raise = self.ctx.append_basic_block(function, "reply.unhandled");
@@ -651,6 +652,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 llvm: &self.llvm,
                 builder: &builder,
                 value: drop,
+                fault_sink: None,
             }
             .destroy_loaded_value(loaded, layout, action)?;
         }
@@ -677,6 +679,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 llvm: &self.llvm,
                 builder: &builder,
                 value: clone,
+                fault_sink: None,
             }
             .clone_loaded_value(loaded, layout, action)?;
             let allocation = allocate(self.module, self.ctx, &self.llvm, &builder, layout.size)?;
@@ -755,6 +758,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                     llvm: &self.llvm,
                     builder: &builder,
                     value: function,
+                    fault_sink: None,
                 }
                 .destroy_loaded_value(loaded, layout, action)?;
             }

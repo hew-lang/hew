@@ -5308,10 +5308,11 @@ unsafe fn actor_send_result_internal_reply(
         return HewError::ErrActorStopped as i32;
     }
 
-    // Check for injected drop fault (testing only). Silently discard
-    // the message without enqueuing it.
+    // Check for injected drop fault (testing only). The message is discarded
+    // without reaching the queue, which is the same observable outcome as a
+    // declared-policy loss: report it as loss, never as delivery.
     if crate::deterministic::check_drop_fault(a.id) {
-        return HewError::Ok as i32; // Pretend success.
+        return HEW_ACTOR_SEND_MESSAGE_LOST;
     }
 
     let mb = a.mailbox.cast::<HewMailbox>();

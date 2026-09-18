@@ -975,6 +975,13 @@ An ordinary borrowed argument stays usable after the call. A parameter marked
 ingress and borrow on read; do not generalize that rule into requiring a manual
 clone for every string insertion. Follow the operation's declared contract.
 
+A borrowed parameter has no owner to give away. Storing one in a record field,
+capturing it in an escaping closure or a generator, or returning it would hand
+a second owner to storage that outlives the call, so each is refused unless the
+parameter is declared `consume`. For a callable there is a second answer: a
+`fn[clone](i64) -> i64` carries a copy operation, so the closure or generator
+frame copies it instead of moving it.
+
 ### .clone() produces an independent copy
 
 ```hew

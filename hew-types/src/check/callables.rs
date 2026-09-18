@@ -233,11 +233,25 @@ impl Checker {
             } else if !self.capture_is_cloneable(&fact.ty)
                 && !matches!(fact.ty, Ty::Error | Ty::Var(_))
             {
-                self.report_error(
+                // `move` transfers an owner into the closure, so a borrowed
+                // parameter needs one first. Name both steps rather than
+                // sending the programmer back for a second diagnostic.
+                let mut suggestions = vec![format!(
+                    "write `move ||` to transfer `{}` into the closure",
+                    fact.name
+                )];
+                if self.env.place_borrows_parameter(&fact.name, &[]) {
+                    suggestions.push(format!(
+                        "`{}` is a borrowed parameter with no owner to move; declare it `consume {}: {}`",
+                        fact.name, fact.name, fact.ty.user_facing()
+                    ));
+                }
+                self.report_error_with_suggestions(
                     TypeErrorKind::ClosureExplicitMoveRequired {
                         name: fact.name.clone(), ty: fact.ty.user_facing().to_string(),
                     }, &fact.use_span,
                     format!("capture `{}` has no independent snapshot operation; use `move` to transfer it into the closure", fact.name),
+                    suggestions,
                 );
             }
             captures.push(fact);

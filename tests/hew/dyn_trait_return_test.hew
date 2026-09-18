@@ -51,7 +51,10 @@ fn inspect(value: dyn Labeled) -> i64 {
     value.label_size()
 }
 
-fn identity(value: dyn Labeled) -> dyn Labeled {
+// Passing a trait object through unchanged transfers it: the callee's return
+// slot becomes the value's only owner, so the parameter is `consume`. A
+// borrowed parameter has no owner to hand on and is refused in source.
+fn identity(consume value: dyn Labeled) -> dyn Labeled {
     value
 }
 

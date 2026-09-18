@@ -16,7 +16,6 @@
 # unstartable, or crashing binary under the same test identity.
 #
 # E_SIR_UNSUPPORTED/E_SIR_VERIFY: dyn trait dispatch has no published dispatch table or source declaration for the impl method
-# E_SIR_UNSUPPORTED: E_OWN_CONSUME_BORROWED on a forwarded resource argument
 # E_SIR_UNSUPPORTED: HIR expression kind RegexLiteralRef is outside the initial SIR subset
 # E_SIR_UNSUPPORTED: HIR expression kind ResolvedImplCall is outside the initial SIR subset
 # E_SIR_UNSUPPORTED: HIR expression kind TryWidthCast is outside the initial SIR subset
@@ -84,9 +83,6 @@ tests/hew/bytes_mutation_proving_test.hew::test_clear_on_owner_leaves_slice_aliv
 tests/hew/bytes_mutation_proving_test.hew::test_pop_cow_leaves_slice_intact compile
 tests/hew/bytes_mutation_proving_test.hew::test_push_cow_leaves_slice_intact compile
 tests/hew/bytes_mutation_proving_test.hew::test_set_cow_leaves_slice_intact compile
-tests/hew/dyn_trait_return_test.hew::test_dyn_param_passes_through_without_reboxing compile
-tests/hew/dyn_trait_return_test.hew::test_returned_dyn_drops_during_panic_unwind compile
-tests/hew/dyn_trait_return_test.hew::test_returned_dyn_transfers_to_caller compile
 tests/hew/hashmap_generic_mono_test.hew::test_generic_hashmap_methods_honor_key_bounds runtime
 tests/hew/http_response_body_non_2xx_test.hew::test_non_2xx_response_body_round_trips runtime
 tests/hew/http_server_client_roundtrip_test.hew::test_server_client_roundtrip_returns_200_and_echoes_path runtime

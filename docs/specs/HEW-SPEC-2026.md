@@ -1826,6 +1826,13 @@ fix is to declare that parameter `consume` too, not a change to the callee —
 consumption then flows from whoever calls the current function, one
 `consume` declaration at a time.
 
+The same rule covers every other owning sink. Storing such a value in a record
+field, capturing it in an escaping closure or a generator frame, or returning
+it hands a second owner to storage that outlives the call, so each is
+`E_OWN_CONSUME_BORROWED` with the same fix. A capture has one further answer
+for a callable: `fn[clone](..)` carries a copy operation, so the frame
+snapshots the value instead of moving it.
+
 #### 3.7.3 Deterministic Cleanup
 
 User-defined `impl Drop` is **not supported** and is rejected at compile time.

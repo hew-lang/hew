@@ -316,8 +316,8 @@ fn nested_closure_parameter_control_loop_source(frames: usize) -> String {
         "fn make_base(n: i64) -> fn() -> i64 {{\n\
          \x20   || n\n\
          }}\n\
-         fn wrap(f: fn() -> i64, n: i64) -> fn() -> i64 {{\n\
-         \x20   || f() + n\n\
+         fn wrap(consume f: fn() -> i64, n: i64) -> fn() -> i64 {{\n\
+         \x20   move || f() + n\n\
          }}\n\
          fn run_loop(frames: i64) -> i64 {{\n\
          \x20   var total: i64 = 0;\n\

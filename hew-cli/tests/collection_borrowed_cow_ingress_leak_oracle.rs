@@ -77,24 +77,27 @@ fn borrowed_bytes_loop_source(frames: usize) -> String {
 // ── reassigned-parameter generation boundary ────────────────────────────────
 
 /// The parameter slot is reassigned to a fresh heap string before the insert:
-/// the new generation is frame-owned, so the ingress must CONSUME it. Covers
-/// the vacant path and (second call) the overwrite path.
+/// the new generation is frame-owned, so the ingress must CONSUME it, and the
+/// stored key has to stay readable through the map that now owns it. The
+/// read-back happens inside `put`, where the map lives: a `var` parameter is
+/// the callee's own copy (spec §3.7.2), so the caller's map is the negative
+/// control and never sees either insert.
 const REASSIGNED_PARAM_INGRESS_SOURCE: &str = "\
 fn put(var counts: HashMap<string, i64>, var key: string, amount: i64) -> i64 {\n\
 \x20   key = (\"fresh\" + \"-key\").to_upper();\n\
 \x20   counts.insert(key, amount);\n\
-\x20   return counts.len();\n\
+\x20   return match counts.get(\"FRESH-KEY\") { .Some(n) => n, .None => -1 };\n\
 }\n\
 \n\
 fn main() {\n\
 \x20   let counts: HashMap<string, i64> = HashMap.new();\n\
 \x20   let first = put(counts, \"caller\" + \"-a\", 1);\n\
 \x20   let second = put(counts, \"caller\" + \"-b\", 2);\n\
-\x20   let stored = match counts.get(\"FRESH-KEY\") { .Some(n) => n, .None => -1 };\n\
-\x20   print(f\"{first}|{second}|{stored}\");\n\
+\x20   let caller_slot = match counts.get(\"FRESH-KEY\") { .Some(n) => n, .None => -1 };\n\
+\x20   print(f\"{first}|{second}|{caller_slot}\");\n\
 }\n";
 
-const REASSIGNED_PARAM_INGRESS_EXPECTED: &str = "1|1|2";
+const REASSIGNED_PARAM_INGRESS_EXPECTED: &str = "1|2|-1";
 
 fn reassigned_param_loop_source(frames: usize) -> String {
     format!(

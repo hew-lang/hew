@@ -3,16 +3,8 @@ linux,macos,windows,freebsd	failure	hew-cli::actor_fault_isolation_e2e	crash_in_
 linux,macos,freebsd	failure	hew-cli::affine_resource_carrier_boundaries	channel_handle_clone_terminals_match_runtime_semantics	#3377 fix/collections-final-path: gives Vec<Sender<T>> a copy operation or refuses it in source
 windows,freebsd	failure	hew-cli::branch_divergent_return_drop_ir	nested_returned_string_scope_exit_is_discharged_exactly_once	#3118 releases branch-local siblings on normal edges
 windows,freebsd	failure	hew-cli::branch_divergent_return_drop_ir	returned_result_branch_releases_only_the_nonreturned_string_sibling	#3118 releases branch-local siblings on normal edges
-macos	failure	hew-cli::closure_capture_owned_leak_oracle	nested_closure_parameter_control_leak_slope_below_tolerance	#3438 borrowed fn-parameter values cannot be captured or stored without consume
-macos	failure	hew-cli::closure_env_drop_leak_oracle	closure_owned_type_param_no_per_frame_leak_slope	#3438 borrowed fn-parameter values cannot be captured or stored without consume
 linux,freebsd,macos	failure	hew-cli::closure_env_drop_leak_oracle	generator_transitive_capture_outliving_its_generator_is_not_a_use_after_free	#3370 feat/generators-adaptors: coerces a Generator value at a callee boundary
 macos	failure	hew-cli::closure_env_drop_leak_oracle	generator_transitive_capture_outliving_its_generator_survives_the_poisoned_allocator	#3370 feat/generators-adaptors: coerces a Generator value at a callee boundary
-macos	failure	hew-cli::closure_in_struct_leak_oracle	forward_fresh_call_result_into_field_freed_exactly_once_under_malloc_scribble	#3438 decides whether a borrowed fn-parameter can be stored without consume
-macos	failure	hew-cli::closure_in_struct_leak_oracle	forward_fresh_call_result_into_field_leak_slope_below_tolerance	#3438 borrowed fn-parameter values cannot be captured or stored without consume
-macos	failure	hew-cli::closure_in_struct_leak_oracle	forward_param_into_field_freed_exactly_once_under_malloc_scribble	#3438 decides whether a borrowed fn-parameter can be stored without consume
-macos	failure	hew-cli::closure_in_struct_leak_oracle	forward_param_into_field_leak_slope_below_tolerance	#3438 borrowed fn-parameter values cannot be captured or stored without consume
-macos	failure	hew-cli::closure_in_struct_leak_oracle	store_and_drop_struct_leak_slope_below_tolerance	#3438 borrowed fn-parameter values cannot be captured or stored without consume
-macos	failure	hew-cli::collection_borrowed_cow_ingress_leak_oracle	reassigned_param_ingress_reads_back_exact_values	#3438 borrowed fn-parameter values cannot be captured or stored without consume
 linux,macos,windows,freebsd	failure	hew-cli::compile_wasm_parity	arith_program_emits_wasm	#3368 implements sandbox emission on the physical path
 linux,macos,windows,freebsd	failure	hew-cli::compile_wasm_parity	wasm_unsupported_substrate_diagnostics_preserve_symbol_category	#3368 implements sandbox emission on the physical path
 linux	failure	hew-cli::coro_thread_fence_e2e	fork_children_create_no_os_threads	#3385 runs fork children as coroutines, not OS threads
@@ -104,8 +96,6 @@ linux,macos,windows,freebsd	failure	hew-cli::unicode_punctuation_wasi_e2e	hew_wa
 macos	failure	hew-cli::vec_index_assign_temp_leak_oracle	vec_index_assign_borrowed_capture_stays_copy_in	#3448 selects the copy-in vector store for a borrowed capture
 macos	failure	hew-cli::vec_iter_closure_unwind_leak_oracle	temporary_vec_iter_closure_trap_invokes_guarded_cleanup_without_leak	#3449 emits a closure call in a guarded region as an invoke
 linux,freebsd,macos	failure	hew-cli::vec_param_embed_copy_in_temp_leak_oracle	enum_text_borrows_balance_on_native_and_wasm	#3368 sandbox emission is not implemented; native borrowed-copy balance passes
-macos	failure	hew-cli::vec_param_embed_copy_in_temp_leak_oracle	resource_projection_direct_consume_has_flat_leak_slope	#3438 decides whether a borrowed parameter's field can be consumed
-macos	failure	hew-cli::vec_param_embed_copy_in_temp_leak_oracle	resource_projection_direct_consume_preserves_the_poisoned_caller	#3438 decides whether a borrowed parameter's field can be consumed
 linux,freebsd,macos	failure	hew-cli::vec_param_embed_copy_in_temp_leak_oracle	reusable_callable_parameter_invocation_compiles_native_and_wasm	#3368 implements sandbox emission on the physical path
 linux,macos,windows,freebsd	failure	hew-cli::wasi_run_e2e	actor_panic_is_module_fatal_on_production_wasi	#3368 implements sandbox emission on the physical path
 linux,macos,windows,freebsd	failure	hew-cli::wasi_run_e2e	actor_start_panic_remains_module_fatal_on_production_wasi	#3368 implements sandbox emission on the physical path

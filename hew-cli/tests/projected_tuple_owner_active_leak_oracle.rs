@@ -213,16 +213,16 @@ fn whole_tuple_escape_after_projection_transfer_runs_clean() {
         .expect("tempdir");
     let bin = compile_to_native(escaping_partial_tuple_source(), dir.path(), "escape");
     let output = run_under_malloc_scribble(&bin);
-    assert!(
-        output.status.success(),
-        "the returned tuple must survive the poisoned allocator:\n{}",
-        describe_output(&output)
-    );
+    // The measurement IS the exit code, so `success()` would demand 0 and
+    // contradict it. A clean exit carrying the expected count is the pass; an
+    // abort under the poisoned allocator reports `None` and fails here.
     assert_eq!(
         output.status.code(),
         Some(1),
-        "the returned tuple's field 0 must still report the one element \
-         pushed before the local `items` clone was taken"
+        "the returned tuple must survive the poisoned allocator and its field 0 \
+         must still report the one element pushed before the local `items` \
+         clone was taken:\n{}",
+        describe_output(&output)
     );
 }
 
@@ -247,16 +247,13 @@ fn loop_backedge_rereads_the_cloned_field_every_iteration() {
         "loop_reread",
     );
     let output = run_under_malloc_scribble(&bin);
-    assert!(
-        output.status.success(),
-        "three backedge-carried rereads of the cloned field must survive the \
-         poisoned allocator:\n{}",
-        describe_output(&output)
-    );
+    // The measurement IS the exit code; see the escape case above.
     assert_eq!(
         output.status.code(),
         Some(3),
-        "each of the three iterations must clone `p.0` and read one element, \
-         so the running total is exactly three"
+        "three backedge-carried rereads of the cloned field must survive the \
+         poisoned allocator, each cloning `p.0` and reading one element, so the \
+         running total is exactly three:\n{}",
+        describe_output(&output)
     );
 }

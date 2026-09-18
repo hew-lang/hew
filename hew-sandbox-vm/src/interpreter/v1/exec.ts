@@ -39,17 +39,7 @@ import {
 import { admitPackage } from "./validate.js";
 
 const DEFAULT_STEP_BUDGET = 1_000_000;
-const PANIC_EXIT = 101;
 const NANOS_PER_MS = 1_000_000n;
-
-/// SIR's trap kinds and the process statuses native execution uses
-/// (opcodes-v1.md, "Trap kinds"). A panic is its own kind at 101.
-const TRAP_EXIT_CODES: Readonly<Record<TrapName, number>> = {
-  integer_overflow: 201,
-  divide_by_zero: 202,
-  shift_out_of_range: 204,
-  vector_bounds: 205,
-};
 
 /// A storage cell. Every SSA value and every place owns one; a loan refers to
 /// one rather than holding a snapshot of its contents.
@@ -952,10 +942,9 @@ class ExecutorV1 {
     const message = isPanic
       ? fault.message
       : (fault.message ?? trapMessage(fault.trap));
-    // The parity runner reads `final_state.exit_code` directly, so a failing
-    // run publishes the process status native execution would use.
-    this.trace.exitCode = isPanic ? PANIC_EXIT : TRAP_EXIT_CODES[fault.trap];
-    this.trace.publishExitCode = true;
+    // A failing run reports no exit code: native exits 1 for every fault and
+    // names the kind in its message, so the kind is what travels, in
+    // `runtime_failures`. The page turns it into an exit code of its own.
     this.trace.fail(
       status,
       "runtime.failure",

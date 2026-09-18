@@ -2274,7 +2274,7 @@ mod tests {
     }
 
     #[test]
-    fn wasm_session_uses_build_checks_at_wasm32_width() {
+    fn browser_session_uses_build_checks_at_native_width() {
         let parsed = hew_parser::parse(
             "fn f() -> i64 {\nvar x = 5;\nx = 6;\nx\n}\nfn main() {\nlet _ = f();\n}\n",
         );
@@ -2298,7 +2298,11 @@ mod tests {
         );
 
         assert_eq!(wasm.checks, build.checks);
-        assert_eq!(wasm.target.pointer_width, hew_mir::PointerWidth::Bits32);
+        // The VM interprets verified semantics and has no machine layout, so
+        // `isize` and `usize` are 64-bit there as they are natively. That is
+        // the parity `docs/sandbox-vm-divergences.md` promises, and a wasm32
+        // pointer width would break it.
+        assert_eq!(wasm.target.pointer_width, hew_mir::PointerWidth::Bits64);
         assert_eq!(
             wasm.lower_hir_module(&hir.module, &tco, &[])
                 .map(|output| format!("{:?}", output.semantics()))
@@ -2307,7 +2311,7 @@ mod tests {
                 .lower_hir_module(&hir.module, &tco, &[])
                 .map(|output| format!("{:?}", output.semantics()))
                 .map_err(|error| error.to_string()),
-            "wasm must run the build check set while retaining its own ABI width"
+            "the browser must run the build check set and reach the same semantics as native"
         );
     }
 }

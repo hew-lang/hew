@@ -37,10 +37,6 @@ export class TraceBuilder {
   status: RuntimeStatus = "ok";
   stepCount = 0;
   exitCode = 0;
-  /// A failing run normally reports no exit code. The v1 executor publishes the
-  /// trap's process status instead, because that is what native execution and
-  /// the parity runner compare against.
-  publishExitCode = false;
 
   private readonly events: TraceEvent[] = [];
   private readonly spanById = new Map<string, TraceSpan>();
@@ -240,8 +236,7 @@ export class TraceBuilder {
       events: this.events,
       final_state: {
         status: this.status,
-        exit_code:
-          this.status === "ok" || this.publishExitCode ? this.exitCode : null,
+        exit_code: this.status === "ok" ? this.exitCode : null,
         step_count: this.stepCount,
         budget_remaining: this.budgetRemaining,
         virtual_clock: this.virtualClock,

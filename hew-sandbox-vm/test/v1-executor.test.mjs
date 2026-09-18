@@ -306,7 +306,10 @@ test("v1: an out-of-bounds index takes the unwind edge before the program ends",
   const trapped = run(indexPackage(9));
   assert.equal(trapped.result, "trap");
   assert.equal(stdout(trapped), "cleanup ran\n", "the cleanup the package names runs before the program ends");
-  assert.equal(trapped.final_state.exit_code, 205);
+  // A failing run reports no exit code: the kind travels in runtime_failures,
+  // and the page turns it into 205. Native exits 1 for every fault, so
+  // publishing a status here would put the VM and native at odds in parity.
+  assert.equal(trapped.final_state.exit_code, null);
   assert.equal(trapped.final_state.runtime_failures[0].trap_kind, "vector_bounds");
 
   // Negative control: the same package with an index in range never reaches

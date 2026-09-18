@@ -1,8 +1,9 @@
-//! Native-pipeline oracle for affine clone-out through generic `HashMap` methods.
+//! Oracle for a copy-requiring `HashMap` operation on an unbounded value type.
 //!
-//! The checker admits these bodies while `V` is abstract. MIR must repeat the
-//! clone-totality proof after monomorphisation so a concrete resource value
-//! cannot reach the descriptor clone choke and acquire a second owner.
+//! A type parameter carrying no `Clone` bound promises no instantiation a copy
+//! path, and no later stage answers for it, so the obligation belongs to the
+//! declaration (spec §3.8.1). These bodies are refused where they are written,
+//! with no instantiation needed and no artifact emitted.
 
 mod support;
 
@@ -30,10 +31,6 @@ fn duplicate<V>(values: HashMap<string, V>) -> HashMap<string, V> {
     values.clone()
 }
 
-fn lookup<V>(values: HashMap<string, V>) -> Option<V> {
-    values.get("live")
-}
-
 fn index<V>(values: HashMap<string, V>) -> V {
     values["live"]
 }
@@ -42,10 +39,6 @@ fn main() {
     var cloned: HashMap<string, Token> = HashMap.new();
     cloned.insert("live", Token { id: 1 });
     let _copy = duplicate(cloned);
-
-    var looked_up: HashMap<string, Token> = HashMap.new();
-    looked_up.insert("live", Token { id: 2 });
-    let _value = lookup(looked_up);
 
     var indexed: HashMap<string, Token> = HashMap.new();
     indexed.insert("live", Token { id: 3 });
@@ -73,14 +66,22 @@ fn main() {
     );
     assert!(
         !output.status.success(),
-        "generic affine clone-out must fail before codegen: {combined}"
+        "a copy of an unbounded value type must be refused at the declaration: {combined}"
     );
-    for operation in ["HashMap.clone()", "HashMap.get()", "HashMap indexing"] {
+    for operation in ["HashMap.clone()", "m[k]"] {
         assert!(
-            combined.contains(operation) && combined.contains("affine close contract"),
-            "diagnostic must name the rejected {operation} resource clone: {combined}"
+            combined.contains(operation),
+            "diagnostic must name the refused {operation}: {combined}"
         );
     }
+    assert!(
+        combined.contains("`V` has no `Clone` bound") && combined.contains("declare `V: Clone`"),
+        "the refusal must name the parameter and the bound it is missing: {combined}"
+    );
+    assert!(
+        combined.contains("generic_hashmap_affine_clone.hew:9:5"),
+        "the refusal belongs to the declaration, with its own span: {combined}"
+    );
     assert!(
         !emit_dir.exists()
             || std::fs::read_dir(&emit_dir)

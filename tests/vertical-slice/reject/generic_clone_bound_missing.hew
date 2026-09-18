@@ -1,0 +1,17 @@
+// Reject: a generic body that copies a value of its own type parameter out
+// needs that parameter to carry `Clone`. Without the bound the declaration
+// promises every instantiation a copy it cannot supply, and the instance
+// reaches the SIR verifier with no copy operation instead of the programmer
+// reading a diagnostic (spec §3.8.1). Accepted twin:
+// accept/generic_clone_bound_copy_out.hew.
+fn first<T>(xs: Vec<T>) -> Option<T> {
+    xs.get(0)
+}
+
+fn main() {
+    let xs: Vec<i64> = [1, 2];
+    match first(xs) {
+        .Some(x) => println(x),
+        .None => println("none"),
+    }
+}

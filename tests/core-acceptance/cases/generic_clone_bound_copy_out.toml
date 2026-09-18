@@ -1,0 +1,13 @@
+[[case]]
+id = "generic_clone_bound_copy_out"
+intent = "A `Clone` bound admits every copy-requiring operation on a generic value; a borrowing one still needs none."
+source = "../vertical-slice/accept/generic_clone_bound_copy_out.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "1\n8\na\n2\n2\n"
+exit = 0

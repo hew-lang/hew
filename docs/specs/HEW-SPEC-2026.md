@@ -2324,6 +2324,13 @@ can still clone elements; consuming the container does not yet promise
 clone-free element extraction. A `Clone` bound also permits the current
 compiler to select copying element reads (§2.1.1).
 
+A copy-requiring operation on a value of a type parameter - `clone()`, `m[k]`,
+`get`, a range slice, an array repeat, a spread, or a generator frame taking
+its capture - is refused where it is written when that parameter carries no
+`Clone` bound (`E_ELEMENT_NO_COPY`, `E_OWN_CONSUME_BORROWED` for the frame).
+The declaration promises what every instantiation must supply, so the bound
+belongs to it.
+
 Borrowed `get` returns an optional loan. Let-bound reads keep the source
 borrowed until their last permitted use. Loan ending is conservative across
 branches and loops; mutation or draining is refused when the compiler cannot

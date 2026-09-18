@@ -22,7 +22,7 @@ enum VecSliceShape {
     Rect(i64, i64),
 }
 
-fn generic_slice<T>(xs: Vec<T>, start: i64, end: i64) -> Vec<T> {
+fn generic_slice<T: Clone>(xs: Vec<T>, start: i64, end: i64) -> Vec<T> {
     xs[start..end]
 }
 

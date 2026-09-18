@@ -60,7 +60,7 @@ use support::{describe_output, hew_binary, repo_root, require_codegen};
 const GENERIC_GET_SINGLE_ROUNDTRIP_SOURCE: &str = "\
 type Name { label: string, }\n\
 \n\
-fn first<T>(v: Vec<T>) -> Option<T> {\n\
+fn first<T: Clone>(v: Vec<T>) -> Option<T> {\n\
 \x20   v.get(0)\n\
 }\n\
 \n\
@@ -89,7 +89,7 @@ fn generic_get_loop_source(frames: usize) -> String {
     format!(
         "type Name {{ label: string, }}\n\
          \n\
-         fn first<T>(v: Vec<T>) -> Option<T> {{\n\
+         fn first<T: Clone>(v: Vec<T>) -> Option<T> {{\n\
          \x20   v.get(0)\n\
          }}\n\
          \n\

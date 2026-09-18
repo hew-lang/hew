@@ -17,7 +17,7 @@ type W<T> {
     v: T,
 }
 
-fn store_and_read<T>(x: T) -> T {
+fn store_and_read<T: Clone>(x: T) -> T {
     var items: Vec<W<T>> = Vec.new();
     items.push(W { v: x });
     match items.get(0) {
@@ -41,7 +41,7 @@ fn test_generic_vec_heap_composite_reads_back() {
     testing.assert_eq(s.len(), 5);
 }
 
-fn count_options<T>(x: T) -> i64 {
+fn count_options<T: Clone>(x: T) -> i64 {
     var items: Vec<Option<T>> = Vec.new();
     items.push(Some(x));
     items.push(None);

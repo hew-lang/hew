@@ -66,9 +66,9 @@ impl ArenaCloneGuard {
 /// A generational-index slotmap with O(1) slot bookkeeping.
 ///
 /// Construct with `arena.new()`. Values are owned by the arena; accessors
-/// return `Option<T>` copies under the value model, never references. An arena
-/// is non-cloneable because forking its identity state could issue ambiguous
-/// keys.
+/// return `Option<T>` copies under the value model, never references, so `T`
+/// carries `Clone`. An arena is non-cloneable because forking its identity
+/// state could issue ambiguous keys.
 pub type Arena<T> {
     clone_guard: ArenaCloneGuard,
     arena_id: i64,
@@ -95,7 +95,7 @@ pub fn new<T>() -> Arena<T> {
     Arena { clone_guard: clone_guard, arena_id: arena_id, generation_counter: generation_counter, slots: slots, free: free }
 }
 
-impl<T> Arena<T> {
+impl<T: Clone> Arena<T> {
     /// Insert `value` and return a fresh `Key<T>` naming it.
     ///
     /// Reuses a freed slot when one is available; otherwise appends a new slot.
@@ -115,12 +115,15 @@ impl<T> Arena<T> {
             Key { arena_id: self.arena_id, index: index, generation: generation }
         }
     }
-    /// Return the value named by `key`, or `None` if the key is stale.
+    /// Return a copy of the value named by `key`, or `None` if the key is stale.
+    ///
+    /// The arena keeps its own value, so this copies one out and needs
+    /// `T: Clone`; `remove` moves the value out and serves a `T` without one.
     ///
     /// Fails closed: a key whose slot was removed (or whose generation no
     /// longer matches after slot reuse) returns `None`, as does an
     /// out-of-range key.
-    fn get(self, key: Key<T>) -> Option<T> {
+    fn get(self, key: Key<T>) -> Option<T> where T: Clone {
         if key.arena_id != self.arena_id {
             return None;
         }

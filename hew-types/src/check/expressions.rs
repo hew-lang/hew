@@ -1226,6 +1226,12 @@ impl Checker {
         // trait object and a `Stream` are drop-only in the class table
         // (`CloneKind::None`), so they refuse here without a second rule.
         if let Some(blocker) = self.element_clone_blocker(&elem_ty) {
+            if let Some(param) = blocker.unbounded_param() {
+                let param = param.to_string();
+                self.report_unbounded_param_copy(&param, "[T; N]", span);
+                return self.make_vec_type(elem_ty, span);
+            }
+            let blocker = blocker.concrete_text();
             let resolved_elem = self.subst.resolve(&elem_ty);
             self.report_error(
                 TypeErrorKind::InvalidOperation,
@@ -1339,6 +1345,12 @@ impl Checker {
         let Some(blocker) = self.element_clone_blocker(elem_ty) else {
             return;
         };
+        if let Some(param) = blocker.unbounded_param() {
+            let param = param.to_string();
+            self.report_unbounded_param_copy(&param, "a spread", span);
+            return;
+        }
+        let blocker = blocker.concrete_text();
         let resolved = self.subst.resolve(elem_ty).materialize_literal_defaults();
         self.report_error(
             TypeErrorKind::InvalidOperation,

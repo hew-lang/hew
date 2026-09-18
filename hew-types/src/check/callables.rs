@@ -356,6 +356,33 @@ impl Checker {
         if element_loan.is_none() && !self.env.place_borrows_parameter(root, &[]) {
             return;
         }
+        // A type parameter has no clone kind until it is substituted. One
+        // carrying `Clone` promises every instantiation a copy the frame can
+        // take; one without it promises nothing, and the instance reaches the
+        // SIR verifier instead. Spec §3.8.1 puts that on the declaration, so
+        // refuse here and name the bound alongside `consume`.
+        if let Ty::Named { name, args, .. } = &ty {
+            if args.is_empty()
+                && self.is_type_param_in_scope(name)
+                && !self.type_param_has_marker_bound(name, MarkerTrait::Clone)
+            {
+                let param = name.clone();
+                self.report_error_with_suggestions(
+                    TypeErrorKind::OwnConsumeBorrowed,
+                    span,
+                    format!(
+                        "E_OWN_CONSUME_BORROWED: a generator owns its captures, so it needs a \
+                         copy of borrowed parameter `{root}`, but `{param}` has no `Clone` bound \
+                         and not every instantiation can supply one"
+                    ),
+                    vec![
+                        format!("declare the parameter `consume {root}: {param}` to move it into the generator"),
+                        format!("or bound the declaration `{param}: Clone` so the generator can copy it"),
+                    ],
+                );
+                return;
+            }
+        }
         if self.parameter_clone_kind(&ty) != Some(crate::type_facts::CloneKind::None) {
             return;
         }

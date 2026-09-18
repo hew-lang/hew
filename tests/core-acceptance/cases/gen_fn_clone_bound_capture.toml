@@ -1,0 +1,13 @@
+[[case]]
+id = "gen_fn_clone_bound_capture"
+intent = "A `Clone` bound lets a generator frame copy a borrowed generic parameter; `consume` moves one instead."
+source = "../vertical-slice/accept/gen_fn_clone_bound_capture.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "hi\nhi\n0\n1\n"
+exit = 0

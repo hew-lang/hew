@@ -1,7 +1,7 @@
 #[resource] type Token { label: string, id: i64 }
 impl Token { fn close(consume self) {} }
 type Store<T> { values: Vec<T> }
-impl<T> Store<T> {
+impl<T: Clone> Store<T> {
     fn replace(var self, value: T, enabled: bool) -> Option<T> {
         let old = self.values.get(0);
         if enabled { self.values.set(0, value); }

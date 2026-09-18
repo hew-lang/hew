@@ -1,0 +1,11 @@
+[[case]]
+id = "actor-state-vec-seat"
+intent = "A state Vec whose element has no copy is pushed, drained by a consuming iteration and refilled in its own seat; a turn that faults between the take and the publish leaves the seat intact for the crash hook, and the fault before the take is the control."
+source = "cases/actor-state-vec-seat.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "U:m1 V:m1 \nafter drain 0\nafter refill 1\nW:m2 \nseat 3\nseat 2\ndone\n"
+stderr = "hew: failure: IndexOutOfBounds (205)\nhew: actor crash in Labels.fail_in_transform (actor 2): IndexOutOfBounds\nhew: failure: UserPanic (212): before the take\nhew: actor crash in Labels.fail_before_transform (actor 3): UserPanic\n"
+exit = 1

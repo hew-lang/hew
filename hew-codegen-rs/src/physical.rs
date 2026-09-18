@@ -6532,6 +6532,19 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 self.clear_owned(receiver)?;
                 self.store(result, vector.into())?;
             }
+            PhysicalVectorOp::TakeAll { result: tuple } => {
+                values.aggregate_glue(tuple)?;
+                let function = get_or_declare_external(
+                    self.llvm,
+                    "hew_vec_take_all",
+                    pointer.fn_type(&[pointer.into()], false),
+                )?;
+                // The buffer moves to the caller; the receiver keeps its
+                // element representation and is left empty.
+                let taken =
+                    self.runtime_call_value(function, &[vector.into()], "vector.take_all")?;
+                self.store_receiver_pair(result, receiver, taken)?;
+            }
             PhysicalVectorOp::Join => {
                 let function = get_or_declare_external(
                     self.llvm,

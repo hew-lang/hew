@@ -79,9 +79,6 @@
 # runtime: wrong result from uuid_test
 # runtime: wrong result from xml_test
 # runtime: wrong result from xml_try_parse_test
-tests/hew/actor_state_vec_into_iter_test.hew::test_push_into_drained_dyn_state_field_lands_in_valid_vec compile  # 3463 a state-field transform copies the seat
-tests/hew/actor_state_vec_into_iter_test.hew::test_second_dispatch_after_dyn_state_drain_sees_valid_empty_vec compile  # 3463 a state-field transform copies the seat
-tests/hew/actor_state_vec_into_iter_test.hew::test_second_dispatch_after_string_state_drain_terminates runtime  # 3463 consuming into_iter drains the staged copy, not the seat
 tests/hew/bytes_mutation_proving_test.hew::test_append_cow_leaves_slice_intact compile
 tests/hew/bytes_mutation_proving_test.hew::test_clear_on_owner_leaves_slice_alive compile
 tests/hew/bytes_mutation_proving_test.hew::test_pop_cow_leaves_slice_intact compile

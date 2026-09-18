@@ -1,0 +1,26 @@
+// A resource local to an actor handler whose `close` fails crashes that actor
+// with the panic's own code and message; `main` keeps running. The handler
+// holds no other owner, so the crash strands nothing.
+#[resource]
+type Conn { fd: i64, }
+
+impl Conn {
+    fn close(consume self) {
+        println(f"close {self.fd}");
+        if self.fd == 2 { panic("close failed"); }
+    }
+}
+
+actor Pool {
+    var drained: i64 = 0,
+    receive fn drain() {
+        var conn: Conn = Conn { fd: 2 };
+        drained = 1;
+    }
+}
+
+fn main() {
+    let pool = spawn Pool;
+    let _ = pool.drain();
+    println("main continues");
+}

@@ -93,6 +93,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             llvm: &self.llvm,
             builder: &builder,
             value: function,
+            fault_sink: None,
         };
         for (index, field) in glue.fields.iter().enumerate().rev() {
             let Some(action) = field.destroy else {
@@ -145,6 +146,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             llvm: &self.llvm,
             builder: &builder,
             value: function,
+            fault_sink: None,
         };
         for (index, field) in glue.fields.iter().enumerate().rev() {
             let index = u32::try_from(index)

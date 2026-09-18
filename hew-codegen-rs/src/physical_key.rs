@@ -246,6 +246,7 @@ impl<'a, 'ctx, 'm> SelectedValueEmitter<'a, 'ctx, 'm> {
             llvm: &self.parent.llvm,
             builder: &self.builder,
             value: self.function,
+            fault_sink: None,
         }
     }
 

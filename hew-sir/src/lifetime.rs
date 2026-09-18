@@ -124,6 +124,49 @@ impl PlaceLifetimes {
     }
 }
 
+/// Which release operations can run an authored `close`.
+///
+/// The released type is the place's declared type or the destroyed value's,
+/// which is the same type physical MIR resolves its release glue from.
+fn fault_releases(
+    function: &SemFunction,
+    release_may_fault: &dyn Fn(&hew_types::ResolvedTy) -> bool,
+) -> BTreeSet<crate::OpId> {
+    let mut types: BTreeMap<ValueId, hew_types::ResolvedTy> = BTreeMap::new();
+    for param in &function.params {
+        types.insert(param.value, param.ty.clone());
+    }
+    for block in &function.blocks {
+        for arg in &block.args {
+            types.insert(arg.value, arg.ty.clone());
+        }
+        for op in &block.ops {
+            for result in &op.results {
+                types.insert(result.id, result.ty.clone());
+            }
+        }
+        block.terminator.visit_results(|value| {
+            types.insert(value.id, value.ty.clone());
+        });
+    }
+    let mut releases = BTreeSet::new();
+    for block in &function.blocks {
+        for op in &block.ops {
+            let ty = match &op.kind {
+                SemOpKind::EndLifetime { place } | SemOpKind::StoreAssign { place, .. } => {
+                    function.places.get(place.0 as usize).map(|place| &place.ty)
+                }
+                SemOpKind::DestroyValue { value } => types.get(&value.value),
+                _ => None,
+            };
+            if ty.is_some_and(release_may_fault) {
+                releases.insert(op.id);
+            }
+        }
+    }
+    releases
+}
+
 pub(crate) struct Analysis {
     pub violations: Vec<Violation>,
     pub lifetimes: PlaceLifetimes,
@@ -138,8 +181,9 @@ pub(crate) fn verify(
     projections: &crate::PlacePlan,
     facts: &crate::ownership::TypeFactTable,
     shapes: &[crate::SemAggregateShape],
+    release_may_fault: &dyn Fn(&hew_types::ResolvedTy) -> bool,
 ) -> Analysis {
-    let flow = Flow::new(function, projections, facts, shapes);
+    let flow = Flow::new(function, projections, facts, shapes, release_may_fault);
     let mut lifetimes = PlaceLifetimes::new();
     if !flow.blocks.contains_key(&function.entry) {
         return Analysis {
@@ -374,6 +418,9 @@ pub(crate) fn cleanup_suffixes(function: &SemFunction) -> BTreeMap<BlockId, usiz
 
 struct Flow<'a> {
     defers: crate::defer::Plan,
+    /// Releases that can run an authored `close`, so a fault may be owned
+    /// after them and the enclosing cleanup must dispatch its outcome (D516).
+    fault_releases: BTreeSet<crate::OpId>,
     terminal_receiver: Option<ValueId>,
     linear_records: BTreeSet<crate::AggregateShapeId>,
     blocks: BTreeMap<BlockId, &'a crate::SemBlock>,
@@ -414,7 +461,9 @@ impl<'a> Flow<'a> {
         projections: &'a crate::PlacePlan,
         facts: &crate::ownership::TypeFactTable,
         shapes: &[crate::SemAggregateShape],
+        release_may_fault: &dyn Fn(&hew_types::ResolvedTy) -> bool,
     ) -> Self {
+        let fault_releases = fault_releases(function, release_may_fault);
         let mut values = BTreeSet::new();
         let mut guaranteed = BTreeSet::new();
         let mut linear_values = BTreeSet::new();
@@ -603,6 +652,7 @@ impl<'a> Flow<'a> {
             .collect();
         Self {
             defers: crate::defer::plan(function).unwrap_or_default(),
+            fault_releases,
             terminal_receiver: function.terminal_receiver,
             linear_records: shapes
                 .iter()
@@ -1356,6 +1406,12 @@ impl<'a> Flow<'a> {
                         *entry.entry(*leaf).or_insert(0) |= state.places[self.place_indices[leaf]];
                     }
                 }
+                if self.fault_releases.contains(&op.id) {
+                    // The release runs an authored `close`, so from here the
+                    // frame may own a fault. The enclosing cleanup dispatch
+                    // decides whether source execution resumes (D516).
+                    state.fault |= LIVE;
+                }
             }
             self.local_lifetime(id, &op.kind, cleanup, state, emit);
             if let SemOpKind::DestroyValue { value } = &op.kind {
@@ -2037,6 +2093,7 @@ mod tests {
             &crate::place_plan(function, &[], &std::collections::BTreeMap::default()).unwrap(),
             &crate::ownership::TypeFactTable::new(),
             &[],
+            &|_| false,
         )
         .violations
     }
@@ -2160,6 +2217,13 @@ mod tests {
     }
 
     fn cleanup_analysis(blocks: Vec<SemBlock>) -> super::Analysis {
+        cleanup_analysis_with_release(blocks, &|_| false)
+    }
+
+    fn cleanup_analysis_with_release(
+        blocks: Vec<SemBlock>,
+        release_may_fault: &dyn Fn(&ResolvedTy) -> bool,
+    ) -> super::Analysis {
         let mut f = function(blocks);
         let mut facts = hew_types::TypeFactService::new(
             hew_types::TypeFactContext::default(),
@@ -2197,7 +2261,26 @@ mod tests {
         f.blocks[0].ops = entry;
         let rows = facts.into_rows();
         let plan = crate::place_plan(&f, &[], &rows).unwrap();
-        super::verify(&f, &plan, &rows, &[])
+        super::verify(&f, &plan, &rows, &[], release_may_fault)
+    }
+
+    /// A release that can run an authored `close` leaves the frame possibly
+    /// owning a fault, so the exit that resumes ordinary execution is refused
+    /// until a cleanup dispatch has decided the outcome (D516).
+    #[test]
+    fn a_release_that_can_fault_cannot_resume_a_normal_return() {
+        let blocks = || vec![block(0, vec![local_end()], done())];
+        let clean = cleanup_analysis_with_release(blocks(), &|_| false);
+        assert!(clean.violations.is_empty(), "{:?}", clean.violations);
+        let fallible = cleanup_analysis_with_release(blocks(), &|_| true);
+        assert!(
+            fallible
+                .violations
+                .iter()
+                .any(|violation| violation.reason.contains("fault")),
+            "{:?}",
+            fallible.violations
+        );
     }
 
     fn local_end() -> SemOp {

@@ -179,6 +179,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             llvm: &self.llvm,
             builder: &builder,
             value: function,
+            fault_sink: None,
         };
         for (index, ty, action) in owned {
             let layout = self.module.target.layout(&ty).ok_or_else(|| {

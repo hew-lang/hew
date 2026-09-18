@@ -257,6 +257,121 @@ pub(crate) fn authored_opaque_lifecycle<'a>(
         .filter(|lifecycle| lifecycle.release_declaration == lifecycle.close_declaration)
 }
 
+/// The leaf test during lowering, where HIR is the lifecycle authority.
+pub(crate) fn authored_close_in_hir(
+    module: &hew_hir::HirModule,
+) -> impl Fn(&ResolvedTy) -> bool + '_ {
+    |ty| {
+        record_resource_lifecycle(module, ty).is_some()
+            || authored_opaque_lifecycle(module, ty).is_some()
+    }
+}
+
+/// The leaf test after publication, where the module's resolved releases are.
+pub(crate) fn authored_close_in_module(
+    resources: &std::collections::BTreeMap<ResolvedTy, crate::ResourceRelease>,
+) -> impl Fn(&ResolvedTy) -> bool + '_ {
+    |ty| {
+        matches!(
+            resources.get(ty),
+            Some(
+                crate::ResourceRelease::RecordClose { .. }
+                    | crate::ResourceRelease::OpaqueClose { .. }
+            )
+        )
+    }
+}
+
+/// Whether releasing `ty` can run an authored `close`, which can fault.
+///
+/// Such a release is the enclosing frame's fault edge (D516): the frame fills
+/// its fault record, keeps releasing what it still owns, and dispatches the
+/// outcome instead of resuming the source exit. The answer is the same one
+/// physical MIR resolves over its release glue, derived here from the checked
+/// shapes so both stages agree on which releases carry a fault slot.
+///
+/// A `#[resource]` record and an authored opaque handle release through a body
+/// with the fault ABI; every other resource protocol releases through a C
+/// endpoint that cannot raise one. A collection, a shared handle, a callable
+/// environment and an erased vtable drop release through runtime glue with no
+/// fault slot to report into, so a close that fails inside one still reaches
+/// the trap path and this answers no for them.
+pub(crate) fn release_may_fault(
+    authored_close: &dyn Fn(&ResolvedTy) -> bool,
+    aggregates: &[crate::SemAggregateShape],
+    variants: &[crate::SemVariantShape],
+    ty: &ResolvedTy,
+) -> bool {
+    fn visit(
+        ty: &ResolvedTy,
+        authored_close: &dyn Fn(&ResolvedTy) -> bool,
+        aggregates: &[crate::SemAggregateShape],
+        variants: &[crate::SemVariantShape],
+        seen: &mut Vec<ResolvedTy>,
+    ) -> bool {
+        if seen.contains(ty) {
+            return false;
+        }
+        // A resource releases through its own protocol, never through its
+        // members: `close(consume self)` destroys what it does not move out.
+        if authored_close(ty) {
+            return true;
+        }
+        seen.push(ty.clone());
+        let result = match ty {
+            // Released through runtime glue, which has no fault slot yet.
+            ResolvedTy::Function { .. }
+            | ResolvedTy::Closure { .. }
+            | ResolvedTy::TraitObject { .. }
+            | ResolvedTy::Array(_, _) => false,
+            _ if [
+                hew_types::BuiltinType::Vec,
+                hew_types::BuiltinType::HashMap,
+                hew_types::BuiltinType::HashSet,
+                hew_types::BuiltinType::Rc,
+                hew_types::BuiltinType::Weak,
+            ]
+            .into_iter()
+            .any(|builtin| ty.is_builtin(builtin)) =>
+            {
+                false
+            }
+            ResolvedTy::Tuple(members) => members
+                .iter()
+                .any(|member| visit(member, authored_close, aggregates, variants, seen)),
+            // A builtin carrier releases through its arguments; a declared
+            // record or enum releases through its published shape. A generic
+            // declaration has both, and neither alone covers it.
+            ResolvedTy::Named { args, .. } => {
+                args.iter()
+                    .any(|argument| visit(argument, authored_close, aggregates, variants, seen))
+                    || aggregates
+                        .iter()
+                        .find(|shape| shape.aggregate_ty == *ty)
+                        .is_some_and(|shape| {
+                            shape.fields.iter().any(|field| {
+                                visit(&field.ty, authored_close, aggregates, variants, seen)
+                            })
+                        })
+                    || variants
+                        .iter()
+                        .find(|shape| shape.enum_ty == *ty)
+                        .is_some_and(|shape| {
+                            shape.variants.iter().any(|variant| {
+                                variant.fields.iter().any(|field| {
+                                    visit(&field.ty, authored_close, aggregates, variants, seen)
+                                })
+                            })
+                        })
+            }
+            _ => false,
+        };
+        seen.pop();
+        result
+    }
+    visit(ty, authored_close, aggregates, variants, &mut Vec::new())
+}
+
 /// Check the release contract independently before any target layout is selected.
 ///
 /// # Errors

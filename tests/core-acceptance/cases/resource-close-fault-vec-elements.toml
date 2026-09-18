@@ -1,0 +1,11 @@
+[[case]]
+id = "resource-close-fault-vec-elements"
+intent = "Two failing element closes in one Vec.clear release every element in index order, report the first failure as the primary and the second as a secondary line."
+source = "cases/resource-close-fault-vec-elements.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "close 1\nclose 2\nclose 3\n"
+stderr = "hew: failure: UserPanic (212): close 2 failed\nhew: secondary failure: UserPanic (212): close 3 failed\n"
+exit = 1

@@ -1,0 +1,31 @@
+// A losing race operand is cancelled while holding a resource whose close
+// fails. The frame releases the operand's owner on the cancellation edge and
+// records the close fault against the cancellation. The race then consumes its
+// own cancellation marker, which leaves the close fault as the surviving
+// failure: a cancellation is a request, and a cleanup that genuinely failed
+// during it is not something the request answers for.
+#[resource]
+type Conn { fd: i64, }
+
+impl Conn {
+    fn close(consume self) {
+        println(f"close {self.fd}");
+        panic(f"close {self.fd} failed");
+    }
+}
+
+fn cancelled() -> i64 {
+    let conn = Conn { fd: 9 };
+    sleep(5s);
+    conn.fd
+}
+
+fn winner() -> i64 {
+    sleep(1ms);
+    7
+}
+
+fn main() {
+    let picked = race { winner(), cancelled() };
+    println(f"picked {picked}");
+}

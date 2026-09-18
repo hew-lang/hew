@@ -1,0 +1,36 @@
+// A handler that faults while holding two resources whose closes both fail.
+// The frame keeps releasing in reverse binding order, so both closes run; the
+// body's panic stays the primary failure and each close joins it as a
+// secondary line. The supervisor rules on the trap code as for any crash.
+#[resource]
+type Conn { fd: i64, }
+
+impl Conn {
+    fn close(consume self) {
+        println(f"close {self.fd}");
+        panic(f"close {self.fd} failed");
+    }
+}
+
+actor Drain {
+    var runs: i64 = 0,
+    receive fn run() {
+        let first = Conn { fd: 1 };
+        let second = Conn { fd: 2 };
+        runs = 1;
+        panic("handler failed");
+    }
+}
+
+supervisor Rack {
+    strategy: one_for_one,
+    intensity: 3 within 60s,
+    child drain: Drain,
+}
+
+fn main() {
+    let rack = spawn Rack;
+    let _ = rack.drain.run();
+    let _ = await_restart rack.drain;
+    println("restarted");
+}

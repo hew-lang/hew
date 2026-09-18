@@ -1,0 +1,21 @@
+// Ownership moved to the caller at the return, so the release obligation and
+// the fault it raises are the caller's: `acquire` owns nothing at its own exit
+// and has no release to fail.
+#[resource]
+type Conn { fd: i64, }
+
+impl Conn {
+    fn close(consume self) {
+        println(f"close {self.fd}");
+        panic(f"close {self.fd} failed");
+    }
+}
+
+fn acquire(fd: i64) -> Conn {
+    Conn { fd: fd }
+}
+
+fn main() {
+    let conn = acquire(7);
+    println("working");
+}

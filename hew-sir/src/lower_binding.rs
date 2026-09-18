@@ -102,6 +102,7 @@ impl Builder<'_, '_> {
                 if self.value_needs_close(&self.places[place.0 as usize].ty) {
                     self.close_value(Some(place), None)?;
                 }
+                self.note_release_may_fault(&self.places[place.0 as usize].ty.clone());
                 self.emit_place_operation(
                     SemOpKind::EndLifetime { place },
                     Provenance::Synthesized,
@@ -109,6 +110,22 @@ impl Builder<'_, '_> {
             }
         }
         Ok(())
+    }
+
+    /// Record that the release just emitted can run an authored `close`.
+    ///
+    /// The enclosing cleanup then dispatches its outcome instead of resuming
+    /// the source exit, so a failing close leaves the frame as a fault after
+    /// every remaining owner has been released (D516).
+    pub(super) fn note_release_may_fault(&mut self, ty: &hew_types::ResolvedTy) {
+        if crate::resource::release_may_fault(
+            &crate::resource::authored_close_in_hir(self.service.module),
+            &self.service.aggregate_shapes,
+            &self.service.variant_shapes,
+            ty,
+        ) {
+            self.cleanup_may_fail = true;
+        }
     }
 
     /// Emit an exit without changing the declaration context used to generate

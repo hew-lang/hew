@@ -27,9 +27,11 @@
 //! always drives it to empty.
 //!
 //! A release never suspends, so the worklist is thread-local: descriptor drop
-//! thunks are plain `extern "C"` functions with no coroutine lowering, and a
-//! resource `close` whose body suspends is driven to completion by
-//! `hew_coro_run_root` on the calling thread before the drop glue returns.
+//! thunks have no coroutine lowering, and a resource `close` whose body
+//! suspends is driven to completion by `hew_coro_run_root` on the calling
+//! thread before the drop glue returns. A `close` that fails instead hands its
+//! fault to [`held_fault`], and the outermost drain raises it once the walk has
+//! released everything it owns.
 
 use std::cell::{Cell, RefCell};
 
@@ -75,6 +77,7 @@ thread_local! {
     /// The fault a `close` raised during the walk in progress, with the status
     /// it returned. Held so the walk finishes releasing what it owns before
     /// the fault leaves the runtime.
+    #[cfg(not(target_arch = "wasm32"))]
     static HELD: Cell<Option<(i32, *mut crate::fault::HewFault)>> = const { Cell::new(None) };
 }
 
@@ -124,15 +127,19 @@ unsafe fn drain(item: ReleaseItem) {
             unsafe { run(step) };
         }
     }
-    if walking() {
-        return;
-    }
-    // The walk is complete and every element is released exactly once, so the
-    // fault a `close` raised during it can now leave the runtime. Nothing here
-    // owns it either: `hew_fault_trap` crashes the actor or ends the run.
-    if let Some((code, fault)) = HELD.with(Cell::take) {
-        // SAFETY: `held_fault` transferred one unique fault owner.
-        unsafe { crate::fault::hew_fault_trap(code, fault) };
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        if walking() {
+            return;
+        }
+        // The walk is complete and every element is released exactly once, so
+        // the fault a `close` raised during it can now leave the runtime.
+        // Nothing here owns it either: `hew_fault_trap` crashes the actor or
+        // ends the run.
+        if let Some((code, fault)) = HELD.with(Cell::take) {
+            // SAFETY: `held_fault` transferred one unique fault owner.
+            unsafe { crate::fault::hew_fault_trap(code, fault) };
+        }
     }
 }
 
@@ -170,6 +177,7 @@ impl Drop for Walk {
 /// # Safety
 ///
 /// `fault` must transfer one live, unique, non-null fault owner.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) unsafe fn held_fault(code: i32, fault: *mut crate::fault::HewFault) -> bool {
     if !walking() {
         return false;

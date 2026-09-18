@@ -2562,6 +2562,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 function_debug,
                 attribution,
                 function,
+                &module.module.target,
                 &slots,
                 prologue,
                 callable.is_resumable,

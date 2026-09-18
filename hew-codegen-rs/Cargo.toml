@@ -26,6 +26,10 @@ inkwell = { version = "=0.9.0", default-features = false, features = [
 # Provides the exact LLVM toolchain path to the sanitizer test build setup.
 llvm-sys = "221"
 
+[build-dependencies]
+# Compiles the DIBuilder variant-part shim into this crate's static archive.
+cc = "1"
+
 [dev-dependencies]
 hew-std = { path = "../hew-std" }
 hew-hir = { path = "../hew-hir" }

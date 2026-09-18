@@ -52,10 +52,32 @@ fn verified(source: &str) -> hew_mir::VerifiedPhysicalModule {
     hew_mir::lower_physical_module(&semantic, target).expect("verified physical module")
 }
 
+/// A record payload behind a variant: the record's own members must stay named
+/// and the enum must select one case, not lay every payload over the same bytes.
+const ENUM: &str = "\
+type Payload {
+    code: i64,
+}
+
+enum Status {
+    Idle,
+    Packet(Payload),
+}
+
+fn main() {
+    let status = Status.Packet(Payload { code: 7 });
+    println(1);
+}
+";
+
 fn emit(dir: &Path, debug: bool) -> EmitArtefacts {
-    let source = dir.join("shadow.hew");
-    std::fs::write(&source, SHADOW).expect("write fixture source");
-    hew_codegen_emit(&verified(SHADOW), dir, debug.then_some(source.as_path()))
+    emit_source(dir, "shadow", SHADOW, debug)
+}
+
+fn emit_source(dir: &Path, name: &str, text: &str, debug: bool) -> EmitArtefacts {
+    let source = dir.join(format!("{name}.hew"));
+    std::fs::write(&source, text).expect("write fixture source");
+    hew_codegen_emit(&verified(text), dir, debug.then_some(source.as_path()))
 }
 
 fn hew_codegen_emit(
@@ -66,7 +88,7 @@ fn hew_codegen_emit(
     emit_physical_object(
         verified,
         &PhysicalEmitOptions {
-            module_name: "shadow",
+            module_name: "fixture",
             out_dir: dir,
             target_triple: None,
             opt_level: OptLevel::O0,
@@ -84,6 +106,10 @@ struct Die {
     tag: String,
     name: Option<String>,
     decl_line: Option<u32>,
+    /// Present on a `DW_TAG_variant_part`: the member it selects on.
+    discr: bool,
+    /// Present on a `DW_TAG_variant`: the tag value that selects it.
+    discr_value: Option<u64>,
 }
 
 fn dwarf_dies(object: &Path) -> Vec<Die> {
@@ -115,6 +141,8 @@ fn dwarf_dies(object: &Path) -> Vec<Die> {
                     tag,
                     name: None,
                     decl_line: None,
+                    discr: false,
+                    discr_value: None,
                 });
             }
             continue;
@@ -125,6 +153,13 @@ fn dwarf_dies(object: &Path) -> Vec<Die> {
             die.name = value.strip_suffix("\")").map(ToOwned::to_owned);
         } else if let Some(value) = trimmed.strip_prefix("DW_AT_decl_line\t(") {
             die.decl_line = value.strip_suffix(')').and_then(|line| line.parse().ok());
+        } else if trimmed.starts_with("DW_AT_discr\t(") {
+            die.discr = true;
+        } else if let Some(value) = trimmed.strip_prefix("DW_AT_discr_value\t(") {
+            die.discr_value = value
+                .strip_suffix(')')
+                .and_then(|raw| raw.strip_prefix("0x"))
+                .and_then(|raw| u64::from_str_radix(raw, 16).ok());
         }
     }
     dies
@@ -208,5 +243,66 @@ fn a_build_without_debug_emits_no_debug_metadata() {
     assert!(
         with_debug.contains("DICompileUnit") && with_debug.contains("#dbg_declare"),
         "the same build with -g must carry both"
+    );
+}
+
+/// An enum local must reach the debugger as a variant part: one discriminant to
+/// select on, one `DW_TAG_variant` per case carrying its tag value, and the
+/// payload record's own field names. Describing the `{ tag, payload }` carrier
+/// instead hands every variant's bytes over at once.
+#[test]
+fn an_enum_emits_a_variant_part_selected_by_its_discriminant() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let artefacts = emit_source(dir.path(), "enum", ENUM, true);
+    let object = artefacts.native_obj_path.expect("native object");
+    let dies = dwarf_dies(&object);
+
+    let status = dies
+        .iter()
+        .position(|die| die.tag == "DW_TAG_structure_type" && die.name.as_deref() == Some("Status"))
+        .expect("the enum is described by its source name");
+    let part = &dies[status + 1];
+    assert_eq!(
+        part.tag, "DW_TAG_variant_part",
+        "the enum's only element is its variant part"
+    );
+    assert!(
+        part.discr,
+        "the variant part must name the member a consumer selects on"
+    );
+
+    let cases: Vec<&Die> = dies[status..]
+        .iter()
+        .take_while(|die| die.depth > dies[status].depth || std::ptr::eq(*die, &dies[status]))
+        .filter(|die| die.tag == "DW_TAG_variant")
+        .collect();
+    assert_eq!(cases.len(), 2, "both declared cases must be described");
+    assert_eq!(cases[0].discr_value, Some(0), "`Idle` is selected by tag 0");
+    assert_eq!(
+        cases[1].discr_value,
+        Some(1),
+        "`Packet` is selected by tag 1"
+    );
+
+    let named = |name: &str| dies.iter().any(|die| die.name.as_deref() == Some(name));
+    assert!(named("Idle") && named("Packet"), "each case is named");
+    assert!(
+        named("code"),
+        "the payload record keeps its source field name"
+    );
+}
+
+/// Negative control: a body with no enum emits no variant part, so the
+/// assertion above cannot pass on debug metadata every build happens to carry.
+#[test]
+fn a_body_without_an_enum_emits_no_variant_part() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let artefacts = emit(dir.path(), true);
+    let object = artefacts.native_obj_path.expect("native object");
+    assert!(
+        dwarf_dies(&object)
+            .iter()
+            .all(|die| die.tag != "DW_TAG_variant_part"),
+        "a build with no enum local must not describe one"
     );
 }

@@ -1311,6 +1311,39 @@ pub struct PhysicalDebug {
     /// Lexical blocks of the root compilation unit, in HIR scope order.
     pub scopes: Vec<hew_sir::SemDebugScope>,
     pub functions: BTreeMap<CallableId, PhysicalDebugFunction>,
+    /// Source field names of each concrete record, in declaration order.
+    pub records: BTreeMap<ResolvedTy, Vec<PhysicalDebugField>>,
+    /// Source variant names of each concrete enum, in declaration (tag) order.
+    pub enums: BTreeMap<ResolvedTy, Vec<PhysicalDebugVariant>>,
+}
+
+/// One aggregate or variant-payload field as the source spells it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PhysicalDebugField {
+    pub name: String,
+    pub ty: ResolvedTy,
+}
+
+/// One enum variant as the source spells it. Its position in the enum's row is
+/// its tag value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PhysicalDebugVariant {
+    pub name: String,
+    pub fields: Vec<PhysicalDebugField>,
+}
+
+fn debug_field(field: &hew_sir::SemAggregateField) -> PhysicalDebugField {
+    PhysicalDebugField {
+        name: field.name.clone(),
+        ty: field.ty.clone(),
+    }
+}
+
+fn debug_variant_field(field: &hew_sir::SemVariantField) -> PhysicalDebugField {
+    PhysicalDebugField {
+        name: field.name.clone(),
+        ty: field.ty.clone(),
+    }
 }
 
 /// One body's source name, declaration point, named locals and op attribution.
@@ -1457,6 +1490,33 @@ pub fn lower_physical_module(
     let mut debug = PhysicalDebug {
         scopes: module.debug.scopes.clone(),
         functions: BTreeMap::new(),
+        records: module
+            .aggregate_shapes
+            .iter()
+            .map(|shape| {
+                (
+                    shape.aggregate_ty.clone(),
+                    shape.fields.iter().map(debug_field).collect(),
+                )
+            })
+            .collect(),
+        enums: module
+            .variant_shapes
+            .iter()
+            .map(|shape| {
+                (
+                    shape.enum_ty.clone(),
+                    shape
+                        .variants
+                        .iter()
+                        .map(|variant| PhysicalDebugVariant {
+                            name: variant.name.clone(),
+                            fields: variant.fields.iter().map(debug_variant_field).collect(),
+                        })
+                        .collect(),
+                )
+            })
+            .collect(),
     };
     let functions = module
         .functions

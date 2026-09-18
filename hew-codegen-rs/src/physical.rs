@@ -1333,6 +1333,57 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
         Ok(())
     }
 
+    /// Arm a release-fault sink around a release the runtime performs.
+    ///
+    /// A collection, shared handle, callable environment or erased vtable drop
+    /// releases inside the runtime, which has no fault slot of its own to hand
+    /// back. The sink is that slot: a failing `close` records against it, the
+    /// release still finishes, and the fault comes back here to join the
+    /// frame's own record (D516).
+    ///
+    /// This adds no basic block. A release sits inside sequences whose later
+    /// phi nodes name the block it was emitted into, so the bracket folds the
+    /// no-fault case into the same combine rather than branching around it:
+    /// `hew_fault_combine` already returns the primary for a null secondary,
+    /// and the status slot starts at zero for a release that raised nothing.
+    fn emit_release_in_sink(&self, emit: impl FnOnce() -> CodegenResult<()>) -> CodegenResult<()> {
+        let Some((active_fault, active_status)) = self.fault_sink else {
+            return emit();
+        };
+        let pointer = self.ctx.ptr_type(AddressSpace::default());
+        let slot = self.entry_scratch(self.ctx.i32_type().into(), "release.sink.status")?;
+        self.builder
+            .build_store(slot, self.ctx.i32_type().const_zero())
+            .llvm_ctx("clear the release sink status")?;
+        let begin = get_or_declare_external(
+            self.llvm,
+            "hew_release_fault_begin",
+            self.ctx.void_type().fn_type(&[], false),
+        )?;
+        self.builder
+            .build_call(begin, &[], "")
+            .llvm_ctx("arm a release fault sink")?;
+        emit()?;
+        let end = get_or_declare_external(
+            self.llvm,
+            "hew_release_fault_end",
+            pointer.fn_type(&[pointer.into()], false),
+        )?;
+        let raised = self
+            .builder
+            .build_call(end, &[slot.into()], "release.sink.fault")
+            .llvm_ctx("end a release fault sink")?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| CodegenError::FailClosed("release sink returned void".into()))?;
+        let status = self
+            .builder
+            .build_load(self.ctx.i32_type(), slot, "release.sink.status.value")
+            .llvm_ctx("load the released fault's status")?
+            .into_int_value();
+        self.record_release_fault(active_fault, active_status, raised, status)
+    }
+
     fn clone_loaded_value(
         &self,
         value: BasicValueEnum<'ctx>,
@@ -1549,10 +1600,12 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
                     .build_store(slot, value)
                     .llvm_ctx("stage callable destruction")?;
                 let drop = external_drop(self.ctx, self.llvm, "hew_callable_drop")?;
-                self.builder
-                    .build_call(drop, &[slot.into()], "")
-                    .llvm_ctx("destroy callable environment")?;
-                Ok(())
+                self.emit_release_in_sink(|| {
+                    self.builder
+                        .build_call(drop, &[slot.into()], "")
+                        .llvm_ctx("destroy callable environment")?;
+                    Ok(())
+                })
             }
 
             // Releasing a strong handle may run the payload's own release,
@@ -1564,10 +1617,12 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
                     RuntimeCallFamily::RcDrop.row().symbol
                 };
                 let function = external_drop(self.ctx, self.llvm, symbol)?;
-                self.builder
-                    .build_call(function, &[value.into_pointer_value().into()], "")
-                    .llvm_ctx("release a shared allocation")?;
-                Ok(())
+                self.emit_release_in_sink(|| {
+                    self.builder
+                        .build_call(function, &[value.into_pointer_value().into()], "")
+                        .llvm_ctx("release a shared allocation")?;
+                    Ok(())
+                })
             }
             DestroyAction::Encoding(_)
             | DestroyAction::StringRelease
@@ -1710,10 +1765,12 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
                     _ => unreachable!("matched collection destroy"),
                 };
                 let function = external_drop(self.ctx, self.llvm, symbol)?;
-                self.builder
-                    .build_call(function, &[value.into()], "collection.drop")
-                    .llvm_ctx("destroy descriptor-backed collection")?;
-                Ok(())
+                self.emit_release_in_sink(|| {
+                    self.builder
+                        .build_call(function, &[value.into()], "collection.drop")
+                        .llvm_ctx("destroy descriptor-backed collection")?;
+                    Ok(())
+                })
             }
         }
     }
@@ -6536,7 +6593,9 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     }
                 } else {
                     let function = external_drop(self.ctx, self.llvm, "hew_vec_clear")?;
-                    self.runtime_call_void(function, &[vector.into()], "vector.clear")?;
+                    self.value_emitter().emit_release_in_sink(|| {
+                        self.runtime_call_void(function, &[vector.into()], "vector.clear")
+                    })?;
                 }
                 self.clear_owned(receiver)?;
                 self.store(result, vector.into())?;
@@ -8830,6 +8889,78 @@ fn external_unary_ptr<'ctx>(
 ) -> CodegenResult<FunctionValue<'ctx>> {
     let ptr = ctx.ptr_type(AddressSpace::default());
     get_or_declare_external(module, symbol, ptr.fn_type(&[ptr.into()], false))
+}
+
+/// Give one piece of release glue a fault record of its own.
+///
+/// Glue the runtime calls directly - an actor's terminal state release, a
+/// callable environment drop - has no frame behind it, so a failing `close`
+/// would otherwise leave through the trap path and strand whatever the glue
+/// still owns. The record collects the failure, the glue finishes releasing,
+/// and [`raise_glue_fault_record`] lets the fault leave at the end (D516).
+pub(super) fn glue_fault_record<'ctx>(
+    ctx: &'ctx Context,
+    builder: &Builder<'ctx>,
+) -> CodegenResult<(PointerValue<'ctx>, PointerValue<'ctx>)> {
+    let pointer = ctx.ptr_type(AddressSpace::default());
+    let fault = builder
+        .build_alloca(pointer, "glue.fault")
+        .llvm_ctx("allocate glue fault owner")?;
+    let status = builder
+        .build_alloca(ctx.i32_type(), "glue.fault.status")
+        .llvm_ctx("allocate glue fault status")?;
+    builder
+        .build_store(fault, pointer.const_null())
+        .llvm_ctx("clear glue fault owner")?;
+    builder
+        .build_store(status, ctx.i32_type().const_zero())
+        .llvm_ctx("clear glue fault status")?;
+    Ok((fault, status))
+}
+
+/// Let a fault this glue collected leave, once it owns nothing further.
+///
+/// The trap path records it against the release in progress when one is armed,
+/// and otherwise reports it and crashes the actor or ends the run.
+pub(super) fn raise_glue_fault_record<'ctx>(
+    ctx: &'ctx Context,
+    llvm: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    function: FunctionValue<'ctx>,
+    record: (PointerValue<'ctx>, PointerValue<'ctx>),
+) -> CodegenResult<()> {
+    let (fault, status) = record;
+    let pointer = ctx.ptr_type(AddressSpace::default());
+    let raised = builder
+        .build_load(pointer, fault, "glue.fault.raised")
+        .llvm_ctx("load the glue's collected fault")?
+        .into_pointer_value();
+    let code = builder
+        .build_load(ctx.i32_type(), status, "glue.fault.code")
+        .llvm_ctx("load the glue's collected status")?;
+    let present = builder
+        .build_is_not_null(raised, "glue.fault.present")
+        .llvm_ctx("test the glue's collected fault")?;
+    let raise = ctx.append_basic_block(function, "glue.fault.raise");
+    let done = ctx.append_basic_block(function, "glue.fault.done");
+    builder
+        .build_conditional_branch(present, raise, done)
+        .llvm_ctx("branch on the glue's collected fault")?;
+    builder.position_at_end(raise);
+    let trap = get_or_declare_external(
+        llvm,
+        "hew_fault_trap",
+        ctx.void_type()
+            .fn_type(&[ctx.i32_type().into(), pointer.into()], false),
+    )?;
+    builder
+        .build_call(trap, &[code.into(), raised.into()], "")
+        .llvm_ctx("raise the glue's collected fault")?;
+    builder
+        .build_unconditional_branch(done)
+        .llvm_ctx("finish raising the glue's fault")?;
+    builder.position_at_end(done);
+    Ok(())
 }
 
 fn external_drop<'ctx>(

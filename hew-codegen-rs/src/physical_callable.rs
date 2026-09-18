@@ -87,13 +87,16 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         let context = function.get_nth_param(1).unwrap().into_pointer_value();
         let builder = self.ctx.create_builder();
         builder.position_at_end(self.ctx.append_basic_block(function, "entry"));
+        // A captured `#[resource]` whose `close` fails records here, so the
+        // remaining captures are still released before the fault leaves.
+        let record = crate::physical::glue_fault_record(self.ctx, &builder)?;
         let emitter = ValueEmitter {
             module: self.module,
             ctx: self.ctx,
             llvm: &self.llvm,
             builder: &builder,
             value: function,
-            fault_sink: None,
+            fault_sink: Some(record),
         };
         for (index, field) in glue.fields.iter().enumerate().rev() {
             let Some(action) = field.destroy else {
@@ -119,6 +122,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 .llvm_ctx("finish capture selection")?;
             builder.position_at_end(next);
         }
+        crate::physical::raise_glue_fault_record(self.ctx, &self.llvm, &builder, function, record)?;
         builder
             .build_return(None)
             .llvm_ctx("finish environment child selection")?;
@@ -140,13 +144,16 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         let environment = function.get_first_param().unwrap().into_pointer_value();
         let builder = self.ctx.create_builder();
         builder.position_at_end(self.ctx.append_basic_block(function, "entry"));
+        // A captured `#[resource]` whose `close` fails records here, so the
+        // remaining captures are still released before the fault leaves.
+        let record = crate::physical::glue_fault_record(self.ctx, &builder)?;
         let emitter = ValueEmitter {
             module: self.module,
             ctx: self.ctx,
             llvm: &self.llvm,
             builder: &builder,
             value: function,
-            fault_sink: None,
+            fault_sink: Some(record),
         };
         for (index, field) in glue.fields.iter().enumerate().rev() {
             let index = u32::try_from(index)
@@ -179,6 +186,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 .llvm_ctx("finish capture destruction")?;
             builder.position_at_end(next);
         }
+        crate::physical::raise_glue_fault_record(self.ctx, &self.llvm, &builder, function, record)?;
         builder
             .build_return(None)
             .llvm_ctx("finish environment destruction")?;

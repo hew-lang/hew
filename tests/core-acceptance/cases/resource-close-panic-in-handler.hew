@@ -1,10 +1,9 @@
 // The same shape inside an actor handler: the panic crashes the actor with the
 // panic's own code and message, and `main` keeps running afterwards.
 //
-// Acceptance only: the trap raised from drop glue has no cleanup authority over
-// the crashing handler's frame, so the vector this handler still owns is
-// stranded (hew-lang/hew#3475). The safety twins are the same clear in `main`
-// and a handler-local resource, which strand nothing.
+// The clear releases every element, the failing close reaches the handler's
+// frame through the release-fault sink, and the frame releases the vector it
+// still owns before the crash leaves it.
 #[resource]
 type Conn { fd: i64, }
 

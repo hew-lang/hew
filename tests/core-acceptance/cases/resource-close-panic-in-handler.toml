@@ -2,7 +2,7 @@
 id = "resource-close-panic-in-handler"
 intent = "A panic inside a resource's close during Vec.clear in an actor handler crashes that actor with the panic's code and message while main continues."
 source = "cases/resource-close-panic-in-handler.hew"
-suites = ["acceptance"]
+suites = ["acceptance", "safety"]
 timeout_seconds = 30
 
 [case.expected]

@@ -13580,6 +13580,36 @@
       "availability": [
         "native"
       ],
+      "classification": "unclassified-stdlib",
+      "extent": "not-applicable",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_release_fault_begin()",
+        "wasm32-wasip1": "fn hew_release_fault_begin()"
+      },
+      "symbol": "hew_release_fault_begin"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "unclassified-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_release_fault_end( *mut i32, ) -> *mut HewFault",
+        "wasm32-wasip1": "fn hew_release_fault_end( *mut i32, ) -> *mut HewFault"
+      },
+      "symbol": "hew_release_fault_end"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
       "classification": "stable",
       "extent": "length-or-count",
       "nul": "not-applicable",

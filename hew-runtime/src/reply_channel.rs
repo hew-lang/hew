@@ -904,7 +904,7 @@ pub unsafe extern "C" fn hew_reply_wait_timeout(
 /// `ch` must have been returned by [`hew_reply_channel_new`] and must
 /// not be used after the final release.
 #[no_mangle]
-pub unsafe extern "C" fn hew_reply_channel_free(ch: *mut HewReplyChannel) {
+pub unsafe extern "C-unwind" fn hew_reply_channel_free(ch: *mut HewReplyChannel) {
     if ch.is_null() {
         return;
     }

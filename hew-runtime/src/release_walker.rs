@@ -30,8 +30,8 @@
 //! thunks have no coroutine lowering, and a resource `close` whose body
 //! suspends is driven to completion by `hew_coro_run_root` on the calling
 //! thread before the drop glue returns. A `close` that fails instead hands its
-//! fault to [`held_fault`], and the outermost drain raises it once the walk has
-//! released everything it owns.
+//! fault to [`held_fault`], which records it against the innermost armed
+//! release sink so the release finishes before the fault leaves it.
 
 use std::cell::{Cell, RefCell};
 
@@ -74,10 +74,13 @@ thread_local! {
     /// How many drains are running on this thread. Non-zero means a deferred
     /// release can join the walk instead of nesting.
     static DRAINS: Cell<usize> = const { Cell::new(0) };
-    /// The fault a `close` raised during the walk in progress, with the status
-    /// it returned. Held so the walk finishes releasing what it owns before
-    /// the fault leaves the runtime.
-    static HELD: Cell<Option<(i32, *mut crate::fault::HewFault)>> = const { Cell::new(None) };
+    /// Releases in progress on this thread, innermost last, each holding the
+    /// fault its `close` raised and the status that close returned. A frame
+    /// arms one around a release the runtime performs for it; a walk arms one
+    /// of its own so it finishes releasing before the fault leaves it.
+    #[cfg(not(target_arch = "wasm32"))]
+    static SINKS: RefCell<Vec<Option<(i32, *mut crate::fault::HewFault)>>> =
+        const { RefCell::new(Vec::new()) };
 }
 
 /// How many collection elements one worklist step releases. A step stays
@@ -116,6 +119,8 @@ fn walking() -> bool {
 ///
 /// `item` must name a structure this call exclusively owns.
 unsafe fn drain(item: ReleaseItem) {
+    #[cfg(not(target_arch = "wasm32"))]
+    arm_release_sink();
     {
         let walk = Walk::enter(item);
         while let Some(step) = take_above(walk.base) {
@@ -127,18 +132,59 @@ unsafe fn drain(item: ReleaseItem) {
         }
     }
     {
-        if walking() {
-            return;
-        }
         // The walk is complete and every element is released exactly once, so
-        // the fault a `close` raised during it can now leave the runtime.
-        // Nothing here owns it either: `hew_fault_trap` crashes the actor or
-        // ends the run.
-        if let Some((code, fault)) = HELD.with(Cell::take) {
+        // the fault a `close` raised during it can now leave it: into the sink
+        // the caller armed, or, with none, out through the trap path.
+        if let Some((code, fault)) = disarm_release_sink() {
             // SAFETY: `held_fault` transferred one unique fault owner.
             unsafe { crate::fault::hew_fault_trap(code, fault) };
         }
     }
+}
+
+/// Arm a sink for the release about to run on this thread.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn arm_release_sink() {
+    SINKS.with(|sinks| sinks.borrow_mut().push(None));
+}
+
+/// Take back the innermost sink and whatever fault it collected.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn disarm_release_sink() -> Option<(i32, *mut crate::fault::HewFault)> {
+    SINKS.with(|sinks| sinks.borrow_mut().pop().flatten())
+}
+
+/// Arm a release sink around a release the runtime performs for a frame.
+///
+/// Generated code brackets a collection, shared-handle, callable or erased
+/// release with this pair so a `close` that fails inside it reaches the frame
+/// that asked for the release instead of the trap path (D516).
+#[no_mangle]
+#[cfg(not(target_arch = "wasm32"))]
+pub extern "C" fn hew_release_fault_begin() {
+    arm_release_sink();
+}
+
+/// End the innermost release sink, transferring the fault it collected.
+///
+/// Returns null when the release raised nothing. `status_out` receives the
+/// status the failing `close` returned, which is the status the frame keeps
+/// when this fault becomes its own.
+///
+/// # Safety
+/// `status_out` must be a live, writable `i32`.
+#[no_mangle]
+#[must_use]
+#[cfg(not(target_arch = "wasm32"))]
+pub unsafe extern "C" fn hew_release_fault_end(
+    status_out: *mut i32,
+) -> *mut crate::fault::HewFault {
+    let Some((code, fault)) = disarm_release_sink() else {
+        return std::ptr::null_mut();
+    };
+    // SAFETY: the caller supplies one live status slot.
+    unsafe { *status_out = code };
+    fault
 }
 
 /// The walk in progress, restoring the worklist even if a step unwinds.
@@ -165,32 +211,34 @@ impl Drop for Walk {
     }
 }
 
-/// Hold a failing `close`'s fault until the walk in progress finishes.
+/// Record a failing `close`'s fault against the release in progress.
 ///
-/// Returns `false` outside a walk, where the caller raises the fault itself.
-/// Inside one, the fault is taken and raised by the outermost [`drain`], so a
-/// `close` that fails partway through a collection does not strand the
-/// elements and storage the walk still owns.
+/// Returns `false` with no sink armed, where the caller raises the fault
+/// itself. With one armed, the fault stays until that release finishes, so a
+/// `close` that fails partway through does not strand what the release still
+/// owns, and the frame that asked for the release is the one that owns the
+/// outcome.
 ///
 /// # Safety
 ///
 /// `fault` must transfer one live, unique, non-null fault owner.
 pub(crate) unsafe fn held_fault(code: i32, fault: *mut crate::fault::HewFault) -> bool {
-    if !walking() {
-        return false;
-    }
-    HELD.with(|held| match held.take() {
-        // The first failing `close` names the crash; a later one during the
-        // same walk joins it as a secondary diagnostic.
-        Some((first, primary)) => {
-            // SAFETY: both owners are unique and distinct.
-            held.set(Some((first, unsafe {
+    SINKS.with(|sinks| {
+        let mut sinks = sinks.borrow_mut();
+        let Some(sink) = sinks.last_mut() else {
+            return false;
+        };
+        *sink = Some(match sink.take() {
+            // The first failing `close` names the failure; a later one during
+            // the same release joins it as a secondary diagnostic.
+            Some((first, primary)) => (first, unsafe {
+                // SAFETY: both owners are unique and distinct.
                 crate::fault::hew_fault_combine(primary, fault)
-            })));
-        }
-        None => held.set(Some((code, fault))),
-    });
-    true
+            }),
+            None => (code, fault),
+        });
+        true
+    })
 }
 
 /// Release `item` synchronously, before returning to the caller.

@@ -1,0 +1,10 @@
+[[case]]
+id = "for-in-early-return-sink"
+intent = "An element moved out of a for-in cursor into a sink on an early-return edge stays owned by the sink; the exit edge releases only the abandoned snapshot, for nested cursors as well as for the own-loop break and no-sink controls."
+source = "cases/for-in-early-return-sink.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "2\nouter-alpha\ninner-alpha\n1\nouter-alpha\n22\nOK\n"
+exit = 0

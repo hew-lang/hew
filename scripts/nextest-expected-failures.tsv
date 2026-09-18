@@ -4,7 +4,6 @@ windows,freebsd	failure	hew-cli::branch_divergent_return_drop_ir	nested_returned
 windows,freebsd	failure	hew-cli::branch_divergent_return_drop_ir	returned_result_branch_releases_only_the_nonreturned_string_sibling	#3118 releases branch-local siblings on normal edges
 linux,freebsd,macos	failure	hew-cli::closure_env_drop_leak_oracle	generator_transitive_capture_outliving_its_generator_is_not_a_use_after_free	#3370 feat/generators-adaptors: coerces a Generator value at a callee boundary
 macos	failure	hew-cli::closure_env_drop_leak_oracle	generator_transitive_capture_outliving_its_generator_survives_the_poisoned_allocator	#3370 feat/generators-adaptors: coerces a Generator value at a callee boundary
-linux,macos,windows,freebsd	failure	hew-cli::compile_wasm_parity	wasm_unsupported_substrate_diagnostics_preserve_symbol_category	#3368 implements sandbox emission on the physical path
 linux	failure	hew-cli::coro_thread_fence_e2e	fork_children_create_no_os_threads	#3385 runs fork children as coroutines, not OS threads
 linux,macos,windows,freebsd	failure	hew-cli::cross_target_e2e	serializable_actor_emits_target_walked_ctor_section	#3382 emits the target-walked constructor section
 linux,macos,windows,freebsd	failure	hew-cli::distributed_two_process_e2e	authenticated_v2_handshake_rejects_wrong_credential_pin	feat/remote-pid-final-path gives hew_node_id_display a verified ownership-SIR operation contract
@@ -73,9 +72,6 @@ macos	failure	hew-cli::structural_rendering_ownership_oracle	structural_renderin
 linux,macos,windows,freebsd	failure	hew-cli::supervisor_init_args_e2e	supervisor_missing_field_diagnostic_points_at_child_declaration	#3393 makes hew check and hew compile agree on a supervisor child
 macos	failure	hew-cli::vec_index_assign_temp_leak_oracle	vec_index_assign_borrowed_capture_stays_copy_in	#3448 selects the copy-in vector store for a borrowed capture
 macos	failure	hew-cli::vec_iter_closure_unwind_leak_oracle	temporary_vec_iter_closure_trap_invokes_guarded_cleanup_without_leak	#3449 emits a closure call in a guarded region as an invoke
-linux,macos,windows,freebsd	failure	hew-cli::wasi_run_e2e	actor_panic_is_module_fatal_on_production_wasi	#3368 implements sandbox emission on the physical path
-linux,macos,windows,freebsd	failure	hew-cli::wasi_run_e2e	actor_start_panic_remains_module_fatal_on_production_wasi	#3368 implements sandbox emission on the physical path
-linux,macos,windows,freebsd	failure	hew-cli::wasi_run_e2e	wasm_actor_periodic_timer_fires_but_never_reaches_quiescence	#3368 implements sandbox emission on the physical path
 linux,macos,windows,freebsd	failure	hew-types	check::tests::basic::reserved_type_names_fail_closed_across_declaration_kinds	#3388 fails closed once on a reserved type name in a machine
 linux,macos,windows,freebsd	failure	hew-types::e2e_typecheck	http_client_module_helpers_rejected_on_wasm	#3386 gates std.net.http.http_client as the HTTP client on wasm
 linux,macos,windows,freebsd	failure	hew-types::e2e_typecheck	http_client_response_methods_rejected_on_wasm	#3386 gates std.net.http.http_client as the HTTP client on wasm

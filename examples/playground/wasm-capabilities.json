@@ -1,20 +1,5 @@
 [
   {
-    "id": "concurrency/actor_pipeline",
-    "status": "unsupported",
-    "reason": "Actor/coroutine runtime ABI unavailable on the current WASI path (#1821)"
-  },
-  {
-    "id": "concurrency/async_await",
-    "status": "unsupported",
-    "reason": "Actor/coroutine runtime ABI unavailable on the current WASI path (#1821)"
-  },
-  {
-    "id": "concurrency/counter_actor",
-    "status": "unsupported",
-    "reason": "Actor/coroutine runtime ABI unavailable on the current WASI path (#1821)"
-  },
-  {
     "id": "concurrency/supervisor",
     "status": "unsupported",
     "capability": "supervision-trees",

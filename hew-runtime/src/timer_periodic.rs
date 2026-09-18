@@ -624,6 +624,7 @@ pub unsafe extern "C" fn hew_actor_schedule_periodic(
     if !handle.is_null() {
         // SAFETY: `tw` was validated above and is still live.
         unsafe {
+            #[cfg(not(target_arch = "wasm32"))]
             assert_ticker_alive("hew_actor_schedule_periodic: after first insert", tw);
         }
     }
@@ -703,7 +704,10 @@ unsafe fn schedule_periodic_on_wheel(
 /// # Safety
 ///
 /// `tw` must be a valid pointer returned by `hew_timer_wheel_new`.
-#[cfg(debug_assertions)]
+/// Only the native target has a ticker thread to be alive: wasm32 ticks the
+/// wheel from the process driver between readiness steps, so the premise of
+/// this check does not hold there.
+#[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
 unsafe fn assert_ticker_alive(context: &str, tw: *mut HewTimerWheel) {
     let ticker_running = TICKER_RUNNING.load(Ordering::SeqCst);
     let handle_finished = TICKER_HANDLE.get().and_then(|handle_mutex| {

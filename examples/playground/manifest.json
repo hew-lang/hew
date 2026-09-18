@@ -204,7 +204,7 @@
     "capabilities": {
       "browser": "analysis-only",
       "sandbox": "runnable",
-      "wasi": "unsupported"
+      "wasi": "runnable"
     }
   },
   {
@@ -217,7 +217,7 @@
     "capabilities": {
       "browser": "analysis-only",
       "sandbox": "runnable",
-      "wasi": "unsupported"
+      "wasi": "runnable"
     }
   },
   {
@@ -230,7 +230,7 @@
     "capabilities": {
       "browser": "analysis-only",
       "sandbox": "runnable",
-      "wasi": "unsupported"
+      "wasi": "runnable"
     }
   },
   {

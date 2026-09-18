@@ -12,22 +12,27 @@
 //!   invisible while the released subtree runs no user code. Codegen emits the
 //!   walker entry only where this answers no.
 //!
-//! * **Raises a fault.** A release that can run an authored `close` is the
-//!   enclosing frame's fault edge (D516): a failing close fills the frame's
-//!   fault record and the frame dispatches that outcome instead of resuming
-//!   the source exit. Only a `#[resource]` record or an authored opaque handle
-//!   runs a body with the fault ABI; every other resource protocol releases
-//!   through a C endpoint that cannot raise one.
+//! * **Raises a fault.** A release the frame emits itself can run an authored
+//!   `close`, which makes it the frame's fault edge (D516): a failing close
+//!   fills the frame's fault record and the frame dispatches that outcome
+//!   instead of resuming the source exit. Only a `#[resource]` record or an
+//!   authored opaque handle runs a body with the fault ABI; every other
+//!   resource protocol releases through a C endpoint that cannot raise one.
 //!
-//! The two differ at exactly one leaf. A callable environment may capture a
-//! resource and an erased vtable drop is not known until run time, so both
-//! answer yes to both questions.
+//!   A collection, a shared handle, a callable environment and an erased
+//!   vtable drop release through runtime glue instead, which has no fault slot
+//!   to report into: a close that fails inside one still reaches the trap
+//!   path. Those answer no here until the runtime carries a failing release
+//!   back to the frame that asked for it.
 
 use super::{DestroyAction, PhysicalModule, PhysicalValueRecipe};
 
 /// Per-glue answers to one question, in glue-id order.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct Tables {
+    /// Count only the leaves the frame releases in its own code: a record's
+    /// and a variant payload's members, and the resources among them.
+    frame_local: bool,
     resource: Vec<bool>,
     aggregate: Vec<bool>,
     variant: Vec<bool>,
@@ -51,8 +56,8 @@ impl ReleaseEffects {
         Self {
             // Every resource release runs the program's own close body or its
             // declared release endpoint, so all of them are user-visible.
-            user_code: Tables::compute(module, &vec![true; module.resources.len()]),
-            faults: Tables::compute(module, &authored_closes(module)),
+            user_code: Tables::compute(module, false, &vec![true; module.resources.len()]),
+            faults: Tables::compute(module, true, &authored_closes(module)),
         }
     }
 
@@ -64,7 +69,7 @@ impl ReleaseEffects {
     }
 
     /// Whether releasing a value through `action` can raise a fault the
-    /// enclosing frame must own.
+    /// enclosing frame must own, which is a release the frame emits itself.
     #[must_use]
     pub fn raises_fault(&self, action: DestroyAction) -> bool {
         self.faults.holds(action)
@@ -89,8 +94,9 @@ fn authored_closes(module: &PhysicalModule) -> Vec<bool> {
 }
 
 impl Tables {
-    fn compute(module: &PhysicalModule, resource: &[bool]) -> Self {
+    fn compute(module: &PhysicalModule, frame_local: bool, resource: &[bool]) -> Self {
         let mut table = Self {
+            frame_local,
             resource: resource.to_vec(),
             aggregate: vec![false; module.aggregate_glue.len()],
             variant: vec![false; module.variant_glue.len()],
@@ -142,14 +148,16 @@ impl Tables {
             | DestroyAction::BytesRelease
             // A weak handle owns no payload; dropping one only decrements.
             | DestroyAction::WeakRelease => false,
-            DestroyAction::Callable | DestroyAction::TraitObject => true,
+            DestroyAction::Callable | DestroyAction::TraitObject => !self.frame_local,
             DestroyAction::Resource(id) => self.resource[id.0 as usize],
             DestroyAction::Aggregate(id) => self.aggregate[id.0 as usize],
             DestroyAction::Variant(id) => self.variant[id.0 as usize],
-            DestroyAction::Vector(id) | DestroyAction::Array(id) => self.vector[id.0 as usize],
-            DestroyAction::Map(id) => self.map[id.0 as usize],
-            DestroyAction::Set(id) => self.set[id.0 as usize],
-            DestroyAction::RcRelease(id) => self.shared[id.0 as usize],
+            DestroyAction::Vector(id) | DestroyAction::Array(id) => {
+                !self.frame_local && self.vector[id.0 as usize]
+            }
+            DestroyAction::Map(id) => !self.frame_local && self.map[id.0 as usize],
+            DestroyAction::Set(id) => !self.frame_local && self.set[id.0 as usize],
+            DestroyAction::RcRelease(id) => !self.frame_local && self.shared[id.0 as usize],
         }
     }
 

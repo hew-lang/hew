@@ -292,9 +292,10 @@ pub(crate) fn authored_close_in_module(
 ///
 /// A `#[resource]` record and an authored opaque handle release through a body
 /// with the fault ABI; every other resource protocol releases through a C
-/// endpoint that cannot raise one. A callable environment may capture a
-/// resource and an erased vtable drop is not known until run time, so both
-/// answer yes.
+/// endpoint that cannot raise one. A collection, a shared handle, a callable
+/// environment and an erased vtable drop release through runtime glue with no
+/// fault slot to report into, so a close that fails inside one still reaches
+/// the trap path and this answers no for them.
 pub(crate) fn release_may_fault(
     authored_close: &dyn Fn(&ResolvedTy) -> bool,
     aggregates: &[crate::SemAggregateShape],
@@ -318,17 +319,26 @@ pub(crate) fn release_may_fault(
         }
         seen.push(ty.clone());
         let result = match ty {
+            // Released through runtime glue, which has no fault slot yet.
             ResolvedTy::Function { .. }
             | ResolvedTy::Closure { .. }
-            | ResolvedTy::TraitObject { .. } => true,
+            | ResolvedTy::TraitObject { .. }
+            | ResolvedTy::Array(_, _) => false,
+            _ if [
+                hew_types::BuiltinType::Vec,
+                hew_types::BuiltinType::HashMap,
+                hew_types::BuiltinType::HashSet,
+                hew_types::BuiltinType::Rc,
+                hew_types::BuiltinType::Weak,
+            ]
+            .into_iter()
+            .any(|builtin| ty.is_builtin(builtin)) =>
+            {
+                false
+            }
             ResolvedTy::Tuple(members) => members
                 .iter()
                 .any(|member| visit(member, authored_close, aggregates, variants, seen)),
-            ResolvedTy::Array(element, length) => {
-                *length != 0 && visit(element, authored_close, aggregates, variants, seen)
-            }
-            // A weak handle owns no payload; dropping one only decrements.
-            _ if ty.is_builtin(hew_types::BuiltinType::Weak) => false,
             // A builtin carrier releases through its arguments; a declared
             // record or enum releases through its published shape. A generic
             // declaration has both, and neither alone covers it.

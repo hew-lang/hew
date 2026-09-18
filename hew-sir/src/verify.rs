@@ -5808,6 +5808,7 @@ mod parameter_own_kind_tests {
     };
     use hew_hir::ItemId;
     use hew_types::{DefId, ResolvedTy, TypeFactContext, TypeFactService};
+    use std::collections::BTreeMap;
 
     fn function(ty: ResolvedTy, own: OwnKind) -> SemFunction {
         SemFunction {
@@ -5888,6 +5889,7 @@ mod parameter_own_kind_tests {
             &TypeFactTable::new(),
             &[],
             &[],
+            &BTreeMap::new(),
         );
         let reason = kind_finding(&diagnostics).expect("a Borrow slot refuses an Owned parameter");
         assert!(reason.contains("Guaranteed"), "{reason}");
@@ -5907,6 +5909,7 @@ mod parameter_own_kind_tests {
             &TypeFactTable::new(),
             &[],
             &[],
+            &BTreeMap::new(),
         );
         assert_eq!(None, kind_finding(&diagnostics));
     }
@@ -5921,8 +5924,14 @@ mod parameter_own_kind_tests {
         let context = callable_context(&callables, &[], &[], &[], &[]);
         let mut facts = TypeFactService::new(TypeFactContext::default(), TypeFactTable::new());
         facts.require(&ResolvedTy::String).unwrap();
-        let diagnostics =
-            verify_function_with_context(&function, Some(&context), facts.rows(), &[], &[]);
+        let diagnostics = verify_function_with_context(
+            &function,
+            Some(&context),
+            facts.rows(),
+            &[],
+            &[],
+            &BTreeMap::new(),
+        );
         let reason =
             kind_finding(&diagnostics).expect("a ReadOnly slot refuses a Guaranteed parameter");
         assert!(reason.contains("Owned"), "{reason}");
@@ -5936,8 +5945,14 @@ mod parameter_own_kind_tests {
     #[test]
     fn verifier_refuses_a_parameter_whose_header_slot_it_cannot_read() {
         let function = function(ResolvedTy::I64, OwnKind::None);
-        let diagnostics =
-            verify_function_with_context(&function, None, &TypeFactTable::new(), &[], &[]);
+        let diagnostics = verify_function_with_context(
+            &function,
+            None,
+            &TypeFactTable::new(),
+            &[],
+            &[],
+            &BTreeMap::new(),
+        );
         let reason =
             kind_finding(&diagnostics).expect("no callable table means no slot to audit against");
         assert!(reason.contains("no header slot"), "{reason}");

@@ -1,0 +1,21 @@
+// Two failing element closes in one clear. The walk visits elements in index
+// order and does not stop, so every element is released; the first failure is
+// the frame's primary and the second joins it as a secondary line.
+#[resource]
+type Conn { fd: i64, }
+
+impl Conn {
+    fn close(consume self) {
+        println(f"close {self.fd}");
+        if self.fd != 1 { panic(f"close {self.fd} failed"); }
+    }
+}
+
+fn main() {
+    var conns: Vec<Conn> = Vec.new();
+    conns.push(Conn { fd: 1 });
+    conns.push(Conn { fd: 2 });
+    conns.push(Conn { fd: 3 });
+    conns.clear();
+    println("done");
+}

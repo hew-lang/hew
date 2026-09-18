@@ -2093,6 +2093,7 @@ mod tests {
             &crate::place_plan(function, &[], &std::collections::BTreeMap::default()).unwrap(),
             &crate::ownership::TypeFactTable::new(),
             &[],
+            &|_| false,
         )
         .violations
     }
@@ -2216,6 +2217,13 @@ mod tests {
     }
 
     fn cleanup_analysis(blocks: Vec<SemBlock>) -> super::Analysis {
+        cleanup_analysis_with_release(blocks, &|_| false)
+    }
+
+    fn cleanup_analysis_with_release(
+        blocks: Vec<SemBlock>,
+        release_may_fault: &dyn Fn(&ResolvedTy) -> bool,
+    ) -> super::Analysis {
         let mut f = function(blocks);
         let mut facts = hew_types::TypeFactService::new(
             hew_types::TypeFactContext::default(),
@@ -2253,7 +2261,26 @@ mod tests {
         f.blocks[0].ops = entry;
         let rows = facts.into_rows();
         let plan = crate::place_plan(&f, &[], &rows).unwrap();
-        super::verify(&f, &plan, &rows, &[])
+        super::verify(&f, &plan, &rows, &[], release_may_fault)
+    }
+
+    /// A release that can run an authored `close` leaves the frame possibly
+    /// owning a fault, so the exit that resumes ordinary execution is refused
+    /// until a cleanup dispatch has decided the outcome (D516).
+    #[test]
+    fn a_release_that_can_fault_cannot_resume_a_normal_return() {
+        let blocks = || vec![block(0, vec![local_end()], done())];
+        let clean = cleanup_analysis_with_release(blocks(), &|_| false);
+        assert!(clean.violations.is_empty(), "{:?}", clean.violations);
+        let fallible = cleanup_analysis_with_release(blocks(), &|_| true);
+        assert!(
+            fallible
+                .violations
+                .iter()
+                .any(|violation| violation.reason.contains("fault")),
+            "{:?}",
+            fallible.violations
+        );
     }
 
     fn local_end() -> SemOp {

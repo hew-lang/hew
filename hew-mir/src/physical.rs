@@ -6553,7 +6553,7 @@ fn apply_operation(
             partial::require_droppable(module, function, state, *source, cleanup.mode())?;
             require_no_live_borrows(function, borrows, state, *source)?;
             invalidate_storage(function, borrows, state, *source);
-            arm_release_fault(module, function, state, *source, Some(*action));
+            arm_release_fault(module, function, state, Some(*source), Some(*action));
         }
         PhysicalOp::EndBorrow { source } => {
             initialized(function, state, *source, block, "end-borrow")?;
@@ -6576,7 +6576,9 @@ fn apply_operation(
                 hew_sir::CleanupMode::Ordinary,
             )?;
             require_no_live_borrows(function, borrows, state, *dest)?;
-            arm_release_fault(module, function, state, *dest, *destroy_old);
+            // `destroy_old` is the whole release here: an assignment replaces
+            // the root, and codegen releases exactly what it names.
+            arm_release_fault(module, function, state, None, *destroy_old);
             consume_if_owned(function, borrows, state, *source)?;
             partial::set_leaves(function, state, *dest, InitState::Initialized);
         }
@@ -6589,7 +6591,7 @@ fn apply_operation(
             partial::require_root(function, state, *id, block, "end-lifetime")?;
             partial::require_droppable(module, function, state, *id, cleanup.mode())?;
             require_no_live_borrows(function, borrows, state, *id)?;
-            arm_release_fault(module, function, state, *id, *destroy);
+            arm_release_fault(module, function, state, Some(*id), *destroy);
             partial::set_leaves(function, state, *id, InitState::Uninitialized);
             if matches!(
                 storage(function, *id)?.origin,
@@ -6620,7 +6622,7 @@ fn arm_release_fault(
     module: &PhysicalModule,
     function: &PhysicalFunction,
     state: &mut FlowState,
-    id: StorageId,
+    partitioned: Option<StorageId>,
     destroy: Option<DestroyAction>,
 ) {
     if state.fault != FaultState::None {
@@ -6629,12 +6631,14 @@ fn arm_release_fault(
     }
     let raises = |action: &DestroyAction| module.releases.raises_fault(*action);
     if destroy.as_ref().is_some_and(raises)
-        || function.place_storage.get(&id).is_some_and(|place| {
-            place
-                .leaves
-                .iter()
-                .any(|leaf| leaf.destroy.as_ref().is_some_and(raises))
-        })
+        || partitioned
+            .and_then(|id| function.place_storage.get(&id))
+            .is_some_and(|place| {
+                place
+                    .leaves
+                    .iter()
+                    .any(|leaf| leaf.destroy.as_ref().is_some_and(raises))
+            })
     {
         state.fault = FaultState::MaybeActive;
     }

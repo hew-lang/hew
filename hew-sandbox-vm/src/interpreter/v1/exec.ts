@@ -18,6 +18,7 @@ import type {
 import { UNIT, cloneValue, type VmValue } from "../values.js";
 import type {
   BlockV1,
+  BoundaryDecision,
   BoundaryOperand,
   CallResult,
   Edge,
@@ -587,6 +588,13 @@ class ExecutorV1 {
       case "callable.coerce":
         this.define(act, op.dst, this.read(act, op.source));
         return;
+      case "dyn.make":
+        this.define(act, op.dst, {
+          kind: "dyn",
+          vtable: op.vtable,
+          value: this.read(act, op.value),
+        });
+        return;
 
       default:
         throw new Error(`opcode ${op.op} has no sequential executor`);
@@ -679,6 +687,48 @@ class ExecutorV1 {
         return;
       }
 
+      case "dyn.call": {
+        const receiver = this.boundary(act, term.receiver);
+        if (receiver.kind !== "dyn") {
+          throw new TypeError(
+            `dyn.call expected a trait object, got ${receiver.kind}`,
+          );
+        }
+        const vtable =
+          this.pkg.vtables[receiver.vtable] ??
+          this.pkg.vtables.find(
+            (candidate) => candidate.id === receiver.vtable,
+          );
+        // The slot number is the checker's own index, so it is matched rather
+        // than used as a position in the slot array.
+        const entry = vtable?.slots.find(
+          (candidate) => candidate.slot === term.slot,
+        );
+        if (!entry) {
+          throw new Error(`vtable ${receiver.vtable} has no slot ${term.slot}`);
+        }
+        // The wrapped value is the method's receiver, ahead of the call's own
+        // arguments, passed under the decision the slot records: the erasure
+        // the concrete type was made under, not something read off the method.
+        const args = [
+          this.erasedReceiver(
+            act,
+            term.receiver,
+            receiver.value,
+            entry.receiver,
+          ),
+          ...term.args.map((operand) => this.boundary(act, operand)),
+        ];
+        this.current = this.activate(
+          this.functionAt(entry.callee),
+          args,
+          act,
+          term.result,
+          term.normal,
+          term.unwind,
+        );
+        return;
+      }
       case "call":
       case "indirect.call": {
         const callee =
@@ -854,6 +904,27 @@ class ExecutorV1 {
     }
     this.current = caller;
     this.takeEdge(caller, act.normal);
+  }
+
+  /// The wrapped value on its way to a trait method's `self`. A `copy` receiver
+  /// deep-clones, a `move` invalidates the trait object it came out of, and a
+  /// borrow passes the live value.
+  private erasedReceiver(
+    act: Activation,
+    operand: BoundaryOperand,
+    wrapped: VmValue,
+    decision: BoundaryDecision,
+  ): VmValue {
+    switch (decision) {
+      case "copy":
+      case "snapshot":
+        return cloneValue(wrapped);
+      case "move":
+        this.invalidate(act, operand.value);
+        return wrapped;
+      default:
+        return wrapped;
+    }
   }
 
   /// Raise a fault at a call site: enter the named unwind edge, or end the

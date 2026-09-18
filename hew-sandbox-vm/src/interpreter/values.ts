@@ -22,6 +22,10 @@ export type VmValue =
   /** A hash map. Keys are canonical renderings of the key value, so lookup is
    *  structural; `entries` keeps insertion order so iteration is stable. */
   | { kind: "map"; entries: Map<string, { key: VmValue; value: VmValue }> }
+  /** A trait object: the vtable the checker selected, and the value it wraps.
+   *  A `dyn.call` resolves its method through `vtable`, never through the
+   *  wrapped value's shape. */
+  | { kind: "dyn"; vtable: number; value: VmValue }
   /** A first-class function reference materialised by `const.function`.
    *  `id` is the bytecode function id (e.g. `"fn:my_handler"`).
    *  Function values are immutable: `cloneValue` is identity. */
@@ -74,6 +78,12 @@ export function cloneValue(value: VmValue): VmValue {
         kind: "vector",
         elementType: value.elementType,
         items: value.items.map(cloneValue),
+      };
+    case "dyn":
+      return {
+        kind: "dyn",
+        vtable: value.vtable,
+        value: cloneValue(value.value),
       };
     case "map":
       return {
@@ -229,6 +239,8 @@ export function renderStdout(value: VmValue): string {
       return canonicalJson(value.items.map((item) => toJsonValue(item)));
     case "map":
       return canonicalJson(mapEntriesJson(value));
+    case "dyn":
+      return renderStdout(value.value);
     case "function":
       return value.id;
   }
@@ -271,6 +283,8 @@ export function toJsonValue(value: VmValue): JsonValue {
       return value.items.map(toJsonValue);
     case "map":
       return mapEntriesJson(value);
+    case "dyn":
+      return toJsonValue(value.value);
     case "function":
       return value.id;
   }

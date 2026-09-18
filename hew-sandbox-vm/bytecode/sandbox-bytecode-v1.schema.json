@@ -237,7 +237,7 @@
             "items": {
               "type": "object",
               "additionalProperties": false,
-              "required": ["slot", "method", "callee"],
+              "required": ["slot", "method", "callee", "receiver"],
               "properties": {
                 "slot": {
                   "type": "integer",
@@ -248,6 +248,9 @@
                 },
                 "callee": {
                   "$ref": "#/$defs/id"
+                },
+                "receiver": {
+                  "enum": ["copy", "borrow", "borrow_mut", "move"]
                 }
               }
             }

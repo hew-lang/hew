@@ -3417,6 +3417,8 @@ function renderComparable(value: VmValue): JsonValue {
         renderComparable(entry.key),
         renderComparable(entry.value),
       ]);
+    case "dyn":
+      return renderComparable(value.value);
     case "function":
       return value.id;
   }

@@ -36,10 +36,9 @@
 //!    - [`Coverage::Parity`] / [`Coverage::ParityTrap`] — the gate admits it,
 //!      and the name is pinned in `REQUIRED_PARITY_TEST_NAMES` (so a real
 //!      stdout+exit parity case in `parity.rs` proves clean or trap parity).
-//!    - [`Coverage::NotYetRunnable`] — the gate admits it but the VM traps or
-//!      the emitter fails to lower it (fail-loud). Catalogued, never silently
-//!      "green". The moment a graduation lane makes one runnable, the honesty
-//!      test fails, forcing promotion to `Parity` + a parity case.
+//!    - There is no third "admitted but not runnable" state: an admitted
+//!      construct runs at parity, or the gate rejects it. The sandbox has no
+//!      construct it accepts and then traps on.
 //!    - [`Coverage::RejectedByProfile`] — the gate fail-closed-rejects it (no
 //!      bytecode). The probe is asserted to actually be rejected, so a profile
 //!      change that *starts* admitting it trips this test.
@@ -75,16 +74,6 @@ enum Coverage {
     /// The gate admits it AND it traps at native↔sandbox parity. Pinned to a
     /// required parity-case name whose native and sandbox exit codes must match.
     ParityTrap(&'static str),
-    /// The gate admits it, but the emitter/interpreter cannot yet run it: it
-    /// traps (`unsupported_instruction` / `invalid_enum_tag`) or fails to lower.
-    /// Fail-loud, catalogued with the observed failure so it can never
-    /// masquerade as runnable. The probe is compiled + run to keep this honest.
-    NotYetRunnable {
-        /// Observed failure when the probe runs in the sandbox today.
-        failure: Failure,
-        /// Why it is not yet runnable (for the catalogue + future graduation).
-        reason: &'static str,
-    },
     /// The profile fail-closed-rejects it (no bytecode). The probe is asserted
     /// to be rejected, so a profile change that begins admitting it trips the
     /// `rejected_probes_are_actually_rejected` test, forcing a coverage update.
@@ -99,13 +88,6 @@ enum Coverage {
         /// A distinguishing substring of the parser diagnostic.
         diagnostic_message: &'static str,
     },
-}
-
-/// The way an admitted-but-not-yet-runnable construct fails in the sandbox.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Failure {
-    /// Compiles to bytecode, then the VM exits non-zero (trap / unsupported op).
-    Trap,
 }
 
 /// One probed construct and its coverage. `id` is a stable label; `probe` is a
@@ -378,14 +360,8 @@ const CONSTRUCTS: &[Construct] = &[
     },
     Construct {
         id: "map literal (`{\"k\": v}`)",
-        // Native lowers this to HashMap insertion, but the sandbox VM has no map
-        // value kind, hash/equality substrate, or map opcodes. Keep the AST path
-        // fail-loud rather than approximating maps with records.
         probe: "fn main() {\n    let m = {\"a\": 1, \"b\": 2};\n    println(\"made map\");\n}\n",
-        coverage: Coverage::NotYetRunnable {
-            failure: Failure::Trap,
-            reason: "sandbox VM has no parity-correct map value or insertion semantics -> emit_unsupported -> trap",
-        },
+        coverage: Coverage::Parity("map_literal"),
     },
     Construct {
         id: "struct functional-update (`R { x: v, ..base }`)",
@@ -955,7 +931,7 @@ fn every_required_parity_case_backs_a_construct() {
 /// - `ParityTrap` probe: must produce bytecode AND trap (non-zero exit) on the
 ///   VM. The named parity case proves the exact native and sandbox exit codes
 ///   match.
-/// - `NotYetRunnable` probe: must produce bytecode AND trap (non-zero exit). The
+/// - Admitted probe: must produce bytecode AND run cleanly. The
 ///   moment it runs cleanly, this fails — forcing promotion to `Parity` + a case.
 ///   This is the structural guarantee against a future G1: a construct cannot be
 ///   "admitted + runs-clean + unparited".
@@ -973,9 +949,6 @@ fn live_gate_matches_declared_coverage() {
         match construct.coverage {
             Coverage::Parity(_) => assert_admitted_runs_clean(construct, &compiled),
             Coverage::ParityTrap(_) => assert_admitted_traps(construct, &compiled),
-            Coverage::NotYetRunnable { failure, reason } => {
-                assert_admitted_but_fails(construct, &compiled, failure, reason);
-            }
             Coverage::RejectedByProfile { diagnostic_kind } => {
                 assert_rejected_by_profile(construct, &compiled, diagnostic_kind);
             }
@@ -1042,28 +1015,6 @@ fn assert_admitted_traps(construct: &Construct, compiled: &CompileOutput) {
     );
 }
 
-fn assert_admitted_but_fails(
-    construct: &Construct,
-    compiled: &CompileOutput,
-    failure: Failure,
-    reason: &str,
-) {
-    let bytecode = bytecode_or_panic(construct, compiled);
-    let sandbox = run_sandbox_inline(&serde_json::to_string(bytecode).expect("serialize"));
-    match failure {
-        Failure::Trap => assert_ne!(
-            sandbox.status.code(),
-            Some(0),
-            "construct `{}` is catalogued NotYetRunnable (Trap; reason: {reason}), but the sandbox \
-             VM ran it cleanly (exit 0). It is now runnable — promote it to Coverage::Parity and \
-             add a required parity case so it joins the ratchet.\nstdout:\n{}\nstderr:\n{}",
-            construct.id,
-            String::from_utf8_lossy(&sandbox.stdout),
-            String::from_utf8_lossy(&sandbox.stderr)
-        ),
-    }
-}
-
 fn assert_rejected_by_profile(
     construct: &Construct,
     compiled: &CompileOutput,
@@ -1073,7 +1024,7 @@ fn assert_rejected_by_profile(
     assert!(
         compiled.bytecode.is_none() && has_errors,
         "construct `{}` is classified RejectedByProfile but the gate produced bytecode \
-         (it is now admitted). Update its coverage to Parity (with a case) or NotYetRunnable.\ndiagnostics:\n{}",
+         (it is now admitted). Update its coverage to Parity and add a case.\ndiagnostics:\n{}",
         construct.id,
         diagnostics_dump(compiled)
     );
@@ -1120,7 +1071,7 @@ fn bytecode_or_panic<'a>(
         .filter(|_| !has_errors)
         .unwrap_or_else(|| {
             panic!(
-                "construct `{}` is classified as admitted (Parity/NotYetRunnable) but the gate \
+                "construct `{}` is classified as admitted (Parity) but the gate \
                  produced no bytecode (it is now rejected). Update its coverage to \
                  RejectedByProfile.\ndiagnostics:\n{}",
                 construct.id,

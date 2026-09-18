@@ -134,8 +134,11 @@ derived structural operation. `value.call` names an entry by its `id`.
 ### `closures` and `vtables`
 
 `closures` names each concrete environment and the function that is its body.
-`vtables` names each demanded trait-object table; `dyn.call` selects a slot by
-the checker's index, which SIR never recomputes.
+`vtables` names each demanded trait-object table. `dyn.call` selects a slot by
+the checker's index, which SIR never recomputes, so a slot is found by its
+`slot` field and not by its position. Each slot carries the `receiver` decision
+the concrete type was erased under, and `dyn.call` passes the wrapped value to
+the callee's `self` parameter under it.
 
 ### `externs`
 

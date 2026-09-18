@@ -1,0 +1,14 @@
+// std.math is pure computation, so every intrinsic must answer what the native
+// LLVM intrinsic answers.
+import std.math;
+
+fn main() {
+    println(math.sqrt(16.0));
+    println(math.floor(2.7));
+    println(math.ceil(2.1));
+    println(math.round(2.5));
+    println(math.pow(2.0, 10.0));
+    println(math.abs(0 - 7));
+    println(math.min(3, 9));
+    println(math.max(3, 9));
+}

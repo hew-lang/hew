@@ -116,7 +116,15 @@ export interface ClosureShape {
 
 export interface VtableShape {
   id: number;
-  slots: Array<{ slot: number; method: string; callee: number }>;
+  /// `receiver` is how the wrapped value reaches the callee's `self`, spelled
+  /// as a boundary operand's decision. It is the erasure the concrete type was
+  /// made under, so it is read rather than inferred from the method.
+  slots: Array<{
+    slot: number;
+    method: string;
+    callee: number;
+    receiver: BoundaryDecision;
+  }>;
 }
 
 export interface FunctionV1 {

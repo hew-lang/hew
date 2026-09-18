@@ -60,6 +60,8 @@ export function resolveRuntimeShim(
       return VECTOR_SHIMS[detailName(entry.detail)];
     case "Map":
       return MAP_SHIMS[detailName(entry.detail)];
+    case "MathIntrinsic":
+      return MATH_SHIMS[detailName(entry.detail)];
     default:
       return UNIT_FAMILY_SHIMS[entry.family];
   }
@@ -179,8 +181,139 @@ const VECTOR_SHIMS: Record<string, RuntimeShim | undefined> = {
   },
 };
 
+/// `std.math`. Native emits the LLVM intrinsic for each of these, so the
+/// mapping is to the matching IEEE operation rather than to whatever JS spells
+/// similarly: `Round` is half away from zero, `MinF64`/`MaxF64` follow
+/// `minnum`/`maxnum` where a NaN operand loses, and `Fma` is fused.
+const MATH_SHIMS: Record<string, RuntimeShim | undefined> = {
+  Sqrt: float1(Math.sqrt),
+  Exp: float1(Math.exp),
+  Log: float1(Math.log),
+  Sin: float1(Math.sin),
+  Cos: float1(Math.cos),
+  Tan: float1(Math.tan),
+  Asin: float1(Math.asin),
+  Acos: float1(Math.acos),
+  Atan: float1(Math.atan),
+  Sinh: float1(Math.sinh),
+  Cosh: float1(Math.cosh),
+  Tanh: float1(Math.tanh),
+  Exp2: float1((x) => Math.pow(2, x)),
+  Log2: float1(Math.log2),
+  Log10: float1(Math.log10),
+  Log1p: float1(Math.log1p),
+  Expm1: float1(Math.expm1),
+  Cbrt: float1(Math.cbrt),
+  Floor: float1(Math.floor),
+  Ceil: float1(Math.ceil),
+  Trunc: float1(Math.trunc),
+  AbsF64: float1(Math.abs),
+  Round: float1(roundHalfAwayFromZero),
+  Pow: float2(Math.pow),
+  Atan2: float2(Math.atan2),
+  Hypot: float2(Math.hypot),
+  Copysign: float2(copysign),
+  MinF64: float2(minnum),
+  MaxF64: float2(maxnum),
+  Fma: (_host, args) => num(fma(real(args, 0), real(args, 1), real(args, 2))),
+  // `powi` takes an i32 exponent, so the second operand is an integer.
+  Powi: (_host, args) => num(Math.pow(real(args, 0), Number(integer(args, 1)))),
+  // f64::from_bits: reinterpret the bit pattern, not a numeric conversion.
+  FromBits: (_host, args) => num(fromBits(integer(args, 0))),
+  AbsI64: (_host, args) => {
+    const value = integer(args, 0);
+    return int(value < 0n ? -value : value);
+  },
+  MinI64: (_host, args) => int(bigMin(integer(args, 0), integer(args, 1))),
+  MaxI64: (_host, args) => int(bigMax(integer(args, 0), integer(args, 1))),
+};
+
+function float1(apply: (x: number) => number): RuntimeShim {
+  return (_host, args) => num(apply(real(args, 0)));
+}
+
+function float2(apply: (x: number, y: number) => number): RuntimeShim {
+  return (_host, args) => num(apply(real(args, 0), real(args, 1)));
+}
+
+/// `llvm.round`: ties go away from zero, and the sign of a zero is kept.
+/// `Math.round` ties toward positive infinity, so -2.5 would read -2.
+function roundHalfAwayFromZero(x: number): number {
+  if (!Number.isFinite(x) || Number.isInteger(x)) {
+    return x;
+  }
+  // The fraction is compared directly rather than adding 0.5 first: for
+  // 0.49999999999999994 that sum rounds up to exactly 1, which would read 1
+  // where native reads 0.
+  const truncated = Math.trunc(x);
+  const fraction = x - truncated;
+  return Math.abs(fraction) >= 0.5 ? truncated + Math.sign(x) : truncated;
+}
+
+function copysign(magnitude: number, sign: number): number {
+  const negative = sign < 0 || Object.is(sign, -0);
+  return negative ? -Math.abs(magnitude) : Math.abs(magnitude);
+}
+
+/// `llvm.minnum`: a NaN operand loses, and operands that compare equal - the
+/// two zeros - resolve to the first, which is what native returns.
+function minnum(left: number, right: number): number {
+  if (Number.isNaN(left)) return right;
+  if (Number.isNaN(right)) return left;
+  return right < left ? right : left;
+}
+
+function maxnum(left: number, right: number): number {
+  if (Number.isNaN(left)) return right;
+  if (Number.isNaN(right)) return left;
+  return right > left ? right : left;
+}
+
+/// Fused multiply-add: `a * b` is not rounded before `c` is added. The product
+/// is carried exactly as an unevaluated head and tail pair, so the result
+/// rounds once, as the hardware instruction native emits does.
+function fma(a: number, b: number, c: number): number {
+  const product = a * b;
+  if (!Number.isFinite(product) || !Number.isFinite(c) || product === 0) {
+    return product + c;
+  }
+  // Dekker's exact product: head + tail is a * b with no rounding lost.
+  const SPLIT = 134217729; // 2^27 + 1
+  const splitHigh = (x: number) => {
+    const t = SPLIT * x;
+    return t - (t - x);
+  };
+  const aHigh = splitHigh(a);
+  const aLow = a - aHigh;
+  const bHigh = splitHigh(b);
+  const bLow = b - bHigh;
+  const tail =
+    aLow * bLow - (product - aHigh * bHigh - aLow * bHigh - aHigh * bLow);
+
+  // Exact sum of the product head with the addend, then one rounding.
+  const sum = product + c;
+  const bVirtual = sum - product;
+  const sumTail = product - (sum - bVirtual) + (c - bVirtual);
+  return sum + (sumTail + tail);
+}
+
+function fromBits(bits: bigint): number {
+  const view = new DataView(new ArrayBuffer(8));
+  view.setBigUint64(0, BigInt.asUintN(64, bits));
+  return view.getFloat64(0);
+}
+
+function bigMin(left: bigint, right: bigint): bigint {
+  return right < left ? right : left;
+}
+
+function bigMax(left: bigint, right: bigint): bigint {
+  return right > left ? right : left;
+}
+
 const MAP_SHIMS: Record<string, RuntimeShim | undefined> = {
   New: () => ({ kind: "map", entries: new Map() }),
+  Len: (_host, args) => int(BigInt(map(args, 0).entries.size)),
   Insert: (_host, args) => {
     const target = map(args, 0);
     const key = arg(args, 1);
@@ -271,6 +404,15 @@ function arg(args: VmValue[], at: number): VmValue {
 function text(args: VmValue[], at: number): string {
   const value = arg(args, at);
   return value.kind === "string" ? value.value : renderStdout(value);
+}
+
+function real(args: VmValue[], at: number): number {
+  const value = arg(args, at);
+  return value.kind === "f64" ? value.value : Number(integer(args, at));
+}
+
+function num(value: number): VmValue {
+  return { kind: "f64", value };
 }
 
 function integer(args: VmValue[], at: number): bigint {

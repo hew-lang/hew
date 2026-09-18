@@ -1,0 +1,25 @@
+// Dynamic dispatch through a trait object: the checker picks the slot and the
+// package carries the table, so neither engine resolves a method by name.
+trait Greeter {
+    fn greet(self) -> string;
+}
+
+type English { name: string }
+type Latin { name: string }
+
+impl Greeter for English {
+    fn greet(self) -> string { f"hello {self.name}" }
+}
+
+impl Greeter for Latin {
+    fn greet(self) -> string { f"salve {self.name}" }
+}
+
+fn speak(g: dyn Greeter) -> string {
+    g.greet()
+}
+
+fn main() {
+    println(speak(English { name: "Ada" }));
+    println(speak(Latin { name: "Grace" }));
+}

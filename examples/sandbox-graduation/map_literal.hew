@@ -1,0 +1,6 @@
+// A map literal builds its entries on both engines, so a lesson can show
+// key/value storage without asking the sandbox for a host hash table.
+fn main() {
+    let scores = {"ada": 3, "grace": 5};
+    println(scores.len());
+}

@@ -156,6 +156,15 @@ pub const REQUIRED_PARITY_TEST_NAMES: &[&str] = &[
     // AST-emitter residuals: array repeat, checker-admitted scalar casts, and
     // Result/Option postfix-try now execute at native parity.
     "trap_residual",
+    // Families the published lessons need and the VM now executes: a map
+    // literal's storage and lookup, the pure `std.math` intrinsics, dynamic
+    // dispatch through a trait object's table, a sleep on the virtual clock,
+    // and a seeded generator whose sequence matches the runtime's own.
+    "map_literal",
+    "math_intrinsics",
+    "trait_objects",
+    "virtual_sleep",
+    "seeded_random",
 ];
 
 /// Names the editor buffer in frontend diagnostics and anchors its imports.

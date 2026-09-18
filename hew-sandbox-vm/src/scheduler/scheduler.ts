@@ -1401,6 +1401,8 @@ function heapUnits(value: VmValue): number {
       return (
         1 + value.items.reduce((total, item) => total + heapUnits(item), 0)
       );
+    case "dyn":
+      return 1 + heapUnits(value.value);
     case "map":
       return (
         1 +

@@ -116,6 +116,11 @@ pub struct VtableSlot {
     pub slot: u32,
     pub method: String,
     pub callee: u32,
+    /// How the erased receiver crosses the dispatch boundary. A `dyn.call`
+    /// passes the wrapped value to the callee's `self` parameter under this
+    /// decision, which the verifier proves matches the boundary the concrete
+    /// type was erased under.
+    pub receiver: String,
 }
 
 /// The checker's selection for one `(type, capability)` pair.
@@ -473,6 +478,7 @@ impl<'m> Walker<'m> {
                                     slot: slot.slot,
                                     method: slot.method_name.clone(),
                                     callee: self.function_id(slot.callee)?,
+                                    receiver: passing_name(slot.receiver).to_string(),
                                 })
                             })
                             .collect::<Result<Vec<_>, EmitError>>()?,
@@ -1332,6 +1338,17 @@ const fn decision_name(decision: BoundaryDecision) -> &'static str {
         BoundaryDecision::Copy => "copy",
         BoundaryDecision::Move => "move",
         BoundaryDecision::Snapshot(_) => "snapshot",
+    }
+}
+
+/// How a parameter crosses a call boundary, as the package spells a boundary
+/// operand's decision.
+const fn passing_name(passing: hew_sir::SemParamPassing) -> &'static str {
+    match passing {
+        hew_sir::SemParamPassing::ReadOnly => "copy",
+        hew_sir::SemParamPassing::Borrow => "borrow",
+        hew_sir::SemParamPassing::BorrowMut => "borrow_mut",
+        hew_sir::SemParamPassing::Consume => "move",
     }
 }
 

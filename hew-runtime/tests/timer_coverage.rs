@@ -16,10 +16,10 @@ use std::ptr;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Mutex;
 
-use hew_runtime::deterministic::{hew_simtime_advance_ms, hew_simtime_disable, hew_simtime_enable};
-use hew_runtime::io_time::{
+use hew_runtime::clock::{
     hew_instant_now, hew_milliseconds, hew_now_ms, hew_seconds, hew_sleep_ns, hew_sleep_until_ns,
 };
+use hew_runtime::deterministic::{hew_simtime_advance_ms, hew_simtime_disable, hew_simtime_enable};
 use hew_runtime::timer_wheel::{
     hew_timer_wheel_cancel, hew_timer_wheel_free, hew_timer_wheel_new,
     hew_timer_wheel_next_deadline_ms, hew_timer_wheel_schedule, hew_timer_wheel_schedule_handle,

@@ -10338,6 +10338,7 @@ mod tests {
                 emit_llvm: true,
                 address_sanitizer: true,
                 debug_source: None,
+                link_freestanding_wasm: false,
             },
         )
         .expect("emit ASan-instrumented physical module");

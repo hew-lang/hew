@@ -1908,10 +1908,6 @@ merely runs or waits on the scheduler reaches this edge, so treating it as a \
 violation would disqualify the entire blocking API without describing any \
 capability the caller actually gains."""
 
-"step_one_actor -> activate_actor_wasm" = """
-The wasm mirror of `worker_loop -> activate_actor`, reached by every stable \
-symbol that turns the wasm scheduler (hew_reply_wait, hew_actor_await, \
-hew_exit, hew_select_first, ...). Same reasoning."""
 
 "hew_actor_link -> send_exit_signal" = """
 Authenticated producer. hew_actor_link only reaches send_exit_signal on the \
@@ -2056,10 +2052,6 @@ move. No \
 user-declarable caller reaches this edge at all any more -- \
 hew_supervisor_remove_child was the last one and is now non-declarable."""
 
-"free_actor_resources_wasm -> hew_mailbox_free" = """
-The wasm mirror of the edge above, retiring through \
-mailbox_wasm::retire_pending_sys_lane with the same ordering and the same \
-per-signal accounting."""
 
 "spawn_actor_internal -> build_spawned_actor" = """
 build_spawned_actor writes `sys_dispatch: config.sys_dispatch`, so it installs \

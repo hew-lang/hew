@@ -2417,10 +2417,7 @@ def test_build_authority_findings(ast_grep: Path, root: Path) -> tuple[list[str]
 def cow_envelope_definition_findings(root: Path) -> list[str]:
     """Keep the COW envelope representation and lifecycle single-sourced."""
     core_path = root / "hew-runtime/src/cow_envelope.rs"
-    wrapper_paths = (
-        root / "hew-runtime/src/mailbox.rs",
-        root / "hew-runtime/src/mailbox_wasm.rs",
-    )
+    wrapper_paths = (root / "hew-runtime/src/mailbox.rs",)
     if not core_path.exists() and not any(path.exists() for path in wrapper_paths):
         # The audit self-tests construct focused fixture roots that do not carry
         # the runtime. A partial real surface is still rejected below.

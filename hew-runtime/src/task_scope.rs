@@ -18,6 +18,8 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
+#[cfg(test)]
+use crate::cancel_token::hew_cancel_token_is_requested;
 use crate::cancel_token::{
     cancel_token_cancel_if_present, cancel_token_is_requested, hew_cancel_token_cancel,
     hew_cancel_token_new_child, hew_cancel_token_release, hew_cancel_token_retain,

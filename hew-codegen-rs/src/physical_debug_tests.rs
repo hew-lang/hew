@@ -100,6 +100,7 @@ fn hew_codegen_emit(
             emit_llvm: true,
             address_sanitizer: false,
             debug_source,
+            link_freestanding_wasm: false,
         },
     )
     .expect("emit physical object")

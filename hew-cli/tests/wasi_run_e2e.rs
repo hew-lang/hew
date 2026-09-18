@@ -236,7 +236,7 @@ fn actor_lifecycle_state_writes_match_on_native_and_wasi() {
         .join("vertical-slice")
         .join("accept")
         .join("actor_lifecycle_state_writes.hew");
-    let native = support::run_bounded_hew_run(&source, &repo_root());
+    let native = support::run_bounded_hew_run(&source, repo_root());
     let wasi = run_wasi_example(&source);
 
     let native_stdout = String::from_utf8_lossy(&native.stdout);

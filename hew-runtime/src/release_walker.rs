@@ -78,7 +78,6 @@ thread_local! {
     /// fault its `close` raised and the status that close returned. A frame
     /// arms one around a release the runtime performs for it; a walk arms one
     /// of its own so it finishes releasing before the fault leaves it.
-    #[cfg(not(target_arch = "wasm32"))]
     static SINKS: RefCell<Vec<Option<(i32, *mut crate::fault::HewFault)>>> =
         const { RefCell::new(Vec::new()) };
 }
@@ -119,7 +118,6 @@ fn walking() -> bool {
 ///
 /// `item` must name a structure this call exclusively owns.
 unsafe fn drain(item: ReleaseItem) {
-    #[cfg(not(target_arch = "wasm32"))]
     arm_release_sink();
     {
         let walk = Walk::enter(item);
@@ -131,25 +129,21 @@ unsafe fn drain(item: ReleaseItem) {
             unsafe { run(step) };
         }
     }
-    {
-        // The walk is complete and every element is released exactly once, so
-        // the fault a `close` raised during it can now leave it: into the sink
-        // the caller armed, or, with none, out through the trap path.
-        if let Some((code, fault)) = disarm_release_sink() {
-            // SAFETY: `held_fault` transferred one unique fault owner.
-            unsafe { crate::fault::hew_fault_trap(code, fault) };
-        }
+    // The walk is complete and every element is released exactly once, so the
+    // fault a `close` raised during it can now leave it: into the sink the
+    // caller armed, or, with none, out through the trap path.
+    if let Some((code, fault)) = disarm_release_sink() {
+        // SAFETY: `held_fault` transferred one unique fault owner.
+        unsafe { crate::fault::hew_fault_trap(code, fault) };
     }
 }
 
 /// Arm a sink for the release about to run on this thread.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn arm_release_sink() {
     SINKS.with(|sinks| sinks.borrow_mut().push(None));
 }
 
 /// Take back the innermost sink and whatever fault it collected.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn disarm_release_sink() -> Option<(i32, *mut crate::fault::HewFault)> {
     SINKS.with(|sinks| sinks.borrow_mut().pop().flatten())
 }
@@ -158,11 +152,8 @@ pub(crate) fn disarm_release_sink() -> Option<(i32, *mut crate::fault::HewFault)
 ///
 /// Generated code brackets a collection, shared-handle, callable or erased
 /// release with this pair so a `close` that fails inside it reaches the frame
-/// that asked for the release instead of the trap path (D516). The sandbox
-/// ends a faulting module immediately and owns no faults, so it emits no
-/// bracket and this pair is native-only.
+/// that asked for the release instead of the trap path (D516).
 #[no_mangle]
-#[cfg(not(target_arch = "wasm32"))]
 pub extern "C" fn hew_release_fault_begin() {
     arm_release_sink();
 }
@@ -177,7 +168,6 @@ pub extern "C" fn hew_release_fault_begin() {
 /// `status_out` must be a live, writable `i32`.
 #[no_mangle]
 #[must_use]
-#[cfg(not(target_arch = "wasm32"))]
 pub unsafe extern "C" fn hew_release_fault_end(
     status_out: *mut i32,
 ) -> *mut crate::fault::HewFault {

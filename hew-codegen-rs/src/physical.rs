@@ -2969,7 +2969,18 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
     fn clear_owned(&self, id: StorageId) -> CodegenResult<()> {
         self.set_capture_initialized(id, false)?;
         self.set_place_initialized(id, false)?;
-        if self.function.place_storage.contains_key(&id) {
+        // A local aggregate leaf records its transfer in this frame's
+        // initialization flag, which the same frame reads back before any
+        // release. An actor state seat outlives the handler: its release
+        // callback reads the field itself, so a take leaves an empty carrier
+        // behind and a handler that faults before publishing releases nothing
+        // twice.
+        if self.function.place_storage.contains_key(&id)
+            && !matches!(
+                self.storage(id)?.origin,
+                hew_mir::physical::StorageOrigin::ActorState { .. }
+            )
+        {
             return Ok(());
         }
         if self.storage(id)?.own == OwnKind::Owned {

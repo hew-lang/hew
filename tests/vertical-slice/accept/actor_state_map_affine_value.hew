@@ -1,0 +1,91 @@
+// A state `HashMap` whose value type has no copy is mutable in place.
+//
+// The seat leaves by take, the runtime call updates the receiver and the
+// updated receiver is published back, so nothing has to copy a `dyn` value.
+// `HashSet` insert and remove take the same shape.
+//
+// main: two inserts, one removal, one lookup through the trait object, plus a
+// set that gains and loses a member → exit 42.
+trait Formatter {
+    fn format(val: Self, msg: string) -> string;
+}
+
+type TagFormatter {
+    tag: string,
+}
+
+impl Formatter for TagFormatter {
+    fn format(f: TagFormatter, msg: string) -> string {
+        f"{f.tag}:{msg}"
+    }
+}
+
+actor Registry {
+    var byName: HashMap<string, dyn Formatter> = HashMap.new(),
+    var seen: HashSet<string> = HashSet.new(),
+
+    receive fn add(k: string) {
+        let f: dyn Formatter = TagFormatter { tag: k };
+        byName.insert(k, f);
+        seen.insert(k);
+    }
+
+    receive fn forget(k: string) {
+        let _gone = byName.remove(k);
+        let _member = seen.remove(k);
+    }
+
+    receive fn size() -> i64 {
+        byName.len()
+    }
+
+    receive fn members() -> i64 {
+        seen.len()
+    }
+
+    receive fn render(k: string) -> string {
+        match byName.get(k) {
+            .Some(f) => f.format("hi"),
+            .None => "missing",
+        }
+    }
+}
+
+fn ask_count(value: Result<i64, ActorError<Never, Never>>) -> i64 {
+    match value {
+        .Ok(v) => v,
+        .Err(_e) => -1,
+    }
+}
+
+fn main() -> i64 {
+    let registry = spawn Registry;
+    let _ = registry.add("a");
+    let _ = registry.add("b");
+
+    // Both seats carry the two entries the handlers published back.
+    let after_inserts = ask_count(registry.size());
+    let members = ask_count(registry.members());
+
+    let rendered = match registry.render("a") {
+        .Ok(text) => text,
+        .Err(_e) => "failed",
+    };
+
+    let _ = registry.forget("a");
+    let after_removal = ask_count(registry.size());
+    let missing = match registry.render("a") {
+        .Ok(text) => text,
+        .Err(_e) => "failed",
+    };
+
+    if rendered != "a:hi" {
+        return 1;
+    }
+    if missing != "missing" {
+        return 2;
+    }
+    // 2 + 2 + 1 = 5 entries observed; the exit code folds them with the two
+    // survivors so a silently emptied seat cannot produce it.
+    (after_inserts + members + after_removal) * 8 + 2
+}

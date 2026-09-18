@@ -1,0 +1,20 @@
+// `v.set(i, x)` releases the element it displaced inside the call, so a `close`
+// that fails there is the frame's failure and the vector it still owns is
+// released before the failure leaves.
+#[resource]
+type Conn { fd: i64, }
+
+impl Conn {
+    fn close(consume self) {
+        println(f"close {self.fd}");
+        panic(f"close {self.fd} failed");
+    }
+}
+
+fn main() {
+    var conns: Vec<Conn> = [];
+    conns.push(Conn { fd: 1 });
+    println("working");
+    conns.set(0, Conn { fd: 2 });
+    println("unreached");
+}

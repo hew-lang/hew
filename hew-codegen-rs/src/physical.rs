@@ -6631,15 +6631,16 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                         .void_type()
                         .fn_type(&[pointer.into(), i64_ty.into(), pointer.into()], false),
                 )?;
-                self.runtime_call_void(
-                    function,
-                    &[
-                        vector.into(),
-                        index.into(),
-                        self.slots[source(2)?.0 as usize].into(),
-                    ],
-                    "vector.set",
-                )?;
+                // The set releases the element it displaces, so a `close` that
+                // fails inside it reaches this frame's fault record (D516).
+                let replacement = self.slots[source(2)?.0 as usize];
+                self.value_emitter().emit_release_in_sink(|| {
+                    self.runtime_call_void(
+                        function,
+                        &[vector.into(), index.into(), replacement.into()],
+                        "vector.set",
+                    )
+                })?;
                 if moved {
                     self.clear_owned(source(2)?)?;
                 }

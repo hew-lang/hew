@@ -6161,6 +6161,7 @@ fn verify_initialization(
                 apply_operation(module, function, borrows, operation, &mut state, block_id)?;
             }
             for (target, successor) in terminator_successors(
+                module,
                 function,
                 borrows,
                 &block.terminator,
@@ -6697,6 +6698,29 @@ fn apply_operation(
 /// is what makes every other rule in this verifier - no call, no suspension
 /// and no normal return while a fault is owned - hold SIR to emitting that
 /// dispatch.
+/// The release a runtime operation performs on the value it displaces.
+///
+/// An operation whose family names a displaced argument replaces something its
+/// receiver already owns and releases it inside the call, so that recipe's
+/// destroy action is the release that can fail (D516).
+fn displaced_release(
+    module: &PhysicalModule,
+    action: &PhysicalRuntimeAction,
+) -> Option<DestroyAction> {
+    action.family.displaced_argument()?;
+    match action.carrier {
+        PhysicalRuntimeCarrier::SharedHandle(glue) => {
+            shared_glue(module, glue).ok()?.payload.destroy
+        }
+        PhysicalRuntimeCarrier::Vector { glue, .. } => {
+            vector_glue(module, glue).ok()?.element.destroy
+        }
+        PhysicalRuntimeCarrier::Map { glue, .. } => map_glue(module, glue).ok()?.value.destroy,
+        PhysicalRuntimeCarrier::Set { glue, .. } => set_glue(module, glue).ok()?.element.destroy,
+        _ => None,
+    }
+}
+
 fn arm_release_fault(
     module: &PhysicalModule,
     function: &PhysicalFunction,
@@ -6854,6 +6878,7 @@ fn call_successors(
     reason = "the terminator transfer is the complete status/result/fault initialization contract"
 )]
 fn terminator_successors(
+    module: &PhysicalModule,
     function: &PhysicalFunction,
     borrows: &BorrowDependents,
     terminator: &PhysicalTerminator,
@@ -7507,6 +7532,13 @@ fn terminator_successors(
                     block,
                     "runtime call result",
                 )?;
+            }
+            // The call released what it displaced, so from its normal edge the
+            // frame may own a fault and SIR owes the cleanup dispatch.
+            if displaced_release(module, action)
+                .is_some_and(|release| module.releases.raises_fault(release))
+            {
+                normal_state.fault = FaultState::MaybeActive;
             }
             // A never-returning action ends the path; its normal edge is only
             // the structural unreachable continuation.
@@ -12011,8 +12043,8 @@ mod tests {
         let mut physical = lower_physical_module(&module, target_for_inventory(&module))
             .unwrap()
             .into_unverified();
-        let function = &mut physical.functions[0];
-        let block = vector_block(function, VecValueOp::Index).clone();
+        let block = vector_block(&mut physical.functions[0], VecValueOp::Index).clone();
+        let function = &physical.functions[0];
         let PhysicalTerminator::RuntimeCall {
             result: Some(result),
             failure: Some(failure),
@@ -12033,6 +12065,7 @@ mod tests {
             defers: defer::State::default(),
         };
         let successors = terminator_successors(
+            &physical,
             function,
             &BorrowDependents::of(function),
             &block.terminator,
@@ -12149,6 +12182,7 @@ mod tests {
             };
             state.slots[result.0 as usize] = InitState::Uninitialized;
             let successors = terminator_successors(
+                &module,
                 function,
                 &BorrowDependents::of(function),
                 &block.terminator,

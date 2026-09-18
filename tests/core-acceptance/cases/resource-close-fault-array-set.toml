@@ -1,0 +1,11 @@
+[[case]]
+id = "resource-close-fault-array-set"
+intent = "A failing close on the element a fixed-array assignment displaces is the frame's failure, and the array's remaining elements are still released in reverse index order."
+source = "cases/resource-close-fault-array-set.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "working\nclose 1\nclose 3\nclose 2\n"
+stderr = "hew: failure: UserPanic (212): close 1 failed\nhew: secondary failure: UserPanic (212): close 3 failed\nhew: secondary failure: UserPanic (212): close 2 failed\n"
+exit = 1

@@ -1,0 +1,19 @@
+// A fixed array's indexed assignment releases the element it displaced. The
+// failing `close` is the frame's failure and the array's remaining elements
+// are still released, in reverse index order.
+#[resource]
+type Conn { fd: i64, }
+
+impl Conn {
+    fn close(consume self) {
+        println(f"close {self.fd}");
+        panic(f"close {self.fd} failed");
+    }
+}
+
+fn main() {
+    var _slots: [Conn; 2] = [Conn { fd: 1 }, Conn { fd: 3 }];
+    println("working");
+    _slots[0] = Conn { fd: 2 };
+    println("unreached");
+}

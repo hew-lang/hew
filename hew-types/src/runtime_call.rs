@@ -11449,6 +11449,31 @@ impl RuntimeCallFamily {
         self.row().contract
     }
 
+    /// The argument position whose value replaces one the receiver already
+    /// owns, for the operations that release what they displace.
+    ///
+    /// The displaced value's release runs inside the call, so a `#[resource]`
+    /// in it runs its `close` there and that release can fail like any other
+    /// (HEW-SPEC-2026 §3.7.8.5). SIR reads the operand's type at this position
+    /// to decide whether the call needs a cleanup dispatch, and physical MIR
+    /// arms the same fault from the carrier's element or payload recipe, so
+    /// both stages answer from this one position.
+    ///
+    /// `HashMap.insert` and `HashSet.insert` displace and release too, but
+    /// their calls also run a user `hash`/`eq` callback and leave on an
+    /// explicit failure edge when one faults. A release sink armed around the
+    /// whole call would not be disarmed on that edge, so those two keep the
+    /// trap path until the runtime arms a sink around the displaced drop
+    /// itself.
+    #[must_use]
+    pub const fn displaced_argument(self) -> Option<usize> {
+        match self {
+            Self::RcSet => Some(1),
+            Self::Vector(VecValueOp::Set) | Self::Array(ArrayValueOp::Set) => Some(2),
+            _ => None,
+        }
+    }
+
     /// Return-value ownership for the closed scalar Vec ABI surface.
     #[must_use]
     pub const fn result_ownership(self) -> RuntimeResultOwnership {

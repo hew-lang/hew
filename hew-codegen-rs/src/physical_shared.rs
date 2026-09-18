@@ -129,7 +129,11 @@ impl FunctionEmitter<'_, '_> {
                     self.ctx.void_type().fn_type(&[ptr.into(); 2], false),
                 )?;
                 self.clear_moved(transfers)?;
-                self.runtime_call_void(function, &[handle.into(), staged.into()], "rc.set")?;
+                // The swap releases the payload it displaces, so a `close` that
+                // fails inside it reaches this frame's fault record (D516).
+                self.value_emitter().emit_release_in_sink(|| {
+                    self.runtime_call_void(function, &[handle.into(), staged.into()], "rc.set")
+                })?;
                 Ok(())
             }
             other => Err(CodegenError::FailClosed(format!(

@@ -172,6 +172,13 @@ impl TargetSpec {
         self.arch == TargetArch::Wasm32
     }
 
+    /// `wasm32-unknown-unknown`: no WASI syscalls and no runtime archive, so
+    /// the module is linked freestanding by codegen and every undefined
+    /// `hew_*` symbol becomes a host import.
+    pub fn is_wasm_freestanding(&self) -> bool {
+        self.os == TargetOs::WasmFreestanding
+    }
+
     /// Returns the target-driven native link plan for this target.
     ///
     /// Every field is derived from `self.os` — not from the host `#[cfg]`

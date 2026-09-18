@@ -115,6 +115,10 @@ pub struct PhysicalEmitOptions<'a> {
     /// Source file whose text attributes native debug metadata; `None` emits
     /// no debug info at all.
     pub debug_source: Option<&'a Path>,
+    /// Link the freestanding `wasm32-unknown-unknown` object into a `.wasm`
+    /// module with `wasm-ld --no-entry`. Ignored on every other triple: a WASI
+    /// module is linked against the runtime archives by `hew-cli`'s linker.
+    pub link_freestanding_wasm: bool,
 }
 
 /// Resolve primitive physical layouts from the exact LLVM target machine.
@@ -528,7 +532,11 @@ fn emit_physical_object_with_host(
     let ll_path = options
         .emit_llvm
         .then(|| options.out_dir.join(format!("{}.ll", options.module_name)));
-    let object_path = options.out_dir.join(format!("{}.o", options.module_name));
+    let wasm = triple.starts_with("wasm32");
+    let suffix = if wasm { "wasm.o" } else { "o" };
+    let object_path = options
+        .out_dir
+        .join(format!("{}.{suffix}", options.module_name));
     emit_physical_to_paths(
         verified,
         options.module_name,
@@ -540,9 +548,29 @@ fn emit_physical_object_with_host(
         host,
         options.debug_source,
     )?;
+    if !wasm {
+        return Ok(EmitArtefacts {
+            ll_path,
+            native_obj_path: Some(object_path),
+            ..EmitArtefacts::default()
+        });
+    }
+    // The freestanding link produces a standalone module with no runtime
+    // archive; a WASI module is linked by `hew-cli` against the wasm32
+    // runtime and std archives instead.
+    let wasm_path = if options.link_freestanding_wasm {
+        let path = options
+            .out_dir
+            .join(format!("{}.wasm", options.module_name));
+        crate::llvm::link_freestanding_wasm_module(&object_path, &path)?;
+        Some(path)
+    } else {
+        None
+    };
     Ok(EmitArtefacts {
         ll_path,
-        native_obj_path: Some(object_path),
+        wasm_obj_path: Some(object_path),
+        wasm_path,
         ..EmitArtefacts::default()
     })
 }
@@ -2602,6 +2630,36 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         builder
             .build_return(Some(&exit))
             .llvm_ctx("return physical process status")?;
+        if self.module.target.triple.starts_with("wasm32") {
+            self.emit_wasi_entry_adapter(wrapper)?;
+        }
+        Ok(())
+    }
+
+    /// Publish the canonical entry adapter the WASI runtime's `_start` calls.
+    ///
+    /// `main` stays the source-shaped export a freestanding host links against;
+    /// `__hew_wasi_main` is the fixed name `hew_runtime`'s `_start` imports, so
+    /// a WASI command module reaches the same process entry.
+    fn emit_wasi_entry_adapter(&self, process_main: FunctionValue<'ctx>) -> CodegenResult<()> {
+        let adapter = self.llvm.add_function(
+            "__hew_wasi_main",
+            self.ctx.i32_type().fn_type(&[], false),
+            Some(Linkage::External),
+        );
+        let builder = self.ctx.create_builder();
+        builder.position_at_end(self.ctx.append_basic_block(adapter, "entry"));
+        let status = builder
+            .build_call(process_main, &[], "wasi.entry.status")
+            .llvm_ctx("call the process entry from the WASI adapter")?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| {
+                CodegenError::FailClosed("process entry returned no status for WASI".into())
+            })?;
+        builder
+            .build_return(Some(&status))
+            .llvm_ctx("return the WASI process status")?;
         Ok(())
     }
 }

@@ -1441,19 +1441,30 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   # Docker — multi-arch image pushed to ghcr.io/hew-lang/hew
   # ─────────────────────────────────────────────────────────────────────────
-  docker:
+  docker-build:
     # Do not publish a container when the canonical release failed to assemble.
     # This also makes the image a post-release artifact rather than a parallel
     # public side effect of a partial tag run.
     needs: release
-    runs-on: ubuntu-24.04
+    name: Docker build (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            arch: amd64
+            runner: ubuntu-24.04
+          - platform: linux/arm64
+            arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     if: ${{ !cancelled() && needs.release.result == 'success' }}
-    # 180: the arm64 leg compiles the workspace under QEMU emulation —
-    # three 60-minute attempts timed out at exactly the wall. Native local
-    # builds + a manifest push are the faster path when iterating.
+    # Each leg now compiles natively on its own architecture instead of one
+    # runner cross-building both under QEMU emulation, where the emulated
+    # arm64 leg took 2h40m against the same 180-minute budget.
     timeout-minutes: 180
     permissions:
-      packages: write # push multi-arch image to ghcr.io
+      packages: write # push image digest to ghcr.io
       contents: read # checkout for Dockerfile
 
     steps:
@@ -1462,8 +1473,68 @@ jobs:
         with:
           ref: ${{ env.RELEASE_TAG }}
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@06116385d9baf250c9f4dcb4858b16962ea869c3 # v4.1.0
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+
+      - name: Log in to GHCR
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract image version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "version=${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push image by digest
+        id: build
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        with:
+          context: .
+          file: installers/docker/Dockerfile.release
+          platforms: ${{ matrix.platform }}
+          build-args: |
+            VERSION=${{ steps.version.outputs.version }}
+          outputs: type=image,name=ghcr.io/hew-lang/hew,push-by-digest=true,name-canonical=true,push=true
+
+      - name: Export digest
+        run: |
+          mkdir -p "${RUNNER_TEMP}/digests"
+          digest="${{ steps.build.outputs.digest }}"
+          touch "${RUNNER_TEMP}/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: docker-digest-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  docker-merge:
+    # Gate on docker-build directly (not release, which it already needs
+    # transitively): with fail-fast disabled, needs.release.result == success
+    # stays true even when one platform leg fails, which would otherwise
+    # publish a single-arch manifest under the multi-arch tag.
+    needs: docker-build
+    runs-on: ubuntu-24.04
+    if: ${{ !cancelled() && needs.docker-build.result == 'success' }}
+    timeout-minutes: 15
+    permissions:
+      packages: write # push multi-arch manifest to ghcr.io
+      contents: read
+
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: docker-digest-*
+          path: ${{ runner.temp }}/digests
+          merge-multiple: true
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
@@ -1493,16 +1564,21 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Build and push multi-arch image
-        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
-        with:
-          context: .
-          file: installers/docker/Dockerfile.release
-          platforms: linux/amd64,linux/arm64
-          push: true
-          build-args: |
-            VERSION=${{ steps.version.outputs.version }}
-          tags: ${{ steps.version.outputs.tags }}
+      - name: Create and push multi-arch manifest
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          set -euo pipefail
+          tags="${{ steps.version.outputs.tags }}"
+          sources=()
+          for digest in *; do
+            sources+=("ghcr.io/hew-lang/hew@sha256:${digest}")
+          done
+          tag_args=()
+          while IFS= read -r tag; do
+            [ -z "${tag}" ] && continue
+            tag_args+=(--tag "${tag}")
+          done <<< "${tags}"
+          docker buildx imagetools create "${tag_args[@]}" "${sources[@]}"
 
   # ─────────────────────────────────────────────────────────────────────────
   # Homebrew — trigger formula update in hew-lang/homebrew-hew

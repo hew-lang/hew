@@ -165,6 +165,13 @@ pub const REQUIRED_PARITY_TEST_NAMES: &[&str] = &[
     "trait_objects",
     "virtual_sleep",
     "seeded_random",
+    // Lesson families the sandbox refused until it could execute them: a
+    // lambda as a value, deferred work running in reverse as its scope ends,
+    // the prelude's own Result constructors, and a map's reads.
+    "closure_values",
+    "defer_order",
+    "result_constructors",
+    "map_reads",
 ];
 
 /// Names the editor buffer in frontend diagnostics and anchors its imports.

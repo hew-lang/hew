@@ -1,0 +1,20 @@
+// Result and Option are the prelude's own enums: constructing and matching one
+// is a variant, not a host call.
+fn divide(a: i64, b: i64) -> Result<i64, string> {
+    if b == 0 {
+        Result.Err("division by zero")
+    } else {
+        Result.Ok(a / b)
+    }
+}
+
+fn main() {
+    match divide(100, 5) {
+        .Ok(v) => println(v),
+        .Err(e) => println(e),
+    }
+    match divide(1, 0) {
+        .Ok(v) => println(v),
+        .Err(e) => println(e),
+    }
+}

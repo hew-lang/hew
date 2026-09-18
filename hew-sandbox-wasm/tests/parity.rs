@@ -11,6 +11,32 @@ const HEW_SEED: &str = "42";
 
 const PARITY_CASES: &[ParityCase] = &[
     ParityCase {
+        // A lambda built, passed to a function taking a callable, and called
+        // there through the same indirect path both engines use.
+        test_name: "closure_values",
+        source_rel: "examples/sandbox-graduation/closure_values.hew",
+        accepted_divergences: &[],
+    },
+    ParityCase {
+        // Deferred work runs as the scope ends, in reverse registration order.
+        test_name: "defer_order",
+        source_rel: "examples/sandbox-graduation/defer_order.hew",
+        accepted_divergences: &[],
+    },
+    ParityCase {
+        // Result is the prelude's own enum: constructing and matching one is a
+        // variant, not a host call.
+        test_name: "result_constructors",
+        source_rel: "examples/sandbox-graduation/result_constructors.hew",
+        accepted_divergences: &[],
+    },
+    ParityCase {
+        // A present key, a missing key and a membership test.
+        test_name: "map_reads",
+        source_rel: "examples/sandbox-graduation/map_reads.hew",
+        accepted_divergences: &[],
+    },
+    ParityCase {
         // A map literal's storage and lookup, which the VM now models with a
         // value kind of its own rather than approximating with a record.
         test_name: "map_literal",

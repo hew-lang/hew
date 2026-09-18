@@ -107,7 +107,7 @@ pub unsafe extern "C" fn hew_reply_channel_status_native(
 /// `drop_payload` releases those fields without freeing the wrapper. `channel` is a live
 /// receiver reference with its wake target and reply destructor already set.
 #[no_mangle]
-pub unsafe extern "C" fn hew_actor_ask_submit_native(
+pub unsafe extern "C-unwind" fn hew_actor_ask_submit_native(
     token: crate::lifetime::local_handles::HewLocalPidId,
     message: i32,
     payload: *mut c_void,

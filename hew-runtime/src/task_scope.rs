@@ -449,7 +449,7 @@ pub unsafe extern "C" fn hew_task_new() -> *mut HewTask {
 /// `task` must have been returned by [`hew_task_new`] and must not be
 /// used after this call.
 #[no_mangle]
-pub unsafe extern "C" fn hew_task_free(task: *mut HewTask) {
+pub unsafe extern "C-unwind" fn hew_task_free(task: *mut HewTask) {
     cabi_guard!(task.is_null());
     // SAFETY: caller transfers one live task reference.
     if unsafe { &*task }.refs.fetch_sub(1, Ordering::AcqRel) != 1 {

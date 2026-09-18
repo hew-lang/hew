@@ -4,10 +4,11 @@ severity: error
 message: >-
   This `#[no_mangle]` export is declared `extern "C"` but calls a function that
   can unwind into it. `hew_panic`, `hew_panic_msg`, `hew_fault_trap`,
-  `hew_trap_with_code` and the `*_walk` release walkers are `extern "C-unwind"`
-  because a user `close`/`drop` under them can panic; an unwind crossing a plain
-  `"C"` frame is undefined behaviour and aborts instead of reporting the fault.
-  Declare this export `extern "C-unwind"`.
+  `hew_trap_with_code`, the `*_walk` release walkers and the exports that
+  invoke a value's drop thunk themselves are `extern "C-unwind"` because a user
+  `close`/`drop` under them can panic; an unwind crossing a plain `"C"` frame is
+  undefined behaviour and aborts instead of reporting the fault. Declare this
+  export `extern "C-unwind"`.
 files:
   - "hew-runtime/src/**/*.rs"
   - "hew-std/src/**/*.rs"
@@ -40,6 +41,14 @@ rule:
           - pattern: hew_array_free_walk($$$ARGS)
           - pattern: hew_hashmap_free_layout_walk($$$ARGS)
           - pattern: hew_hashset_free_layout_walk($$$ARGS)
+          # Exports that invoke a value's drop thunk themselves. Each releases
+          # a payload, task result or reply the program owns, so a user `close`
+          # under one unwinds out through this frame (D516).
+          - pattern: hew_arc_drop($$$ARGS)
+          - pattern: hew_rc_drop($$$ARGS)
+          - pattern: hew_rc_set($$$ARGS)
+          - pattern: hew_checked_scope_wait_status($$$ARGS)
+          - pattern: hew_reply_channel_free($$$ARGS)
           # A `HewValueDropThunk` reached through a layout's `drop_fn` is the
           # same hazard, but it is not matched here: the runtime binds it to a
           # local whose name it shares with plain `"C"` callbacks

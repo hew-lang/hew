@@ -603,7 +603,7 @@ pub unsafe extern "C-unwind" fn hew_checked_scope_wait_status(
 /// Wait remains live and fault is an empty, writable owning slot. A pending
 /// drain leaves both the slot and every child fault untouched.
 #[no_mangle]
-pub unsafe extern "C" fn hew_checked_scope_wait_take_fault(
+pub unsafe extern "C-unwind" fn hew_checked_scope_wait_take_fault(
     wait: *const HewCheckedScopeWait,
     fault: *mut *mut HewFault,
 ) -> i32 {

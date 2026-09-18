@@ -236,14 +236,21 @@ pub unsafe extern "C" fn hew_actor_send_wait_poll(wait: *mut HewNativeSend) -> i
         crate::actor::try_submit_native_envelope(wait.token, wait.message, wait.envelope)
     };
     match outcome {
-        super::SendOutcome::Enqueued => {
+        // A coalescing mailbox admits by replacing the message this one
+        // supersedes, and a `drop_new` fallback discards it: both consumed the
+        // envelope and neither leaves the sender anything to retry.
+        super::SendOutcome::Enqueued
+        | super::SendOutcome::Coalesced
+        | super::SendOutcome::Dropped => {
             wait.envelope = std::ptr::null_mut();
             0
         }
         super::SendOutcome::Failed => -1,
         super::SendOutcome::Closed => 2,
         super::SendOutcome::Oom => 3,
-        _ => unreachable!("native admission does not select an overflow policy"),
+        super::SendOutcome::DroppedOld => {
+            unreachable!("envelope admission never evicts for a one-way submission")
+        }
     }
 }
 

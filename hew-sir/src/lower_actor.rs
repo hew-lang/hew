@@ -60,17 +60,96 @@ fn actor_substitution(
     })
 }
 
-fn actor_overflow(source: &hew_hir::HirActorDecl) -> Result<crate::SemActorOverflow, String> {
-    let overflow = match &source.overflow_policy {
+fn actor_overflow(source: &hew_hir::HirActorDecl) -> crate::SemActorOverflow {
+    match &source.overflow_policy {
         None | Some(hew_parser::ast::OverflowPolicy::Block) => crate::SemActorOverflow::Block,
         Some(hew_parser::ast::OverflowPolicy::DropNew) => crate::SemActorOverflow::DropNew,
         Some(hew_parser::ast::OverflowPolicy::DropOld) => crate::SemActorOverflow::DropOld,
         Some(hew_parser::ast::OverflowPolicy::Fail) => crate::SemActorOverflow::Fail,
-        Some(hew_parser::ast::OverflowPolicy::Coalesce { .. }) => {
-            return Err("coalescing requires a checked key projection".into())
+        Some(hew_parser::ast::OverflowPolicy::Coalesce { .. }) => crate::SemActorOverflow::Coalesce,
+    }
+}
+
+/// The `u64` key one declared parameter type projects to. The checker admits
+/// only these, so an unadmitted type here is a contract break.
+fn coalesce_key_kind(ty: &ResolvedTy) -> Option<crate::SemCoalesceKeyKind> {
+    match ty {
+        ResolvedTy::I8
+        | ResolvedTy::I16
+        | ResolvedTy::I32
+        | ResolvedTy::I64
+        | ResolvedTy::U8
+        | ResolvedTy::U16
+        | ResolvedTy::U32
+        | ResolvedTy::U64
+        | ResolvedTy::Isize
+        | ResolvedTy::Usize => Some(crate::SemCoalesceKeyKind::Integer),
+        ResolvedTy::Bool => Some(crate::SemCoalesceKeyKind::Boolean),
+        ResolvedTy::String => Some(crate::SemCoalesceKeyKind::String),
+        _ => None,
+    }
+}
+
+/// The checked coalescing contract, projected onto the handlers this actor
+/// registered. A handler that does not declare the key parameter is left out:
+/// the runtime then keys it by its own queued payload, so it never merges.
+fn actor_coalesce(
+    source: &hew_hir::HirActorDecl,
+    handlers: &[crate::SemActorHandler],
+) -> Result<Option<crate::SemActorCoalesce>, String> {
+    let Some(hew_parser::ast::OverflowPolicy::Coalesce {
+        key_field,
+        fallback,
+    }) = &source.overflow_policy
+    else {
+        return Ok(None);
+    };
+    let fallback = match fallback {
+        None | Some(hew_parser::ast::OverflowFallback::DropNew) => {
+            crate::SemCoalesceFallback::DropNew
+        }
+        Some(hew_parser::ast::OverflowFallback::DropOld) => crate::SemCoalesceFallback::DropOld,
+        Some(hew_parser::ast::OverflowFallback::Fail) => crate::SemCoalesceFallback::Fail,
+        Some(hew_parser::ast::OverflowFallback::Block) => {
+            return Err("coalesce fallback `block` has no admission contract".into())
         }
     };
-    Ok(overflow)
+    let mut keys = Vec::new();
+    for handler in handlers {
+        let declared = source
+            .receive_handlers
+            .iter()
+            .find(|declared| declared.name == handler.name)
+            .ok_or("a registered handler lost its declaration")?;
+        let Some(param) = declared
+            .params
+            .iter()
+            .position(|param| param.name == *key_field)
+        else {
+            continue;
+        };
+        let ty = handler
+            .params
+            .get(param)
+            .ok_or("coalesce key parameter is absent from the message payload")?;
+        let kind = coalesce_key_kind(ty).ok_or_else(|| {
+            format!(
+                "coalesce key `{key_field}` on `{}` has no key projection",
+                handler.name
+            )
+        })?;
+        keys.push(crate::SemCoalesceKey {
+            message: handler.message_id,
+            param: u32::try_from(param).map_err(|_| "coalesce key index exceeds u32")?,
+            kind,
+        });
+    }
+    if keys.is_empty() {
+        return Err(format!(
+            "coalesce key `{key_field}` names no receive parameter"
+        ));
+    }
+    Ok(Some(crate::SemActorCoalesce { fallback, keys }))
 }
 
 impl InstanceService<'_> {
@@ -129,7 +208,7 @@ impl InstanceService<'_> {
         for argument in &substitution.args {
             self.require_type_facts(argument)?;
         }
-        let overflow = actor_overflow(&source)?;
+        let overflow = actor_overflow(&source);
         if let Some(field) = source.state_fields.iter().find(|field| {
             super::generators::value_needs_close(self, &substitution.apply(&field.ty))
         }) {
@@ -171,9 +250,14 @@ impl InstanceService<'_> {
             handlers: Vec::new(),
             mailbox_capacity: source.mailbox_capacity,
             overflow,
+            coalesce: None,
             max_heap_bytes: source.max_heap_bytes,
         });
         self.register_actor_bodies(id, &source, &substitution)?;
+        // The key projection names message ids, so it is resolved once the
+        // handlers exist.
+        let coalesce = actor_coalesce(&source, &self.actors[id.0 as usize].handlers)?;
+        self.actors[id.0 as usize].coalesce = coalesce;
         Ok(id)
     }
 

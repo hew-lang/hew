@@ -117,6 +117,50 @@ pub enum SemActorOverflow {
     DropNew,
     DropOld,
     Fail,
+    /// A full mailbox replaces the queued message carrying the same key, and
+    /// applies [`SemActorCoalesce::fallback`] when no queued message matches.
+    /// The projection itself is [`SemActor::coalesce`].
+    Coalesce,
+}
+
+/// How a coalescing mailbox admits a message whose key is not already queued.
+/// `block` is refused at check time: cooperative backpressure is the top-level
+/// `overflow block` policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SemCoalesceFallback {
+    DropNew,
+    DropOld,
+    Fail,
+}
+
+/// How one message type's key parameter becomes the mailbox's `u64` key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SemCoalesceKeyKind {
+    /// Zero-extended from the parameter's integer width.
+    Integer,
+    Boolean,
+    /// FNV-1a over the string's bytes.
+    String,
+}
+
+/// The key projection for one receive handler that declares the key parameter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SemCoalesceKey {
+    pub message: u32,
+    /// Index into [`SemActorHandler::params`].
+    pub param: u32,
+    pub kind: SemCoalesceKeyKind,
+}
+
+/// The checked coalescing contract for one actor.
+///
+/// Only the handlers that declare the key parameter carry a projection; a
+/// handler without it keys on its own queued payload identity, so it never
+/// merges with another message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SemActorCoalesce {
+    pub fallback: SemCoalesceFallback,
+    pub keys: Vec<SemCoalesceKey>,
 }
 
 /// One actor owns its initialized state through every strict receive turn.
@@ -148,6 +192,8 @@ pub struct SemActor {
     pub handlers: Vec<SemActorHandler>,
     pub mailbox_capacity: Option<u32>,
     pub overflow: SemActorOverflow,
+    /// `Some` exactly when `overflow` is [`SemActorOverflow::Coalesce`].
+    pub coalesce: Option<SemActorCoalesce>,
     pub max_heap_bytes: Option<u64>,
 }
 

@@ -3808,6 +3808,8 @@ pub unsafe extern "C" fn hew_actor_spawn_native(
     sys_dispatch: Option<HewSysDispatchFn>,
     native_crash: Option<HewNativeCrashFn>,
     fault: *mut *mut crate::fault::HewFault,
+    coalesce_key: Option<mailbox::HewCoalesceKeyFn>,
+    coalesce_fallback: i32,
 ) -> crate::lifetime::local_handles::HewLocalPidId {
     // SAFETY: constructors return an owned native mailbox.
     let mailbox = unsafe {
@@ -3820,6 +3822,18 @@ pub unsafe extern "C" fn hew_actor_spawn_native(
             mailbox::hew_mailbox_new()
         }
     };
+    // Configure coalescing before the actor is published: no sender can reach
+    // this mailbox yet, so the key extractor is in place for the first send.
+    if coalesce_key.is_some() {
+        // SAFETY: the constructor above returned a live mailbox.
+        unsafe {
+            mailbox::hew_mailbox_set_coalesce_config(
+                mailbox,
+                coalesce_key,
+                parse_overflow_policy(coalesce_fallback),
+            );
+        }
+    }
     // SAFETY: ownership and callbacks are supplied atomically before publication.
     let actor = unsafe {
         spawn_actor_internal(ActorSpawnConfig {
@@ -3834,7 +3848,7 @@ pub unsafe extern "C" fn hew_actor_spawn_native(
             sys_dispatch,
             mailbox: mailbox.cast(),
             budget: HEW_MSG_BUDGET,
-            coalesce_key_fn: None,
+            coalesce_key_fn: coalesce_key,
             cycle_capable: false,
             cap_bytes,
             adopt: true,

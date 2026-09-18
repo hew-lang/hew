@@ -39,6 +39,7 @@ impl Checker {
                                 .to_string(),
                         );
                     }
+                    self.check_coalesce_key(ad, span);
                     self.check_actor(ad);
                 }
             }
@@ -62,6 +63,63 @@ impl Checker {
             | Item::Machine(_)
             | Item::ExternBlock(_) => {}
             Item::Supervisor(sd) => self.check_supervisor(sd, span),
+        }
+    }
+
+    /// Validate `mailbox N overflow coalesce(key)`: the key must name a
+    /// receive parameter, and every handler declaring it must project to a
+    /// mailbox key. A handler without the parameter never merges, so it needs
+    /// no annotation.
+    fn check_coalesce_key(&mut self, ad: &ActorDecl, span: &Span) {
+        let Some(hew_parser::ast::OverflowPolicy::Coalesce { key_field, .. }) =
+            ad.overflow_policy.as_ref()
+        else {
+            return;
+        };
+        let mut declared = false;
+        for rf in &ad.receive_fns {
+            let Some(param) = rf.params.iter().find(|param| param.name == *key_field) else {
+                continue;
+            };
+            declared = true;
+            let ty = self.resolve_type_expr(&param.ty);
+            if !matches!(
+                ty,
+                Ty::I8
+                    | Ty::I16
+                    | Ty::I32
+                    | Ty::I64
+                    | Ty::U8
+                    | Ty::U16
+                    | Ty::U32
+                    | Ty::U64
+                    | Ty::Isize
+                    | Ty::Usize
+                    | Ty::Bool
+                    | Ty::String
+            ) {
+                self.report_error(
+                    TypeErrorKind::InvalidOperation,
+                    span,
+                    format!(
+                        "coalesce key `{key_field}` on `receive fn {}` has type `{}`; a mailbox \
+                         key must be an integer, bool or string",
+                        rf.name,
+                        ty.user_facing()
+                    ),
+                );
+            }
+        }
+        if !declared {
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                span,
+                format!(
+                    "coalesce key `{key_field}` names no parameter of any `receive fn` on actor \
+                     `{}`",
+                    ad.name
+                ),
+            );
         }
     }
 

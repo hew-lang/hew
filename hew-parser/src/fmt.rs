@@ -1823,6 +1823,7 @@ impl<'a> Formatter<'a> {
 
     fn format_supervisor(&mut self, decl: &SupervisorDecl) {
         self.write_indent();
+        self.write_visibility(decl.visibility);
         self.write("supervisor ");
         self.write(&decl.name);
         if !decl.type_params.is_empty() {
@@ -4519,6 +4520,30 @@ extern \"rt\" {
 pub type Label = string;
 
 fn main() {
+}
+";
+        let formatted = roundtrip(src);
+        assert_eq!(formatted, src);
+    }
+
+    #[test]
+    fn pub_supervisor_roundtrip() {
+        // `format_supervisor` must emit the visibility modifier: a file import
+        // publishes only `pub` declarations, so dropping it here turns a
+        // formatted supervisor invisible to its importer.
+        let src = "\
+pub actor Worker {
+    let id: i64,
+
+    receive fn identify() -> i64 {
+        id
+    }
+}
+
+pub supervisor Inner {
+    strategy: one_for_one,
+
+    child worker: Worker(id: 23) restart: temporary,
 }
 ";
         let formatted = roundtrip(src);

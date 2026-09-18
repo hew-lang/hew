@@ -239,8 +239,14 @@ unsafe fn submit_native(
             crate::actor::try_submit_native_envelope(token, message, envelope)
         }
     };
+    // `Enqueued` is plain admission. A coalescing mailbox also accepts under its
+    // declared policy - replacing the message this one supersedes, or discarding
+    // it - and owns the envelope either way, so the sender has nothing to
+    // release or retry.
     let status = match outcome {
-        crate::mailbox::SendOutcome::Enqueued => return 0,
+        crate::mailbox::SendOutcome::Enqueued
+        | crate::mailbox::SendOutcome::Coalesced
+        | crate::mailbox::SendOutcome::Dropped => return 0,
         crate::mailbox::SendOutcome::Failed if policy == 2 => {
             // SAFETY: explicit DropNewest transfers the typed payload for destruction.
             unsafe {
@@ -251,7 +257,9 @@ unsafe fn submit_native(
         crate::mailbox::SendOutcome::Failed => 1,
         crate::mailbox::SendOutcome::Closed => 2,
         crate::mailbox::SendOutcome::Oom => 3,
-        _ => unreachable!("native admission cannot apply implicit eviction or discard"),
+        crate::mailbox::SendOutcome::DroppedOld => {
+            unreachable!("a `drop_old` coalesce fallback enqueues rather than reporting eviction")
+        }
     };
     // SAFETY: admission failed without publishing or aliasing. The source retains
     // the typed fields; these two allocations contain no other owning resources.

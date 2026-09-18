@@ -4,7 +4,7 @@ use super::suspend::call_value;
 use super::*;
 use hew_mir::physical::{
     ActorId, ActorIngressAdapter, ActorOperation, SemActor, SemActorField, SemActorHandler,
-    SemFailureDisplay,
+    SemCoalesceFallback, SemCoalesceKeyKind, SemFailureDisplay,
 };
 use inkwell::types::StructType;
 
@@ -532,6 +532,9 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 }
             }
             self.emit_actor_dispatch(actor)?;
+            if actor.coalesce.is_some() {
+                self.emit_actor_coalesce_key(actor)?;
+            }
             if actor.crash.is_some() {
                 self.emit_actor_crash(actor)?;
             }
@@ -763,6 +766,123 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         builder
             .build_return(None)
             .llvm_ctx("return from queued message drop")?;
+        Ok(())
+    }
+
+    /// The mailbox's key extractor: `(msg_type, payload, payload_size) -> u64`.
+    ///
+    /// The runtime only compares keys within one message type, so a handler
+    /// that does not declare the key parameter returns its own payload address
+    /// and therefore never matches a queued message.
+    fn emit_actor_coalesce_key(&self, actor: &SemActor) -> CodegenResult<()> {
+        let coalesce = actor
+            .coalesce
+            .as_ref()
+            .ok_or_else(|| CodegenError::FailClosed("actor lacks its coalesce contract".into()))?;
+        let ptr = self.ctx.ptr_type(AddressSpace::default());
+        let target = TargetData::create(&self.module.target.data_layout);
+        let size_ty = self.ctx.ptr_sized_int_type(&target, None);
+        let i32_ty = self.ctx.i32_type();
+        let i64_ty = self.ctx.i64_type();
+        let key_fn = self.llvm.add_function(
+            &symbol(actor.id, "coalesce_key"),
+            i64_ty.fn_type(&[i32_ty.into(), ptr.into(), size_ty.into()], false),
+            Some(Linkage::Internal),
+        );
+        let builder = self.ctx.create_builder();
+        let entry = self.ctx.append_basic_block(key_fn, "entry");
+        let unkeyed = self.ctx.append_basic_block(key_fn, "unkeyed");
+        builder.position_at_end(entry);
+        let message = key_fn.get_nth_param(0).unwrap().into_int_value();
+        let payload = key_fn.get_nth_param(1).unwrap().into_pointer_value();
+
+        let mut cases = Vec::with_capacity(coalesce.keys.len());
+        for key in &coalesce.keys {
+            cases.push((
+                i32_ty.const_int(u64::from(key.message), false),
+                self.ctx
+                    .append_basic_block(key_fn, &format!("message_{}", key.message)),
+            ));
+        }
+        builder
+            .build_switch(message, unkeyed, &cases)
+            .llvm_ctx("select the coalesce key projection")?;
+
+        for (key, (_, block)) in coalesce.keys.iter().zip(&cases) {
+            builder.position_at_end(*block);
+            let handler = actor
+                .handlers
+                .iter()
+                .find(|handler| handler.message_id == key.message)
+                .ok_or_else(|| {
+                    CodegenError::FailClosed("coalesce key names an unknown message".into())
+                })?;
+            let ty = handler.params.get(key.param as usize).ok_or_else(|| {
+                CodegenError::FailClosed("coalesce key names an absent parameter".into())
+            })?;
+            let field_ty = llvm_type(
+                self.ctx,
+                &self
+                    .module
+                    .target
+                    .layout(ty)
+                    .ok_or_else(|| {
+                        CodegenError::FailClosed("coalesce key lacks its target layout".into())
+                    })?
+                    .repr,
+            )?;
+            // The payload leads with the transfer flag `message_type` stamps.
+            let slot = builder
+                .build_struct_gep(
+                    message_type(self.module, self.ctx, handler)?,
+                    payload,
+                    key.param + 1,
+                    "coalesce.key.slot",
+                )
+                .llvm_ctx("address the coalesce key field")?;
+            let value = builder
+                .build_load(field_ty, slot, "coalesce.key.field")
+                .llvm_ctx("read the coalesce key field")?;
+            let key = match key.kind {
+                SemCoalesceKeyKind::Integer | SemCoalesceKeyKind::Boolean => {
+                    let value = value.into_int_value();
+                    if value.get_type().get_bit_width() >= 64 {
+                        value
+                    } else {
+                        builder
+                            .build_int_z_extend(value, i64_ty, "coalesce.key")
+                            .llvm_ctx("widen the coalesce key")?
+                    }
+                }
+                SemCoalesceKeyKind::String => {
+                    let hash = get_or_declare_external(
+                        &self.llvm,
+                        "hew_string_hash_fnv1a",
+                        i64_ty.fn_type(&[ptr.into()], false),
+                    )?;
+                    builder
+                        .build_call(hash, &[value.into_pointer_value().into()], "coalesce.key")
+                        .llvm_ctx("hash the coalesce key string")?
+                        .try_as_basic_value()
+                        .basic()
+                        .ok_or_else(|| {
+                            CodegenError::FailClosed("string key hash produced no value".into())
+                        })?
+                        .into_int_value()
+                }
+            };
+            builder
+                .build_return(Some(&key))
+                .llvm_ctx("return the coalesce key")?;
+        }
+
+        builder.position_at_end(unkeyed);
+        let identity = builder
+            .build_ptr_to_int(payload, i64_ty, "coalesce.key.identity")
+            .llvm_ctx("key an unkeyed message by its own payload")?;
+        builder
+            .build_return(Some(&identity))
+            .llvm_ctx("return the unkeyed coalesce key")?;
         Ok(())
     }
 
@@ -1684,6 +1804,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     ptr.into(),
                     ptr.into(),
                     ptr.into(),
+                    ptr.into(),
+                    self.ctx.i32_type().into(),
                 ],
                 false,
             ),
@@ -1704,6 +1826,18 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             hew_mir::physical::SemActorOverflow::DropNew => 1,
             hew_mir::physical::SemActorOverflow::DropOld => 2,
             hew_mir::physical::SemActorOverflow::Fail => 3,
+            hew_mir::physical::SemActorOverflow::Coalesce => 4,
+        };
+        let (coalesce_key, coalesce_fallback) = match &actor.coalesce {
+            None => (ptr.const_null(), 1),
+            Some(coalesce) => (
+                callback("coalesce_key")?,
+                match coalesce.fallback {
+                    SemCoalesceFallback::DropNew => 1,
+                    SemCoalesceFallback::DropOld => 2,
+                    SemCoalesceFallback::Fail => 3,
+                },
+            ),
         };
         let token = self
             .builder
@@ -1734,6 +1868,11 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     }
                     .into(),
                     self.active_fault.into(),
+                    coalesce_key.into(),
+                    self.ctx
+                        .i32_type()
+                        .const_int(coalesce_fallback, false)
+                        .into(),
                 ],
                 "spawn.token",
             )

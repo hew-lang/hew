@@ -8,7 +8,11 @@ mod emit;
 mod profile;
 mod sir_emit;
 
-use bytecode::{Block, Capability, Instruction, Local, Operand, StdlibSymbol, Terminator};
+/// The shipped standard-library sources, as `("std/<relative path>", source)`.
+mod std_sources {
+    include!(concat!(env!("OUT_DIR"), "/std_sources.rs"));
+}
+
 use serde::{Deserialize, Serialize};
 
 pub use bytecode::SandboxBytecodePackage;
@@ -157,9 +161,40 @@ pub const REQUIRED_PARITY_TEST_NAMES: &[&str] = &[
 /// Names the editor buffer in frontend diagnostics and anchors its imports.
 const SANDBOX_BUFFER_LABEL: &str = "playground.hew";
 
-const SANDBOX_STDIN_HELPER: &str = "__hew_sandbox_stdin_read_line";
-const SANDBOX_STDIN_SYMBOL: &str = "sym:core.stdin.read_line";
-const SANDBOX_STDIN_CAPABILITY: &str = "core.stdin";
+/// The standard library as a document set.
+///
+/// Import resolution builds candidate paths relative to the buffer and reads
+/// them through this set before the filesystem, so the browser resolves the
+/// shipped sources it has no filesystem to read. Natively the files are on
+/// disk and win, so this changes nothing there.
+///
+/// The working-directory spelling is the one recorded, because it is the
+/// candidate both shapes reach: the buffer's own import tries it after its
+/// relative form, and a standard-library module importing a sibling tries it
+/// after a form relative to that module's own directory. Recording both
+/// spellings would make every import ambiguous, since a candidate the
+/// filesystem cannot canonicalize stays the distinct path it was written as.
+#[must_use]
+pub fn embedded_standard_library() -> &'static [(&'static str, &'static str)] {
+    std_sources::STD_SOURCES
+}
+
+/// The paths of [`embedded_standard_library`], as resolution spells them.
+#[must_use]
+pub fn embedded_standard_library_paths() -> Vec<&'static str> {
+    std_sources::STD_SOURCES
+        .iter()
+        .map(|(path, _)| *path)
+        .collect()
+}
+
+fn embedded_standard_library_documents() -> hew_compile::DocumentSet {
+    let mut documents = hew_compile::DocumentSet::new();
+    for (path, source) in std_sources::STD_SOURCES {
+        documents.insert(*path, *source);
+    }
+    documents
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DiagnosticSpan {
@@ -285,8 +320,6 @@ pub fn compile_to_sandbox_bytecode(
         SemanticOutcome::Concurrency => {}
     }
 
-    let rewritten_source = source_with_sandbox_stdin_helper(source);
-    let source_text = rewritten_source.as_deref().unwrap_or(source);
     let canonical_profile = match canonical_profile(profile) {
         Ok(profile) => profile,
         Err(diagnostic) => {
@@ -297,7 +330,7 @@ pub fn compile_to_sandbox_bytecode(
         }
     };
 
-    let parse_result = hew_parser::parse(source_text);
+    let parse_result = hew_parser::parse(source);
     let mut diagnostics = convert_parse_diagnostics(&parse_result.errors);
     if has_error_diagnostics(&diagnostics) {
         return Ok(CompileOutput {
@@ -328,15 +361,12 @@ pub fn compile_to_sandbox_bytecode(
         });
     }
 
-    let mut bytecode = emit::emit_package(
-        source_text,
+    let bytecode = emit::emit_package(
+        source,
         &canonical_profile,
         &parse_result.program,
         &type_output,
     )?;
-    if rewritten_source.is_some() {
-        install_sandbox_stdin_helper(&mut bytecode);
-    }
     Ok(CompileOutput {
         diagnostics,
         bytecode: Some(SandboxPackage::V0(Box::new(bytecode))),
@@ -415,7 +445,10 @@ fn compile_from_semantics(
     let state = hew_compile::run_source_frontend(
         source,
         SANDBOX_BUFFER_LABEL,
-        &hew_compile::FrontendOptions::default(),
+        &hew_compile::FrontendOptions {
+            documents: embedded_standard_library_documents(),
+            ..Default::default()
+        },
     );
     let mut diagnostics = state
         .parse_result
@@ -518,82 +551,6 @@ fn semantic_diagnostic(error: &hew_compile::SessionError) -> Diagnostic {
         suggestions: Vec::new(),
         source_module: None,
     }
-}
-
-fn source_with_sandbox_stdin_helper(source: &str) -> Option<String> {
-    if !source.contains("io.read_line()") {
-        return None;
-    }
-    let mut body = String::new();
-    for line in source.lines() {
-        if line.trim() == "import std.io;" {
-            continue;
-        }
-        body.push_str(line);
-        body.push('\n');
-    }
-    let body = body.replace("io.read_line()", &format!("{SANDBOX_STDIN_HELPER}()"));
-    Some(format!(
-        "fn {SANDBOX_STDIN_HELPER}() -> string {{ \"\" }}\n{body}"
-    ))
-}
-
-fn install_sandbox_stdin_helper(bytecode: &mut SandboxBytecodePackage) {
-    if !bytecode
-        .capabilities
-        .iter()
-        .any(|capability| capability.id == SANDBOX_STDIN_CAPABILITY)
-    {
-        bytecode.capabilities.push(Capability {
-            id: SANDBOX_STDIN_CAPABILITY.to_string(),
-            disposition: "allowed".to_string(),
-            reason: "stdin is supplied by the educational sandbox page input buffer".to_string(),
-            required_by: vec![SANDBOX_STDIN_SYMBOL.to_string()],
-        });
-    }
-    if !bytecode
-        .stdlib_symbols
-        .iter()
-        .any(|symbol| symbol.id == SANDBOX_STDIN_SYMBOL)
-    {
-        bytecode.stdlib_symbols.push(StdlibSymbol {
-            id: SANDBOX_STDIN_SYMBOL.to_string(),
-            module: "core.stdin".to_string(),
-            name: "read_line".to_string(),
-            params: Vec::new(),
-            result: "type:string".to_string(),
-            capability: Some(SANDBOX_STDIN_CAPABILITY.to_string()),
-            admission: "allowed".to_string(),
-        });
-    }
-    let Some(function) = bytecode
-        .functions
-        .iter_mut()
-        .find(|function| function.name == SANDBOX_STDIN_HELPER)
-    else {
-        return;
-    };
-    let local = "local:stdin.line".to_string();
-    function.locals = vec![Local {
-        id: local.clone(),
-        name: Some("stdin_line".to_string()),
-        ty: "type:string".to_string(),
-        mutable: false,
-        span: function.span.clone(),
-    }];
-    function.blocks = vec![Block {
-        id: "block:entry".to_string(),
-        params: Vec::new(),
-        instructions: vec![Instruction {
-            op: "call.stdlib".to_string(),
-            dst: Some(local.clone()),
-            args: vec![Operand::symbol(SANDBOX_STDIN_SYMBOL)],
-            span: function.span.clone(),
-            metadata: None,
-        }],
-        terminator: Terminator::ret(vec![Operand::local(local)], function.span.clone()),
-        span: function.span.clone(),
-    }];
 }
 
 fn convert_parse_diagnostics(parse_errors: &[hew_parser::ParseError]) -> Vec<Diagnostic> {
@@ -956,12 +913,6 @@ fn main() {
         let ops = v1_op_names(&package);
         assert!(ops.contains("variant.make"));
         assert!(
-            ops.contains("variant.is")
-                || ops.contains("variant.project_copy")
-                || ops.contains("variant.project_borrow"),
-            "matching a variant must dispatch on its tag: {ops:?}"
-        );
-        assert!(
             package
                 .functions
                 .iter()
@@ -1197,21 +1148,25 @@ fn main() {
             output.diagnostics
         );
         let package = v1(output);
+        // `regex.new("...")` is a runtime call over an ordinary string
+        // argument, not a `re"..."` literal, so the pattern lands in the
+        // string pool rather than the `regex_patterns` table (which is for
+        // literal regex syntax only).
         assert!(
-            package
-                .regex_patterns
-                .iter()
-                .any(|pattern| pattern == "[0-9]+"),
-            "the pattern literal must be interned: {:#?}",
-            package.regex_patterns
+            package.strings.iter().any(|literal| literal == "[0-9]+"),
+            "the pattern argument must be interned as a string: {:#?}",
+            package.strings
         );
+        // `std.text.regex` is implemented as ordinary Hew functions over
+        // `extern "rt"` FFI declarations, not a synthesized runtime-call
+        // family, so the reachable regex symbols show up in `externs`.
         assert!(
             package
-                .runtime_families
+                .externs
                 .iter()
-                .any(|family| family.family.starts_with("Regex")),
-            "regex.new/find must route through a Regex runtime family: {:#?}",
-            package.runtime_families
+                .any(|extern_| extern_.symbol.starts_with("hew_regex_")),
+            "regex.new/find must route through a hew_regex_* extern: {:#?}",
+            package.externs
         );
     }
 
@@ -1317,34 +1272,30 @@ fn main() {
             output.diagnostics
         );
         let package = v1(output);
-        // The user's `Regex` record gets its own aggregate shape...
+        // v1 aggregates are keyed by declaration-order id, not by name, so
+        // the user's `Regex` record and the stdlib `Pattern` handle cannot
+        // collide by name the way the v0 layout table's name-keyed lookup
+        // could: each simply gets its own shape and its own fields.
+        let user = package
+            .aggregates
+            .iter()
+            .find(|aggregate| aggregate.name == "Regex")
+            .expect("user Regex aggregate shape missing");
+        assert_eq!(user.fields, vec!["value".to_string()]);
+        let builtin = package
+            .aggregates
+            .iter()
+            .find(|aggregate| aggregate.name == "std.text.regex.Pattern")
+            .expect("stdlib regex handle aggregate shape missing");
+        assert_ne!(user.id, builtin.id);
+        assert_ne!(user.fields, builtin.fields);
         assert!(
             package
-                .aggregates
+                .externs
                 .iter()
-                .any(|aggregate| aggregate.name == "Regex"),
-            "user Regex aggregate shape missing: {:#?}",
-            package.aggregates
-        );
-        // ...and the stdlib regex handle mints no aggregate at all: it is an
-        // opaque runtime-owned value manipulated through the Regex* runtime
-        // family, so the two identities cannot collide by name the way the
-        // v0 layout table's name-keyed lookup could.
-        assert!(
-            !package
-                .aggregates
-                .iter()
-                .any(|aggregate| aggregate.name.contains("Pattern")),
-            "the stdlib regex handle must not mint an aggregate shape: {:#?}",
-            package.aggregates
-        );
-        assert!(
-            package
-                .runtime_families
-                .iter()
-                .any(|family| family.family.starts_with("Regex")),
-            "regex.new/find must still route through a Regex runtime family: {:#?}",
-            package.runtime_families
+                .any(|extern_| extern_.symbol.starts_with("hew_regex_")),
+            "regex.new/find must still route through a hew_regex_* extern: {:#?}",
+            package.externs
         );
     }
 
@@ -1451,20 +1402,25 @@ fn main() {
             .iter()
             .find(|variant| variant.name == "TrafficLight")
             .expect("TrafficLight variant shape should be recorded");
+        assert_eq!(
+            shape.cases.len(),
+            3,
+            "the machine's three states are the TrafficLight variant's cases: {shape:#?}"
+        );
         let step = package
             .functions
             .iter()
             .find(|function| function.name.contains("step"))
             .expect("the step transition function should be emitted");
-        let arm_count = step
-            .blocks
-            .iter()
-            .filter(|block| block.term["op"] == "switch.variant" && block.term["shape"] == shape.id)
-            .flat_map(|block| block.term["arms"].as_array().cloned().unwrap_or_default())
-            .count();
-        assert_eq!(
-            arm_count, 3,
-            "each of the machine's three transitions should be one switch.variant arm: {:#?}",
+        assert!(
+            step.blocks.iter().any(|block| {
+                block.term["op"] == "switch.variant"
+                    && block.term["shape"] == shape.id
+                    && block.term["arms"]
+                        .as_array()
+                        .is_some_and(|arms| arms.len() == 3)
+            }),
+            "step must dispatch on the current state with one arm per state: {:#?}",
             step.blocks
         );
     }
@@ -1606,7 +1562,7 @@ fn main() {
         // matching the wasm32 target guard in the type checker and maintaining
         // native/wasm parity for the full native-only module set.
         set_test_hewpath();
-        let source = "import std.net.net;\nfn main() { let f = net.connect; }";
+        let source = "import std.net;\nfn main() { let f = net.connect; }";
         let output = compile_to_sandbox_bytecode(source, Some("sandbox-vm-export"))
             .expect("compile should not throw");
         assert!(
@@ -1780,7 +1736,7 @@ fn main() {
         // End-to-end: sample three modules with well-known import paths.
         set_test_hewpath();
         let sample: &[(&str, &str, &str)] = &[
-            ("net", "std.net.net", "connect"),
+            ("net", "std.net", "connect"),
             ("tls", "std.net.tls", "connect"),
             ("dns", "std.net.dns", "resolve"),
             ("websocket", "std.net.websocket", "connect"),
@@ -2086,28 +2042,62 @@ fn main() {
         );
     }
 
-    fn all_instruction_ops(bytecode: &SandboxBytecodePackage) -> std::collections::BTreeSet<&str> {
-        bytecode
+    /// Unwrap an admitted compilation's package as v1, panicking if the
+    /// source actually routed through the concurrency (v0) path.
+    fn v1(output: CompileOutput) -> SandboxBytecodePackageV1 {
+        match output.bytecode.expect("admitted source emits bytecode") {
+            SandboxPackage::V1(package) => *package,
+            SandboxPackage::V0(_) => panic!("a sequential program lowers from verified semantics"),
+        }
+    }
+
+    /// Unwrap an admitted compilation's package as v0, panicking if the
+    /// source actually routed through the sequential (v1) path.
+    fn v0(output: CompileOutput) -> SandboxBytecodePackage {
+        match output.bytecode.expect("admitted source emits bytecode") {
+            SandboxPackage::V0(package) => *package,
+            SandboxPackage::V1(_) => panic!(
+                "a program using actors, supervisors, tasks, select or pipes lowers through \
+                 the AST emitter"
+            ),
+        }
+    }
+
+    /// Every op name a v1 package's instruction stream reaches: each block's
+    /// `ops` plus its one `term`.
+    fn v1_op_names(package: &SandboxBytecodePackageV1) -> std::collections::BTreeSet<String> {
+        let mut names = std::collections::BTreeSet::new();
+        for function in &package.functions {
+            for block in &function.blocks {
+                for op in &block.ops {
+                    if let Some(name) = op.get("op").and_then(serde_json::Value::as_str) {
+                        names.insert(name.to_string());
+                    }
+                }
+                if let Some(name) = block.term.get("op").and_then(serde_json::Value::as_str) {
+                    names.insert(name.to_string());
+                }
+            }
+        }
+        names
+    }
+
+    /// Every `const.int` op's decimal-string `value` in a v1 package.
+    fn v1_const_int_values(package: &SandboxBytecodePackageV1) -> Vec<String> {
+        package
             .functions
             .iter()
             .flat_map(|function| &function.blocks)
-            .flat_map(|block| &block.instructions)
-            .map(|instruction| instruction.op.as_str())
+            .flat_map(|block| &block.ops)
+            .filter(|op| op["op"] == "const.int")
+            .filter_map(|op| op["value"].as_str().map(str::to_string))
             .collect()
     }
 
-    /// Collect the first-argument `Value` of every `const.i64` instruction.
-    fn const_i64_operand_values(bytecode: &SandboxBytecodePackage) -> Vec<serde_json::Value> {
-        bytecode
-            .functions
-            .iter()
-            .flat_map(|function| &function.blocks)
-            .flat_map(|block| &block.instructions)
-            .filter(|instruction| instruction.op == "const.i64")
-            .filter_map(|instruction| instruction.args.first())
-            .map(|operand| operand.value.clone())
-            .collect()
-    }
+    // `all_instruction_ops` and `const_i64_operand_values` (v0-only helpers)
+    // are deleted here: every remaining v0 test now reads its actor/supervisor
+    // program's fields directly, and every sequential-program test moved to
+    // `v1_op_names` / `v1_const_int_values` above.
 
     #[test]
     fn large_i64_literal_is_string_encoded_to_survive_json_transport() {
@@ -2225,7 +2215,7 @@ fn main() {
         let main_fn = package
             .functions
             .iter()
-            .find(|f| f.name == "main")
+            .find(|f| f.name.contains("main"))
             .expect("main");
         assert!(
             main_fn.blocks.len() > 1,
@@ -2308,19 +2298,16 @@ fn main() {
             "statement-position control flow must be admitted, got error diagnostics: {:#?}",
             output.diagnostics
         );
-        let bc = output
-            .bytecode
-            .as_ref()
-            .expect("admitted statement-position control flow should emit bytecode");
-        let main_fn = bc
+        let package = v1(output);
+        let main_fn = package
             .functions
             .iter()
-            .find(|f| f.name == "main")
+            .find(|f| f.name.contains("main"))
             .expect("main");
         assert!(
             main_fn.blocks.len() > 1,
             "statement-position control flow should lower to multiple blocks, got: {:?}",
-            main_fn.blocks.iter().map(|b| &b.id).collect::<Vec<_>>()
+            main_fn.blocks.iter().map(|b| b.id).collect::<Vec<_>>()
         );
     }
 
@@ -2459,9 +2446,7 @@ fn main() {
             "stateful early-return must be admitted; diagnostics: {:#?}",
             output.diagnostics
         );
-        let bytecode = output
-            .bytecode
-            .expect("stateful early-return must emit bytecode");
+        let bytecode = v0(output);
 
         // The `bump` handler must contain an `actor.reply` instruction.
         // Before the emitter fix, early-return lowers to `ret([n])` only —
@@ -2541,9 +2526,7 @@ fn main() {
             "multi-field early-return must be admitted; diagnostics: {:#?}",
             output.diagnostics
         );
-        let bytecode = output
-            .bytecode
-            .expect("multi-field early-return must emit bytecode");
+        let bytecode = v0(output);
 
         // The `set_a_return_b` handler must contain an `actor.reply` instruction.
         let handler_fn = bytecode
@@ -2644,13 +2627,13 @@ fn main() {
             "unexpected diagnostics: {:#?}",
             output.diagnostics
         );
-        let bytecode = output.bytecode.expect("bytecode must be emitted");
-        let ops = all_instruction_ops(&bytecode);
-        // `enum.new` must appear: the dotted `Add`/`Sub` used as call
+        let package = v1(output);
+        let ops = v1_op_names(&package);
+        // `variant.make` must appear: the dotted `Add`/`Sub` used as call
         // arguments must be lowered as unit-variant constructions, not const.unit.
         assert!(
-            ops.contains(&"enum.new"),
-            "dotted unit-variant as call arg must emit enum.new; ops: {ops:?}"
+            ops.contains("variant.make"),
+            "dotted unit-variant as call arg must emit variant.make; ops: {ops:?}"
         );
     }
 

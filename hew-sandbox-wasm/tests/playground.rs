@@ -201,7 +201,7 @@ fn run_native(source_path: &Path) -> Output {
         .unwrap_or_else(|err| panic!("failed to spawn native `hew run`: {err}"))
 }
 
-fn run_sandbox(bytecode: &hew_sandbox_wasm::SandboxBytecodePackage, id: &str) -> Output {
+fn run_sandbox(bytecode: &hew_sandbox_wasm::SandboxPackage, id: &str) -> Output {
     let bytecode_json = serde_json::to_string_pretty(bytecode)
         .unwrap_or_else(|err| panic!("failed to serialize bytecode for {id}: {err}"));
     let tempdir = tempfile::tempdir()

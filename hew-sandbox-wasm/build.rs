@@ -11,6 +11,7 @@
 //! module cannot silently go missing from the browser.
 
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 fn main() {
@@ -29,11 +30,12 @@ fn main() {
     );
     for (relative, path) in sources {
         println!("cargo:rerun-if-changed={}", path.display());
-        out.push_str(&format!(
-            "    (\"std/{}\", include_str!(r\"{}\")),\n",
-            relative,
+        writeln!(
+            out,
+            "    (\"./std/{relative}\", include_str!(r\"{}\")),",
             path.display()
-        ));
+        )
+        .expect("writing to a String cannot fail");
     }
     out.push_str("];\n");
 

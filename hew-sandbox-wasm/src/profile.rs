@@ -66,21 +66,6 @@ pub struct ProfileReport {
     clippy::result_large_err,
     reason = "profile selection failures are surfaced as the same diagnostic shape as compile gates"
 )]
-/// The module-qualified functions the sandbox admits.
-///
-/// `std::io` is the page's standard streams and `std::random` is the VM's
-/// seeded generator, so their imports are admitted and each function is named
-/// here. `random.crypto_bytes` and `random.crypto_u64` are deliberately absent:
-/// they read host entropy the browser sandbox has no authority for.
-fn module_function_is_admitted(module: &str, function: &str) -> bool {
-    matches!(
-        (module, function),
-        ("regex", "new" | "is_match" | "find" | "replace")
-            | ("io", "read_line")
-            | ("random", "seed" | "randint")
-    )
-}
-
 pub fn canonical_profile(profile: Option<&str>) -> Result<String, Diagnostic> {
     match profile.unwrap_or(DEFAULT_PROFILE_ALIAS).trim() {
         "" | DEFAULT_PROFILE_ALIAS | DEFAULT_PROFILE_CANONICAL => {
@@ -94,6 +79,21 @@ pub fn canonical_profile(profile: Option<&str>) -> Result<String, Diagnostic> {
             ),
         )),
     }
+}
+
+/// The module-qualified functions the sandbox admits.
+///
+/// `std::io` is the page's standard streams and `std::random` is the VM's
+/// seeded generator, so their imports are admitted and each function is named
+/// here. `random.crypto_bytes` and `random.crypto_u64` are deliberately absent:
+/// they read host entropy the browser sandbox has no authority for.
+fn module_function_is_admitted(module: &str, function: &str) -> bool {
+    matches!(
+        (module, function),
+        ("regex", "new" | "is_match" | "find" | "replace")
+            | ("io", "read_line")
+            | ("random", "seed" | "randint")
+    )
 }
 
 pub fn check_program(

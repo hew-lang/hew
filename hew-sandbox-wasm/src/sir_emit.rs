@@ -686,7 +686,13 @@ impl<'m> Walker<'m> {
                 serde_json::json!({ "op": "const.bool", "value": value })
             }
             SemOpKind::ConstFloat(value) => {
-                let mut encoded = serde_json::json!({ "op": "const.float" });
+                let mut encoded = serde_json::json!({
+                    "op": "const.float",
+                    "ty": op
+                        .results
+                        .first()
+                        .map(|result| result.ty.user_facing().to_string()),
+                });
                 if value.is_nan() {
                     encoded["nonfinite"] = "nan".into();
                     encoded["value"] = 0.into();

@@ -580,11 +580,9 @@ jobs:
         shell: bash
         run: make SHELL=bash test-cabi
 
-      # Native acceptance does not run here yet. Windows has no glob (#3412),
-      # links a deferred actor stop against POSIX usleep (#3413), and the
-      # corpus assumes POSIX temp paths and LF expectations (#3414) with exit
-      # statuses that disagree (#3415). This candidate names this lane as
-      # unqualified; add the step back when those close.
+      - name: Run native acceptance
+        shell: bash
+        run: make SHELL=bash core-acceptance
 
       - name: Upload test reports
         if: always()

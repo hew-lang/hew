@@ -547,7 +547,10 @@ fn dead_actor_select_request_source(frames: usize) -> String {
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
          \x20       let selected = select {{\n\
-         \x20           reply from worker.score(i, .Node(.Leaf(1), .Leaf(2))) => reply.expect(\"ask reply\"),\n\
+         \x20           reply from worker.score(i, .Node(.Leaf(1), .Leaf(2))) => match reply {{\n\
+         \x20               .Ok(value) => value,\n\
+         \x20               .Err(_) => 0 - 1,\n\
+         \x20           }},\n\
          \x20           after 1ms => i,\n\
          \x20       }};\n\
          \x20       total = total + selected;\n\
@@ -556,7 +559,11 @@ fn dead_actor_select_request_source(frames: usize) -> String {
          \x20   if total == {} {{ print(\"ok\"); }} else {{ print(\"BAD\"); }}\n\
          \x20   0\n\
          }}\n",
-        frames.saturating_mul(frames.saturating_sub(1)) / 2
+        // A request to a permanently dead actor answers at once with `.Err`,
+        // so the reply arm wins every frame and the timeout never does. The
+        // negative total is the witness: a frame that fell through to `after`
+        // would add a non-negative `i` instead.
+        -(i64::try_from(frames).expect("frame count fits i64"))
     )
 }
 
@@ -1006,8 +1013,10 @@ fn indirect_enum_dead_actor_select_request_leak_slope_below_tolerance() {
 }
 
 /// The same dead-actor select recovery runs clean under poisoned allocation and
-/// reaches the exact `after`-arm aggregate. A double release or poisoned read
-/// aborts before `ok`; a missing cleanup is caught by the companion slope test.
+/// reaches the exact aggregate. A request to a dead actor is refused at once
+/// rather than left to time out, so the reply arm carries the refusal every
+/// frame. A double release or poisoned read aborts before `ok`; a missing
+/// cleanup is caught by the companion slope test.
 #[cfg_attr(
     not(target_os = "macos"),
     ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"

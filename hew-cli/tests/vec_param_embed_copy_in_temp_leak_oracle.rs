@@ -184,15 +184,15 @@ fn newArena<T>() -> Arena<T> {
 }
 
 impl<T> Arena<T> {
-    fn insert(self, value: T) -> Key<T> {
+    fn insert(var self, value: T) -> Key<T> {
         let index = self.slots.len();
         self.slots.push(Slot { value: Some(value) });
         Key { index: index }
     }
 
-    fn remove(self, key: Key<T>) -> T {
+    fn remove(var self, key: Key<T>) -> T {
         let slot = self.slots.remove(key.index);
-        slot.value.unwrap()
+        slot.value.expect("arena slot must hold its inserted value")
     }
 
     fn len(self) -> i64 {

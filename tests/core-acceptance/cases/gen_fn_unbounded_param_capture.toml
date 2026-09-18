@@ -1,0 +1,12 @@
+[[case]]
+id = "gen_fn_unbounded_param_capture"
+intent = "Reject: a generator frame needs a copy of a borrowed parameter whose type parameter carries no `Clone` bound."
+source = "../vertical-slice/reject/gen_fn_unbounded_param_capture.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "E_OWN_CONSUME_BORROWED"
+line = 9
+column = 15

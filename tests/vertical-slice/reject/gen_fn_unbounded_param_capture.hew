@@ -1,0 +1,18 @@
+// Reject: a generator frame owns its captures, so it needs a copy of the
+// borrowed parameter `x`. `T` carries no `Clone` bound, so no instantiation is
+// guaranteed to supply one and the declaration is where that is decided
+// (spec §3.8.1). Accepted twin: accept/gen_fn_clone_bound_capture.hew shows
+// both answers, `T: Clone` and `consume`.
+gen fn repeat<T>(x: T, n: i64) -> T {
+    var i = 0;
+    while i < n {
+        yield x;
+        i = i + 1;
+    }
+}
+
+fn main() {
+    for v in repeat("hi", 2) {
+        println(v);
+    }
+}

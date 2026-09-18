@@ -1,0 +1,37 @@
+// Accept + run: the two answers a generator's generic parameter has. A frame
+// owns its captures, so a borrowed parameter of an unbounded type parameter is
+// refused; `T: Clone` lets the frame copy it, and `consume` moves it in.
+// Negative control: reject/gen_fn_unbounded_param_capture.hew.
+#[resource]
+type Token {
+    id: i64,
+}
+
+impl Token {
+    fn close(consume self) {}
+}
+
+gen fn repeat<T: Clone>(x: T, n: i64) -> T {
+    var i = 0;
+    while i < n {
+        yield x;
+        i = i + 1;
+    }
+}
+
+gen fn drain<T>(consume held: T, n: i64) -> i64 {
+    var i = 0;
+    while i < n {
+        yield i;
+        i = i + 1;
+    }
+}
+
+fn main() {
+    for v in repeat("hi", 2) {
+        println(v);
+    }
+    for v in drain(Token { id: 1 }, 2) {
+        println(v);
+    }
+}

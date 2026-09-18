@@ -3,9 +3,9 @@
 // real loan or an ordinary independent value.
 type Point { x: i64, y: i64 }
 
-fn first<T>(xs: Vec<T>) -> T { xs[0] }
+fn first<T: Clone>(xs: Vec<T>) -> T { xs[0] }
 
-fn maybe_first<T>(xs: Vec<T>) -> Option<T> { xs.get(0) }
+fn maybe_first<T: Clone>(xs: Vec<T>) -> Option<T> { xs.get(0) }
 
 fn count<T>(xs: Vec<T>) -> i64 {
     var n = 0;

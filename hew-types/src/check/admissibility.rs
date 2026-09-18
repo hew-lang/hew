@@ -8,6 +8,36 @@ use crate::type_facts::CloneKind;
 use crate::value_class::{ClassError, ValueClass};
 use crate::BuiltinType;
 
+/// Why a copy-requiring operation cannot copy an element.
+///
+/// The two answers differ in who has to act: a concrete type with no copy
+/// operation needs a different operation at the use site, while a type
+/// parameter with no `Clone` bound needs the bound on the declaration.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum ElementCopyBlocker {
+    /// A concrete type with no copy operation, already rendered with its class.
+    Concrete(String),
+    /// A type parameter carrying no `Clone` bound.
+    UnboundedParam(String),
+}
+
+impl ElementCopyBlocker {
+    /// The parameter name when the declaration is missing a `Clone` bound.
+    pub(super) fn unbounded_param(&self) -> Option<&str> {
+        match self {
+            Self::UnboundedParam(name) => Some(name),
+            Self::Concrete(_) => None,
+        }
+    }
+
+    /// The rendered blocker for a concrete type with no copy operation.
+    pub(super) fn concrete_text(&self) -> &str {
+        match self {
+            Self::Concrete(text) | Self::UnboundedParam(text) => text,
+        }
+    }
+}
+
 /// How one value class reads in a diagnostic, so a refusal names the rule that
 /// produced it rather than the shape the checker happened to walk.
 fn class_description(class: ValueClass) -> &'static str {
@@ -921,23 +951,59 @@ impl Checker {
     /// ([`crate::value_class::classify_ty`]). `xs[i]`, a range slice, a
     /// `HashMap` value read, cloning iteration and `Vec.clone` all copy an
     /// element into an independent owner, so they admit exactly the element
-    /// types the class table gives a copy path. An abstract parameter has no
-    /// class until the instance service substitutes it and MIR's
-    /// per-monomorphisation clone check answers there, so it blocks nothing
-    /// here.
-    pub(super) fn element_clone_blocker(&self, ty: &Ty) -> Option<String> {
+    /// types the class table gives a copy path.
+    ///
+    /// An abstract parameter has no class until it is substituted. A parameter
+    /// carrying `Clone` promises every instantiation a copy path, so it blocks
+    /// nothing; one without that bound promises nothing, and no later stage
+    /// answers for it - the instance reaches the SIR verifier with no copy
+    /// operation. Spec §3.8.1 puts that obligation on the declaration, so the
+    /// blocker names the parameter and the bound it is missing.
+    pub(super) fn element_clone_blocker(&self, ty: &Ty) -> Option<ElementCopyBlocker> {
         match self.element_value_facts(ty) {
-            Ok((class, CloneKind::None)) => Some(format!(
+            Ok((class, CloneKind::None)) => Some(ElementCopyBlocker::Concrete(format!(
                 "`{}` ({})",
                 self.subst
                     .resolve(ty)
                     .materialize_literal_defaults()
                     .user_facing(),
                 class_description(class)
-            )),
-            Ok(_) | Err(ClassError::TypeParam { .. }) => None,
-            Err(error) => Some(error.to_string()),
+            ))),
+            Ok(_) => None,
+            Err(ClassError::TypeParam { name }) => {
+                if self.type_param_has_marker_bound(&name, MarkerTrait::Clone) {
+                    None
+                } else {
+                    Some(ElementCopyBlocker::UnboundedParam(name))
+                }
+            }
+            Err(error) => Some(ElementCopyBlocker::Concrete(error.to_string())),
         }
+    }
+
+    /// A copy-requiring operation reached a value whose type is a type
+    /// parameter with no `Clone` bound. The declaration, not whichever
+    /// instantiation happens to be copyable, owns that obligation (spec
+    /// §3.8.1).
+    pub(super) fn report_unbounded_param_copy(
+        &mut self,
+        param: &str,
+        operation: &str,
+        span: &Span,
+    ) {
+        let owner = self
+            .current_function
+            .clone()
+            .map_or_else(String::new, |name| format!(" of `{name}`"));
+        self.report_error(
+            TypeErrorKind::InvalidOperation,
+            span,
+            format!(
+                "E_ELEMENT_NO_COPY: `{operation}` needs a copy of `{param}`, but `{param}` has \
+                 no `Clone` bound, so not every instantiation{owner} can supply one; declare \
+                 `{param}: Clone`"
+            ),
+        );
     }
 
     /// How a `VecIter<T>` cursor produces each element.
@@ -1047,6 +1113,12 @@ impl Checker {
         let Some(blocker) = self.element_clone_blocker(&resolved) else {
             return true;
         };
+        if let Some(param) = blocker.unbounded_param() {
+            let param = param.to_string();
+            self.report_unbounded_param_copy(&param, "xs[a..b]", span);
+            return false;
+        }
+        let blocker = blocker.concrete_text();
         self.report_error(
             TypeErrorKind::InvalidOperation,
             span,
@@ -1076,6 +1148,12 @@ impl Checker {
         let Some(blocker) = self.element_clone_blocker(&resolved) else {
             return true;
         };
+        if let Some(param) = blocker.unbounded_param() {
+            let param = param.to_string();
+            self.report_unbounded_param_copy(&param, "Vec.get(i)", span);
+            return false;
+        }
+        let blocker = blocker.concrete_text();
         self.report_error(
             TypeErrorKind::InvalidOperation,
             span,
@@ -1118,6 +1196,13 @@ impl Checker {
             return true;
         }
         if let Some(blocker) = self.element_clone_blocker(ty) {
+            if let Some(param) = blocker.unbounded_param() {
+                let param = param.to_string();
+                let operation = operation.to_string();
+                self.report_unbounded_param_copy(&param, &operation, span);
+                return false;
+            }
+            let blocker = blocker.concrete_text();
             self.report_error(
                 TypeErrorKind::InvalidOperation,
                 span,

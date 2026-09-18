@@ -1,5 +1,5 @@
 type Store<T> { values: Vec<T> }
-impl<T> Store<T> {
+impl<T: Clone> Store<T> {
     fn fail(var self, value: T) {
         let snapshot = self.values.get(0);
         if snapshot.is_some() { self.values.set(9, value); }

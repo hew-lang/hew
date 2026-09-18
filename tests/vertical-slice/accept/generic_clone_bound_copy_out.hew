@@ -1,0 +1,46 @@
+// Accept + run: the `Clone` bound a copy-requiring generic operation asks for.
+// A type parameter carrying `Clone` promises every instantiation a copy path,
+// so `HashMap.clone()`, `m[k]`, `Vec.get(i)` and a range slice all admit it.
+// Negative controls: reject/generic_clone_bound_missing.hew is the same code
+// without the bounds, and `count` below borrows and needs none.
+fn duplicate<V: Clone>(values: HashMap<string, V>) -> HashMap<string, V> {
+    values.clone()
+}
+
+fn index<V: Clone>(values: HashMap<string, V>) -> V {
+    values["live"]
+}
+
+fn first<T: Clone>(xs: Vec<T>) -> Option<T> {
+    xs.get(0)
+}
+
+fn middle<T: Clone>(xs: Vec<T>) -> Vec<T> {
+    xs[1..3]
+}
+
+fn count<T>(xs: Vec<T>) -> i64 {
+    xs.len()
+}
+
+fn main() {
+    var m: HashMap<string, i64> = HashMap.new();
+    m.insert("live", 7);
+    println(duplicate(m).len());
+
+    var m2: HashMap<string, i64> = HashMap.new();
+    m2.insert("live", 8);
+    println(index(m2));
+
+    let xs: Vec<string> = ["a", "b", "c", "d"];
+    match first(xs) {
+        .Some(x) => println(x),
+        .None => println("none"),
+    }
+
+    let ys: Vec<string> = ["a", "b", "c", "d"];
+    println(middle(ys).len());
+
+    let zs: Vec<string> = ["a", "b"];
+    println(count(zs));
+}

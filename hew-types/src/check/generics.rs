@@ -1093,6 +1093,29 @@ impl Checker {
             }
             return self.display_impl_type(ty).is_some();
         }
+        // `Clone` in bound position answers the same question `x.clone()` and
+        // the value class answer: whether this type has a copy operation. A
+        // record whose fields all clone has one - the clone thunk HIR calls -
+        // so deriving the bound structurally keeps one authority for that fact
+        // instead of demanding an empty `impl Clone for T {}` alongside it.
+        if MarkerTrait::from_name(trait_name) == Some(MarkerTrait::Clone) {
+            if matches!(self.subst.resolve(ty), Ty::Var(_) | Ty::Error) {
+                return true;
+            }
+            if let Ty::Named {
+                name,
+                args,
+                builtin: None,
+            } = &self.subst.resolve(ty)
+            {
+                if args.is_empty() && self.type_param_carries_bound(name, trait_name) {
+                    return true;
+                }
+            }
+            return self
+                .parameter_clone_kind(ty)
+                .is_some_and(|clone| clone != crate::type_facts::CloneKind::None);
+        }
         if MarkerTrait::from_name(trait_name) == Some(MarkerTrait::Send) {
             return self.registry.implements_marker_with_bounds(
                 ty,

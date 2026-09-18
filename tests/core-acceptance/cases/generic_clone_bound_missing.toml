@@ -1,0 +1,12 @@
+[[case]]
+id = "generic_clone_bound_missing"
+intent = "Reject: a generic body copying a value of its own unbounded type parameter out is refused at the declaration."
+source = "../vertical-slice/reject/generic_clone_bound_missing.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "InvalidOperation"
+line = 8
+column = 5

@@ -14,7 +14,7 @@ type Name {
     label: string,
 }
 
-fn first<T>(v: Vec<T>) -> Option<T> {
+fn first<T: Clone>(v: Vec<T>) -> Option<T> {
     v.get(0)
 }
 

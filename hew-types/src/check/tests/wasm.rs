@@ -494,37 +494,6 @@ mod wasm_rejects {
     }
 
     #[test]
-    fn wasm_rejects_select() {
-        let source = concat!(
-            "actor Pinger {\n",
-            "    receive fn ping() -> i64 { 7 }\n",
-            "}\n",
-            "fn main() {\n",
-            "    let p = spawn Pinger;\n",
-            "    select {\n",
-            "        v from p.ping() => { let _ = v; },\n",
-            "        after 1s => {},\n",
-            "    };\n",
-            "}\n",
-        );
-        let result = hew_parser::parse(source);
-        assert!(
-            result.errors.is_empty(),
-            "parse errors: {:?}",
-            result.errors
-        );
-        let mut checker = Checker::new(test_registry());
-        checker.enable_wasm_target();
-        let output = checker.check_program(&result.program);
-        assert!(
-            platform_error_contains(&output, "`select {}` operations"),
-            "select builds its waitset in the task-scope runtime and must be \
-             rejected before link; got: {:?}",
-            output.errors
-        );
-    }
-
-    #[test]
     fn native_stream_method_no_platform_error() {
         let source = concat!(
             "import std.stream;\n",
@@ -1800,7 +1769,7 @@ fn main() {
     }
 
     #[test]
-    fn wasm_computed_timed_select_no_longer_warns() {
+    fn wasm_rejects_a_computed_timed_select_like_any_other() {
         let output = check_wasm(
             r"
             actor Responder {
@@ -1823,19 +1792,28 @@ fn main() {
             }
         ",
         );
+        // A select builds its readiness waitset in the task-scope runtime, which
+        // wasm32 does not compile, so the reject is the select itself and does
+        // not depend on how the timeout is spelled: one error, no warning.
         assert!(
             !output.warnings.iter().any(
                 |w| w.kind == TypeErrorKind::PlatformLimitation && w.message.contains("Select")
             ),
-            "computed timed select should not warn on WASM; got warnings: {:?}",
+            "the select reject is an error, not a warning; got warnings: {:?}",
             output.warnings
         );
-        assert!(
-            !output
-                .errors
-                .iter()
-                .any(|e| e.kind == TypeErrorKind::PlatformLimitation),
-            "computed timed select should not error on WASM; got errors: {:?}",
+        let rejects: Vec<_> = output
+            .errors
+            .iter()
+            .filter(|e| {
+                e.kind == TypeErrorKind::PlatformLimitation
+                    && e.message.contains("`select {}` operations")
+            })
+            .collect();
+        assert_eq!(
+            rejects.len(),
+            1,
+            "a computed timeout must not change the select reject; got errors: {:?}",
             output.errors
         );
     }

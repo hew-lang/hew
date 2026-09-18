@@ -298,11 +298,19 @@ fn pipe_recv_waits_for_an_actor_send_on_native_and_wasi() {
     assert_accept_fixture_parity("pipe_recv_waits_for_an_actor_send");
 }
 
-/// Backpressure: a producer blocked on a full ring resumes once the consumer
-/// drains it, with every item delivered exactly once.
+/// Backpressure with the actor producing: its coroutine suspends on the full
+/// ring and the root drains.
 #[test]
-fn pipe_backpressure_matches_on_native_and_wasi() {
+fn pipe_backpressure_from_an_actor_matches_on_native_and_wasi() {
     assert_accept_fixture_parity("pipe_send_waits_for_a_full_ring_to_drain");
+}
+
+/// Backpressure the other way round: the root suspends on the full ring and the
+/// actor drains. The two fixtures cover both owners of the suspension, which is
+/// what the wasm32 driver has to resume from its run queue.
+#[test]
+fn pipe_backpressure_from_the_root_matches_on_native_and_wasi() {
+    assert_accept_fixture_parity("pipe_root_send_waits_for_an_actor_to_drain");
 }
 
 /// A cloned sink adds a producer; end of data waits for the last finish.

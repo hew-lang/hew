@@ -277,6 +277,7 @@ impl<'a> ProfileChecker<'a> {
                 Item::Impl(impl_decl) => {
                     for method in &impl_decl.methods {
                         self.check_return_clause(method.return_type.as_ref());
+                        self.check_block(&method.body);
                     }
                 }
                 Item::Const(const_decl) => self.check_expr(&const_decl.value),

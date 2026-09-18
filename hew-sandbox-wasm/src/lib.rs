@@ -2041,6 +2041,41 @@ fn main() {
 ";
 
     #[test]
+    /// Admitting an impl admits its declarations, not its contents: a body
+    /// still meets every expression gate. Without this an `unsafe` block hid
+    /// inside a method where the same block at top level is refused.
+    fn an_impl_method_body_still_meets_the_expression_gates() {
+        set_test_hewpath();
+        let source = r"
+type Worker { id: i64 }
+
+impl Worker {
+    fn run(self) {
+        unsafe { }
+    }
+}
+
+fn main() {
+    let w = Worker { id: 1 };
+    w.run();
+}
+";
+        let output = compile_to_sandbox_bytecode(source, Some("sandbox-vm-export"))
+            .expect("compile should not throw");
+        assert!(
+            output.bytecode.is_none(),
+            "an unsafe block inside an impl method must not emit a package"
+        );
+        assert!(
+            output.diagnostics.iter().any(|diagnostic| {
+                diagnostic.phase == "profile" && diagnostic.kind == "unsafe_rejected"
+            }),
+            "the refusal must name the unsafe block: {:#?}",
+            output.diagnostics
+        );
+    }
+
+    #[test]
     /// A generic impl with a where clause is ordinary code the checker
     /// resolves; it runs natively and the sandbox admits it.
     fn generic_impl_with_a_where_clause_is_admitted() {

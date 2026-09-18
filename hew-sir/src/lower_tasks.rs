@@ -13,7 +13,7 @@ fn edge(target: crate::BlockId) -> Edge {
     }
 }
 
-fn contains_task(ty: &ResolvedTy) -> bool {
+pub(super) fn contains_task(ty: &ResolvedTy) -> bool {
     let mut pending = vec![ty.clone()];
     let mut seen = std::collections::BTreeSet::new();
     while let Some(ty) = pending.pop() {
@@ -154,20 +154,29 @@ impl Builder<'_, '_> {
         Ok(())
     }
 
-    pub(super) fn lower_task_scope(&mut self, body: &HirBlock) -> Result<Option<ValueId>, String> {
-        self.lower_task_scope_with_deadline(body, None)
+    pub(super) fn lower_task_scope(
+        &mut self,
+        body: &HirBlock,
+        value_required: bool,
+    ) -> Result<Option<ValueId>, String> {
+        self.lower_task_scope_with_deadline(body, None, value_required)
     }
 
     pub(super) fn lower_task_scope_with_deadline(
         &mut self,
         body: &HirBlock,
         duration: Option<&HirExpr>,
+        value_required: bool,
     ) -> Result<Option<ValueId>, String> {
-        self.lower_task_scope_body(body, duration, false)
+        self.lower_task_scope_body(body, duration, false, value_required)
     }
 
-    pub(super) fn lower_race(&mut self, body: &HirBlock) -> Result<Option<ValueId>, String> {
-        self.lower_task_scope_body(body, None, true)
+    pub(super) fn lower_race(
+        &mut self,
+        body: &HirBlock,
+        value_required: bool,
+    ) -> Result<Option<ValueId>, String> {
+        self.lower_task_scope_body(body, None, true, value_required)
     }
 
     fn lower_task_scope_body(
@@ -175,6 +184,7 @@ impl Builder<'_, '_> {
         body: &HirBlock,
         duration: Option<&HirExpr>,
         race: bool,
+        value_required: bool,
     ) -> Result<Option<ValueId>, String> {
         // Deferred bodies cannot create children or suspend. A plain scope
         // there only supplies lexical cleanup; it needs no asynchronous drain.
@@ -193,14 +203,22 @@ impl Builder<'_, '_> {
             .last_mut()
             .expect("entered child scope")
             .race = race;
-        let result = self.lower_block(body, OwnedBindingUse::Return)?;
+        let mut result = self.lower_block(body, OwnedBindingUse::Return)?;
         if self.is_open() {
             if result
                 .as_ref()
                 .and_then(|value| self.value_ty(value.value))
                 .is_some_and(|ty| contains_task(&ty))
             {
-                return Err("a scope result cannot retain a scoped task handle".into());
+                // The scope joins its children at exit, so a handle in tail
+                // position is dead at this boundary. Retaining it would hand
+                // the caller a join for a task already joined; discarding it is
+                // what the same `fork` written as a statement already does, and
+                // the two spellings mean the same thing.
+                if value_required {
+                    return Err("a scope result cannot retain a scoped task handle".into());
+                }
+                result = None;
             }
             self.finish_task_scopes(floor, false)?;
             self.end_scopes(floor)?;

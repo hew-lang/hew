@@ -1,0 +1,30 @@
+// Accept + run: a `scope` whose body's tail is a `fork`. The scope joins its
+// children at its own exit, so the handle in tail position is already
+// discharged there and the discarded scope drops it. Writing the same `fork`
+// one statement earlier means the same program, and both spellings lower.
+//
+// Retaining the value (`let t = scope { fork { ... } }`) is still refused: the
+// caller would hold a join for a task the scope already joined.
+import std.string;
+
+fn sink(s: string) {}
+
+fn drive(rounds: i64) -> i64 {
+    var i: i64 = 0;
+    while i < rounds {
+        let tail = string.repeat("owned-heap-payload", 4);
+        scope {
+            fork { sink(tail) }
+        };
+        let statement = string.repeat("owned-heap-payload", 4);
+        scope {
+            fork { sink(statement) };
+        };
+        i = i + 1;
+    }
+    i
+}
+
+fn main() {
+    println(drive(3));
+}

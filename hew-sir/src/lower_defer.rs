@@ -364,9 +364,9 @@ impl Builder<'_, '_> {
         });
         let result_ty = self.ty(&whole.ty);
         let result = match &scope.kind {
-            hew_hir::HirExprKind::Scope { body } => self.lower_task_scope(body)?,
+            hew_hir::HirExprKind::Scope { body } => self.lower_task_scope(body, true)?,
             hew_hir::HirExprKind::ScopeDeadline { body, duration } => {
-                self.lower_task_scope_with_deadline(body, Some(duration))?
+                self.lower_task_scope_with_deadline(body, Some(duration), true)?
             }
             _ => return Err("scope recovery requires a checked lexical scope".into()),
         };

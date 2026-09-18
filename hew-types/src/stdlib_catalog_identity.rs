@@ -70,6 +70,42 @@ pub fn compiler_synthetic_identity_endpoint(name: &str) -> Option<&str> {
 mod tests {
     use super::*;
 
+    /// Every endpoint this module admits reaches SIR as a runtime family with
+    /// a semantic contract. Admitting one without a contract is what left the
+    /// identity accessors refusing at the SIR boundary (#3442).
+    #[test]
+    fn every_admitted_identity_endpoint_has_a_runtime_contract() {
+        for endpoint in [
+            "hew_node_id_display",
+            "hew_location_node_id",
+            "hew_location_slot",
+            "hew_location_incarnation",
+            "hew_location_display",
+            "hew_remote_pid_location",
+            "hew_remote_pid_node_id",
+            "hew_remote_pid_slot",
+            "hew_remote_pid_incarnation",
+            "hew_remote_pid_display",
+        ] {
+            assert_eq!(
+                compiler_synthetic_identity_endpoint(endpoint),
+                Some(endpoint),
+                "{endpoint} must stay an admitted synthetic identity endpoint"
+            );
+            let family = crate::runtime_call::RuntimeCallFamily::from_catalog_endpoint(endpoint)
+                .unwrap_or_else(|| panic!("{endpoint} has no runtime family"));
+            assert_eq!(
+                family.row().symbol,
+                endpoint,
+                "{endpoint} must map to the family carrying its own symbol"
+            );
+            assert!(
+                family.semantic_contract().is_some(),
+                "{endpoint} has a family but no ownership-SIR contract"
+            );
+        }
+    }
+
     #[test]
     fn assert_has_a_canonical_executable_catalog_identity() {
         assert_eq!(monomorphic_callable_identity("assert"), Some("assert"));

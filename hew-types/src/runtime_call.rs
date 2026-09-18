@@ -173,6 +173,12 @@ pub enum RuntimeValueKind {
     /// A builtin nominal with no type parameters, named by its own identity
     /// rather than by a source spelling (`NodeId`).
     BuiltinNominal(BuiltinType),
+    /// The argument's own checked type, required to carry this builtin
+    /// identity. A declared accessor names its value as an ordinary parameter
+    /// rather than a method receiver (`hew_remote_pid_slot(pid)`), so identity
+    /// is checked on the argument itself. One authority for that identity: the
+    /// type's own `builtin` discriminator, never the receiver table.
+    BuiltinArgument(BuiltinType),
     /// Ordinary type construction, shared by optional results and projections.
     Applied(BuiltinType, &'static [Self]),
     /// Ordinary product results, including receiver replacement with a value.
@@ -257,6 +263,13 @@ impl RuntimeValueKind {
                     return None;
                 }
                 receiver.clone()
+            }
+            Self::BuiltinArgument(expected) => {
+                let argument = receiver?;
+                if !carries_builtin_identity(argument, expected) {
+                    return None;
+                }
+                argument.clone()
             }
             Self::FixedArray => {
                 let array @ ResolvedTy::Array(_, _) = receiver? else {
@@ -576,9 +589,13 @@ impl RuntimeSemanticContract {
             .map(|(expected, actual)| {
                 // An actor handle and a pipe half bind to their own argument:
                 // `stream.forward(from, to)` names both halves in one contract.
+                // An actor handle and a pipe half bind to their own argument:
+                // `stream.forward(from, to)` names both halves in one contract.
                 let binding = if expected.ty == RuntimeValueKind::ActorHandle
-                    || matches!(expected.ty, RuntimeValueKind::PipeHalf(_))
-                {
+                    || matches!(
+                        expected.ty,
+                        RuntimeValueKind::PipeHalf(_) | RuntimeValueKind::BuiltinArgument(_)
+                    ) {
                     Some(actual)
                 } else {
                     receiver
@@ -633,6 +650,25 @@ pub struct RuntimeInstantiatedContract {
 
 /// Bind the existing canonical receiver itself, preserving representation facts
 /// such as opacity. Encoding values have no collection type arguments.
+/// Whether `ty` is the named builtin `expected`, by its own identity.
+///
+/// A checked type reaches here spelled either with its `builtin` discriminator
+/// filled in or as the module-qualified nominal the resolver minted
+/// (`std.builtins.NodeId`), depending on which producer built it. Both are the
+/// same type, so this reads the nominal and accepts either spelling rather
+/// than routing identity through the receiver table, which knows only
+/// collections and handles.
+fn carries_builtin_identity(ty: &ResolvedTy, expected: BuiltinType) -> bool {
+    let ResolvedTy::Named { name, builtin, .. } = ty else {
+        return false;
+    };
+    if *builtin == Some(expected) {
+        return true;
+    }
+    let leaf = name.rsplit('.').next().unwrap_or(name.as_str());
+    leaf == expected.canonical_name()
+}
+
 fn runtime_receiver_builtin(ty: &ResolvedTy) -> Option<BuiltinType> {
     if let Some((builtin, _)) = collection_type_arguments(ty) {
         return Some(builtin);
@@ -1553,6 +1589,20 @@ pub enum RuntimeCallFamily {
     NodeAllowPeer,
     NodeConnect,
     NodeId,
+    /// The identity and location accessors `std/builtins.hew` declares through
+    /// `#[extern_symbol]`. Each borrows its receiver - a `NodeId`, `Location`
+    /// or `RemotePid<T>` is a by-value identity snapshot whose drop frees
+    /// nothing - and returns either a fresh owned string or a bit-copied field.
+    NodeIdDisplay,
+    LocationNodeId,
+    LocationSlot,
+    LocationIncarnation,
+    LocationDisplay,
+    RemotePidLocation,
+    RemotePidNodeId,
+    RemotePidSlot,
+    RemotePidIncarnation,
+    RemotePidDisplay,
     NodeIdentityKey,
     NodeLoadKeys,
     NodeLookup,
@@ -2391,6 +2441,16 @@ impl RuntimeCallFamily {
     #[must_use]
     pub fn from_catalog_endpoint(endpoint: &str) -> Option<Self> {
         match endpoint {
+            "hew_node_id_display" => Some(Self::NodeIdDisplay),
+            "hew_location_node_id" => Some(Self::LocationNodeId),
+            "hew_location_slot" => Some(Self::LocationSlot),
+            "hew_location_incarnation" => Some(Self::LocationIncarnation),
+            "hew_location_display" => Some(Self::LocationDisplay),
+            "hew_remote_pid_location" => Some(Self::RemotePidLocation),
+            "hew_remote_pid_node_id" => Some(Self::RemotePidNodeId),
+            "hew_remote_pid_slot" => Some(Self::RemotePidSlot),
+            "hew_remote_pid_incarnation" => Some(Self::RemotePidIncarnation),
+            "hew_remote_pid_display" => Some(Self::RemotePidDisplay),
             "stream.pair_sink" => Some(Self::StreamPairSink),
             "stream.pair_stream" => Some(Self::StreamPairStream),
             "stream.forward" => Some(Self::StreamForward),
@@ -7106,6 +7166,156 @@ impl RuntimeCallFamily {
                 physical: RuntimePhysicalForm::NodeResult,
                 c_return: RuntimeCReturn::Storage,
             },
+            Self::NodeIdDisplay => RuntimeOpRow {
+                symbol: "hew_node_id_display",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::BuiltinArgument(BuiltinType::NodeId),
+                        effect: E::Borrow,
+                    }],
+                    result: R::FreshOwned(K::String),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::LocationNodeId => RuntimeOpRow {
+                symbol: "hew_location_node_id",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::BuiltinArgument(BuiltinType::Location),
+                        effect: E::Borrow,
+                    }],
+                    result: R::BitCopy(K::Named("std.builtins.NodeId")),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::LocationSlot => RuntimeOpRow {
+                symbol: "hew_location_slot",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::BuiltinArgument(BuiltinType::Location),
+                        effect: E::Borrow,
+                    }],
+                    result: R::BitCopy(K::U64),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::LocationIncarnation => RuntimeOpRow {
+                symbol: "hew_location_incarnation",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::BuiltinArgument(BuiltinType::Location),
+                        effect: E::Borrow,
+                    }],
+                    result: R::BitCopy(K::U32),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::LocationDisplay => RuntimeOpRow {
+                symbol: "hew_location_display",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::BuiltinArgument(BuiltinType::Location),
+                        effect: E::Borrow,
+                    }],
+                    result: R::FreshOwned(K::String),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::RemotePidLocation => RuntimeOpRow {
+                symbol: "hew_remote_pid_location",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::BuiltinArgument(BuiltinType::RemotePid),
+                        effect: E::Borrow,
+                    }],
+                    result: R::BitCopy(K::Named("std.builtins.Location")),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::RemotePidNodeId => RuntimeOpRow {
+                symbol: "hew_remote_pid_node_id",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::BuiltinArgument(BuiltinType::RemotePid),
+                        effect: E::Borrow,
+                    }],
+                    result: R::BitCopy(K::Named("std.builtins.NodeId")),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::RemotePidSlot => RuntimeOpRow {
+                symbol: "hew_remote_pid_slot",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::BuiltinArgument(BuiltinType::RemotePid),
+                        effect: E::Borrow,
+                    }],
+                    result: R::BitCopy(K::U64),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::RemotePidIncarnation => RuntimeOpRow {
+                symbol: "hew_remote_pid_incarnation",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::BuiltinArgument(BuiltinType::RemotePid),
+                        effect: E::Borrow,
+                    }],
+                    result: R::BitCopy(K::U32),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::RemotePidDisplay => RuntimeOpRow {
+                symbol: "hew_remote_pid_display",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::BuiltinArgument(BuiltinType::RemotePid),
+                        effect: E::Borrow,
+                    }],
+                    result: R::FreshOwned(K::String),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
             Self::NodeId => RuntimeOpRow {
                 symbol: "Node::id",
                 contract: Some(RuntimeSemanticContract {
@@ -8120,6 +8330,15 @@ impl RuntimeCallFamily {
             },
             Self::StructuralFormat => RuntimeOpRow {
                 symbol: "hew_structural_format",
+                // Rendering reads the value's layout and allocates the text.
+                // The receiver stays the caller's: `f"{holder:?}"` twice over
+                // one binding renders twice and releases nothing.
+                // No contract yet, and a contract alone would not help: the
+                // row's symbol is an abort-only sentinel (`hew_structural_format`
+                // in hew-runtime/src/string.rs), the real render dispatches per
+                // type, and `NotAnAction` has no physical action to lower to.
+                // Giving this a contract only moves the refusal from SIR to
+                // physical MIR. #3441 needs the render's physical path.
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
@@ -11263,6 +11482,7 @@ impl RuntimeCallFamily {
                     | RuntimeValueKind::SharedPayload
                     | RuntimeValueKind::NodeLookupResult
                     | RuntimeValueKind::BuiltinNominal(_)
+                    | RuntimeValueKind::BuiltinArgument(_)
                     | RuntimeValueKind::Applied(_, _)
                     | RuntimeValueKind::Tuple(_)
                     | RuntimeValueKind::IoHandle(_)
@@ -11544,6 +11764,16 @@ impl RuntimeCallFamily {
             | F::NodeAllowPeer
             | F::NodeConnect
             | F::NodeId
+            | F::NodeIdDisplay
+            | F::LocationNodeId
+            | F::LocationSlot
+            | F::LocationIncarnation
+            | F::LocationDisplay
+            | F::RemotePidLocation
+            | F::RemotePidNodeId
+            | F::RemotePidSlot
+            | F::RemotePidIncarnation
+            | F::RemotePidDisplay
             | F::NodeIdentityKey
             | F::NodeLoadKeys
             | F::NodeLookup

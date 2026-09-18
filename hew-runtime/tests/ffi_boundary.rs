@@ -1121,15 +1121,13 @@ mod mailbox_policies {
 
 mod coalesce_tests {
     use std::ffi::c_void;
-    use std::sync::mpsc;
-    use std::time::Duration;
 
     use hew_runtime::mailbox::{
         hew_mailbox_free, hew_mailbox_len, hew_mailbox_new_coalesce, hew_mailbox_send,
         hew_mailbox_send_with_reply, hew_mailbox_try_push, hew_mailbox_try_recv, hew_msg_node_free,
     };
     use hew_runtime::reply_channel::{
-        hew_reply_channel_free, hew_reply_channel_new, hew_reply_channel_retain, hew_reply_wait,
+        hew_reply_channel_free, hew_reply_channel_new, hew_reply_channel_retain,
         hew_reply_wait_timeout, hew_select_first, HewReplyChannel,
     };
 
@@ -1247,8 +1245,10 @@ mod coalesce_tests {
         }
     }
 
+    /// D510 across the C ABI: a queued completion call keeps its payload and
+    /// its waiter, and the arriving one is refused rather than superseding it.
     #[test]
-    fn coalesce_preserves_original_reply_channel_and_retires_incoming_waiter() {
+    fn a_queued_ask_keeps_its_reply_channel_against_a_coalescing_send() {
         unsafe {
             let mb = hew_mailbox_new_coalesce(1);
             let ch1 = hew_reply_channel_new();
@@ -1261,18 +1261,6 @@ mod coalesce_tests {
             // replied or retired.
             hew_reply_channel_retain(ch1);
             hew_reply_channel_retain(ch2);
-
-            let (tx, rx) = mpsc::channel();
-            let waiter_ch2 = ch2 as usize;
-            let waiter = std::thread::spawn(move || {
-                let reply = hew_reply_wait(waiter_ch2 as *mut HewReplyChannel);
-                let is_null = reply.is_null();
-                if !reply.is_null() {
-                    hew_runtime::mem::buf_free(reply);
-                }
-                tx.send(is_null)
-                    .expect("superseded waiter result should send");
-            });
 
             let v1: i32 = 10;
             let v2: i32 = 99;
@@ -1294,27 +1282,23 @@ mod coalesce_tests {
                     size_of::<i32>(),
                     ch2.cast(),
                 ),
-                0
+                -1,
+                "the arriving ask is refused, never superseding the queued one"
             );
             assert_eq!(hew_mailbox_len(mb), 1);
-
-            assert_eq!(
-                rx.recv_timeout(Duration::from_millis(200)),
-                Ok(true),
-                "coalescing should retire the superseded incoming waiter immediately"
-            );
-            waiter
-                .join()
-                .expect("superseded waiter thread should finish");
 
             let node = hew_mailbox_try_recv(mb);
             assert!(!node.is_null());
             assert_eq!((*node).msg_type, 1);
-            assert_eq!(*((*node).data.cast::<i32>()), 99);
+            assert_eq!(
+                *((*node).data.cast::<i32>()),
+                10,
+                "the queued ask keeps its own payload"
+            );
             assert_eq!(
                 (*node).reply_channel.cast::<HewReplyChannel>(),
                 ch1,
-                "the surviving coalesced message must preserve the original queued reply channel"
+                "the queued ask keeps its own reply channel"
             );
             hew_msg_node_free(node);
 
@@ -1322,12 +1306,14 @@ mod coalesce_tests {
             assert_eq!(
                 hew_select_first(ready.as_mut_ptr(), 1, 0),
                 0,
-                "freeing the surviving coalesced node should still resolve the original waiter"
+                "retiring the queued node resolves its own waiter"
             );
             assert!(hew_reply_wait_timeout(ch1, 0).is_null());
 
             hew_reply_channel_free(ch1);
             hew_reply_channel_free(ch2);
+            hew_reply_channel_free(ch2);
+
             hew_mailbox_free(mb);
         }
     }

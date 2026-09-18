@@ -86,9 +86,11 @@ runnable = true
 id = "basic-actors"
 label = "Basic actors (`spawn`, `send`, `receive`, `ask/await`)"
 checker = "pass"
-runtime = "implemented"
-runtime_status = "Implemented"
+runtime = "unavailable"
+runtime_status = "The checker admits actor programs, but the wasm32 process driver does not yet export the actor core, so an actor program fails closed at link on an unresolved `hew_actor_*` import"
 categories = ["runtime", "actors"]
+tracking = "WASM-TODO"
+tracking_label = "WASM-TODO(basic-actors):"
 
 [[feature]]
 id = "actor-crash-containment"

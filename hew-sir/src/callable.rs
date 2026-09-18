@@ -346,7 +346,7 @@ mod tests {
             service.require(required).unwrap();
         }
         SemModule {
-            debug: Default::default(),
+            debug: crate::SemDebugFacts::default(),
             regex_patterns: Vec::new(),
             actors: Vec::new(),
             supervisors: Vec::new(),

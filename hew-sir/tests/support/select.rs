@@ -150,7 +150,7 @@ pub fn module(task_count: u32, has_timeout: bool) -> SemModule {
         resources.insert(task_ty, ResourceRelease::Task);
     }
     SemModule {
-        debug: Default::default(),
+        debug: hew_sir::SemDebugFacts::default(),
         regex_patterns: Vec::new(),
         callables: vec![callable],
         functions: vec![function],

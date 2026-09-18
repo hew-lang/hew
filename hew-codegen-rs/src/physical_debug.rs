@@ -436,7 +436,7 @@ impl<'ctx> DebugEmitter<'ctx> {
                 let byte = self
                     .builder
                     .create_basic_type("u8", 8, DW_ATE_UNSIGNED_CHAR, DIFlags::ZERO)
-                    .ok()?;
+                    .unwrap_or_else(|_| unreachable!("a basic type named `u8` is never empty"));
                 Some(
                     self.builder
                         .create_pointer_type(
@@ -453,7 +453,15 @@ impl<'ctx> DebugEmitter<'ctx> {
                 let inner = self.build_type(&ResolvedTy::Unit, element)?;
                 Some(
                     self.builder
-                        .create_array_type(inner, bits, layout.align * 8, &[0..i64::from(*len)])
+                        .create_array_type(
+                            inner,
+                            bits,
+                            layout.align * 8,
+                            &[std::ops::Range {
+                                start: 0,
+                                end: i64::from(*len),
+                            }],
+                        )
                         .as_type(),
                 )
             }
@@ -646,48 +654,45 @@ pub(super) fn order_blocks_for_inspection(value: FunctionValue<'_>) {
     use inkwell::llvm_sys::core::{
         LLVMGetBasicBlockTerminator, LLVMGetNumSuccessors, LLVMGetSuccessor,
     };
-    use inkwell::llvm_sys::prelude::LLVMBasicBlockRef;
 
     let blocks = value.get_basic_blocks();
-    let Some(entry) = blocks.first().copied() else {
+    if blocks.len() < 2 {
         return;
-    };
-    let mut order: Vec<inkwell::basic_block::BasicBlock<'_>> = Vec::with_capacity(blocks.len());
-    let mut seen: Vec<LLVMBasicBlockRef> = Vec::with_capacity(blocks.len());
-    let mut stack = vec![entry];
-    while let Some(block) = stack.pop() {
-        let raw: LLVMBasicBlockRef = unsafe { std::mem::transmute(block) };
-        if seen.contains(&raw) {
+    }
+    let address = |index: usize| blocks[index].as_mut_ptr() as usize;
+    let mut order: Vec<usize> = Vec::with_capacity(blocks.len());
+    let mut visited = vec![false; blocks.len()];
+    let mut stack = vec![0usize];
+    while let Some(index) = stack.pop() {
+        if visited[index] {
             continue;
         }
-        seen.push(raw);
-        order.push(block);
+        visited[index] = true;
+        order.push(index);
         // SAFETY: the block belongs to a fully built function, so its
-        // terminator and successor list are live for this call.
-        let successors: Vec<LLVMBasicBlockRef> = unsafe {
-            let terminator = LLVMGetBasicBlockTerminator(raw);
+        // terminator and successor list are live for this read.
+        let successors: Vec<usize> = unsafe {
+            let terminator = LLVMGetBasicBlockTerminator(blocks[index].as_mut_ptr());
             if terminator.is_null() {
                 Vec::new()
             } else {
                 (0..LLVMGetNumSuccessors(terminator))
-                    .map(|index| LLVMGetSuccessor(terminator, index))
+                    .filter_map(|slot| {
+                        let successor = LLVMGetSuccessor(terminator, slot) as usize;
+                        (0..blocks.len()).find(|candidate| address(*candidate) == successor)
+                    })
                     .collect()
             }
         };
-        // Pushed in reverse so the first successor is visited first.
+        // Pushed in reverse so the first successor is laid out first.
         for successor in successors.into_iter().rev() {
-            stack.push(unsafe { std::mem::transmute(successor) });
+            stack.push(successor);
         }
     }
     // Unreachable blocks keep their relative order at the end.
-    for block in blocks {
-        let raw: LLVMBasicBlockRef = unsafe { std::mem::transmute(block) };
-        if !seen.contains(&raw) {
-            order.push(block);
-        }
-    }
+    order.extend((0..blocks.len()).filter(|index| !visited[*index]));
     for pair in order.windows(2) {
-        pair[1].move_after(pair[0]).ok();
+        blocks[pair[1]].move_after(blocks[pair[0]]).ok();
     }
 }
 

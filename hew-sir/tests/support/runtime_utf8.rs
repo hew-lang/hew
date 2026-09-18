@@ -147,7 +147,7 @@ pub(super) fn decode_module() -> SemModule {
         type_facts.insert(TypeInstanceKey(ty), row);
     }
     SemModule {
-        debug: Default::default(),
+        debug: hew_sir::SemDebugFacts::default(),
         regex_patterns: Vec::new(),
         actors: Vec::new(),
         supervisors: Vec::new(),

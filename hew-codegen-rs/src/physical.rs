@@ -9659,7 +9659,7 @@ mod tests {
             bindings: vec![],
         };
         SemModule {
-            debug: Default::default(),
+            debug: hew_sir::SemDebugFacts::default(),
             regex_patterns: Vec::new(),
             actors: Vec::new(),
             supervisors: Vec::new(),
@@ -9853,7 +9853,7 @@ mod tests {
             bindings: vec![],
         };
         SemModule {
-            debug: Default::default(),
+            debug: hew_sir::SemDebugFacts::default(),
             regex_patterns: Vec::new(),
             actors: Vec::new(),
             supervisors: Vec::new(),

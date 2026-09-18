@@ -2473,7 +2473,7 @@ fn lower_function(
                     ops.extend(lowerer.lower_op(operation, (block.id, ops.len()))?);
                     if let Some(offset) = module.debug.site_offset(&operation.provenance) {
                         for index in first..ops.len() {
-                            sites.insert((block.id, index as u32), offset);
+                            sites.insert((block.id, index_key(index)), offset);
                         }
                     }
                     Ok::<_, PhysicalError>(ops)
@@ -2481,7 +2481,7 @@ fn lower_function(
             if let Some(offset) = module.debug.site_offset(&block.terminator_provenance) {
                 // The terminator's attribution takes the index one past the
                 // last op, the position codegen reaches it at.
-                sites.insert((block.id, ops.len() as u32), offset);
+                sites.insert((block.id, index_key(ops.len())), offset);
             }
             let terminator = lowerer.lower_terminator(&block.terminator)?;
             Ok(PhysicalBlock {
@@ -2506,6 +2506,12 @@ fn lower_function(
         },
         attribution,
     ))
+}
+
+/// An operation's position within its block, as debug attribution keys it.
+/// A block with more than `u32::MAX` operations cannot exist.
+fn index_key(index: usize) -> u32 {
+    u32::try_from(index).unwrap_or(u32::MAX)
 }
 
 /// Join SIR's ordered binding table onto the storage that realizes each source
@@ -9624,7 +9630,7 @@ mod tests {
             },
         );
         SemModule {
-            debug: Default::default(),
+            debug: hew_sir::SemDebugFacts::default(),
             regex_patterns: Vec::new(),
             actors: Vec::new(),
             supervisors: Vec::new(),
@@ -11124,7 +11130,7 @@ mod tests {
             ],
         };
         let physical = PhysicalModule {
-            debug: Default::default(),
+            debug: PhysicalDebug::default(),
             regex_patterns: Vec::new(),
             pure_releases: PureDataReleases::default(),
             actors: Vec::new(),

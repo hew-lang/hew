@@ -335,7 +335,7 @@ fn counter_module(
         facts.require(required).unwrap();
     }
     let mut module = sir::SemModule {
-        debug: Default::default(),
+        debug: hew_sir::SemDebugFacts::default(),
         actors: Vec::new(),
         supervisors: Vec::new(),
         callables: vec![parent, body],

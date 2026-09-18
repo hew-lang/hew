@@ -75,7 +75,7 @@ fn module(function: SemFunction) -> SemModule {
         let _ = fact_service.require(ty);
     }
     SemModule {
-        debug: Default::default(),
+        debug: hew_sir::SemDebugFacts::default(),
         regex_patterns: Vec::new(),
         actors: Vec::new(),
         supervisors: Vec::new(),
@@ -916,7 +916,7 @@ fn module_canonicalization_rejects_an_invalid_body_atomically() {
     invalid.callable = CallableId(1);
 
     let mut module = SemModule {
-        debug: Default::default(),
+        debug: hew_sir::SemDebugFacts::default(),
         regex_patterns: Vec::new(),
         actors: Vec::new(),
         supervisors: Vec::new(),

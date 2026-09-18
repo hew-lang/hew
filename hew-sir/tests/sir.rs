@@ -117,7 +117,7 @@ fn module(functions: Vec<SemFunction>) -> SemModule {
         let _ = fact_service.require(ty);
     }
     SemModule {
-        debug: Default::default(),
+        debug: hew_sir::SemDebugFacts::default(),
         regex_patterns: Vec::new(),
         actors: Vec::new(),
         supervisors: Vec::new(),
@@ -832,6 +832,7 @@ fn verifier_requires_zero_results_for_a_unit_direct_call() {
 }
 
 #[test]
+#[expect(clippy::too_many_lines, reason = "one hand-built SIR fixture")]
 fn verifier_rejects_noncanonical_block_ids_and_order() {
     let non_contiguous = SemFunction {
         id: ItemId(0),
@@ -1442,6 +1443,7 @@ fn verifier_rejects_value_carrying_return_from_unit_function() {
     );
 }
 
+#[expect(clippy::too_many_lines, reason = "one hand-built SIR fixture")]
 fn rewrite_fixture() -> SemFunction {
     SemFunction {
         id: ItemId(0),

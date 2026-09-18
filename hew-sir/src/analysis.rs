@@ -571,7 +571,7 @@ mod tests {
             let _ = fact_service.require(ty);
         }
         SemModule {
-            debug: Default::default(),
+            debug: crate::SemDebugFacts::default(),
             actors: Vec::new(),
             supervisors: Vec::new(),
             resources: BTreeMap::new(),

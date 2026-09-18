@@ -238,7 +238,7 @@ pub fn module(case: Case) -> sir::SemModule {
         facts.require(&ty).unwrap();
     }
     sir::SemModule {
-        debug: Default::default(),
+        debug: hew_sir::SemDebugFacts::default(),
         regex_patterns: Vec::new(),
         actors: Vec::new(),
         supervisors: Vec::new(),

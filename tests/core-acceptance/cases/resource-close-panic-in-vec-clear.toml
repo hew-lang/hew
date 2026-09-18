@@ -1,0 +1,11 @@
+[[case]]
+id = "resource-close-panic-in-vec-clear"
+intent = "A panic inside a resource's close during Vec.clear reports UserPanic through the trap path, after the clear has released every remaining element exactly once."
+source = "cases/resource-close-panic-in-vec-clear.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "close 1\nclose 2\nclose 3\n"
+stderr = "hew: failure: UserPanic (212): close failed\n"
+exit = 1

@@ -1118,8 +1118,11 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
     /// `close` is an ordinary private callable, so it uses the private ABI:
     /// its arguments, then the caller's fault slot, returning a status. Drop
     /// glue has no unwind successor to carry a failure into, so a failing
-    /// release traps: continuing would leave the value half-released with no
-    /// owner able to observe it.
+    /// release hands its fault to `hew_fault_trap`: the runtime reports the
+    /// fault's own line and crashes the actor, or ends the run, because no
+    /// owner here can observe it. A release already in progress finishes
+    /// releasing what it owns first, so the raise returns here and the glue
+    /// completes; `close` consumed the value either way.
     /// Release one owner by calling the exact `close` MIR named for it.
     fn emit_authored_close(
         &self,
@@ -1186,15 +1189,34 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
             .build_conditional_branch(ok, released, failed)
             .llvm_ctx("branch on record release status")?;
         self.builder.position_at_end(failed);
-        let trap = Intrinsic::find("llvm.trap")
-            .ok_or_else(|| CodegenError::FailClosed("LLVM trap intrinsic is unavailable".into()))?
-            .get_declaration(self.llvm, &[])
-            .ok_or_else(|| CodegenError::FailClosed("LLVM trap declaration failed".into()))?;
+        let raise = get_or_declare_external(
+            self.llvm,
+            "hew_fault_trap",
+            self.ctx.void_type().fn_type(
+                &[
+                    self.ctx.i32_type().into(),
+                    self.ctx.ptr_type(AddressSpace::default()).into(),
+                ],
+                false,
+            ),
+        )?;
+        let raised = self
+            .builder
+            .build_load(
+                self.ctx.ptr_type(AddressSpace::default()),
+                fault,
+                "resource.close.raised",
+            )
+            .llvm_ctx("load failing record release fault")?;
         self.builder
-            .build_call(trap, &[], "resource.close.trap")
-            .llvm_ctx("emit failing record release trap")?;
+            .build_call(
+                raise,
+                &[status.into(), raised.into()],
+                "resource.close.trap",
+            )
+            .llvm_ctx("raise failing record release fault")?;
         self.builder
-            .build_unreachable()
+            .build_unconditional_branch(released)
             .llvm_ctx("terminate failing record release")?;
         self.builder.position_at_end(released);
         // D442: `close` consumes the record (`fn close(consume self)` is the

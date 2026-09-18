@@ -54,8 +54,11 @@ pub type HewValueCloneThunk = unsafe extern "C" fn(src: *const c_void, dst: *mut
 ///   not deallocate the storage itself — the caller owns and releases it.
 /// - Invoked exactly once for each destroyed value obligation, including
 ///   replacement, removal and final release.
+/// - Unwinds when a `#[resource]` element's own `close` fails outside a
+///   collection release, which is why this is `C-unwind`: the runtime entry
+///   points that invoke it carry that unwind to the actor's crash boundary.
 ///
-pub type HewValueDropThunk = unsafe extern "C" fn(slot: *mut c_void);
+pub type HewValueDropThunk = unsafe extern "C-unwind" fn(slot: *mut c_void);
 
 /// Poll a uniquely borrowed owner through cooperative cleanup. The invocation
 /// state supplies cancellation and readiness; the result uses `CoroStatus`.

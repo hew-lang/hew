@@ -1111,7 +1111,7 @@ pub unsafe extern "C" fn hew_hashmap_clone_layout(
 /// its descriptors. A zero-sized plain value may use a null `val`; a value
 /// requiring a clone callback must supply a non-null slot even when zero-sized.
 #[no_mangle]
-pub unsafe extern "C" fn hew_hashmap_insert_clone_layout(
+pub unsafe extern "C-unwind" fn hew_hashmap_insert_clone_layout(
     m: *mut HewLayoutHashMap,
     key: *const c_void,
     val: *const c_void,
@@ -1199,7 +1199,7 @@ pub unsafe extern "C" fn hew_hashmap_insert_clone_layout(
 /// descriptor. `val` must be an independent owner of a value blob matching the
 /// value descriptor; the caller must not release it after a zero status.
 #[no_mangle]
-pub unsafe extern "C" fn hew_hashmap_insert_take_layout(
+pub unsafe extern "C-unwind" fn hew_hashmap_insert_take_layout(
     m: *mut HewLayoutHashMap,
     key: *const c_void,
     val: *const c_void,
@@ -1964,7 +1964,7 @@ pub unsafe extern "C" fn hew_hashmap_len_layout(m: *const HewLayoutHashMap) -> i
 /// `m` must have been returned by [`hew_hashmap_new_with_layout`] (or be null).
 /// After this call, `m` is invalid.
 #[no_mangle]
-pub unsafe extern "C" fn hew_hashmap_free_layout(m: *mut HewLayoutHashMap) {
+pub unsafe extern "C-unwind" fn hew_hashmap_free_layout(m: *mut HewLayoutHashMap) {
     // SAFETY: forwarded allocation contract.
     unsafe { release_map(m, false) }
 }
@@ -1981,7 +1981,7 @@ pub unsafe extern "C" fn hew_hashmap_free_layout(m: *mut HewLayoutHashMap) {
 /// `m` must have been returned by [`hew_hashmap_new_with_layout`] (or be null).
 /// After this call, `m` is invalid.
 #[no_mangle]
-pub unsafe extern "C" fn hew_hashmap_free_layout_walk(m: *mut HewLayoutHashMap) {
+pub unsafe extern "C-unwind" fn hew_hashmap_free_layout_walk(m: *mut HewLayoutHashMap) {
     // SAFETY: forwarded allocation contract.
     unsafe { release_map(m, true) }
 }

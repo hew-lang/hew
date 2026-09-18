@@ -61,7 +61,7 @@ pub(crate) unsafe extern "C" fn string_pair_clone_thunk(
 ///
 /// `slot` must point to a live `HewStringPair`-sized blob whose string
 /// pointers were allocated with `string_from_str`.
-pub(crate) unsafe extern "C" fn string_pair_drop_thunk(slot: *mut c_void) {
+pub(crate) unsafe extern "C-unwind" fn string_pair_drop_thunk(slot: *mut c_void) {
     // SAFETY: slot is a live pair element owning both managed string fields.
     unsafe {
         let pair = &mut *slot.cast::<HewStringPair>();

@@ -56,18 +56,18 @@
 
 # ── examples/ ───────────────────────────────────────────────────────────────────
 
-# deferred-nyi: multifile compilation is not implemented (requires multi-file resolve)
-examples/multifile/02_geometry/geo/area.hew
-examples/multifile/02_geometry/geo/distance.hew
+# final-path-limitation: the distributed Node surface has no ownership-SIR
+# operation contract on the final path yet
+examples/distributed/kv_client.hew E_SIR_UNSUPPORTED
+examples/distributed_hello.hew E_SIR_UNSUPPORTED
 
 # internal-channel (#3401): a `dyn Drawable` parameter reaches SIR verification
 # with no published dispatch table
 examples/multifile/01_shapes/shapes/shapes.hew E_SIR_VERIFY
 
-# final-path-limitation: the distributed Node surface has no ownership-SIR
-# operation contract on the final path yet
-examples/distributed/kv_client.hew E_SIR_UNSUPPORTED
-examples/distributed_hello.hew E_SIR_UNSUPPORTED
+# deferred-nyi: multifile compilation is not implemented (requires multi-file resolve)
+examples/multifile/02_geometry/geo/area.hew
+examples/multifile/02_geometry/geo/distance.hew
 
 # final-path-limitation: QUIC / advanced net
 examples/quic_mesh/client.hew E_SIR_UNSUPPORTED
@@ -173,12 +173,12 @@ repros/ladder/state_resource_trait.hew E_SIR_VERIFY
 
 # ── tests/core-acceptance/ ──────────────────────────────────────────────────────
 
+# requires-file-import-program: a directory module's leaf source
+tests/core-acceptance/cases/directory-module-one-identity/src/lib/lib.hew
+
 # requires-file-import-program: members of a multi-file program. Standalone
 # `hew check` cannot resolve the sibling modules; the owning core-acceptance
 # case compiles the program's root.
-
-# requires-file-import-program: a directory module's leaf source
-tests/core-acceptance/cases/directory-module-one-identity/src/lib/lib.hew
 
 # ── tests/ownership-balance/ ────────────────────────────────────────────────
 
@@ -234,6 +234,21 @@ tests/pkg-import/mixed_collision_reply.hew
 tests/pkg-import/mixed_import_impl_collision.hew
 tests/pkg-import/nested_qualified_payload.hew
 tests/pkg-import/package_module_type_alias.hew
+
+# requires-package-resolver: sub-package sources, each depending on siblings
+tests/pkg-import/pkgs/aliasmember/aliasmember.hew
+tests/pkg-import/pkgs/assocemptyuse/assocemptyuse.hew
+tests/pkg-import/pkgs/assocreqimplbad/assocreqimplbad.hew
+tests/pkg-import/pkgs/assocreqimplok/assocreqimplok.hew
+tests/pkg-import/pkgs/deepalias/deepalias.hew
+tests/pkg-import/pkgs/nestrelay/nestrelay.hew
+tests/pkg-import/pkgs/qmachbad/qmachbad.hew
+tests/pkg-import/pkgs/reexchaina/reexchaina.hew
+tests/pkg-import/pkgs/reexmid/reexmid.hew
+tests/pkg-import/pkgs/reexsub/reexsub.hew
+tests/pkg-import/pkgs/reexsubalias/reexsubalias.hew
+tests/pkg-import/pkgs/selfqualtype/selfqualtype.hew
+tests/pkg-import/pkgs/sinkres/sinkres.hew
 tests/pkg-import/postmono_qualified_layout.hew
 tests/pkg-import/private_generic_record_option_element.hew
 tests/pkg-import/private_generic_record_vec_element.hew
@@ -258,21 +273,6 @@ tests/pkg-import/samename_type_layout.hew
 tests/pkg-import/self_qualified_type_identity.hew
 tests/pkg-import/two_module_same_generic_valueclass_accept.hew
 
-# requires-package-resolver: sub-package sources, each depending on siblings
-tests/pkg-import/pkgs/aliasmember/aliasmember.hew
-tests/pkg-import/pkgs/assocemptyuse/assocemptyuse.hew
-tests/pkg-import/pkgs/assocreqimplbad/assocreqimplbad.hew
-tests/pkg-import/pkgs/assocreqimplok/assocreqimplok.hew
-tests/pkg-import/pkgs/deepalias/deepalias.hew
-tests/pkg-import/pkgs/nestrelay/nestrelay.hew
-tests/pkg-import/pkgs/qmachbad/qmachbad.hew
-tests/pkg-import/pkgs/reexchaina/reexchaina.hew
-tests/pkg-import/pkgs/reexmid/reexmid.hew
-tests/pkg-import/pkgs/reexsub/reexsub.hew
-tests/pkg-import/pkgs/reexsubalias/reexsubalias.hew
-tests/pkg-import/pkgs/selfqualtype/selfqualtype.hew
-tests/pkg-import/pkgs/sinkres/sinkres.hew
-
 # ── tests/vertical-slice/accept/ ────────────────────────────────────────────────
 
 # final-path-limitation: accept fixtures whose programs the final path cannot
@@ -285,30 +285,30 @@ tests/vertical-slice/accept/gen_block_explicit_return.hew E_SIR_UNSUPPORTED
 tests/vertical-slice/accept/generic_spawn_unit.hew E_SIR_UNSUPPORTED
 tests/vertical-slice/accept/hashmap_for_in_call.hew E_SIR_UNSUPPORTED
 tests/vertical-slice/accept/hashset_for_in_call.hew E_SIR_UNSUPPORTED
+
+# known defect (#3404): `Node.id()` returns the builtin `NodeId` and
+# `RemotePid<T>.node_id()` the one std/builtins.hew declares, so comparing them
+# reads as `expected NodeId, found NodeId`
+tests/vertical-slice/accept/identity_aggregates.hew
 tests/vertical-slice/accept/imported_actor_msg_discriminants.hew E_SIR_UNSUPPORTED
 tests/vertical-slice/accept/imported_supervisor_child_identity.hew E_SIR_UNSUPPORTED
 tests/vertical-slice/accept/link_monitor_value_monitor.hew E_SIR_UNSUPPORTED
 tests/vertical-slice/accept/link_monitor_value_monitor_in_actor.hew E_SIR_UNSUPPORTED
 tests/vertical-slice/accept/link_monitor_value_result.hew E_SIR_UNSUPPORTED
 tests/vertical-slice/accept/match_float_literal_arm.hew E_SIR_UNSUPPORTED
-tests/vertical-slice/accept/structural_rendering.hew E_SIR_UNSUPPORTED
-tests/vertical-slice/accept/vec_into_iter_typeck.hew E_SIR_UNSUPPORTED
-tests/vertical-slice/accept/w2006_scope_spawn.hew E_SIR_UNSUPPORTED
-
-# internal-channel (#3401): accept fixtures the checker admits and SIR
-# verification then refuses
-tests/vertical-slice/accept/supervisor_childref_value_flow_states.hew E_SIR_VERIFY
-tests/vertical-slice/accept/toml_value_resource_exactly_once.hew E_SIR_VERIFY
-
-# known defect (#3404): `Node.id()` returns the builtin `NodeId` and
-# `RemotePid<T>.node_id()` the one std/builtins.hew declares, so comparing them
-# reads as `expected NodeId, found NodeId`
-tests/vertical-slice/accept/identity_aggregates.hew
 
 # known defect (#3094): a `#[resource]` disposer cannot consume its own handle
 # field. Routing around the refusal compiles and then segfaults, so the refusal
 # is fail-closed protection, not stale pedantry.
 tests/vertical-slice/accept/returns_receiver_consuming_result.hew
+tests/vertical-slice/accept/structural_rendering.hew E_SIR_UNSUPPORTED
+
+# internal-channel (#3401): accept fixtures the checker admits and SIR
+# verification then refuses
+tests/vertical-slice/accept/supervisor_childref_value_flow_states.hew E_SIR_VERIFY
+tests/vertical-slice/accept/toml_value_resource_exactly_once.hew E_SIR_VERIFY
+tests/vertical-slice/accept/vec_into_iter_typeck.hew E_SIR_UNSUPPORTED
+tests/vertical-slice/accept/w2006_scope_spawn.hew E_SIR_UNSUPPORTED
 
 # ── tools/ ──────────────────────────────────────────────────────────────────────
 

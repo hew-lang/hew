@@ -4957,21 +4957,24 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 return Ok(());
             }
             HirExprKind::Race { body }
-                if matches!(self.ty(&expr.ty), ResolvedTy::Unit | ResolvedTy::Never) =>
+                if matches!(self.ty(&expr.ty), ResolvedTy::Unit | ResolvedTy::Never)
+                    || tasks::contains_task(&self.ty(&expr.ty)) =>
             {
-                self.lower_race(body)?;
+                self.lower_race(body, false)?;
                 return Ok(());
             }
             HirExprKind::Scope { body }
-                if matches!(self.ty(&expr.ty), ResolvedTy::Unit | ResolvedTy::Never) =>
+                if matches!(self.ty(&expr.ty), ResolvedTy::Unit | ResolvedTy::Never)
+                    || tasks::contains_task(&self.ty(&expr.ty)) =>
             {
-                self.lower_task_scope(body)?;
+                self.lower_task_scope(body, false)?;
                 return Ok(());
             }
             HirExprKind::ScopeDeadline { duration, body }
-                if matches!(self.ty(&expr.ty), ResolvedTy::Unit | ResolvedTy::Never) =>
+                if matches!(self.ty(&expr.ty), ResolvedTy::Unit | ResolvedTy::Never)
+                    || tasks::contains_task(&self.ty(&expr.ty)) =>
             {
-                self.lower_task_scope_with_deadline(body, Some(duration))?;
+                self.lower_task_scope_with_deadline(body, Some(duration), false)?;
                 return Ok(());
             }
             HirExprKind::SubsumedValue { source } => {
@@ -5302,18 +5305,18 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 Some(value) => Ok(value),
                 None => self.emit(expr, SemOpKind::ConstUnit),
             },
-            HirExprKind::Race { body } => match self.lower_race(body)? {
+            HirExprKind::Race { body } => match self.lower_race(body, true)? {
                 Some(value) => Ok(value),
                 None if self.is_open() => self.emit(expr, SemOpKind::ConstUnit),
                 None => Err("divergent race cannot produce a SIR value".into()),
             },
-            HirExprKind::Scope { body } => match self.lower_task_scope(body)? {
+            HirExprKind::Scope { body } => match self.lower_task_scope(body, true)? {
                 Some(value) => Ok(value),
                 None if self.is_open() => self.emit(expr, SemOpKind::ConstUnit),
                 None => Err("divergent scope cannot produce a SIR value".into()),
             },
             HirExprKind::ScopeDeadline { duration, body } => {
-                match self.lower_task_scope_with_deadline(body, Some(duration))? {
+                match self.lower_task_scope_with_deadline(body, Some(duration), true)? {
                     Some(value) => Ok(value),
                     None if self.is_open() => self.emit(expr, SemOpKind::ConstUnit),
                     None => Err("divergent scope cannot produce a SIR value".into()),

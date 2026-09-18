@@ -1,0 +1,13 @@
+[[case]]
+id = "free_fn_scope_fork_in_default"
+intent = "A default-callconv `main` forks a free function inside a `scope`, and the scope joins it before continuing."
+source = "../vertical-slice/accept/free_fn_scope_fork_in_default.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "worker ran\nafter scope\n"
+exit = 0

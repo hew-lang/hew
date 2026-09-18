@@ -1,0 +1,13 @@
+[[case]]
+id = "scope_fork_tail_discarded"
+intent = "A discarded `scope` whose tail is a `fork` lowers; the scope's own join already discharged the handle."
+source = "../vertical-slice/accept/scope_fork_tail_discarded.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "3\n"
+exit = 0

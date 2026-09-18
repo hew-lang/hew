@@ -1,0 +1,20 @@
+// Accept + run: a default-callconv `main` forks a free function inside a
+// `scope`, and the scope joins it before execution continues.
+//
+// This was a reject fixture whose header said a top-level function "cannot fork
+// a free function because there is no caller execution context to pass to the
+// task wrapper". That is no longer what the compiler does: the work runs and
+// the join orders it before the line after the scope. The fixture was still
+// failing only because a scope whose tail is a `fork` was refused for retaining
+// a handle nothing retained, which is what this change fixes.
+fn worker() {
+    println("worker ran");
+}
+
+fn main() -> i64 {
+    scope {
+        fork { worker() }
+    };
+    println("after scope");
+    0
+}

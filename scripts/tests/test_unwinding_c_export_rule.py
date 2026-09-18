@@ -57,8 +57,8 @@ def main() -> None:
         "    unsafe { hew_vec_free_owned_walk(v) };\n"
         "}\n"
         "#[no_mangle]\n"
-        'pub unsafe extern "C" fn hew_elem_stub(slot: *mut c_void, drop_thunk: HewValueDropThunk) {\n'
-        "    unsafe { (drop_thunk)(slot) };\n"
+        'pub unsafe extern "C" fn hew_trap_stub(code: i32) {\n'
+        "    unsafe { hew_trap_with_code(code) };\n"
         "}\n"
     )
     if len(red) != 4:
@@ -77,6 +77,16 @@ def main() -> None:
         "}\n"
         # A non-exported helper is not the C-ABI surface generated code links.
         'extern "C" fn helper() { hew_panic(); }\n'
+        # A plain `"C"` callback bound to a local named `drop_fn`. The rule does
+        # not match a drop call by name, because `config_drop_fn` and
+        # `result_drop_fn` are plain `"C"` while a layout's `drop_fn` is
+        # `C-unwind`, and the name does not say which.
+        "#[no_mangle]\n"
+        'pub unsafe extern "C" fn hew_config_release(cfg: *mut c_void) {\n'
+        "    if let Some(drop_fn) = config_drop_fn() {\n"
+        "        unsafe { drop_fn(cfg) };\n"
+        "    }\n"
+        "}\n"
         # Test doubles are their own ABI island.
         "#[cfg(test)]\n"
         "mod tests {\n"

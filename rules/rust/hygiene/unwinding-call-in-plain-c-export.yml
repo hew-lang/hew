@@ -40,12 +40,12 @@ rule:
           - pattern: hew_array_free_walk($$$ARGS)
           - pattern: hew_hashmap_free_layout_walk($$$ARGS)
           - pattern: hew_hashset_free_layout_walk($$$ARGS)
-          # A drop thunk called through its function pointer. The thunk's type
-          # is `HewValueDropThunk`, which is `C-unwind`.
-          - pattern: (drop_thunk)($$$ARGS)
-          - pattern: (elem_drop)($$$ARGS)
-          - pattern: ($SELF.drop_thunk)($$$ARGS)
-          - pattern: ($SELF.elem_drop)($$$ARGS)
+          # A `HewValueDropThunk` reached through a layout's `drop_fn` is the
+          # same hazard, but it is not matched here: the runtime binds it to a
+          # local whose name it shares with plain `"C"` callbacks
+          # (`config_drop_fn`, `result_drop_fn`), so a name-keyed arm mixes
+          # true and false positives. Distinguishing them needs the field's
+          # type, which this matcher does not have.
         stopBy: end
     # Test doubles are their own ABI island: they are not the exported surface
     # generated code links against.

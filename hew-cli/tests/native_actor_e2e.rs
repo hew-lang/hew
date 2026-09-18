@@ -569,6 +569,13 @@ fn main() {
     );
 }
 
+// The single worker frees itself the moment the sender parks, so `Probe`'s
+// queued message is dispatched before the scope deadline fires. That ordering
+// needs a margin: with the deadline at 1ms it raced the scheduler's own
+// dispatch latency and lost on a loaded Windows runner, printing
+// `sender-cleanup` before `other-actor`. `Sink` holds its queue for ten times
+// the deadline so the parked submission still cannot be admitted, and the
+// deadline is fifty times the dispatch this test waits on.
 #[test]
 fn waiting_submission_deadline_cleans_sender_without_delivering_pending_message() {
     run_actor(
@@ -577,7 +584,7 @@ actor Sink {
     mailbox 1,
     receive fn hold(me: Sink, driver: Driver, probe: Probe) {
         let _ = mailbox(driver, on_full: .Reject).run(me, probe);
-        sleep(30ms);
+        sleep(500ms);
     }
     receive fn process(value: string) { println(value); }
 }
@@ -586,7 +593,7 @@ actor Driver {
         let _ = mailbox(sink, on_full: .Reject).process("first".to_upper());
         let _ = mailbox(probe, on_full: .Reject).run();
         let waiting = mailbox(sink, on_full: .Wait);
-        let outcome = scope within 1ms {
+        let outcome = scope within 50ms {
             defer println("sender-cleanup");
             let _ = waiting.process("must-not-arrive".to_upper());
             "unexpected acceptance"

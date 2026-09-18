@@ -385,18 +385,33 @@ fn allocated_closure() -> hew_sir::SemModule {
         SemBlock {
             terminator_provenance: hew_sir::Provenance::Synthesized,
             args: vec![arg(8, ResolvedTy::I64)],
+            // A callable release can run a capture's `close`, so the normal
+            // exit dispatches on the release outcome before it returns.
             ..block(
                 5,
                 vec![end(), destroy(1)],
+                SemTerminator::CleanupDispatch {
+                    normal: edge(7, &[8]),
+                    fault: edge(8, &[]),
+                },
+            )
+        },
+        block(6, vec![end(), destroy(1)], SemTerminator::ResumeUnwind),
+        SemBlock {
+            terminator_provenance: hew_sir::Provenance::Synthesized,
+            args: vec![arg(9, ResolvedTy::I64)],
+            ..block(
+                7,
+                vec![],
                 SemTerminator::Return {
                     value: Some(BoundaryOperand {
-                        operand: operand(8),
+                        operand: operand(9),
                         decision: BoundaryDecision::Copy,
                     }),
                 },
             )
         },
-        block(6, vec![end(), destroy(1)], SemTerminator::ResumeUnwind),
+        block(8, vec![], SemTerminator::ResumeUnwind),
     ];
     normalize(&mut module);
     check_module(&module).unwrap();

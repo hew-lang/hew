@@ -91,25 +91,59 @@ fn counter_body(module: &sir::SemModule, mode: CallableCallMode, fault: bool) ->
     if mode == CallableCallMode::Once {
         ops.push(drop_receiver(2, 0));
     }
+    // A consuming receiver releases the environment here, and that release can
+    // run a capture's `close`, so the normal exit dispatches on its outcome.
+    let releases = mode == CallableCallMode::Once && !fault;
     let terminator = if fault {
         sir::SemTerminator::Trap {
             kind: TrapKind::DivideByZero,
+        }
+    } else if releases {
+        sir::SemTerminator::CleanupDispatch {
+            normal: sir::Edge {
+                target: BlockId(1),
+                args: vec![operand(2)],
+            },
+            fault: sir::Edge {
+                target: BlockId(2),
+                args: vec![],
+            },
         }
     } else {
         sir::SemTerminator::Return {
             value: Some(boundary(2, sir::BoundaryDecision::Copy)),
         }
     };
-    let mut body = function(
-        &module.callables[1],
-        vec![sir::SemBlock {
+    let mut blocks = vec![sir::SemBlock {
+        terminator_provenance: hew_sir::Provenance::Synthesized,
+        id: BlockId(0),
+        args: vec![],
+        ops,
+        terminator,
+    }];
+    if releases {
+        blocks.push(sir::SemBlock {
             terminator_provenance: hew_sir::Provenance::Synthesized,
-            id: BlockId(0),
+            id: BlockId(1),
+            args: vec![sir::BlockArg {
+                value: sir::ValueId(3),
+                ty: ResolvedTy::I64,
+                own: OwnKind::None,
+            }],
+            ops: vec![],
+            terminator: sir::SemTerminator::Return {
+                value: Some(boundary(3, sir::BoundaryDecision::Copy)),
+            },
+        });
+        blocks.push(sir::SemBlock {
+            terminator_provenance: hew_sir::Provenance::Synthesized,
+            id: BlockId(2),
             args: vec![],
-            ops,
-            terminator,
-        }],
-    );
+            ops: vec![],
+            terminator: sir::SemTerminator::ResumeUnwind,
+        });
+    }
+    let mut body = function(&module.callables[1], blocks);
     body.params = vec![
         sir::BlockArg {
             value: sir::ValueId(0),

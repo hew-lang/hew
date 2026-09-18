@@ -522,6 +522,20 @@ fn borrowed_parameters_need_an_explicit_copy_before_local_initialization() {
 fn local_copy_requires_the_exact_type_clone_contract() {
     let mut module =
         fixture("fn probe(consume owner: fn[once]() -> i64, flag: bool) {} fn main() {}");
+    // A callable release can run a capture's `close`, so this model body
+    // dispatches on the release outcome instead of returning straight out.
+    probe(&mut module).blocks = vec![
+        block(
+            0,
+            vec![alloc(0), init(0, 0), end(0)],
+            SemTerminator::CleanupDispatch {
+                normal: edge(1),
+                fault: edge(2),
+            },
+        ),
+        block(1, vec![], done()),
+        block(2, vec![], SemTerminator::ResumeUnwind),
+    ];
     valid(&mut module);
     let ty = probe(&mut module).places[0].ty.clone();
     probe(&mut module).blocks[0].ops.insert(

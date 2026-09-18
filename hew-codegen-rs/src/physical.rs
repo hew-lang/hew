@@ -1347,7 +1347,12 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
     /// `hew_fault_combine` already returns the primary for a null secondary,
     /// and the status slot starts at zero for a release that raised nothing.
     fn emit_release_in_sink(&self, emit: impl FnOnce() -> CodegenResult<()>) -> CodegenResult<()> {
-        let Some((active_fault, active_status)) = self.fault_sink else {
+        // The sandbox ends a faulting module immediately and owns no faults, so
+        // there is no record for a release to fold into and nothing to arm.
+        let sink = self
+            .fault_sink
+            .filter(|_| !self.module.target.triple.starts_with("wasm32"));
+        let Some((active_fault, active_status)) = sink else {
             return emit();
         };
         let pointer = self.ctx.ptr_type(AddressSpace::default());

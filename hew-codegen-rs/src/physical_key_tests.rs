@@ -280,6 +280,8 @@ fn engine<'ctx>(llvm: &Module<'ctx>, optimized: bool) -> ExecutionEngine<'ctx> {
         callable::hew_callable_clone,
         callable::hew_callable_drop,
         callable::hew_callable_visit_close,
+        release_walker::hew_release_fault_begin,
+        release_walker::hew_release_fault_end,
         value_close::hew_value_close_poll,
         value_close::hew_value_close_finish,
         mailbox::hew_msg_envelope_release,

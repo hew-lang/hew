@@ -158,7 +158,9 @@ pub(crate) fn disarm_release_sink() -> Option<(i32, *mut crate::fault::HewFault)
 ///
 /// Generated code brackets a collection, shared-handle, callable or erased
 /// release with this pair so a `close` that fails inside it reaches the frame
-/// that asked for the release instead of the trap path (D516).
+/// that asked for the release instead of the trap path (D516). The sandbox
+/// ends a faulting module immediately and owns no faults, so it emits no
+/// bracket and this pair is native-only.
 #[no_mangle]
 #[cfg(not(target_arch = "wasm32"))]
 pub extern "C" fn hew_release_fault_begin() {

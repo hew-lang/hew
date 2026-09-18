@@ -1427,8 +1427,8 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1619] = {
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_checked_scope_wait_status",
      "{\"native\": \"fn hew_checked_scope_wait_status( *const "
-     "HewCheckedScopeWait) -> i32\", \"wasm32-wasip1\": \"fn "
-     "hew_checked_scope_wait_status( *const HewCheckedScopeWait) -> i32\"}",
+     "HewCheckedScopeWait, ) -> i32\", \"wasm32-wasip1\": \"fn "
+     "hew_checked_scope_wait_status( *const HewCheckedScopeWait, ) -> i32\"}",
      "native,wasm32-wasip1", "non-declarable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_checked_scope_wait_take_fault",

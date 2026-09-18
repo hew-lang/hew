@@ -3746,8 +3746,8 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_checked_scope_wait_status( *const HewCheckedScopeWait) -> i32",
-        "wasm32-wasip1": "fn hew_checked_scope_wait_status( *const HewCheckedScopeWait) -> i32"
+        "native": "fn hew_checked_scope_wait_status( *const HewCheckedScopeWait, ) -> i32",
+        "wasm32-wasip1": "fn hew_checked_scope_wait_status( *const HewCheckedScopeWait, ) -> i32"
       },
       "symbol": "hew_checked_scope_wait_status"
     },

@@ -37,8 +37,8 @@ use crate::scheduler;
 /// declared mailbox policy discarded, replaced, or coalesced work.
 ///
 /// This positive code is intentionally outside the negative [`HewError`]
-/// space. Checked language sends map it to `SendError.MessageLost`; ordinary
-/// lossless sends never produce it.
+/// space. A delivery view reports the same loss as `Ok(Delivery.Discarded)`
+/// through its own status protocol; ordinary lossless sends never produce it.
 pub const HEW_ACTOR_SEND_MESSAGE_LOST: i32 = 1;
 
 // ── Crash teardown ordering hook ─────────────────────────────────────────

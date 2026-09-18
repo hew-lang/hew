@@ -3772,6 +3772,14 @@ function that constructs and returns a `#[resource]` or `#[linear]` value
 works the same whether it lives in the current module or an imported one —
 close/consume discipline is enforced on the value, not on where it was built.
 
+A `close` body can fail. When it panics, its owner still finishes releasing
+everything else it holds — the rest of the scope's locals, the other elements
+of a vector, the remaining fields of a record — and the failure leaves the
+frame afterwards. The first failing `close` is the failure you see; later ones
+print under it as `hew: secondary failure:` lines. So a broken `close` strands
+nothing behind it, and an actor whose two state fields both fail to close still
+closes both.
+
 Full example (`#[linear]`): [`examples/v05/linear/accept/linear_consumed_via_rollback_on_err.hew`](../examples/v05/linear/accept/linear_consumed_via_rollback_on_err.hew). For `#[resource]`, see HEW-SPEC-2026.md §3.7.8.
 
 ### `#[opaque]` — FFI-backed handle types

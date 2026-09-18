@@ -22,7 +22,7 @@
 //! independent in-flight ref on the slot (`read_slot_retain`) for as long as the
 //! registration lives, released on EVERY exit (normal wake, detach, close). The
 //! wake itself goes through
-//! [`crate::scheduler::enqueue_resume_by_incarnation`], which resolves the
+//! [`crate::resume::enqueue_resume_by_incarnation`], which resolves the
 //! recorded incarnation in the live-actor registry and drops the wake, with no
 //! deref, when that incarnation is gone - whether the address was freed or now
 //! belongs to a different actor. The deposit checks the
@@ -30,8 +30,9 @@
 //! a no-op. Wakes are always performed AFTER the core lock is released to avoid
 //! re-entrancy into the scheduler under the channel lock.
 //!
-//! Native-only: parks a coroutine continuation woken by `enqueue_resume`, which
-//! does not exist on `wasm32`.
+//! The resume goes through [`crate::resume`], so the native work-stealing
+//! scheduler and the single-threaded wasm32 driver park and wake a pipe peer
+//! the same way; only where the runnable entry is published differs.
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -47,6 +48,25 @@ use crate::read_slot::{
     hew_read_slot_free, read_slot_deposit_status, read_slot_retain, HewReadSlot, ReadStatus,
 };
 use crate::wake::{HewWaker, OwnedWaker};
+
+/// Whether a producer blocked on a full ring must abandon its send because the
+/// runtime is shutting down.
+///
+/// Native shutdown publishes a phase rather than a wake edge, so a blocked
+/// producer polls it. The wasm32 driver has no phase to publish: the thread
+/// that would drain the ring is the one this producer hands the process back
+/// to, and [`crate::wasm_driver::step`] fails closed on its own once nothing is
+/// left that could run.
+fn send_abandoned_by_shutdown() -> bool {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        crate::shutdown::hew_shutdown_phase() >= crate::shutdown::PHASE_DRAIN
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        false
+    }
+}
 
 /// Codegen ABI: the await entry parked the continuation; the runtime will wake
 /// it via `enqueue_resume`. The caller MUST `coro.suspend`.
@@ -290,7 +310,7 @@ impl ChannelCore {
         // terminal status is the documented reactor-deposit contract.
         let do_wake = unsafe { read_slot_deposit_status(w.slot, ReadStatus::Data) };
         if do_wake {
-            crate::scheduler::enqueue_resume_by_incarnation(w.actor);
+            crate::resume::enqueue_resume_by_incarnation(w.actor);
         }
         // Release the core's in-flight ref (the single authority for it).
         // SAFETY: the core owned this ref; nothing else releases it.
@@ -741,7 +761,7 @@ impl ChannelCore {
                     consumer_wake = inner.consumer.take();
                     break;
                 }
-                if crate::shutdown::hew_shutdown_phase() >= crate::shutdown::PHASE_DRAIN {
+                if send_abandoned_by_shutdown() {
                     let capacity = inner.capacity;
                     let queued = inner.queue.len();
                     let layout = inner.elem_layout;
@@ -765,11 +785,12 @@ impl ChannelCore {
                 //   execution context through `await_send`, the way
                 //   `channel.Receiver.recv` already lowers through
                 //   `hew_channel_await_recv`.
-                let (guard, _timeout) = self
-                    .cv
-                    .wait_timeout(inner, SHUTDOWN_PHASE_POLL_INTERVAL)
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                inner = guard;
+                inner = crate::wake::wait_for_peer(
+                    &self.inner,
+                    &self.cv,
+                    inner,
+                    SHUTDOWN_PHASE_POLL_INTERVAL,
+                );
             }
         }
         if let Some(w) = consumer_wake {

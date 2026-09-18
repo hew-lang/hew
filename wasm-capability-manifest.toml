@@ -172,11 +172,16 @@ it pass.\
 
 [[feature]]
 id = "select"
-label = "`select {}` (any timeout expression, any arm count)"
-checker = "pass"
-runtime = "implemented"
-runtime_status = "Implemented"
+enum_variant = "Select"
+label = "`select {}` operations"
+prose_label = "`select {}` (any arm kind, any timeout expression)"
+reason = "a select builds its readiness waitset through the task-scope runtime (`hew_checked_task_select_*`), which is not compiled for wasm32"
+checker = "reject"
+runtime = "unavailable"
+runtime_status = "Module not compiled"
 categories = ["runtime", "actors"]
+tracking = "WASM-TODO"
+tracking_label = "WASM-TODO(suspending-select):"
 
 [[feature]]
 id = "supervision-trees"
@@ -278,31 +283,25 @@ tracking_label = "Implemented"
 
 [[feature]]
 id = "streams"
-enum_variant = "Streams"
-label = "Stream operations"
-prose_label = "`stream.pipe`/`stream.open`, `Stream<T>.*` and `Sink<T>.*` methods"
-reason = "the pipe runtime (suspending queue core, file and socket backings) is not compiled for wasm32; the one pipe family is native-only until the queue core is ported"
-checker = "reject"
-runtime = "unavailable"
-runtime_status = "Module not compiled"
+label = "Pipe operations (`stream.pipe`, `Stream<T>.*`, `Sink<T>.*`)"
+checker = "pass"
+runtime = "implemented"
+runtime_status = "Implemented on the wasm32 process driver: the same suspending queue core the native target runs, with a parked producer or consumer resumed from the driver's run queue instead of a worker thread. The file and socket backings of the same handle types are separately classified"
 categories = ["runtime", "streams"]
-tracking = "WASM-TODO"
-tracking_label = "WASM-TODO(streams):"
-native_only_modules = ["stream"]
 
 [[feature]]
 id = "filesystem-streams"
 enum_variant = "FilesystemStreams"
 label = "File-backed stream operations"
-prose_label = "`std.fs.read` (file-stream ownership path)"
-reason = "the FileReadStream runtime and stream collector are not compiled for wasm32; reject before code generation rather than leaving unresolved native symbols"
+prose_label = "`std.fs.read` and `std.stream.open` (file-stream ownership path)"
+reason = "a file-backed stream reads its chunks through the native I/O reactor, which is not compiled for wasm32; the in-memory pipe half of the same handle types is implemented"
 checker = "reject"
 runtime = "unavailable"
 runtime_status = "File-backed stream runtime is native-only; path-independent fs helpers remain separately classified"
 categories = ["stdlib", "filesystem"]
 tracking = "WASM-TODO"
 tracking_label = "WASM-TODO(filesystem-streams):"
-native_only_functions = ["std.fs.read"]
+native_only_functions = ["std.fs.read", "std.stream.open"]
 
 [[feature]]
 id = "http-client"
@@ -721,12 +720,6 @@ blocker = "A wasm32 transport bridge for the native-only SMTP wrapper"
 tracking_label = "WASM-TODO(smtp):"
 
 [[backlog]]
-id = "suspending-receive"
-gap = "Shared suspending receive carrier parity"
-blocker = "WASM continuation routing for `for` over a stream and the pipe receive/send suspensions"
-tracking_label = "WASM-TODO(suspending-receive):"
-
-[[backlog]]
 id = "suspending-select"
 gap = "Execution-context select suspension parity"
 blocker = "A WASM readiness waitset and non-recursive resume path for suspending select"
@@ -763,13 +756,3 @@ id = "concurrency/supervisor"
 status = "unsupported"
 capability = "supervision-trees"
 reason = "Uses the manifest-owned supervision-trees reject capability"
-
-[[playground_wasi]]
-id = "machines/traffic_light"
-status = "unsupported"
-reason = "Machine runtime is not yet wired into the WASI/LLVM path"
-
-[[playground_wasi]]
-id = "language/string_slicing"
-status = "unsupported"
-reason = "hew_string_slice currently has a wasm32-wasi linker signature mismatch"

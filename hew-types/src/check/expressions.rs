@@ -3440,6 +3440,8 @@ impl Checker {
                 ty
             }
             Expr::Select { arms, timeout } => {
+                // WASM-TODO(suspending-select): compile the readiness waitset for wasm32.
+                self.reject_wasm_feature(span, WasmUnsupportedFeature::Select);
                 if arms.is_empty() && timeout.is_none() {
                     self.report_error(
                         TypeErrorKind::InvalidOperation,

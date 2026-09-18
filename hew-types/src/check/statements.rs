@@ -1929,12 +1929,6 @@ impl Checker {
                             }
                         } else {
                             let inner = Self::stream_element_type(args);
-                            // Stream runtime is native-only. Method-call
-                            // `.recv()` already rejects on wasm; the loop
-                            // must mirror that checker gate before HIR
-                            // desugars it.
-                            // WASM-TODO(suspending-receive): port the pipe suspend carrier.
-                            self.reject_wasm_feature(&iterable.1, WasmUnsupportedFeature::Streams);
                             let resolved = self.subst.resolve(&inner);
                             if !matches!(resolved, Ty::Var(_))
                                 && !self.queue_elem_admissible(&resolved)

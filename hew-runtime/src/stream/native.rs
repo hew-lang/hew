@@ -7,6 +7,7 @@ use std::sync::Arc;
 use hew_cabi::vec::{HewTypeOwnershipKind, HewValueLayout};
 
 use super::{HewSink, HewStream};
+#[cfg(not(target_arch = "wasm32"))]
 use crate::async_io::{self, HewAsyncIo, IoFailure};
 use crate::channel_common::{
     decode_elem_envelope, drop_elem_envelope, move_elem_envelope, move_elem_layout_witness,
@@ -14,15 +15,26 @@ use crate::channel_common::{
 use crate::channel_core::ChannelCore;
 use crate::wake::{HewWaker, OwnedWaker};
 
+/// What one stream operation waits on.
+///
+/// A pipe waits on the shared queue core. A file or socket waits on the I/O
+/// reactor's request, which only the targets that compile the reactor have -
+/// `filesystem-streams` and `tcp-networking` are manifest rejects on wasm32, so
+/// an admitted wasm32 program never reaches that backing. A write that began on
+/// an already finished sink waits on nothing: the poll reports the closed
+/// status and `Drop` releases the element the operation took.
+enum Backing {
+    Pipe(Arc<ChannelCore>),
+    #[cfg(not(target_arch = "wasm32"))]
+    Io(*const HewAsyncIo),
+    Finished,
+}
+
 pub struct HewNativeStream {
     layout: HewValueLayout,
     waker: Arc<OwnedWaker>,
-    core: Option<Arc<ChannelCore>>,
-    io: *const HewAsyncIo,
+    backing: Backing,
     envelope: Option<Vec<u8>>,
-    /// The sink had already finished when this write began. The poll reports
-    /// the closed status and `Drop` releases the element the operation took.
-    closed: bool,
 }
 
 impl Drop for HewNativeStream {
@@ -30,12 +42,17 @@ impl Drop for HewNativeStream {
         if let Some(envelope) = self.envelope.take() {
             drop_elem_envelope(Some(&self.layout), envelope, "native stream drop");
         }
-        // SAFETY: this operation owns the creator reference; generated cleanup
-        // waits for producer quiescence before releasing borrowed handles.
-        unsafe { async_io::hew_async_io_free(self.io) };
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Backing::Io(io) = self.backing {
+            // SAFETY: this operation owns the creator reference; generated
+            // cleanup waits for producer quiescence before releasing borrowed
+            // handles.
+            unsafe { async_io::hew_async_io_free(io) };
+        }
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn content_layout(layout: &HewValueLayout) {
     if !matches!(
         layout.ownership_kind,
@@ -50,6 +67,7 @@ fn content_layout(layout: &HewValueLayout) {
 
 /// # Safety
 /// The exclusive source loan survives this operation and its producer drain.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) unsafe fn read_content(stream: *mut HewStream) -> Result<Option<Vec<u8>>, IoFailure> {
     let _ = super::take_last_error();
     // SAFETY: the producer owns the exclusive heap-handle loan.
@@ -62,6 +80,7 @@ pub(crate) unsafe fn read_content(stream: *mut HewStream) -> Result<Option<Vec<u
 
 /// # Safety
 /// The exclusive sink loan survives this operation and its producer drain.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) unsafe fn write_content(sink: *mut HewSink, data: &[u8]) -> Result<(), IoFailure> {
     let _ = super::take_last_error();
     // SAFETY: the producer owns the exclusive heap-handle loan.
@@ -86,28 +105,30 @@ pub unsafe extern "C" fn hew_stream_read_start_native(
     // SAFETY: compiler-provided live operands satisfy the start contract.
     let layout = unsafe { *move_elem_layout_witness(layout, "native stream read") };
     // SAFETY: stream is a live exclusive loan.
-    let core = unsafe { (*stream).channel.clone() };
-    let io = if core.is_some() {
-        std::ptr::null()
-    } else {
-        content_layout(&layout);
-        // SAFETY: the exclusive stream loan remains live during inspection.
-        if let Some(connection) = unsafe { (*stream).inner.native_connection() } {
-            // SAFETY: generated cleanup retains the transport loan through quiescence.
-            unsafe { async_io::hew_async_tcp_read(connection, waker) }
-        } else {
-            // SAFETY: generated cleanup retains stream through producer quiescence.
-            unsafe { async_io::start_stream_read(stream, waker) }
+    let backing = match unsafe { (*stream).channel.clone() } {
+        Some(core) => Backing::Pipe(core),
+        #[cfg(not(target_arch = "wasm32"))]
+        None => {
+            content_layout(&layout);
+            // SAFETY: the exclusive stream loan remains live during inspection.
+            let io = if let Some(connection) = unsafe { (*stream).inner.native_connection() } {
+                // SAFETY: generated cleanup retains the transport loan through quiescence.
+                unsafe { async_io::hew_async_tcp_read(connection, waker) }
+            } else {
+                // SAFETY: generated cleanup retains stream through producer quiescence.
+                unsafe { async_io::start_stream_read(stream, waker) }
+            };
+            Backing::Io(io)
         }
+        #[cfg(target_arch = "wasm32")]
+        None => reactor_backing_unreachable("read"),
     };
     Box::into_raw(Box::new(HewNativeStream {
         layout,
         // SAFETY: waker is borrowed during this call.
         waker: Arc::new(unsafe { OwnedWaker::retain(&*waker) }),
-        core,
-        io,
+        backing,
         envelope: None,
-        closed: false,
     }))
 }
 
@@ -136,10 +157,8 @@ pub unsafe extern "C" fn hew_stream_write_start_native(
             layout,
             // SAFETY: waker is borrowed during this call.
             waker: Arc::new(unsafe { OwnedWaker::retain(&*waker) }),
-            core: None,
-            io: std::ptr::null(),
+            backing: Backing::Finished,
             envelope: Some(envelope),
-            closed: true,
         }));
     }
     // SAFETY: sink is a live exclusive loan.
@@ -152,29 +171,33 @@ pub unsafe extern "C" fn hew_stream_write_start_native(
         // SAFETY: the increment above creates this operation's independent owner.
         Some(unsafe { Arc::from_raw(raw) })
     };
-    let (io, envelope) = if let Some(core) = &core {
-        core.stamp_elem_layout(&layout);
-        (std::ptr::null(), Some(envelope))
-    } else {
-        content_layout(&layout);
-        // SAFETY: the exclusive sink loan remains live during inspection.
-        let io = if let Some(connection) = unsafe { (*sink).native_connection() } {
-            // SAFETY: generated cleanup retains the transport loan through quiescence.
-            unsafe { async_io::start_tcp_stream_write(connection, envelope, waker) }
-        } else {
-            // SAFETY: generated cleanup retains sink through producer quiescence.
-            unsafe { async_io::start_sink_write(sink, envelope, waker) }
-        };
-        (io, None)
+    let (backing, envelope) = match core {
+        Some(core) => {
+            core.stamp_elem_layout(&layout);
+            (Backing::Pipe(core), Some(envelope))
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        None => {
+            content_layout(&layout);
+            // SAFETY: the exclusive sink loan remains live during inspection.
+            let io = if let Some(connection) = unsafe { (*sink).native_connection() } {
+                // SAFETY: generated cleanup retains the transport loan through quiescence.
+                unsafe { async_io::start_tcp_stream_write(connection, envelope, waker) }
+            } else {
+                // SAFETY: generated cleanup retains sink through producer quiescence.
+                unsafe { async_io::start_sink_write(sink, envelope, waker) }
+            };
+            (Backing::Io(io), None)
+        }
+        #[cfg(target_arch = "wasm32")]
+        None => reactor_backing_unreachable("write"),
     };
     Box::into_raw(Box::new(HewNativeStream {
         layout,
         // SAFETY: waker is borrowed during this call.
         waker: Arc::new(unsafe { OwnedWaker::retain(&*waker) }),
-        core,
-        io,
+        backing,
         envelope,
-        closed: false,
     }))
 }
 
@@ -186,11 +209,15 @@ pub unsafe extern "C" fn hew_stream_write_start_native(
 pub unsafe extern "C" fn hew_stream_read_poll_native(operation: *mut HewNativeStream) -> i32 {
     // SAFETY: the caller lends the live exclusive operation.
     let operation = unsafe { &mut *operation };
-    let (status, item) = if let Some(core) = &operation.core {
-        core.poll_recv_observed(&operation.waker)
-    } else {
-        // SAFETY: the operation owns this live async request.
-        unsafe { async_io::take_stream_item(operation.io) }
+    let (status, item) = match &operation.backing {
+        Backing::Pipe(core) => core.poll_recv_observed(&operation.waker),
+        #[cfg(not(target_arch = "wasm32"))]
+        Backing::Io(io) => {
+            // SAFETY: the operation owns this live async request.
+            unsafe { async_io::take_stream_item(*io) }
+        }
+        // A read never begins on a finished backing; report end of data.
+        Backing::Finished => (2, None),
     };
     if status == 1 {
         operation.envelope = item;
@@ -222,23 +249,25 @@ pub unsafe extern "C" fn hew_stream_read_take_native(
 pub unsafe extern "C" fn hew_stream_write_poll_native(operation: *mut HewNativeStream) -> i32 {
     // SAFETY: the caller lends the live exclusive operation.
     let operation = unsafe { &mut *operation };
-    if operation.closed {
-        return 2;
-    }
-    if let Some(core) = &operation.core {
-        let Some(envelope) = operation.envelope.take() else {
-            return 1;
-        };
-        let (status, envelope) = core.poll_send_observed(&operation.waker, envelope);
-        operation.envelope = envelope;
-        status
-    } else {
-        // SAFETY: this operation owns the live async request.
-        match unsafe { async_io::hew_async_io_status(operation.io) } {
-            0 => 0,
-            1 => 1,
-            _ => 3,
+    match &operation.backing {
+        Backing::Pipe(core) => {
+            let Some(envelope) = operation.envelope.take() else {
+                return 1;
+            };
+            let (status, envelope) = core.poll_send_observed(&operation.waker, envelope);
+            operation.envelope = envelope;
+            status
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        Backing::Io(io) => {
+            // SAFETY: this operation owns the live async request.
+            match unsafe { async_io::hew_async_io_status(*io) } {
+                0 => 0,
+                1 => 1,
+                _ => 3,
+            }
+        }
+        Backing::Finished => 2,
     }
 }
 
@@ -246,8 +275,17 @@ pub unsafe extern "C" fn hew_stream_write_poll_native(operation: *mut HewNativeS
 /// Operation is live; cancellation precedes draining a pending operation.
 #[no_mangle]
 pub unsafe extern "C" fn hew_stream_cancel_native(operation: *mut HewNativeStream) {
-    // SAFETY: this operation owns the async request, possibly null for a pipe.
-    unsafe { async_io::hew_async_io_cancel((*operation).io) };
+    // SAFETY: the caller lends the live exclusive operation.
+    match unsafe { &(*operation).backing } {
+        #[cfg(not(target_arch = "wasm32"))]
+        Backing::Io(io) => {
+            // SAFETY: this operation owns the async request.
+            unsafe { async_io::hew_async_io_cancel(*io) };
+        }
+        // A pipe registration is withdrawn by the read slot the await entry
+        // parked on, not here.
+        Backing::Pipe(_) | Backing::Finished => {}
+    }
 }
 
 /// # Safety
@@ -257,8 +295,20 @@ pub unsafe extern "C" fn hew_stream_cleanup_status_native(
     operation: *mut HewNativeStream,
     waker: *const HewWaker,
 ) -> i32 {
-    // SAFETY: this operation owns the async request; null means a drained pipe.
-    unsafe { async_io::hew_async_io_cleanup_status((*operation).io, waker) }
+    // SAFETY: the caller lends the live exclusive operation.
+    match unsafe { &(*operation).backing } {
+        #[cfg(not(target_arch = "wasm32"))]
+        Backing::Io(io) => {
+            // SAFETY: this operation owns the async request.
+            unsafe { async_io::hew_async_io_cleanup_status(*io, waker) }
+        }
+        // Nothing borrowed a handle beyond this call, so the operation is
+        // already quiescent.
+        Backing::Pipe(_) | Backing::Finished => {
+            let _ = waker;
+            1
+        }
+    }
 }
 
 /// # Safety
@@ -269,16 +319,28 @@ pub unsafe extern "C" fn hew_stream_operation_free_native(operation: *mut HewNat
     drop(unsafe { Box::from_raw(operation) });
 }
 
+/// A stream with no queue core is a file or a socket, and both are manifest
+/// rejects on wasm32. Reaching here means a lowering defect rather than a
+/// program outcome, so the module fails closed.
+#[cfg(target_arch = "wasm32")]
+fn reactor_backing_unreachable(operation: &str) -> ! {
+    eprintln!("hew: fail-closed: wasm32 stream {operation} with no pipe backing");
+    std::process::abort();
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 unsafe extern "C" fn retain_thread(context: *mut c_void) {
     // SAFETY: the synchronous adapter lends a live Arc<Thread> descriptor.
     unsafe { Arc::increment_strong_count(context.cast::<std::thread::Thread>()) };
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 unsafe extern "C" fn release_thread(context: *mut c_void) {
     // SAFETY: this consumes one reference retained by the operation.
     unsafe { Arc::decrement_strong_count(context.cast::<std::thread::Thread>()) };
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 unsafe extern "C" fn notify_thread(context: *mut c_void) {
     // SAFETY: the operation retains the thread through notification.
     unsafe { &*context.cast::<std::thread::Thread>() }.unpark();
@@ -286,6 +348,7 @@ unsafe extern "C" fn notify_thread(context: *mut c_void) {
 
 /// Synchronous C ABI stream entries wait on the same readiness operation.
 /// Native coroutine entries above retain their ordinary suspend/resume path.
+#[cfg(not(target_arch = "wasm32"))]
 fn wait_tcp(start: impl FnOnce(&HewWaker) -> *const HewAsyncIo) -> *const HewAsyncIo {
     let thread = Arc::new(std::thread::current());
     let waker = HewWaker {
@@ -309,6 +372,7 @@ fn wait_tcp(start: impl FnOnce(&HewWaker) -> *const HewAsyncIo) -> *const HewAsy
     operation
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(super) fn blocking_tcp_read(connection: i32) -> Option<Vec<u8>> {
     let operation = wait_tcp(|waker| {
         // SAFETY: the synchronous backing retains its borrowed connection.
@@ -322,6 +386,7 @@ pub(super) fn blocking_tcp_read(connection: i32) -> Option<Vec<u8>> {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(super) fn blocking_tcp_write(connection: i32, content: &[u8]) {
     let operation = wait_tcp(|waker| {
         // SAFETY: the synchronous backing retains its borrowed connection.

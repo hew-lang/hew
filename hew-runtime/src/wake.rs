@@ -99,6 +99,40 @@ impl ReadinessRegistrations {
     }
 }
 
+/// Wait for a peer to change a condition the caller re-checks under its own
+/// lock, and hand back the re-taken guard.
+///
+/// This is not a [`blocking::Readiness`] wait: the condition lives in the
+/// caller's `Mutex`, not in a latch, so the caller loops and re-reads it.
+/// Natively the peer's `notify_all` ends the wait early and the timeout bounds
+/// a caller that also polls something nobody notifies. wasm32 has one thread -
+/// this one - so releasing the lock and stepping the process driver is what
+/// lets the peer run at all, and the driver fails closed on its own when
+/// nothing is left that could.
+pub(crate) fn wait_for_peer<'a, T>(
+    lock: &'a std::sync::Mutex<T>,
+    condition: &std::sync::Condvar,
+    guard: std::sync::MutexGuard<'a, T>,
+    timeout: std::time::Duration,
+) -> std::sync::MutexGuard<'a, T> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = lock;
+        condition
+            .wait_timeout(guard, timeout)
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .0
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        use crate::util::MutexExt;
+        let _ = (condition, timeout);
+        drop(guard);
+        crate::wasm_driver::step();
+        lock.lock_or_recover()
+    }
+}
+
 /// A readiness latch for a top-level or task-thread coroutine driver. Actor
 /// workers use their scheduler's readiness target instead of waiting here.
 pub mod blocking {

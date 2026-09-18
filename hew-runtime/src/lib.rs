@@ -741,7 +741,9 @@ pub mod transport_checked;
 #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "sim-transport")))]
 pub mod sim_transport;
 
-#[cfg(not(target_arch = "wasm32"))]
+/// The suspending queue behind an in-memory pipe. Ungated: a parked producer
+/// or consumer is resumed through [`resume`], so the native scheduler and the
+/// wasm32 driver share it.
 pub mod channel_core;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod cluster;
@@ -788,7 +790,10 @@ pub mod routing;
 /// WASM cooperative scheduler and the native work-stealing scheduler share
 /// this module.  Hooks are registered per-platform at init time.
 pub mod session;
-#[cfg(not(target_arch = "wasm32"))]
+/// `Stream<T>` and `Sink<T>`. Ungated: the in-memory pipe runs on every target.
+/// The file and socket backings of the same handle types need the I/O reactor,
+/// so their entries stay native and the manifest rejects the surface that
+/// reaches them.
 pub mod stream;
 /// Single-owner stream/sink error channel. Ungated: it owns the `hew_stream_*`
 /// C ABI for the whole linked image (see the module docs for why this must be

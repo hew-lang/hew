@@ -26,6 +26,7 @@ pub enum WasmFeatureDisposition { Warn, Reject }
 /// Exhaustive reject/warn feature carrier generated from the manifest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum WasmUnsupportedFeature {
+    Select,
     SupervisionTrees,
     LinkMonitor,
     StructuredConcurrency,
@@ -33,7 +34,6 @@ pub enum WasmUnsupportedFeature {
     BlockingSemaphoreAcquire,
     Timers,
     PeriodicTimers,
-    Streams,
     FilesystemStreams,
     HttpClient,
     Smtp,
@@ -55,6 +55,7 @@ pub enum WasmUnsupportedFeature {
 impl WasmUnsupportedFeature {
     /// Every reject/warn variant, in manifest order.
     pub const ALL: &'static [Self] = &[
+        Self::Select,
         Self::SupervisionTrees,
         Self::LinkMonitor,
         Self::StructuredConcurrency,
@@ -62,7 +63,6 @@ impl WasmUnsupportedFeature {
         Self::BlockingSemaphoreAcquire,
         Self::Timers,
         Self::PeriodicTimers,
-        Self::Streams,
         Self::FilesystemStreams,
         Self::HttpClient,
         Self::Smtp,
@@ -84,6 +84,7 @@ impl WasmUnsupportedFeature {
     #[must_use]
     pub const fn capability_id(self) -> WasmCapabilityId {
         match self {
+            Self::Select => WasmCapabilityId("select"),
             Self::SupervisionTrees => WasmCapabilityId("supervision-trees"),
             Self::LinkMonitor => WasmCapabilityId("link-monitor"),
             Self::StructuredConcurrency => WasmCapabilityId("structured-concurrency"),
@@ -91,7 +92,6 @@ impl WasmUnsupportedFeature {
             Self::BlockingSemaphoreAcquire => WasmCapabilityId("semaphore-blocking-acquire"),
             Self::Timers => WasmCapabilityId("timers-sleep"),
             Self::PeriodicTimers => WasmCapabilityId("timers-every"),
-            Self::Streams => WasmCapabilityId("streams"),
             Self::FilesystemStreams => WasmCapabilityId("filesystem-streams"),
             Self::HttpClient => WasmCapabilityId("http-client"),
             Self::Smtp => WasmCapabilityId("smtp"),
@@ -114,6 +114,7 @@ impl WasmUnsupportedFeature {
     #[must_use]
     pub const fn disposition(self) -> WasmFeatureDisposition {
         match self {
+            Self::Select => WasmFeatureDisposition::Reject,
             Self::SupervisionTrees => WasmFeatureDisposition::Reject,
             Self::LinkMonitor => WasmFeatureDisposition::Reject,
             Self::StructuredConcurrency => WasmFeatureDisposition::Reject,
@@ -121,7 +122,6 @@ impl WasmUnsupportedFeature {
             Self::BlockingSemaphoreAcquire => WasmFeatureDisposition::Reject,
             Self::Timers => WasmFeatureDisposition::Warn,
             Self::PeriodicTimers => WasmFeatureDisposition::Warn,
-            Self::Streams => WasmFeatureDisposition::Reject,
             Self::FilesystemStreams => WasmFeatureDisposition::Reject,
             Self::HttpClient => WasmFeatureDisposition::Reject,
             Self::Smtp => WasmFeatureDisposition::Reject,
@@ -144,6 +144,7 @@ impl WasmUnsupportedFeature {
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
+            Self::Select => "`select {}` operations",
             Self::SupervisionTrees => "Supervision tree operations",
             Self::LinkMonitor => "Link/monitor operations",
             Self::StructuredConcurrency => "Structured concurrency scopes",
@@ -151,7 +152,6 @@ impl WasmUnsupportedFeature {
             Self::BlockingSemaphoreAcquire => "Blocking semaphore acquire operations",
             Self::Timers => "Timer operations",
             Self::PeriodicTimers => "Timer operations",
-            Self::Streams => "Stream operations",
             Self::FilesystemStreams => "File-backed stream operations",
             Self::HttpClient => "std.net.http.http_client operations",
             Self::Smtp => "std.net.smtp operations",
@@ -174,6 +174,7 @@ impl WasmUnsupportedFeature {
     #[must_use]
     pub const fn reason(self) -> &'static str {
         match self {
+            Self::Select => "a select builds its readiness waitset through the task-scope runtime (`hew_checked_task_select_*`), which is not compiled for wasm32",
             Self::SupervisionTrees => "they require OS threads for restart strategies and child supervision",
             Self::LinkMonitor => "they rely on OS threads to watch linked actors and propagate exits",
             Self::StructuredConcurrency => "the wasm32 scheduler has no cooperative task executor or non-blocking scope join",
@@ -181,8 +182,7 @@ impl WasmUnsupportedFeature {
             Self::BlockingSemaphoreAcquire => "Semaphore.acquire and Semaphore.acquire_timeout still require a blocking permit wait that has no cooperative wasm32 implementation; use try_acquire or actor coordination instead",
             Self::Timers => "timers are cooperative on wasm32: a sleep parks the coroutine and an #[every(duration)] handler fires when the process driver next ticks the shared timer wheel, so granularity follows the driver steps rather than a dedicated ticker",
             Self::PeriodicTimers => "timers are cooperative on wasm32: a sleep parks the coroutine and an #[every(duration)] handler fires when the process driver next ticks the shared timer wheel, so granularity follows the driver steps rather than a dedicated ticker",
-            Self::Streams => "the pipe runtime (suspending queue core, file and socket backings) is not compiled for wasm32; the one pipe family is native-only until the queue core is ported",
-            Self::FilesystemStreams => "the FileReadStream runtime and stream collector are not compiled for wasm32; reject before code generation rather than leaving unresolved native symbols",
+            Self::FilesystemStreams => "a file-backed stream reads its chunks through the native I/O reactor, which is not compiled for wasm32; the in-memory pipe half of the same handle types is implemented",
             Self::HttpClient => "the std.net.http.http_client wrappers are still native-only; no wasm32 networking bridge exists yet",
             Self::Smtp => "the std.net.smtp transport is still native-only; no wasm32 SMTP bridge exists yet",
             Self::WebSocket => "the std.net.websocket transport uses native sockets and OS threads; no wasm32 WebSocket bridge exists yet",
@@ -230,6 +230,7 @@ pub mod wasm_capability_ids {
     pub const RUNTIME_SUBSTRATE_CLASSIFICATION: WasmCapabilityId = WasmCapabilityId("runtime-substrate-classification");
     pub const RUNTIME_TRAPS: WasmCapabilityId = WasmCapabilityId("runtime-traps");
     pub const SCOPE: WasmCapabilityId = WasmCapabilityId("scope");
+    pub const SELECT: WasmCapabilityId = WasmCapabilityId("select");
     pub const SEMAPHORE: WasmCapabilityId = WasmCapabilityId("semaphore");
     pub const SEMAPHORE_BLOCKING_ACQUIRE: WasmCapabilityId = WasmCapabilityId("semaphore-blocking-acquire");
     pub const SMTP: WasmCapabilityId = WasmCapabilityId("smtp");
@@ -238,7 +239,6 @@ pub mod wasm_capability_ids {
     pub const STRUCTURED_CONCURRENCY: WasmCapabilityId = WasmCapabilityId("structured-concurrency");
     pub const SUPERVISION: WasmCapabilityId = WasmCapabilityId("supervision");
     pub const SUPERVISION_TREES: WasmCapabilityId = WasmCapabilityId("supervision-trees");
-    pub const SUSPENDING_RECEIVE: WasmCapabilityId = WasmCapabilityId("suspending-receive");
     pub const SUSPENDING_SELECT: WasmCapabilityId = WasmCapabilityId("suspending-select");
     pub const SUSPENSION_DEADLINE: WasmCapabilityId = WasmCapabilityId("suspension-deadline");
     pub const TASKS: WasmCapabilityId = WasmCapabilityId("tasks");
@@ -269,7 +269,6 @@ pub struct WasmFunctionRejection {
 
 /// Generated module rejection classification.
 pub const NATIVE_ONLY_WASM_MODULE_REJECTIONS: &[WasmModuleRejection] = &[
-    WasmModuleRejection { module: "stream", feature: WasmUnsupportedFeature::Streams },
     WasmModuleRejection { module: "http_client", feature: WasmUnsupportedFeature::HttpClient },
     WasmModuleRejection { module: "smtp", feature: WasmUnsupportedFeature::Smtp },
     WasmModuleRejection { module: "websocket", feature: WasmUnsupportedFeature::WebSocket },
@@ -287,11 +286,11 @@ pub const NATIVE_ONLY_WASM_MODULE_REJECTIONS: &[WasmModuleRejection] = &[
 /// Generated exact-function rejection classification.
 pub const NATIVE_ONLY_WASM_FUNCTION_REJECTIONS: &[WasmFunctionRejection] = &[
     WasmFunctionRejection { module: "std.fs", function: "read", feature: WasmUnsupportedFeature::FilesystemStreams },
+    WasmFunctionRejection { module: "std.stream", function: "open", feature: WasmUnsupportedFeature::FilesystemStreams },
 ];
 
 /// Generated native-only module short-names for sandbox and checker consumers.
 pub const NATIVE_ONLY_WASM_MODULES: &[&str] = &[
-    "stream",
     "http_client",
     "smtp",
     "websocket",

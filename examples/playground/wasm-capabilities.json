@@ -4,15 +4,5 @@
     "status": "unsupported",
     "capability": "supervision-trees",
     "reason": "Uses the manifest-owned supervision-trees reject capability"
-  },
-  {
-    "id": "machines/traffic_light",
-    "status": "unsupported",
-    "reason": "Machine runtime is not yet wired into the WASI/LLVM path"
-  },
-  {
-    "id": "language/string_slicing",
-    "status": "unsupported",
-    "reason": "hew_string_slice currently has a wasm32-wasi linker signature mismatch"
   }
 ]

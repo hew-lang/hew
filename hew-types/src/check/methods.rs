@@ -8282,12 +8282,7 @@ impl Checker {
                     ..
                 },
                 _,
-            ) => {
-                // Stream<T> methods are not supported on wasm32: the stream
-                // runtime module is not compiled for wasm32.
-                self.reject_wasm_feature(span, WasmUnsupportedFeature::Streams);
-                self.check_stream_method(type_args, method, args, span)
-            }
+            ) => self.check_stream_method(type_args, method, args, span),
             // Sink<T> methods
             (
                 Ty::Named {
@@ -8297,9 +8292,6 @@ impl Checker {
                 },
                 _,
             ) => {
-                // The pipe runtime is native-only; the write half is gated
-                // exactly like the read half.
-                self.reject_wasm_feature(span, WasmUnsupportedFeature::Streams);
                 let inner = Self::stream_element_type(type_args);
                 // Gate 2: lowering-capability check.  Only string and bytes have
                 // runtime symbols; other Wire-capable types pass gate 1 but cannot

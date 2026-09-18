@@ -530,7 +530,9 @@ pub unsafe extern "C" fn hew_checked_scope_wait_cancel_losers(wait: *mut HewChec
 /// completed cleanup and abandoned results have closed. An observed child fault
 /// requests cancellation of siblings. Calls on one wait must be serialized.
 #[no_mangle]
-pub unsafe extern "C" fn hew_checked_scope_wait_status(wait: *const HewCheckedScopeWait) -> i32 {
+pub unsafe extern "C-unwind" fn hew_checked_scope_wait_status(
+    wait: *const HewCheckedScopeWait,
+) -> i32 {
     // SAFETY: caller retains the scope drain and its task references.
     let wait = unsafe { &*wait };
     let mut pending = false;
@@ -601,7 +603,7 @@ pub unsafe extern "C" fn hew_checked_scope_wait_status(wait: *const HewCheckedSc
 /// Wait remains live and fault is an empty, writable owning slot. A pending
 /// drain leaves both the slot and every child fault untouched.
 #[no_mangle]
-pub unsafe extern "C" fn hew_checked_scope_wait_take_fault(
+pub unsafe extern "C-unwind" fn hew_checked_scope_wait_take_fault(
     wait: *const HewCheckedScopeWait,
     fault: *mut *mut HewFault,
 ) -> i32 {

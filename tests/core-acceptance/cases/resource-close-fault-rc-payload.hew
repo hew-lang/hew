@@ -1,0 +1,18 @@
+// The last strong owner of a shared allocation releases its payload, so a
+// `#[resource]` inside one closes there. That release runs in the runtime, not
+// in the frame's own code, and the failing close still reaches the frame that
+// dropped the handle rather than leaving through the trap path.
+#[resource]
+type Conn { fd: i64, }
+
+impl Conn {
+    fn close(consume self) {
+        println(f"close {self.fd}");
+        panic(f"close {self.fd} failed");
+    }
+}
+
+fn main() {
+    let shared = Rc.new(Conn { fd: 5 });
+    println("working");
+}

@@ -539,6 +539,10 @@ mod tests {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one hand-built module: the indirect call, its cleanup dispatch and both exits"
+    )]
     fn indirect_counter_module() -> SemModule {
         use crate::{
             BlockArg, BlockId, BoundaryDecision, BoundaryOperand, CallResult, CallUnwind, Edge,
@@ -623,11 +627,17 @@ mod tests {
                         own: OwnKind::None,
                     }],
                     ops: vec![drop_callable(3, 1)],
-                    terminator: SemTerminator::Return {
-                        value: Some(BoundaryOperand {
-                            operand: Operand { value: ValueId(3) },
-                            decision: BoundaryDecision::Copy,
-                        }),
+                    // A callable release can run a capture's `close`, so the
+                    // normal exit dispatches on the release's outcome.
+                    terminator: SemTerminator::CleanupDispatch {
+                        normal: Edge {
+                            target: BlockId(3),
+                            args: vec![Operand { value: ValueId(3) }],
+                        },
+                        fault: Edge {
+                            target: BlockId(4),
+                            args: vec![],
+                        },
                     },
                 },
                 SemBlock {
@@ -635,6 +645,29 @@ mod tests {
                     id: BlockId(2),
                     args: vec![],
                     ops: vec![drop_callable(4, 1)],
+                    terminator: SemTerminator::ResumeUnwind,
+                },
+                SemBlock {
+                    terminator_provenance: crate::Provenance::Synthesized,
+                    id: BlockId(3),
+                    args: vec![BlockArg {
+                        value: ValueId(4),
+                        ty: ResolvedTy::I64,
+                        own: OwnKind::None,
+                    }],
+                    ops: vec![],
+                    terminator: SemTerminator::Return {
+                        value: Some(BoundaryOperand {
+                            operand: Operand { value: ValueId(4) },
+                            decision: BoundaryDecision::Copy,
+                        }),
+                    },
+                },
+                SemBlock {
+                    terminator_provenance: crate::Provenance::Synthesized,
+                    id: BlockId(4),
+                    args: vec![],
+                    ops: vec![],
                     terminator: SemTerminator::ResumeUnwind,
                 },
             ],

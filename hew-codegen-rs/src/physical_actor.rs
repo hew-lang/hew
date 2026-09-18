@@ -646,15 +646,21 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                     "actor.state",
                 )
                 .llvm_ctx("load initialized actor state")?;
+            // The terminal sequence releases `#[resource]` state fields in
+            // reverse declaration order (spec 9 item 9). A field whose `close`
+            // fails records here so its siblings are still released, and the
+            // fault leaves once the state owns nothing.
+            let record = crate::physical::glue_fault_record(self.ctx, &builder)?;
             ValueEmitter {
                 module: self.module,
                 ctx: self.ctx,
                 llvm: &self.llvm,
                 builder: &builder,
                 value: drop,
-                fault_sink: None,
+                fault_sink: Some(record),
             }
             .destroy_loaded_value(loaded, layout, action)?;
+            crate::physical::raise_glue_fault_record(self.ctx, &self.llvm, &builder, drop, record)?;
         }
         builder
             .build_return(None)

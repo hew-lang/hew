@@ -3746,8 +3746,8 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_checked_scope_wait_status( *const HewCheckedScopeWait) -> i32",
-        "wasm32-wasip1": "fn hew_checked_scope_wait_status( *const HewCheckedScopeWait) -> i32"
+        "native": "fn hew_checked_scope_wait_status( *const HewCheckedScopeWait, ) -> i32",
+        "wasm32-wasip1": "fn hew_checked_scope_wait_status( *const HewCheckedScopeWait, ) -> i32"
       },
       "symbol": "hew_checked_scope_wait_status"
     },
@@ -13575,6 +13575,36 @@
         "wasm32-wasip1": "fn hew_registry_unregister( *const c_char) -> i32"
       },
       "symbol": "hew_registry_unregister"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "not-applicable",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_release_fault_begin()",
+        "wasm32-wasip1": "fn hew_release_fault_begin()"
+      },
+      "symbol": "hew_release_fault_begin"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_release_fault_end( *mut i32, ) -> *mut HewFault",
+        "wasm32-wasip1": "fn hew_release_fault_end( *mut i32, ) -> *mut HewFault"
+      },
+      "symbol": "hew_release_fault_end"
     },
     {
       "availability": [

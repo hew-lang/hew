@@ -180,7 +180,7 @@ pub unsafe extern "C" fn hew_arc_clone(ptr: *mut u8) -> *mut u8 {
 ///
 /// `ptr` must have been returned by [`hew_arc_new`] or [`hew_arc_clone`].
 #[no_mangle]
-pub unsafe extern "C" fn hew_arc_drop(ptr: *mut u8) {
+pub unsafe extern "C-unwind" fn hew_arc_drop(ptr: *mut u8) {
     if ptr.is_null() {
         return;
     }

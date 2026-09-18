@@ -1,0 +1,11 @@
+[[case]]
+id = "resource-close-fault-rc-payload"
+intent = "A failing close inside a shared allocation's payload reaches the frame that released the last strong owner, so it is that frame's failure rather than a trap with no owner."
+source = "cases/resource-close-fault-rc-payload.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "working\nclose 5\n"
+stderr = "hew: failure: UserPanic (212): close 5 failed\n"
+exit = 1

@@ -178,7 +178,7 @@ pub unsafe extern "C" fn hew_rc_clone(ptr: *mut u8) -> *mut u8 {
 /// `ptr` must have been returned by [`hew_rc_new`] or [`hew_rc_clone`].
 /// Must not be used after this call (use-after-free).
 #[no_mangle]
-pub unsafe extern "C" fn hew_rc_drop(ptr: *mut u8) {
+pub unsafe extern "C-unwind" fn hew_rc_drop(ptr: *mut u8) {
     if ptr.is_null() {
         return;
     }
@@ -300,7 +300,7 @@ pub unsafe extern "C" fn hew_rc_get(ptr: *mut u8) -> *mut u8 {
 ///   alignment used to construct `ptr`.
 /// - The payload and replacement ranges must not overlap.
 #[no_mangle]
-pub unsafe extern "C" fn hew_rc_set(ptr: *mut u8, replacement: *mut u8) {
+pub unsafe extern "C-unwind" fn hew_rc_set(ptr: *mut u8, replacement: *mut u8) {
     assert!(!ptr.is_null(), "Rc.set requires a non-null Rc data pointer");
     assert!(
         !replacement.is_null(),

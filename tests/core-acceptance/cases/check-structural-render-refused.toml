@@ -1,0 +1,21 @@
+[[case]]
+id = "check-structural-render-refused"
+intent = "A callable has neither a structural rendering nor a `Display` impl, so `:?` on it is refused at check time; plain `{v}` on a record without `Display` keeps its own diagnostic."
+source = "cases/check-structural-render-refused.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+code = "BoundsNotSatisfied"
+severity = "error"
+line = 12
+column = 16
+message = "has no structural rendering"
+
+[[case.expected.diagnostics]]
+code = "BoundsNotSatisfied"
+severity = "error"
+line = 14
+column = 16
+message = "does not implement `Display`"

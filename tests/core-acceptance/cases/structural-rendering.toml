@@ -1,0 +1,10 @@
+[[case]]
+id = "structural-rendering"
+intent = "`f\"{v:?}\"` renders records, tuples, `Option`/`Result`, `Vec`, `HashMap` and nesting from the value's own physical layout, borrowing throughout; a user `impl Display` overrides the structural spelling, including through a type alias."
+source = "cases/structural-rendering.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "Point { x: 7, label: west }\n(1, two)\nSome(3) None\nOk(4) Err(bad)\n[5, 6]\n{answer: 42}\nNested { status: Some(Ok(8)), pair: (9, true) }\nconcrete-display\nalias-display\n"
+exit = 0

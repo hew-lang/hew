@@ -588,6 +588,38 @@ impl BuiltinType {
         matches!(self, Self::Vec | Self::HashMap | Self::HashSet)
     }
 
+    /// Whether a value of this builtin has a structural rendering under
+    /// `f"{v:?}"`.
+    ///
+    /// A shipped record or enum renders through its own declared fields, and
+    /// the two admitted collections render through their borrowed element
+    /// walks. A runtime handle, cursor, task or substrate carrier has no
+    /// structure to spell, so `:?` on one is refused at the source.
+    #[must_use]
+    pub const fn renders_structurally(self) -> bool {
+        matches!(
+            self,
+            Self::Option
+                | Self::Result
+                | Self::Vec
+                | Self::HashMap
+                | Self::Unit
+                | Self::CrashInfo
+                | Self::CrashAction
+                | Self::CrashKind
+                | Self::CrashNotification
+                | Self::MonitorId
+                | Self::DownTarget
+                | Self::DownReason
+                | Self::DownNotification
+                | Self::SendError
+                | Self::NodeError
+                | Self::LookupError
+                | Self::LinkError
+                | Self::MonitorError
+        )
+    }
+
     #[must_use]
     pub const fn is_substrate_handle(self) -> bool {
         matches!(self, Self::Sink | Self::Stream)

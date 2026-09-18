@@ -50,21 +50,6 @@ pub unsafe extern "C" fn hew_string_literal_new(
     unsafe { out.write(value) };
 }
 
-/// Compiler-intercept sentinel. Generated code lowers this symbol to typed
-/// formatter thunks before link time; a direct call is always a compiler bug.
-///
-/// # Safety
-///
-/// This function must never be called; it aborts unconditionally.
-#[no_mangle]
-#[expect(
-    clippy::undocumented_unsafe_blocks,
-    reason = "the sentinel's only operation is unconditional process abort"
-)]
-pub unsafe extern "C" fn hew_structural_format(_value: *const c_void) -> *mut c_char {
-    unsafe { libc::abort() }
-}
-
 #[expect(
     clippy::undocumented_unsafe_blocks,
     reason = "callers preserve the builder allocation for the complete formatting traversal"
@@ -80,6 +65,31 @@ pub(crate) unsafe fn structural_builder_append(builder: *mut c_void, bytes: &[u8
 #[no_mangle]
 pub extern "C" fn hew_string_builder_new() -> *mut c_void {
     Box::into_raw(Box::new(HewStringBuilder::default())).cast()
+}
+
+/// Append a compiler literal: the punctuation and source names a structural
+/// rendering spells around its values.
+///
+/// # Safety
+///
+/// `builder` must be live and `data` must contain `len` readable UTF-8 bytes,
+/// or be null when `len` is zero.
+#[no_mangle]
+#[expect(
+    clippy::undocumented_unsafe_blocks,
+    reason = "compiler literals are valid UTF-8 and readable for their length"
+)]
+pub unsafe extern "C" fn hew_string_builder_append_literal(
+    builder: *mut c_void,
+    data: *const u8,
+    len: u32,
+) {
+    let bytes = if data.is_null() || len == 0 {
+        &[][..]
+    } else {
+        unsafe { std::slice::from_raw_parts(data, len as usize) }
+    };
+    unsafe { structural_builder_append(builder, bytes) };
 }
 
 /// Append a borrowed managed Hew string.

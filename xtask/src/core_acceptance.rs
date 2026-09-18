@@ -2285,7 +2285,10 @@ mod tests {
             source: PathBuf::from(source_rel),
             fixtures: None,
             suites: suites.iter().map(ToString::to_string).collect(),
-            timeout_seconds: 1,
+            // These cases run a stub compiler that returns at once. The budget
+            // is generous so a loaded host cannot turn an expectation-matching
+            // test into a stopwatch.
+            timeout_seconds: 30,
             kind,
             env: BTreeMap::new(),
             fences: None,

@@ -1,0 +1,58 @@
+// Structural rendering over the shapes the pinned surface case does not
+// reach: a self-recursive enum behind indirection, every scalar carrier the
+// runtime builder has an entry for, a collection whose elements are
+// themselves composite, and a generic body whose recipe is selected per
+// monomorphization.
+
+enum Tree {
+    Leaf(i64),
+    Branch([Tree]),
+}
+
+type Wrap<T> {
+    value: T,
+}
+
+fn show<T>(w: Wrap<T>) -> string {
+    f"{w:?}"
+}
+
+type Carriers {
+    flag: bool,
+    letter: char,
+    ratio: f64,
+    narrow: u8,
+    wide: u64,
+    signed: i16,
+}
+
+fn main() {
+    let tree = Tree.Branch([Tree.Leaf(1), Tree.Branch([Tree.Leaf(2)])]);
+    println(f"{tree:?}");
+
+    let carriers = Carriers {
+        flag: true,
+        letter: 'q',
+        ratio: 0.5,
+        narrow: 255,
+        wide: 18446744073709551615,
+        signed: -32768,
+    };
+    println(f"{carriers:?}");
+
+    var pairs: Vec<(i64, string)> = Vec.new();
+    pairs.push((1, "one"));
+    pairs.push((2, "two"));
+    println(f"{pairs:?}");
+
+    var nested: HashMap<string, Vec<i64>> = HashMap.new();
+    var inner: Vec<i64> = Vec.new();
+    inner.push(3);
+    nested.insert("odd", inner);
+    println(f"{nested:?}");
+
+    let counted: Wrap<i64> = Wrap { value: 4 };
+    let named: Wrap<string> = Wrap { value: "hi" };
+    println(show(counted));
+    println(show(named));
+}

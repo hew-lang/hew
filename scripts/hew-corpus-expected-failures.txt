@@ -298,7 +298,6 @@ tests/vertical-slice/accept/match_float_literal_arm.hew E_SIR_UNSUPPORTED
 # field. Routing around the refusal compiles and then segfaults, so the refusal
 # is fail-closed protection, not stale pedantry.
 tests/vertical-slice/accept/returns_receiver_consuming_result.hew
-tests/vertical-slice/accept/structural_rendering.hew E_SIR_UNSUPPORTED
 
 # internal-channel (#3401): accept fixtures the checker admits and SIR
 # verification then refuses

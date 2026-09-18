@@ -23,6 +23,13 @@ mod wire;
 mod capability;
 pub use capability::{PhysicalValueCapability, PhysicalValueMethod};
 
+#[path = "physical_structural.rs"]
+mod structural;
+pub use structural::{
+    PhysicalStructuralCase, PhysicalStructuralField, PhysicalStructuralGlue, PhysicalStructuralId,
+    PhysicalStructuralShape,
+};
+
 use hew_parser::ast::{BinaryOp, UnaryOp};
 #[path = "physical_callable.rs"]
 mod callable;
@@ -968,6 +975,8 @@ pub enum PhysicalRuntimeCarrier {
     },
     /// The shared allocation's payload recipe and layout.
     SharedHandle(PhysicalSharedId),
+    /// The borrowed operand's rendering recipe.
+    StructuralFormat(PhysicalStructuralId),
 }
 
 /// One no-unwind runtime ABI operation: the verified SIR operation itself plus
@@ -1281,6 +1290,9 @@ pub struct PhysicalModule {
     pub map_glue: Vec<PhysicalMapGlue>,
     pub set_glue: Vec<PhysicalSetGlue>,
     pub shared_glue: Vec<PhysicalSharedGlue>,
+    /// Rendering recipes for every type reached by `f"{v:?}"`, in identity
+    /// order. Empty when the module renders nothing structurally.
+    pub structural_glue: Vec<PhysicalStructuralGlue>,
     /// What releasing each glue identity does: whether it runs user-visible
     /// action, so the runtime may walk it iteratively instead of nesting a
     /// native frame per level, and whether it can raise a fault the enclosing
@@ -1520,6 +1532,9 @@ pub fn lower_physical_module(
             })
             .collect(),
     };
+    // Rendering recipes are interned as the render sites are lowered, so the
+    // table holds exactly the types this module renders.
+    let structural = std::cell::RefCell::new(structural::StructuralGlue::default());
     let functions = module
         .functions
         .iter()
@@ -1528,13 +1543,14 @@ pub fn lower_physical_module(
                 .function(function.callable)
                 .ok_or_else(|| PhysicalError::new("physical function lacks its SIR certificate"))?;
             let (lowered, attribution) =
-                lower_function(module, &target, function, &ids, certificate)?;
+                lower_function(module, &target, function, &ids, &structural, certificate)?;
             if let Some(attribution) = attribution {
                 debug.functions.insert(function.callable, attribution);
             }
             Ok(lowered)
         })
         .collect::<Result<Vec<_>, PhysicalError>>()?;
+    let structural_glue = structural.into_inner().finish()?;
 
     let vtables = module
         .vtables
@@ -1613,6 +1629,7 @@ pub fn lower_physical_module(
         map_glue,
         set_glue,
         shared_glue,
+        structural_glue,
         type_facts: module.type_facts.clone(),
         callables,
         functions,
@@ -2278,6 +2295,9 @@ struct FunctionLowerer<'a> {
     target: &'a PhysicalTarget,
     function: &'a SemFunction,
     glue_ids: &'a PhysicalGlueIds,
+    /// Rendering recipes interned across the whole module, so two functions
+    /// rendering the same type share one thunk.
+    structural: &'a std::cell::RefCell<structural::StructuralGlue>,
     values: BTreeMap<ValueId, StorageId>,
     places: BTreeMap<hew_sir::PlaceId, StorageId>,
     storage: Vec<PhysicalStorage>,
@@ -2294,6 +2314,7 @@ fn lower_function(
     target: &PhysicalTarget,
     function: &SemFunction,
     glue_ids: &PhysicalGlueIds,
+    structural: &std::cell::RefCell<structural::StructuralGlue>,
     certificate: &hew_sir::CheckedFunction,
 ) -> Result<(PhysicalFunction, Option<PhysicalDebugFunction>), PhysicalError> {
     let mut lowerer = FunctionLowerer {
@@ -2301,6 +2322,7 @@ fn lower_function(
         target,
         function,
         glue_ids,
+        structural,
         values: BTreeMap::new(),
         places: BTreeMap::new(),
         storage: Vec::new(),
@@ -4004,6 +4026,17 @@ impl FunctionLowerer<'_> {
             RuntimePhysicalForm::Set => self.set_carrier(family, args, result)?,
             RuntimePhysicalForm::Vector => self.vector_carrier(family, args, result)?,
             RuntimePhysicalForm::SharedHandle => self.shared_carrier(family, args, result)?,
+            RuntimePhysicalForm::StructuralFormat => {
+                let operand = args
+                    .first()
+                    .ok_or_else(|| PhysicalError::new("structural rendering lacks its operand"))?;
+                let ty = self.storage[self.value(operand.operand.value)?.0 as usize]
+                    .ty
+                    .clone();
+                PhysicalRuntimeCarrier::StructuralFormat(
+                    self.structural.borrow_mut().intern(self.module, &ty)?,
+                )
+            }
             RuntimePhysicalForm::NodeResult => self.node_result_carrier(family, args, result)?,
             RuntimePhysicalForm::VariantResult => {
                 let CallResult::Value(value) = result else {
@@ -4328,6 +4361,51 @@ fn verify_resources(module: &PhysicalModule) -> Result<(), PhysicalError> {
     Ok(())
 }
 
+/// Every rendering recipe sits at its own identity, has a realized layout and
+/// names only recipes this table carries. Codegen emits one thunk per row, so
+/// a dangling member reference would emit a call to nothing.
+fn verify_structural_glue(module: &PhysicalModule) -> Result<(), PhysicalError> {
+    let count = module.structural_glue.len();
+    for (index, glue) in module.structural_glue.iter().enumerate() {
+        if usize::try_from(glue.id.0).ok() != Some(index) {
+            return Err(PhysicalError::new(format!(
+                "structural recipe {} is not at its canonical table index {index}",
+                glue.id.0
+            )));
+        }
+        required_layout(&module.target, &glue.ty)?;
+        let members: Vec<PhysicalStructuralId> = match &glue.shape {
+            PhysicalStructuralShape::Tuple { fields } => fields.clone(),
+            PhysicalStructuralShape::Record { fields, .. } => {
+                fields.iter().map(|field| field.recipe).collect()
+            }
+            PhysicalStructuralShape::Enum { cases } => cases
+                .iter()
+                .flat_map(|case| case.fields.iter().copied())
+                .collect(),
+            PhysicalStructuralShape::Vector { element } => vec![*element],
+            PhysicalStructuralShape::Map { key, value } => vec![*key, *value],
+            PhysicalStructuralShape::SignedInt
+            | PhysicalStructuralShape::UnsignedInt
+            | PhysicalStructuralShape::Float
+            | PhysicalStructuralShape::Bool
+            | PhysicalStructuralShape::Char
+            | PhysicalStructuralShape::Unit
+            | PhysicalStructuralShape::String
+            | PhysicalStructuralShape::Identity { .. } => Vec::new(),
+        };
+        for member in members {
+            if usize::try_from(member.0).ok().is_none_or(|id| id >= count) {
+                return Err(PhysicalError::new(format!(
+                    "structural recipe {} names recipe {}, which the module does not carry",
+                    glue.id.0, member.0
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn verify_physical_module(module: &PhysicalModule) -> Result<(), PhysicalError> {
     suspend::verify_callables(module)?;
     capability::verify(module)?;
@@ -4337,6 +4415,7 @@ fn verify_physical_module(module: &PhysicalModule) -> Result<(), PhysicalError> 
             "physical module requires a target triple and data layout",
         ));
     }
+    verify_structural_glue(module)?;
     for (index, glue) in module.aggregate_glue.iter().enumerate() {
         if usize::try_from(glue.id.0).ok() != Some(index) {
             return Err(PhysicalError::new(format!(
@@ -11100,6 +11179,7 @@ mod tests {
             shared_glue: vec![],
             map_glue: vec![],
             set_glue: vec![],
+            structural_glue: vec![],
             type_facts: BTreeMap::new(),
             callables: vec![callable],
             functions: vec![function],

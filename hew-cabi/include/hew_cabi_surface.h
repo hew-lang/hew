@@ -5717,6 +5717,12 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1601] = {
      "c_void, )\"}",
      "native,wasm32-wasip1", "stable", "nul-terminated",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_string_builder_append_literal",
+     "{\"native\": \"fn hew_string_builder_append_literal( *mut c_void, *const "
+     "u8, u32, )\", \"wasm32-wasip1\": \"fn hew_string_builder_append_literal( "
+     "*mut c_void, *const u8, u32, )\"}",
+     "native,wasm32-wasip1", "stable", "not-applicable", "length-or-count",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_string_builder_append_string",
      "{\"native\": \"fn hew_string_builder_append_string( *mut c_void, *const "
      "HewString, )\", \"wasm32-wasip1\": \"fn "
@@ -5978,12 +5984,6 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1601] = {
      "HewString\", \"wasm32-wasip1\": \"fn hew_string_trim( *const HewString) "
      "-> *mut HewString\"}",
      "native,wasm32-wasip1", "stable", "not-applicable",
-     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_structural_format",
-     "{\"native\": \"fn hew_structural_format( *const c_void) -> *mut "
-     "c_char\", \"wasm32-wasip1\": \"fn hew_structural_format( *const c_void) "
-     "-> *mut c_char\"}",
-     "native,wasm32-wasip1", "stable", "nul-terminated",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_structural_format_hashmap",
      "{\"native\": \"fn hew_structural_format_hashmap( *mut c_void, *const "

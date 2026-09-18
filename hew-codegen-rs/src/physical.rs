@@ -51,6 +51,8 @@ mod dyn_object;
 mod host;
 #[path = "physical_shared.rs"]
 mod shared;
+#[path = "physical_structural.rs"]
+mod structural;
 
 pub use debug::DebugSource;
 pub use host::HostExport;
@@ -4563,6 +4565,9 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             PhysicalRuntimeCarrier::SharedHandle(glue) => {
                 self.emit_shared_call(action.family, glue, transfers, result)?;
                 return self.emit_result_edge(result, normal);
+            }
+            PhysicalRuntimeCarrier::StructuralFormat(glue) => {
+                return self.emit_structural_format(glue, transfers, required_result()?, normal);
             }
             PhysicalRuntimeCarrier::Variant(option)
                 if action.family == RuntimeCallFamily::WeakUpgradeRc =>

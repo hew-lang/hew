@@ -11,14 +11,14 @@
 //! 1. Spawn a supervised actor that always crashes on `MSG_CRASH`.
 //! 2. Send `MSG_CRASH` → supervisor restarts the child → second spawn lands.
 //! 3. Send `MSG_OK` to the restarted child to record a clean stop.
-//! 4. Open + close a duplex pair (channel substrate).
+//! 4. Open + close a pipe (both halves).
 //!
 //! Then drain the trace events as JSON and assert:
 //! - The drain is non-empty.
 //! - Every `event_type` string in the JSON resolves to a name in the
 //!   known metadata names ([`KNOWN_EVENT_NAMES`]). Zero fall-throughs to `"unknown"`.
 //! - The expected canonical events for the exercised scenario are present
-//!   (`spawn`, `send`, `crash`, `duplex_created`, `duplex_closed`).
+//!   (`spawn`, `send`, `crash`, `sink_closed`, `stream_closed`).
 //!
 //! Per R58 Q138 Option B, this probe stays scoped to producer-emitted v0.5
 //! concurrency events. Supervisor lifecycle / channel partition / machine
@@ -43,7 +43,10 @@ use std::time::{Duration, Instant};
 use hew_runtime::actor::hew_actor_send;
 use hew_runtime::crash::hew_crash_log_count;
 use hew_runtime::deterministic::hew_deterministic_reset;
-use hew_runtime::duplex::{hew_duplex_close, hew_duplex_pair, HewDuplexHandle};
+use hew_runtime::stream::{
+    hew_sink_close, hew_stream_channel, hew_stream_close, hew_stream_pair_free,
+    hew_stream_pair_sink, hew_stream_pair_stream,
+};
 use hew_runtime::supervisor::{
     hew_supervisor_add_child_spec, hew_supervisor_get_child_wait, hew_trap_with_code,
     test_wait_for_restart, HewChildSpec, HEW_TRAP_DIVIDE_BY_ZERO,
@@ -239,14 +242,14 @@ fn v05_concurrency_program_has_no_unknown_trace_events() {
         // emission for the restarted lane is exercised.
         hew_actor_send(restarted, MSG_OK, ptr::null_mut(), 0);
 
-        // Exercise the channel substrate so duplex_* events are emitted.
-        let mut a: *mut HewDuplexHandle = ptr::null_mut();
-        let mut b: *mut HewDuplexHandle = ptr::null_mut();
-        let pair_rc = hew_duplex_pair(8, 8, &raw mut a, &raw mut b);
-        assert_eq!(pair_rc, 0, "hew_duplex_pair must succeed");
-        assert!(!a.is_null() && !b.is_null());
-        hew_duplex_close(a);
-        hew_duplex_close(b);
+        // Exercise the pipe substrate so sink_closed / stream_closed are emitted.
+        let pair = hew_stream_channel(8);
+        assert!(!pair.is_null(), "hew_stream_channel must succeed");
+        let sink = hew_stream_pair_sink(pair);
+        let stream = hew_stream_pair_stream(pair);
+        hew_stream_pair_free(pair);
+        hew_sink_close(sink);
+        hew_stream_close(stream);
 
         // Give the scheduler a moment to flush the post-send lifecycle
         // events. The drain below caps at 256 events which is well above
@@ -301,8 +304,8 @@ fn v05_concurrency_program_has_no_unknown_trace_events() {
              taxonomy; saw {seen:?}. JSON: {json}"
         );
     }
-    // Channel substrate must surface its create + close pair.
-    for required in ["duplex_created", "duplex_closed"] {
+    // Pipe substrate must surface both halves closing.
+    for required in ["sink_closed", "stream_closed"] {
         assert!(
             seen.contains(required),
             "expected channel event {required:?} in drained taxonomy; \

@@ -1,18 +1,18 @@
-// MIR-corpus fixture: bounded channel send/recv/try_recv/close + select.
+// MIR-corpus fixture: bounded pipe send/recv/try_recv/close + select.
 //
 // Pins the element-layout-witness recv entries
-// (`hew_channel_recv_layout` / `hew_channel_try_recv_layout`), the
-// send path (`hew_channel_send_layout`), the sender/receiver close
+// (`hew_stream_next_layout` / `hew_stream_try_next_layout`), the
+// send path (`hew_stream_send_layout`), the sink/stream close
 // releases, and the select winner-picker (`hew_select_first`).
-import std.channel;
+import std.stream;
 
 actor Inbox {
     receive fn run(unused: i64) {
-        let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(4) {
+        let (tx, rx): (stream.Sink<string>, stream.Stream<string>) = match stream.pipe(4) {
             .Ok(pair) => pair,
-            .Err(err) => panic(f"channel.new failed: {err}"),
+            .Err(err) => panic(f"stream.pipe failed: {err}"),
         };
-        tx.send("ready");
+        tx.send("ready").expect("send");
         tx.close();
         match rx.recv() {
             .Some(msg) => println(msg),

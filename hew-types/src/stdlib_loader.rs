@@ -1584,24 +1584,18 @@ mod tests {
 
     #[test]
     fn imported_network_text_reads_preserve_validation_errors() {
+        // `net.Connection` no longer carries its own text-read wrappers
+        // (`read_string`/`try_read_string`/`ReadStringError`) — a caller
+        // decodes the `bytes` a `Stream<bytes>` yields itself (D506). QUIC's
+        // `recv_string`/`stream_recv_string` are unaffected and still surface
+        // `utf8.Utf8Error` on invalid bytes.
         let parsed = parse(
             r"
-            import std.net;
             import std.net.quic;
             import std.encoding.utf8;
-            fn tcp(conn: net.Connection) {
-                let _: Result<string, utf8.Utf8Error> = conn.read_string();
-                let _: Result<string, net.ReadStringError> = conn.try_read_string();
-            }
             fn quic_read(stream: quic.QUICStream) {
                 let _: Result<string, utf8.Utf8Error> = stream.recv_string();
                 let _: Result<string, utf8.Utf8Error> = quic.stream_recv_string(stream);
-            }
-            fn describe(error: net.ReadStringError) -> string {
-                match error {
-                    .Network(reason) => to_string(reason),
-                    .InvalidUtf8(reason) => to_string(reason),
-                }
             }
         ",
         );
@@ -1619,33 +1613,26 @@ mod tests {
         assert!(info.is_some(), "should load net module");
         let info = info.unwrap();
 
-        let has_read = info.handle_methods.iter().any(|m| {
+        let has_close = info.handle_methods.iter().any(|m| {
             m.type_name == "net.Connection"
-                && m.method_name == "read"
-                && m.c_symbol == "hew_tcp_read"
+                && m.method_name == "close"
+                && m.c_symbol == "hew_tcp_close"
         });
         assert!(
-            has_read,
-            "net.Connection.read should rewrite to hew_tcp_read"
+            has_close,
+            "net.Connection.close should rewrite to hew_tcp_close"
         );
 
-        let rewrites_read_string = info.handle_methods.iter().any(|m| {
-            m.type_name == "net.Connection"
-                && matches!(m.method_name.as_str(), "read_string" | "try_read_string")
+        // `recv`/`send` wrap `hew_tcp_read`/`hew_tcp_write` with errno
+        // classification and a trap on unexpected failure — not a trivial
+        // single-call passthrough — so they must retain their source-level
+        // validation and error handling rather than aliasing the raw symbol.
+        let rewrites_recv_or_send = info.handle_methods.iter().any(|m| {
+            m.type_name == "net.Connection" && matches!(m.method_name.as_str(), "recv" | "send")
         });
         assert!(
-            !rewrites_read_string,
-            "net.Connection text reads must retain their source-level validation and error handling"
-        );
-
-        let rewrites_write_string = info.handle_methods.iter().any(|m| {
-            m.type_name == "net.Connection"
-                && m.method_name == "write_string"
-                && m.c_symbol == "hew_tcp_write"
-        });
-        assert!(
-            !rewrites_write_string,
-            "net.Connection.write_string should remain a Hew wrapper, not alias hew_tcp_write"
+            !rewrites_recv_or_send,
+            "net.Connection.recv/send must retain their source-level validation and error handling"
         );
     }
 

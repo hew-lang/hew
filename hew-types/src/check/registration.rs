@@ -256,7 +256,7 @@ const FAILURE_HEW: &str = include_str!("../../../std/failure.hew");
 ///   identity selects a closed runtime operation; the raw status/out ABI is
 ///   not exposed to source programs.
 const INTRINSIC_FLOOR_MODULES: &[&str] =
-    &["std.math", "std.mem", "std.encoding.utf8", "std.channel"];
+    &["std.math", "std.mem", "std.encoding.utf8", "std.stream"];
 
 #[must_use]
 pub fn intrinsic_floor_modules() -> &'static [&'static str] {
@@ -1363,79 +1363,6 @@ impl Checker {
                 }),
                 crate::builtin_enums::monomorphic_builtin_enum_ty("LookupError")
                     .expect("generated builtin enum catalog must contain LookupError"),
-            ),
-        );
-
-        // Duplex constructors — compiler builtins.
-        //
-        // WHY: `duplex_pair` and `duplex` are constructor-only surfaces with no
-        //   stdlib module equivalent yet; they must remain resolvable without an
-        //   explicit import. The former `channel` builtin constructor was removed;
-        //   callers use `std.channel.new` instead.
-        //
-        // `duplex_pair<S: Send, R: Send>(capacity: int) -> (Duplex<S, R>, Duplex<R, S>)`
-        // Returns a cross-wired pair of Duplex handles backed by a shared buffer.
-        // All construction goes through this; there is no per-direction constructor
-        // (`hew_duplex_new` was removed in the M2 runtime refactor).
-        self.register_builtin_fn_with_bounds(
-            "duplex_pair",
-            vec!["S".to_string(), "R".to_string()],
-            HashMap::from([
-                ("S".to_string(), vec!["Send".to_string()]),
-                ("R".to_string(), vec!["Send".to_string()]),
-            ]),
-            vec![Ty::I64],
-            Ty::Tuple(vec![
-                Ty::duplex(
-                    Ty::Named {
-                        builtin: None,
-                        name: "S".to_string(),
-                        args: vec![],
-                    },
-                    Ty::Named {
-                        builtin: None,
-                        name: "R".to_string(),
-                        args: vec![],
-                    },
-                ),
-                Ty::duplex(
-                    Ty::Named {
-                        builtin: None,
-                        name: "R".to_string(),
-                        args: vec![],
-                    },
-                    Ty::Named {
-                        builtin: None,
-                        name: "S".to_string(),
-                        args: vec![],
-                    },
-                ),
-            ]),
-        );
-
-        // `duplex<S: Send, R: Send>(capacity: int) -> Duplex<S, R>`
-        // Constructs a detached Duplex handle with no peer. A transport must be
-        // attached via `.attach(transport)` before send/recv will succeed (the
-        // go-nil / detached pattern per §5.16.7 + Q16).
-        self.register_builtin_fn_with_bounds(
-            "duplex",
-            vec!["S".to_string(), "R".to_string()],
-            HashMap::from([
-                ("S".to_string(), vec!["Send".to_string()]),
-                ("R".to_string(), vec!["Send".to_string()]),
-            ]),
-            vec![Ty::I64],
-            Ty::duplex(
-                Ty::Named {
-                    builtin: None,
-                    name: "S".to_string(),
-                    args: vec![],
-                },
-                Ty::Named {
-                    builtin: None,
-                    name: "R".to_string(),
-                    args: vec![],
-                },
             ),
         );
 
@@ -6937,10 +6864,13 @@ impl Checker {
                 .map(String::as_str)
                 .eq(family.source_intrinsic_type_params().iter().copied())
                 && !fd.is_generator
-                && !fd
-                    .params
-                    .iter()
-                    .any(|param| param.is_consume || param.is_mutable)
+                // A parameter is consumed exactly when the contract moves it.
+                && fd.params.len() == contract.arguments.len()
+                && fd.params.iter().zip(contract.arguments).all(|(param, argument)| {
+                    !param.is_mutable
+                        && param.is_consume
+                            == (argument.effect == crate::runtime_call::RuntimeArgumentEffect::Move)
+                })
                 && family
                     .source_intrinsic_declaration()
                     .is_none_or(|expected| expected == key)

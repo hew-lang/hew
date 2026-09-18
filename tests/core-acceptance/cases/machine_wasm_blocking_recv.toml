@@ -10,4 +10,4 @@ kind = "reject"
 code = "MachineExhaustivenessError"
 line = 19
 column = 15
-message = "machine evaluator is not demonstrably pure: `Result<(Sender<i64>, Receiver<i64>), string>` can carry external identity, effects or unclassified payloads"
+message = "machine evaluator is not demonstrably pure: `Result<(Sink<i64>, Stream<i64>), string>` can carry external identity, effects or unclassified payloads"

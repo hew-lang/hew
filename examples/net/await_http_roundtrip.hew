@@ -1,4 +1,4 @@
-//! HTTP/1.1 client and server using ordinary accept and read calls.
+//! HTTP/1.1 client and server using ordinary accept and recv calls.
 //! Client and server must run concurrently, so `main` launches both handlers
 //! with `fork`: a discarded receive call is an ask, and waiting on the server
 //! would leave nobody to make the request.
@@ -15,7 +15,6 @@ import std.string;
 
 actor Server {
     let addr: string,
-
     receive fn serve(unused: i64) {
         let listener = match net.listen(addr) {
             .Ok(listener) => listener,
@@ -26,9 +25,13 @@ actor Server {
         var reads = 0;
         var done = false;
         while !done {
-            let chunk = utf8.decode(conn.read()) handle error {
-                println(f"invalid UTF-8: {error}");
-                return;
+            // `None` is the peer's end of stream; an empty chunk ends the loop.
+            let chunk = match conn.recv() {
+                .Some(data) => utf8.decode(data) handle error {
+                    println(f"invalid UTF-8: {error}");
+                    return;
+                },
+                .None => "",
             };
             reads = reads + 1;
             if string.is_empty(chunk) {
@@ -53,7 +56,7 @@ actor Server {
                 _ => http_async_server.response_text(404, "nope"),
             };
         }
-        let _ = conn.write_string(reply);
+        let _ = conn.send(reply.to_bytes());
         let _ = conn.close();
         let _ = listener.close();
     }
@@ -61,7 +64,6 @@ actor Server {
 
 actor Client {
     let url: string,
-
     receive fn go(unused: i64) {
         sleep(300ms);
         let parts = http_async_client.split_address(url);
@@ -70,14 +72,18 @@ actor Client {
             .Ok(conn) => conn,
             .Err(_) => panic(f"network setup failed"),
         };
-        let _ = conn.write_string(http_async_client.build_get(host, parts.1));
+        let _ = conn.send(http_async_client.build_get(host, parts.1).to_bytes());
         var raw = "";
         var reads = 0;
         var done = false;
         while !done {
-            let chunk = utf8.decode(conn.read()) handle error {
-                println(f"invalid UTF-8: {error}");
-                return;
+            // `None` is the peer's end of stream; an empty chunk ends the loop.
+            let chunk = match conn.recv() {
+                .Some(data) => utf8.decode(data) handle error {
+                    println(f"invalid UTF-8: {error}");
+                    return;
+                },
+                .None => "",
             };
             reads = reads + 1;
             if string.is_empty(chunk) {

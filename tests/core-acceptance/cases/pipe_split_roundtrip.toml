@@ -1,0 +1,13 @@
+[[case]]
+id = "pipe_split_roundtrip"
+intent = "The pipe's two halves round-trip the exact value: 7 sent on the sink arrives on the stream and carries into the exit code, and both halves close exactly once."
+source = "../vertical-slice/accept/pipe_split_roundtrip.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = ""
+exit = 7

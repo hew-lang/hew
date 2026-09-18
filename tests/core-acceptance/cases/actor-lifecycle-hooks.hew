@@ -13,8 +13,8 @@ actor Keeper {
 }
 
 fn open(path: string) -> Stream<string> {
-    match stream.from_file(path) {
-        .Ok(input) => input,
+    match stream.open(path) {
+        .Ok(input) => input.lines(),
         .Err(_) => panic("fixture open failed"),
     }
 }

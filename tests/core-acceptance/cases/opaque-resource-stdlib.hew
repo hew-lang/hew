@@ -11,7 +11,7 @@ fn text_pipe() -> (Sink<string>, Stream<string>) {
 }
 
 fn early_return() -> i64 {
-    let _pair = match stream.bytes_pipe(1) {
+    let _pair: (Sink<bytes>, Stream<bytes>) = match stream.pipe(1) {
         .Ok(pair) => pair,
         .Err(_) => panic("bytes pipe allocation failed"),
     };

@@ -16,7 +16,6 @@ import std.stream.{Sink, Stream};
 
 extern "C" {
     fn hew_actor_self_stop();
-    fn hew_sink_shutdown(sink: Sink<bytes>);
 }
 
 actor ServerReader {
@@ -40,9 +39,7 @@ actor ServerReader {
             }
         }
         println(f"[{name}] closed");
-        unsafe {
-            hew_sink_shutdown(sink)
-        };
+        sink.finish();
         unsafe {
             hew_actor_self_stop()
         };
@@ -66,7 +63,7 @@ fn main() {
     var next_id: i32 = 1;
     loop {
         let conn = listener.accept();
-        let (input, sink) = conn.into_stream_sink();
+        let (input, sink) = conn.split();
         let reader = spawn ServerReader(input: input, sink: sink, name: f"peer-{next_id}");
         fork reader.start();
         next_id = next_id + 1;

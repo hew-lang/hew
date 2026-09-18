@@ -770,30 +770,30 @@ fn actor_handle_is_copy_clone_debug() {
 }
 
 // ===========================================================================
-// Duplex @resource marker (design contract D3 — slice 2 codification)
+// Stream @resource marker (design contract D3 — slice 2 codification)
 // ===========================================================================
 
 #[test]
-fn duplex_is_resource() {
+fn stream_is_resource() {
     let reg = TraitRegistry::new();
-    let duplex = Ty::duplex(Ty::I64, Ty::I64);
+    let stream = Ty::stream(Ty::I64);
     assert!(
-        reg.implements_marker(&duplex, MarkerTrait::Resource),
-        "Duplex<i64, i64> must implement Resource (@resource D3 marker)"
+        reg.implements_marker(&stream, MarkerTrait::Resource),
+        "Stream<i64> must implement Resource (@resource D3 marker)"
     );
 }
 
 #[test]
-fn duplex_is_not_copy_or_clone() {
+fn unregistered_stream_named_type_is_not_copy_or_clone() {
     let reg = TraitRegistry::new();
-    let duplex = named_with("Duplex", vec![Ty::I64, Ty::I64]);
+    let stream = named_with("Stream", vec![Ty::I64]);
     assert!(
-        !reg.implements_marker(&duplex, MarkerTrait::Copy),
-        "Duplex must not be Copy (move-only resource)"
+        !reg.implements_marker(&stream, MarkerTrait::Copy),
+        "Stream must not be Copy (move-only resource)"
     );
     assert!(
-        !reg.implements_marker(&duplex, MarkerTrait::Clone),
-        "Duplex must not be Clone (no shared ownership in slice 2)"
+        !reg.implements_marker(&stream, MarkerTrait::Clone),
+        "Stream must not be Clone (single consumer; only Sink clones)"
     );
 }
 
@@ -917,39 +917,39 @@ fn result_is_not_resource() {
     );
 }
 
-/// `Option<Duplex<i64,i64>>` IS a Resource — the inner Duplex is a built-in
+/// `Option<Stream<i64>>` IS a Resource — the inner Stream is a built-in
 /// resource handle (`Resource => true`). The structural `any()` arm propagates
 /// this: a wrapper holding a resource handle is itself conditionally a resource.
 #[test]
-fn option_duplex_is_resource() {
+fn option_stream_is_resource() {
     let reg = TraitRegistry::new();
-    let opt = Ty::option(Ty::duplex(Ty::I64, Ty::I64));
+    let opt = Ty::option(Ty::stream(Ty::I64));
     assert!(
         reg.implements_marker(&opt, MarkerTrait::Resource),
-        "Option<Duplex<i64,i64>> must be Resource (inner Duplex is a resource handle)"
+        "Option<Stream<i64>> must be Resource (inner Stream is a resource handle)"
     );
 }
 
-/// `Result<Duplex<i64,i64>, i64>` IS a Resource — the Ok arm is a Duplex.
+/// `Result<Stream<i64>, i64>` IS a Resource — the Ok arm is a Stream.
 /// Uses `any()`: one resource arg makes the wrapper a resource.
 #[test]
-fn result_duplex_ok_is_resource() {
+fn result_stream_ok_is_resource() {
     let reg = TraitRegistry::new();
-    let res = Ty::result(Ty::duplex(Ty::I64, Ty::I64), Ty::I64);
+    let res = Ty::result(Ty::stream(Ty::I64), Ty::I64);
     assert!(
         reg.implements_marker(&res, MarkerTrait::Resource),
-        "Result<Duplex<i64,i64>, i64> must be Resource (Ok arm is a resource handle)"
+        "Result<Stream<i64>, i64> must be Resource (Ok arm is a resource handle)"
     );
 }
 
-/// `Result<i64, Duplex<i64,i64>>` IS a Resource — the Err arm is a Duplex.
+/// `Result<i64, Stream<i64>>` IS a Resource — the Err arm is a Stream.
 /// Proves `any()` covers the error arm too.
 #[test]
-fn result_duplex_err_is_resource() {
+fn result_stream_err_is_resource() {
     let reg = TraitRegistry::new();
-    let res = Ty::result(Ty::I64, Ty::duplex(Ty::I64, Ty::I64));
+    let res = Ty::result(Ty::I64, Ty::stream(Ty::I64));
     assert!(
         reg.implements_marker(&res, MarkerTrait::Resource),
-        "Result<i64, Duplex<i64,i64>> must be Resource (Err arm is a resource handle)"
+        "Result<i64, Stream<i64>> must be Resource (Err arm is a resource handle)"
     );
 }

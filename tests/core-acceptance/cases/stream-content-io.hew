@@ -4,14 +4,10 @@ import std.stream;
 
 fn main() {
     let path = f"{os.temp_dir()}/hew-stream-content-{os.pid()}.bin";
-    let output = stream.to_file(path).expect("open output");
-    output.write("first\0");
-    output.write("");
-    output.write("last 🌲");
-    output.close();
-    assert(fs.read(path).expect("read output") == "first\0last 🌲");
+    fs.write(path, "first\0last 🌲").expect("write input");
+    assert(fs.read(path).expect("read input") == "first\0last 🌲");
 
-    let input = stream.from_file(path).expect("open input");
+    let input = stream.open(path).expect("open input").lines();
     var content = "";
     loop {
         match input.recv() {
@@ -21,6 +17,6 @@ fn main() {
     }
     assert(content == "first\0last 🌲");
     input.close();
-    fs.delete(path).expect("remove output");
+    fs.delete(path).expect("remove input");
     println("native stream content I/O");
 }

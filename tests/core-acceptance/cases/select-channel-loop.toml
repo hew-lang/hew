@@ -1,6 +1,6 @@
 [[case]]
 id = "select-channel-loop"
-intent = "One select loop over two channels drains both queues in source order; the receivers survive every disarm and each sender's close then arrives as its own `None`."
+intent = "One select loop over two pipes drains both queues in source order; the read halves survive every disarm and each sink's close then arrives as its own `None`."
 source = "cases/select-channel-loop.hew"
 suites = ["acceptance", "safety"]
 timeout_seconds = 30

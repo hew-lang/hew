@@ -1,12 +1,12 @@
 // Accept: an actor receive handler whose parameter is a tuple carrying a
-// `channel.Receiver<string>` alongside a `string` tag. The caller passes
+// `stream.Stream<string>` alongside a `string` tag. The caller passes
 // `(rx, "tag")` as the actor-send arg — ownership of `rx` transfers through
-// the tuple to the handler, which closes the channel.
+// the tuple to the handler, which closes the read half.
 //
 // This is the positive half of the W5.0-nested-handle-transfer gate:
 // the transfer compiles, runs, and produces the expected output without a
 // double-close.
-import std.channel;
+import std.stream;
 
 actor Worker {
     // Both printed lines are handled here so mailbox FIFO order is the printed
@@ -16,7 +16,7 @@ actor Worker {
         println("done");
     }
 
-    receive fn deliver(pair: (channel.Receiver<string>, string)) {
+    receive fn deliver(pair: (stream.Stream<string>, string)) {
         let (rx, tag) = pair;
         let msg = match rx.recv() {
             .Some(s) => s,
@@ -28,11 +28,11 @@ actor Worker {
 }
 
 fn main() {
-    let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(4) {
+    let (tx, rx): (stream.Sink<string>, stream.Stream<string>) = match stream.pipe(4) {
         .Ok(pair) => pair,
         .Err(_) => return,
     };
-    tx.send("hello");
+    tx.send("hello").expect("send");
     tx.close();
     let w = spawn Worker;
     // Transfer rx through a tuple. After this send `rx` must not be used.

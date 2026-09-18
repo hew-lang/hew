@@ -1,0 +1,13 @@
+[[case]]
+id = "select_arm_stream_recv"
+intent = "A pipe `Stream<T>` is a select source: `item from rx.recv()` binds `Option<T>`, so a queued item wins as `Some(value)` and the finished pipe wins as `None`, both ahead of the timer arm."
+source = "../vertical-slice/accept/select_arm_stream_recv.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "picked 7\neof -1\n"
+exit = 0

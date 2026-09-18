@@ -2505,20 +2505,28 @@ const HANDWRITTEN_CATALOG: &[BuiltinEntry] = &[
         BuiltinTy::String,
         BuiltinLinkage::CalleeNameDispatchOnly,
     ),
-    // Typed channel extraction uses the checked source signature. These are
-    // dispatch identities; their pointer ABI is owned by the runtime contract.
+    // Typed pipe-half extraction and forwarding use the checked source
+    // signature. These are dispatch identities; their pointer ABI is owned by
+    // the runtime contract.
     direct(
-        "channel.pair_sender",
+        "stream.pair_sink",
         BuiltinClass::ClassB,
         &[BuiltinTy::Pointer],
         BuiltinTy::Pointer,
         BuiltinLinkage::CalleeNameDispatchOnly,
     ),
     direct(
-        "channel.pair_receiver",
+        "stream.pair_stream",
         BuiltinClass::ClassB,
         &[BuiltinTy::Pointer],
         BuiltinTy::Pointer,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
+    direct(
+        "stream.forward",
+        BuiltinClass::ClassB,
+        &[BuiltinTy::Pointer, BuiltinTy::Pointer],
+        BuiltinTy::Unit,
         BuiltinLinkage::CalleeNameDispatchOnly,
     ),
     // Compiler-owned UTF-8 source declarations carry their real signatures.

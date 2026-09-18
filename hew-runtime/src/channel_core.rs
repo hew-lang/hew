@@ -102,8 +102,11 @@ impl NativeRegistration {
 struct Inner {
     queue: VecDeque<Vec<u8>>,
     capacity: usize,
-    /// The producer signalled EOF (`sink.close()` / sink drop).
+    /// The producer signalled EOF: every sink handle finished or closed.
     sink_closed: bool,
+    /// Live sink handles on this pipe. `clone_sink` adds one; `close_sink`
+    /// retires one, and the last retirement publishes EOF.
+    sink_handles: usize,
     /// The consumer cancelled (`stream.close()` / stream drop).
     stream_closed: bool,
     /// Terminal FAULT: the producer (a `receive gen fn` pump) crashed
@@ -176,6 +179,7 @@ impl ChannelCore {
                 queue: VecDeque::new(),
                 capacity: capacity.max(1),
                 sink_closed: false,
+                sink_handles: 1,
                 stream_closed: false,
                 sink_fault: false,
                 fault_actor_id: None,
@@ -836,13 +840,23 @@ impl ChannelCore {
 
     // ── Close edges ──────────────────────────────────────────────────────────
 
-    /// The producer closed (EOF). Wakes a parked consumer so its `await_next`
-    /// resume binds `None`.
+    /// Register one more sink handle (`sink.clone()`): EOF is published only
+    /// when the last handle finishes or closes.
+    pub fn clone_sink(&self) {
+        self.locked().sink_handles += 1;
+    }
+
+    /// One sink handle finished or closed. The last one publishes EOF and
+    /// wakes a parked consumer so its `await_next` resume binds `None`.
     pub fn close_sink(&self) {
         let consumer_wake;
         let native_consumer;
         {
             let mut inner = self.locked();
+            inner.sink_handles = inner.sink_handles.saturating_sub(1);
+            if inner.sink_handles > 0 {
+                return;
+            }
             inner.sink_closed = true;
             consumer_wake = inner.consumer.take();
             native_consumer = inner
@@ -999,8 +1013,8 @@ impl ChannelCore {
     /// Named so the panic message identifies the faulted producer actor.
     fn panic_faulted(actor_id: u64) -> ! {
         panic!(
-            "receive-gen stream: producer actor {actor_id} crashed or was torn down; \
-             stream faulted — no more values will ever arrive"
+            "pipe faulted: producer actor {actor_id} crashed while holding a sink; \
+             no more items will arrive"
         );
     }
 

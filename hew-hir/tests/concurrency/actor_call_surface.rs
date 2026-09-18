@@ -174,8 +174,7 @@ fn visit_expr<'a>(expr: &'a HirExpr, out: &mut Vec<&'a HirExpr>) {
         | HirExprKind::TryWidthCast { value, .. } => {
             visit_expr(value, out);
         }
-        HirExprKind::ChannelRecvAwait { receiver, .. }
-        | HirExprKind::CancellationTokenIsCancelled { receiver }
+        HirExprKind::CancellationTokenIsCancelled { receiver }
         | HirExprKind::GeneratorNext { receiver, .. } => {
             visit_expr(receiver, out);
         }

@@ -160,18 +160,24 @@ fn accepted_tcp_connection_composes_read_write_and_resource_cleanup() {
             r#"
 import std.fs;
 import std.net;
+import std.encoding.utf8;
 fn main() {
     match net.listen("127.0.0.1:0") {
         .Ok(listener) => {
             let port = listener.local_port();
             let _announced = fs.write("port", f"{port}");
             let conn = listener.accept();
-            match conn.read_string() {
-                .Ok(text) => println(text),
-                .Err(_) => panic("read failed"),
+            match conn.recv() {
+                .Some(data) => {
+                    match utf8.decode(data) {
+                        .Ok(text) => println(text),
+                        .Err(_) => panic("read failed"),
+                    }
+                },
+                .None => panic("read failed"),
             }
-            match conn.write_string("native reply") {
-                .Ok(_) => println("written"),
+            match conn.send("native reply".to_bytes()) {
+                .Ok(()) => println("written"),
                 .Err(_) => panic("write failed"),
             }
         },

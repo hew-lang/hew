@@ -648,9 +648,6 @@ impl Verifier {
                         crate::node::HirSelectArmKind::TaskAwait { task } => {
                             self.expr(task);
                         }
-                        crate::node::HirSelectArmKind::ChannelRecv { receiver, .. } => {
-                            self.expr(receiver);
-                        }
                         crate::node::HirSelectArmKind::AfterTimer { duration } => {
                             self.expr(duration);
                         }
@@ -861,8 +858,7 @@ impl Verifier {
             HirExprKind::CoerceToDynTrait { value, .. } => {
                 self.expr(value);
             }
-            HirExprKind::ChannelRecvAwait { receiver, .. }
-            | HirExprKind::CancellationTokenIsCancelled { receiver }
+            HirExprKind::CancellationTokenIsCancelled { receiver }
             | HirExprKind::GeneratorNext { receiver, .. }
             | HirExprKind::RecordCloneCall { src: receiver, .. } => {
                 self.expr(receiver);

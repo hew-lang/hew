@@ -160,14 +160,14 @@
     "features": ["actor", "ask", "reply", "scheduler"]
   },
   {
-    "id": "channel-select",
+    "id": "pipe-select",
     "category": "concurrency",
-    "name": "Channel Select",
-    "description": "Covers channel ID allocation and select trace shape.",
-    "source_path": "17-channel-select/main.hew",
-    "expected_trace_path": "17-channel-select/expected.trace.json",
+    "name": "Pipe Select",
+    "description": "Covers pipe ID allocation and select trace shape.",
+    "source_path": "17-pipe-select/main.hew",
+    "expected_trace_path": "17-pipe-select/expected.trace.json",
     "status": "planned",
-    "features": ["channel", "select", "id"]
+    "features": ["pipe", "select", "id"]
   },
   {
     "id": "task-await",

@@ -4,7 +4,7 @@
 // With one worker, the handler queues sibling work, calls supervisor_stop,
 // signals main, and remains Running briefly. Main therefore starts its exit
 // tail before the worker can activate the Runnable sibling.
-import std.channel;
+import std.stream;
 
 actor Busy {
     receive fn work(_n: i64) {
@@ -13,10 +13,10 @@ actor Busy {
 }
 
 actor Stopper {
-    receive fn stop_tree(sup: App, ready: channel.Sender<i64>) {
+    receive fn stop_tree(sup: App, ready: stream.Sink<i64>) {
         let _ = sup.busy.work(1);
         supervisor_stop(sup);
-        ready.send(42);
+        ready.send(42).expect("send");
         sleep(200ms);
     }
 }
@@ -31,7 +31,7 @@ supervisor App {
 
 fn main() -> i64 {
     let sup = spawn App;
-    let (ready_tx, ready_rx): (channel.Sender<i64>, channel.Receiver<i64>) = match channel.new(1) {
+    let (ready_tx, ready_rx): (stream.Sink<i64>, stream.Stream<i64>) = match stream.pipe(1) {
         .Ok(pair) => pair,
         .Err(_) => return 1,
     };

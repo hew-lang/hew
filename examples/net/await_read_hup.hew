@@ -1,20 +1,25 @@
-//! TCP connection-failure and end-of-stream example using `conn.read()`.
+//! TCP connection-failure and end-of-stream example using `conn.recv()`.
 //! A failed connection follows the error arm; a connected peer that closes
-//! can produce an empty read. These are distinct outcomes.
+//! yields `None`. These are distinct outcomes.
 
 import std.net;
 
 actor Reader {
     receive fn go(unused: i64) {
 
-        // Nothing listens here: the connect fails or the read errors. Either
-        // failure follows its own path; EOF after connection is an empty read.
+        // Nothing listens here: the connect fails, or a peer that hangs up
+        // after connecting ends the stream with `None`.
         let conn = match net.connect("127.0.0.1:9") {
             .Ok(conn) => conn,
-            .Err(_) => panic(f"network setup failed"),
+            .Err(_) => {
+                println("connect refused");
+                return;
+            },
         };
-        let body = conn.read();
-        println(f"read {body.len()} bytes");
+        match conn.recv() {
+            .Some(body) => println(f"read {body.len()} bytes"),
+            .None => println("end of stream"),
+        }
         let _ = conn.close();
     }
 }

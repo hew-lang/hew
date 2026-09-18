@@ -20,7 +20,11 @@ actor Reader {
             if trigger >= 0 {
                 panic("reader crashed mid suspending-closure await");
             }
-            let decoded = utf8.decode(conn.read());
+            let data = match conn.recv() {
+                .Some(data) => data,
+                .None => "".to_bytes(),
+            };
+            let decoded = utf8.decode(data);
             let _ = conn.close();
             decoded
         };

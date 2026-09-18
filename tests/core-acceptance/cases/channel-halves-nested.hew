@@ -1,17 +1,17 @@
-// A channel half is an ordinary value: it rides in a record field and in a
+// A pipe half is an ordinary value: it rides in a record field and in a
 // Vec, is used from there, and is closed exactly once. Before the endpoint had
 // one spelling, a half stored in either container failed physical lowering
 // because the declared member type and the constructor's own result keyed
 // different glue recipes for the same pointer word.
-import std.channel;
+import std.stream;
 
 type Halves {
-    tx: channel.Sender<string>,
-    rx: channel.Receiver<string>,
+    tx: stream.Sink<string>,
+    rx: stream.Stream<string>,
 }
 
 fn main() {
-    let (tx, rx) = match channel.new(4) {
+    let (tx, rx) = match stream.pipe(4) {
         .Ok(pair) => pair,
         .Err(error) => {
             println(error);
@@ -19,7 +19,7 @@ fn main() {
         },
     };
     let pair = Halves { tx: tx, rx: rx };
-    pair.tx.send("through a record");
+    pair.tx.send("through a record").expect("send");
     pair.tx.close();
     match pair.rx.recv() {
         .Some(item) => println(f"record {item}"),
@@ -31,17 +31,17 @@ fn main() {
     }
     pair.rx.close();
 
-    let (producer, consumer) = match channel.new(2) {
+    let (producer, consumer) = match stream.pipe(2) {
         .Ok(pair) => pair,
         .Err(error) => {
             println(error);
             return;
         },
     };
-    var senders: Vec<channel.Sender<string>> = [];
+    var senders: Vec<stream.Sink<string>> = [];
     senders.push(producer);
     let stored = senders.pop();
-    stored.send("through a vec");
+    stored.send("through a vec").expect("send");
     stored.close();
     match consumer.recv() {
         .Some(item) => println(f"vec {item}"),

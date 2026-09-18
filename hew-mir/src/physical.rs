@@ -552,8 +552,8 @@ pub struct PhysicalVariantGlue {
 pub enum PhysicalSelectSource {
     /// A borrowed checked task handle; the winning arm awaits it.
     Task(ArgumentTransfer),
-    /// A borrowed channel receiver; the winning arm performs the receive.
-    ChannelRecv(ArgumentTransfer),
+    /// A borrowed pipe stream; the winning arm performs the receive.
+    StreamNext(ArgumentTransfer),
     /// A borrowed ephemeral completion; the winning arm consumes its result.
     ActorCall(ArgumentTransfer),
 }
@@ -563,7 +563,7 @@ impl PhysicalSelectSource {
     #[must_use]
     pub const fn transfer(self) -> ArgumentTransfer {
         match self {
-            Self::Task(transfer) | Self::ChannelRecv(transfer) | Self::ActorCall(transfer) => {
+            Self::Task(transfer) | Self::StreamNext(transfer) | Self::ActorCall(transfer) => {
                 transfer
             }
         }
@@ -1006,38 +1006,18 @@ pub enum PhysicalTerminator {
         cancel: PhysicalEdge,
         unwind: PhysicalEdge,
     },
-    /// Take the next element from the exclusively borrowed channel. `park`
-    /// waits for an element or for every sender to close; without it an empty
-    /// channel produces `None` at once. The element carries its typed
-    /// envelope recipe.
-    ChannelRecv {
-        park: bool,
-        channel: ArgumentTransfer,
-        element: PhysicalValueRecipe,
-        result: StorageId,
-        normal: PhysicalEdge,
-        cancel: PhysicalEdge,
-        unwind: PhysicalEdge,
-    },
-    /// Deep-copy one element into the borrowed channel, parking on capacity.
-    /// The producer keeps its value on every exit.
-    ChannelSend {
-        channel: ArgumentTransfer,
-        value: ArgumentTransfer,
-        element: PhysicalValueRecipe,
-        normal: PhysicalEdge,
-        cancel: PhysicalEdge,
-        unwind: PhysicalEdge,
-    },
-    /// Transfer one element into the borrowed sink, parking on capacity. The
+    /// Transfer one element into the borrowed sink. `park` waits for
+    /// capacity; without it a full pipe resumes at once on `full`. The
     /// element is consumed on every exit; `closed` resumes after the consumer
     /// closed its half.
     StreamSend {
+        park: bool,
         sink: ArgumentTransfer,
         value: ArgumentTransfer,
         element: PhysicalValueRecipe,
         normal: PhysicalEdge,
         closed: PhysicalEdge,
+        full: Option<PhysicalEdge>,
         cancel: PhysicalEdge,
         unwind: PhysicalEdge,
     },
@@ -3326,8 +3306,8 @@ impl FunctionLowerer<'_> {
                         let ty = &self.storage[self.value(input.operand.value)?.0 as usize].ty;
                         // The operand's own type says which substrate this arm
                         // observes; the selection has no other authority.
-                        if ty.is_builtin(hew_types::BuiltinType::Receiver) {
-                            Ok(PhysicalSelectSource::ChannelRecv(transfer))
+                        if ty.is_builtin(hew_types::BuiltinType::Stream) {
+                            Ok(PhysicalSelectSource::StreamNext(transfer))
                         } else if ty.is_builtin(hew_types::BuiltinType::ActorCall) {
                             Ok(PhysicalSelectSource::ActorCall(transfer))
                         } else {
@@ -3474,37 +3454,7 @@ impl FunctionLowerer<'_> {
                 })
             }
             SemTerminator::Suspend {
-                kind: hew_sir::SuspendKind::ChannelRecv { park },
-                inputs,
-                result: CallResult::Value(result),
-                resumes,
-                cancel,
-                unwind,
-            } => {
-                let shape = self
-                    .module
-                    .variant_shape_for_type(&result.ty)
-                    .ok_or_else(|| {
-                        PhysicalError::new("channel receive lacks its Option descriptor")
-                    })?;
-                let element = shape
-                    .variants
-                    .first()
-                    .and_then(|variant| variant.fields.first())
-                    .map(|field| field.ty.clone())
-                    .ok_or_else(|| PhysicalError::new("channel receive lacks its element type"))?;
-                Ok(PhysicalTerminator::ChannelRecv {
-                    park: *park,
-                    channel: self.argument_transfers(inputs)?[0],
-                    element: physical_value_recipe(self.module, self.glue_ids, &element)?,
-                    result: self.value(result.id)?,
-                    normal: self.lower_edge(&resumes[0])?,
-                    cancel: self.lower_edge(cancel)?,
-                    unwind: self.lower_edge(unwind)?,
-                })
-            }
-            SemTerminator::Suspend {
-                kind: hew_sir::SuspendKind::ChannelSend,
+                kind: hew_sir::SuspendKind::StreamSend { park },
                 inputs,
                 resumes,
                 cancel,
@@ -3512,39 +3462,24 @@ impl FunctionLowerer<'_> {
                 ..
             } => {
                 let transfers = self.argument_transfers(inputs)?;
-                let element = self.storage[self.value(inputs[1].operand.value)?.0 as usize]
-                    .ty
-                    .clone();
-                Ok(PhysicalTerminator::ChannelSend {
-                    channel: transfers[0],
-                    value: transfers[1],
-                    element: physical_value_recipe(self.module, self.glue_ids, &element)?,
-                    normal: self.lower_edge(&resumes[0])?,
-                    cancel: self.lower_edge(cancel)?,
-                    unwind: self.lower_edge(unwind)?,
-                })
-            }
-            SemTerminator::Suspend {
-                kind: hew_sir::SuspendKind::StreamSend,
-                inputs,
-                resumes,
-                cancel,
-                unwind,
-                ..
-            } => {
-                let transfers = self.argument_transfers(inputs)?;
-                let [normal, closed] = resumes.as_slice() else {
-                    return Err(PhysicalError::new(
-                        "stream send lacks its accepted and closed resumes",
-                    ));
+                let (normal, closed, full) = match resumes.as_slice() {
+                    [normal, closed] if *park => (normal, closed, None),
+                    [normal, closed, full] if !*park => (normal, closed, Some(full)),
+                    _ => {
+                        return Err(PhysicalError::new(
+                            "stream send lacks its accepted, closed and full resumes",
+                        ))
+                    }
                 };
                 let element = &self.storage[self.value(inputs[1].operand.value)?.0 as usize].ty;
                 Ok(PhysicalTerminator::StreamSend {
+                    park: *park,
                     sink: transfers[0],
                     value: transfers[1],
                     element: physical_value_recipe(self.module, self.glue_ids, element)?,
                     normal: self.lower_edge(normal)?,
                     closed: self.lower_edge(closed)?,
+                    full: full.map(|full| self.lower_edge(full)).transpose()?,
                     cancel: self.lower_edge(cancel)?,
                     unwind: self.lower_edge(unwind)?,
                 })
@@ -6787,79 +6722,12 @@ fn terminator_successors(
             successors.push(apply_edge(function, borrows, unwind, state, block)?);
             Ok(successors)
         }
-        PhysicalTerminator::ChannelRecv {
-            channel,
-            result,
-            normal,
-            cancel,
-            unwind,
-            ..
-        } => {
-            let ArgumentTransfer::BorrowMut(channel) = channel else {
-                return Err(PhysicalError::new(
-                    "channel receive requires an exclusive receiver",
-                ));
-            };
-            initialized(function, &state, *channel, block, "received channel")?;
-            if state.fault != FaultState::None {
-                return Err(PhysicalError::new(
-                    "channel receive cannot replace an active fault",
-                ));
-            }
-            let mut completed = state.clone();
-            define(
-                function,
-                borrows,
-                &mut completed,
-                *result,
-                block,
-                "received element",
-            )?;
-            let mut successors = vec![apply_edge(function, borrows, normal, completed, block)?];
-            state.fault = FaultState::Active;
-            let mut cancelled = state.clone();
-            cancelled.exit = defer::CANCEL;
-            successors.push(apply_edge(function, borrows, cancel, cancelled, block)?);
-            state.exit = defer::TRAP;
-            successors.push(apply_edge(function, borrows, unwind, state, block)?);
-            Ok(successors)
-        }
-        PhysicalTerminator::ChannelSend {
-            channel,
-            value,
-            normal,
-            cancel,
-            unwind,
-            ..
-        } => {
-            let (ArgumentTransfer::BorrowMut(channel), ArgumentTransfer::Borrow(value)) =
-                (channel, value)
-            else {
-                return Err(PhysicalError::new(
-                    "channel send borrows its sender exclusively and reads its element",
-                ));
-            };
-            initialized(function, &state, *channel, block, "sending channel")?;
-            initialized(function, &state, *value, block, "sent element")?;
-            if state.fault != FaultState::None {
-                return Err(PhysicalError::new(
-                    "channel send cannot replace an active fault",
-                ));
-            }
-            let mut successors = vec![apply_edge(function, borrows, normal, state.clone(), block)?];
-            state.fault = FaultState::Active;
-            let mut cancelled = state.clone();
-            cancelled.exit = defer::CANCEL;
-            successors.push(apply_edge(function, borrows, cancel, cancelled, block)?);
-            state.exit = defer::TRAP;
-            successors.push(apply_edge(function, borrows, unwind, state, block)?);
-            Ok(successors)
-        }
         PhysicalTerminator::StreamSend {
             sink,
             value,
             normal,
             closed,
+            full,
             cancel,
             unwind,
             ..
@@ -6882,6 +6750,9 @@ fn terminator_successors(
                 apply_edge(function, borrows, normal, state.clone(), block)?,
                 apply_edge(function, borrows, closed, state.clone(), block)?,
             ];
+            if let Some(full) = full {
+                successors.push(apply_edge(function, borrows, full, state.clone(), block)?);
+            }
             state.fault = FaultState::Active;
             let mut cancelled = state.clone();
             cancelled.exit = defer::CANCEL;
@@ -7565,8 +7436,8 @@ fn verify_terminator(
                     PhysicalSelectSource::ActorCall(_) => {
                         ty.is_builtin(hew_types::BuiltinType::ActorCall)
                     }
-                    PhysicalSelectSource::ChannelRecv(_) => {
-                        ty.is_builtin(hew_types::BuiltinType::Receiver)
+                    PhysicalSelectSource::StreamNext(_) => {
+                        ty.is_builtin(hew_types::BuiltinType::Stream)
                     }
                 };
                 if !agrees {
@@ -7628,61 +7499,6 @@ fn verify_terminator(
                 ));
             }
             verify_value_recipe(module, recipe)?;
-            for successor in defer::edges(terminator) {
-                edge(successor)?;
-            }
-            Ok(())
-        }
-        PhysicalTerminator::ChannelRecv {
-            channel,
-            element,
-            result,
-            ..
-        } => {
-            let ArgumentTransfer::BorrowMut(channel) = channel else {
-                return Err(PhysicalError::new(
-                    "channel receive requires an exclusive receiver",
-                ));
-            };
-            if hew_sir::receiver_element(&slot(*channel)?.ty) != Some(&element.ty)
-                || slot(*result)?.ty
-                    != ResolvedTy::named_builtin(
-                        "Option",
-                        BuiltinType::Option,
-                        vec![element.ty.clone()],
-                    )
-            {
-                return Err(PhysicalError::new(
-                    "channel receive changes its element type",
-                ));
-            }
-            verify_value_recipe(module, element)?;
-            for successor in defer::edges(terminator) {
-                edge(successor)?;
-            }
-            Ok(())
-        }
-        PhysicalTerminator::ChannelSend {
-            channel,
-            value,
-            element,
-            ..
-        } => {
-            let (ArgumentTransfer::BorrowMut(channel), ArgumentTransfer::Borrow(value)) =
-                (channel, value)
-            else {
-                return Err(PhysicalError::new(
-                    "channel send borrows its sender exclusively and reads its element",
-                ));
-            };
-            if hew_sir::sender_element(&slot(*channel)?.ty) != Some(&element.ty)
-                || slot(*value)?.ty != element.ty
-            {
-                return Err(PhysicalError::new(
-                    "channel send element differs from its sender",
-                ));
-            }
-            verify_value_recipe(module, element)?;
             for successor in defer::edges(terminator) {
                 edge(successor)?;
             }

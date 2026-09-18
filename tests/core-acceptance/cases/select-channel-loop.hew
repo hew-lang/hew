@@ -1,29 +1,29 @@
-// Two channels selected in one loop. Source order takes the first ready arm, so
-// the loop drains the first channel then the second, and each close arrives as
+// Two pipes selected in one loop. Source order takes the first ready arm, so
+// the loop drains the first pipe then the second, and each close arrives as
 // its own `None`.
-import std.channel;
+import std.stream;
 
 fn main() {
-    let (txa, rxa): (channel.Sender<string>, channel.Receiver<string>) =
-        match channel.new(4) {
+    let (txa, rxa): (stream.Sink<string>, stream.Stream<string>) =
+        match stream.pipe(4) {
             .Ok(pair) => pair,
             .Err(error) => {
                 println(error);
                 return;
             },
         };
-    let (txb, rxb): (channel.Sender<string>, channel.Receiver<string>) =
-        match channel.new(4) {
+    let (txb, rxb): (stream.Sink<string>, stream.Stream<string>) =
+        match stream.pipe(4) {
             .Ok(pair) => pair,
             .Err(error) => {
                 println(error);
                 return;
             },
         };
-    txa.send("a1");
-    txb.send("b1");
-    txa.send("a2");
-    txb.send("b2");
+    txa.send("a1").expect("send");
+    txb.send("b1").expect("send");
+    txa.send("a2").expect("send");
+    txb.send("b2").expect("send");
 
     var items = 0;
     while items < 4 {
@@ -45,7 +45,7 @@ fn main() {
         }
     }
 
-    // A closed channel is permanently ready, so under source order it would
+    // A finished pipe is permanently ready, so under source order it would
     // win every later round. Observe each close on its own receive instead.
     txa.close();
     txb.close();

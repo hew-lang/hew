@@ -279,7 +279,7 @@ fn empty_field_user_type_remains_uninferred() {
 fn user_shadowed_builtin_name_does_not_take_builtin_value_class() {
     let output = lower_checked(
         r"
-        pub type Duplex {
+        pub type Stream {
             payload: string,
         }
     ",
@@ -289,21 +289,18 @@ fn user_shadowed_builtin_name_does_not_take_builtin_value_class() {
         "no diagnostics expected; got: {:#?}",
         output.diagnostics
     );
-    let user_ty = ResolvedTy::named_user("Duplex", Vec::new());
+    let user_ty = ResolvedTy::named_user("Stream", Vec::new());
     assert_eq!(
         ValueClass::of_ty(&user_ty, &output.module.type_classes),
         ValueClass::Unknown,
-        "user-defined Duplex with builtin: None must not inherit builtin Resource classification"
+        "user-defined Stream with builtin: None must not inherit builtin Resource classification"
     );
 
-    let builtin_ty = ResolvedTy::named_builtin(
-        "Duplex",
-        BuiltinType::Duplex,
-        vec![ResolvedTy::I64, ResolvedTy::I64],
-    );
+    let builtin_ty =
+        ResolvedTy::named_builtin("Stream", BuiltinType::Stream, vec![ResolvedTy::I64]);
     assert_eq!(
         ValueClass::of_ty(&builtin_ty, &output.module.type_classes),
         ValueClass::AffineResource,
-        "builtin-discriminated Duplex still follows builtin type-class registration"
+        "builtin-discriminated Stream still follows builtin type-class registration"
     );
 }

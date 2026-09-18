@@ -202,7 +202,7 @@ fn defer_calls_require_transitive_non_suspending_effects() {
         .unwrap();
     callee.blocks[0].terminator = SemTerminator::RtCall {
         id: OpId(0),
-        family: hew_types::RuntimeCallFamily::DuplexClose,
+        family: hew_types::RuntimeCallFamily::ActorCooperate,
         args: vec![],
         result: CallResult::Unit,
         normal: fixture::edge(1),

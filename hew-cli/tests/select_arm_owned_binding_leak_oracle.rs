@@ -71,9 +71,9 @@ fn ask_unused_binding_loop_source(frames: usize) -> String {
     )
 }
 
-/// Channel-recv mirror of the headline: an owned `string` selected per
+/// Pipe-recv mirror of the headline: an owned `string` selected per
 /// iteration (`Option<string>` binding), binding unused. The payload is a
-/// STATIC literal deliberately: `hew_channel_send_layout` deep-copies the
+/// STATIC literal deliberately: `hew_stream_send_layout` deep-copies the
 /// element into the envelope, so the recv'd value is fresh heap owned solely
 /// by the arm binding — a heap send argument would contaminate the slope with
 /// the pre-existing send-side temp leak (MIR marks `send` consuming, the
@@ -81,14 +81,14 @@ fn ask_unused_binding_loop_source(frames: usize) -> String {
 /// `select` and is a separate seam.
 fn recv_unused_binding_loop_source(frames: usize) -> String {
     format!(
-        "import std.channel;\n\
+        "import std.stream;\n\
          \n\
          fn main() -> i64 {{\n\
-         \x20   let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(1) {{ .Ok(pair) => pair, .Err(error) => panic(error), }};\n\
+         \x20   let (tx, rx): (stream.Sink<string>, stream.Stream<string>) = match stream.pipe(1) {{ .Ok(pair) => pair, .Err(error) => panic(error), }};\n\
          \x20   var i: i64 = 0;\n\
          \x20   var hits: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
-         \x20       tx.send(\"recv-owned-heap-payload\");\n\
+         \x20       tx.send(\"recv-owned-heap-payload\").expect(\"send\");\n\
          \x20       let r = select {{\n\
          \x20           _msg from rx.recv() => 1,\n\
          \x20           after 1s => 0,\n\
@@ -110,7 +110,7 @@ fn recv_unused_binding_loop_source(frames: usize) -> String {
 /// no drop of an unwritten slot.
 fn after_wins_owned_losers_loop_source(frames: usize) -> String {
     format!(
-        "import std.channel;\n\
+        "import std.stream;\n\
          \n\
          actor SlowReplier {{ \n\
          \x20   receive fn fetch() -> string {{\n\
@@ -121,7 +121,7 @@ fn after_wins_owned_losers_loop_source(frames: usize) -> String {
          \n\
          fn main() -> i64 {{\n\
          \x20   let slow = spawn SlowReplier;\n\
-         \x20   let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(1) {{ .Ok(pair) => pair, .Err(error) => panic(error), }};\n\
+         \x20   let (tx, rx): (stream.Sink<string>, stream.Stream<string>) = match stream.pipe(1) {{ .Ok(pair) => pair, .Err(error) => panic(error), }};\n\
          \x20   var i: i64 = 0;\n\
          \x20   var timeouts: i64 = 0;\n\
          \x20   while i < {frames} {{\n\

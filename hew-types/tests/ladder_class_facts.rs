@@ -493,17 +493,17 @@ fn a_user_declaration_shadowing_a_builtin_name_keeps_its_own_class() {
 /// the builtin row, which the declaration lookup must leave reachable for a
 /// name it holds no user declaration of.
 #[test]
-fn the_channel_handles_are_affine_resources_with_no_clone() {
-    let output = facts_of("class_channel_handles.hew");
-    for half in ["Sender", "Receiver"] {
+fn the_pipe_handles_are_affine_resources_with_no_clone() {
+    let output = facts_of("class_stream_handles.hew");
+    for half in ["Sink", "Stream"] {
         let rows = rows_named(&output, half);
         let facts = *rows
             .first()
-            .unwrap_or_else(|| panic!("`channel.{half}` has a published row"));
+            .unwrap_or_else(|| panic!("`stream.{half}` has a published row"));
         assert_eq!(
             (ValueClass::AffineResource, CloneKind::None),
             (facts.class, facts.clone),
-            "class table row for `channel.{half}`"
+            "class table row for `stream.{half}`"
         );
     }
 }

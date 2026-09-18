@@ -1,0 +1,45 @@
+// `finish` is a half-close, so a later `send` answers `SendError.Closed` for
+// every element type. The runtime took the element at the call, so the refusal
+// releases it exactly once rather than leaking it with the answer.
+import std.stream;
+
+fn main() {
+    let (tx, rx): (stream.Sink<i64>, stream.Stream<i64>) = match stream.pipe(4) {
+        .Ok(pair) => pair,
+        .Err(error) => panic(error),
+    };
+    tx.finish();
+    match tx.send(7) {
+        .Ok(()) => println("i64 accepted"),
+        .Err(SendError.Closed) => println("i64 closed"),
+        .Err(_) => println("i64 other"),
+    }
+    tx.close();
+    rx.close();
+
+    let (stx, srx): (stream.Sink<string>, stream.Stream<string>) = match stream.pipe(4) {
+        .Ok(pair) => pair,
+        .Err(error) => panic(error),
+    };
+    stx.finish();
+    match stx.send("late") {
+        .Ok(()) => println("string accepted"),
+        .Err(SendError.Closed) => println("string closed"),
+        .Err(_) => println("string other"),
+    }
+    stx.close();
+    srx.close();
+
+    let (btx, brx): (stream.Sink<bytes>, stream.Stream<bytes>) = match stream.pipe(4) {
+        .Ok(pair) => pair,
+        .Err(error) => panic(error),
+    };
+    btx.finish();
+    match btx.send("late".to_bytes()) {
+        .Ok(()) => println("bytes accepted"),
+        .Err(SendError.Closed) => println("bytes closed"),
+        .Err(_) => println("bytes other"),
+    }
+    btx.close();
+    brx.close();
+}

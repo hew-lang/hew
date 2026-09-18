@@ -307,7 +307,7 @@ pub enum CheckedSelectSource {
     ActorAsk {
         call: SpanKey,
     },
-    ChannelReceive {
+    StreamReceive {
         call: SpanKey,
     },
 }
@@ -2397,27 +2397,6 @@ pub(super) struct PendingInstantiation {
     pub(super) chain: Vec<String>,
 }
 
-/// A channel method call rewrite deferred until after all inference has settled.
-///
-/// Recorded when a `Sender<T>::send` / `Receiver<T>::recv` / `try_recv` call is
-/// encountered but the inner type `T` is still an unresolved `Ty::Var` at the
-/// call site (for example `let v: int = rx.recv()` — the `int` annotation
-/// constrains `T` *after* the call is visited).
-///
-/// Drained by `finalize_channel_rewrites` in `check_program`, after all
-/// inference has settled, so the correct type-specific C symbol is selected.
-#[derive(Debug, Clone)]
-pub(super) struct DeferredChannelMethodRewrite {
-    /// The built-in handle kind: `"Sender"` or `"Receiver"`.
-    pub(super) handle_kind: String,
-    /// The method name: `"send"`, `"recv"`, or `"try_recv"`.
-    pub(super) method: String,
-    /// The inner element type variable (still unresolved at record time).
-    pub(super) inner_ty: Ty,
-    /// Module path where this rewrite was recorded (None = root module).
-    pub(super) source_module: Option<String>,
-}
-
 impl PendingLoweringFact {
     pub(super) fn hashset(hashset_element_ty: Ty, source_module: Option<String>) -> Self {
         Self {
@@ -2431,8 +2410,8 @@ impl PendingLoweringFact {
 ///
 /// A qualified declaration is registered under its full path and under the
 /// twin one segment shorter, so a resolved type may carry either. Splitting on
-/// the first dot maps `std.channel.Sender` to `channel.Sender` and
-/// `channel.Sender` to `Sender`, which is the twin in both cases.
+/// the first dot maps `std.stream.Sink` to `stream.Sink` and
+/// `stream.Sink` to `Sink`, which is the twin in both cases.
 #[must_use]
 #[expect(
     clippy::implicit_hasher,
@@ -2956,7 +2935,6 @@ pub struct Checker {
     /// Keyed by call-site span so repeated traversal of the same site is
     /// idempotent (last write wins, which is fine since the inner type is the
     /// same variable every time).
-    pub(super) deferred_channel_rewrites: HashMap<SpanKey, DeferredChannelMethodRewrite>,
     pub(super) method_call_rewrites: HashMap<SpanKey, MethodCallRewrite>,
     /// Checker-side accumulator for [`TypeCheckOutput::wire_layouts`].
     pub(super) wire_layouts: WireLayoutTable,
@@ -4021,7 +3999,6 @@ impl Checker {
             shadowed_method_type_param_reports: HashSet::new(),
             eq_requirements: HashMap::new(),
             generic_fn_instantiation_sites: Vec::new(),
-            deferred_channel_rewrites: HashMap::new(),
             method_call_rewrites: HashMap::new(),
             wire_layouts: HashMap::new(),
             resolved_calls: HashMap::new(),

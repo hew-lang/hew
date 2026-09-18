@@ -1,15 +1,15 @@
-// MIR-corpus fixture: Sender/Receiver scope-exit auto-close.
+// MIR-corpus fixture: Sink/Stream scope-exit auto-close.
 //
 // The function intentionally does not call tx.close() or rx.close(); the
-// elaborated MIR must emit scope-exit channel close drops for both handles.
-import std.channel;
+// elaborated MIR must emit scope-exit pipe close drops for both handles.
+import std.stream;
 
 fn main() {
-    let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(1) {
+    let (tx, rx): (stream.Sink<string>, stream.Stream<string>) = match stream.pipe(1) {
         .Ok(pair) => pair,
-        .Err(err) => panic(f"channel.new failed: {err}"),
+        .Err(err) => panic(f"stream.pipe failed: {err}"),
     };
-    tx.send("ready");
+    tx.send("ready").expect("send");
     match rx.try_recv() {
         .Some(msg) => println(msg),
         .None => println("empty"),

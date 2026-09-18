@@ -1,0 +1,46 @@
+//! `select { pat from rx.recv() }` — a pipe-receive arm in select.
+//!
+//! Two pipes race plus an `after` safety net; the ready pipe's arm wins,
+//! the loser arm's poll is cancelled at the dispatch site, and the after-timer
+//! never fires. A correct run prints the winning pipe's value.
+
+import std.stream;
+
+actor Worker {
+    receive fn run() {
+        let (txa, rxa): (stream.Sink<string>, stream.Stream<string>) = match stream.pipe(4) {
+            .Ok(pair) => pair,
+            .Err(err) => panic(f"stream.pipe failed: {err}"),
+        };
+        let (txb, rxb): (stream.Sink<i64>, stream.Stream<i64>) = match stream.pipe(4) {
+            .Ok(pair) => pair,
+            .Err(err) => panic(f"stream.pipe failed: {err}"),
+        };
+        txb.send(7).expect("send");
+        select {
+            a from rxa.recv() => {
+                match a {
+                    .Some(s) => println(f"a:{s}"),
+                    .None => println("a:none"),
+                }
+            },
+            b from rxb.recv() => {
+                match b {
+                    .Some(n) => println(f"b:{n}"),
+                    .None => println("b:none"),
+                }
+            },
+            after 1s => println("timeout"),
+        };
+        txa.close();
+        txb.close();
+        rxa.close();
+        rxb.close();
+    }
+}
+
+fn main() {
+    let w = spawn Worker;
+    let _ = w.run();
+    sleep(100ms);
+}

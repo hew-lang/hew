@@ -178,7 +178,7 @@ pub struct HewSink {
     inner: Option<Box<dyn SinkOps>>,
     /// Opaque borrow of the suspending channel core (`ChannelCore`) when this
     /// sink is the write half of an in-memory pipe (NEW-7). Null for every
-    /// other sink kind. The runtime sets this so `hew_stream_await_send` can
+    /// other sink kind. The runtime sets this so a suspending write can
     /// reach the shared queue + the parked-consumer wake without downcasting
     /// the `dyn SinkOps` backing. The pointer borrows the `Arc<ChannelCore>`
     /// owned by the backing, so it stays valid for the lifetime of the sink.
@@ -219,6 +219,17 @@ impl HewSink {
         self.channel_core
     }
 
+    /// Whether this sink has published EOF and released its backing.
+    ///
+    /// The one closed-sink authority: [`HewSink::close`] takes `inner` exactly
+    /// once, and [`HewSink::try_write_item`] reports `Closed` from the same
+    /// state. Every send surface answers `SendError.Closed` from this predicate
+    /// rather than from a backing-specific remnant.
+    #[must_use]
+    pub fn is_closed(&self) -> bool {
+        self.inner.is_none()
+    }
+
     /// Write one item (exact bytes). Blocks if the backing buffer is full.
     pub fn write_item(&mut self, data: &[u8]) {
         let Some(inner) = self.inner.as_mut() else {
@@ -254,7 +265,7 @@ impl HewSink {
         // Drop the suspending-channel-core borrow BEFORE releasing the backing:
         // closing dethrones this sink's `Arc<ChannelCore>` clone, so the raw
         // borrow could dangle once the peer (stream) half is also dropped.
-        // Nulling it forces a later `hew_stream_await_send` onto the closed-sink
+        // Nulling it forces a later suspending write onto the closed-sink
         // (fail-closed) path instead of dereferencing a possibly-freed core.
         self.channel_core = std::ptr::null();
         self.native_connection = None;

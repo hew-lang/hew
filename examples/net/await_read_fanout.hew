@@ -1,6 +1,6 @@
-//! Multiple TCP readers using ordinary `conn.read()` calls.
-//! Each reader must run concurrently with the server that supplies its data;
-//! completion calls in the launch loop need review before running this demo.
+//! Multiple TCP readers using ordinary `conn.recv()` calls.
+//! Each reader runs concurrently with the server that supplies its data, so
+//! the launch loop forks each reader instead of waiting for it.
 
 import std.encoding.utf8;
 
@@ -18,11 +18,16 @@ actor Reader {
             .Ok(conn) => conn,
             .Err(_) => panic(f"network setup failed"),
         };
-        let body = utf8.decode(conn.read()) handle error {
-            println(f"invalid UTF-8: {error}");
-            return;
-        };
-        println(f"reader-{id}-got: {body}");
+        match conn.recv() {
+            .Some(data) => {
+                let body = utf8.decode(data) handle error {
+                    println(f"invalid UTF-8: {error}");
+                    return;
+                };
+                println(f"reader-{id}-got: {body}");
+            },
+            .None => println(f"reader-{id}-got: peer closed"),
+        }
         let _ = conn.close();
     }
 }
@@ -35,13 +40,13 @@ fn main() {
     var i = 0;
     while i < READER_COUNT {
         let r = spawn Reader(id: i, port: "18078");
-        let _ = r.go(0);
+        fork r.go(0);
         i = i + 1;
     }
     var accepted = 0;
     while accepted < READER_COUNT {
         let client = listener.accept();
-        let _ = client.write_string(f"payload-{accepted}");
+        let _ = client.send(f"payload-{accepted}".to_bytes());
         accepted = accepted + 1;
     }
     sleep(800ms);

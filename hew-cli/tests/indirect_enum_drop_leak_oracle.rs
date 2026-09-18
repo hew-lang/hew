@@ -401,12 +401,12 @@ fn tuple_of_inline_enum_loop_source(iters: usize) -> String {
 /// so a missing message destructor produces a steep leak slope.
 fn actor_mailbox_teardown_source(frames: usize) -> String {
     format!(
-        "import std.channel;\n\
+        "import std.stream;\n\
          indirect enum Tree {{ Leaf(i64), Node(Tree, Tree), }}\n\
          fn sum(t: Tree) -> i64 {{ match t {{ .Leaf(n) => n, .Node(l, r) => sum(l) + sum(r), }} }}\n\
          actor ProbeSink {{ \n\
-         \x20   receive fn hold(ready: channel.Sender<i64>) {{\n\
-         \x20       ready.send(1);\n\
+         \x20   receive fn hold(ready: stream.Sink<i64>) {{\n\
+         \x20       ready.send(1).expect(\"send\");\n\
          \x20       sleep(10s);\n\
          \x20   }}\n\
          \x20   receive fn take(t: Tree) {{ let _ = sum(t); }}\n\
@@ -420,7 +420,7 @@ fn actor_mailbox_teardown_source(frames: usize) -> String {
          fn main() -> i64 {{\n\
          \x20   let sup = spawn App;\n\
          \x20   let sink = sup.sink;\n\
-         \x20   let (ready_tx, ready_rx): (channel.Sender<i64>, channel.Receiver<i64>) = match channel.new(1) {{ .Ok(pair) => pair, .Err(error) => panic(error), }};\n\
+         \x20   let (ready_tx, ready_rx): (stream.Sink<i64>, stream.Stream<i64>) = match stream.pipe(1) {{ .Ok(pair) => pair, .Err(error) => panic(error), }};\n\
          \x20   let _ = sink.hold(ready_tx);\n\
          \x20   let started = match ready_rx.recv() {{ .Some(n) => n, .None => 0, }};\n\
          \x20   if started != 1 {{ print(\"BAD\"); return 1; }}\n\

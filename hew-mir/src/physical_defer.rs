@@ -116,10 +116,15 @@ pub(super) fn edges(term: &PhysicalTerminator) -> Vec<&PhysicalEdge> {
         PhysicalTerminator::StreamSend {
             normal,
             closed,
+            full,
             cancel,
             unwind,
             ..
-        } => vec![normal, closed, cancel, unwind],
+        } => [normal, closed]
+            .into_iter()
+            .chain(full.as_ref())
+            .chain([cancel, unwind])
+            .collect(),
         PhysicalTerminator::GeneratorYield {
             normal,
             cancel,
@@ -127,18 +132,6 @@ pub(super) fn edges(term: &PhysicalTerminator) -> Vec<&PhysicalEdge> {
             ..
         }
         | PhysicalTerminator::StreamNext {
-            normal,
-            cancel,
-            unwind,
-            ..
-        }
-        | PhysicalTerminator::ChannelRecv {
-            normal,
-            cancel,
-            unwind,
-            ..
-        }
-        | PhysicalTerminator::ChannelSend {
             normal,
             cancel,
             unwind,
@@ -418,8 +411,6 @@ pub(super) fn verify_calls(
             | PhysicalTerminator::GeneratorNext { .. }
             | PhysicalTerminator::StreamNext { .. }
             | PhysicalTerminator::StreamSend { .. }
-            | PhysicalTerminator::ChannelRecv { .. }
-            | PhysicalTerminator::ChannelSend { .. }
             | PhysicalTerminator::TaskAwait { .. }
             | PhysicalTerminator::ActorAsk { .. }
             | PhysicalTerminator::TaskScopeJoin { .. }

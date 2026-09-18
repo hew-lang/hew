@@ -16,7 +16,7 @@ use std::os::unix::io::AsRawFd;
 
 use hew_cabi::sink::hew_stream_last_errno;
 use hew_runtime::stream::{
-    hew_stream_chunks, hew_stream_next_sized, hew_stream_pair_free, hew_stream_pair_stream_bytes,
+    hew_stream_chunks, hew_stream_next_sized, hew_stream_pair_free, hew_stream_pair_stream,
     hew_tcp_stream_from_conn,
 };
 use hew_runtime::transport::{hew_tcp_connect, hew_tcp_set_read_timeout};
@@ -77,7 +77,7 @@ fn loopback_byte_for_byte() {
     assert!(!pair.is_null(), "factory must return a non-null pair");
 
     // SAFETY: pair is valid; extract stream half.
-    let stream_ptr = unsafe { hew_stream_pair_stream_bytes(pair) };
+    let stream_ptr = unsafe { hew_stream_pair_stream(pair) };
     assert!(!stream_ptr.is_null());
 
     // Write payload from peer, then close to signal EOF.
@@ -106,7 +106,7 @@ fn eof_when_peer_closes() {
     assert!(!pair.is_null());
 
     // SAFETY: pair is valid.
-    let stream_ptr = unsafe { hew_stream_pair_stream_bytes(pair) };
+    let stream_ptr = unsafe { hew_stream_pair_stream(pair) };
     assert!(!stream_ptr.is_null());
 
     // Give the OS a moment to deliver the FIN.
@@ -180,7 +180,7 @@ fn read_error_sets_last_errno() {
     let _ = hew_stream_last_errno();
 
     // SAFETY: pair is valid.
-    let stream_ptr = unsafe { hew_stream_pair_stream_bytes(pair) };
+    let stream_ptr = unsafe { hew_stream_pair_stream(pair) };
     assert!(!stream_ptr.is_null());
 
     // The read should return None (no bytes) because of the RST.
@@ -212,7 +212,7 @@ fn compose_with_chunks_adapter() {
     assert!(!pair.is_null());
 
     // SAFETY: pair is valid.
-    let stream_ptr = unsafe { hew_stream_pair_stream_bytes(pair) };
+    let stream_ptr = unsafe { hew_stream_pair_stream(pair) };
     assert!(!stream_ptr.is_null());
 
     // Write payload and close peer.
@@ -275,7 +275,7 @@ fn read_timeout_sets_nonzero_errno() {
     let _ = hew_stream_last_errno();
 
     // SAFETY: pair is valid.
-    let stream_ptr = unsafe { hew_stream_pair_stream_bytes(pair) };
+    let stream_ptr = unsafe { hew_stream_pair_stream(pair) };
     assert!(!stream_ptr.is_null());
 
     // next() should return null (None) because the socket has no data and

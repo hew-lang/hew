@@ -11,10 +11,10 @@ actor StringPipeline {
             .Err(error) => panic(error),
         };
         // Send three normal frames, one empty frame between them, then EOF.
-        sink.send("frame-0");
-        sink.send("");
-        sink.send("frame-1");
-        sink.send("frame-2");
+        sink.send("frame-0").expect("send");
+        sink.send("").expect("send");
+        sink.send("frame-1").expect("send");
+        sink.send("frame-2").expect("send");
         sink.close();
 
         // Consumer: each recv suspends until a frame is ready; None == EOF.

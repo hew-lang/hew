@@ -1,0 +1,35 @@
+// Accept + run: a pipe `Stream<T>` is a `select` source. The arm
+// `item from rx.recv()` binds `Option<T>`, so the ready item wins the first
+// selection as `Some(value)` and, once the last sink has finished, the same
+// arm wins again as `None`. The timer arm loses both times, which is what
+// separates a ready stream from a stalled one.
+import std.stream;
+
+fn main() {
+    let (tx, rx): (stream.Sink<i64>, stream.Stream<i64>) = match stream.pipe(4) {
+        .Ok(pair) => pair,
+        .Err(error) => panic(error),
+    };
+    tx.send(7).expect("send");
+    let picked = select {
+        item from rx.recv() => match item {
+            .Some(value) => value,
+            .None => -1,
+        },
+        after 1s => -2,
+    };
+    assert(picked == 7);
+    println(f"picked {picked}");
+    tx.finish();
+    let eof = select {
+        item from rx.recv() => match item {
+            .Some(value) => value,
+            .None => -1,
+        },
+        after 1s => -2,
+    };
+    assert(eof == -1);
+    println(f"eof {eof}");
+    tx.close();
+    rx.close();
+}

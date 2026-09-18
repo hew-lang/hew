@@ -340,60 +340,31 @@ fn test_try_write_reports_enotdir_errno() {
 
 #[test]
 #[serial]
-fn test_stream_try_from_file_missing_returns_not_found() {
-    // try_from_file on a missing path returns IoError::NotFound.
+fn test_stream_open_missing_path_reports_the_os_error() {
+    // `stream.open` fails closed on a missing path and hands back the runtime's
+    // own message rather than an empty string or a null-backed handle.
     let missing_path = "tests/hew/_stream_missing.txt";
     cleanup_file(missing_path);
-    match stream.from_file(missing_path) {
+    match stream.open(missing_path) {
         .Ok(_) => panic("expected missing stream source"),
-        .Err(err) => match err {
-            IoError.NotFound(_) => {},
-            _ => panic("expected IoError::NotFound"),
-        },
+        .Err(detail) => testing.assert_true(detail.len() > 0),
     }
 }
 
 #[test]
 #[serial]
-fn test_stream_try_to_file_send_close_and_try_from_file() {
-    // try_to_file opens a writable Sink; send+close works.
-    // try_from_file on the written file succeeds (no IoError).
-    // STREAM-EXTRACTION-GAP: Ok(file) binding of Stream<string> out of a
-    // Result aggregate is not yet supported in v0.5 codegen — tracked v0.5.1.
-    // TWO-FROM-FILE-GAP: two try_from_file calls in one function body hang
-    // at runtime (stream drop analysis multi-match issue) — tracked v0.5.1.
+fn test_stream_open_reads_back_the_written_file() {
+    // The file surface is read-only: `fs.write` supplies the content and
+    // `stream.open(...).lines()` reads it back through the pipe family.
     let file_path = "tests/hew/_stream_roundtrip.txt";
     cleanup_file(file_path);
-    match stream.to_file(file_path) {
-        .Ok(sink) => {
-            sink.send("stream");
-            sink.close();
-        },
-        .Err(_) => panic("expected try_to_file to succeed"),
-    }
-    match stream.from_file(file_path) {
-        .Ok(_) => {}, // stream handle dropped; Ok(file) binding deferred to v0.5.1
-        .Err(_) => panic("expected try_from_file to succeed on the written file"),
-    }
+    fs.write(file_path, "stream").expect("write input");
+    let input = match stream.open(file_path) {
+        .Ok(input) => input,
+        .Err(detail) => panic(f"expected stream.open to succeed: {detail}"),
+    };
+    testing.assert_eq_str(input.lines().collect(), "stream");
     cleanup_file(file_path);
-}
-
-#[test]
-#[serial]
-fn test_stream_try_to_file_missing_dir_returns_not_found() {
-    // Regression: try_to_file must classify open failures through the runtime's
-    // canonical error-kind channel (like std/fs), not the raw errno alone.
-    // Creating a file under a directory that does not exist is NotFound on every
-    // platform; before the consumer-side fix this path read only the errno and
-    // would misclassify a Windows access-denied open (raw 5) as Other(5).
-    let missing_target = "tests/hew/_stream_no_such_dir/child.txt";
-    match stream.to_file(missing_target) {
-        .Ok(_) => panic("expected try_to_file into a missing directory to fail"),
-        .Err(err) => match err {
-            IoError.NotFound(_) => {},
-            _ => panic("expected IoError::NotFound"),
-        },
-    }
 }
 
 #[test]

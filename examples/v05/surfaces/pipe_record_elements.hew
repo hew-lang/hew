@@ -1,0 +1,69 @@
+//! Status: runnable (record elements over std.stream)
+//! Description: Round-trips a heap-owning record through a pipe and
+//! breaks out of a `for` drain early with items still queued.
+//!
+//! A record with a `string` field is a LayoutManaged element: `send` deep-
+//! copies it into the queue envelope via the witness `clone_fn` (the caller
+//! keeps its value), `recv`/`try_recv` move the decoded element to the
+//! consumer, and a stream dropped with items still queued releases each
+//! unconsumed envelope exactly once via the witness `drop_fn`. The early
+//! `break` below exercises that queue-drop path: two `Tagged` envelopes are
+//! still queued when `rx` goes out of scope.
+
+import std.stream;
+
+type Tagged {
+    label: string,
+    value: i64,
+}
+
+actor DrainRecords {
+    // Ask-shaped fence. A tell carries no happens-before edge to anything the
+    // caller does afterwards, so `main` printing its own lines after a sleep
+    // pinned one of two legal interleavings. The mailbox is FIFO and dispatch
+    // is serial, so a reply to a fence asked after `run` proves `run` finished.
+    receive fn fence() -> i64 {
+        0
+    }
+    receive fn run(unused: i64) {
+        let (tx, rx): (stream.Sink<Tagged>, stream.Stream<Tagged>) = match stream.pipe(4) {
+            .Ok(pair) => pair,
+            .Err(err) => panic(f"stream.pipe failed: {err}"),
+        };
+        tx.send(Tagged { label: "first", value: 1 }).expect("send");
+        tx.send(Tagged { label: "second", value: 2 }).expect("send");
+        tx.send(Tagged { label: "third", value: 3 }).expect("send");
+        tx.close();
+        for item in rx {
+            println(item.label);
+            println(item.value);
+            break;
+        }
+        println("stopped early");
+    }
+}
+
+fn main() {
+    let worker = spawn DrainRecords;
+    let _ = worker.run(0);
+    match worker.fence() {
+        .Ok(_v) => {},
+        .Err(_) => println("fence failed"),
+    }
+    // Non-blocking sibling: try_recv moves one queued record out; the match
+    // owns the payload and drops it at arm scope exit.
+    let (tx, rx): (stream.Sink<Tagged>, stream.Stream<Tagged>) = match stream.pipe(2) {
+        .Ok(pair) => pair,
+        .Err(err) => panic(f"stream.pipe failed: {err}"),
+    };
+    tx.send(Tagged { label: "polled", value: 9 }).expect("send");
+    tx.close();
+    match rx.try_recv() {
+        .Some(item) => println(item.label),
+        .None => println("empty"),
+    }
+    match rx.try_recv() {
+        .Some(item) => println(item.value),
+        .None => println("drained"),
+    }
+}

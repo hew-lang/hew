@@ -4,10 +4,9 @@
 /// through `link::link_executable`, which resolves `libhew.a` (the combined
 /// runtime + stdlib staticlib) and applies the per-platform link plan.
 ///
-/// The fixture used here (`01-arith.hew`) does not exercise the duplex
-/// substrate — that path requires the HIR→MIR surface for `duplex_pair` to
-/// be wired through the typecheck pass (E3 prerequisite). A duplex-specific
-/// end-to-end test is in scope for the E5c lane once E3 lands.
+/// The fixture used here (`01-arith.hew`) does not exercise pipes or
+/// sockets; it is a plain arithmetic program that only needs the native
+/// link plan to succeed.
 ///
 /// Linux coverage for `-lpthread -ldl -lm -lrt` requires Docker validation;
 /// see `feedback_test_linux_docker`. The link plan is codified in

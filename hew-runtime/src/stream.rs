@@ -65,13 +65,11 @@ pub use crate::stream_error::{
     hew_stream_has_error, hew_stream_last_error, io_error_kind_tag, set_last_error,
     set_last_error_with_errno, set_last_error_with_errno_and_kind, take_last_error,
 };
-pub use hew_cabi::sink::{into_sink_ptr, into_write_sink_ptr, HewSink};
+pub use hew_cabi::sink::{into_sink_ptr, into_write_sink_ptr, HewSink, TrySendResult};
 
 // hew_stream_last_error / hew_stream_last_errno are defined in crate::stream_error
 // (the single owner of the C ABI); hew-cabi only declares them as imports so that
 // native packages resolve them against libhew.a at final link.
-
-use hew_cabi::vec::HewVec;
 
 pub(crate) mod native;
 
@@ -158,6 +156,15 @@ pub struct HewStream {
     /// producer's `await sink.send()`. Non-channel backings keep the blocking
     /// read path (no parkable producer to wake).
     channel: Option<Arc<crate::channel_core::ChannelCore>>,
+}
+
+impl HewStream {
+    /// The shared pipe core when this stream is the read half of an
+    /// in-memory pipe; `None` for a content stream (socket, file, adapter).
+    #[must_use]
+    pub(crate) fn pipe_core(&self) -> Option<&Arc<crate::channel_core::ChannelCore>> {
+        self.channel.as_ref()
+    }
 }
 
 impl Drop for HewStream {
@@ -591,20 +598,6 @@ fn into_stream_ptr(backing: impl StreamBacking + 'static) -> *mut HewStream {
     }))
 }
 
-/// Like [`into_stream_ptr`] but accepts an already-boxed backing.
-fn into_stream_ptr_dyn(backing: Box<dyn StreamBacking>) -> *mut HewStream {
-    Box::into_raw(Box::new(HewStream {
-        // ALLOCATOR-PAIRING: GlobalAlloc
-        inner: backing,
-        closed: false,
-        pending_read: AtomicU64::new(0),
-        pending_state: Mutex::new(None),
-        #[cfg(test)]
-        park_exit_gen: Arc::new((Mutex::new(0u64), std::sync::Condvar::new())),
-        channel: None,
-    }))
-}
-
 /// Consume a `HewStream` pointer, extract its inner backing, and free the
 /// outer allocation.  Equivalent to `Box::from_raw` + field move, but marks
 /// the stream as closed first so `HewStream::drop` won't double-close.
@@ -643,226 +636,6 @@ unsafe fn consume_stream_inner(stream: *mut HewStream) -> Box<dyn StreamBacking>
 
 // ── Stream transform infrastructure ────────────────────────────────────────────
 //
-// The four stream transform adapters (map/filter × string/bytes) share identical
-// struct layout, Send safety, Drop behaviour, and C ABI entry-point patterns.
-// Two macros eliminate this duplication while keeping the `next()` methods
-// explicit since their marshalling logic genuinely differs.
-
-/// Defines a map-style transform stream struct with Send, Drop, and trivial
-/// `close`/`is_closed` delegating to upstream.
-macro_rules! define_map_stream {
-    ($name:ident, $fn_type:ty) => {
-        #[derive(Debug)]
-        struct $name {
-            upstream: Box<dyn StreamBacking>,
-            fn_ptr: $fn_type,
-            env_ptr: *const c_void,
-        }
-
-        // SAFETY: fn_ptr is a plain function pointer; env_ptr is an RC'd closure
-        // environment that is only accessed from one thread at a time.
-        unsafe impl Send for $name {}
-
-        impl Drop for $name {
-            fn drop(&mut self) {
-                // SAFETY: env_ptr is an RC'd block; decrement its reference count.
-                unsafe { rc_drop_env(self.env_ptr) };
-            }
-        }
-    };
-}
-
-/// Defines a filter-style transform stream struct with a `done` flag,
-/// Send, Drop, and filter-aware `close`/`is_closed`.
-macro_rules! define_filter_stream {
-    ($name:ident, $fn_type:ty) => {
-        #[derive(Debug)]
-        struct $name {
-            upstream: Box<dyn StreamBacking>,
-            fn_ptr: $fn_type,
-            env_ptr: *const c_void,
-            done: bool,
-        }
-
-        // SAFETY: fn_ptr is a plain function pointer; env_ptr is an RC'd closure
-        // environment that is only accessed from one thread at a time.
-        unsafe impl Send for $name {}
-
-        impl Drop for $name {
-            fn drop(&mut self) {
-                // SAFETY: env_ptr is an RC'd block; decrement its reference count.
-                unsafe { rc_drop_env(self.env_ptr) };
-            }
-        }
-    };
-}
-
-// ── Map adapter (string) ──────────────────────────────────────────────────────
-
-/// Calling convention matching the Hew closure ABI: (env, string) → owned managed string.
-type StringMapFn = unsafe extern "C" fn(*const c_void, *const HewString) -> *mut HewString;
-
-define_map_stream!(MapStringStream, StringMapFn);
-
-impl StreamBacking for MapStringStream {
-    fn next(&mut self) -> Option<Item> {
-        let item = self.upstream.next()?;
-        let input = match string_from_utf8(&item) {
-            Ok(input) => input,
-            Err(error) => {
-                set_last_error(format!("stream string map: {error}"));
-                return None;
-            }
-        };
-        // SAFETY: input is a managed owner borrowed by the live Hew closure.
-        let result_ptr = unsafe { (self.fn_ptr)(self.env_ptr, input) };
-        // SAFETY: the callback returned an owned managed string; input is still ours.
-        let bytes = unsafe {
-            let bytes = string_as_bytes(result_ptr).to_vec();
-            string_release(result_ptr);
-            string_release(input);
-            bytes
-        };
-        Some(bytes)
-    }
-
-    fn close(&mut self) {
-        self.upstream.close();
-    }
-
-    fn is_closed(&self) -> bool {
-        self.upstream.is_closed()
-    }
-}
-
-// ── Filter adapter (string) ───────────────────────────────────────────────────
-
-/// Calling convention: (env, string) → i32 (non-zero means keep the item).
-type StringFilterFn = unsafe extern "C" fn(*const c_void, *const HewString) -> i32;
-
-define_filter_stream!(FilterStringStream, StringFilterFn);
-
-impl StreamBacking for FilterStringStream {
-    fn next(&mut self) -> Option<Item> {
-        loop {
-            if self.done {
-                return None;
-            }
-            let item = self.upstream.next()?;
-            let input = match string_from_utf8(&item) {
-                Ok(input) => input,
-                Err(error) => {
-                    set_last_error(format!("stream string filter: {error}"));
-                    self.done = true;
-                    return None;
-                }
-            };
-            // SAFETY: input is borrowed by the live Hew closure and released afterwards.
-            let keep = unsafe {
-                let keep = (self.fn_ptr)(self.env_ptr, input);
-                string_release(input);
-                keep
-            };
-            if keep != 0 {
-                return Some(item);
-            }
-        }
-    }
-
-    fn close(&mut self) {
-        self.done = true;
-        self.upstream.close();
-    }
-
-    fn is_closed(&self) -> bool {
-        self.done || self.upstream.is_closed()
-    }
-}
-
-// ── Map adapter (bytes) ───────────────────────────────────────────────────────
-
-/// Calling convention for bytes map closures.
-///
-/// The closure receives a `*mut HewVec` (bytes) and returns a new `*mut HewVec`.
-/// Both the input and the return value are owned: the closure frees the input,
-/// and the caller owns the returned vec.
-type BytesMapFn = unsafe extern "C" fn(*const c_void, *mut HewVec) -> *mut HewVec;
-
-define_map_stream!(MapBytesStream, BytesMapFn);
-
-impl StreamBacking for MapBytesStream {
-    fn next(&mut self) -> Option<Item> {
-        let item = self.upstream.next()?;
-        // SAFETY: u8_to_hwvec allocates a fresh HewVec.
-        let input_vec = unsafe { hew_cabi::vec::u8_to_hwvec(&item) };
-        // SAFETY: fn_ptr is a valid Hew closure, env_ptr is its environment.
-        let result_vec = unsafe { (self.fn_ptr)(self.env_ptr, input_vec) };
-        // Free the input vec when the closure returned a new allocation.
-        if result_vec != input_vec {
-            // SAFETY: input_vec was allocated by u8_to_hwvec and is no longer
-            // referenced — the closure returned a different allocation.
-            unsafe { hew_cabi::vec::hew_vec_free(input_vec) };
-        }
-        if result_vec.is_null() {
-            return Some(Vec::new());
-        }
-        // SAFETY: result_vec is a valid HewVec returned by the closure.
-        let result_bytes = unsafe { hew_cabi::vec::hwvec_to_u8(result_vec) };
-        // SAFETY: result_vec was allocated by the closure.
-        unsafe { hew_cabi::vec::hew_vec_free(result_vec) };
-        Some(result_bytes)
-    }
-
-    fn close(&mut self) {
-        self.upstream.close();
-    }
-
-    fn is_closed(&self) -> bool {
-        self.upstream.is_closed()
-    }
-}
-
-// ── Filter adapter (bytes) ────────────────────────────────────────────────────
-
-/// Calling convention for bytes filter closures.
-///
-/// The closure receives a `*mut HewVec` (bytes) and returns non-zero to keep
-/// the item.  The closure does NOT take ownership — the caller frees the vec
-/// after the predicate returns.
-type BytesFilterFn = unsafe extern "C" fn(*const c_void, *mut HewVec) -> i32;
-
-define_filter_stream!(FilterBytesStream, BytesFilterFn);
-
-impl StreamBacking for FilterBytesStream {
-    fn next(&mut self) -> Option<Item> {
-        loop {
-            if self.done {
-                return None;
-            }
-            let item = self.upstream.next()?;
-            // SAFETY: u8_to_hwvec allocates a fresh HewVec.
-            let tmp_vec = unsafe { hew_cabi::vec::u8_to_hwvec(&item) };
-            // SAFETY: fn_ptr is a valid Hew closure, env_ptr is its environment.
-            let keep = unsafe { (self.fn_ptr)(self.env_ptr, tmp_vec) };
-            // SAFETY: tmp_vec was allocated by u8_to_hwvec and the predicate
-            // only reads it (returns i32 bool, not the vec).
-            unsafe { hew_cabi::vec::hew_vec_free(tmp_vec) };
-            if keep != 0 {
-                return Some(item);
-            }
-        }
-    }
-
-    fn close(&mut self) {
-        self.done = true;
-        self.upstream.close();
-    }
-
-    fn is_closed(&self) -> bool {
-        self.done || self.upstream.is_closed()
-    }
-}
-
 // ── Take adapter ──────────────────────────────────────────────────────────────
 
 /// Wraps a stream and yields at most `limit` items.
@@ -890,21 +663,6 @@ impl StreamBacking for TakeStream {
     fn is_closed(&self) -> bool {
         self.remaining == 0 || self.upstream.is_closed()
     }
-}
-
-/// Decrement the RC reference count of a closure environment pointer.
-///
-/// A null pointer is a no-op (matches `hew_rc_drop`'s null-safe contract).
-///
-/// # Safety
-///
-/// `env_ptr` must be null or a valid Hew RC block pointer.
-unsafe fn rc_drop_env(env_ptr: *const c_void) {
-    extern "C" {
-        fn hew_rc_drop(ptr: *mut u8);
-    }
-    // SAFETY: hew_rc_drop handles null and expects a valid RC block pointer.
-    unsafe { hew_rc_drop(env_ptr.cast_mut().cast::<u8>()) };
 }
 
 // ── C ABI ─────────────────────────────────────────────────────────────────────
@@ -951,7 +709,7 @@ pub unsafe extern "C" fn hew_stream_channel(capacity: i64) -> *mut HewStreamPair
     }
 
     // Write half: a callback sink owning the last Arc clone; the opaque core
-    // borrow lets `hew_stream_await_send` reach the queue + parked consumer.
+    // borrow lets a suspending write reach the queue + parked consumer.
     let sink_ptr = into_sink_ptr(
         core,
         channel_sink_write,
@@ -1015,7 +773,7 @@ pub const extern "C" fn hew_stream_pair_is_valid(pair: *const HewStreamPair) -> 
 }
 
 /// Channel-sink callback: blocking write (default callers). Suspending callers
-/// route through `hew_stream_await_send` instead.
+/// route through the channel core's own send instead.
 fn channel_sink_write(core: &mut Arc<crate::channel_core::ChannelCore>, data: &[u8]) {
     core.blocking_send(data.to_vec());
 }
@@ -1023,10 +781,15 @@ fn channel_sink_write(core: &mut Arc<crate::channel_core::ChannelCore>, data: &[
 /// Channel-sink callback: flush is a no-op (the core is not write-buffered).
 fn channel_sink_flush(_core: &mut Arc<crate::channel_core::ChannelCore>) {}
 
-/// Channel-sink callback: producer EOF. Wakes a parked consumer so its
-/// `await stream.recv()` resume binds `None`.
+/// Channel-sink callback: one producer handle finished or closed. The last
+/// handle publishes EOF and wakes a parked consumer so its `recv()` binds
+/// `None`. A handle released by a crashing actor faults the pipe instead:
+/// the consumer traps on its next read rather than reading a clean end.
 fn channel_sink_close(core: &mut Arc<crate::channel_core::ChannelCore>) {
-    core.close_sink();
+    match crate::fault::crashing_owner() {
+        Some(actor_id) => core.fault_close(actor_id),
+        None => core.close_sink(),
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1062,8 +825,8 @@ fn tcp_sink_close(backing: &mut TcpStreamBacking) {
 /// has transferred ownership to the returned pair.
 ///
 /// Returns a `*mut HewStreamPair` on success.  The caller must extract the
-/// stream and sink with `hew_stream_pair_stream_bytes` /
-/// `hew_stream_pair_sink_bytes`, then free with `hew_stream_pair_free`.
+/// stream and sink with `hew_stream_pair_stream` / `hew_stream_pair_sink`,
+/// then free with `hew_stream_pair_free`.
 ///
 /// The `conn` handle is **consumed on every return path**: success *and*
 /// clone failure.  On either clone failure the original connection is fully
@@ -1277,32 +1040,6 @@ pub unsafe extern "C" fn hew_stream_pair_free(pair: *mut HewStreamPair) {
     }
 }
 
-// Bytes-typed aliases for `hew_stream_pair_sink` / `hew_stream_pair_stream`.
-// The runtime handles are type-erased, so these are thin wrappers that let
-// the Hew type checker distinguish `Sink<String>` from `Sink<bytes>`.
-
-/// Extract the `Sink` from a pair (bytes-typed alias).
-///
-/// # Safety
-///
-/// Same preconditions as `hew_stream_pair_sink`.
-#[no_mangle]
-pub unsafe extern "C" fn hew_stream_pair_sink_bytes(pair: *mut HewStreamPair) -> *mut HewSink {
-    // SAFETY: caller guarantees pair is valid; delegates to hew_stream_pair_sink.
-    unsafe { hew_stream_pair_sink(pair) }
-}
-
-/// Extract the `Stream` from a pair (bytes-typed alias).
-///
-/// # Safety
-///
-/// Same preconditions as `hew_stream_pair_stream`.
-#[no_mangle]
-pub unsafe extern "C" fn hew_stream_pair_stream_bytes(pair: *mut HewStreamPair) -> *mut HewStream {
-    // SAFETY: caller guarantees pair is valid; delegates to hew_stream_pair_stream.
-    unsafe { hew_stream_pair_stream(pair) }
-}
-
 /// Open a file for streaming reads.
 ///
 /// Returns a `*mut HewStream` that yields the file contents in 4096-byte
@@ -1348,36 +1085,6 @@ pub unsafe extern "C" fn hew_stream_from_file_read(path: *const HewString) -> *m
 pub unsafe extern "C" fn hew_file_read_stream_open(path: *const HewString) -> *mut HewStream {
     // SAFETY: This nominal adapter has exactly the delegated ABI and preconditions.
     unsafe { hew_stream_from_file_read(path) }
-}
-
-/// Open a file for streaming writes.
-///
-/// Returns a `*mut HewSink`, or null on error.  On failure, the error
-/// message is retrievable via [`hew_stream_last_error`].
-///
-/// # Safety
-///
-/// `path` must be a live managed string.
-#[no_mangle]
-pub unsafe extern "C" fn hew_stream_from_file_write(path: *const HewString) -> *mut HewSink {
-    cabi_guard!(path.is_null(), ptr::null_mut());
-    // SAFETY: Caller guarantees path is a live managed string.
-    let path_str = unsafe { string_as_str(path) };
-    if path_str.contains('\0') {
-        set_last_error("path contains interior NUL".into());
-        return ptr::null_mut();
-    }
-    match fs::File::create(path_str) {
-        Ok(f) => into_write_sink_ptr(f),
-        Err(e) => {
-            set_last_error_with_errno_and_kind(
-                format!("{e}"),
-                e.raw_os_error().unwrap_or(0),
-                io_error_kind_tag(e.kind()),
-            );
-            ptr::null_mut()
-        }
-    }
 }
 
 /// Create a stream that drains a byte buffer.
@@ -2005,23 +1712,60 @@ pub unsafe extern "C" fn hew_sink_close(sink: *mut HewSink) {
     }
 }
 
-/// Shut down a sink's backing resource without consuming its wrapper.
+/// `Sink.finish`: publish EOF to the reader and keep the handle.
 ///
-/// This is the eager-close form for a sink stored in actor state: terminal
-/// handlers cannot move a state field out, but they must still make peer EOF
-/// observable before the actor's remaining strong references are released.
-/// The later owning drop remains safe because [`HewSink::close`] takes the
-/// backing exactly once and becomes a no-op on subsequent calls.
+/// The half-close verb. A pipe sink retires its producer handle (the last
+/// one publishes EOF); a TCP sink sends FIN with `shutdown(Write)` while
+/// the read half stays live. The later owning drop remains a no-op because
+/// [`HewSink::close`] takes the backing exactly once.
 ///
 /// # Safety
 ///
 /// `sink` must be a valid pointer created by a stream sink constructor.
 #[no_mangle]
-pub unsafe extern "C" fn hew_sink_shutdown(sink: *mut HewSink) {
+pub unsafe extern "C" fn hew_sink_finish(sink: *mut HewSink) {
     if !sink.is_null() {
         // SAFETY: sink is valid per caller contract.
         unsafe { (*sink).close() };
     }
+}
+
+/// `Sink.clone`: one more producer handle on the same pipe. The pipe reaches
+/// EOF when the last handle finishes or closes.
+///
+/// Only a pipe sink has a shareable queue behind it. A socket or file sink has
+/// one writer; cloning one is refused fail-closed.
+///
+/// # Safety
+///
+/// `sink` must be a valid pointer created by a stream sink constructor.
+#[no_mangle]
+pub unsafe extern "C" fn hew_sink_clone(sink: *mut HewSink) -> *mut HewSink {
+    cabi_guard!(sink.is_null(), ptr::null_mut());
+    // SAFETY: sink is valid per caller contract.
+    let core_raw = unsafe { (*sink).channel_core_ptr() };
+    if core_raw.is_null() {
+        crate::channel_common::abort_elem_witness(
+            "hew_sink_clone",
+            "only a pipe sink can be cloned; a socket or file sink has one writer",
+        );
+    }
+    let core_raw = core_raw.cast::<crate::channel_core::ChannelCore>();
+    // SAFETY: the sink's backing owns the Arc this pointer borrows; the
+    // increment mints the clone's independent owner.
+    unsafe { Arc::increment_strong_count(core_raw) };
+    // SAFETY: the increment above balances this reconstruction.
+    let core = unsafe { Arc::from_raw(core_raw) };
+    core.clone_sink();
+    let clone = into_sink_ptr(
+        core,
+        channel_sink_write,
+        channel_sink_flush,
+        channel_sink_close,
+    );
+    // SAFETY: clone was just allocated by into_sink_ptr.
+    unsafe { (*clone).set_channel_core(core_raw.cast::<c_void>()) };
+    clone
 }
 
 /// Whether the sink's peer (the consumer / `Stream<T>` half) has closed or
@@ -2320,157 +2064,6 @@ pub unsafe extern "C" fn hew_stream_is_closed(stream: *mut HewStream) -> i32 {
     i32::from(s.inner.is_closed())
 }
 
-/// Common entry-point logic for stream transform C ABI functions.
-///
-/// Validates inputs, consumes the upstream stream, and invokes `build`
-/// to construct the platform-specific backing.
-///
-/// # Safety
-///
-/// - `stream` must be a valid `HewStream` pointer.
-/// - `fn_ptr` must be non-null.
-/// - `build` must produce a valid `StreamBacking` from the given upstream and pointers.
-unsafe fn stream_transform_entry(
-    stream: *mut HewStream,
-    fn_ptr: *const c_void,
-    env_ptr: *const c_void,
-    build: impl FnOnce(Box<dyn StreamBacking>, *const c_void, *const c_void) -> Box<dyn StreamBacking>,
-) -> *mut HewStream {
-    cabi_guard!(stream.is_null() || fn_ptr.is_null(), ptr::null_mut());
-    // SAFETY: stream is a valid HewStream pointer from the Hew runtime ABI.
-    let upstream = unsafe { consume_stream_inner(stream) };
-    into_stream_ptr_dyn(build(upstream, fn_ptr, env_ptr))
-}
-
-/// Wrap a stream with a lazy map adapter.
-///
-/// Every item yielded by `stream` is transformed by calling `fn_ptr(env_ptr, item)`.
-/// The adapter takes ownership of `stream` and of one RC reference to `env_ptr`
-/// (the caller must have RC-cloned before passing here).
-///
-/// Returns a new `HewStream*`. Takes ownership of `stream`.
-///
-/// # Safety
-///
-/// - `stream` must be a valid `HewStream` pointer.
-/// - `fn_ptr` must be a valid Hew closure function pointer matching the
-///   `(env: *const c_void, s: *const HewString) -> *mut HewString` ABI.
-/// - `env_ptr` must be null or a valid Hew RC block already retained for this call.
-#[no_mangle]
-pub unsafe extern "C" fn hew_stream_map_string(
-    stream: *mut HewStream,
-    fn_ptr: *const c_void,
-    env_ptr: *const c_void,
-) -> *mut HewStream {
-    // SAFETY: caller satisfies all pointer contracts.
-    unsafe {
-        stream_transform_entry(stream, fn_ptr, env_ptr, |upstream, fp, ep| {
-            let fn_typed: StringMapFn = std::mem::transmute(fp);
-            Box::new(MapStringStream {
-                upstream,
-                fn_ptr: fn_typed,
-                env_ptr: ep,
-            })
-        })
-    }
-}
-
-/// Wrap a stream with a lazy filter adapter.
-///
-/// Items for which `fn_ptr(env_ptr, item)` returns zero are skipped.
-/// The adapter takes ownership of `stream` and of one RC reference to `env_ptr`.
-///
-/// Returns a new `HewStream*`. Takes ownership of `stream`.
-///
-/// # Safety
-///
-/// - `stream` must be a valid `HewStream` pointer.
-/// - `fn_ptr` must match the `(env: *const c_void, s: *const HewString) -> i32` ABI.
-/// - `env_ptr` must be null or a valid Hew RC block already retained for this call.
-#[no_mangle]
-pub unsafe extern "C" fn hew_stream_filter_string(
-    stream: *mut HewStream,
-    fn_ptr: *const c_void,
-    env_ptr: *const c_void,
-) -> *mut HewStream {
-    // SAFETY: caller satisfies all pointer contracts.
-    unsafe {
-        stream_transform_entry(stream, fn_ptr, env_ptr, |upstream, fp, ep| {
-            let fn_typed: StringFilterFn = std::mem::transmute(fp);
-            Box::new(FilterStringStream {
-                upstream,
-                fn_ptr: fn_typed,
-                env_ptr: ep,
-                done: false,
-            })
-        })
-    }
-}
-
-/// Wrap a bytes stream with a lazy map adapter.
-///
-/// The closure receives a `*mut HewVec` (bytes) and returns a new `*mut HewVec`.
-/// The adapter takes ownership of `stream` and of one RC reference to `env_ptr`.
-///
-/// Returns a new `HewStream*`. Takes ownership of `stream`.
-///
-/// # Safety
-///
-/// - `stream` must be a valid `HewStream` pointer.
-/// - `fn_ptr` must be a valid Hew closure matching the
-///   `(env: *const c_void, data: *mut HewVec) -> *mut HewVec` ABI.
-/// - `env_ptr` must be null or a valid Hew RC block already retained for this call.
-#[no_mangle]
-pub unsafe extern "C" fn hew_stream_map_bytes(
-    stream: *mut HewStream,
-    fn_ptr: *const c_void,
-    env_ptr: *const c_void,
-) -> *mut HewStream {
-    // SAFETY: caller satisfies all pointer contracts.
-    unsafe {
-        stream_transform_entry(stream, fn_ptr, env_ptr, |upstream, fp, ep| {
-            let fn_typed: BytesMapFn = std::mem::transmute(fp);
-            Box::new(MapBytesStream {
-                upstream,
-                fn_ptr: fn_typed,
-                env_ptr: ep,
-            })
-        })
-    }
-}
-
-/// Wrap a bytes stream with a lazy filter adapter.
-///
-/// Items for which `fn_ptr(env_ptr, item_vec)` returns zero are skipped.
-/// The adapter takes ownership of `stream` and of one RC reference to `env_ptr`.
-///
-/// Returns a new `HewStream*`. Takes ownership of `stream`.
-///
-/// # Safety
-///
-/// - `stream` must be a valid `HewStream` pointer.
-/// - `fn_ptr` must match the `(env: *const c_void, data: *mut HewVec) -> i32` ABI.
-/// - `env_ptr` must be null or a valid Hew RC block already retained for this call.
-#[no_mangle]
-pub unsafe extern "C" fn hew_stream_filter_bytes(
-    stream: *mut HewStream,
-    fn_ptr: *const c_void,
-    env_ptr: *const c_void,
-) -> *mut HewStream {
-    // SAFETY: caller satisfies all pointer contracts.
-    unsafe {
-        stream_transform_entry(stream, fn_ptr, env_ptr, |upstream, fp, ep| {
-            let fn_typed: BytesFilterFn = std::mem::transmute(fp);
-            Box::new(FilterBytesStream {
-                upstream,
-                fn_ptr: fn_typed,
-                env_ptr: ep,
-                done: false,
-            })
-        })
-    }
-}
-
 /// Wrap a stream with a take adapter that yields at most `n` items.
 ///
 /// Returns a new `HewStream*`. Takes ownership of `stream`.
@@ -2763,137 +2356,6 @@ pub unsafe extern "C" fn hew_stream_detach_await(
     }
 }
 
-/// Register a suspending producer for `await sink.send(x)`.
-///
-/// Returns [`crate::channel_core::STREAM_AWAIT_READY`] when the write completed
-/// immediately (the ring had space, the consumer is gone, or this is a
-/// non-channel sink), or [`crate::channel_core::STREAM_AWAIT_SUSPEND`] after
-/// parking the producer (the ring was full; its item is owned by the runtime
-/// across the suspend and enqueued by the consumer's drain).
-///
-/// # Safety
-///
-/// `sink` is a live sink handle; `actor` is the sending actor; `slot` is a live
-/// read slot; `data` points to the caller's `BytesTriple` (borrowed — the
-/// runtime copies it).
-#[no_mangle]
-pub unsafe extern "C" fn hew_stream_await_send(
-    sink: *mut HewSink,
-    actor: *mut crate::actor::HewActor,
-    slot: *mut crate::read_slot::HewReadSlot,
-    data: *const crate::bytes::BytesTriple,
-) -> i32 {
-    if sink.is_null() {
-        return crate::channel_core::STREAM_AWAIT_READY;
-    }
-    // SAFETY: sink is valid per caller contract.
-    let core_raw = unsafe { (*sink).channel_core_ptr() };
-    if core_raw.is_null() {
-        // Non-channel sink: blocking write (status quo).
-        // SAFETY: sink + data validity is the caller's contract.
-        unsafe { hew_sink_write_bytes(sink, data) };
-        return crate::channel_core::STREAM_AWAIT_READY;
-    }
-    // Copy the item out of the borrowed triple (the runtime owns it across the
-    // suspend / hand-off).
-    let item: Vec<u8> = if data.is_null() {
-        Vec::new()
-    } else {
-        // SAFETY: data points to the caller's valid BytesTriple slot.
-        let d = unsafe { &*data };
-        if d.ptr.is_null() || d.len == 0 {
-            Vec::new()
-        } else {
-            // SAFETY: `d.ptr + d.offset` is valid for `d.len` bytes per the
-            // BytesTriple contract; read-only borrow.
-            unsafe {
-                std::slice::from_raw_parts(d.ptr.add(d.offset as usize), d.len as usize).to_vec()
-            }
-        }
-    };
-    // SAFETY: core_raw borrows the live `Arc<ChannelCore>` owned by the sink
-    // backing (alive for the duration of this call); actor / slot validity is
-    // the caller's contract.
-    let core = unsafe { &*core_raw.cast::<crate::channel_core::ChannelCore>() };
-    // SAFETY: see above.
-    unsafe { core.await_send(actor, slot, item) }
-}
-
-/// Layout-generic sibling of [`hew_stream_await_send`]: registers a
-/// suspending producer for a `receive gen fn` pump's per-yield forward
-/// (`SuspendKind::StreamSend`) for ANY witness-describable element type, not
-/// just `bytes`/`string`. Combines [`hew_stream_send_layout`]'s envelope
-/// encoding with `hew_stream_await_send`'s suspend/park semantics.
-///
-/// Returns [`crate::channel_core::STREAM_AWAIT_READY`] when the write
-/// completed immediately (the ring had space, the consumer is gone, this is a
-/// non-channel sink, or a `Plain`/`String`/`Bytes` envelope was written to
-/// any sink kind), or [`crate::channel_core::STREAM_AWAIT_SUSPEND`] after
-/// parking the producer (the ring was full; the encoded envelope is owned by
-/// the runtime across the suspend).
-///
-/// # Safety
-///
-/// `sink` is a live sink handle; `actor` is the sending actor; `slot` is a
-/// live read slot; `data`/`layout` follow [`crate::channel_common::encode_elem_envelope`]'s
-/// contract (`data` points to one live element of the witness's type;
-/// `layout` is a valid witness for the call's duration).
-#[no_mangle]
-pub unsafe extern "C" fn hew_stream_await_send_layout(
-    sink: *mut HewSink,
-    actor: *mut crate::actor::HewActor,
-    slot: *mut crate::read_slot::HewReadSlot,
-    data: *const c_void,
-    layout: *const crate::vec::HewValueLayout,
-) -> i32 {
-    if sink.is_null() {
-        return crate::channel_core::STREAM_AWAIT_READY;
-    }
-    // SAFETY: layout validity is the caller's contract; the helper aborts
-    // fail-closed on a malformed witness.
-    let layout = unsafe {
-        crate::channel_common::elem_layout_witness(layout, "hew_stream_await_send_layout")
-    };
-    // SAFETY: sink is valid per caller contract.
-    let core_raw = unsafe { (*sink).channel_core_ptr() };
-    if core_raw.is_null() {
-        // Non-channel sink: no in-memory queue to own a layout-managed
-        // element's release — fail closed exactly like the blocking
-        // `hew_stream_send_layout` sibling. Plain/String/Bytes envelopes own
-        // no heap, so any sink kind accepts them via the same immediate
-        // `write_item` the blocking path uses.
-        if layout.ownership_kind == crate::vec::HewTypeOwnershipKind::LayoutManaged {
-            crate::channel_common::abort_elem_witness(
-                "hew_stream_await_send_layout",
-                "layout-managed elements require an in-memory channel sink",
-            );
-        }
-        // SAFETY: data points to one live element per caller contract.
-        let env = unsafe {
-            crate::channel_common::encode_elem_envelope(
-                data,
-                layout,
-                "hew_stream_await_send_layout",
-            )
-        };
-        // SAFETY: sink is valid per caller contract.
-        unsafe { (*sink).write_item(&env) };
-        return crate::channel_core::STREAM_AWAIT_READY;
-    }
-    // SAFETY: core_raw borrows the live `Arc<ChannelCore>` owned by the sink
-    // backing (alive for the duration of this call).
-    let core = unsafe { &*core_raw.cast::<crate::channel_core::ChannelCore>() };
-    if layout.ownership_kind == crate::vec::HewTypeOwnershipKind::LayoutManaged {
-        core.stamp_elem_layout(layout);
-    }
-    // SAFETY: data points to one live element per caller contract.
-    let env = unsafe {
-        crate::channel_common::encode_elem_envelope(data, layout, "hew_stream_await_send_layout")
-    };
-    // SAFETY: actor / slot validity is the caller's contract.
-    unsafe { core.await_send(actor, slot, env) }
-}
-
 /// Detach an abandoned suspending producer (the codegen abandon edge). Releases
 /// the channel core's in-flight ref on `slot` and drops the parked item.
 ///
@@ -2921,63 +2383,6 @@ pub unsafe extern "C" fn hew_sink_detach_await(
 
 // ── Non-blocking stream read / sink write ─────────────────────────────────────
 
-/// Non-blocking variant of [`hew_sink_write_string`].
-///
-/// Writes a managed string to the sink if the backing buffer has
-/// capacity. Returns `0` (`SendError::Ok`) on success, `1`
-/// (`SendError::Closed`) if the sink or its receiving peer is closed, or `2`
-/// (`SendError::Full`) if the buffer is at capacity and the write would have
-/// blocked. For open non-channel sinks the backing falls back to a blocking
-/// write and returns `0`.
-///
-/// Returns `1` (`SendError::Closed`) if `sink` or `data` is null.
-///
-/// # Safety
-///
-/// ## Pointer validity
-/// `sink` must be a non-null pointer obtained from a `hew_stream_*` or
-/// `hew_sink_*` constructor and must not have been freed.
-/// `data` must be a live managed string or canonical null/empty.
-///
-/// ## Aliasing
-/// No other thread may concurrently write to `sink` during this call.
-///
-/// ## Lifetime
-/// `data` must remain valid for the duration of this call; the runtime
-/// copies the bytes before returning.
-///
-/// ## Return value
-/// `0` = item accepted; `1` = closed/null argument; `2` = channel full.
-///
-/// ## Caller responsibility
-/// The caller retains ownership of `data`; the runtime copies the bytes.
-#[no_mangle]
-pub unsafe extern "C" fn hew_sink_try_write_string(
-    sink: *mut HewSink,
-    data: *const HewString,
-) -> i32 {
-    // SendError::Closed = 1
-    if sink.is_null() {
-        return 1;
-    }
-    // SAFETY: data is a borrowed managed value (null represents empty);
-    // the immutable stored length bounds this read.
-    let bytes = unsafe { string_as_bytes(data) };
-    // Channel-backed sinks use the core's genuine non-blocking `try_send`.
-    // SAFETY: sink is valid per the guard above.
-    if let Some(core) = unsafe { sink_channel_core(sink) } {
-        return core.try_send(bytes.to_vec()).into_abi_code();
-    }
-    // SAFETY:
-    //   Provenance: `sink` came from a `hew_*_sink_*` constructor; non-null by guard above.
-    //   Type tag: cast to `*mut HewSink` matches declared type.
-    //   Lifetime owner: caller retains; we do not free.
-    //   Aliasing/concurrency: caller contract bans concurrent writes; backing's try_write is internally synchronised.
-    //   Bounds: not a slice access — method dispatch with the bytes slice we just borrowed.
-    //   Failure mode: violations are UAF / data race; documented at fn level. Non-channel sinks fall back to blocking write per `SinkOps::try_write_item` default.
-    unsafe { (*sink).try_write_item(bytes) }.into_abi_code()
-}
-
 /// If `sink` is a channel-backed (NEW-7) sink, return a borrow of its core.
 ///
 /// # Safety
@@ -3000,72 +2405,64 @@ unsafe fn sink_channel_core<'a>(
     }
 }
 
-/// Non-blocking variant of [`hew_sink_write_bytes`].
-///
-/// Writes a `bytes` value to the sink if the backing buffer has capacity.
-/// Returns `0` (`SendError::Ok`) on success, `1` (`SendError::Closed`) if the
-/// sink or its receiving peer is closed, or `2` (`SendError::Full`) if the
-/// buffer is at capacity. For open non-channel sinks the backing falls back
-/// to a blocking write and returns `0`.
-///
-/// Returns `1` (`SendError::Closed`) if `sink` or `data` is null.
-///
-/// Takes a POINTER to the caller's [`crate::bytes::BytesTriple`]; the active
-/// region is BORROWED for the duration of the call and the caller retains
-/// ownership (the Hew drop spine releases it via `hew_bytes_drop`). By-pointer
-/// (not by-value) for the same ABI reason as [`hew_sink_write_bytes`]
-/// (the uniform by-pointer bytes-param convention).
+/// `Sink.try_send`: deposit one element of any witness-describable type
+/// without waiting. Returns `0` (accepted), `1` (`SendError.Closed`: the sink
+/// finished or the reader left) or `2` (`SendError.Full`: the pipe is at
+/// capacity). An open content sink (file, socket) has no bounded queue to
+/// observe, so its write completes in place and reports `0`.
 ///
 /// # Safety
 ///
-/// ## Pointer validity
-/// `sink` must be a non-null pointer obtained from a `hew_stream_*` or
-/// `hew_sink_*` constructor and must not have been freed.
-/// `data` must point to a valid `BytesTriple` (its ptr null with len 0, or ptr
-/// pointing to a `hew_bytes_*` allocation whose active region is in bounds).
-///
-/// ## Aliasing
-/// No other thread may concurrently write to `sink` during this call.
-///
-/// ## Lifetime
-/// `data`'s buffer must remain valid for the duration of this call; the
-/// runtime copies the bytes before returning.
-///
-/// ## Return value
-/// `0` = item accepted; `1` = closed/null sink or data; `2` = channel full.
+/// `sink` must be a valid pointer. `data` must point to one live element of
+/// the witness's type; the caller keeps it. `layout` must be a valid witness
+/// for the duration of the call.
 #[no_mangle]
-pub unsafe extern "C" fn hew_sink_try_write_bytes(
+pub unsafe extern "C" fn hew_stream_try_send_layout(
     sink: *mut HewSink,
-    data: *const crate::bytes::BytesTriple,
+    data: *const c_void,
+    layout: *const crate::vec::HewValueLayout,
 ) -> i32 {
-    // SendError::Closed = 1
     if sink.is_null() {
-        return 1;
+        return TrySendResult::Closed.into_abi_code();
     }
-    // SAFETY: `data` points to the caller's valid BytesTriple slot.
-    let data = unsafe { &*data };
-    // Borrow the active region (empty for a null/0 triple).
-    let bytes: &[u8] = if data.len == 0 || data.ptr.is_null() {
-        &[]
-    } else {
-        // SAFETY: `data.ptr + data.offset` is valid for `data.len` bytes per
-        // the BytesTriple contract; read-only borrow (no mutation, no free).
-        unsafe { std::slice::from_raw_parts(data.ptr.add(data.offset as usize), data.len as usize) }
-    };
-    // Channel-backed sinks use the core's genuine non-blocking `try_send`
-    // (the CallbackSink default would block).
+    // SAFETY: layout validity is the caller's contract.
+    let layout =
+        unsafe { crate::channel_common::elem_layout_witness(layout, "hew_stream_try_send_layout") };
     // SAFETY: sink is valid per caller contract.
-    if let Some(core) = unsafe { sink_channel_core(sink) } {
-        return core.try_send(bytes.to_vec()).into_abi_code();
+    let core = unsafe { sink_channel_core(sink) };
+    // A finished sink answers `Closed` for every element type: its backing is
+    // gone, so no element kind can require an in-memory channel of it.
+    // SAFETY: sink is valid per caller contract.
+    let closed = unsafe { (*sink).is_closed() };
+    if !closed
+        && core.is_none()
+        && layout.ownership_kind == crate::vec::HewTypeOwnershipKind::LayoutManaged
+    {
+        crate::channel_common::abort_elem_witness(
+            "hew_stream_try_send_layout",
+            "layout-managed elements require an in-memory channel sink",
+        );
     }
-    // SAFETY:
-    //   Provenance: `sink` came from a `hew_*_sink_*` constructor; non-null by guard above.
-    //   Type tag: cast to `*mut HewSink` matches declared type.
-    //   Lifetime owner: caller retains; we do not free.
-    //   Aliasing/concurrency: caller contract bans concurrent writes; backing's try_write is internally synchronised.
-    //   Bounds: method dispatch with the bytes slice borrowed above.
-    //   Failure mode: violations are UAF / data race. Non-channel sinks fall back to blocking write.
-    unsafe { (*sink).try_write_item(bytes) }.into_abi_code()
+    // SAFETY: data points to one live element per caller contract.
+    let env = unsafe {
+        crate::channel_common::encode_elem_envelope(data, layout, "hew_stream_try_send_layout")
+    };
+    if closed {
+        // The caller relinquished the element at the call, so the refusal
+        // releases it here rather than leaking it with the answer.
+        crate::channel_common::drop_elem_envelope(Some(layout), env, "hew_stream_try_send_layout");
+        return TrySendResult::Closed.into_abi_code();
+    }
+    match core {
+        Some(core) => {
+            if layout.ownership_kind == crate::vec::HewTypeOwnershipKind::LayoutManaged {
+                core.stamp_elem_layout(layout);
+            }
+            core.try_send(env).into_abi_code()
+        }
+        // SAFETY: sink is valid per caller contract.
+        None => unsafe { (*sink).try_write_item(&env) }.into_abi_code(),
+    }
 }
 
 #[cfg(test)]
@@ -3201,21 +2598,6 @@ mod tests {
         // SAFETY: null is explicitly handled by cabi_guard.
         let result = unsafe { hew_stream_pair_stream(ptr::null_mut()) };
         assert!(result.is_null());
-    }
-
-    #[test]
-    fn pair_bytes_aliases_delegate_correctly() {
-        // SAFETY: FFI calls with valid pointers.
-        unsafe {
-            let pair = hew_stream_channel(1);
-            let sink = hew_stream_pair_sink_bytes(pair);
-            let stream = hew_stream_pair_stream_bytes(pair);
-            assert!(!sink.is_null());
-            assert!(!stream.is_null());
-            hew_sink_close(sink);
-            hew_stream_close(stream);
-            hew_stream_pair_free(pair);
-        }
     }
 
     #[test]
@@ -3680,53 +3062,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn sink_try_write_string_reports_accepted_full_and_closed() {
-        let data = ManagedString::new("message");
-        // SAFETY: all handles and data pointers come from their matching constructors.
-        unsafe {
-            let pair = hew_stream_channel(1);
-            let sink = hew_stream_pair_sink(pair);
-            let stream = hew_stream_pair_stream(pair);
-            hew_stream_pair_free(pair);
-
-            assert_eq!(hew_sink_try_write_string(sink, data.as_ptr()), 0);
-            assert_eq!(hew_sink_try_write_string(sink, data.as_ptr()), 2);
-            hew_stream_close(stream);
-            assert_eq!(hew_sink_try_write_string(sink, data.as_ptr()), 1);
-
-            hew_sink_close(sink);
-        }
-    }
-
-    #[test]
-    fn sink_try_write_bytes_reports_accepted_full_and_closed() {
-        let payload = b"message";
-        // SAFETY: payload is valid for its length and the returned bytes allocation
-        // remains live until the matching hew_bytes_drop below.
-        let data = unsafe {
-            crate::bytes::hew_bytes_from_static(
-                payload.as_ptr(),
-                u32::try_from(payload.len()).unwrap(),
-            )
-        };
-        // SAFETY: all handles and data pointers come from their matching constructors.
-        unsafe {
-            let pair = hew_stream_channel(1);
-            let sink = hew_stream_pair_sink_bytes(pair);
-            let stream = hew_stream_pair_stream_bytes(pair);
-            hew_stream_pair_free(pair);
-
-            assert_eq!(hew_sink_try_write_bytes(sink, &raw const data), 0);
-            assert_eq!(hew_sink_try_write_bytes(sink, &raw const data), 2);
-            hew_stream_close(stream);
-            assert_eq!(hew_sink_try_write_bytes(sink, &raw const data), 1);
-
-            hew_sink_close(sink);
-            crate::bytes::hew_bytes_drop(data.ptr);
-        }
-    }
-
     // ── File-backed streams ─────────────────────────────────────────────
 
     #[test]
@@ -3871,111 +3206,26 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
-    #[test]
-    fn file_write_null_path_returns_null() {
-        // SAFETY: null path is handled by cabi_guard.
-        let result = unsafe { hew_stream_from_file_write(ptr::null()) };
-        assert!(result.is_null());
-    }
-
-    #[test]
-    fn file_write_then_read_roundtrip() {
-        let path = temp_path("write_roundtrip");
-        let c_path = ManagedString::new(path.to_str().unwrap());
-
-        // Write via sink FFI.
-        // SAFETY: c_path points to a valid path; sink is created from it.
-        unsafe {
-            let sink = hew_stream_from_file_write(c_path.as_ptr());
-            assert!(!sink.is_null());
-            let msg = b"written via FFI";
-            hew_sink_write(sink, msg.as_ptr().cast(), msg.len());
-            hew_sink_flush(sink);
-            hew_sink_close(sink);
-        }
-
-        // Verify file contents directly.
-        let mut contents = Vec::new();
-        std::fs::File::open(&path)
-            .unwrap()
-            .read_to_end(&mut contents)
-            .unwrap();
-        assert_eq!(contents, b"written via FFI");
-        let _ = std::fs::remove_file(&path);
-    }
-
-    #[test]
-    fn file_write_then_stream_read_roundtrip() {
-        let path = temp_path("file_roundtrip");
-        let c_path = ManagedString::new(path.to_str().unwrap());
-        let payload = b"roundtrip payload";
-
-        // SAFETY: all FFI calls use valid pointers.
-        unsafe {
-            // Write phase.
-            let sink = hew_stream_from_file_write(c_path.as_ptr());
-            assert!(!sink.is_null());
-            hew_sink_write(sink, payload.as_ptr().cast(), payload.len());
-            hew_sink_close(sink);
-
-            // Read phase.
-            let stream = hew_stream_from_file_read(c_path.as_ptr());
-            assert!(!stream.is_null());
-            let items = drain_stream(stream);
-            let all: Vec<u8> = items.into_iter().flatten().collect();
-            assert_eq!(all, payload);
-            hew_stream_close(stream);
-        }
-        let _ = std::fs::remove_file(&path);
-    }
-
-    #[test]
-    fn file_write_binary_data_preserved() {
-        let path = temp_path("binary_write");
-        let c_path = ManagedString::new(path.to_str().unwrap());
-        let binary: Vec<u8> = (0..=255).collect();
-
-        // SAFETY: all FFI calls use valid pointers.
-        unsafe {
-            let sink = hew_stream_from_file_write(c_path.as_ptr());
-            assert!(!sink.is_null());
-            hew_sink_write(sink, binary.as_ptr().cast(), binary.len());
-            hew_sink_close(sink);
-
-            let stream = hew_stream_from_file_read(c_path.as_ptr());
-            let items = drain_stream(stream);
-            let all: Vec<u8> = items.into_iter().flatten().collect();
-            assert_eq!(all, binary);
-            hew_stream_close(stream);
-        }
-        let _ = std::fs::remove_file(&path);
-    }
-
     // ── Pipe ────────────────────────────────────────────────────────────
 
     #[test]
-    fn pipe_transfers_all_items() {
-        let path = temp_path("pipe_output");
-        let c_path = ManagedString::new(path.to_str().unwrap());
-
+    fn pipe_transfers_all_items_and_finishes_the_sink() {
         let data = b"piped content";
         // SAFETY: all FFI calls use valid pointers.
         unsafe {
-            let stream = hew_stream_from_bytes(data.as_ptr(), data.len(), 0);
-            let sink = hew_stream_from_file_write(c_path.as_ptr());
-            assert!(!stream.is_null());
-            assert!(!sink.is_null());
-            // pipe consumes both handles.
+            let stream = hew_stream_from_bytes(data.as_ptr(), data.len(), 5);
+            let pair = hew_stream_channel(8);
+            let sink = hew_stream_pair_sink(pair);
+            let output = hew_stream_pair_stream(pair);
+            hew_stream_pair_free(pair);
+            // pipe consumes both handles and finishes the sink at EOF.
             hew_stream_pipe(stream, sink);
+            assert_eq!(
+                drain_stream(output),
+                vec![b"piped".to_vec(), b" cont".to_vec(), b"ent".to_vec()]
+            );
+            hew_stream_close(output);
         }
-
-        let mut contents = Vec::new();
-        std::fs::File::open(&path)
-            .unwrap()
-            .read_to_end(&mut contents)
-            .unwrap();
-        assert_eq!(contents, data);
-        let _ = std::fs::remove_file(&path);
     }
 
     // ── Lines adapter ───────────────────────────────────────────────────
@@ -4455,45 +3705,6 @@ mod tests {
     }
 
     #[test]
-    fn managed_stream_callbacks_and_sink_preserve_content_and_owners() {
-        unsafe extern "C" fn retain_input(
-            _env: *const c_void,
-            value: *const HewString,
-        ) -> *mut HewString {
-            // SAFETY: the callback borrows value and returns a separate owned reference.
-            unsafe { hew_cabi::string::string_retain(value) }
-        }
-        unsafe extern "C" fn keep_nul_or_empty(
-            _env: *const c_void,
-            value: *const HewString,
-        ) -> i32 {
-            // SAFETY: value is borrowed for this callback, including canonical empty.
-            let bytes = unsafe { string_as_bytes(value) };
-            i32::from(bytes.is_empty() || bytes.contains(&0))
-        }
-        let value = ManagedString::new("é\0中🙂");
-        // SAFETY: each constructor transfers a live handle; adapters consume their upstream.
-        unsafe {
-            let pair = hew_stream_channel(4);
-            let sink = hew_stream_pair_sink(pair);
-            let stream = hew_stream_pair_stream(pair);
-            hew_stream_pair_free(pair);
-            hew_sink_write_string(sink, value.as_ptr());
-            assert_eq!(hew_sink_try_write_string(sink, ptr::null()), 0);
-            drop(value);
-            hew_sink_close(sink);
-            let mapped = hew_stream_map_string(stream, retain_input as *const c_void, ptr::null());
-            let filtered =
-                hew_stream_filter_string(mapped, keep_nul_or_empty as *const c_void, ptr::null());
-            assert_eq!(
-                drain_stream(filtered),
-                vec!["é\0中🙂".as_bytes().to_vec(), vec![]]
-            );
-            hew_stream_close(filtered);
-        }
-    }
-
-    #[test]
     fn managed_stream_file_paths_reject_nul_without_truncating_files() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("existing.txt");
@@ -4502,8 +3713,6 @@ mod tests {
         // SAFETY: value remains a live managed string throughout both calls.
         unsafe {
             assert!(hew_stream_from_file_read(value.as_ptr()).is_null());
-            assert!(take_last_error().unwrap().contains("interior NUL"));
-            assert!(hew_stream_from_file_write(value.as_ptr()).is_null());
             assert!(take_last_error().unwrap().contains("interior NUL"));
         }
         assert_eq!(std::fs::read_to_string(path).unwrap(), "unchanged");
@@ -4721,30 +3930,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn large_file_roundtrip() {
-        let path = temp_path("large_file");
-        let c_path = ManagedString::new(path.to_str().unwrap());
-        let large: Vec<u8> = (0..100_000u32).map(|i| (i % 199) as u8).collect();
-
-        // SAFETY: all FFI calls use valid pointers.
-        unsafe {
-            let sink = hew_stream_from_file_write(c_path.as_ptr());
-            assert!(!sink.is_null());
-            hew_sink_write(sink, large.as_ptr().cast(), large.len());
-            hew_sink_close(sink);
-
-            let stream = hew_stream_from_file_read(c_path.as_ptr());
-            assert!(!stream.is_null());
-            let items = drain_stream(stream);
-            let all: Vec<u8> = items.into_iter().flatten().collect();
-            assert_eq!(all.len(), large.len());
-            assert_eq!(all, large);
-            hew_stream_close(stream);
-        }
-        let _ = std::fs::remove_file(&path);
-    }
-
     // ── File-open error classification (canonical kind channel) ──────────
 
     #[test]
@@ -4767,32 +3952,6 @@ mod tests {
         assert_eq!(
             kind, IO_ERROR_KIND_NOT_FOUND,
             "a missing-file open must classify as NotFound on every platform"
-        );
-        assert_ne!(
-            errno, 0,
-            "the raw OS errno must be preserved in the payload"
-        );
-    }
-
-    #[test]
-    fn from_file_write_into_missing_dir_sets_not_found_kind() {
-        // Symmetric proof for the write/sink open path used by try_to_file:
-        // creating a file under a directory that does not exist is NotFound on
-        // every OS, and the sink-open path must tag it so try_to_file classifies
-        // through the canonical kind rather than the raw errno.
-        use crate::stream_error::{take_last_errno, take_last_error_kind, IO_ERROR_KIND_NOT_FOUND};
-        let c_path = ManagedString::new("/tmp/hew_stream_missing_dir_open/child.txt");
-        // SAFETY: c_path is a live managed string.
-        let s = unsafe { hew_stream_from_file_write(c_path.as_ptr()) };
-        assert!(
-            s.is_null(),
-            "opening a file under a missing directory for write must fail"
-        );
-        let kind = take_last_error_kind();
-        let errno = take_last_errno();
-        assert_eq!(
-            kind, IO_ERROR_KIND_NOT_FOUND,
-            "a missing-parent open must classify as NotFound on every platform"
         );
         assert_ne!(
             errno, 0,
@@ -5557,11 +4716,11 @@ mod tests {
 
         // Both halves must be extractable.
         // SAFETY: pair is valid.
-        let stream_ptr = unsafe { hew_stream_pair_stream_bytes(pair) };
+        let stream_ptr = unsafe { hew_stream_pair_stream(pair) };
         assert!(!stream_ptr.is_null());
 
         // SAFETY: pair still valid (stream extraction nulls the stream slot, sink is still there).
-        let sink_ptr = unsafe { hew_stream_pair_sink_bytes(pair) };
+        let sink_ptr = unsafe { hew_stream_pair_sink(pair) };
         assert!(!sink_ptr.is_null());
 
         // SAFETY: cleanup.
@@ -5587,13 +4746,13 @@ mod tests {
         let pair = unsafe { hew_tcp_stream_from_conn(conn_handle) };
         assert!(!pair.is_null());
         // SAFETY: each extraction consumes one pointer slot in the pair.
-        let stream_ptr = unsafe { hew_stream_pair_stream_bytes(pair) };
+        let stream_ptr = unsafe { hew_stream_pair_stream(pair) };
         // SAFETY: the sink slot remains live and has not been extracted yet.
-        let sink_ptr = unsafe { hew_stream_pair_sink_bytes(pair) };
+        let sink_ptr = unsafe { hew_stream_pair_sink(pair) };
         assert!(!stream_ptr.is_null() && !sink_ptr.is_null());
 
         // SAFETY: sink_ptr is live and remains wrapper-owned after shutdown.
-        unsafe { hew_sink_shutdown(sink_ptr) };
+        unsafe { hew_sink_finish(sink_ptr) };
         let mut byte = [0u8; 1];
         assert_eq!(
             peer.read(&mut byte).expect("peer observes sink shutdown"),
@@ -5628,7 +4787,7 @@ mod tests {
         // SAFETY: the factory transfers the pair's sole allocation to the test.
         let mut pair = unsafe { Box::from_raw(pair) };
         // SAFETY: extraction consumes the stream slot in the pair.
-        let stream_ptr = unsafe { hew_stream_pair_stream_bytes(&raw mut *pair) };
+        let stream_ptr = unsafe { hew_stream_pair_stream(&raw mut *pair) };
         assert!(!stream_ptr.is_null());
         // SAFETY: extraction transferred the stream's sole allocation.
         let mut stream = unsafe { Box::from_raw(stream_ptr) };

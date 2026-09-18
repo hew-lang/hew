@@ -210,10 +210,12 @@ fn aliased_and_full_stdlib_builtin_spellings_normalize_to_one_nominal() {
         checker.normalize_for_use(&full),
         "an actor field spelled through the module alias must carry the factory's canonical nominal"
     );
+    // A pipe half has one spelling at every stage: the builtin's canonical
+    // name, whatever module alias the source wrote.
     assert_eq!(
         aliased_normalized,
         Ty::Named {
-            name: "std.stream.Stream".to_string(),
+            name: "Stream".to_string(),
             args: vec![Ty::String],
             builtin: Some(BuiltinType::Stream),
         },
@@ -1517,13 +1519,13 @@ mod module_body_diagnostic_envelope {
         }
     }
 
-    /// Deferred channel rewrite finalization must preserve the non-root module
+    /// Deferred stream rewrite finalization must preserve the non-root module
     /// tag when it emits a post-inference `InferenceFailed` diagnostic.
     #[test]
-    fn deferred_channel_rewrite_error_tagged_with_source_module() {
+    fn deferred_stream_rewrite_error_tagged_with_source_module() {
         let parsed = hew_parser::parse(
             r"
-                fn bad(rx: Receiver<_>) {
+                fn bad(rx: Stream<_>) {
                     let _ = rx.recv();
                 }
             ",
@@ -1534,7 +1536,7 @@ mod module_body_diagnostic_envelope {
             parsed.errors
         );
 
-        let program = make_program_with_named_module("chanmod", parsed.program.items.clone());
+        let program = make_program_with_named_module("pipemod", parsed.program.items.clone());
 
         let mut checker = Checker::new(test_registry());
         let output = checker.check_program(&program);
@@ -1542,37 +1544,35 @@ mod module_body_diagnostic_envelope {
         let inference_failed: Vec<_> = output
             .errors
             .iter()
-            .filter(|e| {
-                matches!(e.kind, TypeErrorKind::InferenceFailed) && e.message.contains("inner type")
-            })
+            .filter(|e| matches!(e.kind, TypeErrorKind::InferenceFailed))
             .collect();
 
         assert!(
             !inference_failed.is_empty(),
-            "expected deferred channel inference failure in non-root module; errors: {:?}",
+            "expected deferred stream inference failure in non-root module; errors: {:?}",
             output.errors
         );
         for err in inference_failed {
             assert_eq!(
                 err.source_module.as_deref(),
-                Some("chanmod"),
-                "deferred channel rewrite error must carry source module 'chanmod'; got {:?}",
+                Some("pipemod"),
+                "deferred stream rewrite error must carry source module 'pipemod'; got {:?}",
                 err.source_module
             );
         }
     }
 
-    /// Deferred channel inference retains the selected runtime endpoints.
+    /// Deferred pipe inference retains the selected runtime endpoints.
     #[test]
-    fn deferred_channel_rewrite_retains_selected_endpoints() {
+    fn deferred_pipe_rewrite_retains_selected_endpoints() {
         let parsed = hew_parser::parse(
             r#"
-                import std.channel;
+                import std.stream;
 
                 fn relay() {
-                    let (tx, rx) = match channel.new(1) { .Ok(pair) => pair, .Err(error) => panic(error), };
+                    let (tx, rx) = match stream.pipe(1) { .Ok(pair) => pair, .Err(error) => panic(error), };
                     let _value = rx.recv();
-                    tx.send("hello");
+                    let _ = tx.send("hello");
                 }
             "#,
         );
@@ -1586,25 +1586,25 @@ mod module_body_diagnostic_envelope {
             .iter()
             .find_map(|(span, rewrite)| match rewrite {
                 MethodCallRewrite::RewriteToFunction { c_symbol, .. }
-                    if c_symbol == "hew_channel_recv_layout" =>
+                    if c_symbol == "hew_stream_next_layout" =>
                 {
                     Some(span)
                 }
                 _ => None,
             })
-            .expect("deferred Receiver<string>::recv rewrite must be finalized");
+            .expect("deferred Stream<string>::recv rewrite must be finalized");
         let _send_span = output
             .method_call_rewrites
             .iter()
             .find_map(|(span, rewrite)| match rewrite {
                 MethodCallRewrite::RewriteToFunction { c_symbol, .. }
-                    if c_symbol == "hew_channel_send_layout" =>
+                    if c_symbol == "hew_stream_send_layout" =>
                 {
                     Some(span)
                 }
                 _ => None,
             })
-            .expect("Sender<string>::send rewrite must be present");
+            .expect("Sink<string>::send rewrite must be present");
     }
 
     #[test]

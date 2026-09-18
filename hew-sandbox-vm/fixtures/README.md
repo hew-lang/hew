@@ -67,8 +67,8 @@ this list must carry the exact `compiler_version` marker shown here.
       "reason": "actor ask/reply and await are profile-reserved"
     },
     {
-      "fixture": "17-channel-select",
-      "feature": "channel-select-parser-emitter",
+      "fixture": "17-pipe-select",
+      "feature": "pipe-select-parser-emitter",
       "reason": "select syntax is not accepted by the canonical parser/emitter path yet"
     },
     {

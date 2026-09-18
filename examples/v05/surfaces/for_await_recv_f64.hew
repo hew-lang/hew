@@ -1,21 +1,21 @@
-//! Status: runnable (v0.5 ordinary for over Receiver<f64>)
-//! Description: Drains a float channel receiver with `for`.
+//! Status: runnable (ordinary for over Stream<f64>)
+//! Description: Drains a float pipe with `for`.
 //!
-//! `Receiver<f64>` rides the element-layout witness: the checker admits any
+//! `Stream<f64>` rides the element-layout witness: the checker admits any
 //! describable element type and the recv path decodes the 8-byte Plain
-//! envelope through `hew_channel_recv_layout` — no per-type runtime symbol.
+//! envelope through the shared layout entry point — no per-type runtime symbol.
 
-import std.channel;
+import std.stream;
 
 actor DrainFloats {
     receive fn run(unused: i64) {
-        let (tx, rx): (channel.Sender<f64>, channel.Receiver<f64>) = match channel.new(4) {
+        let (tx, rx): (stream.Sink<f64>, stream.Stream<f64>) = match stream.pipe(4) {
             .Ok(pair) => pair,
-            .Err(err) => panic(f"channel.new failed: {err}"),
+            .Err(err) => panic(f"stream.pipe failed: {err}"),
         };
-        tx.send(0.5);
-        tx.send(1.25);
-        tx.send(-3.75);
+        tx.send(0.5).expect("send");
+        tx.send(1.25).expect("send");
+        tx.send(-3.75).expect("send");
         tx.close();
         for sample in rx {
             println(sample);

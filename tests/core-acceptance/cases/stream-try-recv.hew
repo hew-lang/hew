@@ -10,9 +10,9 @@ actor TryRecvStrings {
             .Ok(pair) => pair,
             .Err(error) => panic(error),
         };
-        sink.send("frame-0");
-        sink.send("");
-        sink.send(f"frame-{1}");
+        sink.send("frame-0").expect("send");
+        sink.send("").expect("send");
+        sink.send(f"frame-{1}").expect("send");
         sink.close();
         var received = 0;
         var done = false;
@@ -42,8 +42,8 @@ actor AbandonQueued {
             .Ok(pair) => pair,
             .Err(error) => panic(error),
         };
-        sink.send(f"kept-{7}");
-        sink.send(f"dropped-{8}");
+        sink.send(f"kept-{7}").expect("send");
+        sink.send(f"dropped-{8}").expect("send");
         sink.close();
         // One take, one element left queued: closing the consumer releases it.
         match input.try_recv() {

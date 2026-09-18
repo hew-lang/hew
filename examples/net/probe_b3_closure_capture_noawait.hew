@@ -16,7 +16,11 @@ actor Reader {
             .Err(_) => panic(f"network setup failed"),
         };
         let read_once = move || {
-            let decoded = utf8.decode(conn.read());
+            let data = match conn.recv() {
+                .Some(data) => data,
+                .None => "".to_bytes(),
+            };
+            let decoded = utf8.decode(data);
             let _ = conn.close();
             decoded
         };
@@ -39,7 +43,7 @@ fn main() {
     let reader = spawn Reader(addr: f"127.0.0.1:{port}");
     fork reader.go(0);
     let client = listener.accept();
-    let _ = client.write_string("hello-from-server");
+    let _ = client.send("hello-from-server".to_bytes());
     sleep(500ms);
     let _ = client.close();
     println("server-done");

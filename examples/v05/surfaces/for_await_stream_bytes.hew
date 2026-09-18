@@ -1,4 +1,4 @@
-//! Status: runnable (v0.5 ordinary for over Stream<bytes>)
+//! Status: runnable (ordinary for over Stream<bytes>)
 //! Description: Drains a byte stream with `for`.
 
 import std.encoding.utf8;
@@ -9,13 +9,13 @@ actor DrainBytes {
     let frames: i64,
 
     receive fn run(unused: i64) {
-        let (sink, input) = match stream.bytes_pipe(8) {
+        let (sink, input): (stream.Sink<bytes>, stream.Stream<bytes>) = match stream.pipe(8) {
             .Ok(pair) => pair,
             .Err(error) => panic(error),
         };
         for i in 0 .. frames {
             let frame = f"frame-{i}".to_bytes();
-            sink.send(frame);
+            sink.send(frame).expect("send");
         }
         sink.close();
         for frame in input {

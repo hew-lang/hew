@@ -363,16 +363,6 @@ def wasm_public_programs(
     printing a witness from an otherwise dead `main`.
     """
     programs: dict[str, tuple[str, tuple[tuple[str, str], ...]]] = {
-        "std.channel.ChannelPair": (
-            "internal-transient",
-            (
-                (
-                    "internal-wrapper",
-                    "import std.channel;\n"
-                    f'fn main() {{ let result: Result<(channel.Sender<i64>, channel.Receiver<i64>), string> = channel.new(1); match result {{ .Ok((sender, receiver)) => println("{witness}"), .Err(error) => panic(error), }} }}\n',
-                ),
-            ),
-        ),
         "std.encoding.toml.Value": (
             "public-lifecycle",
             (

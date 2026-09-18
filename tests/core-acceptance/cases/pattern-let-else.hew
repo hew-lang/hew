@@ -124,8 +124,8 @@ enum Source {
 
 fn source(has_file: i64) -> Source {
     if has_file == 1 {
-        match stream.from_file("resource-read.bin") {
-            .Ok(input) => .File(input, "tag"),
+        match stream.open("resource-read.bin") {
+            .Ok(input) => .File(input.lines(), "tag"),
             .Err(_) => panic("fixture open failed"),
         }
     } else {

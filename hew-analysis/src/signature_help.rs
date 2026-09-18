@@ -447,11 +447,11 @@ fn probe(mat: Matcher, s: string) {
     #[test]
     fn module_qualified_function_sig_help_prefers_exact_dotted_name_over_receiver_method_fallback()
     {
-        let source = "channel.new(";
+        let source = "stream.pipe(";
 
         let mut fn_sigs = HashMap::new();
         fn_sigs.insert(
-            "channel.new".to_string(),
+            "stream.pipe".to_string(),
             FnSig {
                 param_names: vec!["capacity".to_string()],
                 params: vec![Ty::I64],
@@ -462,17 +462,17 @@ fn probe(mat: Matcher, s: string) {
 
         let mut type_defs = HashMap::new();
         type_defs.insert(
-            "ChannelModule".to_string(),
+            "StreamModule".to_string(),
             TypeDef {
                 kind: TypeDefKind::Struct,
-                name: "ChannelModule".to_string(),
+                name: "StreamModule".to_string(),
                 type_params: vec![],
                 bounds: HashMap::new(),
                 fields: HashMap::new(),
                 field_order: vec![],
                 variants: HashMap::new(),
                 methods: HashMap::from([(
-                    "new".to_string(),
+                    "pipe".to_string(),
                     FnSig {
                         param_names: vec!["count".to_string()],
                         params: vec![Ty::I32],
@@ -489,11 +489,11 @@ fn probe(mat: Matcher, s: string) {
         expr_types.insert(
             SpanKey {
                 start: 0,
-                end: 7,
+                end: 6,
                 module_idx: 0,
             },
             Ty::Named {
-                name: "ChannelModule".to_string(),
+                name: "StreamModule".to_string(),
                 args: vec![],
                 builtin: None,
             },
@@ -508,7 +508,7 @@ fn probe(mat: Matcher, s: string) {
         );
         let sh = result.unwrap();
         assert_eq!(sh.active_parameter, Some(0));
-        assert_eq!(sh.signatures[0].label, "fn new(capacity: i64)");
+        assert_eq!(sh.signatures[0].label, "fn pipe(capacity: i64)");
     }
 
     #[test]

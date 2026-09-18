@@ -50,21 +50,21 @@ fn duration_scaling_and_ratio_preserve_checked_operand_types() {
 }
 
 #[test]
-fn channel_result_sites_are_affine_in_hir() {
+fn pipe_result_sites_are_affine_in_hir() {
     let output = support::checker_pipeline::lower_through_checker_with_modules(
         r#"
-        import std.channel;
+        import std.stream;
 
-        fn make_channel_result()
-            -> Result<(channel.Sender<i64>, channel.Receiver<i64>), string> {
+        fn make_pipe_result()
+            -> Result<(stream.Sink<i64>, stream.Stream<i64>), string> {
             panic("not called")
         }
 
         fn main() {
-            let result: Result<(channel.Sender<i64>, channel.Receiver<i64>), string> =
-                make_channel_result();
+            let result: Result<(stream.Sink<i64>, stream.Stream<i64>), string> =
+                make_pipe_result();
             match result {
-                .Ok((_sender, _receiver)) => (),
+                .Ok((_sink, _stream)) => (),
                 .Err(error) => panic(error),
             }
         }
@@ -82,7 +82,7 @@ fn channel_result_sites_are_affine_in_hir() {
         })
         .expect("main function");
     let HirStmtKind::Let(_, Some(call)) = &main.body.statements[0].kind else {
-        panic!("expected channel result binding");
+        panic!("expected pipe result binding");
     };
     let Some(match_expr) = main.body.tail.as_deref() else {
         panic!("expected match tail");

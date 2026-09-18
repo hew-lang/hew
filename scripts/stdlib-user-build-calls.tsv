@@ -2,7 +2,6 @@
 std.arena	let _store: arena.Arena<i64> = arena.new();
 std.bench	bench.suite("gate");
 std.builtins	println("stdlib consumer");
-std.channel	let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(1).expect("channel creation"); tx.close(); rx.close();
 std.crypto.crypto	crypto.sha256("".to_bytes());
 std.crypto.encrypt	encrypt.last_open_error();
 std.crypto.jwt	jwt.last_error();
@@ -57,7 +56,7 @@ std.random	random.seed(1);
 std.result	result.is_ok_int(Ok(1));
 std.semaphore	semaphore.new(1);
 std.sort	sort.sort_ints([1]);
-std.stream	stream.pipe(1);
+std.stream	let (tx, rx): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("pipe"); tx.close(); rx.close();
 std.string	string.from_int(1);
 std.testing	testing.assert_eq(1, 1);
 std.text.regex	regex.new("a");

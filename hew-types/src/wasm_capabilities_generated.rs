@@ -30,7 +30,6 @@ pub enum WasmUnsupportedFeature {
     LinkMonitor,
     StructuredConcurrency,
     Tasks,
-    BlockingChannelRecv,
     BlockingSemaphoreAcquire,
     Timers,
     PeriodicTimers,
@@ -60,7 +59,6 @@ impl WasmUnsupportedFeature {
         Self::LinkMonitor,
         Self::StructuredConcurrency,
         Self::Tasks,
-        Self::BlockingChannelRecv,
         Self::BlockingSemaphoreAcquire,
         Self::Timers,
         Self::PeriodicTimers,
@@ -90,7 +88,6 @@ impl WasmUnsupportedFeature {
             Self::LinkMonitor => WasmCapabilityId("link-monitor"),
             Self::StructuredConcurrency => WasmCapabilityId("structured-concurrency"),
             Self::Tasks => WasmCapabilityId("tasks"),
-            Self::BlockingChannelRecv => WasmCapabilityId("channel-blocking-recv"),
             Self::BlockingSemaphoreAcquire => WasmCapabilityId("semaphore-blocking-acquire"),
             Self::Timers => WasmCapabilityId("timers-sleep"),
             Self::PeriodicTimers => WasmCapabilityId("timers-every"),
@@ -121,7 +118,6 @@ impl WasmUnsupportedFeature {
             Self::LinkMonitor => WasmFeatureDisposition::Reject,
             Self::StructuredConcurrency => WasmFeatureDisposition::Reject,
             Self::Tasks => WasmFeatureDisposition::Reject,
-            Self::BlockingChannelRecv => WasmFeatureDisposition::Reject,
             Self::BlockingSemaphoreAcquire => WasmFeatureDisposition::Reject,
             Self::Timers => WasmFeatureDisposition::Warn,
             Self::PeriodicTimers => WasmFeatureDisposition::Warn,
@@ -152,7 +148,6 @@ impl WasmUnsupportedFeature {
             Self::LinkMonitor => "Link/monitor operations",
             Self::StructuredConcurrency => "Structured concurrency scopes",
             Self::Tasks => "Task handles spawned from scopes",
-            Self::BlockingChannelRecv => "Blocking channel receive operations",
             Self::BlockingSemaphoreAcquire => "Blocking semaphore acquire operations",
             Self::Timers => "Timer operations",
             Self::PeriodicTimers => "Timer operations",
@@ -183,11 +178,10 @@ impl WasmUnsupportedFeature {
             Self::LinkMonitor => "they rely on OS threads to watch linked actors and propagate exits",
             Self::StructuredConcurrency => "the wasm32 scheduler has no cooperative task executor or non-blocking scope join",
             Self::Tasks => "task spawn is thread-based and no cooperative task executor drives forked bodies on wasm32",
-            Self::BlockingChannelRecv => "Receiver<T>.recv still requires cooperative scheduler yield/resume on wasm32; use try_recv or the actor ask pattern instead",
             Self::BlockingSemaphoreAcquire => "Semaphore.acquire and Semaphore.acquire_timeout still require a blocking permit wait that has no cooperative wasm32 implementation; use try_acquire or actor coordination instead",
             Self::Timers => "timers are cooperative on wasm32: sleep parks at the message boundary, and #[every(duration)] handlers fire only when the host drives the timer queue",
             Self::PeriodicTimers => "timers are cooperative on wasm32: sleep parks at the message boundary, and #[every(duration)] handlers fire only when the host drives the timer queue",
-            Self::Streams => "I/O streams require the OS threading and networking stack; the stream runtime module is not compiled for wasm32",
+            Self::Streams => "the pipe runtime (suspending queue core, file and socket backings) is not compiled for wasm32; the one pipe family is native-only until the queue core is ported",
             Self::FilesystemStreams => "the FileReadStream runtime and stream collector are not compiled for wasm32; reject before code generation rather than leaving unresolved native symbols",
             Self::HttpClient => "the std.net.http.http_client wrappers are still native-only; no wasm32 networking bridge exists yet",
             Self::Smtp => "the std.net.smtp transport is still native-only; no wasm32 SMTP bridge exists yet",
@@ -216,8 +210,6 @@ pub mod wasm_capability_ids {
     pub const ACTOR_HEAP_LIMITS: WasmCapabilityId = WasmCapabilityId("actor-heap-limits");
     pub const ALIAS_MESSAGING: WasmCapabilityId = WasmCapabilityId("alias-messaging");
     pub const BLOCKING_POOL: WasmCapabilityId = WasmCapabilityId("blocking-pool");
-    pub const CHANNELS: WasmCapabilityId = WasmCapabilityId("channels");
-    pub const CHANNEL_BLOCKING_RECV: WasmCapabilityId = WasmCapabilityId("channel-blocking-recv");
     pub const COMPRESSION: WasmCapabilityId = WasmCapabilityId("compression");
     pub const COOPERATIVE_YIELD: WasmCapabilityId = WasmCapabilityId("cooperative-yield");
     pub const CRYPTO_ENCRYPT: WasmCapabilityId = WasmCapabilityId("crypto-encrypt");
@@ -226,7 +218,6 @@ pub mod wasm_capability_ids {
     pub const DIAGNOSTIC_SOURCE_MAP: WasmCapabilityId = WasmCapabilityId("diagnostic-source-map");
     pub const DISTRIBUTED: WasmCapabilityId = WasmCapabilityId("distributed");
     pub const DNS: WasmCapabilityId = WasmCapabilityId("dns");
-    pub const DUPLEX: WasmCapabilityId = WasmCapabilityId("duplex");
     pub const FILESYSTEM_STREAMS: WasmCapabilityId = WasmCapabilityId("filesystem-streams");
     pub const HTTP_CLIENT: WasmCapabilityId = WasmCapabilityId("http-client");
     pub const HTTP_SERVER: WasmCapabilityId = WasmCapabilityId("http-server");

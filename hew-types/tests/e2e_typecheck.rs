@@ -664,12 +664,11 @@ fn consume(s: Stream<bytes>) {
 
 #[test]
 fn method_call_stream_map_fails_closed_with_honest_diagnostic() {
-    // The callback adapters (`map`/`filter`) have no MIR lowering.
-    // They previously type-checked clean and recorded `StreamInstance` receiver
-    // metadata before dead-ending in HIR lowering with internal-shaped
-    // `E_NOT_YET_IMPLEMENTED` noise. Per issue #2530 they now fail closed at the
-    // checker with exactly one honest `StreamAdapterNotSupported` diagnostic and
-    // record no receiver-kind metadata.
+    // The callback adapters (`map`/`filter`) are not part of the pipe surface
+    // (D506): there is no type-erased runtime entry for a user callback over
+    // a `Stream<T>`. They fail closed at the checker with exactly one
+    // ordinary `UndefinedMethod` diagnostic and record no receiver-kind
+    // metadata — no special adapter carve-out.
     let output = typecheck_inline(
         r"
 fn consume(s: Stream<string>) {
@@ -677,25 +676,16 @@ fn consume(s: Stream<string>) {
 }
 ",
     );
-    let adapter_errors: Vec<_> = output
+    let undefined_method_errors: Vec<_> = output
         .errors
         .iter()
-        .filter(|e| matches!(&e.kind, TypeErrorKind::StreamAdapterNotSupported { .. }))
+        .filter(|e| e.kind == TypeErrorKind::UndefinedMethod)
         .collect();
     assert_eq!(
-        adapter_errors.len(),
+        undefined_method_errors.len(),
         1,
-        "expected exactly one StreamAdapterNotSupported diagnostic, got: {:#?}",
+        "expected exactly one UndefinedMethod diagnostic, got: {:#?}",
         output.errors
-    );
-    assert!(
-        matches!(
-            &adapter_errors[0].kind,
-            TypeErrorKind::StreamAdapterNotSupported { method, element_ty }
-                if method == "map" && element_ty == "string"
-        ),
-        "expected `map`/`string` in the diagnostic, got: {:?}",
-        adapter_errors[0].kind
     );
     assert!(
         !output
@@ -715,29 +705,20 @@ fn method_call_stream_filter_fails_closed_with_honest_diagnostic() {
     let output = typecheck_inline(
         r"
 fn consume(s: Stream<bytes>) {
-    let _ = s.filter(|item| item.len() > 0);
+    let _ = s.filter(|item| true);
 }
 ",
     );
-    let adapter_errors: Vec<_> = output
+    let undefined_method_errors: Vec<_> = output
         .errors
         .iter()
-        .filter(|e| matches!(&e.kind, TypeErrorKind::StreamAdapterNotSupported { .. }))
+        .filter(|e| e.kind == TypeErrorKind::UndefinedMethod)
         .collect();
     assert_eq!(
-        adapter_errors.len(),
+        undefined_method_errors.len(),
         1,
-        "expected exactly one StreamAdapterNotSupported diagnostic, got: {:#?}",
+        "expected exactly one UndefinedMethod diagnostic, got: {:#?}",
         output.errors
-    );
-    assert!(
-        matches!(
-            &adapter_errors[0].kind,
-            TypeErrorKind::StreamAdapterNotSupported { method, element_ty }
-                if method == "filter" && element_ty == "bytes"
-        ),
-        "expected `filter`/`bytes` in the diagnostic, got: {:?}",
-        adapter_errors[0].kind
     );
     assert!(
         !output
@@ -1076,7 +1057,7 @@ fn stream_dot_sink_annotation_typechecks() {
         import std.stream;
 
         fn flush_and_close(s: stream.Sink<string>, msg: string) {
-            s.send(msg);
+            let _ = s.send(msg);
             s.close();
         }
         ",
@@ -1131,70 +1112,22 @@ fn stream_dot_stream_container_element_reports_user_facing_type() {
     );
 }
 
-#[test]
-fn stream_decode_fails_closed_before_codegen() {
-    let output = typecheck_inline(
-        r"
-        import std.stream;
-
-        #[wire]
-        type Message {
-            id: i64 @1,
-        }
-
-        fn main() {
-            let (_sink, input) = match stream.bytes_pipe(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
-            let _decoded: stream.Stream<Message> = input.decode();
-        }
-        ",
-    );
-    assert!(
-        output.errors.iter().any(|e| {
-            e.message
-                .contains("`decode()` is not available on `Stream<bytes>` yet")
-        }),
-        "expected explicit stream.decode fail-closed diagnostic, got: {:#?}",
-        output.errors
-    );
-}
+// The old bare `stream.decode()` / `sink.encode()` fail-closed carve-outs are
+// gone along with `stream.bytes_pipe`: decoding/encoding now goes through the
+// `Codec<T>` trait (`Lines`, `LengthPrefixed`), never a method directly on
+// `Stream`/`Sink`. `method_resolution::unlowerable_stream_codec_boundaries_are_not_builtin_methods`
+// pins that `decode`/`encode` are simply absent from the builtin method table.
 
 #[test]
-fn sink_encode_fails_closed_before_codegen() {
-    let output = typecheck_inline(
-        r"
-        import std.stream;
-
-        #[wire]
-        type Message {
-            id: i64 @1,
-        }
-
-        fn main() {
-            let (sink, _input) = match stream.bytes_pipe(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
-            let _encoded: stream.Sink<Message> = sink.encode();
-        }
-        ",
-    );
-    assert!(
-        output.errors.iter().any(|e| {
-            e.message
-                .contains("`encode()` is not available on `Sink<bytes>` yet")
-        }),
-        "expected explicit sink.encode fail-closed diagnostic, got: {:#?}",
-        output.errors
-    );
-}
-
-#[test]
-fn channel_dot_receiver_annotation_typechecks() {
-    // A function whose parameter is explicitly spelled `channel.Receiver<string>`.
-    // Proves: the qualified spelling resolves to the canonical Receiver<string>
+fn stream_dot_stream_annotation_typechecks() {
+    // A function whose parameter is explicitly spelled `stream.Stream<string>`.
+    // Proves: the qualified spelling resolves to the canonical Stream<string>
     // type and its recv/close methods are available.
     let output = typecheck_inline(
         r"
-        import std.channel;
+        import std.stream;
 
-        fn take_one(rx: channel.Receiver<string>) -> Option<string> {
+        fn take_one(rx: stream.Stream<string>) -> Option<string> {
             let v = rx.recv();
             rx.close();
             v
@@ -1203,26 +1136,26 @@ fn channel_dot_receiver_annotation_typechecks() {
     );
     assert!(
         output.errors.is_empty(),
-        "channel.Receiver<string> annotation should typecheck cleanly, got: {:#?}",
+        "stream.Stream<string> annotation should typecheck cleanly, got: {:#?}",
         output.errors
     );
 }
 
 // ===========================================================================
-// Stream and channel `for` loop fail-closed tests
+// Stream `for` loop fail-closed tests
 // ===========================================================================
 
-/// `for item in rx` over `Receiver<string>` must typecheck cleanly.
+/// `for item in rx` over `Stream<string>` must typecheck cleanly.
 #[test]
-fn for_receiver_string_ok() {
+fn for_stream_string_ok() {
     let output = typecheck_inline(
         r#"
-        import std.channel;
+        import std.stream;
 
         fn main() {
-            let (tx, rx) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
-            tx.send("hello");
-            tx.close();
+            let (tx, rx) = match stream.pipe(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
+            let _ = tx.send("hello");
+            tx.finish();
             for msg in rx {
                 println(msg);
             }
@@ -1231,22 +1164,22 @@ fn for_receiver_string_ok() {
     );
     assert!(
         output.errors.is_empty(),
-        "for over Receiver<string> should typecheck cleanly, got: {:#?}",
+        "for over Stream<string> should typecheck cleanly, got: {:#?}",
         output.errors
     );
 }
 
-/// `for val in rx` over `Receiver<i64>` must typecheck cleanly.
+/// `for val in rx` over `Stream<i64>` must typecheck cleanly.
 #[test]
-fn for_receiver_int_ok() {
+fn for_stream_int_ok() {
     let output = typecheck_inline(
         r"
-        import std.channel;
+        import std.stream;
 
         fn main() {
-            let (tx, rx) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
-            tx.send(42);
-            tx.close();
+            let (tx, rx) = match stream.pipe(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
+            let _ = tx.send(42);
+            tx.finish();
             for val in rx {
                 println(val);
             }
@@ -1255,88 +1188,7 @@ fn for_receiver_int_ok() {
     );
     assert!(
         output.errors.is_empty(),
-        "for over Receiver<i64> should typecheck cleanly, got: {:#?}",
-        output.errors
-    );
-}
-
-/// `for _ in rx` over a bare `Receiver` annotation must fail closed
-/// before serializer-time unresolved-type handling.
-#[test]
-fn for_receiver_missing_element_type_errors() {
-    let output = typecheck_inline(
-        r"
-        import std.channel;
-
-        fn main() {
-            let (tx, rx) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
-            tx.close();
-            for _ in rx {
-                println(0);
-            }
-        }
-        ",
-    );
-    assert!(
-        output.errors.iter().any(
-            |e| e.kind == hew_types::error::TypeErrorKind::InvalidOperation
-                && e.message.contains("requires a resolved element type")
-        ),
-        "expected unresolved Receiver<T> for-await error, got: {:#?}",
-        output.errors
-    );
-}
-
-/// `for item in rx` over `Receiver<Foo>` (a `BitCopy` record) rides the
-/// element-layout witness and must typecheck cleanly.
-#[test]
-fn for_receiver_record_element_admitted() {
-    let output = typecheck_inline(
-        r"
-        import std.channel;
-
-        type Foo { x: i64 }
-
-        fn make_foo() -> Foo { Foo { x: 1 } }
-
-        fn main() {
-            let (tx, rx): (channel.Sender<Foo>, channel.Receiver<Foo>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
-            for item in rx {
-                println(item.x);
-            }
-        }
-        ",
-    );
-    assert!(
-        output.errors.is_empty(),
-        "Receiver<Foo> for-await must be admitted by the layout witness, got: {:#?}",
-        output.errors
-    );
-}
-
-/// `for item in rx` over a container element (`Receiver<Vec<i64>>`)
-/// must fail closed — the witness cannot clone or drop a container element.
-#[test]
-fn for_receiver_container_element_errors() {
-    let output = typecheck_inline(
-        r"
-        import std.channel;
-
-        fn main() {
-            let (tx, rx): (channel.Sender<Vec<i64>>, channel.Receiver<Vec<i64>>) =
-                match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
-            for item in rx {
-                println(item.len());
-            }
-        }
-        ",
-    );
-    assert!(
-        output.errors.iter().any(
-            |e| e.kind == hew_types::error::TypeErrorKind::InvalidOperation
-                && e.message.contains("not supported")
-        ),
-        "expected InvalidOperation for Receiver<Vec<i64>> in for, got: {:#?}",
+        "for over Stream<i64> should typecheck cleanly, got: {:#?}",
         output.errors
     );
 }
@@ -2804,8 +2656,8 @@ fn http_request_unknown_method_is_undefined() {
 }
 
 #[test]
-fn net_connection_write_arg_type_checked() {
-    // `write` is a Hew wrapper function (`write_result_from_status(unsafe {
+fn net_connection_send_arg_type_checked() {
+    // `send` is a Hew wrapper function (`send_result_from_status(unsafe {
     // hew_tcp_write(...) })`), not a direct single-call C shim, so the
     // registry's handle-method extractor cannot see it. The module's own
     // source declarations supply the signature on every import spelling, so
@@ -2815,8 +2667,8 @@ fn net_connection_write_arg_type_checked() {
         r#"
         import std.net;
 
-        fn send(conn: net.Connection) {
-            conn.write("wrong_type");
+        fn relay(conn: net.Connection) {
+            let _ = conn.send("wrong_type");
         }
         "#,
     );
@@ -2826,7 +2678,7 @@ fn net_connection_write_arg_type_checked() {
             TypeErrorKind::Mismatch { expected, actual }
                 if expected == "bytes" && actual == "string"
         )),
-        "expected conn.write to reject a string where `bytes` is required, got: {:#?}",
+        "expected conn.send to reject a string where `bytes` is required, got: {:#?}",
         output.errors
     );
 }
@@ -5529,27 +5381,27 @@ fn call_type_args_failed_generic_call_pruned_at_boundary() {
 }
 
 // ===========================================================================
-// Deferred channel method rewrite tests
+// Deferred pipe method rewrite tests
 //
 // These tests cover the post-inference symbol-selection fix for
-// Sender<T>::send, Receiver<T>::recv, and Receiver<T>::try_recv when the
-// inner type T is only constrained *after* the call site.  The correct
-// type-specific C symbol must be selected even when the call is visited before
-// the surrounding context has narrowed T.
+// Sink<T>::send, Stream<T>::recv, and Stream<T>::try_recv when the inner type
+// T is only constrained *after* the call site.  The correct type-specific C
+// symbol must be selected even when the call is visited before the
+// surrounding context has narrowed T.
 // ===========================================================================
 
-/// `recv()` on a `Receiver<i64>` channel where the element type is inferred
+/// `recv()` on a `Stream<i64>` pipe where the element type is inferred
 /// from a downstream `let v: i64 = rx.recv()` annotation must still record
-/// the layout-witness rewrite (`hew_channel_recv_layout`) once deferred
+/// the layout-witness rewrite (`hew_stream_next_layout`) once deferred
 /// resolution completes — the element kind rides the witness, not the symbol.
 #[test]
-fn deferred_channel_recv_int_constrained_after_call() {
+fn deferred_pipe_recv_int_constrained_after_call() {
     let output = typecheck_inline(
         r"
-        import std.channel;
+        import std.stream;
 
         fn take_one() -> Option<i64> {
-            let (tx, rx) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
+            let (tx, rx) = match stream.pipe(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
             let v: Option<i64> = rx.recv();
             tx.close();
             v
@@ -5565,33 +5417,23 @@ fn deferred_channel_recv_int_constrained_after_call() {
         output.method_call_rewrites.values().any(|rewrite| matches!(
             rewrite,
             hew_types::MethodCallRewrite::RewriteToFunction { c_symbol, .. }
-                if c_symbol == "hew_channel_recv_layout"
+                if c_symbol == "hew_stream_next_layout"
         )),
-        "expected hew_channel_recv_layout rewrite after deferred resolution, got: {:?}",
-        output.method_call_rewrites
-    );
-    // The retired per-type symbols must never be recorded.
-    assert!(
-        !output.method_call_rewrites.values().any(|rewrite| matches!(
-            rewrite,
-            hew_types::MethodCallRewrite::RewriteToFunction { c_symbol, .. }
-                if c_symbol == "hew_channel_recv" || c_symbol == "hew_channel_recv_int"
-        )),
-        "retired per-type recv symbols must not be recorded: {:?}",
+        "expected hew_stream_next_layout rewrite after deferred resolution, got: {:?}",
         output.method_call_rewrites
     );
 }
 
-/// `recv()` on a `Receiver<string>` channel where the element type is inferred
-/// from the usage of the received value must emit `hew_channel_recv_layout`.
+/// `recv()` on a `Stream<string>` pipe where the element type is inferred
+/// from the usage of the received value must emit `hew_stream_next_layout`.
 #[test]
-fn deferred_channel_recv_string_constrained_after_call() {
+fn deferred_pipe_recv_string_constrained_after_call() {
     let output = typecheck_inline(
         r"
-        import std.channel;
+        import std.stream;
 
         fn take_one() -> Option<string> {
-            let (tx, rx) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
+            let (tx, rx) = match stream.pipe(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
             let v: Option<string> = rx.recv();
             tx.close();
             v
@@ -5607,23 +5449,23 @@ fn deferred_channel_recv_string_constrained_after_call() {
         output.method_call_rewrites.values().any(|rewrite| matches!(
             rewrite,
             hew_types::MethodCallRewrite::RewriteToFunction { c_symbol, .. }
-                if c_symbol == "hew_channel_recv_layout"
+                if c_symbol == "hew_stream_next_layout"
         )),
-        "expected hew_channel_recv_layout rewrite after deferred resolution, got: {:?}",
+        "expected hew_stream_next_layout rewrite after deferred resolution, got: {:?}",
         output.method_call_rewrites
     );
 }
 
-/// `try_recv()` on a `Receiver<i64>` where the element type is constrained
+/// `try_recv()` on a `Stream<i64>` where the element type is constrained
 /// after the call site must resolve to the layout-witness `try_recv` entry.
 #[test]
-fn deferred_channel_try_recv_int_constrained_after_call() {
+fn deferred_pipe_try_recv_int_constrained_after_call() {
     let output = typecheck_inline(
         r"
-        import std.channel;
+        import std.stream;
 
         fn try_take() -> Option<i64> {
-            let (tx, rx) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
+            let (tx, rx) = match stream.pipe(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
             let v: Option<i64> = rx.try_recv();
             tx.close();
             v
@@ -5639,26 +5481,26 @@ fn deferred_channel_try_recv_int_constrained_after_call() {
         output.method_call_rewrites.values().any(|rewrite| matches!(
             rewrite,
             hew_types::MethodCallRewrite::RewriteToFunction { c_symbol, .. }
-                if c_symbol == "hew_channel_try_recv_layout"
+                if c_symbol == "hew_stream_try_next_layout"
         )),
-        "expected hew_channel_try_recv_layout rewrite after deferred resolution, got: {:?}",
+        "expected hew_stream_try_next_layout rewrite after deferred resolution, got: {:?}",
         output.method_call_rewrites
     );
 }
 
-/// `send()` must defer when both the channel inner type and the sent value are
+/// `send()` must defer when both the pipe's inner type and the sent value are
 /// still `Ty::Var` at the call site, then record the layout-witness send
-/// rewrite once a later `recv()` annotation constrains the shared channel type.
+/// rewrite once a later `recv()` annotation constrains the shared pipe type.
 #[test]
-fn deferred_channel_send_int_constrained_after_call() {
+fn deferred_pipe_send_int_constrained_after_call() {
     let output = typecheck_inline(
         r"
-        import std.channel;
+        import std.stream;
 
         fn relay() {
-            let (tx, rx) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
+            let (tx, rx) = match stream.pipe(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
             if let .Some(v) = rx.recv() {
-                tx.send(v);
+                let _ = tx.send(v);
             }
             let _: Option<i64> = rx.recv();
         }
@@ -5673,24 +5515,24 @@ fn deferred_channel_send_int_constrained_after_call() {
         output.method_call_rewrites.values().any(|rewrite| matches!(
             rewrite,
             hew_types::MethodCallRewrite::RewriteToFunction { c_symbol, .. }
-                if c_symbol == "hew_channel_send_layout"
+                if c_symbol == "hew_stream_send_layout"
         )),
-        "expected hew_channel_send_layout rewrite after deferred resolution, got: {:?}",
+        "expected hew_stream_send_layout rewrite after deferred resolution, got: {:?}",
         output.method_call_rewrites
     );
 }
 
 /// When neither send nor recv arguments or annotations constrain the inner type
-/// before the checker boundary, `finalize_channel_rewrites` must emit an
+/// before the checker boundary, deferred pipe rewrite finalization must emit an
 /// `InferenceFailed` error rather than silently recording the wrong symbol.
 #[test]
-fn deferred_channel_unresolved_inner_fails_closed() {
+fn deferred_pipe_unresolved_inner_fails_closed() {
     let output = typecheck_inline(
         r"
-        import std.channel;
+        import std.stream;
 
         fn untyped() {
-            let (tx, rx) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
+            let (tx, rx) = match stream.pipe(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
             let _ = rx.recv();
             tx.close();
         }
@@ -5698,10 +5540,11 @@ fn deferred_channel_unresolved_inner_fails_closed() {
     );
     // Must produce InferenceFailed — T is genuinely unconstrained.
     assert!(
-        output.errors.iter().any(|e| {
-            e.kind == TypeErrorKind::InferenceFailed && e.message.contains("inner type")
-        }),
-        "expected InferenceFailed for unresolved channel inner type, got: {:#?}",
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InferenceFailed),
+        "expected InferenceFailed for unresolved pipe inner type, got: {:#?}",
         output.errors
     );
     // The span must NOT have a rewrite recorded (codegen-fails-closed invariant).
@@ -5709,7 +5552,7 @@ fn deferred_channel_unresolved_inner_fails_closed() {
         !output.method_call_rewrites.values().any(|rewrite| matches!(
             rewrite,
             hew_types::MethodCallRewrite::RewriteToFunction { c_symbol, .. }
-                if c_symbol.contains("hew_channel_recv")
+                if c_symbol.contains("hew_stream_next")
         )),
         "no recv rewrite should be recorded when inner type is unresolved: {:?}",
         output.method_call_rewrites
@@ -5885,19 +5728,19 @@ fn native_allows_crypto_encrypt_and_sign_module_calls() {
 }
 
 // ===========================================================================
-// Machine channel elements (transition-watch lane, stage-0 pin)
+// Machine pipe elements (transition-watch lane, stage-0 pin)
 // ===========================================================================
 
-/// A monomorphic machine value as a channel element typechecks clean —
+/// A monomorphic machine value as a pipe element typechecks clean —
 /// machines are enums at the value-classification layer and ride the
 /// owned-element queue witness. Was the stage-0 fail-closed pin
 /// (`machine_channel_element_currently_fails_closed`) before the machine
 /// admission landed.
 #[test]
-fn monomorphic_machine_channel_element_admitted() {
+fn monomorphic_machine_pipe_element_admitted() {
     let output = typecheck_inline(
         r"
-        import std.channel;
+        import std.stream;
 
         machine Light {
             events {
@@ -5910,8 +5753,8 @@ fn monomorphic_machine_channel_element_admitted() {
         }
 
         fn main() {
-            let (tx, rx): (channel.Sender<Light>, channel.Receiver<Light>) = match channel.new(2) { .Ok(pair) => pair, .Err(error) => panic(error), };
-            tx.send(Light.Off);
+            let (tx, rx): (stream.Sink<Light>, stream.Stream<Light>) = match stream.pipe(2) { .Ok(pair) => pair, .Err(error) => panic(error), };
+            let _ = tx.send(Light.Off);
             tx.close();
             let _ = rx.recv();
             rx.close();
@@ -5920,12 +5763,12 @@ fn monomorphic_machine_channel_element_admitted() {
     );
     assert!(
         output.errors.is_empty(),
-        "monomorphic machine channel element must be admitted; got: {:#?}",
+        "monomorphic machine pipe element must be admitted; got: {:#?}",
         output.errors
     );
 }
 
-/// A GENERIC machine instantiation as a channel element stays refused:
+/// A GENERIC machine instantiation as a pipe element stays refused:
 /// the machine substrate canonicalizes instantiations to one bare-named
 /// decl layout, so the recv binding's `Option<T>` has no
 /// per-instantiation layout to land in. The imported spelling resolves
@@ -5933,14 +5776,14 @@ fn monomorphic_machine_channel_element_admitted() {
 /// clause fires for locally declared generic machines, whose type defs
 /// resolve by bare name).
 #[test]
-fn generic_machine_instantiation_channel_element_refused() {
+fn generic_machine_instantiation_pipe_element_refused() {
     let output = typecheck_inline(
         r"
         import std.concurrency.lifecycle;
-        import std.channel;
+        import std.stream;
 
         fn main() {
-            let (tx, rx): (channel.Sender<lifecycle.Lifecycle<i64>>, channel.Receiver<lifecycle.Lifecycle<i64>>) = match channel.new(2) { .Ok(pair) => pair, .Err(error) => panic(error), };
+            let (tx, rx): (stream.Sink<lifecycle.Lifecycle<i64>>, stream.Stream<lifecycle.Lifecycle<i64>>) = match stream.pipe(2) { .Ok(pair) => pair, .Err(error) => panic(error), };
             tx.close();
             let _ = rx.recv();
             rx.close();
@@ -5961,10 +5804,10 @@ fn generic_machine_instantiation_channel_element_refused() {
 /// refused exactly as a container-bearing enum would — the machine
 /// admission rides the same transitive container walk.
 #[test]
-fn container_bearing_machine_channel_element_refused() {
+fn container_bearing_machine_pipe_element_refused() {
     let output = typecheck_inline(
         r"
-        import std.channel;
+        import std.stream;
 
         machine Buffered {
             events {
@@ -5977,8 +5820,8 @@ fn container_bearing_machine_channel_element_refused() {
         }
 
         fn main() {
-            let (tx, rx): (channel.Sender<Buffered>, channel.Receiver<Buffered>) = match channel.new(2) { .Ok(pair) => pair, .Err(error) => panic(error), };
-            tx.send(Buffered.Empty);
+            let (tx, rx): (stream.Sink<Buffered>, stream.Stream<Buffered>) = match stream.pipe(2) { .Ok(pair) => pair, .Err(error) => panic(error), };
+            let _ = tx.send(Buffered.Empty);
             tx.close();
             let _ = rx.recv();
             rx.close();
@@ -5995,25 +5838,25 @@ fn container_bearing_machine_channel_element_refused() {
     );
 }
 
-/// Cross-node guard for the local channel-handle transfer surface: a
-/// `RemotePid<T>` exposes no receive-fn dispatch, so a channel handle can
+/// Cross-node guard for the local pipe-handle transfer surface: a
+/// `RemotePid<T>` exposes no receive-fn dispatch, so a pipe handle can
 /// never ride an actor message across a node boundary through this
 /// surface. If `RemotePid` ever grows handler dispatch, its payloads must
-/// route through the Serializable enforcement (channel handles are not
+/// route through the Serializable enforcement (pipe handles are not
 /// Serializable) — this pin fails first.
 #[test]
-fn remote_receive_fn_dispatch_with_channel_handle_refused() {
+fn remote_receive_fn_dispatch_with_pipe_handle_refused() {
     let output = typecheck_inline(
         r"
-        import std.channel;
+        import std.stream;
 
         actor Observer {
-            receive fn watch(rx: channel.Receiver<string>) {
+            receive fn watch(rx: stream.Stream<string>) {
                 rx.close();
             }
         }
 
-        fn forward(o: RemotePid<Observer>, rx: channel.Receiver<string>) {
+        fn forward(o: RemotePid<Observer>, rx: stream.Stream<string>) {
             o.watch(rx);
         }
         ",

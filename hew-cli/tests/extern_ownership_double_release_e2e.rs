@@ -758,24 +758,25 @@ fn resource_payload_beside_an_interpolated_string_closes_exactly_once() {
     );
 }
 
-/// A returned channel pair must NOT be closed by the producer's own scope-exit
+/// A returned pipe pair must NOT be closed by the producer's own scope-exit
 /// drop.
 ///
-/// `channel.new` unwraps a `Result<(Sender, Receiver), string>` and MOVES the
-/// `Ok` payload into its return value. `Sender` and `Receiver` are resource
-/// handles released by `hew_channel_sender_close` / `hew_channel_receiver_close`
-/// with no duplication helper, so an `EnumInPlace` drop on that `Result` closes
-/// a pair the caller has just been handed. The old `!ty_owns_heap_mir` cap read
-/// the pair as "owns no heap" and admitted it; this program then segfaulted
-/// unconditionally, with no allocator poisoning required.
+/// `stream.pipe` unwraps a `Result<(Sink, Stream), string>` and MOVES the
+/// `Ok` payload into its return value. `Sink` and `Stream` are resource
+/// handles released by `hew_sink_close` / `hew_stream_close` with no
+/// duplication helper on the `Stream` half, so an `EnumInPlace` drop on that
+/// `Result` closes a pair the caller has just been handed. The old
+/// `!ty_owns_heap_mir` cap read the pair as "owns no heap" and admitted it;
+/// this program then segfaulted unconditionally, with no allocator
+/// poisoning required.
 ///
 /// The pin is the whole program: it must run, print the message it sent
-/// through the channel, and exit cleanly.
-const RETURNED_CHANNEL_PAIR: &str = r#"import std.channel;
+/// through the pipe, and exit cleanly.
+const RETURNED_CHANNEL_PAIR: &str = r#"import std.stream;
 
 fn main() -> i64 {
-    let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(1) { .Ok(pair) => pair, .Err(error) => panic(error), };
-    tx.send(f"ready-{1}");
+    let (tx, rx): (stream.Sink<string>, stream.Stream<string>) = match stream.pipe(1) { .Ok(pair) => pair, .Err(error) => panic(error), };
+    tx.send(f"ready-{1}").expect("send");
     match rx.try_recv() {
         .Some(msg) => { println(f"got={msg}"); }
         .None => { println("empty"); }
@@ -792,8 +793,8 @@ fn a_returned_channel_pair_is_not_closed_by_its_producer() {
     assert_eq!(
         stdout.trim(),
         "got=ready-1",
-        "the receiver must still be open when the caller reads it; a \
-         producer-side in-place drop of the `Result<(Sender, Receiver), string>` \
+        "the stream must still be open when the caller reads it; a \
+         producer-side in-place drop of the `Result<(Sink, Stream), string>` \
          closes handles the caller owns:\n{stdout}"
     );
 }

@@ -664,11 +664,8 @@ pub mod wasm_stubs {
     //!   process-relative clock so timeout comparisons stay consistent on
     //!   `wasm32-wasip1`.
     //!
-    //! - **Channels**: the bounded non-blocking slice is implemented in
-    //!   [`crate::channel_wasm`] (`channel.new`, the layout-witness
-    //!   `hew_channel_send_layout` / `hew_channel_try_recv_layout` entries,
-    //!   clone/close helpers). Blocking `hew_channel_recv_layout` remains an
-    //!   explicit trap until cooperative scheduler yield/resume parity exists.
+    //! - **Pipes**: `std.stream` is native-only today; the checker refuses
+    //!   `Stream<T>` / `Sink<T>` on wasm32 before code generation.
 
     use std::ffi::c_void;
     #[cfg(test)]
@@ -782,26 +779,6 @@ pub mod wasm_stubs {
     pub(crate) fn unpin_virtual_clock() {
         VCLOCK_PINNED_MS.store(VCLOCK_DISABLED, AtomicOrdering::Relaxed);
     }
-
-    // ── Channels (blocking recv still deferred on wasm32) ────────────────────
-    //
-    // The non-blocking channel ABI surface lives in `channel_wasm.rs`.
-    // Blocking recv still needs cooperative yield/resume when the queue is
-    // empty but live senders remain, so those entry points keep trapping.
-
-    /// WASM stub: blocking channel recv is not supported.
-    ///
-    /// # Safety
-    ///
-    /// Never returns — traps unconditionally.
-    #[no_mangle]
-    pub unsafe extern "C" fn hew_channel_recv_layout(
-        _receiver: *mut c_void,
-        _out: *mut c_void,
-        _layout: *const c_void,
-    ) -> i32 {
-        unreachable!("hew_channel_recv_layout: not supported on wasm32")
-    }
 }
 
 // ── Actor/scheduling modules ─────────────────────────────────────────────────
@@ -889,10 +866,6 @@ pub mod arena;
 // guard in arena_wasm.rs prevents duplicate symbol collisions with arena.rs.
 #[cfg(all(not(target_arch = "wasm32"), test))]
 pub mod arena_wasm;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod channel;
-#[cfg(any(target_arch = "wasm32", test))]
-mod channel_wasm;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod duplex;
 pub mod execution_context;

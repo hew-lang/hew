@@ -16,6 +16,9 @@ fn main() {
     let e = spawn Emitter;
     for v in e.ticks() {
         println(f"{v}");
+        // Let the producer's crash report print before the next resume
+        // observes the fault, so the two stderr lines have one order.
+        sleep(200ms);
     }
-    println("unreached-eof");
+    println("unreached-eof");  // the consumer traps first; this must not print
 }

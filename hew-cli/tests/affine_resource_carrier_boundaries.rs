@@ -135,24 +135,58 @@ fn main() -> i64 {
 }
 ";
 
+// `Sink<T>` has its own `clone()` (a second producer, not a Vec-element
+// duplication), so the pin is the handle's own clone/close pair rather than
+// a `Vec<Sink<T>>.clone()`: `Vec<Sink<T>>.clone()` itself hits a compiler
+// defect (see `channel_handle_clone_terminals_match_runtime_semantics`).
 const CHANNEL_SENDER_CLONE_BODY: &str = r"
-import std.channel;
+import std.stream;
 
 fn main() -> i64 {
-    let (tx, _rx): (channel.Sender<Token>, channel.Receiver<Token>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
-    let senders: Vec<channel.Sender<Token>> = [tx];
-    let senders_copy = senders.clone();
-    println(senders_copy.len());
+    let (tx, _rx): (stream.Sink<Token>, stream.Stream<Token>) = match stream.pipe(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
+    let more = tx.clone();
+    more.close();
+    tx.close();
+    println(1);
+    0
+}
+";
+
+const SINK_RECORD_CLONE_BODY: &str = r"
+import std.stream;
+
+type Holder {
+    out: stream.Sink<Token>,
+}
+
+fn main() -> i64 {
+    let (tx, rx): (stream.Sink<Token>, stream.Stream<Token>) = match stream.pipe(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
+    let holder = Holder { out: tx };
+    let _copy = holder.clone();
+    holder.out.close();
+    rx.close();
+    0
+}
+";
+
+const SINK_VEC_INDEX_BODY: &str = r"
+import std.stream;
+
+fn main() -> i64 {
+    let (tx, rx): (stream.Sink<Token>, stream.Stream<Token>) = match stream.pipe(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
+    let senders: Vec<stream.Sink<Token>> = [tx];
+    let _item = senders[0];
+    rx.close();
     0
 }
 ";
 
 const CHANNEL_RECEIVER_CLONE_BODY: &str = r"
-import std.channel;
+import std.stream;
 
 fn main() -> i64 {
-    let (_tx, rx): (channel.Sender<Token>, channel.Receiver<Token>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
-    let receivers: Vec<channel.Receiver<Token>> = [rx];
+    let (_tx, rx): (stream.Sink<Token>, stream.Stream<Token>) = match stream.pipe(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
+    let receivers: Vec<stream.Stream<Token>> = [rx];
     let _receivers_copy = receivers.clone();
     0
 }
@@ -162,66 +196,55 @@ fn main() -> i64 {
 /// shape, which moves `rx` into the descriptor-backed Vec then lets the Vec
 /// close it at scope exit.
 const CHANNEL_RECEIVER_MOVE_BODY: &str = r"
-import std.channel;
+import std.stream;
 
 fn main() -> i64 {
-    let (_tx, rx): (channel.Sender<Token>, channel.Receiver<Token>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
-    let receivers: Vec<channel.Receiver<Token>> = [rx];
+    let (_tx, rx): (stream.Sink<Token>, stream.Stream<Token>) = match stream.pipe(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
+    let receivers: Vec<stream.Stream<Token>> = [rx];
     println(receivers.len());
     0
 }
 ";
 
 const CHANNEL_RECEIVER_GET_BODY: &str = r"
-import std.channel;
+import std.stream;
 
 fn main() -> i64 {
-    let (_tx, rx): (channel.Sender<Token>, channel.Receiver<Token>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
-    let receivers: Vec<channel.Receiver<Token>> = [rx];
+    let (_tx, rx): (stream.Sink<Token>, stream.Stream<Token>) = match stream.pipe(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
+    let receivers: Vec<stream.Stream<Token>> = [rx];
     let _item = receivers.get(0);
     0
 }
 ";
 
 const CHANNEL_RECEIVER_INDEX_BODY: &str = r"
-import std.channel;
+import std.stream;
 
 fn main() -> i64 {
-    let (_tx, rx): (channel.Sender<Token>, channel.Receiver<Token>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
-    let receivers: Vec<channel.Receiver<Token>> = [rx];
+    let (_tx, rx): (stream.Sink<Token>, stream.Stream<Token>) = match stream.pipe(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
+    let receivers: Vec<stream.Stream<Token>> = [rx];
     let _item = receivers[0];
     0
 }
 ";
 
 const CHANNEL_RECEIVER_SLICE_BODY: &str = r"
-import std.channel;
+import std.stream;
 
 fn main() -> i64 {
-    let (_tx, rx): (channel.Sender<Token>, channel.Receiver<Token>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
-    let receivers: Vec<channel.Receiver<Token>> = [rx];
+    let (_tx, rx): (stream.Sink<Token>, stream.Stream<Token>) = match stream.pipe(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
+    let receivers: Vec<stream.Stream<Token>> = [rx];
     let _slice = receivers[0..1];
     0
 }
 ";
 
-const CHANNEL_RECEIVER_ITER_BODY: &str = r"
-import std.channel;
-
-fn main() -> i64 {
-    let (_tx, rx): (channel.Sender<Token>, channel.Receiver<Token>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
-    var receivers: Vec<channel.Receiver<Token>> = [rx];
-    let _iter = receivers.iter();
-    0
-}
-";
-
 const CHANNEL_RECEIVER_COPY_PUSH_BODY: &str = r"
-import std.channel;
+import std.stream;
 
 fn main() -> i64 {
-    let (_tx, rx): (channel.Sender<Token>, channel.Receiver<Token>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
-    var receivers: Vec<channel.Receiver<Token>> = Vec.new();
+    let (_tx, rx): (stream.Sink<Token>, stream.Stream<Token>) = match stream.pipe(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
+    var receivers: Vec<stream.Stream<Token>> = Vec.new();
     receivers.push(rx);
     println(receivers.len());
     0
@@ -229,12 +252,12 @@ fn main() -> i64 {
 ";
 
 const CHANNEL_RECEIVER_COPY_SET_BODY: &str = r"
-import std.channel;
+import std.stream;
 
 fn main() -> i64 {
-    let (_tx1, rx1): (channel.Sender<Token>, channel.Receiver<Token>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
-    let (_tx2, rx2): (channel.Sender<Token>, channel.Receiver<Token>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
-    var receivers: Vec<channel.Receiver<Token>> = [rx1];
+    let (_tx1, rx1): (stream.Sink<Token>, stream.Stream<Token>) = match stream.pipe(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
+    let (_tx2, rx2): (stream.Sink<Token>, stream.Stream<Token>) = match stream.pipe(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
+    var receivers: Vec<stream.Stream<Token>> = [rx1];
     receivers.set(0, rx2);
     println(receivers.len());
     0
@@ -444,11 +467,27 @@ fn channel_handle_clone_terminals_match_runtime_semantics() {
     let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
     assert!(
         !output.status.success()
-            && stderr.contains("E_NOT_YET_IMPLEMENTED")
-            && stderr.contains("drop-only `Vec` element operation `clone/iter`")
-            && stderr.contains("drop callback but no semantic clone")
-            && stderr.contains("would create a second owner"),
-        "Receiver has no dup helper and must be rejected by the canonical drop-only Vec clone authority:\n{stderr}"
+            && stderr.contains("cannot be cloned")
+            && stderr.contains("affine close contract and no semantic clone"),
+        "Stream has no dup helper and must be rejected by the affine resource clone contract:\n{stderr}"
+    );
+}
+
+/// Both pipe halves are affine, so a composite holding either has no copy
+/// operation. `sink.clone()` on the handle itself stays the one way to add a
+/// producer, and these two composite shapes are refused in source rather than
+/// reaching the SIR verifier with no recipe to lower.
+#[test]
+fn sink_composites_have_no_structural_copy_operation() {
+    let stderr = compile_rejected("sink_record_clone", SINK_RECORD_CLONE_BODY);
+    assert!(
+        stderr.contains("cannot be cloned") && stderr.contains("out"),
+        "a record with a Sink member must be refused in source:\n{stderr}"
+    );
+    let stderr = compile_rejected("sink_vec_index", SINK_VEC_INDEX_BODY);
+    assert!(
+        stderr.contains("no copy operation") && stderr.contains("non-cloneable"),
+        "Vec<Sink<T>> index-by-value must be refused in source:\n{stderr}"
     );
 }
 
@@ -519,7 +558,7 @@ fn receiver_vec_move_is_descriptor_owned_and_read_copy_surfaces_reject() {
         .expect("drop thunk body is unterminated")
         .0;
     assert!(
-        drop_body.contains("call void @hew_channel_receiver_close"),
+        drop_body.contains("call void @hew_stream_close"),
         "the drop-only element thunk @{drop_symbol} must close the endpoint exactly once:\n{drop_body}"
     );
 
@@ -543,25 +582,21 @@ fn receiver_vec_move_is_descriptor_owned_and_read_copy_surfaces_reject() {
         );
     }
 
+    // `receiver_iter` (`Vec<Stream<T>>.iter()`) dropped out of this loop: it
+    // now compiles cleanly, since iterating by reference does not copy the
+    // affine element the way `get`/indexing/slicing do.
     for (name, body) in [
         ("receiver_get", CHANNEL_RECEIVER_GET_BODY),
         ("receiver_index", CHANNEL_RECEIVER_INDEX_BODY),
         ("receiver_slice", CHANNEL_RECEIVER_SLICE_BODY),
-        ("receiver_iter", CHANNEL_RECEIVER_ITER_BODY),
     ] {
         let stderr = compile_rejected(name, body);
         assert!(
-            (stderr.contains("single-consumer endpoint")
-                || stderr.contains("drop-only")
-                || stderr.contains("affine close contract")
-                || stderr.contains("opaque/resource handle")
-                || stderr.contains("owned handle"))
-                && (stderr.contains("semantic clone")
+            (stderr.contains("no copy operation") || stderr.contains("single-consumer endpoint"))
+                && (stderr.contains("affine resource")
                     || stderr.contains("non-cloneable")
-                    || stderr.contains("clone an affine value")
-                    || stderr.contains("cannot be cloned")
-                    || stderr.contains("owned handle")),
-            "{name} must reject the copy/read surface through the affine Receiver contract:\n{stderr}"
+                    || stderr.contains("cannot be cloned")),
+            "{name} must reject the copy/read surface through the affine Stream contract:\n{stderr}"
         );
     }
 }

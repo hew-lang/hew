@@ -142,18 +142,27 @@ fn vec_index_admits_resource_element_as_an_interior_borrow() {
 }
 
 #[test]
-fn vec_index_still_rejects_single_consumer_receiver() {
-    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    let receiver = Ty::Named {
-        name: "std.channel.Receiver".to_string(),
-        args: vec![Ty::I64],
-        builtin: Some(BuiltinType::Receiver),
-    };
-    assert!(!checker.validate_vec_index_borrow_surface(&receiver, &Span::from(0..0)));
-    assert!(checker
-        .errors
-        .iter()
-        .any(|error| error.message.contains("single-consumer endpoint")));
+fn vec_index_still_rejects_either_pipe_half() {
+    for (name, builtin) in [
+        ("std.stream.Stream", BuiltinType::Stream),
+        ("std.stream.Sink", BuiltinType::Sink),
+    ] {
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let half = Ty::Named {
+            name: name.to_string(),
+            args: vec![Ty::I64],
+            builtin: Some(builtin),
+        };
+        assert!(!checker.validate_vec_index_borrow_surface(&half, &Span::from(0..0)));
+        assert!(
+            checker
+                .errors
+                .iter()
+                .any(|error| error.message.contains("no copy operation")),
+            "{name} must refuse index-by-value in source: {:#?}",
+            checker.errors
+        );
+    }
 }
 
 /// the boundary does: a concrete type lands in both maps; a non-concrete type

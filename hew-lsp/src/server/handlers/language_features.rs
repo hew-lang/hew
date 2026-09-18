@@ -227,14 +227,14 @@ pub(super) fn append_concurrency_snippets(
     }
     for (label, insert_text, detail) in [
         (
-            "channel.new...",
-            "let (${1:tx}, ${2:rx}): (channel.Sender<${3:string}>, channel.Receiver<${3:string}>) = match channel.new(${4:capacity}) { .Ok(pair) => pair, .Err(error) => panic(error), };",
-            "let (tx, rx) = match channel.new(capacity) { .Ok(pair) => pair, .Err(error) => panic(error), };",
+            "stream.pipe...",
+            "let (${1:tx}, ${2:rx}): (stream.Sink<${3:string}>, stream.Stream<${3:string}>) = match stream.pipe(${4:capacity}) { .Ok(pair) => pair, .Err(error) => panic(error), };",
+            "let (tx, rx) = match stream.pipe(capacity) { .Ok(pair) => pair, .Err(error) => panic(error), };",
         ),
         (
-            "await rx.recv...",
-            "match await ${1:rx}.recv() {\n\tSome(${2:value}) => ${3:expr},\n\tNone => ${0:closed_expr},\n}",
-            "await rx.recv()",
+            "rx.recv...",
+            "match ${1:rx}.recv() {\n\t.Some(${2:value}) => ${3:expr},\n\t.None => ${0:closed_expr},\n}",
+            "rx.recv()",
         ),
         (
             "select rx.recv...",
@@ -496,23 +496,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn concurrency_snippets_cover_channel_recv_and_select_surfaces() {
+    fn concurrency_snippets_cover_pipe_recv_and_select_surfaces() {
         let mut items = Vec::new();
         append_concurrency_snippets(&mut items, "", 0);
 
         let labels: Vec<_> = items.iter().map(|item| item.label.as_str()).collect();
-        assert!(labels.contains(&"channel.new..."));
-        assert!(labels.contains(&"await rx.recv..."));
+        assert!(labels.contains(&"stream.pipe..."));
+        assert!(labels.contains(&"rx.recv..."));
         assert!(labels.contains(&"select rx.recv..."));
 
         let snippets: Vec<_> = items
             .iter()
             .map(|item| item.insert_text.as_deref().unwrap_or_default())
             .collect();
-        assert!(snippets.iter().any(|text| text.contains("channel.new(")));
+        assert!(snippets.iter().any(|text| text.contains("stream.pipe(")));
         assert!(snippets
             .iter()
-            .any(|text| text.contains("await ${1:rx}.recv()")));
+            .any(|text| text.contains("match ${1:rx}.recv()")));
         assert!(snippets
             .iter()
             .any(|text| text.contains("from ${2:rx}.recv()")));

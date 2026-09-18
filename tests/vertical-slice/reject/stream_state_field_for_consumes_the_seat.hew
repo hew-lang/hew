@@ -1,0 +1,21 @@
+// Reject fixture: `for` over an actor-state `Stream<T>` field consumes the
+// seat's only owner, so the next message would consume it again.
+//
+// A pipe half is affine and the state seat outlives the handler. The checker
+// refuses the consuming spelling rather than letting the loop's cursor and the
+// field's own close authority both release the one runtime pointer (#3218).
+// The borrowing spelling is
+// `tests/vertical-slice/accept/stream_state_field_drain_asan.hew`.
+//
+// Expected: hew check exits non-zero and names the consumed state field.
+import std.stream;
+
+actor Consumer {
+    var input: Stream<string>,
+
+    receive fn drain() {
+        for item in self.input {
+            let _ = item;
+        }
+    }
+}

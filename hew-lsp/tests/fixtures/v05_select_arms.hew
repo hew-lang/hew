@@ -1,4 +1,4 @@
-import std.channel;
+import std.stream;
 
 actor Responder {
     receive fn ask(value: i32) -> i32 {
@@ -12,8 +12,8 @@ fn select_probe() -> i32 {
 
 fn select_arms() -> i32 {
     let recipient = spawn Responder;
-    let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
-    tx.send("ping");
+    let (tx, rx): (stream.Sink<string>, stream.Stream<string>) = match stream.pipe(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
+    tx.send("ping").expect("send");
     let result = select {
         reply from recipient.ask(1) => match reply {
             .Ok(value) => value,

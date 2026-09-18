@@ -1,0 +1,172 @@
+//! The pipe's delivery contract: exact values cross, an empty payload is data,
+//! EOF arrives only when the last sink finishes, and the non-blocking halves
+//! report Full and Closed rather than guessing.
+
+import std.stream;
+import std.testing;
+
+/// The value the sink sends is the value the stream delivers.
+#[test]
+fn test_roundtrip_delivers_exact_value() {
+    let (tx, rx): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(4).expect("pipe");
+    tx.send(7).expect("send");
+    match rx.recv() {
+        .Some(value) => testing.assert_eq(value, 7),
+        .None => panic("recv should deliver the sent value"),
+    }
+    tx.close();
+    rx.close();
+}
+
+/// Empty is data, EOF is end-of-stream only: a zero-length `bytes` and an
+/// empty `string` both arrive as `Some`, and only the sink's finish produces
+/// `None`.
+#[test]
+fn test_empty_payload_is_data_not_eof() {
+    let (btx, brx): (stream.Sink<bytes>, stream.Stream<bytes>) = stream.pipe(4).expect("bytes pipe");
+    btx.send("".to_bytes()).expect("send");
+    match brx.recv() {
+        .Some(payload) => testing.assert_eq(payload.len(), 0),
+        .None => panic("a zero-length bytes payload is data, not EOF"),
+    }
+    btx.finish();
+    match brx.recv() {
+        .Some(_) => panic("the finished pipe must report EOF"),
+        .None => testing.assert_true(true),
+    }
+    btx.close();
+    brx.close();
+
+    let (stx, srx): (stream.Sink<string>, stream.Stream<string>) = stream.pipe(4).expect("string pipe");
+    stx.send("").expect("send");
+    match srx.recv() {
+        .Some(text) => testing.assert_eq_str(text, ""),
+        .None => panic("an empty string payload is data, not EOF"),
+    }
+    stx.close();
+    srx.close();
+}
+
+/// A clone adds a producer: finishing one clone leaves the pipe open for the
+/// others, and only the last finish publishes EOF.
+#[test]
+fn test_eof_waits_for_the_last_sink_to_finish() {
+    let (tx, rx): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(4).expect("pipe");
+    let more = tx.clone();
+    tx.send(1).expect("send");
+    tx.finish();
+    // The first sink is done; the clone still holds the pipe open.
+    match rx.recv() {
+        .Some(value) => testing.assert_eq(value, 1),
+        .None => panic("the queued item must arrive before EOF"),
+    }
+    more.send(2).expect("send after the first sink finished");
+    match rx.recv() {
+        .Some(value) => testing.assert_eq(value, 2),
+        .None => panic("one finished clone must not end the pipe"),
+    }
+    more.finish();
+    match rx.recv() {
+        .Some(_) => panic("the last finish must publish EOF"),
+        .None => testing.assert_true(true),
+    }
+    tx.close();
+    more.close();
+    rx.close();
+}
+
+/// `try_send` never waits: a full queue answers `Full`, and a released reader
+/// answers `Closed`.
+#[test]
+fn test_try_send_reports_full_then_closed() {
+    let (tx, rx): (stream.Sink<string>, stream.Stream<string>) = stream.pipe(1).expect("pipe");
+    tx.send("one").expect("send");
+    match tx.try_send("two") {
+        .Ok(()) => panic("a full pipe must refuse try_send"),
+        .Err(SendError.Full) => testing.assert_true(true),
+        .Err(_) => panic("a full pipe reports Full"),
+    }
+    rx.close();
+    match tx.try_send("three") {
+        .Ok(()) => panic("a released reader must refuse try_send"),
+        .Err(SendError.Closed) => testing.assert_true(true),
+        .Err(_) => panic("a released reader reports Closed"),
+    }
+    tx.close();
+}
+
+/// `finish` is a half-close, so a later `send` answers the same `Closed` the
+/// non-blocking half reports. The element type does not change the answer: a
+/// finished sink has no backing to write to, whatever it carried.
+#[test]
+fn test_send_after_finish_reports_closed() {
+    let (tx, rx): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(4).expect("pipe");
+    // Negative control: the same send on the open sink is accepted.
+    tx.send(1).expect("send before finish");
+    tx.finish();
+    match tx.send(2) {
+        .Ok(()) => panic("a finished sink must refuse send"),
+        .Err(SendError.Closed) => testing.assert_true(true),
+        .Err(_) => panic("a finished sink reports Closed"),
+    }
+    tx.close();
+    rx.close();
+
+    let (stx, srx): (stream.Sink<string>, stream.Stream<string>) = stream.pipe(4).expect("pipe");
+    stx.finish();
+    match stx.send("late") {
+        .Ok(()) => panic("a finished string sink must refuse send"),
+        .Err(SendError.Closed) => testing.assert_true(true),
+        .Err(_) => panic("a finished string sink reports Closed"),
+    }
+    stx.close();
+    srx.close();
+
+    let (btx, brx): (stream.Sink<bytes>, stream.Stream<bytes>) = stream.pipe(4).expect("pipe");
+    btx.finish();
+    match btx.send("late".to_bytes()) {
+        .Ok(()) => panic("a finished bytes sink must refuse send"),
+        .Err(SendError.Closed) => testing.assert_true(true),
+        .Err(_) => panic("a finished bytes sink reports Closed"),
+    }
+    btx.close();
+    brx.close();
+}
+
+/// `try_recv` on an empty but still open pipe is `None` without waiting, and
+/// the same pipe still delivers the next item.
+#[test]
+fn test_try_recv_on_an_empty_open_pipe_is_none() {
+    let (tx, rx): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(4).expect("pipe");
+    match rx.try_recv() {
+        .Some(_) => panic("an empty pipe has nothing to take"),
+        .None => testing.assert_true(true),
+    }
+    tx.send(9).expect("send");
+    match rx.try_recv() {
+        .Some(value) => testing.assert_eq(value, 9),
+        .None => panic("the queued item must be takeable"),
+    }
+    tx.close();
+    rx.close();
+}
+
+/// The waiting `recv()` delivers the exact value a producer sent while the
+/// consumer was parked on the empty queue.
+#[test]
+fn test_waiting_recv_delivers_exact_value() {
+    let (tx, rx): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("pipe");
+    let producer = fork feed(tx, 55);
+    match rx.recv() {
+        .Some(value) => testing.assert_eq(value, 55),
+        .None => panic("the waiting recv must deliver the produced value"),
+    }
+    testing.assert_eq(await producer, 1);
+    rx.close();
+}
+
+fn feed(consume tx: stream.Sink<i64>, value: i64) -> i64 {
+    tx.send(value).expect("send");
+    tx.close();
+    1
+}

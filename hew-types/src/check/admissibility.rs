@@ -738,72 +738,14 @@ impl Checker {
             .retain(|key, _| valid_keys.contains(key));
     }
 
-    pub(super) fn validate_stream_sink_element_type(
-        &mut self,
-        type_args: &[Ty],
-        type_name: &str,
-        method_name: &str,
-        span: &Span,
-    ) -> Option<Ty> {
-        let _ = method_name;
-        let inner = type_args
+    /// The element type of a `Stream<T>` / `Sink<T>` receiver. A missing
+    /// argument is a fresh inference variable: admission is checked once the
+    /// element is known (`queue_elem_admissible`), never on a partial type.
+    pub(super) fn stream_element_type(type_args: &[Ty]) -> Ty {
+        type_args
             .first()
             .cloned()
-            .unwrap_or(Ty::Var(TypeVar::fresh()));
-        // Unresolved type variables and error sentinels pass through so that
-        // type inference can complete without generating a cascade of spurious
-        // "not Wire" diagnostics on partially-inferred programs.
-        if matches!(&inner, Ty::Var(_) | Ty::Error) {
-            return Some(inner);
-        }
-        // A type is a valid Sink/Stream payload if and only if it implements
-        // both the Encode and Decode marker traits (the "Wire capability").
-        // implements_marker performs structural derivation — closures, raw
-        // pointers, dyn-Trait, an actor handle, and other non-serialisable types
-        // naturally fall out here without any explicit allowlist entry.
-        let has_encode = self.registry.implements_marker(&inner, MarkerTrait::Encode);
-        let has_decode = self.registry.implements_marker(&inner, MarkerTrait::Decode);
-        if !has_encode || !has_decode {
-            let mut missing = Vec::new();
-            if !has_encode {
-                missing.push("Encode".to_owned());
-            }
-            if !has_decode {
-                missing.push("Decode".to_owned());
-            }
-            self.report_error(
-                TypeErrorKind::SinkPayloadNotWire {
-                    payload_ty: inner.user_facing().to_string(),
-                    missing_traits: missing,
-                },
-                span,
-                format!(
-                    "`{type_name}<{}>` payload must implement Wire (Encode + Decode); \
-                     the type does not satisfy the required marker traits",
-                    inner.user_facing()
-                ),
-            );
-            return None;
-        }
-        Some(inner)
-    }
-
-    pub(super) fn report_unlowerable_stream_codec_boundary(
-        &mut self,
-        type_name: &str,
-        inner: &Ty,
-        method: &str,
-        span: &Span,
-    ) -> Ty {
-        self.report_error(
-            TypeErrorKind::InvalidOperation,
-            span,
-            format!(
-                "`{method}()` is not available on `{type_name}<{}>` yet; lowering/runtime support is not implemented",
-                inner.user_facing()
-            ),
-        );
-        Ty::Error
+            .unwrap_or(Ty::Var(TypeVar::fresh()))
     }
 
     /// Concrete key operations come from the exact semantic type and selected
@@ -1349,14 +1291,14 @@ impl Checker {
     }
 
     pub(super) fn vec_element_has_copy_layout(&self, elem_ty: &Ty) -> bool {
-        // Sender is pointer-width but not semantically Copy: duplicating an
-        // endpoint must call `hew_channel_sender_clone` so its shared channel
-        // refcount is retained. Keep it on the owned descriptor lane even if
-        // the representation marker reports a flat pointer layout.
+        // A sink is pointer-width but not semantically Copy: duplicating a
+        // producer handle must call `hew_sink_clone` so the pipe's handle
+        // count is retained. Keep it on the owned descriptor lane even if the
+        // representation marker reports a flat pointer layout.
         if matches!(
             elem_ty,
             Ty::Named {
-                builtin: Some(BuiltinType::Sender),
+                builtin: Some(BuiltinType::Sink),
                 ..
             }
         ) {

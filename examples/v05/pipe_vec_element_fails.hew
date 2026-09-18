@@ -1,0 +1,30 @@
+// Pipe element rejection fixture: a builtin container element
+// (`Sink<Vec<i64>>`) cannot ride the element-layout queue witness — its
+// ownership lives in a runtime context the queue cannot clone or drop. It
+// must fail closed at check time with a diagnostic that names the container,
+// never silently accept then corrupt ownership at runtime.
+//
+// NOTE: primitives, `string`, `bytes`, and value records/enums/tuples ARE
+// admitted — the witness describes them (see
+// examples/v05/surfaces/pipe_record_elements.hew). Only container/handle
+// elements and types without a clone/drop thunk path remain fail-closed.
+import std.stream;
+
+fn relay(items: Vec<i64>) {
+    let (tx, rx): (stream.Sink<Vec<i64>>, stream.Stream<Vec<i64>>) = match stream.pipe(2) {
+        .Ok(pair) => pair,
+        .Err(err) => panic(f"stream.pipe failed: {err}"),
+    };
+    tx.send(items).expect("send");
+    tx.close();
+    match rx.try_recv() {
+        .Some(v) => println(v.len()),
+        .None => println("drained"),
+    }
+}
+
+fn main() {
+    var items: Vec<i64> = Vec.new();
+    items.push(1);
+    relay(items);
+}

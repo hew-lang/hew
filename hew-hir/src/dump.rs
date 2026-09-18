@@ -768,17 +768,6 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
             writeln!(out, "{pad}  listener-await-accept").expect("write to string");
             dump_expr(out, listener, indent + 2);
         }
-        HirExprKind::ChannelRecvAwait {
-            receiver,
-            deadline_ns,
-            ..
-        } => {
-            let deadline = deadline_ns
-                .map(|ns| format!(" | after {ns}ns"))
-                .unwrap_or_default();
-            writeln!(out, "{pad}  channel-recv-await{deadline}").expect("write to string");
-            dump_expr(out, receiver, indent + 2);
-        }
         HirExprKind::StreamRecvAwait {
             stream,
             deadline_ns,
@@ -797,7 +786,6 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                     crate::node::HirSelectArmKind::StreamNext { .. } => "stream-next",
                     crate::node::HirSelectArmKind::ActorAsk { .. } => "actor-ask",
                     crate::node::HirSelectArmKind::TaskAwait { .. } => "task-await",
-                    crate::node::HirSelectArmKind::ChannelRecv { .. } => "channel-recv",
                     crate::node::HirSelectArmKind::AfterTimer { .. } => "after-timer",
                 };
                 let binding_label = arm.binding_name.as_deref().unwrap_or("_");

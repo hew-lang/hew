@@ -1,6 +1,6 @@
 //! HTTP/1.1 codec over ordinary `std.net` calls.
 //!
-//! Call `conn.read()` directly; pending reads can suspend the caller.
+//! Call `conn.recv()` directly; pending reads can suspend the caller.
 //! Use `fork` for concurrent work and `await` for the resulting task.
 //! The codec buffers bodies and uses one connection per request; HTTPS and
 //! connection pooling are not provided here.
@@ -22,9 +22,12 @@
 //!         var reads = 0;
 //!         var done = false;
 //!         while !done {
-//!             let chunk = utf8.decode(conn.read()) handle error {
-//!                 println(f"invalid UTF-8: {error}");
-//!                 return;
+//!             let chunk = match conn.recv() {
+//!                 .Some(data) => utf8.decode(data) handle error {
+//!                     println(f"invalid UTF-8: {error}");
+//!                     return;
+//!                 },
+//!                 .None => "",
 //!             };    // suspends the worker
 //!             reads = reads + 1;
 //!             if string.is_empty(chunk) {
@@ -49,8 +52,8 @@
 //!                 _        => http_async_server.response_text(404, "nope"),
 //!             };
 //!         }
-//!         conn.write_string(reply) handle error {
-//!             println(f"response write failed: {error}");
+//!         conn.send(reply.to_bytes()) handle error {
+//!             println(f"response send failed: {error}");
 //!             return;
 //!         };
 //!         let _ = conn.close();

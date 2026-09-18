@@ -777,10 +777,10 @@ mod non_root_module_inference_scope {
     }
 
     #[test]
-    fn bare_channel_handle_signature_stays_valid() {
+    fn bare_pipe_handle_signature_stays_valid() {
         let source = concat!(
-            "import std.channel;\n",
-            "fn close_sender(tx: channel.Sender) {\n",
+            "import std.stream;\n",
+            "fn close_sink(consume tx: stream.Sink<i64>) {\n",
             "    tx.close();\n",
             "}\n",
         );
@@ -796,11 +796,11 @@ mod non_root_module_inference_scope {
         let errs = inference_failed_errors(&output);
         assert!(
             errs.is_empty(),
-            "bare channel handle signatures should not produce InferenceFailed: {errs:?}"
+            "bare pipe handle signatures should not produce InferenceFailed: {errs:?}"
         );
         assert!(
             output.errors.is_empty(),
-            "bare channel handle signatures should type-check cleanly: {:?}",
+            "bare pipe handle signatures should type-check cleanly: {:?}",
             output.errors
         );
     }

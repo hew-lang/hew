@@ -1,10 +1,9 @@
 # platform<TAB>outcome<TAB>suite<TAB>test<TAB>reason
 linux,macos,windows,freebsd	failure	hew-cli::actor_fault_isolation_e2e	crash_in_the_supervisor_itself_fails_the_process_without_cascading	#3381 reports a fault raised inside an on(crash) hook
 linux,macos,freebsd	failure	hew-cli::affine_resource_carrier_boundaries	channel_handle_clone_terminals_match_runtime_semantics	#3377 fix/collections-final-path: gives Vec<Sender<T>> a copy operation or refuses it in source
-linux,macos,freebsd	failure	hew-cli::affine_resource_carrier_boundaries	receiver_vec_move_is_descriptor_owned_and_read_copy_surfaces_reject	#3395 stops Vec.get handing out a second owner of a non-cloneable endpoint
+macos,freebsd	failure	hew-cli::affine_resource_carrier_boundaries	receiver_vec_move_is_descriptor_owned_and_read_copy_surfaces_reject	#3395 stops Vec.get handing out a second owner of a non-cloneable endpoint
 windows,freebsd	failure	hew-cli::branch_divergent_return_drop_ir	nested_returned_string_scope_exit_is_discharged_exactly_once	#3118 releases branch-local siblings on normal edges
 windows,freebsd	failure	hew-cli::branch_divergent_return_drop_ir	returned_result_branch_releases_only_the_nonreturned_string_sibling	#3118 releases branch-local siblings on normal edges
-linux,macos,windows,freebsd	failure	hew-cli::channel_send_shutdown_e2e	full_send_at_shutdown_fails_closed_with_named_channel	#3380 makes a periodic handler's send observe the channel bound
 macos	failure	hew-cli::closure_capture_owned_leak_oracle	nested_closure_parameter_control_leak_slope_below_tolerance	#3438 borrowed fn-parameter values cannot be captured or stored without consume
 macos	failure	hew-cli::closure_env_drop_leak_oracle	closure_owned_type_param_no_per_frame_leak_slope	#3438 borrowed fn-parameter values cannot be captured or stored without consume
 linux,freebsd,macos	failure	hew-cli::closure_env_drop_leak_oracle	generator_transitive_capture_outliving_its_generator_is_not_a_use_after_free	#3370 feat/generators-adaptors: coerces a Generator value at a callee boundary
@@ -15,7 +14,7 @@ macos	failure	hew-cli::closure_in_struct_leak_oracle	forward_param_into_field_fr
 macos	failure	hew-cli::closure_in_struct_leak_oracle	forward_param_into_field_leak_slope_below_tolerance	#3438 borrowed fn-parameter values cannot be captured or stored without consume
 macos	failure	hew-cli::closure_in_struct_leak_oracle	store_and_drop_struct_leak_slope_below_tolerance	#3438 borrowed fn-parameter values cannot be captured or stored without consume
 macos	failure	hew-cli::collection_borrowed_cow_ingress_leak_oracle	reassigned_param_ingress_reads_back_exact_values	#3438 borrowed fn-parameter values cannot be captured or stored without consume
-linux,windows,freebsd	failure	hew-cli::compile_wasm_parity	non_duplex_program_emits_wasm	#3368 implements sandbox emission on the physical path
+linux,windows,freebsd	failure	hew-cli::compile_wasm_parity	arith_program_emits_wasm	#3368 implements sandbox emission on the physical path
 linux,macos,windows,freebsd	failure	hew-cli::compile_wasm_parity	wasm_unsupported_substrate_diagnostics_preserve_symbol_category	#3368 implements sandbox emission on the physical path
 linux	failure	hew-cli::coro_thread_fence_e2e	fork_children_create_no_os_threads	#3385 runs fork children as coroutines, not OS threads
 linux,macos,windows,freebsd	failure	hew-cli::cross_target_e2e	serializable_actor_emits_target_walked_ctor_section	#3382 emits the target-walked constructor section
@@ -81,7 +80,6 @@ macos	failure	hew-cli::indirect_enum_drop_leak_oracle	indirect_enum_dead_actor_s
 linux,macos,windows,freebsd	failure	hew-cli::is_value_type_reject_e2e	is_on_an_actor_handle_is_still_accepted	#3372 lowers identity comparison
 linux,macos,windows,freebsd	failure	hew-cli::is_value_type_reject_e2e	is_on_an_actor_handle_through_an_inferred_closure_is_accepted	#3372 lowers identity comparison
 linux,macos,windows,freebsd	failure	hew-cli::machine_e2e	machine_diagram_renders_composite_nesting_in_mermaid	#3379 evaluates const parameters and generic fallbacks in a pure machine
-linux,macos,windows,freebsd	failure	hew-cli::machine_transition_watch_e2e	select_on_transition_example_runs_clean	#3392 waits out a select's after arm inside an actor handler
 macos	failure	hew-cli::match_bound_payload_drop_leak_oracle	nested_enum_payload_cancel_drops_parent_exactly_once	#3450 fixes the observable result of a recovery edge
 freebsd	failure	hew-cli::match_payload_reassign_uaf_oracle	borrow_only_guard_fallthrough_runs_safely	#2523 keeps borrow-only payload guards live across fallthrough
 freebsd	failure	hew-cli::match_payload_reassign_uaf_oracle	borrow_only_projection_keeps_scrutinee_live	#2523 keeps borrow-only payload projections attached to the scrutinee
@@ -115,8 +113,8 @@ linux,macos,windows,freebsd	failure	hew-cli::run_e2e	check_gen_fn_capturing_clos
 linux,macos,windows,freebsd	failure	hew-cli::run_e2e	check_gen_fn_capturing_closure_rebind_fails_closed	#3377 fix/collections-final-path: treats a function value as a first-class value
 linux,macos,windows,freebsd	failure	hew-cli::run_e2e	run_file_imported_actor_closure_and_range_body_runs	#3374 fix/collections-final-path: gives an imported ask its exact receive protocol member
 linux,macos,windows,freebsd	failure	hew-cli::run_e2e	run_file_imported_actor_spawns_and_calls	#3374 fix/collections-final-path: gives an imported ask its exact receive protocol member
-linux,macos,windows,freebsd	failure	hew-cli::run_e2e	run_record_of_handles_return_drops_each_field_once	#3374 gives an imported declaration its exact SIR identity
-linux,macos,windows,freebsd	failure	hew-cli::run_e2e	run_record_of_handles_return_without_explicit_close_exits_clean	#3374 gives an imported declaration its exact SIR identity
+macos,windows,freebsd	failure	hew-cli::run_e2e	run_record_of_handles_return_drops_each_field_once	#3374 gives an imported declaration its exact SIR identity
+macos,windows,freebsd	failure	hew-cli::run_e2e	run_record_of_handles_return_without_explicit_close_exits_clean	#3374 gives an imported declaration its exact SIR identity
 windows	failure	hew-cli::run_e2e	run_record_resource_field_partial_close_leaks_the_sibling	#3070 closes a composite's resource leaf exactly once
 windows	failure	hew-cli::run_e2e	run_record_resource_fields_both_closed_close_once_each	#3070 closes a composite's resource leaf exactly once
 windows	failure	hew-cli::run_e2e	run_result_resource_payload_field_read_closes_once	#3070 closes a composite's resource leaf exactly once
@@ -141,7 +139,6 @@ linux,macos,windows,freebsd	failure	hew-cli::wasi_run_e2e	json_value_implicit_cl
 linux,macos,windows,freebsd	failure	hew-cli::wasi_run_e2e	toml_encoding_round_trips_under_wasi	#3368 implements sandbox emission on the physical path
 linux,macos,windows,freebsd	failure	hew-cli::wasi_run_e2e	wasi_run_timeout_terminates_a_non_terminating_program	#3368 implements sandbox emission on the physical path
 linux,macos,windows,freebsd	failure	hew-cli::wasi_run_e2e	wasm_actor_periodic_timer_fires_but_never_reaches_quiescence	#3368 implements sandbox emission on the physical path
-linux,macos,windows,freebsd	failure	hew-cli::wasi_run_e2e	wasm_channel_send_full_traps_instead_of_dropping	#3368 implements sandbox emission on the physical path
 linux,macos,windows,freebsd	failure	hew-cli::wasi_run_e2e	wasm_cooperative_sleep_parks_and_resumes	#3368 implements sandbox emission on the physical path
 linux,macos,windows,freebsd	failure	hew-cli::wasi_run_e2e	wasm_hashmap_hashset_layout_ownership_run_pass	#3368 implements sandbox emission on the physical path
 linux,macos,windows,freebsd	failure	hew-cli::wasi_run_e2e	wasm_hashmap_hashset_layout_run_pass	#3368 implements sandbox emission on the physical path

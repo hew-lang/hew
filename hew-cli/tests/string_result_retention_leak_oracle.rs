@@ -117,7 +117,7 @@ fn main() {
     reason = "kept for when the E_SIR_UNSUPPORTED limitation it hits lifts"
 )]
 const SUSPENDING_CLOSURE_ABANDON_SOURCE: &str = r#"
-import std.channel;
+import std.stream;
 
 extern "C" {
     fn hew_sched_metrics_active_workers() -> i64;
@@ -126,12 +126,12 @@ extern "C" {
 }
 
 actor Reader {
-    let ready: channel.Sender<i64>,
+    let ready: stream.Sink<i64>,
 
     receive fn go(unused: i64) {
         let ready_tx = ready;
         let delayed_identity = move |value: string| {
-            ready_tx.send(1);
+            ready_tx.send(1).expect("send");
             sleep(10s);
             value
         };
@@ -140,7 +140,7 @@ actor Reader {
 }
 
 fn main() {
-    let (ready_tx, ready_rx): (channel.Sender<i64>, channel.Receiver<i64>) = match channel.new(1) { .Ok(pair) => pair, .Err(error) => panic(error), };
+    let (ready_tx, ready_rx): (stream.Sink<i64>, stream.Stream<i64>) = match stream.pipe(1) { .Ok(pair) => pair, .Err(error) => panic(error), };
     let reader = spawn Reader(ready: ready_tx);
     reader.go(0);
     let _ = ready_rx.recv();
@@ -173,7 +173,7 @@ actor Reader {
             if trigger >= 0 {
                 panic("crash before child suspend");
             }
-            let _ = conn.read_string();
+            let _ = conn.recv();
             value
         };
         let _ = read_once("crash-owner".to_upper());
@@ -241,7 +241,7 @@ actor Reader {
             if trigger >= 0 {
                 panic("crash before child suspend");
             }
-            let _ = conn.read_string();
+            let _ = conn.recv();
             value
         };
         let _ = read_once("crash-owner".to_upper());
@@ -259,15 +259,12 @@ fn main() {
         .Err(_) => println("crash-fallback"),
     }
     let peer = listener.accept();
-    match peer.try_read() {
-        .Ok(buf) => {
-            if buf.len() == 0 {
-                println("peer-eof");
-            } else {
-                println("peer-data");
-            }
-        },
-        .Err(_) => println("peer-error"),
+    // `recv()` is blocking and traps the calling actor on a transport
+    // failure instead of returning an `Err`, unlike the deleted
+    // `try_read()`; `None` is the orderly-EOF witness this probe needs.
+    match peer.recv() {
+        .None => println("peer-eof"),
+        .Some(_) => println("peer-data"),
     }
     peer.close();
     listener.close();
@@ -300,7 +297,7 @@ actor Reader {{
             if trigger >= 0 {{
                 panic("crash before child suspend");
             }}
-            let _ = conn.read_string();
+            let _ = conn.recv();
             value
         }};
         let _ = read_once({argument});

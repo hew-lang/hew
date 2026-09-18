@@ -62,8 +62,8 @@ pub use optimize::{
 };
 pub use ownership::{
     aggregate_field_recipes, aggregate_field_types, call_boundary_types_match,
-    checked_binary_failure_kinds, checked_binary_types_match, pipe_parts, receiver_element,
-    runtime_failure_trap_kind, sender_element, sink_element, stream_element, variant_field_recipes,
+    checked_binary_failure_kinds, checked_binary_types_match, pipe_parts,
+    runtime_failure_trap_kind, sink_element, stream_element, variant_field_recipes,
     variant_field_types, AggregateFieldRecipe, Binding, BindingId, BindingTarget, BoundaryDecision,
     BytesLiteralId, OwnKind, OwnerRoot, PlaceBase, PlaceDecl, PlaceId, PlaceOrigin,
     SnapshotDecision, StringLiteralId, SuspendKind, TaskScopeId, TaskScopeJoinMode, TrapKind,

@@ -1369,8 +1369,8 @@ mod tests {
             "Vec",
             crate::BuiltinType::Vec,
             vec![ResolvedTy::named_builtin(
-                "Sender",
-                crate::BuiltinType::Sender,
+                "Sink",
+                crate::BuiltinType::Sink,
                 vec![ResolvedTy::I64],
             )],
         );
@@ -1378,14 +1378,14 @@ mod tests {
             "Vec",
             crate::BuiltinType::Vec,
             vec![ResolvedTy::named_builtin(
-                "std.channel.Sender",
-                crate::BuiltinType::Sender,
+                "std.stream.Sink",
+                crate::BuiltinType::Sink,
                 vec![ResolvedTy::I64],
             )],
         );
         assert!(short.is_storage_congruent_with(&qualified));
 
-        let foreign = ResolvedTy::named_user("user.channel.Sender", vec![ResolvedTy::I64]);
+        let foreign = ResolvedTy::named_user("user.stream.Sink", vec![ResolvedTy::I64]);
         assert!(!short.is_storage_congruent_with(&ResolvedTy::named_builtin(
             "Vec",
             crate::BuiltinType::Vec,

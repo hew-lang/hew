@@ -16,18 +16,28 @@ use support::leak_slope::{
 };
 use support::{describe_output, require_codegen};
 
+// `stream.to_file` and `Sink<T>.write` were both deleted with the old pipe
+// surface; there is no write-side equivalent in the one pipe family whose
+// premise is a fresh sink minted from `if let` each loop iteration (a real
+// caller opens a file for writing once, not per frame). This oracle's
+// subject — does an `if let`-bound `#[resource]` handle close on scope exit,
+// and not close twice under an explicit close — carries over unchanged onto
+// the read side: `stream.open` mints a fresh `Stream<bytes>` handle per
+// iteration instead of a `Sink`.
 fn if_let_sink_source(frames: usize, explicit_close: bool) -> String {
     let close = if explicit_close {
-        "        sink.close();\n"
+        "        input.close();\n"
     } else {
         ""
     };
     format!(
         "import std.stream;\n\
+         import std.fs;\n\
          fn main() -> i64 {{\n\
+         \x20   fs.write(\"/tmp/hew-if-let-resource-oracle.txt\", \"frame\").expect(\"write\");\n\
          \x20   for i in 0..{frames} {{\n\
-         \x20       if let .Ok(sink) = stream.to_file(\"/tmp/hew-if-let-resource-oracle.txt\") {{\n\
-         \x20           sink.write(\"frame\");\n\
+         \x20       if let .Ok(input) = stream.open(\"/tmp/hew-if-let-resource-oracle.txt\") {{\n\
+         \x20           let _ = input.try_recv();\n\
          {close}\
          \x20           println(\"closed\");\n\
          \x20       }} else {{\n\

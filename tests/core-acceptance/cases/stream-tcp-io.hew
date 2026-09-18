@@ -1,5 +1,4 @@
 import std.net;
-import std.stream;
 
 fn drain(consume input: Stream<bytes>) -> bytes {
     var result = "".to_bytes();
@@ -11,8 +10,8 @@ fn drain(consume input: Stream<bytes>) -> bytes {
 
 fn client(address: string) -> bytes {
     let connection = net.connect(address).expect("connect client");
-    let (input, output) = connection.into_stream_sink();
-    output.write("request\0bytes".to_bytes());
+    let (input, output) = connection.split();
+    output.send("request\0bytes".to_bytes()).expect("send");
     output.close();
     drain(input)
 }
@@ -23,9 +22,9 @@ fn main() {
     scope {
         let response = fork client(address);
         let connection = listener.accept();
-        let (input, output) = connection.into_stream_sink();
+        let (input, output) = connection.split();
         assert(drain(input) == "request\0bytes".to_bytes());
-        output.write("reply\0bytes".to_bytes());
+        output.send("reply\0bytes".to_bytes()).expect("send");
         output.close();
         assert(await response == "reply\0bytes".to_bytes());
     }

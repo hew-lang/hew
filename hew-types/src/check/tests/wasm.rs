@@ -12,8 +12,7 @@ pub(super) use super::*;
 // before calling `check_program`.
 //
 // Coverage:
-//  - channel.new / send / try_recv → allowed on wasm32 bounded subset
-//  - Receiver<T>::recv / `for ... in Receiver<T>` → BlockingChannelRecv error
+//  - stream.pipe / Sink send/close → allowed on wasm32 (Sink is ungated)
 //  - semaphore.new / try_acquire / release / count / close → allowed on wasm32
 //  - Semaphore::acquire / Semaphore::acquire_timeout → BlockingSemaphoreAcquire error
 //  - sleep_ms → now an undefined-function error (removed; use sleep(duration))
@@ -232,42 +231,14 @@ mod wasm_rejects {
         );
     }
 
-    // ── channel.new ──────────────────────────────────────────────────────────
+    // ── stream.pipe ──────────────────────────────────────────────────────────
 
     #[test]
-    fn wasm_allows_bounded_channel_subset() {
+    fn native_pipe_new_no_platform_error() {
         let source = concat!(
-            "import std.channel;\n",
+            "import std.stream;\n",
             "fn main() {\n",
-            "    let (tx, rx) = match channel.new(1) { .Ok(pair) => pair, .Err(error) => panic(error), };\n",
-            "    tx.send(\"hello\");\n",
-            "    let _ = rx.try_recv();\n",
-            "    tx.close();\n",
-            "    rx.close();\n",
-            "}\n",
-        );
-        let result = hew_parser::parse(source);
-        assert!(
-            result.errors.is_empty(),
-            "parse errors: {:?}",
-            result.errors
-        );
-        let mut checker = Checker::new(test_registry());
-        checker.enable_wasm_target();
-        let output = checker.check_program(&result.program);
-        assert!(
-            !has_platform_limitation_error(&output),
-            "bounded channel.new/send/try_recv subset should be allowed on WASM; got errors: {:?}",
-            output.errors
-        );
-    }
-
-    #[test]
-    fn native_channel_new_no_platform_error() {
-        let source = concat!(
-            "import std.channel;\n",
-            "fn main() {\n",
-            "    let pair = channel.new(0);\n",
+            "    let pair = stream.pipe(0);\n",
             "}\n",
         );
         let result = hew_parser::parse(source);
@@ -280,18 +251,18 @@ mod wasm_rejects {
         let output = checker.check_program(&result.program);
         assert!(
             !has_platform_limitation_error(&output),
-            "channel.new should not emit PlatformLimitation on native target; got: {:?}",
+            "stream.pipe should not emit PlatformLimitation on native target; got: {:?}",
             output.errors
         );
     }
 
     #[test]
-    fn native_channel_receive_does_not_warn_worker_blocking() {
+    fn native_stream_receive_does_not_warn_worker_blocking() {
         let source = concat!(
-            "import std.channel;\n",
+            "import std.stream;\n",
             "actor Worker {\n",
             "    receive fn run() {\n",
-            "        let (_tx, rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(1) { .Ok(pair) => pair, .Err(error) => panic(error), };\n",
+            "        let (_tx, rx): (stream.Sink<string>, stream.Stream<string>) = match stream.pipe(1) { .Ok(pair) => pair, .Err(error) => panic(error), };\n",
             "        let _ = rx.recv();\n",
             "        rx.close();\n",
             "    }\n",
@@ -319,76 +290,18 @@ mod wasm_rejects {
         );
     }
 
-    #[test]
-    fn wasm_rejects_blocking_channel_recv() {
-        let source = concat!(
-            "import std.channel;\n",
-            "fn main() {\n",
-            "    let (_tx, rx) = match channel.new(1) { .Ok(pair) => pair, .Err(error) => panic(error), };\n",
-            "    let _ = rx.recv();\n",
-            "}\n",
-        );
-        let result = hew_parser::parse(source);
-        assert!(
-            result.errors.is_empty(),
-            "parse errors: {:?}",
-            result.errors
-        );
-        let mut checker = Checker::new(test_registry());
-        checker.enable_wasm_target();
-        let output = checker.check_program(&result.program);
-        assert!(
-            has_platform_limitation_error(&output),
-            "blocking recv should still be a compile-time error on WASM; got errors: {:?}",
-            output.errors
-        );
-        assert!(
-            platform_error_contains(&output, "Blocking channel receive"),
-            "error message should mention blocking channel receive; got: {:?}",
-            output.errors
-        );
-    }
-
-    #[test]
-    fn wasm_rejects_for_await_receiver() {
-        let source = concat!(
-            "import std.channel;\n",
-            "fn main() {\n",
-            "    let (tx, rx) = match channel.new(1) { .Ok(pair) => pair, .Err(error) => panic(error), };\n",
-            "    tx.send(\"hello\");\n",
-            "    tx.close();\n",
-            "    for item in rx {\n",
-            "        println(item);\n",
-            "    }\n",
-            "}\n",
-        );
-        let result = hew_parser::parse(source);
-        assert!(
-            result.errors.is_empty(),
-            "parse errors: {:?}",
-            result.errors
-        );
-        let mut checker = Checker::new(test_registry());
-        checker.enable_wasm_target();
-        let output = checker.check_program(&result.program);
-        assert!(
-            has_platform_limitation_error(&output),
-            "`for` over Receiver<T> should be a compile-time error on WASM; got errors: {:?}",
-            output.errors
-        );
-        assert!(
-            platform_error_contains(&output, "Blocking channel receive"),
-            "error message should mention blocking channel receive; got: {:?}",
-            output.errors
-        );
-    }
+    // The former channel-specific `wasm_rejects_blocking_channel_recv` and
+    // `wasm_rejects_for_await_receiver` tests are gone with the channel
+    // family: `wasm_rejects_for_await_stream` and `wasm_rejects_stream_method`
+    // below already pin the single `WasmUnsupportedFeature::Streams` gate
+    // that any `Stream<T>` method call goes through on wasm32.
 
     #[test]
     fn wasm_rejects_for_await_stream() {
         let source = concat!(
             "import std.stream;\n",
             "fn main() {\n",
-            "    let (sink, input) = match stream.bytes_pipe(1) { .Ok(pair) => pair, .Err(error) => panic(error), };\n",
+            "    let (sink, input): (stream.Sink<bytes>, stream.Stream<bytes>) = match stream.pipe(1) { .Ok(pair) => pair, .Err(error) => panic(error), };\n",
             "    sink.close();\n",
             "    for item in input {\n",
             "        println(item.to_string());\n",
@@ -417,13 +330,13 @@ mod wasm_rejects {
     }
 
     #[test]
-    fn native_for_await_receiver_no_platform_error() {
+    fn native_for_await_stream_no_platform_error() {
         let source = concat!(
-            "import std.channel;\n",
+            "import std.stream;\n",
             "fn main() {\n",
-            "    let (tx, rx) = match channel.new(1) { .Ok(pair) => pair, .Err(error) => panic(error), };\n",
-            "    tx.send(\"hello\");\n",
-            "    tx.close();\n",
+            "    let (tx, rx) = match stream.pipe(1) { .Ok(pair) => pair, .Err(error) => panic(error), };\n",
+            "    let _ = tx.send(\"hello\");\n",
+            "    tx.finish();\n",
             "    for item in rx {\n",
             "        println(item);\n",
             "    }\n",
@@ -439,7 +352,7 @@ mod wasm_rejects {
         let output = checker.check_program(&result.program);
         assert!(
             !has_platform_limitation_error(&output),
-            "`for` over Receiver<T> should not emit PlatformLimitation on native target; got: {:?}",
+            "`for` over Stream<T> should not emit PlatformLimitation on native target; got: {:?}",
             output.errors
         );
     }

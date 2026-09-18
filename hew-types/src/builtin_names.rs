@@ -11,7 +11,7 @@ use std::sync::OnceLock;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuiltinMethodSigTemplate {
-    ValueToUnit,
+    ValueToSendResult,
     CloneSelf,
     ReturnOptionT,
     ReturnString,
@@ -19,22 +19,12 @@ pub enum BuiltinMethodSigTemplate {
     ReturnBool,
     ReturnContainerOfString,
     CountToSelf,
-    MapperToSelf,
-    PredicateToSelf,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuiltinMethodRuntime {
     None,
     Fixed(&'static str),
-    IntegerOverload {
-        default_symbol: &'static str,
-        integer_symbol: &'static str,
-    },
-    ElementOverload {
-        string_symbol: &'static str,
-        bytes_symbol: &'static str,
-    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -125,88 +115,32 @@ macro_rules! builtin_named_types {
                 }
             }
 
-            #[must_use]
-            pub const fn is_channel_handle(self) -> bool {
-                matches!(self, Self::Sender | Self::Receiver)
-            }
         }
     };
 }
 
 const fn builtin_named_type_index(kind: BuiltinNamedType) -> usize {
     match kind {
-        BuiltinNamedType::Sender => 0,
-        BuiltinNamedType::Receiver => 1,
-        BuiltinNamedType::Stream => 2,
-        BuiltinNamedType::Sink => 3,
-        BuiltinNamedType::Duplex => 4,
-        BuiltinNamedType::RemotePid => 6,
-        BuiltinNamedType::CancellationToken => 7,
+        BuiltinNamedType::Stream => 0,
+        BuiltinNamedType::Sink => 1,
+        BuiltinNamedType::RemotePid => 2,
+        BuiltinNamedType::CancellationToken => 3,
     }
 }
 
 builtin_named_types! {
-    Sender {
-        consts: (SENDER, QUALIFIED_SENDER),
-        methods_const: SENDER_METHODS,
-        canonical: "Sender",
-        qualified: "channel.Sender",
-        methods: [
-            // The element-layout witness entry carries every describable
-            // element type through one symbol; the checker gates admission
-            // (queue_elem_admissible) and codegen synthesizes the witness
-            // from the value argument's static type.
-            "send" => {
-                signature: ValueToUnit,
-                runtime: BuiltinMethodRuntime::Fixed("hew_channel_send_layout")
-            },
-            "clone" => {
-                signature: CloneSelf,
-                runtime: BuiltinMethodRuntime::Fixed("hew_channel_sender_clone")
-            },
-            "close" => {
-                signature: ReturnUnit,
-                runtime: BuiltinMethodRuntime::Fixed("hew_channel_sender_close")
-            },
-        ]
-    },
-    Receiver {
-        consts: (RECEIVER, QUALIFIED_RECEIVER),
-        methods_const: RECEIVER_METHODS,
-        canonical: "Receiver",
-        qualified: "channel.Receiver",
-        methods: [
-            // Layout-witness recv entries (`i32 sym(handle, out, witness)`):
-            // codegen intercepts the call by name and decodes the element
-            // directly into the Option<T> dest slot — one symbol for every
-            // describable element type.
-            "recv" => {
-                signature: ReturnOptionT,
-                runtime: BuiltinMethodRuntime::Fixed("hew_channel_recv_layout")
-            },
-            "try_recv" => {
-                signature: ReturnOptionT,
-                runtime: BuiltinMethodRuntime::Fixed("hew_channel_try_recv_layout")
-            },
-            "close" => {
-                signature: ReturnUnit,
-                runtime: BuiltinMethodRuntime::Fixed("hew_channel_receiver_close")
-            },
-        ]
-    },
     Stream {
         consts: (STREAM, QUALIFIED_STREAM),
         methods_const: STREAM_METHODS,
         canonical: "Stream",
         qualified: "stream.Stream",
         methods: [
-            // Channel-family naming: recv/close mirror Duplex and RecvHalf.
-            // `.next` is spelled `.recv`; `.lines`/`.chunks`/`.take` are the
-            // lazy adaptors, each consuming its source stream.
-            // Layout-witness recv entries: one symbol per operation for every
-            // describable element type (mirrors Receiver<T> above). The
-            // blocking recv flips to the suspending channel-await substrate
-            // in execution-context callers (MIR `lower_direct_call`).
+            // The read half of a pipe. `recv` parks until an item, EOF or a
+            // fault is ready; `try_recv` never parks. Both ride the
+            // element-layout witness entries, one symbol for every
+            // describable element type. `lines`, `chunks` and `take` are the
+            // lazy adaptors: each consumes its source stream and returns a
+            // fresh one.
             "recv" => {
                 signature: ReturnOptionT,
                 runtime: BuiltinMethodRuntime::Fixed("hew_stream_next_layout")
@@ -219,10 +153,10 @@ builtin_named_types! {
                 signature: ReturnUnit,
                 runtime: BuiltinMethodRuntime::Fixed("hew_stream_close")
             },
-            // `CloneSelf` is the `() -> Self` shape: `lines()` re-frames the
-            // same stream, one newline-terminated item at a time.
+            // `Stream<bytes>.lines()` is the `frames(Lines)` case of the
+            // codec seam: one newline-terminated item at a time, as text.
             "lines" => {
-                signature: CloneSelf,
+                signature: ReturnContainerOfString,
                 runtime: BuiltinMethodRuntime::Fixed("hew_stream_lines")
             },
             "chunks" => {
@@ -232,14 +166,6 @@ builtin_named_types! {
             "take" => {
                 signature: CountToSelf,
                 runtime: BuiltinMethodRuntime::Fixed("hew_stream_take")
-            },
-            "map" => {
-                signature: MapperToSelf,
-                runtime: BuiltinMethodRuntime::None
-            },
-            "filter" => {
-                signature: PredicateToSelf,
-                runtime: BuiltinMethodRuntime::None
             },
             // String-specific collect: drains a Stream<string> into a single
             // string. Only string elements have a runtime symbol; other element
@@ -257,56 +183,33 @@ builtin_named_types! {
         canonical: "Sink",
         qualified: "stream.Sink",
         methods: [
-            // Channel-family naming: send/close mirror Duplex and SendHalf.
-            // .flush is removed from the fundamental surface; it may re-surface
-            // via an I/O-sink trait in stdlib work.
-            // .write is retained as an I/O-flavoured alias for .send, routing to
-            // the same runtime symbols (hew_sink_write_string / hew_sink_write_bytes).
+            // The write half of a pipe. `send` parks on a full pipe and
+            // reports `SendError.Closed` once the reader is gone; `try_send`
+            // never parks and adds `SendError.Full`. Both carry every
+            // describable element through the layout witness. `clone` adds a
+            // producer handle; `finish` publishes EOF and keeps the handle;
+            // `close` finishes and releases it.
             "send" => {
-                signature: ValueToUnit,
-                runtime: BuiltinMethodRuntime::ElementOverload {
-                    string_symbol: "hew_sink_write_string",
-                    bytes_symbol: "hew_sink_write_bytes",
-                }
+                signature: ValueToSendResult,
+                runtime: BuiltinMethodRuntime::Fixed("hew_stream_send_layout")
             },
             "try_send" => {
-                signature: ValueToUnit,
-                runtime: BuiltinMethodRuntime::ElementOverload {
-                    string_symbol: "hew_sink_try_write_string",
-                    bytes_symbol: "hew_sink_try_write_bytes",
-                }
+                signature: ValueToSendResult,
+                runtime: BuiltinMethodRuntime::Fixed("hew_stream_try_send_layout")
             },
-            // I/O-flavoured alias for .send: routes to the same byte-sink
-            // write symbols so that file/socket sinks feel like I/O writers
-            // while channel sinks feel like message producers.
-            "write" => {
-                signature: ValueToUnit,
-                runtime: BuiltinMethodRuntime::ElementOverload {
-                    string_symbol: "hew_sink_write_string",
-                    bytes_symbol: "hew_sink_write_bytes",
-                }
+            "clone" => {
+                signature: CloneSelf,
+                runtime: BuiltinMethodRuntime::Fixed("hew_sink_clone")
+            },
+            "finish" => {
+                signature: ReturnUnit,
+                runtime: BuiltinMethodRuntime::Fixed("hew_sink_finish")
             },
             "close" => {
                 signature: ReturnUnit,
                 runtime: BuiltinMethodRuntime::Fixed("hew_sink_close")
             },
         ]
-    },
-    // Duplex<S, R>: bidirectional lambda-actor handle.
-    //
-    // S = send direction (msg type), R = receive direction (reply type).
-    // @resource: dropping the last handle closes both directions.
-    // Send iff S: Send + R: Send (checked in traits.rs implements_marker).
-    // Call-syntax `handle(msg)` is canonical for lambda-actor handles; `.send()` is
-    // accepted as an allowed-secondary surface because lambda-actor handles are
-    // `Duplex<Msg, Reply>` underneath — both surfaces route to the same runtime symbol
-    // (`hew_duplex_send`).  The type system cannot distinguish them at the call site.
-    Duplex {
-        consts: (DUPLEX, QUALIFIED_DUPLEX),
-        methods_const: DUPLEX_METHODS,
-        canonical: "Duplex",
-        qualified: "duplex.Duplex",
-        methods: []
     },
     // RemotePid<T>: actor pid on a remote node.
     //
@@ -346,11 +249,8 @@ pub const fn builtin_named_types() -> &'static [BuiltinNamedTypeInfo] {
 #[must_use]
 pub fn builtin_named_type(name: &str) -> Option<BuiltinNamedType> {
     match crate::lookup_builtin_type(name) {
-        Some(BuiltinType::Sender) => Some(BuiltinNamedType::Sender),
-        Some(BuiltinType::Receiver) => Some(BuiltinNamedType::Receiver),
         Some(BuiltinType::Stream) => Some(BuiltinNamedType::Stream),
         Some(BuiltinType::Sink) => Some(BuiltinNamedType::Sink),
-        Some(BuiltinType::Duplex) => Some(BuiltinNamedType::Duplex),
         Some(BuiltinType::RemotePid) => Some(BuiltinNamedType::RemotePid),
         Some(BuiltinType::CancellationToken) => Some(BuiltinNamedType::CancellationToken),
         Some(
@@ -365,7 +265,6 @@ pub fn builtin_named_type(name: &str) -> Option<BuiltinNamedType> {
             | BuiltinType::ActorCall
             | BuiltinType::SupervisorPool
             | BuiltinType::ChildRef
-            | BuiltinType::StreamPair
             | BuiltinType::Generator
             | BuiltinType::Range
             | BuiltinType::Rc
@@ -373,14 +272,9 @@ pub fn builtin_named_type(name: &str) -> Option<BuiltinNamedType> {
             | BuiltinType::NodeId
             | BuiltinType::Location
             | BuiltinType::HewActor
-            | BuiltinType::HewDuplex
-            | BuiltinType::HewSendHalf
-            | BuiltinType::HewRecvHalf
             | BuiltinType::BoxedActor
             | BuiltinType::ActorState
             | BuiltinType::MachineState
-            | BuiltinType::SendHalf
-            | BuiltinType::RecvHalf
             | BuiltinType::ActorHandle
             | BuiltinType::ActorFn
             | BuiltinType::CrashInfo
@@ -394,11 +288,9 @@ pub fn builtin_named_type(name: &str) -> Option<BuiltinNamedType> {
             | BuiltinType::SendError
             | BuiltinType::NodeError
             | BuiltinType::LookupError
-            | BuiltinType::RecvError
             | BuiltinType::LinkError
             | BuiltinType::MonitorError
             | BuiltinType::MonitorRef
-            | BuiltinType::CloseError
             | BuiltinType::Iterator
             | BuiltinType::Unit
             | BuiltinType::Duration
@@ -435,21 +327,11 @@ fn self_container_ty(kind: BuiltinNamedType, inner: Ty) -> Ty {
 impl BuiltinMethodSigTemplate {
     fn instantiate(self, owner: BuiltinNamedType) -> FnSig {
         let item_ty = type_param_ty();
-        let item_fn = Ty::Function {
-            capabilities: crate::CallableCapabilities::default(),
-            params: vec![item_ty.clone()],
-            ret: Box::new(item_ty.clone()),
-        };
-        let item_predicate = Ty::Function {
-            capabilities: crate::CallableCapabilities::default(),
-            params: vec![item_ty.clone()],
-            ret: Box::new(Ty::Bool),
-        };
         match self {
-            Self::ValueToUnit => FnSig {
-                param_names: vec!["value".to_string()],
+            Self::ValueToSendResult => FnSig {
+                param_names: vec!["item".to_string()],
                 params: vec![item_ty],
-                return_type: Ty::Unit,
+                return_type: Ty::result(Ty::Unit, Ty::send_error()),
                 ..FnSig::default()
             },
             Self::CloneSelf => FnSig {
@@ -482,64 +364,29 @@ impl BuiltinMethodSigTemplate {
                 return_type: self_container_ty(owner, item_ty),
                 ..FnSig::default()
             },
-            Self::MapperToSelf => FnSig {
-                param_names: vec!["mapper".to_string()],
-                params: vec![item_fn],
-                return_type: self_container_ty(owner, item_ty),
-                ..FnSig::default()
-            },
-            Self::PredicateToSelf => FnSig {
-                param_names: vec!["predicate".to_string()],
-                params: vec![item_predicate],
-                return_type: self_container_ty(owner, item_ty),
-                ..FnSig::default()
-            },
         }
     }
 }
 
 impl BuiltinMethodRuntime {
-    fn resolve(self, element_ty: Option<&Ty>, element_name: Option<&str>) -> Option<&'static str> {
+    const fn resolve(self) -> Option<&'static str> {
         match self {
             Self::None => None,
             Self::Fixed(symbol) => Some(symbol),
-            Self::IntegerOverload {
-                default_symbol,
-                integer_symbol,
-            } => Some(if element_ty.is_some_and(Ty::is_integer) {
-                integer_symbol
-            } else {
-                default_symbol
-            }),
-            Self::ElementOverload {
-                string_symbol,
-                bytes_symbol,
-            } => match element_name {
-                Some("string") => Some(string_symbol),
-                Some("bytes") => Some(bytes_symbol),
-                _ => None,
-            },
         }
     }
 }
 
 #[must_use]
-pub fn resolve_builtin_method_symbol(
-    kind: BuiltinNamedType,
-    method: &str,
-    element_ty: Option<&Ty>,
-    element_name: Option<&str>,
-) -> Option<&'static str> {
-    builtin_method_info(kind, method)
-        .and_then(|info| info.runtime.resolve(element_ty, element_name))
+pub fn resolve_builtin_method_symbol(kind: BuiltinNamedType, method: &str) -> Option<&'static str> {
+    builtin_method_info(kind, method).and_then(|info| info.runtime.resolve())
 }
 
 /// True when the runtime symbol a `.method()` call rewrites to TAKES OWNERSHIP
 /// of (consumes) its receiver handle.
 ///
 /// These are the `@resource` handle-release builtins: dropping the last handle
-/// closes the underlying resource (`Stream`/`Sink`/channel `Sender`/`Receiver`/
-/// `Duplex` and its half-handles). A consuming call moves the receiver out, so
+/// closes the underlying resource (`Stream`/`Sink`). A consuming call moves the receiver out, so
 /// the receiver's scope-exit drop must NOT fire again — a second `close` is a
 /// double `Box::from_raw` / double-free. HIR lowers a consuming receiver with
 /// `IntentKind::Consume` so the MIR move-checker excludes the handle from the

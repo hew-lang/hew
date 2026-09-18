@@ -63,7 +63,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             };
             let symbol = match source {
                 PhysicalSelectSource::Task(_) => "hew_checked_task_select_add_task",
-                PhysicalSelectSource::ChannelRecv(_) => "hew_checked_task_select_add_channel",
+                PhysicalSelectSource::StreamNext(_) => "hew_checked_task_select_add_stream",
                 PhysicalSelectSource::ActorCall(_) => "hew_checked_task_select_add_actor",
             };
             let add = coro::external(

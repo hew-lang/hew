@@ -23,13 +23,8 @@ pub enum ResourceRelease {
     /// `Stream<T>`: closing the read half discards unread elements and wakes
     /// a parked producer.
     Stream,
-    /// `Sink<T>`: closing the write half is the consumer's end of stream.
+    /// `Sink<T>`: closing the last write half is the consumer's end of stream.
     Sink,
-    /// `Sender<T>`: closing the last write half is the receiver's end of channel.
-    Sender,
-    /// `Receiver<T>`: closing the read half discards queued elements and wakes
-    /// a parked producer.
-    Receiver,
     /// A `#[resource]` record whose release is the user's consuming `close`.
     ///
     /// The lifecycle is the checker/HIR fact; `close` is the semantic callable
@@ -147,8 +142,6 @@ impl ResourceRelease {
                 Self::Generator => RuntimeCallFamily::GeneratorFree,
                 Self::Stream => RuntimeCallFamily::StreamClose,
                 Self::Sink => RuntimeCallFamily::SinkClose,
-                Self::Sender => RuntimeCallFamily::ChannelSenderClose,
-                Self::Receiver => RuntimeCallFamily::ChannelReceiverClose,
                 Self::RecordClose { .. } | Self::OpaqueClose { .. } => return Err(
                     "a resource with an authored close is released by its own close body, not an \
                      extern call"
@@ -177,10 +170,6 @@ pub(crate) fn resource_release_from_hir(
         Some(ResourceRelease::Stream)
     } else if ty.is_builtin(hew_types::BuiltinType::Sink) {
         Some(ResourceRelease::Sink)
-    } else if ty.is_builtin(hew_types::BuiltinType::Sender) {
-        Some(ResourceRelease::Sender)
-    } else if ty.is_builtin(hew_types::BuiltinType::Receiver) {
-        Some(ResourceRelease::Receiver)
     } else {
         if record_resource_lifecycle(module, ty).is_some()
             || authored_opaque_lifecycle(module, ty).is_some()
@@ -303,12 +292,10 @@ pub fn verify_resource_release(
             Err("task release requires an exact Task result type".into())
         };
     }
-    // Both pipe and channel endpoints carry exactly one checked element type.
+    // Both pipe halves carry exactly one checked element type.
     if let Some((builtin, elements)) = match release {
         ResourceRelease::Stream => Some((hew_types::BuiltinType::Stream, 1..=1)),
         ResourceRelease::Sink => Some((hew_types::BuiltinType::Sink, 1..=1)),
-        ResourceRelease::Sender => Some((hew_types::BuiltinType::Sender, 1..=1)),
-        ResourceRelease::Receiver => Some((hew_types::BuiltinType::Receiver, 1..=1)),
         _ => None,
     } {
         return if matches!(ty, ResolvedTy::Named { builtin: Some(kind), args, .. } if *kind == builtin && elements.contains(&args.len()))
@@ -360,8 +347,6 @@ pub fn verify_resource_release(
         | ResourceRelease::Task
         | ResourceRelease::Stream
         | ResourceRelease::Sink
-        | ResourceRelease::Sender
-        | ResourceRelease::Receiver
         | ResourceRelease::RecordClose { .. }
         | ResourceRelease::OpaqueClose { .. } => {
             unreachable!("handled exact builtin and authored-close releases above")

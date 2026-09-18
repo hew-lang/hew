@@ -392,12 +392,76 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         self.emit_edge(unwind)
     }
 
+    /// `try_send()`: one non-parking transfer. The runtime entry moves the
+    /// element in and reports 0 accepted, 1 closed or 2 full, so there is no
+    /// waker, no frame and no cancellation observation — an immediate answer
+    /// cannot be interrupted.
+    fn emit_stream_try_send(
+        &self,
+        handle: BasicValueEnum<'ctx>,
+        value: StorageId,
+        witness: PointerValue<'ctx>,
+        normal: &PhysicalEdge,
+        closed: &PhysicalEdge,
+        full: &PhysicalEdge,
+    ) -> CodegenResult<()> {
+        let pointer = self.ctx.ptr_type(AddressSpace::default());
+        let send = coro::external(
+            self.llvm,
+            "hew_stream_try_send_layout",
+            self.ctx
+                .i32_type()
+                .fn_type(&[pointer.into(), pointer.into(), pointer.into()], false),
+        )?;
+        let status = suspend::call_value(
+            &self.builder,
+            send,
+            &[
+                handle.into(),
+                self.slots[value.0 as usize].into(),
+                witness.into(),
+            ],
+            "stream.try_send.status",
+        )?
+        .into_int_value();
+        // The runtime copied the element into its envelope; the slot no
+        // longer owns it on any outcome.
+        self.clear_owned(value)?;
+        let accepted = self
+            .ctx
+            .append_basic_block(self.value, "stream.try_send.accepted");
+        let peer_closed = self
+            .ctx
+            .append_basic_block(self.value, "stream.try_send.closed");
+        let at_capacity = self
+            .ctx
+            .append_basic_block(self.value, "stream.try_send.full");
+        self.builder
+            .build_switch(
+                status,
+                at_capacity,
+                &[
+                    (self.ctx.i32_type().const_zero(), accepted),
+                    (self.ctx.i32_type().const_int(1, false), peer_closed),
+                ],
+            )
+            .llvm_ctx("dispatch non-parking stream send outcome")?;
+        self.builder.position_at_end(accepted);
+        self.emit_edge(normal)?;
+        self.builder.position_at_end(peer_closed);
+        self.emit_edge(closed)?;
+        self.builder.position_at_end(at_capacity);
+        self.emit_edge(full)
+    }
+
     pub(super) fn emit_stream_send(&self, block: &PhysicalBlock) -> CodegenResult<()> {
         let PhysicalTerminator::StreamSend {
+            park,
             sink,
             value,
             normal,
             closed,
+            full,
             cancel,
             unwind,
             ..
@@ -413,9 +477,15 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 "stream send borrows its sink and consumes its element".into(),
             ));
         };
+        let handle = self.load(*sink, "stream.sink")?;
+        if !park {
+            let full = full.as_ref().ok_or_else(|| {
+                CodegenError::FailClosed("non-parking stream send lacks its full edge".into())
+            })?;
+            return self.emit_stream_try_send(handle, *value, witness, normal, closed, full);
+        }
         let frame = self.stream_frame()?;
         let pointer = self.ctx.ptr_type(AddressSpace::default());
-        let handle = self.load(*sink, "stream.sink")?;
         let waker = self.task_pointer_call("hew_coro_state_waker", &[frame.state.into()])?;
         let start = coro::external(
             self.llvm,

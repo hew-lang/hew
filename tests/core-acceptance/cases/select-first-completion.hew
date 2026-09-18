@@ -1,8 +1,8 @@
 // A selection over mixed sources takes the first one that is ready. The forked
-// task sleeps well past the channel's readiness, so the channel arm wins even
+// task sleeps well past the pipe's readiness, so the pipe arm wins even
 // though the task arm is written first; the loser is neither cancelled nor
 // consumed, and the scope joins it on exit.
-import std.channel;
+import std.stream;
 
 fn slow() -> i64 {
     sleep(60ms);
@@ -13,15 +13,15 @@ fn slow() -> i64 {
 }
 
 fn main() {
-    let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) =
-        match channel.new(4) {
+    let (tx, rx): (stream.Sink<string>, stream.Stream<string>) =
+        match stream.pipe(4) {
             .Ok(pair) => pair,
             .Err(error) => {
                 println(error);
                 return;
             },
         };
-    tx.send("payload-with-owned-heap");
+    tx.send("payload-with-owned-heap").expect("send");
     scope {
         let winner = fork slow();
         select {
@@ -34,7 +34,7 @@ fn main() {
     }
     println("scope joined");
     // The losing arm never consumed the receiver, so it still drains.
-    tx.send("second");
+    tx.send("second").expect("send");
     tx.close();
     match rx.recv() {
         .Some(item) => println(f"after {item}"),

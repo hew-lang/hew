@@ -11,7 +11,7 @@
 //! Post-W4.001 Stage C3 (DI-017): `HashMap` / `HashSet` method calls are no longer
 //! covered by `method_call_rewrites`; they flow through the parallel
 //! `resolved_calls` channel as `HirExprKind::ResolvedImplCall`. The bridge
-//! tests below intentionally exercise non-collection methods (Duplex, string)
+//! tests below intentionally exercise non-collection methods (Sink, string)
 //! that still use the legacy rewrite path. The `_fails_closed` test asserts
 //! the boundary-violation contract — `MethodCallNoRewrite` after Stage C3 is
 //! a fail-closed compiler-bug signal, not a user-reachable diagnostic for
@@ -234,16 +234,15 @@ fn dotted_struct_variant_lowers_from_checker_selected_owner() {
     ));
 }
 
-/// `a.send(42)` on a `Duplex<i64, i64>` binding is rewritten to
-/// `HirExprKind::Call` with callee `hew_duplex_send` and the receiver
+/// `a.finish()` on a `Sink<i64>` parameter is rewritten to
+/// `HirExprKind::Call` with callee `hew_sink_finish` and the receiver
 /// prepended as the first argument.  No diagnostics are emitted and the
 /// HIR verifier passes.
 #[test]
 fn method_call_with_rewrite_produces_hir_call() {
     let source = r"
-        fn main() -> i64 {
-            let (a, b) = duplex_pair<i64, i64>(16);
-            a.send(42);
+        fn main(a: Sink<i64>) -> i64 {
+            a.finish();
             return 0;
         }
     ";
@@ -258,11 +257,11 @@ fn method_call_with_rewrite_produces_hir_call() {
         .collect();
     assert!(
         method_call_errors.is_empty(),
-        "a.send(42) must not emit MethodCallNoRewrite when checker registered hew_duplex_send; \
+        "a.finish() must not emit MethodCallNoRewrite when checker registered hew_sink_finish; \
          got: {method_call_errors:#?}"
     );
 
-    // Find the function body and look for the send call statement.
+    // Find the function body and look for the finish call statement.
     let fn_item = lower_output
         .module
         .items
@@ -278,8 +277,8 @@ fn method_call_with_rewrite_produces_hir_call() {
         .expect("main function must be present");
 
     // The body should contain a statement whose expr is a Call with callee
-    // name `hew_duplex_send`.
-    let duplex_send_target = fn_item.body.statements.iter().find_map(|stmt| {
+    // name `hew_sink_finish`.
+    let sink_finish_target = fn_item.body.statements.iter().find_map(|stmt| {
         if let HirStmtKind::Expr(expr) = &stmt.kind {
             if let HirExprKind::Call {
                 target,
@@ -287,9 +286,9 @@ fn method_call_with_rewrite_produces_hir_call() {
                 args,
             } = &expr.kind
             {
-                // Callee should be a BindingRef named "hew_duplex_send"
+                // Callee should be a BindingRef named "hew_sink_finish"
                 if let HirExprKind::BindingRef { name, .. } = &callee.kind {
-                    if name == "hew_duplex_send" && args.len() == 2 {
+                    if name == "hew_sink_finish" && args.len() == 1 {
                         return Some(target);
                     }
                 }
@@ -298,17 +297,17 @@ fn method_call_with_rewrite_produces_hir_call() {
         None
     });
     assert!(
-        duplex_send_target.is_some(),
-        "a.send(42) must lower to HirExprKind::Call {{ callee: hew_duplex_send, args: [receiver, 42] }}; \
+        sink_finish_target.is_some(),
+        "a.finish() must lower to HirExprKind::Call {{ callee: hew_sink_finish, args: [receiver] }}; \
          body statements: {:#?}",
         fn_item.body.statements
     );
     assert!(
-        matches!(duplex_send_target, Some(hew_types::CallTarget::Runtime(_))),
-        "runtime method calls must preserve the checker-selected Runtime target, got: {duplex_send_target:#?}"
+        matches!(sink_finish_target, Some(hew_types::CallTarget::Runtime(_))),
+        "runtime method calls must preserve the checker-selected Runtime target, got: {sink_finish_target:#?}"
     );
     // Note: verify_hir is not called here because the synthetic runtime-symbol
-    // callee (`hew_duplex_send`) uses `ResolvedRef::Unresolved` by design —
+    // callee (`hew_sink_finish`) uses `ResolvedRef::Unresolved` by design —
     // it is not a user binding and has no BindingId in the HIR scope.  The
     // verifier would fire `UnresolvedSymbol` on it, which is a known and
     // intentional property of the bridge.  E2 (MIR lowering) detects synthetic
@@ -394,9 +393,8 @@ fn rewrite_to_function_preserves_return_type() {
 #[test]
 fn method_call_without_rewrite_fails_closed() {
     let source = r"
-        fn main() -> i64 {
-            let (a, b) = duplex_pair<i64, i64>(16);
-            a.send(42);
+        fn main(a: Sink<i64>) -> i64 {
+            a.finish();
             return 0;
         }
     ";

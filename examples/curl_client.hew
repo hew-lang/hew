@@ -123,7 +123,7 @@ fn main() {
     }
     // Build and send HTTP request
     let request = f"GET {path} HTTP/1.0\nHost: {host}\nUser-Agent: hew-curl/1.0\nAccept: */*\nConnection: close\n\n";
-    match conn.write_string(request) {
+    match conn.send(request.to_bytes()) {
         .Ok(_) => {},
         .Err(_) => {
             let err = f"  Error: failed to send request to {addr}";
@@ -138,14 +138,15 @@ fn main() {
     var response_bytes = bytes.new();
     var reading = true;
     while reading {
-        let chunk_bytes = conn.read();
-        let chunk_len = chunk_bytes.len();
-        if chunk_len == 0 {
-            reading = false;
-        } else {
-            total_bytes = total_bytes + chunk_len;
-            response_bytes.append(chunk_bytes);
-            print(f"  Progress: {total_bytes} bytes received");
+        match conn.recv() {
+            .Some(chunk_bytes) => {
+                total_bytes = total_bytes + chunk_bytes.len();
+                response_bytes.append(chunk_bytes);
+                print(f"  Progress: {total_bytes} bytes received");
+            },
+            .None => {
+                reading = false;
+            },
         }
     }
     println("");

@@ -12,8 +12,6 @@
 
 import std.encoding.utf8;
 
-import std.channel;
-
 import std.io;
 
 import std.net;
@@ -24,7 +22,7 @@ import std.stream;
 
 actor ChatReader {
     let input: stream.Stream<bytes>,
-    let done: channel.Sender<string>,
+    let done: stream.Sink<string>,
     /// The terminal path publishes completion and returns. `main` remains in
     /// its stdin loop until `/quit`, then closes the sink, waits for this
     /// status, and exits; runtime teardown closes both handles exactly once.
@@ -34,21 +32,21 @@ actor ChatReader {
             match input.recv() {
                 .Some(chunk) => {
                     let msg = utf8.decode(chunk) handle error {
-                        done.send(f"[client] invalid UTF-8: {error}");
+                        done.send(f"[client] invalid UTF-8: {error}").expect("send");
                         return;
                     };
                     if msg.contains("__HEW_TCP_DISCONNECT__") {
-                        done.send("[client] server acknowledged disconnect");
+                        done.send("[client] server acknowledged disconnect").expect("send");
                         reading = false;
                     } else {
                         println(msg);
                     }
                 },
                 .None => {
-                    // The duplex stream surface reports one terminal `None`
-                    // for peer EOF or a transport read failure; do not claim
-                    // one cause when that public API does not expose it.
-                    done.send("[client] server stream ended");
+                    // The pipe surface reports one terminal `None` for peer
+                    // EOF; a transport failure traps instead, so this arm is
+                    // the clean end of the server's stream.
+                    done.send("[client] server stream ended").expect("send");
                     reading = false;
                 },
             }
@@ -90,10 +88,10 @@ fn main() {
     println("=== Hew TCP Chat Client ===");
     println(f"Connected to {addr}");
     println("Type messages and press Enter. Type /quit to exit.");
-    let (input, output) = conn.into_stream_sink();
-    let (done_tx, done_rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(1) {
+    let (input, output) = conn.split();
+    let (done_tx, done_rx): (stream.Sink<string>, stream.Stream<string>) = match stream.pipe(1) {
         .Ok(pair) => pair,
-        .Err(_) => panic("channel.new failed"),
+        .Err(_) => panic("stream.pipe failed"),
     };
     let reader = spawn ChatReader(input: input, done: done_tx);
     // A handler call is an ask, and `pump` runs until the stream ends, so
@@ -105,10 +103,10 @@ fn main() {
         if line.contains("/quit") {
             // Sink close drains the queued protocol marker before publishing
             // EOF to the peer, so `/quit` cannot race ahead of disconnect.
-            output.send("__HEW_TCP_DISCONNECT__".to_bytes());
+            output.send("__HEW_TCP_DISCONNECT__".to_bytes()).expect("send");
             break;
         }
-        output.send(f"{name}: {line}".to_bytes());
+        output.send(f"{name}: {line}".to_bytes()).expect("send");
     }
     output.close();
     match done_rx.recv() {

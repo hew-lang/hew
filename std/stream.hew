@@ -1,30 +1,29 @@
-//! Stream<T> and Sink<T> — bounded, FIFO data channels.
+//! Stream<T> and Sink<T> — the one pipe family.
 //!
-//! Streams and sinks are language intrinsics for passing typed data between
-//! producers and consumers, including across actor boundaries.
+//! A pipe moves data between actors, sockets and files. `Stream<T>` is the
+//! read half and `Sink<T>` the write half; the same two handle types cover an
+//! in-memory pipe (`pipe`), a file (`open`), a socket (`Connection.split`)
+//! and an actor's `receive gen fn`.
 //!
-//! Stream behaviour:
-//! - `Stream<bytes>` / `Sink<bytes>` are the canonical first-class foundation
-//! - `Stream<string>` / `Sink<string>` are convenience text ABI wrappers
-//! - EOF means end-of-stream only; zero-length `bytes` and empty `string`
-//!   values are valid items
-//! - `sink.close()` or drop yields graceful EOF; `stream.close()` or drop is a
-//!   local cancel/discard of unread items
-//! - Call `input.recv()` and `sink.write(value)` directly. Native operations
-//!   wait for data or capacity while allowing other tasks to run on the worker.
-//!   `await` is reserved for tasks created by `fork`.
-//! - Constructor/open failures return errors; native read/write failures
-//!   propagate through the caller's runtime fault path.
+//! The contract, stated once:
 //!
-//! Current stdlib scope:
-//! - `bytes_pipe()` is the canonical in-memory constructor
-//! - `pipe()` remains the text convenience constructor
-//! - `from_file()` / `to_file()` remain `Stream<string>` / `Sink<string>`;
-//!   `from_file()` yields fixed-size chunks, so use `.lines()` when you want
-//!   line boundaries
-//! - `.lines()`, `.chunks(n)` and `.take(n)` are the lazy adaptors: each
-//!   consumes its source stream and returns a fresh one, and closing the
-//!   result closes the whole chain. `.chunks(n)` counts bytes.
+//! - `input.recv()` returns `Option<T>`: `Some(item)` is data, `None` means
+//!   every sink finished. A transport failure traps the reading actor with a
+//!   typed I/O fault; the loop never sees an error value. A zero-length
+//!   `bytes` or empty `string` is a valid item.
+//! - `sink.send(item)` waits for capacity and returns `Result<(), SendError>`:
+//!   `Err(SendError.Closed)` once the reader is gone or the sink finished.
+//!   `try_send` never waits and adds `Err(SendError.Full)`.
+//! - `sink.clone()` adds a producer; the pipe reaches EOF when the last one
+//!   finishes. `sink.finish()` publishes EOF and keeps the handle (on a
+//!   socket: FIN to the peer). `close()` on either half consumes it; scope
+//!   exit releases a live half the same way.
+//! - Pipes carry data, actors carry handles: an item is a primitive, a
+//!   `string`, `bytes`, or a value record, enum or tuple. Containers and
+//!   handles are refused at check time.
+//! - A sink released by a crashing actor marks the pipe faulted: the consumer
+//!   traps on its next read instead of reading a clean end.
+//! - `Stream<T>` is a `select` source: `item from input.recv() => ...`.
 //!
 //! # Example
 //!
@@ -32,10 +31,11 @@
 //! import std.stream;
 //!
 //! fn main() {
-//!     let (sink, input) = match stream.pipe(16) { .Ok(pair) => pair, .Err(error) => panic(error), };
+//!     let (sink, input): (stream.Sink<string>, stream.Stream<string>) =
+//!         match stream.pipe(16) { .Ok(pair) => pair, .Err(error) => panic(error), };
 //!
-//!     sink.send("hello");
-//!     sink.send("world");
+//!     sink.send("hello").expect("send");
+//!     sink.send("world").expect("send");
 //!     sink.close();  // optional — would auto-close on drop
 //!
 //!     for item in input {
@@ -44,29 +44,22 @@
 //! }
 //! ```
 
-import std.fs;
+import std.encoding.utf8;
 
-/// A readable stream handle, parameterised by element type.
+/// The read half of a pipe, parameterised by element type.
 pub type Stream<T> {
 }
 
-/// A writable sink handle, parameterised by element type.
+/// The write half of a pipe, parameterised by element type.
 pub type Sink<T> {
 }
 
-// ── Stream<T> methods ─────────────────────────────────────────────────
-//
-// The checked element type selects the value transfer and cleanup descriptor.
-// Native receives suspend until a value, EOF or failure is ready.
-
-// ── Sink<T> methods ───────────────────────────────────────────────────
-//
-// `.write(value)` transfers a typed value through native backpressure.
-// `.close()` releases the sink; no public sink flush method is registered.
-
 // ── Constructors ──────────────────────────────────────────────────────
-/// Create a bounded in-memory string pipe with the given capacity.
-pub fn pipe(capacity: i64) -> Result<(Sink<string>, Stream<string>), string> {
+/// Create a bounded in-memory pipe with the given capacity.
+///
+/// The element type is inferred from use; write it at the binding when
+/// nothing else fixes it: `let (tx, rx): (stream.Sink<i64>, stream.Stream<i64>) = ...`.
+pub fn pipe<T>(capacity: i64) -> Result<(Sink<T>, Stream<T>), string> {
     if capacity < 0 {
         return Err(f"stream.pipe: invalid capacity {capacity} (must be >= 0)");
     }
@@ -75,80 +68,40 @@ pub fn pipe(capacity: i64) -> Result<(Sink<string>, Stream<string>), string> {
         if !hew_stream_pair_is_valid(pair) {
             let detail = hew_stream_last_error();
             if detail == "" {
-                return Err("stream.pipe: stream allocation failed");
+                return Err("stream.pipe: pipe allocation failed");
             }
             return Err(detail);
         }
-        let sink = hew_stream_pair_sink(pair);
-        let input = hew_stream_pair_stream(pair);
+        let sink = pair_sink(pair);
+        let input = pair_stream(pair);
         hew_stream_pair_free(pair);
         Ok((sink, input))
     }
 }
 
-/// Create a bounded in-memory bytes pipe.
-pub fn bytes_pipe(capacity: i64) -> Result<(Sink<bytes>, Stream<bytes>), string> {
-    if capacity < 0 {
-        return Err(f"stream.bytes_pipe: invalid capacity {capacity} (must be >= 0)");
-    }
+/// Open a file as a chunked `Stream<bytes>`.
+///
+/// Each item is one chunk of the file; `.lines()` re-frames the bytes into
+/// text lines. A read failure after open traps the reading actor.
+pub fn open(path: string) -> Result<Stream<bytes>, string> {
     unsafe {
-        let pair = hew_stream_channel(capacity as i64);
-        if !hew_stream_pair_is_valid(pair) {
+        let input = hew_stream_from_file_read(path);
+        if hew_stream_is_valid(input) {
+            Ok(input)
+        } else {
             let detail = hew_stream_last_error();
             if detail == "" {
-                return Err("stream.bytes_pipe: stream allocation failed");
+                return Err(f"stream.open: could not open {path}");
             }
-            return Err(detail);
-        }
-        let sink = hew_stream_pair_sink_bytes(pair);
-        let input = hew_stream_pair_stream_bytes(pair);
-        hew_stream_pair_free(pair);
-        Ok((sink, input))
-    }
-}
-
-/// Open a file as a readable `Stream<string>`.
-///
-/// Returns `fs.IoError` on open failure.
-pub fn from_file(path: string) -> Result<Stream<string>, fs.IoError> {
-    unsafe {
-        let s = hew_stream_from_file_read(path);
-        if hew_stream_is_valid(s) {
-            Ok(s)
-        } else {
-            // Read the canonical kind BEFORE the errno: hew_stream_last_errno
-            // clears the kind tag as errno metadata, so the order matters.
-            let kind = hew_stream_last_error_kind() as i64;
-            let errno = hew_stream_last_errno();
-            let _ = hew_stream_last_error();
-            Err(fs.io_error_from_kind(kind, errno as i64))
+            Err(detail)
         }
     }
 }
 
-/// Open a file as a writable `Sink<string>`.
+/// Drain `from` into `to`, then finish `to` and release both halves.
 ///
-/// Returns `fs.IoError` on open failure.
-pub fn to_file(path: string) -> Result<Sink<string>, fs.IoError> {
-    unsafe {
-        let s = hew_stream_from_file_write(path);
-        if hew_sink_is_valid(s) {
-            Ok(s)
-        } else {
-            // Read the canonical kind BEFORE the errno: hew_stream_last_errno
-            // clears the kind tag as errno metadata, so the order matters.
-            let kind = hew_stream_last_error_kind() as i64;
-            let errno = hew_stream_last_errno();
-            let _ = hew_stream_last_error();
-            Err(fs.io_error_from_kind(kind, errno as i64))
-        }
-    }
-}
-
-/// Pipe all items from a stream into a sink, then close both.
-///
-/// This is the streaming equivalent of `io.Copy` — it reads from the source
-/// until EOF and writes each item to the destination.
+/// This is the streaming equivalent of `io.Copy`: it reads until EOF and
+/// writes each item downstream, waiting on the destination's capacity.
 ///
 /// # Examples
 ///
@@ -160,13 +113,13 @@ pub fn to_file(path: string) -> Result<Sink<string>, fs.IoError> {
 ///     match http.listen(":8080") {
 ///         .Ok(server) => {
 ///             let req = server.accept();
-///             match stream.from_file("data.txt") {
+///             match stream.open("data.txt") {
 ///                 .Ok(file) => {
 ///                     let body = match req.respond_stream(200, "text/plain") {
 ///                         .Ok(body) => body,
 ///                         .Err(error) => panic(to_string(error)),
 ///                     };
-///                     stream.forward(file, body);  // streams file directly to HTTP response
+///                     stream.forward(file.lines(), body);  // streams file to the HTTP response
 ///                 },
 ///                 .Err(e) => println(e),
 ///             }
@@ -177,14 +130,119 @@ pub fn to_file(path: string) -> Result<Sink<string>, fs.IoError> {
 ///     }
 /// }
 /// ```
-pub fn forward(consume source: Stream<string>, consume dest: Sink<string>) {
-    unsafe {
-        hew_stream_pipe(source, dest)
-    };
+#[intrinsic("stream.forward")]
+pub fn forward<T>(consume from: Stream<T>, consume to: Sink<T>) {}
+
+// ── Codecs ────────────────────────────────────────────────────────────
+/// Why a frame could not be decoded.
+pub enum CodecError {
+    /// The bytes do not form a frame of this codec.
+    Malformed(string),
+}
+
+impl Display for CodecError {
+    fn fmt(error: CodecError) -> string {
+        match error {
+            CodecError.Malformed(detail) => f"malformed frame: {detail}",
+        }
+    }
+}
+
+/// One `decode` step: a complete frame with the bytes after it, or the
+/// buffer handed back unchanged because more bytes are needed.
+pub enum Decoded<T> {
+    Frame(T, bytes),
+    Incomplete(bytes),
+}
+
+/// Frames bytes into typed items and back.
+///
+/// `decode` takes the buffered bytes and returns the first complete frame
+/// with the bytes that follow it, or `Incomplete` with the buffer unchanged
+/// when more bytes are needed. `encode` returns one item's frame. Values
+/// are copy-on-write, so the caller keeps what `decode` hands back: a `var`
+/// parameter is the callee's own copy and cannot advance the caller's
+/// buffer. `Lines` and `LengthPrefixed` are the shipped codecs;
+/// `Stream<bytes>.lines()` is the `Lines` case as a method.
+pub trait Codec<T> {
+    fn decode(self, buf: bytes) -> Result<Decoded<T>, CodecError>;
+
+    fn encode(self, item: T) -> bytes;
+}
+
+/// Newline-terminated text frames. The newline is not part of the item.
+pub type Lines {
+}
+
+impl Codec<string> for Lines {
+    fn decode(self, buf: bytes) -> Result<Decoded<string>, CodecError> {
+        var end = -1;
+        for i in 0 .. buf.len() {
+            if end < 0 && buf[i] == 10 {
+                end = i;
+            }
+        }
+        if end < 0 {
+            return Ok(Decoded.Incomplete(buf));
+        }
+        let line = buf[0..end];
+        let rest = buf[end + 1..buf.len()];
+        match utf8.decode(line) {
+            .Ok(text) => Ok(Decoded.Frame(text, rest)),
+            .Err(error) => Err(CodecError.Malformed(to_string(error))),
+        }
+    }
+    fn encode(self, item: string) -> bytes {
+        var out = item.to_bytes();
+        out.push(10);
+        out
+    }
+}
+
+/// Frames prefixed by a big-endian length of `width` bytes (1, 2 or 4).
+pub type LengthPrefixed {
+    width: i64,
+}
+
+impl Codec<bytes> for LengthPrefixed {
+    fn decode(self, buf: bytes) -> Result<Decoded<bytes>, CodecError> {
+        if self.width != 1 && self.width != 2 && self.width != 4 {
+            return Err(CodecError.Malformed(f"length prefix width {self.width} is not 1, 2 or 4"));
+        }
+        if buf.len() < self.width {
+            return Ok(Decoded.Incomplete(buf));
+        }
+        var length = 0;
+        for i in 0 .. self.width {
+            length = length * 256 + buf[i] as i64;
+        }
+        if buf.len() < self.width + length {
+            return Ok(Decoded.Incomplete(buf));
+        }
+        let frame = buf[self.width..self.width + length];
+        let rest = buf[self.width + length..buf.len()];
+        Ok(Decoded.Frame(frame, rest))
+    }
+    fn encode(self, item: bytes) -> bytes {
+        var remaining = item.len();
+        var prefix = bytes.new();
+        for _ in 0 .. self.width {
+            prefix.push((remaining % 256) as u8);
+            remaining = remaining / 256;
+        }
+        var out = bytes.new();
+        for i in 0 .. self.width {
+            out.push(prefix[self.width - 1 - i]);
+        }
+        for byte in item {
+            out.push(byte);
+        }
+        out
+    }
 }
 
 // ── FFI bindings ──────────────────────────────────────────────────────
-/// Internal paired channel handle.
+/// Internal paired pipe handle: both halves before extraction.
 #[resource]
 #[opaque]
 pub type StreamPair {
@@ -201,33 +259,20 @@ impl StreamPair {
 extern "C" {
     fn hew_stream_channel(capacity: i64) -> StreamPair;
     fn hew_stream_pair_is_valid(pair: StreamPair) -> bool;
-    fn hew_stream_pair_sink(pair: StreamPair) -> Sink<string>;
-    fn hew_stream_pair_stream(pair: StreamPair) -> Stream<string>;
     fn hew_stream_pair_free(consume pair: StreamPair);
-    fn hew_stream_from_file_read(path: string) -> Stream<string>;
-    fn hew_stream_from_file_write(path: string) -> Sink<string>;
-    fn hew_stream_is_valid(stream: Stream<string>) -> bool;
-    fn hew_sink_is_valid(sink: Sink<string>) -> bool;
+    fn hew_stream_from_file_read(path: string) -> Stream<bytes>;
+    fn hew_stream_is_valid(stream: Stream<bytes>) -> bool;
     fn hew_stream_last_error() -> string;
-    fn hew_stream_last_errno() -> i32; // INTERNAL-ABI: OS errno from thread-local; 0 when none recorded
-    fn hew_stream_last_error_kind() -> i32; // INTERNAL-ABI: canonical cross-platform error-kind tag; 0 when none
-    fn hew_stream_close(consume stream: Stream<string>);
-    fn hew_stream_pipe(consume source: Stream<string>, consume dest: Sink<string>);
-    fn hew_sink_flush(sink: Sink<string>);
-    fn hew_sink_close(consume sink: Sink<string>);
-
-    // Element-type-specific runtime functions used by enricher dispatch.
-    // string element operations
-    // hew_stream_next_layout / hew_stream_try_next_layout carry an
-    // out-parameter + element-layout witness ABI and are declared by
-    // codegen with the correct calling convention.
-    fn hew_stream_collect_string(consume stream: Stream<string>) -> string;
-    fn hew_sink_write_string(sink: Sink<string>, data: string);
-
-    // Bytes element operations
-    fn hew_sink_write_bytes(sink: Sink<bytes>, data: bytes);
-
-    // Bytes-typed pair extractors (same underlying handle, typed for the checker)
-    fn hew_stream_pair_sink_bytes(pair: StreamPair) -> Sink<bytes>;
-    fn hew_stream_pair_stream_bytes(pair: StreamPair) -> Stream<bytes>;
+    // hew_stream_next_layout / hew_stream_try_next_layout /
+    // hew_stream_send_layout / hew_stream_try_send_layout carry an
+    // out-parameter + element-layout witness ABI and are declared by codegen
+    // with the correct calling convention.
 }
+
+/// Extract the write half of a pair. Used by `std.net` to split a socket.
+#[intrinsic("stream.pair_sink")]
+pub fn pair_sink<T>(pair: StreamPair) -> Sink<T> {}
+
+/// Extract the read half of a pair. Used by `std.net` to split a socket.
+#[intrinsic("stream.pair_stream")]
+pub fn pair_stream<T>(pair: StreamPair) -> Stream<T> {}

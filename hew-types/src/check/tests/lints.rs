@@ -1230,7 +1230,11 @@ fn needless_range_loop_flags_index_access() {
 fn needless_range_loop_flagged_when_vec_element_lacks_semantic_clone() {
     let (errors, warnings) = parse_and_check(
         r"
-        fn drain(inputs: Vec<Stream<i64>>) {
+        #[resource]
+        type Guard { id: i64, }
+        impl Guard { fn close(consume self) { } }
+
+        fn drain(inputs: Vec<Guard>) {
             for i in 0..inputs.len() {
                 let _ = inputs[i];
             }
@@ -1239,7 +1243,7 @@ fn needless_range_loop_flagged_when_vec_element_lacks_semantic_clone() {
     );
     assert!(
         errors.is_empty(),
-        "the indexed stream walk must type-check: {errors:?}"
+        "the indexed resource walk must type-check: {errors:?}"
     );
     assert_eq!(
         count_needless_range_loop(&warnings),
@@ -4219,68 +4223,6 @@ fn warn_dead_code_self_recursive_function() {
             .iter()
             .any(|w| w.kind == TypeErrorKind::Lint(LintId::DeadCode) && w.message.contains("rec")),
         "self-recursive unreachable function should get dead code warning, got: {warnings:?}"
-    );
-}
-
-// -----------------------------------------------------------------------
-// must_use lint
-// -----------------------------------------------------------------------
-//
-// Delivery outcomes (send/ask) are no longer a lint tier: discarding one is
-// `E_SEND_RESULT_DROPPED`, covered in `check::tests::actor_delivery`. What
-// remains here is `WriteError` and the machine step report.
-
-fn count_must_use(diags: &[TypeError]) -> usize {
-    diags
-        .iter()
-        .filter(|d| d.kind == TypeErrorKind::Lint(LintId::MustUse))
-        .count()
-}
-
-#[test]
-fn must_use_flags_bare_error_value() {
-    let src = "import std.net;\nfn caller(error: net.WriteError) { error; }";
-    let (errors, warnings) = parse_and_check_with_stdlib(src);
-    assert!(errors.is_empty(), "fixture should type-check: {errors:?}");
-    assert_eq!(
-        count_must_use(&warnings),
-        1,
-        "a bare discarded WriteError must fire, warnings: {warnings:?}"
-    );
-}
-
-#[test]
-fn must_use_not_flagged_for_ordinary_result() {
-    // Only WriteError is must-use; an unrelated error is left alone.
-    let src = "fn g() -> Result<(), i64> { Ok(()) }\nfn caller() { g(); }";
-    let (_, warnings) = parse_and_check(src);
-    assert_eq!(
-        count_must_use(&warnings),
-        0,
-        "a non-must-use error must not fire, warnings: {warnings:?}"
-    );
-}
-
-#[test]
-fn must_use_rejects_user_same_leaf_error_names() {
-    let src = "enum SendError { Closed, }\n\
-        enum AskError { Timeout, }\n\
-        enum WriteError { Disconnected, }\n\
-        fn send() -> SendError { SendError.Closed }\n\
-        fn ask() -> AskError { AskError.Timeout }\n\
-        fn write() -> WriteError { WriteError.Disconnected }\n\
-        fn caller() { send(); ask(); write(); }";
-    let output = check_source_allowing_prelude_redeclaration(src);
-    assert!(
-        output.errors.is_empty(),
-        "fixture should type-check: {:?}",
-        output.errors
-    );
-    assert_eq!(
-        count_must_use(&output.warnings),
-        0,
-        "same-leaf user types do not carry stdlib must-use authority: {:?}",
-        output.warnings
     );
 }
 

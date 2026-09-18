@@ -1,0 +1,83 @@
+//! How a pipe discloses the way its producer ended.
+//!
+//! A sink released by a crashing actor faults the pipe, so the consumer traps
+//! on its next read instead of reading a clean end. A sink released by an
+//! ordinary handler return or by a self-stop publishes EOF, and the consumer
+//! reads `None`.
+
+import std.stream;
+import std.testing;
+
+extern "C" {
+    fn hew_actor_self_stop();
+}
+
+actor StateProducer {
+    out: stream.Sink<i64>,
+
+    receive fn emit(n: i64) {
+        self.out.send(n).expect("send");
+    }
+
+    receive fn boom() {
+        panic("producer crashed");
+    }
+
+    receive fn quit() {
+        unsafe { hew_actor_self_stop() };
+    }
+}
+
+actor LocalProducer {
+    receive fn produce(consume out: stream.Sink<i64>) {
+        out.send(41).expect("send");
+    }
+}
+
+/// A crashing actor holding the sink in its state faults the pipe: the queued
+/// item still arrives, and the read after the crash traps rather than
+/// reporting a clean end.
+#[test]
+#[should_panic]
+fn test_crashing_producer_faults_the_pipe() {
+    let (tx, rx): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(4).expect("pipe");
+    let p = spawn StateProducer(out: tx);
+    let _ = p.emit(1);
+    let _ = p.boom();
+    // The trap is the only panic on this path: a clean end would fall out of
+    // the loop and leave `#[should_panic]` unsatisfied.
+    for item in rx {
+        testing.assert_eq(item, 1);
+    }
+}
+
+/// The sink is a consuming handler parameter, so the handler's ordinary return
+/// releases it and the consumer reads EOF.
+#[test]
+fn test_handler_local_sink_publishes_eof_on_return() {
+    let (tx, rx): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(4).expect("pipe");
+    let p = spawn LocalProducer();
+    let _ = p.produce(tx);
+    var seen = 0;
+    for item in rx {
+        testing.assert_eq(item, 41);
+        seen = seen + 1;
+    }
+    testing.assert_eq(seen, 1);
+}
+
+/// A producer that stops itself ended normally, so its state-held sink
+/// publishes EOF and the consumer reads a clean end.
+#[test]
+fn test_self_stopping_producer_publishes_eof() {
+    let (tx, rx): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(4).expect("pipe");
+    let p = spawn StateProducer(out: tx);
+    let _ = p.emit(2);
+    let _ = p.quit();
+    var seen = 0;
+    for item in rx {
+        testing.assert_eq(item, 2);
+        seen = seen + 1;
+    }
+    testing.assert_eq(seen, 1);
+}

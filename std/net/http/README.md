@@ -8,7 +8,7 @@ HTTP client and server helpers. The package contains the inbound server at
 The pure Hew codecs operate on `std.net` connections:
 
 - `std.net.http.http_async_client`: build a request with `build_get` or
-  `build_request`, read with `conn.read()`, and parse accumulated bytes with
+  `build_request`, read with `conn.recv()`, and parse accumulated bytes with
   `parse_response`. `AsyncResponse` exposes `status()`, `body()`, `header()`
   and `content_type()`.
 - `std.net.http.http_async_server`: call `listener.accept()`, read until

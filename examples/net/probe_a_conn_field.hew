@@ -1,3 +1,5 @@
+import std.encoding.utf8;
+
 import std.net.{Listener, Connection};
 
 extern "C" {
@@ -6,9 +8,15 @@ extern "C" {
 
 actor Session {
     let conn: Connection,
-
     receive fn pump(unused: i64) {
-        let body = conn.read_string() handle error {
+        let data = match conn.recv() {
+            .Some(data) => data,
+            .None => {
+                println("session-received: peer closed");
+                return;
+            },
+        };
+        let body = utf8.decode(data) handle error {
             println(f"invalid UTF-8: {error}");
             return;
         };
@@ -29,9 +37,11 @@ fn main() {
         .Err(_) => panic(f"network setup failed"),
     };
     let session = spawn Session(conn: conn);
-    let _ = session.pump(0);
+    // `fork` starts the session concurrently: an ordinary call would wait for
+    // the handler's read to finish before main accepts and writes.
+    fork session.pump(0);
     let client = listener.accept();
-    let _ = client.write_string("hello");
+    let _ = client.send("hello".to_bytes());
     sleep(300ms);
     let _ = client.close();
     println("server-done");

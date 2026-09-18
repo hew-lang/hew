@@ -1,15 +1,16 @@
-// Accept + run: the §6.5 first-class stream pipe round-trips bytes end-to-end.
-// `stream.bytes_pipe(n)` returns a paired `(Sink<bytes>, Stream<bytes>)`;
-// writing two chunks then closing the sink drains both through `for`.
+// Accept + run: the first-class pipe round-trips bytes end-to-end.
+// `stream.pipe(n)` returns a paired `(Sink<bytes>, Stream<bytes>)`; sending
+// two chunks then closing the sink drains both through `for`.
 // The body sums each chunk's length, proving the bytes arrive intact and EOF
 // fires only after the buffered items drain (sink.close() => graceful EOF).
 // Exit code carries the summed length: b"hi"(2) + b"abc"(3) = 5.
 import std.stream;
 
 fn main() -> i64 {
-    let (sink, source) = match stream.bytes_pipe(16) { .Ok(pair) => pair, .Err(error) => panic(error), };
-    sink.write(b"hi");
-    sink.write(b"abc");
+    let (sink, source): (stream.Sink<bytes>, stream.Stream<bytes>) =
+        match stream.pipe(16) { .Ok(pair) => pair, .Err(error) => panic(error), };
+    sink.send(b"hi").expect("send");
+    sink.send(b"abc").expect("send");
     sink.close();
     var total: i64 = 0;
     for chunk in source {

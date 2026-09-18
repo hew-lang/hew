@@ -126,7 +126,9 @@ pub(super) fn semantic_callables(checked: &hew_sir::CheckedModule<'_>) -> BTreeS
         {
             match &block.terminator {
                 hew_sir::SemTerminator::Suspend {
-                    kind: hew_sir::SuspendKind::ChannelRecv { park: false },
+                    kind:
+                        hew_sir::SuspendKind::StreamNext { park: false }
+                        | hew_sir::SuspendKind::StreamSend { park: false },
                     ..
                 } => {}
                 hew_sir::SemTerminator::RecoverFault { .. }
@@ -176,10 +178,8 @@ pub(super) fn verify_callables(module: &PhysicalModule) -> Result<(), PhysicalEr
                 | PhysicalTerminator::TaskSelect { .. }
                 | PhysicalTerminator::GeneratorYield { .. }
                 | PhysicalTerminator::GeneratorNext { .. }
-                | PhysicalTerminator::StreamNext { .. }
-                | PhysicalTerminator::StreamSend { .. }
-                | PhysicalTerminator::ChannelRecv { park: true, .. }
-                | PhysicalTerminator::ChannelSend { .. }
+                | PhysicalTerminator::StreamNext { park: true, .. }
+                | PhysicalTerminator::StreamSend { park: true, .. }
                 | PhysicalTerminator::ValueClose { .. }
                 | PhysicalTerminator::IndirectCall { .. }
                 | PhysicalTerminator::TaskAwait { .. }

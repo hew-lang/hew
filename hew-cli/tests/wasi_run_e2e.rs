@@ -396,51 +396,11 @@ fn main() {
     );
 }
 
-#[test]
-fn wasm_channel_send_full_traps_instead_of_dropping() {
-    require_wasi_runner();
-
-    let dir = support::tempdir();
-    let source = dir.path().join("channel_send_full_traps_wasi.hew");
-    fs::write(
-        &source,
-        r#"import std.channel;
-
-fn main() {
-    let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(2) { .Ok(pair) => pair, .Err(error) => panic(error), };
-
-    tx.send("msg-1");
-    tx.send("msg-2");
-    tx.send("msg-3");
-    tx.close();
-
-    match rx.try_recv() { .Some(s) => println(s), .None => println("empty-1") }
-    match rx.try_recv() { .Some(s) => println(s), .None => println("empty-2") }
-    match rx.try_recv() { .Some(s) => println(s), .None => println("empty-3-DROPPED") }
-    match rx.try_recv() { .Some(s) => println(s), .None => println("drained") }
-    rx.close();
-}
-"#,
-    )
-    .expect("write channel full-send WASI source");
-
-    let output = run_wasi_example(&source);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-
-    assert!(
-        !output.status.success(),
-        "full wasm channel send must trap rather than exiting successfully\nstdout:\n{stdout}\nstderr:\n{stderr}",
-    );
-    assert!(
-        stderr.contains("channel is full"),
-        "trap diagnostic should name the full channel\nstdout:\n{stdout}\nstderr:\n{stderr}",
-    );
-    assert!(
-        !stdout.contains("empty-3-DROPPED"),
-        "full send must not silently drop and continue\nstdout:\n{stdout}\nstderr:\n{stderr}",
-    );
-}
+// `wasm_channel_send_full_traps_instead_of_dropping` was deleted with the old
+// `std.channel` surface: the one pipe family (`stream.pipe`/`Sink`/`Stream`)
+// that replaced it is native-only and is rejected before code generation on
+// wasm32 (`wasm-capability-manifest.toml`, id `streams`), so there is no
+// wasm-runnable pipe program left to pin a full-send trap against.
 
 // The layout-keyed `HashMap<Record, V>` / `HashSet<string>` runtime ABI
 // (`hew_hashmap_*_layout` / `hew_hashset_*_layout`) is target-agnostic: the
@@ -816,10 +776,10 @@ fn main() {
 // runner. Guarding the send keeps first delivery a precondition for main
 // returning while leaving quiescence dependent only on shutdown cancelling the
 // periodic timer, which is the property under test.
-const NATIVE_PERIODIC_HANDSHAKE_SOURCE: &str = r#"import std.channel;
+const NATIVE_PERIODIC_HANDSHAKE_SOURCE: &str = r#"import std.stream;
 
 actor Pulse {
-    let ready: channel.Sender<i64>,
+    let ready: stream.Sink<i64>,
     var count: i64 = 0,
 
     #[every(20ms)]
@@ -827,13 +787,13 @@ actor Pulse {
         count += 1;
         println(f"tick {count}");
         if count == 1 {
-            ready.send(count);
+            ready.send(count).expect("send");
         }
     }
 }
 
 fn main() {
-    let (ready_tx, ready_rx): (channel.Sender<i64>, channel.Receiver<i64>) = match channel.new(1) { .Ok(pair) => pair, .Err(error) => panic(error), };
+    let (ready_tx, ready_rx): (stream.Sink<i64>, stream.Stream<i64>) = match stream.pipe(1) { .Ok(pair) => pair, .Err(error) => panic(error), };
     let _p = spawn Pulse(ready: ready_tx, count: 0);
     println("spawned");
     let _ = ready_rx.recv();

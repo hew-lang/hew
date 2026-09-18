@@ -563,9 +563,7 @@ mod tests {
     fn stream_pair_extractors_transfer_the_returned_handle() {
         for (symbol, release_symbol) in [
             ("hew_stream_pair_sink", "hew_sink_close"),
-            ("hew_stream_pair_sink_bytes", "hew_sink_close"),
             ("hew_stream_pair_stream", "hew_stream_close"),
-            ("hew_stream_pair_stream_bytes", "hew_stream_close"),
         ] {
             let contract = extern_ownership_contract(symbol)
                 .contract()

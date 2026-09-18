@@ -1,25 +1,25 @@
-//! Machine transition watch over select channel arms — e2e baseline and
+//! Machine transition watch over select pipe arms — e2e baseline and
 //! fail-closed gap pins.
 //!
 //! The supported observation pattern for machine state transitions is the
-//! notification channel: the owner steps the machine (a value type) and
-//! publishes each observed transition into a std/channel `Sender`; the
+//! notification pipe: the owner steps the machine (a value type) and
+//! publishes each observed transition into a std/stream `Sink`; the
 //! observer waits with the sealed `from ... recv()` select arm composed
 //! with `after`. This file pins the green baseline
 //! (`examples/machine/transition_watch_baseline.hew`), the local
-//! channel-handle transfer through actor messages, and its ownership
+//! pipe-handle transfer through actor messages, and its ownership
 //! contract:
 //!
-//! - a `Sender`/`Receiver` actor message argument transfers the retained
-//!   handle to the receiving handler (the local mailbox copies the handle
-//!   pointer; no cross-node codec is emitted for handle-bearing
+//! - a `Sink`/`Stream` actor message argument (`consume`-annotated) transfers
+//!   the retained handle to the receiving handler (the local mailbox copies
+//!   the handle pointer; no cross-node codec is emitted for handle-bearing
 //!   handlers);
 //! - the caller binding is consumed at the send site — any later use
 //!   (`close()`, a second send) is refused with `UseAfterConsume`, the
 //!   double-close / racing-owner guard;
 //! - cross-node transfer is statically unreachable: `RemotePid` exposes
 //!   no receive-fn dispatch, and tell/ask payloads are
-//!   Serializable-enforced (channel handles are not Serializable).
+//!   Serializable-enforced (pipe handles are not Serializable).
 
 mod support;
 
@@ -61,7 +61,7 @@ fn run_machine_example(name: &str, expected_stdout: &str) {
 }
 
 /// Baseline: a single actor owns the machine, publishes the transition as a
-/// string, and receives it through the sealed channel-recv select arm.
+/// string, and receives it through the sealed pipe-recv select arm.
 #[test]
 fn transition_watch_baseline_prints_transition() {
     run_machine_example("transition_watch_baseline", "Created -> Initialising\n");
@@ -69,7 +69,7 @@ fn transition_watch_baseline_prints_transition() {
 
 /// The full cross-actor watch: the owner drives a Lifecycle machine in
 /// actor state, publishes transitions (attach snapshot first), the
-/// observer receives the channel end through an actor message and selects
+/// observer receives the pipe end through an actor message and selects
 /// with the `after` safety net, reacting to the Running edge and tearing
 /// down on the close-driven `None` arm.
 #[test]
@@ -113,7 +113,7 @@ fn run_inline_scribbled(label: &str, source: &str, expected_stdout: &str) {
     );
 }
 
-/// Record channel element received through the sealed select arm, with the
+/// Record pipe element received through the sealed select arm, with the
 /// arm body's field reads spanning Call-terminated blocks (the f-string).
 /// Pins the select-arm init-check CFG fix end to end: before the arm-body
 /// edges landed this refused with a false `InitialisedBeforeUse`.
@@ -121,7 +121,7 @@ fn run_inline_scribbled(label: &str, source: &str, expected_stdout: &str) {
 fn select_record_element_cross_block_arm_runs_clean() {
     run_inline_scribbled(
         "select_record_element",
-        "import std.channel;\n\
+        "import std.stream;\n\
          \n\
          type Transition {\n\
          \x20   from_state: string,\n\
@@ -130,8 +130,8 @@ fn select_record_element_cross_block_arm_runs_clean() {
          \n\
          actor Combined {\n\
          \x20   receive fn run() {\n\
-         \x20       let (tx, rx): (channel.Sender<Transition>, channel.Receiver<Transition>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
-         \x20       tx.send(Transition { from_state: \"Created\", to_state: \"Initialising\" });\n\
+         \x20       let (tx, rx): (stream.Sink<Transition>, stream.Stream<Transition>) = match stream.pipe(4) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
+         \x20       tx.send(Transition { from_state: \"Created\", to_state: \"Initialising\" }).expect(\"send\");\n\
          \x20       tx.close();\n\
          \x20       select {\n\
          \x20           t from rx.recv() => {\n\
@@ -155,16 +155,16 @@ fn select_record_element_cross_block_arm_runs_clean() {
     );
 }
 
-/// Heap-payload enum channel element through the sealed select arm. Pins
-/// the queue-carrier element thunk seeding: before `Sender`/`Receiver`/
-/// `Stream` elements were seeded like `Vec` elements, the owned-element
+/// Heap-payload enum pipe element through the sealed select arm. Pins
+/// the queue-carrier element thunk seeding: before `Sink`/`Stream`
+/// elements were seeded like `Vec` elements, the owned-element
 /// witness referenced `__hew_enum_{clone,drop}_inplace_*` thunks with no
 /// body and llvm-verify refused the module.
 #[test]
 fn select_enum_element_thunks_resolve_and_run_clean() {
     run_inline_scribbled(
         "select_enum_element",
-        "import std.channel;\n\
+        "import std.stream;\n\
          \n\
          enum Transition {\n\
          \x20   Moved { from_state: string, to_state: string },\n\
@@ -172,8 +172,8 @@ fn select_enum_element_thunks_resolve_and_run_clean() {
          \n\
          actor Combined {\n\
          \x20   receive fn run() {\n\
-         \x20       let (tx, rx): (channel.Sender<Transition>, channel.Receiver<Transition>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
-         \x20       tx.send(Transition.Moved { from_state: \"Created\", to_state: \"Initialising\" });\n\
+         \x20       let (tx, rx): (stream.Sink<Transition>, stream.Stream<Transition>) = match stream.pipe(4) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
+         \x20       tx.send(Transition.Moved { from_state: \"Created\", to_state: \"Initialising\" }).expect(\"send\");\n\
          \x20       tx.close();\n\
          \x20       select {\n\
          \x20           t from rx.recv() => {\n\
@@ -201,13 +201,13 @@ fn select_enum_element_thunks_resolve_and_run_clean() {
     );
 }
 
-/// A `channel.Receiver<string>` as a receive-fn parameter source. The
+/// A `stream.Stream<string>` as a receive-fn parameter source. The
 /// cross-actor watch handoff needs this exact shape green.
 fn receiver_param_source() -> &'static str {
-    "import std.channel;\n\
+    "import std.stream;\n\
      \n\
      actor Observer {\n\
-     \x20   receive fn watch(rx: channel.Receiver<string>) {\n\
+     \x20   receive fn watch(consume rx: stream.Stream<string>) {\n\
      \x20       match rx.recv() {\n\
      \x20           .Some(v) => println(v),\n\
      \x20           .None => println(\"closed\"),\n\
@@ -217,8 +217,8 @@ fn receiver_param_source() -> &'static str {
      }\n\
      \n\
      fn main() {\n\
-     \x20   let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
-     \x20   tx.send(\"hello\");\n\
+     \x20   let (tx, rx): (stream.Sink<string>, stream.Stream<string>) = match stream.pipe(4) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
+     \x20   tx.send(\"hello\").expect(\"send\");\n\
      \x20   tx.close();\n\
      \x20   let obs = spawn Observer;\n\
      \x20   let _ = obs.watch(rx);\n\
@@ -226,12 +226,12 @@ fn receiver_param_source() -> &'static str {
      }\n"
 }
 
-/// A channel handle as an actor message argument transfers locally: the
-/// observer receives the live receiver, drains it, and closes it. Was the
+/// A pipe handle as an actor message argument transfers locally: the
+/// observer receives the live stream, drains it, and closes it. Was the
 /// stage-0 cross-node-serialize refusal pin before handle-bearing handlers
 /// stopped emitting xnode codecs.
 #[test]
-fn channel_receiver_actor_message_arg_transfers_locally() {
+fn pipe_stream_actor_message_arg_transfers_locally() {
     run_inline_scribbled(
         "receiver_param_transfer",
         receiver_param_source(),
@@ -239,26 +239,26 @@ fn channel_receiver_actor_message_arg_transfers_locally() {
     );
 }
 
-/// Sender is the complementary local mailbox transfer: its last-use carrier
+/// Sink is the complementary local mailbox transfer: its last-use carrier
 /// has a failure-edge cleanup, so this used to be rejected by the generic
 /// actor refcount-handle guard before the program could execute.  The worker
-/// can use and close the transferred sender, proving the original owner did
+/// can use and close the transferred sink, proving the original owner did
 /// not remain live at the call site.
 #[test]
-fn channel_sender_actor_message_arg_transfers_locally() {
+fn pipe_sink_actor_message_arg_transfers_locally() {
     run_inline_scribbled(
         "sender_param_transfer",
-        "import std.channel;\n\
+        "import std.stream;\n\
          \n\
          actor Worker {\n\
-         \x20   receive fn notify(tx: channel.Sender<string>) {\n\
-         \x20       tx.send(\"pong\");\n\
+         \x20   receive fn notify(consume tx: stream.Sink<string>) {\n\
+         \x20       tx.send(\"pong\").expect(\"send\");\n\
          \x20       tx.close();\n\
          \x20   }\n\
          }\n\
          \n\
          fn main() {\n\
-         \x20   let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(1) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
+         \x20   let (tx, rx): (stream.Sink<string>, stream.Stream<string>) = match stream.pipe(1) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
          \x20   let worker = spawn Worker;\n\
          \x20   let _ = worker.notify(tx);\n\
          \x20   match rx.recv() {\n\
@@ -272,29 +272,29 @@ fn channel_sender_actor_message_arg_transfers_locally() {
 }
 
 /// Ownership contract: the caller binding is consumed by the transfer.
-/// A later `rx.close()` would double-close the channel the new owner now
+/// A later `rx.close()` would double-close the pipe the new owner now
 /// holds — refused by the move checker with the consume site attached.
 #[test]
-fn channel_handle_use_after_transfer_refused() {
+fn pipe_handle_use_after_transfer_refused() {
     require_codegen();
 
     let dir = support::tempdir();
     let source = dir.path().join("use_after_transfer.hew");
     std::fs::write(
         &source,
-        "import std.channel;\n\
+        "import std.stream;\n\
          \n\
          actor Observer {\n\
-         \x20   receive fn watch(rx: channel.Receiver<string>, label: string) {\n\
+         \x20   receive fn watch(consume rx: stream.Stream<string>, label: string) {\n\
          \x20       rx.close();\n\
          \x20   }\n\
          }\n\
          \n\
          fn main() {\n\
-         \x20   let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
+         \x20   let (tx, rx): (stream.Sink<string>, stream.Stream<string>) = match stream.pipe(4) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
          \x20   tx.close();\n\
          \x20   let obs = spawn Observer;\n\
-         \x20   obs.watch(rx, \"watch\");\n\
+         \x20   let _ = obs.watch(rx, \"watch\");\n\
          \x20   rx.close();\n\
          \x20   sleep(100ms);\n\
          }\n",
@@ -316,11 +316,11 @@ fn channel_handle_use_after_transfer_refused() {
 }
 
 /// The target composition: a machine-owning service publishes
-/// record transitions into a channel whose receiver was handed to a
+/// record transitions into a pipe whose stream was handed to a
 /// separate observer actor through a message; the observer selects on
 /// transitions with an `after` safety net and reacts to the Faulted edge.
 ///
-/// Main blocks on a COMPLETION channel the observer closes out after its
+/// Main blocks on a COMPLETION pipe the observer closes out after its
 /// watch loop ends — a deterministic seam, not a `sleep` that races the
 /// observer under load. The `after 2s` arm must never fire here: every
 /// wake the select observes carries a real transition (or the close), so
@@ -332,7 +332,7 @@ fn cross_actor_record_transition_watch_runs_clean() {
     run_inline_scribbled(
         "cross_actor_transition_watch",
         "import std.concurrency.lifecycle;\n\
-         import std.channel;\n\
+         import std.stream;\n\
          \n\
          type Transition {\n\
          \x20   from_state: string,\n\
@@ -340,26 +340,26 @@ fn cross_actor_record_transition_watch_runs_clean() {
          }\n\
          \n\
          actor Service {\n\
-         \x20   receive fn drive(tx: channel.Sender<Transition>) {\n\
+         \x20   receive fn drive(consume tx: stream.Sink<Transition>) {\n\
          \x20       var lc: lifecycle.Lifecycle<i64> = lifecycle.Lifecycle.Created;\n\
          \x20       let before1 = lc.state_name();\n\
          \x20       lc.step(lifecycle.LifecycleEvent.Initialise);\n\
          \x20       let after1 = lc.state_name();\n\
          \x20       if before1 != after1 {\n\
-         \x20           tx.send(Transition { from_state: before1, to_state: after1 });\n\
+         \x20           tx.send(Transition { from_state: before1, to_state: after1 }).expect(\"send\");\n\
          \x20       }\n\
          \x20       let before2 = lc.state_name();\n\
          \x20       lc.step(lifecycle.LifecycleEvent.Crashed { error: Error.Code(7) });\n\
          \x20       let after2 = lc.state_name();\n\
          \x20       if before2 != after2 {\n\
-         \x20           tx.send(Transition { from_state: before2, to_state: after2 });\n\
+         \x20           tx.send(Transition { from_state: before2, to_state: after2 }).expect(\"send\");\n\
          \x20       }\n\
          \x20       tx.close();\n\
          \x20   }\n\
          }\n\
          \n\
          actor Observer {\n\
-         \x20   receive fn watch(rx: channel.Receiver<Transition>, done: channel.Sender<i64>) {\n\
+         \x20   receive fn watch(consume rx: stream.Stream<Transition>, consume done: stream.Sink<i64>) {\n\
          \x20       var waiting = true;\n\
          \x20       while waiting {\n\
          \x20           select {\n\
@@ -384,14 +384,14 @@ fn cross_actor_record_transition_watch_runs_clean() {
          \x20           };\n\
          \x20       }\n\
          \x20       rx.close();\n\
-         \x20       done.send(1);\n\
+         \x20       done.send(1).expect(\"send\");\n\
          \x20       done.close();\n\
          \x20   }\n\
          }\n\
          \n\
          fn main() {\n\
-         \x20   let (tx, rx): (channel.Sender<Transition>, channel.Receiver<Transition>) = match channel.new(8) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
-         \x20   let (done_tx, done_rx): (channel.Sender<i64>, channel.Receiver<i64>) = match channel.new(1) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
+         \x20   let (tx, rx): (stream.Sink<Transition>, stream.Stream<Transition>) = match stream.pipe(8) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
+         \x20   let (done_tx, done_rx): (stream.Sink<i64>, stream.Stream<i64>) = match stream.pipe(1) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
          \x20   let obs = spawn Observer;\n\
          \x20   let _ = fork obs.watch(rx, done_tx);\n\
          \x20   let svc = spawn Service;\n\
@@ -414,10 +414,10 @@ fn cross_actor_record_transition_watch_runs_clean() {
 fn select_after_genuine_expiry_takes_after_arm() {
     run_inline_scribbled(
         "select_after_genuine_expiry",
-        "import std.channel;\n\
+        "import std.stream;\n\
          \n\
          actor Observer {\n\
-         \x20   receive fn watch(rx: channel.Receiver<i64>, done: channel.Sender<i64>) {\n\
+         \x20   receive fn watch(consume rx: stream.Stream<i64>, consume done: stream.Sink<i64>) {\n\
          \x20       select {\n\
          \x20           v from rx.recv() => {\n\
          \x20               match v {\n\
@@ -428,14 +428,14 @@ fn select_after_genuine_expiry_takes_after_arm() {
          \x20           after 400ms => println(\"timeout\"),\n\
          \x20       };\n\
          \x20       rx.close();\n\
-         \x20       done.send(1);\n\
+         \x20       done.send(1).expect(\"send\");\n\
          \x20       done.close();\n\
          \x20   }\n\
          }\n\
          \n\
          fn main() {\n\
-         \x20   let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
-         \x20   let (done_tx, done_rx): (channel.Sender<i64>, channel.Receiver<i64>) = match channel.new(1) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
+         \x20   let (tx, rx): (stream.Sink<i64>, stream.Stream<i64>) = match stream.pipe(4) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
+         \x20   let (done_tx, done_rx): (stream.Sink<i64>, stream.Stream<i64>) = match stream.pipe(1) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
          \x20   let obs = spawn Observer;\n\
          \x20   let _ = obs.watch(rx, done_tx);\n\
          \x20   let _ = done_rx.recv();\n\
@@ -462,10 +462,10 @@ fn suspending_select_wake_gate_ir_shape_holds() {
     let source = dir.path().join("gate_shape.hew");
     std::fs::write(
         &source,
-        "import std.channel;\n\
+        "import std.stream;\n\
          \n\
          actor Observer {\n\
-         \x20   receive fn watch(rx: channel.Receiver<i64>) {\n\
+         \x20   receive fn watch(consume rx: stream.Stream<i64>) {\n\
          \x20       select {\n\
          \x20           v from rx.recv() => {\n\
          \x20               match v {\n\
@@ -480,7 +480,7 @@ fn suspending_select_wake_gate_ir_shape_holds() {
          }\n\
          \n\
          fn main() {\n\
-         \x20   let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
+         \x20   let (tx, rx): (stream.Sink<i64>, stream.Stream<i64>) = match stream.pipe(4) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
          \x20   let obs = spawn Observer;\n\
          \x20   let _ = obs.watch(rx);\n\
          \x20   tx.close();\n\
@@ -663,7 +663,7 @@ fn main() {
 }
 
 /// The snapshot watch with full pattern fidelity: machine values travel as
-/// channel elements through the sealed select arm and the received
+/// pipe elements through the sealed select arm and the received
 /// snapshot pattern-matches on state variants, including the heap-payload
 /// `Failed { reason }` extraction. Multi-iteration: two snapshots, then
 /// the close-driven `None` teardown. Pins the machine-payload enum sizing —
@@ -676,9 +676,9 @@ fn machine_snapshot_select_watch_matches_state_variants() {
     run_inline_scribbled(
         "machine_snapshot_select",
         "\
-         // Snapshot watch: machine values as channel elements through the sealed\n\
+         // Snapshot watch: machine values as pipe elements through the sealed\n\
          // select arm, state-variant pattern matching on the received snapshot.\n\
-         import std.channel;\n\
+         import std.stream;\n\
          \n\
          machine Conn {\n\
          \x20   events {\n\
@@ -702,12 +702,12 @@ fn machine_snapshot_select_watch_matches_state_variants() {
          \n\
          actor Owner {\n\
          \x20   receive fn run() -> i64 {\n\
-         \x20       let (tx, rx): (channel.Sender<Conn>, channel.Receiver<Conn>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
+         \x20       let (tx, rx): (stream.Sink<Conn>, stream.Stream<Conn>) = match stream.pipe(4) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
          \x20       var c: Conn = Conn.Idle;\n\
          \x20       c.step(ConnEvent.Connect);\n\
-         \x20       tx.send(c);\n\
+         \x20       tx.send(c).expect(\"send\");\n\
          \x20       c.step(ConnEvent.Fail { reason: \"peer reset\" });\n\
-         \x20       tx.send(c);\n\
+         \x20       tx.send(c).expect(\"send\");\n\
          \x20       tx.close();\n\
          \x20       var waiting = true;\n\
          \x20       while waiting {\n\
@@ -802,7 +802,7 @@ fn vec_machine_element_stores_and_releases_each_value() {
     );
 }
 
-/// A channel handle nested inside a tuple `(Receiver<i64>, i64)` is still a
+/// A pipe handle nested inside a tuple `(Stream<i64>, i64)` is still a
 /// single-owner resource. Sending the tuple to an actor transfers the handle;
 /// a later use of the caller binding `rx` is a use after that move.
 ///
@@ -811,24 +811,24 @@ fn vec_machine_element_stores_and_releases_each_value() {
 /// binding stayed live, and `rx.close()` compiled silently and crashed at
 /// runtime (SIGABRT from double-close, SIGSEGV from a freed-then-read pointer).
 #[test]
-fn nested_channel_handle_in_tuple_use_after_send_refused() {
+fn nested_pipe_handle_in_tuple_use_after_send_refused() {
     require_codegen();
 
     let dir = support::tempdir();
     let source = dir.path().join("nested_handle_tuple.hew");
     std::fs::write(
         &source,
-        "import std.channel;\n\
+        "import std.stream;\n\
          \n\
          actor Worker {\n\
-         \x20   receive fn accept(pair: (channel.Receiver<i64>, i64)) {\n\
+         \x20   receive fn accept(consume pair: (stream.Stream<i64>, i64)) {\n\
          \x20       let (rx, _n) = pair;\n\
          \x20       rx.close();\n\
          \x20   }\n\
          }\n\
          \n\
          fn main() {\n\
-         \x20   let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
+         \x20   let (tx, rx): (stream.Sink<i64>, stream.Stream<i64>) = match stream.pipe(4) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
          \x20   tx.close();\n\
          \x20   let w = spawn Worker;\n\
          \x20   let _ = w.accept((rx, 42));\n\
@@ -851,18 +851,18 @@ fn nested_channel_handle_in_tuple_use_after_send_refused() {
     );
 }
 
-/// Positive contract: sending a tuple `(Receiver<string>, string)` to an actor
+/// Positive contract: sending a tuple `(Stream<i64>, i64)` to an actor
 /// compiles and runs correctly — the handle is transferred (not double-closed),
-/// the worker drains and closes the channel, and both sides produce the
+/// the worker drains and closes the pipe, and both sides produce the
 /// expected output.
 #[test]
-fn nested_channel_handle_in_tuple_transfers_correctly() {
+fn nested_pipe_handle_in_tuple_transfers_correctly() {
     run_inline_scribbled(
         "nested_handle_tuple_transfer",
-        "import std.channel;\n\
+        "import std.stream;\n\
          \n\
          actor Worker {\n\
-         \x20   receive fn deliver(pair: (channel.Receiver<i64>, i64)) {\n\
+         \x20   receive fn deliver(consume pair: (stream.Stream<i64>, i64)) {\n\
          \x20       let (rx, n) = pair;\n\
          \x20       rx.close();\n\
          \x20       println(f\"worker got {n}\");\n\
@@ -870,7 +870,7 @@ fn nested_channel_handle_in_tuple_transfers_correctly() {
          }\n\
          \n\
          fn main() {\n\
-         \x20   let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
+         \x20   let (tx, rx): (stream.Sink<i64>, stream.Stream<i64>) = match stream.pipe(4) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
          \x20   tx.close();\n\
          \x20   let w = spawn Worker;\n\
          \x20   let _ = w.deliver((rx, 99));\n\
@@ -885,12 +885,12 @@ fn nested_channel_handle_in_tuple_transfers_correctly() {
 /// use-after-free.
 ///
 /// The composition that fires the defect: an actor `receive fn run() -> i64`
-/// whose body runs a `select`/`after` arm over a channel carrying a `machine`
+/// whose body runs a `select`/`after` arm over a pipe carrying a `machine`
 /// value with a heap-payload state (`Failed { reason: string }`), invoked
 /// with a plain ask (`o.run()`, which suspends the caller on its own — an
 /// explicit `await` is now redundant here and everywhere a plain call
-/// suspends). Under `MallocScribble` the channel's `ChannelCore` is released
-/// one time too many on this path — the receiver reference is lost while a
+/// suspends). Under `MallocScribble` the pipe's core is released
+/// one time too many on this path — the stream reference is lost while a
 /// `select`-poll thread and the resumed handler still hold it — so the next
 /// `try_recv` reads a freed core. The same shape with a plain `enum` element
 /// (not a `machine`) stays clean. A resumed-coroutine handler is required to
@@ -916,7 +916,7 @@ fn nested_channel_handle_in_tuple_transfers_correctly() {
 /// stdout — a single corrupted decode anywhere in the batch fails the test.
 #[test]
 fn awaited_ask_select_machine_heap_payload_stays_clean_under_scribble() {
-    const SOURCE: &str = "import std.channel;\n\
+    const SOURCE: &str = "import std.stream;\n\
          \n\
          machine Conn {\n\
          \x20   events {\n\
@@ -940,11 +940,11 @@ fn awaited_ask_select_machine_heap_payload_stays_clean_under_scribble() {
          \n\
          actor Owner {\n\
          \x20   receive fn run() -> i64 {\n\
-         \x20       let (tx, rx): (channel.Sender<Conn>, channel.Receiver<Conn>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
+         \x20       let (tx, rx): (stream.Sink<Conn>, stream.Stream<Conn>) = match stream.pipe(4) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
          \x20       var c: Conn = Conn.Idle;\n\
          \x20       c.step(ConnEvent.Connect);\n\
          \x20       c.step(ConnEvent.Fail { reason: \"peer reset\" });\n\
-         \x20       tx.send(c);\n\
+         \x20       tx.send(c).expect(\"send\");\n\
          \x20       tx.close();\n\
          \x20       select {\n\
          \x20           snap from rx.recv() => {\n\

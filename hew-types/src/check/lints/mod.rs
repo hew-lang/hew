@@ -84,12 +84,9 @@ pub enum LintId {
     /// A function that is defined but never reached from any entry point.
     /// (Migrated from an ad-hoc whole-program dead-code warning.)
     DeadCode,
-    /// A discarded value carries a write/send/ask error that must not be
-    /// ignored — `WriteError` / `SendError` / `AskError`, bare or as the error
-    /// arm of a `Result`. A statement-position discard fails open (a dropped
-    /// backpressure / disconnect signal, an unnoticed undelivered send, or a
-    /// timed-out / mailbox-full / stopped-actor `ask` mistaken for a reply);
-    /// handle it or bind `let _ = …`.
+    /// A discarded machine step report. A statement-position discard loses
+    /// the step's typed outputs and disposition; read it or bind `let _ = …`.
+    /// Send and ask outcomes are `E_SEND_RESULT_DROPPED`, not a lint tier.
     MustUse,
     /// A receive handler contains a `sleep`/`sleep_until` loop whose only obvious
     /// exit is a sibling actor message, but the mailbox is not observed until

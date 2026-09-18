@@ -1938,9 +1938,7 @@ impl<'a> Flow<'a> {
                     SemTerminator::Suspend {
                         kind: crate::SuspendKind::GeneratorNext
                             | crate::SuspendKind::StreamNext { .. }
-                            | crate::SuspendKind::StreamSend
-                            | crate::SuspendKind::ChannelRecv { .. }
-                            | crate::SuspendKind::ChannelSend,
+                            | crate::SuspendKind::StreamSend { .. },
                         ..
                     } | SemTerminator::ActorCall { .. }
                         | SemTerminator::Call { .. }

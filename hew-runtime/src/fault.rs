@@ -46,6 +46,96 @@ impl HewFault {
     }
 }
 
+/// Actors whose current turn is unwinding a crash. A pipe sink released
+/// while its owner is here marks the pipe faulted instead of publishing a
+/// clean EOF, so the consumer never mistakes a crash for the end of the data.
+///
+/// An entry is added when generated code raises a crash fault inside an
+/// actor turn (before its cleanup edges run) and removed by the actor's
+/// terminal teardown. Cancellation, deadline and race-loss codes are not
+/// crashes and never enter.
+#[cfg(not(target_arch = "wasm32"))]
+static UNWINDING_ACTORS: std::sync::Mutex<Vec<u64>> = std::sync::Mutex::new(Vec::new());
+
+#[cfg(not(target_arch = "wasm32"))]
+thread_local! {
+    /// The crashed actor whose owned state this thread is releasing right
+    /// now (`free_actor_resources` runs the state drop synchronously).
+    static CRASH_RELEASING: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn is_crash_code(code: i32) -> bool {
+    !matches!(
+        code,
+        HEW_FAULT_CANCELLED | HEW_FAULT_DEADLINE | HEW_FAULT_RACE_LOST
+    )
+}
+
+/// Record that the current actor turn, if any, is unwinding a crash.
+#[cfg(not(target_arch = "wasm32"))]
+fn note_unwinding(code: i32) {
+    if !is_crash_code(code) {
+        return;
+    }
+    let actor = crate::actor::hew_actor_self();
+    if actor.is_null() {
+        return;
+    }
+    // SAFETY: the current context's actor is live for the turn that raised
+    // the fault.
+    let id = unsafe { (*actor).id };
+    let mut unwinding = UNWINDING_ACTORS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if !unwinding.contains(&id) {
+        unwinding.push(id);
+    }
+}
+
+/// Release the owned state of actor `id` on its terminal teardown. While
+/// `release` runs, a pipe sink it drops learns whether the owner crashed.
+///
+/// One call site: the actor's terminal free. Also retires the unwinding
+/// entry the crash raised, so the set only ever holds live crashed actors.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn release_actor_state(id: u64, crashed: bool, release: impl FnOnce()) {
+    UNWINDING_ACTORS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .retain(|unwinding| *unwinding != id);
+    if !crashed {
+        release();
+        return;
+    }
+    CRASH_RELEASING.with(|cell| cell.set(id));
+    release();
+    CRASH_RELEASING.with(|cell| cell.set(0));
+}
+
+/// The crashed actor releasing a resource on the current thread, if the
+/// release belongs to a crash: either this thread is dropping a crashed
+/// actor's state, or the current actor turn is unwinding its own crash.
+#[cfg(not(target_arch = "wasm32"))]
+#[must_use]
+pub(crate) fn crashing_owner() -> Option<u64> {
+    let releasing = CRASH_RELEASING.with(std::cell::Cell::get);
+    if releasing != 0 {
+        return Some(releasing);
+    }
+    let actor = crate::actor::hew_actor_self();
+    if actor.is_null() {
+        return None;
+    }
+    // SAFETY: the current context's actor is live for the current turn.
+    let id = unsafe { (*actor).id };
+    UNWINDING_ACTORS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .contains(&id)
+        .then_some(id)
+}
+
 /// Create an owned logical-failure code. Unknown codes report as `UnknownFault`.
 ///
 /// Returns one owner, released by [`hew_fault_drop`]. Allocation failure remains
@@ -53,6 +143,8 @@ impl HewFault {
 #[no_mangle]
 #[must_use]
 pub extern "C" fn hew_fault_new(code: i32) -> *mut HewFault {
+    #[cfg(not(target_arch = "wasm32"))]
+    note_unwinding(code);
     Box::into_raw(Box::new(HewFault {
         code,
         message: None,
@@ -71,6 +163,8 @@ pub extern "C" fn hew_fault_new(code: i32) -> *mut HewFault {
 pub unsafe extern "C" fn hew_fault_new_panic(message: *const HewString) -> *mut HewFault {
     // SAFETY: the caller supplies a live length-carrying UTF-8 string borrow.
     let message = unsafe { string_as_str(message) }.into();
+    #[cfg(not(target_arch = "wasm32"))]
+    note_unwinding(HEW_TRAP_USER_PANIC);
     Box::into_raw(Box::new(HewFault {
         code: HEW_TRAP_USER_PANIC,
         message: Some(message),
@@ -94,6 +188,8 @@ pub unsafe extern "C" fn hew_fault_new_unhandled_failure(
 ) -> *mut HewFault {
     // SAFETY: the caller supplies a live length-carrying UTF-8 string borrow.
     let message = unsafe { string_as_str(message) }.into();
+    #[cfg(not(target_arch = "wasm32"))]
+    note_unwinding(crate::internal::types::HEW_TRAP_ACTOR_UNHANDLED_FAILURE);
     Box::into_raw(Box::new(HewFault {
         code: crate::internal::types::HEW_TRAP_ACTOR_UNHANDLED_FAILURE,
         message: Some(message),

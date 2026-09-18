@@ -223,12 +223,9 @@ the precise subset that is actually convertible.
     `!c`. *Guards:* each branch must be exactly one boolean literal (no other statements); the two
     branches must be opposite polarities (a matching pair is a constant, not this lint); `else if`
     chains never collapse the outer `if`. Position-agnostic (the rewrite is valid anywhere).
-  - **`must_use`** — a discarded value carrying a write error that must not be ignored:
-    `WriteError`, bare or as the error arm of a `Result<_, E>`, plus a discarded machine step
-    report. *Guards:* statement position only (a trailing block value, a `let`/`var` binding, a
-    `match`/`if let` scrutinee, and `expr?` are all "used" and never flagged); the resolved type
-    must be exactly the stdlib `WriteError` or a `Result` over it, matched by canonical name.
-    Discarding one fails open — a dropped backpressure/disconnect signal. Opt out with
+  - **`must_use`** — a discarded machine step report. *Guards:* statement position only (a
+    trailing block value, a `let`/`var` binding and a `match`/`if let` scrutinee are all "used");
+    the resolved type must be a declaration the checker registered as a step report. Opt out with
     `let _ = …` or `// hew:allow(must_use)`. Send and ask outcomes are **not** a lint tier:
     discarding one is `E_SEND_RESULT_DROPPED`, a compile error raised by the statement checker
     (HEW-SPEC-2026 §2.1.1, §5.6).

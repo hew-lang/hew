@@ -25,7 +25,7 @@ use crate::internal::types::{
 };
 use crate::mailbox::{self, HewMailbox};
 use crate::reply_channel::{self, HewReplyChannel};
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(test)]
 use crate::scheduler;
 
 /// Policy-sensitive actor-send status: the incoming send completed, but the
@@ -6128,7 +6128,7 @@ pub(crate) fn fault_close_registered_gen_sink(a: &HewActor) {
     #[cfg(not(target_arch = "wasm32"))]
     // SAFETY: see above.
     unsafe {
-        crate::stream::fault_close_registered_sink(raw.cast(), a.id)
+        crate::stream::fault_close_registered_sink(raw.cast(), a.id);
     };
     #[cfg(target_arch = "wasm32")]
     {

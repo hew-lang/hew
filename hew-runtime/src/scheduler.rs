@@ -31,11 +31,12 @@ use std::time::{Duration, Instant};
 
 use rand::RngExt;
 
+#[cfg(test)]
+use crate::actor::HEW_MSG_BUDGET;
 use crate::actor::{self, HewActor, HEW_DEFAULT_REDUCTIONS};
 use crate::deque::{GlobalQueue, WorkDeque, WorkStealer};
 use crate::deterministic::hew_deterministic_set_seed;
 use crate::internal::types::HewActorState;
-use crate::lifetime::live_actors::ActorIncarnation;
 use crate::lifetime::poison_safe::PoisonSafe;
 use crate::set_last_error;
 use crate::util::{CondvarExt, MutexExt};
@@ -54,29 +55,6 @@ const WORKERS_LIVE: u8 = 0;
 const WORKERS_JOINING: u8 = 1;
 const WORKERS_PENDING: u8 = 2;
 const WORKERS_JOINED: u8 = 3;
-
-#[cfg(test)]
-static ACTIVATE_PRE_REENQUEUE_HOOK: PoisonSafe<Option<fn(*mut HewActor)>> = PoisonSafe::new(None);
-
-/// Fires inside `activate_actor` immediately after the worker WINS the
-/// `Runnable -> Running` CAS — the exact CAS->marker-gap location. A regression
-/// test installs a hook here to fire an external trap in the precise window the
-/// pre-fix code left `dispatch_active == false` while the actor was already
-/// `Running`, and asserts the fix (claim before the CAS) keeps the flag set so
-/// the free-quiescence predicate refuses.
-#[cfg(test)]
-static ACTIVATE_POST_CAS_HOOK: PoisonSafe<Option<fn(*mut HewActor)>> = PoisonSafe::new(None);
-
-/// Fires inside `enqueue_resume`'s CAS-lose arm, AFTER the failed
-/// `Suspended -> Runnable` CAS and BEFORE the pending-wake mark — the exact
-/// window the lifecycle-park lost-wake interleaving spans: a park can publish
-/// `Suspended` AND run its one-shot drain inside this gap, so the mark lands
-/// after the only drain that would have consumed it. A regression test installs
-/// a park-completion hook here to force that ordering deterministically and
-/// asserts the post-mark re-check + CAS retry delivers the wake instead of
-/// stranding the actor `Suspended` with a set marker.
-#[cfg(test)]
-static ENQUEUE_RESUME_CAS_FAIL_HOOK: PoisonSafe<Option<fn(*mut HewActor)>> = PoisonSafe::new(None);
 
 /// Fires after a worker's last ordinary queue probe and before it acquires its
 /// parker mutex. Tests enqueue and wake in this exact gap to pin the scheduler
@@ -97,7 +75,7 @@ static WORKER_SHUTDOWN_GATE: PoisonSafe<Option<WorkerShutdownGate>> = PoisonSafe
 /// Rendezvous after a scheduler queue reference is retained but before the raw
 /// pointer is published to the global injector.
 #[cfg(test)]
-type SchedulerQueueHandoffHook = (
+pub(crate) type SchedulerQueueHandoffHook = (
     u64,
     std::sync::Arc<std::sync::Barrier>,
     std::sync::Arc<std::sync::Barrier>,
@@ -105,18 +83,6 @@ type SchedulerQueueHandoffHook = (
 
 #[cfg(test)]
 static SCHED_ENQUEUE_PRE_PUBLISH_HOOK: PoisonSafe<Option<SchedulerQueueHandoffHook>> =
-    PoisonSafe::new(None);
-
-#[cfg(test)]
-static ACTIVATE_PRE_CLAIM_HOOK: PoisonSafe<Option<SchedulerQueueHandoffHook>> =
-    PoisonSafe::new(None);
-
-/// Rendezvous after a dequeued actor observes a still-active prior activation
-/// while the actor is already `Runnable`. This is the self-reenqueue handoff:
-/// the prior activation published the queue entry before releasing
-/// `dispatch_active`.
-#[cfg(test)]
-static ACTIVATE_CLAIM_BUSY_HOOK: PoisonSafe<Option<SchedulerQueueHandoffHook>> =
     PoisonSafe::new(None);
 
 #[cfg(test)]
@@ -184,36 +150,14 @@ impl Drop for SchedulerQueueHandoffHookGuard {
     }
 }
 
-#[cfg(test)]
-fn run_scheduler_queue_handoff_hook(
-    hook: &PoisonSafe<Option<SchedulerQueueHandoffHook>>,
-    actor: *mut HewActor,
-) {
-    // SAFETY: both seams still hold the scheduler queue lifetime reference.
-    let actor_id = unsafe { (*actor).id };
-    let rendezvous = hook.access(|slot| {
-        slot.as_ref().and_then(|(target, entered, release)| {
-            (*target == actor_id).then(|| (entered.clone(), release.clone()))
-        })
-    });
-    if let Some((entered, release)) = rendezvous {
-        entered.wait();
-        release.wait();
-    }
-}
-
 /// Deterministic trap/activation-drop rendezvous immediately before the
 /// activation takes the terminal-reclaim lock.
 #[cfg(test)]
-type ActivationPreTerminalLockHook = (
+pub(crate) type ActivationPreTerminalLockHook = (
     u64,
     std::sync::Arc<std::sync::Barrier>,
     std::sync::Arc<std::sync::Barrier>,
 );
-
-#[cfg(test)]
-static ACTIVATION_PRE_TERMINAL_LOCK_HOOK: PoisonSafe<Option<ActivationPreTerminalLockHook>> =
-    PoisonSafe::new(None);
 
 #[cfg(test)]
 pub(crate) struct ActivationPreTerminalLockHookGuard;
@@ -252,43 +196,6 @@ pub fn inject_null_lock_seat_once_for_test() {
     crate::activation::INJECT_NULL_LOCK_SEAT_ONCE.store(true, Ordering::Release);
 }
 
-#[cfg(test)]
-fn run_activate_pre_reenqueue_hook(actor: *mut HewActor) {
-    let hook = ACTIVATE_PRE_REENQUEUE_HOOK.access(|h| *h);
-    if let Some(hook) = hook {
-        hook(actor);
-    }
-}
-
-#[cfg(test)]
-fn run_activate_post_cas_hook(actor: *mut HewActor) {
-    let hook = ACTIVATE_POST_CAS_HOOK.access(|h| *h);
-    if let Some(hook) = hook {
-        hook(actor);
-    }
-}
-
-#[cfg(test)]
-fn run_enqueue_resume_cas_fail_hook(actor: *mut HewActor) {
-    let hook = ENQUEUE_RESUME_CAS_FAIL_HOOK.access(|h| *h);
-    if let Some(hook) = hook {
-        hook(actor);
-    }
-}
-
-#[cfg(test)]
-fn run_activation_pre_terminal_lock_hook(actor: &HewActor) {
-    let rendezvous = ACTIVATION_PRE_TERMINAL_LOCK_HOOK.access(|hook| {
-        hook.as_ref().and_then(|(actor_id, entered, release)| {
-            (*actor_id == actor.id).then(|| (entered.clone(), release.clone()))
-        })
-    });
-    if let Some((entered, release)) = rendezvous {
-        entered.wait();
-        release.wait();
-    }
-}
-
 // ── Reply-channel readers (ctx-backed) ──────────────────────────────────
 //
 // R17 sole-authority: the reply channel for the currently-dispatched message
@@ -304,7 +211,6 @@ fn run_activation_pre_terminal_lock_hook(actor: &HewActor) {
 // one definition). It is re-exported here so existing call sites that import
 // from `crate::scheduler::*` keep compiling.
 pub use crate::execution_context::hew_get_reply_channel;
-pub(crate) use crate::execution_context::mark_current_reply_channel_consumed;
 
 // ── Global scheduler instance ───────────────────────────────────────────
 
@@ -1150,10 +1056,20 @@ pub extern "C" fn hew_runtime_cleanup_after_main() {
 // ── Internal API ────────────────────────────────────────────────────────
 
 #[cfg(test)]
-pub(crate) use crate::activation::activate_actor_for_test;
+use crate::activation::{
+    activate_actor, enqueue_resume_pinned, park_suspended_activation, release_parked_ask_channel,
+    run_activation_pre_terminal_lock_hook, run_scheduler_queue_handoff_hook, ActivationOwnership,
+    ACTIVATE_CLAIM_BUSY_HOOK, ACTIVATE_POST_CAS_HOOK, ACTIVATE_PRE_CLAIM_HOOK,
+    ACTIVATE_PRE_REENQUEUE_HOOK, ACTIVATION_PRE_TERMINAL_LOCK_HOOK, ENQUEUE_RESUME_CAS_FAIL_HOOK,
+};
+#[cfg(test)]
+pub(crate) use crate::activation::{activate_actor_for_test, release_scheduler_queue_ref_for_test};
+#[cfg(test)]
+use crate::mailbox::{self, hew_mailbox_has_messages, hew_msg_node_free, HewMailbox};
+
 pub(crate) use crate::activation::{
     activate_queued_actor, enqueue_resume_by_incarnation, release_scheduler_queue_ref,
-    retire_suspended_reply_channel, SchedulerQueueEntry,
+    SchedulerQueueEntry,
 };
 pub(crate) use crate::activation::{
     ACTIVATIONS_COMPLETED as TASKS_COMPLETED, ACTIVE_ACTIVATIONS as ACTIVE_WORKERS,
@@ -1181,16 +1097,6 @@ pub(crate) fn sched_enqueue(actor: *mut HewActor) {
     // SAFETY: every production caller holds a live actor while transferring
     // that lifetime to the scheduler queue entry.
     let entry = unsafe { SchedulerQueueEntry::retain(actor) };
-    sched_enqueue_owned_inner(sched, entry);
-}
-
-/// Publish an already-owned scheduler entry.
-///
-/// Taking ownership before an `Idle/Suspended -> Runnable` transition closes
-/// the producer-side interval between making an actor dispatchable and
-/// publishing its raw pointer.
-pub(crate) fn sched_enqueue_owned(entry: SchedulerQueueEntry) {
-    let sched = get_scheduler().expect("scheduler not initialized");
     sched_enqueue_owned_inner(sched, entry);
 }
 

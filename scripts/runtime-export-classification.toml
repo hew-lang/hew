@@ -1903,6 +1903,17 @@ non-declarable = [
 # reason paragraph makes that authenticated. The gate enforces that directly.
 [sys-lane-closure.authenticated-edges]
 
+"wait -> step" = """
+The wasm32 readiness latch is the process driver. With no worker thread to \
+satisfy it, `wake::blocking::Readiness::wait` advances the process itself: it \
+ticks the timer wheel and runs one queued activation, which is how an actor \
+gets to dispatch at all on that target. The edge is therefore the wasm32 \
+counterpart of the native `worker_loop` turning the same crank, not a stable \
+symbol acquiring a sys-lane capability - every caller in the reported closure \
+reaches it by blocking, and blocking is what hands the process back to the \
+driver. The graph is name-keyed, so this edge also absorbs `Condvar::wait`, \
+which calls nothing of the sort."""
+
 "worker_loop -> activate_queued_actor" = """
 The native scheduler worker is the system lane's one legitimate consumer: \
 draining sys_queue ahead of the user queue and routing each HewSysMsg to the \

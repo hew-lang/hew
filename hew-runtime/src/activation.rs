@@ -12,6 +12,11 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+#[cfg(test)]
+use crate::lifetime::poison_safe::PoisonSafe;
+#[cfg(test)]
+use crate::scheduler::{ActivationPreTerminalLockHook, SchedulerQueueHandoffHook};
+
 use crate::set_last_error;
 
 use crate::actor::{self, HewActor, HEW_DEFAULT_REDUCTIONS, HEW_MSG_BUDGET};
@@ -211,7 +216,7 @@ pub(crate) unsafe fn release_scheduler_queue_ref(actor: *mut HewActor) {
 /// dispatch loop's `hew_actor_state_lock_release_for_context` on the dispatch
 /// return edge) so a suspended actor does not hold its lock against senders
 /// (FG2 / R2 P0).
-unsafe fn park_suspended_activation(actor: *mut HewActor, cont: *mut c_void) -> bool {
+pub(crate) unsafe fn park_suspended_activation(actor: *mut HewActor, cont: *mut c_void) -> bool {
     // SAFETY: caller owns `actor` via the Running CAS.
     let a = unsafe { &*actor };
 
@@ -1969,13 +1974,13 @@ fn settle_after_activation(actor: *mut HewActor, msgs_processed: u32) {
 /// `Runnable` therefore denotes the prior owner's publish-before-release tail
 /// (or a duplicate entry whose winner is about to leave `Runnable`), never
 /// authority to discard the last runnable entry.
-struct ActivationOwnership<'a> {
-    actor: &'a HewActor,
+pub(crate) struct ActivationOwnership<'a> {
+    pub(crate) actor: &'a HewActor,
 }
 impl<'a> ActivationOwnership<'a> {
     /// Mark the activation owned. Call BEFORE the `Runnable -> Running` CAS so
     /// the flag is already published when the actor first becomes `Running`.
-    fn claim(actor: &'a HewActor) -> Option<Self> {
+    pub(crate) fn claim(actor: &'a HewActor) -> Option<Self> {
         actor
             .dispatch_active
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -2082,7 +2087,7 @@ impl Drop for ActivationOwnership<'_> {
 /// callee is the provenance decision itself. There is no path that constructs
 /// `Sys` from a user-queue node or `User` from a system-queue node.
 #[derive(Clone, Copy)]
-enum DispatchTarget {
+pub(crate) enum DispatchTarget {
     /// An application message for the actor's user trampoline.
     User(HewDispatchFn),
     /// A runtime lifecycle signal for the actor's system entry point.
@@ -2150,7 +2155,7 @@ fn restore_current_context_after_dispatch() {
 /// this call. `cont`, if non-null, must be the continuation parked on `actor`
 /// (a `coro.begin` frame). The caller (a readiness source) owns the wake edge;
 /// the executor owns teardown.
-unsafe fn enqueue_resume_pinned(actor: *mut HewActor, cont: *mut c_void) {
+pub(crate) unsafe fn enqueue_resume_pinned(actor: *mut HewActor, cont: *mut c_void) {
     if actor.is_null() {
         return;
     }
@@ -2376,3 +2381,90 @@ fn assert_wake_routes_to_owning_runtime(actor_runtime_id: crate::runtime_id::Run
         resolved.map(crate::runtime_id::RuntimeId::as_u64),
     );
 }
+#[cfg(test)]
+pub(crate) fn run_scheduler_queue_handoff_hook(
+    hook: &PoisonSafe<Option<SchedulerQueueHandoffHook>>,
+    actor: *mut HewActor,
+) {
+    // SAFETY: both seams still hold the scheduler queue lifetime reference.
+    let actor_id = unsafe { (*actor).id };
+    let rendezvous = hook.access(|slot| {
+        slot.as_ref().and_then(|(target, entered, release)| {
+            (*target == actor_id).then(|| (entered.clone(), release.clone()))
+        })
+    });
+    if let Some((entered, release)) = rendezvous {
+        entered.wait();
+        release.wait();
+    }
+}
+#[cfg(test)]
+fn run_activate_pre_reenqueue_hook(actor: *mut HewActor) {
+    let hook = ACTIVATE_PRE_REENQUEUE_HOOK.access(|h| *h);
+    if let Some(hook) = hook {
+        hook(actor);
+    }
+}
+#[cfg(test)]
+fn run_activate_post_cas_hook(actor: *mut HewActor) {
+    let hook = ACTIVATE_POST_CAS_HOOK.access(|h| *h);
+    if let Some(hook) = hook {
+        hook(actor);
+    }
+}
+#[cfg(test)]
+fn run_enqueue_resume_cas_fail_hook(actor: *mut HewActor) {
+    let hook = ENQUEUE_RESUME_CAS_FAIL_HOOK.access(|h| *h);
+    if let Some(hook) = hook {
+        hook(actor);
+    }
+}
+#[cfg(test)]
+pub(crate) fn run_activation_pre_terminal_lock_hook(actor: &HewActor) {
+    let rendezvous = ACTIVATION_PRE_TERMINAL_LOCK_HOOK.access(|hook| {
+        hook.as_ref().and_then(|(actor_id, entered, release)| {
+            (*actor_id == actor.id).then(|| (entered.clone(), release.clone()))
+        })
+    });
+    if let Some((entered, release)) = rendezvous {
+        entered.wait();
+        release.wait();
+    }
+}
+#[cfg(test)]
+pub(crate) static ACTIVATE_PRE_REENQUEUE_HOOK: PoisonSafe<Option<fn(*mut HewActor)>> =
+    PoisonSafe::new(None);
+/// Fires inside `activate_actor` immediately after the worker WINS the
+/// `Runnable -> Running` CAS — the exact CAS->marker-gap location. A regression
+/// test installs a hook here to fire an external trap in the precise window the
+/// pre-fix code left `dispatch_active == false` while the actor was already
+/// `Running`, and asserts the fix (claim before the CAS) keeps the flag set so
+/// the free-quiescence predicate refuses.
+#[cfg(test)]
+pub(crate) static ACTIVATE_POST_CAS_HOOK: PoisonSafe<Option<fn(*mut HewActor)>> =
+    PoisonSafe::new(None);
+/// Fires inside `enqueue_resume`'s CAS-lose arm, AFTER the failed
+/// `Suspended -> Runnable` CAS and BEFORE the pending-wake mark — the exact
+/// window the lifecycle-park lost-wake interleaving spans: a park can publish
+/// `Suspended` AND run its one-shot drain inside this gap, so the mark lands
+/// after the only drain that would have consumed it. A regression test installs
+/// a park-completion hook here to force that ordering deterministically and
+/// asserts the post-mark re-check + CAS retry delivers the wake instead of
+/// stranding the actor `Suspended` with a set marker.
+#[cfg(test)]
+pub(crate) static ENQUEUE_RESUME_CAS_FAIL_HOOK: PoisonSafe<Option<fn(*mut HewActor)>> =
+    PoisonSafe::new(None);
+#[cfg(test)]
+pub(crate) static ACTIVATE_PRE_CLAIM_HOOK: PoisonSafe<Option<SchedulerQueueHandoffHook>> =
+    PoisonSafe::new(None);
+/// Rendezvous after a dequeued actor observes a still-active prior activation
+/// while the actor is already `Runnable`. This is the self-reenqueue handoff:
+/// the prior activation published the queue entry before releasing
+/// `dispatch_active`.
+#[cfg(test)]
+pub(crate) static ACTIVATE_CLAIM_BUSY_HOOK: PoisonSafe<Option<SchedulerQueueHandoffHook>> =
+    PoisonSafe::new(None);
+#[cfg(test)]
+pub(crate) static ACTIVATION_PRE_TERMINAL_LOCK_HOOK: PoisonSafe<
+    Option<ActivationPreTerminalLockHook>,
+> = PoisonSafe::new(None);

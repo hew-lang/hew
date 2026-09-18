@@ -10,7 +10,8 @@ use std::path::Path;
 
 use hew_mir::physical::SemDebugScope;
 use hew_mir::physical::{
-    PhysicalDebug, PhysicalDebugField, PhysicalDebugFunction, PhysicalDebugVariant, PhysicalTarget,
+    PhysicalDebug, PhysicalDebugField, PhysicalDebugFunction, PhysicalDebugLocal,
+    PhysicalDebugVariant, PhysicalTarget,
 };
 use hew_mir::{PhysicalFunction, PhysicalLayout, PhysicalRepr};
 use hew_types::ResolvedTy;
@@ -319,13 +320,17 @@ impl<'ctx> DebugEmitter<'ctx> {
     pub(super) fn local_variable(
         &self,
         function: &FunctionDebug<'ctx>,
-        name: &str,
-        decl: u32,
-        parameter: Option<u32>,
+        local: &PhysicalDebugLocal,
         ty: &ResolvedTy,
         layout: &PhysicalLayout,
         target: &PhysicalTarget,
     ) -> Option<(DILocalVariable<'ctx>, DIScope<'ctx>, u32)> {
+        let PhysicalDebugLocal {
+            name,
+            decl,
+            parameter,
+        } = local;
+        let (decl, parameter) = (*decl, *parameter);
         let di_type = self.resolve_type(ty, layout, target)?;
         if let Some(index) = parameter {
             let line = self.lines.line(decl);
@@ -595,10 +600,15 @@ impl<'ctx> DebugEmitter<'ctx> {
         let tag_bits = tag.size.checked_mul(8)?;
         let tag_align = u64::from(payload.align).max(1);
         let payload_offset_bits = tag.size.div_ceil(tag_align) * tag_align * 8;
-        let tag_int = self
+        let Ok(tag_width) = u32::try_from(tag_bits) else {
+            return None;
+        };
+        let Ok(tag_int) = self
             .ctx
-            .custom_width_int_type(std::num::NonZeroU32::new(u32::try_from(tag_bits).ok()?)?)
-            .ok()?;
+            .custom_width_int_type(std::num::NonZeroU32::new(tag_width)?)
+        else {
+            return None;
+        };
 
         let enumerators: Vec<_> = variants
             .iter()
@@ -611,21 +621,20 @@ impl<'ctx> DebugEmitter<'ctx> {
                 )
             })
             .collect();
-        let underlying = self
-            .builder
-            .create_basic_type(
-                &format!("u{tag_bits}"),
-                tag_bits,
-                DW_ATE_UNSIGNED,
-                DIFlags::ZERO,
-            )
-            .ok()?
-            .as_type();
+        let Ok(underlying) = self.builder.create_basic_type(
+            &format!("u{tag_bits}"),
+            tag_bits,
+            DW_ATE_UNSIGNED,
+            DIFlags::ZERO,
+        ) else {
+            return None;
+        };
+        let underlying = underlying.as_type();
         let tag_di = self
             .builder
             .create_enumeration_type(
                 self.file.as_debug_info_scope(),
-                &format!("{}::Tag", type_name(ty)),
+                &format!("{}.Tag", type_name(ty)),
                 self.file,
                 0,
                 tag_bits,
@@ -682,7 +691,7 @@ impl<'ctx> DebugEmitter<'ctx> {
                 );
                 offset += field_layout.size;
             }
-            let unique = format!("{}::{}", type_name(ty), variant.name);
+            let unique = format!("{}.{}", type_name(ty), variant.name);
             let case = self
                 .builder
                 .create_struct_type(
@@ -700,7 +709,10 @@ impl<'ctx> DebugEmitter<'ctx> {
                     &unique,
                 )
                 .as_type();
-            let discriminant = tag_int.const_int(u64::try_from(index).ok()?, false);
+            let Ok(tag_value) = u64::try_from(index) else {
+                return None;
+            };
+            let discriminant = tag_int.const_int(tag_value, false);
             members.push(create_variant_member(
                 &self.builder,
                 self.file,
@@ -823,6 +835,9 @@ fn create_variant_part<'ctx>(
         ) -> inkwell::llvm_sys::prelude::LLVMMetadataRef;
     }
 
+    let Ok(count) = u32::try_from(elements.len()) else {
+        return None;
+    };
     // SAFETY: every metadata node belongs to this builder's context, and LLVM
     // copies the pointer slice into an MDTuple during the call.
     let metadata = unsafe {
@@ -834,7 +849,7 @@ fn create_variant_part<'ctx>(
             align_in_bits,
             discriminator.as_type().as_mut_ptr(),
             elements.as_ptr(),
-            u32::try_from(elements.len()).ok()?,
+            count,
         )
     };
     (!metadata.is_null()).then_some(metadata)
@@ -919,15 +934,9 @@ pub(super) fn declare_locals<'ctx>(
         let Some(slot) = slots.get(id.0 as usize) else {
             continue;
         };
-        let Some((variable, scope, line)) = emitter.local_variable(
-            function_debug,
-            &local.name,
-            local.decl,
-            local.parameter,
-            &storage.ty,
-            &storage.layout,
-            target,
-        ) else {
+        let Some((variable, scope, line)) =
+            emitter.local_variable(function_debug, local, &storage.ty, &storage.layout, target)
+        else {
             continue;
         };
         let location = emitter.location_in(ctx, scope, line);

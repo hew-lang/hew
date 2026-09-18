@@ -3503,7 +3503,18 @@ struct LockedEntry {
 fn load_optional_toml<T: DeserializeOwned>(path: &Path) -> Result<Option<T>, FrontendFailure> {
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        // An optional project file is absent both when the directory does not
+        // hold one and when the host has no filesystem to hold it: the browser
+        // compiles a buffer with no project behind it, and wasm32 reports that
+        // as `Unsupported` rather than `NotFound`.
+        Err(err)
+            if matches!(
+                err.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::Unsupported
+            ) =>
+        {
+            return Ok(None)
+        }
         Err(err) => {
             return Err(FrontendFailure::message_only(format!(
                 "Error: cannot read {}: {err}",

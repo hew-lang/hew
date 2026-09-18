@@ -1152,6 +1152,13 @@ function intTy(name: string | undefined): IntTy {
   }
 }
 
+/// The VM holds every float as a double, so an `f32` operand rounds to single
+/// precision after each step. `16777216f32 + 1.0 + 1.0` is `16777216` natively
+/// because neither addition is representable, and rounding here reproduces it.
+function narrowFloat(value: number, name: string | undefined): number {
+  return name === "f32" ? Math.fround(value) : value;
+}
+
 function narrowInt(value: bigint, name: string | undefined): bigint {
   const ty = intTy(name);
   return ty.signed
@@ -1214,7 +1221,7 @@ function applyUnary(op: string, value: VmValue, ty: string): VmValue {
       return { kind: "bool", value: !truth(value) };
     case "Negate":
       return value.kind === "f64"
-        ? { kind: "f64", value: -value.value }
+        ? { kind: "f64", value: narrowFloat(-value.value, ty) }
         : { kind: "i64", value: narrowInt(-asInt(value), ty) };
     case "BitNot":
       return { kind: "i64", value: narrowInt(~asInt(value), ty) };
@@ -1248,7 +1255,10 @@ function applyBinary(
       break;
   }
   if (lhs.kind === "f64" || rhs.kind === "f64") {
-    return { kind: "f64", value: floatBinary(op, asFloat(lhs), asFloat(rhs)) };
+    return {
+      kind: "f64",
+      value: narrowFloat(floatBinary(op, asFloat(lhs), asFloat(rhs)), ty),
+    };
   }
   if (lhs.kind === "string") {
     return { kind: "string", value: lhs.value + asString(rhs) };
@@ -1315,7 +1325,7 @@ function applyCast(value: VmValue, to: string): VmValue {
   switch (to) {
     case "f32":
     case "f64":
-      return { kind: "f64", value: asFloat(value) };
+      return { kind: "f64", value: narrowFloat(asFloat(value), to) };
     case "bool":
       return { kind: "bool", value: truth(value) };
     case "char":

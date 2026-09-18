@@ -279,19 +279,19 @@ impl<'m> Walker<'m> {
             .string_literals
             .keys()
             .enumerate()
-            .map(|(index, id)| (*id, index as u32))
+            .map(|(index, id)| (*id, table_index(index)))
             .collect();
         let bytes = module
             .bytes_literals
             .keys()
             .enumerate()
-            .map(|(index, id)| (*id, index as u32))
+            .map(|(index, id)| (*id, table_index(index)))
             .collect();
         let functions = module
             .functions
             .iter()
             .enumerate()
-            .map(|(index, function)| (function.callable, index as u32))
+            .map(|(index, function)| (function.callable, table_index(index)))
             .collect();
         let capabilities = module
             .value_capabilities
@@ -300,7 +300,7 @@ impl<'m> Walker<'m> {
             .map(|(index, (ty, capability))| {
                 (
                     (ty.user_facing().to_string(), capability_name(*capability)),
-                    index as u32,
+                    table_index(index),
                 )
             })
             .collect();
@@ -416,18 +416,19 @@ impl<'m> Walker<'m> {
             .functions
             .iter()
             .enumerate()
-            .map(|(index, function)| self.function(index as u32, function))
+            .map(|(index, function)| self.function(table_index(index), function))
             .collect::<Result<Vec<_>, _>>()?;
 
         let entry = match (self.module.entry_callable, &self.module.entry_exit_plan) {
             (Some(callable), Some(plan)) => Some(Entry {
                 function: self.function_id(callable)?,
+                // SIR consumes a `Result` action in the entry adapter and
+                // publishes the integer status that body returns, so it reaches
+                // the package as an ordinary integer exit.
                 exit: match plan.action {
                     hew_types::EntryExitAction::Unit => "unit",
-                    hew_types::EntryExitAction::Integer(_) => "status",
-                    // SIR consumes a `Result` action in the entry adapter and
-                    // publishes the integer status that body returns.
-                    hew_types::EntryExitAction::Result { .. } => "status",
+                    hew_types::EntryExitAction::Integer(_)
+                    | hew_types::EntryExitAction::Result { .. } => "status",
                 }
                 .to_string(),
             }),
@@ -443,41 +444,8 @@ impl<'m> Walker<'m> {
             strings: self.module.string_literals.values().cloned().collect(),
             bytes: self.module.bytes_literals.values().cloned().collect(),
             regex_patterns: self.module.regex_patterns.clone(),
-            aggregates: self
-                .module
-                .aggregate_shapes
-                .iter()
-                .map(|shape| AggregateShape {
-                    id: shape.id.0,
-                    name: shape.aggregate_ty.user_facing().to_string(),
-                    fields: shape
-                        .fields
-                        .iter()
-                        .map(|field| field.name.clone())
-                        .collect(),
-                })
-                .collect(),
-            variants: self
-                .module
-                .variant_shapes
-                .iter()
-                .map(|shape| VariantShape {
-                    id: shape.id.0,
-                    name: shape.enum_ty.user_facing().to_string(),
-                    cases: shape
-                        .variants
-                        .iter()
-                        .map(|variant| VariantCase {
-                            name: variant.name.clone(),
-                            fields: variant
-                                .fields
-                                .iter()
-                                .map(|field| field.name.clone())
-                                .collect(),
-                        })
-                        .collect(),
-                })
-                .collect(),
+            aggregates: self.aggregate_shapes(),
+            variants: self.variant_shapes(),
             closures: self
                 .module
                 .closures
@@ -486,7 +454,7 @@ impl<'m> Walker<'m> {
                     Ok(Closure {
                         id: closure.id.0,
                         body: self.function_id(closure.body)?,
-                        fields: closure.fields.len() as u32,
+                        fields: table_index(closure.fields.len()),
                     })
                 })
                 .collect::<Result<Vec<_>, EmitError>>()?,
@@ -518,7 +486,7 @@ impl<'m> Walker<'m> {
                 .enumerate()
                 .map(|(index, ((ty, capability), plan))| {
                     Ok(ValueCapabilityPlan {
-                        id: index as u32,
+                        id: table_index(index),
                         capability: capability_name(*capability).to_string(),
                         ty: ty.user_facing().to_string(),
                         callable: plan
@@ -533,6 +501,45 @@ impl<'m> Walker<'m> {
             suspend_kinds: self.suspend_kinds,
             functions,
         })
+    }
+
+    fn aggregate_shapes(&self) -> Vec<AggregateShape> {
+        self.module
+            .aggregate_shapes
+            .iter()
+            .map(|shape| AggregateShape {
+                id: shape.id.0,
+                name: shape.aggregate_ty.user_facing().to_string(),
+                fields: shape
+                    .fields
+                    .iter()
+                    .map(|field| field.name.clone())
+                    .collect(),
+            })
+            .collect()
+    }
+
+    fn variant_shapes(&self) -> Vec<VariantShape> {
+        self.module
+            .variant_shapes
+            .iter()
+            .map(|shape| VariantShape {
+                id: shape.id.0,
+                name: shape.enum_ty.user_facing().to_string(),
+                cases: shape
+                    .variants
+                    .iter()
+                    .map(|variant| VariantCase {
+                        name: variant.name.clone(),
+                        fields: variant
+                            .fields
+                            .iter()
+                            .map(|field| field.name.clone())
+                            .collect(),
+                    })
+                    .collect(),
+            })
+            .collect()
     }
 
     fn function_id(&self, callable: CallableId) -> Result<u32, EmitError> {
@@ -569,7 +576,7 @@ impl<'m> Walker<'m> {
             .ok_or_else(|| {
                 EmitError::new(format!(
                     "`{}` has no selected {capability:?} operation",
-                    ty.user_facing().to_string()
+                    ty.user_facing()
                 ))
             })
     }
@@ -602,7 +609,7 @@ impl<'m> Walker<'m> {
         if let Some(id) = self.family_index.get(&key) {
             return Ok(*id);
         }
-        let id = self.families.len() as u32;
+        let id = table_index(self.families.len());
         self.families.push(RuntimeFamily {
             id,
             family: name,
@@ -616,7 +623,7 @@ impl<'m> Walker<'m> {
         if let Some(id) = self.extern_index.get(symbol) {
             return *id;
         }
-        let id = self.externs.len() as u32;
+        let id = table_index(self.externs.len());
         self.externs.push(Extern {
             id,
             symbol: symbol.to_string(),
@@ -654,6 +661,10 @@ impl<'m> Walker<'m> {
         })
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one arm per SemOpKind variant with no wildcard is the point: a new SIR operation must fail to compile here"
+    )]
     fn op(&mut self, op: &SemOp) -> Result<serde_json::Value, EmitError> {
         // An operation that defines several values carries them all in
         // `results`; every other operation has the one `dst`.
@@ -759,7 +770,7 @@ impl<'m> Walker<'m> {
             }
             SemOpKind::AggregateMake { shape, fields } => serde_json::json!({
                 "op": "aggregate.make",
-                "shape": shape_ref(shape),
+                "shape": shape_ref(*shape),
                 "fields": operands(fields),
             }),
             SemOpKind::AggregateProjectCopy {
@@ -768,7 +779,7 @@ impl<'m> Walker<'m> {
                 field,
             } => serde_json::json!({
                 "op": "aggregate.project_copy",
-                "shape": shape_ref(shape),
+                "shape": shape_ref(*shape),
                 "aggregate": operand(aggregate),
                 "field": field,
             }),
@@ -778,13 +789,13 @@ impl<'m> Walker<'m> {
                 field,
             } => serde_json::json!({
                 "op": "aggregate.project_borrow",
-                "shape": shape_ref(shape),
+                "shape": shape_ref(*shape),
                 "aggregate": operand(aggregate),
                 "field": field,
             }),
             SemOpKind::Destructure { shape, aggregate } => serde_json::json!({
                 "op": "destructure",
-                "shape": shape_ref(shape),
+                "shape": shape_ref(*shape),
                 "aggregate": operand(aggregate),
                 "results": op.results.iter().map(|result| result.id.0).collect::<Vec<_>>(),
             }),
@@ -934,6 +945,10 @@ impl<'m> Walker<'m> {
         Ok(encoded)
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one arm per SemTerminator variant with no wildcard is the point: a new SIR terminator must fail to compile here"
+    )]
     fn terminator(
         &mut self,
         terminator: &SemTerminator,
@@ -946,7 +961,7 @@ impl<'m> Walker<'m> {
                 "value": value.as_ref().map(boundary),
             }),
             SemTerminator::Goto(edge) => {
-                serde_json::json!({ "op": "goto", "edge": self.edge(edge) })
+                serde_json::json!({ "op": "goto", "edge": encode_edge(edge) })
             }
             SemTerminator::Branch {
                 condition,
@@ -955,8 +970,8 @@ impl<'m> Walker<'m> {
             } => serde_json::json!({
                 "op": "branch",
                 "condition": operand(condition),
-                "then": self.edge(then_target),
-                "else": self.edge(else_target),
+                "then": encode_edge(then_target),
+                "else": encode_edge(else_target),
             }),
             SemTerminator::SwitchVariant {
                 shape,
@@ -970,7 +985,7 @@ impl<'m> Walker<'m> {
                 "arms": arms.iter().map(|arm| serde_json::json!({
                     "variant": arm.variant,
                     "fields": arm.fields.iter().map(value_def).collect::<Vec<_>>(),
-                    "edge": self.edge(&arm.target),
+                    "edge": encode_edge(&arm.target),
                 })).collect::<Vec<_>>(),
             }),
             SemTerminator::CheckedBinary {
@@ -988,10 +1003,10 @@ impl<'m> Walker<'m> {
                 "rhs": operand(rhs),
                 "ty": self.value_ty(lhs)?,
                 "result": value_def(result),
-                "normal": self.edge(normal),
+                "normal": encode_edge(normal),
                 "failures": failures.iter().map(|failure| serde_json::json!({
                     "trap": trap_name(failure.kind),
-                    "edge": self.edge(&failure.edge),
+                    "edge": encode_edge(&failure.edge),
                 })).collect::<Vec<_>>(),
             }),
             SemTerminator::Unreachable => serde_json::json!({ "op": "unreachable" }),
@@ -1007,9 +1022,9 @@ impl<'m> Walker<'m> {
                 "op": "call",
                 "callee": self.function_id(*callee)?,
                 "args": boundaries(args),
-                "result": self.call_result(result),
-                "normal": normal.as_ref().map(|edge| self.edge(edge)),
-                "unwind": self.unwind(unwind),
+                "result": call_result(result),
+                "normal": normal.as_ref().map(encode_edge),
+                "unwind": encode_unwind(unwind),
             }),
             SemTerminator::IndirectCall {
                 callee,
@@ -1022,9 +1037,9 @@ impl<'m> Walker<'m> {
                 "op": "indirect.call",
                 "callee": boundary(callee),
                 "args": boundaries(args),
-                "result": self.call_result(result),
-                "normal": normal.as_ref().map(|edge| self.edge(edge)),
-                "unwind": self.unwind(unwind),
+                "result": call_result(result),
+                "normal": normal.as_ref().map(encode_edge),
+                "unwind": encode_unwind(unwind),
             }),
             SemTerminator::DynCall {
                 receiver,
@@ -1039,9 +1054,9 @@ impl<'m> Walker<'m> {
                 "receiver": boundary(receiver),
                 "slot": slot,
                 "args": boundaries(args),
-                "result": self.call_result(result),
-                "normal": normal.as_ref().map(|edge| self.edge(edge)),
-                "unwind": self.unwind(unwind),
+                "result": call_result(result),
+                "normal": normal.as_ref().map(encode_edge),
+                "unwind": encode_unwind(unwind),
             }),
             SemTerminator::ValueCall {
                 ty,
@@ -1055,9 +1070,9 @@ impl<'m> Walker<'m> {
                 "op": "value.call",
                 "plan": self.capability_id(ty, *capability)?,
                 "args": boundaries(args),
-                "result": self.call_result(result),
-                "normal": self.edge(normal),
-                "unwind": self.unwind(unwind),
+                "result": call_result(result),
+                "normal": encode_edge(normal),
+                "unwind": encode_unwind(unwind),
             }),
             SemTerminator::RtCall {
                 family,
@@ -1070,10 +1085,10 @@ impl<'m> Walker<'m> {
                 "op": "runtime.call",
                 "family": self.family_id(*family)?,
                 "args": boundaries(args),
-                "result": self.call_result(result),
+                "result": call_result(result),
                 "result_shape": self.result_shape(result),
-                "normal": self.edge(normal),
-                "unwind": self.unwind(unwind),
+                "normal": encode_edge(normal),
+                "unwind": encode_unwind(unwind),
             }),
             SemTerminator::ExternCall {
                 signature,
@@ -1086,16 +1101,16 @@ impl<'m> Walker<'m> {
                 "op": "extern.call",
                 "extern": self.extern_id(&signature.symbol),
                 "args": boundaries(args),
-                "result": self.call_result(result),
+                "result": call_result(result),
                 "result_shape": self.result_shape(result),
-                "normal": self.edge(normal),
-                "unwind": self.unwind(unwind),
+                "normal": encode_edge(normal),
+                "unwind": encode_unwind(unwind),
             }),
 
             SemTerminator::Panic { message, cleanup } => serde_json::json!({
                 "op": "panic",
                 "message": boundary(message),
-                "cleanup": self.edge(cleanup),
+                "cleanup": encode_edge(cleanup),
             }),
             SemTerminator::Trap { kind } => {
                 serde_json::json!({ "op": "trap", "trap": trap_name(*kind) })
@@ -1103,25 +1118,25 @@ impl<'m> Walker<'m> {
             SemTerminator::CheckedRaiseFault { kind, cleanup } => serde_json::json!({
                 "op": "checked_raise",
                 "trap": trap_name(*kind),
-                "cleanup": self.edge(cleanup),
+                "cleanup": encode_edge(cleanup),
             }),
             SemTerminator::CleanupDispatch { normal, fault } => serde_json::json!({
                 "op": "cleanup.dispatch",
-                "normal": self.edge(normal),
-                "fault": self.edge(fault),
+                "normal": encode_edge(normal),
+                "fault": encode_edge(fault),
             }),
             SemTerminator::ResumeUnwind => serde_json::json!({ "op": "resume_unwind" }),
             SemTerminator::EnterDefer { defer, park, body } => serde_json::json!({
                 "op": "enter_defer",
                 "defer": defer.0,
                 "park": park.0,
-                "body": self.edge(body),
+                "body": encode_edge(body),
             }),
             SemTerminator::FinishDefer { defer, park, next } => serde_json::json!({
                 "op": "finish_defer",
                 "defer": defer.0,
                 "park": park.0,
-                "next": self.edge(next),
+                "next": encode_edge(next),
             }),
             SemTerminator::RecoverFault {
                 result,
@@ -1134,8 +1149,8 @@ impl<'m> Walker<'m> {
                 "result": value_def(result),
                 "deadline_variant": deadline_variant,
                 "fault_variant": fault_variant,
-                "normal": self.edge(normal),
-                "unwind": self.edge(unwind),
+                "normal": encode_edge(normal),
+                "unwind": encode_edge(unwind),
             }),
             SemTerminator::Suspend {
                 kind,
@@ -1152,10 +1167,10 @@ impl<'m> Walker<'m> {
                     "kind": name,
                     "detail": detail,
                     "inputs": boundaries(inputs),
-                    "result": self.call_result(result),
-                    "resumes": resumes.iter().map(|edge| self.edge(edge)).collect::<Vec<_>>(),
-                    "cancel": self.edge(cancel),
-                    "unwind": self.edge(unwind),
+                    "result": call_result(result),
+                    "resumes": resumes.iter().map(encode_edge).collect::<Vec<_>>(),
+                    "cancel": encode_edge(cancel),
+                    "unwind": encode_edge(unwind),
                 })
             }
 
@@ -1172,25 +1187,6 @@ impl<'m> Walker<'m> {
         };
         encoded["span"] = span;
         Ok(encoded)
-    }
-
-    fn edge(&self, edge: &Edge) -> serde_json::Value {
-        serde_json::json!({ "to": edge.target.0, "args": operands(&edge.args) })
-    }
-
-    fn unwind(&self, unwind: &CallUnwind) -> serde_json::Value {
-        match unwind {
-            CallUnwind::NotApplicable => serde_json::Value::Null,
-            CallUnwind::Cleanup(edge) => self.edge(edge),
-        }
-    }
-
-    fn call_result(&self, result: &CallResult) -> serde_json::Value {
-        match result {
-            CallResult::Unit => serde_json::Value::Null,
-            CallResult::Never => "never".into(),
-            CallResult::Value(def) => value_def(def),
-        }
     }
 
     /// The source byte a site names, as a caret.
@@ -1247,6 +1243,37 @@ fn place_decl(place: &hew_sir::PlaceDecl) -> Place {
     encoded
 }
 
+/// A table position as the package's id type.
+///
+/// SIR indexes its own tables with `u32`, so a module that overflows this has
+/// already overflowed the IR it came from.
+///
+/// # Panics
+///
+/// Panics only when a package table exceeds the `u32` range.
+fn table_index(index: usize) -> u32 {
+    u32::try_from(index).expect("sandbox package table exceeds u32")
+}
+
+fn call_result(result: &CallResult) -> serde_json::Value {
+    match result {
+        CallResult::Unit => serde_json::Value::Null,
+        CallResult::Never => "never".into(),
+        CallResult::Value(def) => value_def(def),
+    }
+}
+
+fn encode_edge(edge: &Edge) -> serde_json::Value {
+    serde_json::json!({ "to": edge.target.0, "args": operands(&edge.args) })
+}
+
+fn encode_unwind(unwind: &CallUnwind) -> serde_json::Value {
+    match unwind {
+        CallUnwind::NotApplicable => serde_json::Value::Null,
+        CallUnwind::Cleanup(target) => encode_edge(target),
+    }
+}
+
 fn block_arg(arg: &hew_sir::BlockArg) -> Value {
     Value {
         value: arg.value.0,
@@ -1269,7 +1296,7 @@ fn operands(operands: &[Operand]) -> Vec<u32> {
 fn boundary(operand: &BoundaryOperand) -> serde_json::Value {
     serde_json::json!({
         "value": operand.operand.value.0,
-        "decision": decision_name(&operand.decision),
+        "decision": decision_name(operand.decision),
     })
 }
 
@@ -1277,7 +1304,7 @@ fn boundaries(operands: &[BoundaryOperand]) -> Vec<serde_json::Value> {
     operands.iter().map(boundary).collect()
 }
 
-fn shape_ref(shape: &AggregateShapeRef) -> serde_json::Value {
+fn shape_ref(shape: AggregateShapeRef) -> serde_json::Value {
     match shape {
         AggregateShapeRef::Tuple => serde_json::Value::Null,
         AggregateShapeRef::Record(id) => id.0.into(),
@@ -1292,7 +1319,7 @@ const fn own_name(own: OwnKind) -> &'static str {
     }
 }
 
-const fn decision_name(decision: &BoundaryDecision) -> &'static str {
+const fn decision_name(decision: BoundaryDecision) -> &'static str {
     match decision {
         BoundaryDecision::Borrow => "borrow",
         BoundaryDecision::BorrowMut => "borrow_mut",

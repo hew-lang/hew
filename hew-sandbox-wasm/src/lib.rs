@@ -474,18 +474,7 @@ fn compile_from_semantics(
     let semantics = match session.lower_program(program, type_output) {
         Ok(output) => output,
         Err(error) => {
-            diagnostics.push(Diagnostic {
-                severity: "error".to_string(),
-                phase: "sir".to_string(),
-                message: error.to_string(),
-                span: DiagnosticSpan { start: 0, end: 0 },
-                start_offset: 0,
-                end_offset: 0,
-                kind: "E_SIR_VERIFY".to_string(),
-                notes: Vec::new(),
-                suggestions: Vec::new(),
-                source_module: None,
-            });
+            diagnostics.push(semantic_diagnostic(&error));
             return Ok(SemanticOutcome::Compiled(CompileOutput {
                 diagnostics,
                 bytecode: None,
@@ -512,6 +501,23 @@ fn compile_from_semantics(
         diagnostics,
         bytecode: Some(SandboxPackage::V1(Box::new(package))),
     }))
+}
+
+/// Render a semantic boundary failure the way the browser analysis surface
+/// does, so an editor and a run report the same thing.
+fn semantic_diagnostic(error: &hew_compile::SessionError) -> Diagnostic {
+    Diagnostic {
+        severity: "error".to_string(),
+        phase: "sir".to_string(),
+        message: error.to_string(),
+        span: DiagnosticSpan { start: 0, end: 0 },
+        start_offset: 0,
+        end_offset: 0,
+        kind: "E_SIR_VERIFY".to_string(),
+        notes: Vec::new(),
+        suggestions: Vec::new(),
+        source_module: None,
+    }
 }
 
 fn source_with_sandbox_stdin_helper(source: &str) -> Option<String> {

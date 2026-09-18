@@ -110,7 +110,9 @@ field to the values the following ops name; the container itself is spent.
 | `str.eq`   | bool       | `lhs`, `rhs`              |
 | `bytes.eq` | bool       | `lhs`, `rhs`              |
 
-`binary_op` and `unary_op` are the source operator names. `binary` is the
+`binary_op` and `unary_op` are the checker's operator names, which are the AST
+variant spellings rather than source punctuation: `Add`, `Subtract`, `Greater`,
+`NotEqual`, `WrappingMul`, `BitXor`, `Negate`, `Not`. `binary` is the
 non-trapping family: wrapping arithmetic, bitwise, logical and comparison.
 Arithmetic that can fail is the `checked.binary` **terminator**, because its
 failures are CFG edges.
@@ -182,6 +184,11 @@ unwind successor.
 | `actor.call`    | `operation`, `args`, `result`, `normal`, `unwind`                              |
 | `wire.codec`    | `direction`, `plan`, `args`, `result`, `normal`, `unwind`                      |
 
+A runtime family that mutates its receiver takes it by `move` and hands it back
+as the call's result, so the caller can store the value it now owns.
+`Vector(Push)` and `Map(Insert)` are the two in the sequential set; a shim that
+returned unit would drop the collection.
+
 `result_shape` is the `variants` id of the demanded enum descriptor a runtime
 or extern result is built against, or `null` when the result is not an enum. A
 shim that returns `Option` or `Result` constructs the tag from that descriptor's
@@ -223,8 +230,16 @@ statuses native execution uses:
 | `ShiftOutOfRange`    | `shift_out_of_range` | 204  |
 | `IndexOutOfBounds`   | `vector_bounds`      | 205  |
 
-A panic is `panic` / 101. The VM adds no trap kind of its own for a SIR fault:
-a SIR fault with no mapping here is an emitter gap to fix, not a kind to invent.
+A panic is `panic` / 101.
+
+Those statuses are what the sandbox page reports for a failed run, not the
+trace's own field: a trace that ends in a fault leaves `final_state.exit_code`
+null and names the kind in `final_state.runtime_failures`. A native binary
+exits 1 for every fault and prints its logical code in the message, so the
+parity harness compares the null against that 1.
+
+The VM adds no trap kind of its own for a SIR fault: a SIR fault with no
+mapping here is an emitter gap to fix, not a kind to invent.
 
 ## Suspension
 

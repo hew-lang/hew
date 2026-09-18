@@ -1112,7 +1112,7 @@ fn assert_rejected_before_profile(
 fn bytecode_or_panic<'a>(
     construct: &Construct,
     compiled: &'a CompileOutput,
-) -> &'a hew_sandbox_wasm::SandboxBytecodePackage {
+) -> &'a hew_sandbox_wasm::SandboxPackage {
     let has_errors = compiled.diagnostics.iter().any(|d| d.severity == "error");
     compiled
         .bytecode

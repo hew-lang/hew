@@ -333,20 +333,44 @@ class ExecutorV1 {
   }
 
   private invalidate(act: Activation, id: number): void {
-    const ref = this.refOf(act, id);
-    if (ref.kind === "cell") {
-      ref.cell.valid = false;
-    }
+    invalidateRef(this.refOf(act, id));
   }
 
-  private placeCell(act: Activation, id: number): Cell {
-    const cell = act.places.get(id);
-    if (!cell) {
-      throw new Error(
-        `${act.fn.name}: place ${id} was never created by alloc_place`,
-      );
+  /// Where a place currently lives. Only a `local` is a cell of its own; a
+  /// projected place is a `(container, field)` reference through the storage
+  /// its base already holds, so a store through it is visible in the container
+  /// and a loan of it sees a later `store.assign`.
+  private placeRef(act: Activation, id: number): Ref {
+    const decl =
+      act.fn.places[id] ??
+      act.fn.places.find((candidate) => candidate.id === id);
+    if (!decl) {
+      throw new Error(`${act.fn.name}: place ${id} is not declared`);
     }
-    return cell;
+    switch (decl.origin) {
+      case "local": {
+        const cell = act.places.get(id);
+        if (!cell) {
+          throw new Error(
+            `${act.fn.name}: place ${id} was never created by alloc_place`,
+          );
+        }
+        return { kind: "cell", cell };
+      }
+      case "aggregate":
+        return {
+          kind: "field",
+          parent:
+            "place" in decl.base
+              ? this.placeRef(act, decl.base.place)
+              : this.refOf(act, decl.base.value),
+          index: decl.field,
+        };
+      default:
+        throw new Error(
+          `${act.fn.name}: place origin ${decl.origin} has no sequential executor`,
+        );
+    }
   }
 
   /// Bind a call or suspension operand according to the decision the boundary
@@ -423,33 +447,27 @@ class ExecutorV1 {
         act.places.set(op.place, { value: UNIT, valid: false });
         return;
       case "store.init":
-      case "store.assign": {
-        const cell = this.placeCell(act, op.place);
-        cell.value = this.read(act, op.value);
-        cell.valid = true;
+      case "store.assign":
+        writeRef(this.placeRef(act, op.place), this.read(act, op.value));
         return;
-      }
       case "load.copy":
         this.define(
           act,
           op.dst,
-          cloneValue(this.placeCell(act, op.place).value),
+          cloneValue(readRef(this.placeRef(act, op.place))),
         );
         return;
       case "load.take": {
-        const cell = this.placeCell(act, op.place);
-        this.define(act, op.dst, cell.value);
-        cell.valid = false;
+        const ref = this.placeRef(act, op.place);
+        this.define(act, op.dst, readRef(ref));
+        invalidateRef(ref);
         return;
       }
       case "load.borrow":
-        act.env.set(op.dst, {
-          kind: "cell",
-          cell: this.placeCell(act, op.place),
-        });
+        act.env.set(op.dst, this.placeRef(act, op.place));
         return;
       case "end_lifetime":
-        this.placeCell(act, op.place).valid = false;
+        invalidateRef(this.placeRef(act, op.place));
         return;
 
       case "tuple.make":
@@ -887,7 +905,7 @@ class ExecutorV1 {
         // nothing and the activation resumes immediately.
         const place = valueCloseePlace(term.detail);
         if (place !== null) {
-          this.placeCell(act, place).valid = false;
+          invalidateRef(this.placeRef(act, place));
         }
         break;
       }
@@ -951,6 +969,29 @@ class ExecutorV1 {
 
 function ownedRef(value: VmValue): Ref {
   return { kind: "cell", cell: { value, valid: true } };
+}
+
+function writeRef(ref: Ref, value: VmValue): void {
+  switch (ref.kind) {
+    case "cell":
+      ref.cell.value = value;
+      ref.cell.valid = true;
+      return;
+    case "field":
+      fieldsOf(readRef(ref.parent))[ref.index] = value;
+      return;
+    case "payload":
+      payloadOf(readRef(ref.parent))[ref.index] = value;
+      return;
+  }
+}
+
+/// Only a cell of its own can be ended; a projection lives as long as the
+/// storage it reaches through.
+function invalidateRef(ref: Ref): void {
+  if (ref.kind === "cell") {
+    ref.cell.valid = false;
+  }
 }
 
 function readRef(ref: Ref): VmValue {

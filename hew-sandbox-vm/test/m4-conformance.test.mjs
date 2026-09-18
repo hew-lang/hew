@@ -14,8 +14,7 @@ const m4FixtureDirs = [
   "25-actor-crash",
   "26-i64-bigint",
   "27-actor-crash-restart-ignored",
-  "28-actor-state-arity-trap",
-  "29-mixed-scalar-compare-trap"
+  "28-actor-state-arity-trap"
 ];
 
 const ajv = new Ajv2020({ allErrors: true, strict: true, validateFormats: false });
@@ -80,9 +79,13 @@ test("M4 actor fixture coverage is explicit", () => {
   assert.equal(arityTrap.final_state.status, "ok");
   assert.ok(arityTrap.events.some((event) => event.message === "actor.crash" && event.text?.includes('"trap_kind":"invalid_record_field"')));
 
-  const mixedScalar = readJson("fixtures/29-mixed-scalar-compare-trap/expected.trace.json");
-  assert.equal(mixedScalar.final_state.status, "trap");
-  assert.equal(mixedScalar.final_state.runtime_failures[0].trap_kind, "invalid_local");
+  // An ordered comparison between i64 and f64 is refused by the checker, so
+  // there is no bytecode to run and no trap to observe: the fixture records the
+  // compile diagnostic instead.
+  const mixedScalar = readJson("fixtures/29-mixed-scalar-compare-rejected/expected.trace.json");
+  assert.equal(mixedScalar.final_state.status, "compile_error");
+  assert.equal(mixedScalar.final_state.diagnostics[0].severity, "error");
+  assert.match(mixedScalar.final_state.diagnostics[0].message, /cannot implicitly coerce/);
 });
 
 test("M4 chaos scheduling is seeded and replay byte-stable", () => {

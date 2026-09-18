@@ -83,9 +83,20 @@ export interface ExternEntry {
   symbol: string;
 }
 
-export interface PlaceDecl {
-  id: number;
-}
+/// A semantic storage location. Only a `local` is a cell of its own, created by
+/// `alloc_place` and ended by `end_lifetime`; every other origin resolves
+/// through storage the body already holds and is never allocated.
+export type PlaceDecl =
+  | { id: number; origin: "local" }
+  | {
+      id: number;
+      origin: "aggregate";
+      base: { place: number } | { value: number };
+      shape?: number;
+      field: number;
+    }
+  | { id: number; origin: "capture"; environment: number; field: number }
+  | { id: number; origin: "runtime" | "actor_state" };
 
 /// A value capability the checker selected for a concrete type. `callable` is a
 /// user implementation to call; without it the operation is the derived,

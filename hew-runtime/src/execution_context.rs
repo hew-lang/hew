@@ -545,7 +545,6 @@ pub extern "C" fn hew_context_reply_channel_swap_pop() {
 /// with — `clear_reply_channel_on`, `current_reply_channel_consumed_on`) is
 /// native-only; the WASM scheduler aborts on hard traps and does not drive the
 /// suspending-closure swap.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn reply_channel_swap_unwind() {
     let swaps = REPLY_CHANNEL_SWAP_STACK.with(|stack| std::mem::take(&mut *stack.borrow_mut()));
 
@@ -571,7 +570,6 @@ pub(crate) fn reply_channel_swap_stack_depth() -> usize {
 }
 
 /// Cancel + free both refs of a driver-owned reply channel on the crash edge.
-#[cfg(not(target_arch = "wasm32"))]
 unsafe fn teardown_driver_channel(ch: *mut c_void) {
     let typed = ch.cast();
     // SAFETY: caller guarantees `ch` is a live driver-owned reply channel.

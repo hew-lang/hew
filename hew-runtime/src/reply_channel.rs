@@ -459,7 +459,7 @@ unsafe fn publish_reply_from_sender_ref(
             // caller's INCARNATION, so a reply arriving after that caller died
             // - and after a new actor inherited its allocation - resolves to
             // nothing and is dropped.
-            crate::scheduler::enqueue_resume_by_incarnation(caller_actor);
+            crate::resume::enqueue_resume_by_incarnation(caller_actor);
         }
         hew_reply_channel_free(ch);
     }
@@ -675,7 +675,7 @@ pub unsafe extern "C" fn hew_reply(
 
     // SAFETY: Caller guarantees `ch` is valid and single-writer.
     unsafe {
-        crate::scheduler::mark_current_reply_channel_consumed(ch.cast());
+        crate::execution_context::mark_current_reply_channel_consumed(ch.cast());
         if release_sender_ref_if_cancelled(ch, value) {
             // Channel was cancelled before delivery. The registered reply
             // destructor (when present) has reclaimed `value`'s embedded heap
@@ -984,7 +984,7 @@ pub unsafe extern "C" fn hew_reply_channel_publish_cancelled(ch: *mut HewReplyCh
     }
     // SAFETY: caller guarantees the live sender reference and single writer.
     unsafe {
-        crate::scheduler::mark_current_reply_channel_consumed(ch.cast());
+        crate::execution_context::mark_current_reply_channel_consumed(ch.cast());
         (*ch).cancelled.store(true, Ordering::Release);
         publish_reply_from_sender_ref(ch, ptr::null_mut(), 0);
     }
@@ -1002,7 +1002,7 @@ pub unsafe extern "C" fn hew_reply_channel_publish_task_failed(ch: *mut HewReply
     }
     // SAFETY: caller guarantees the live sender reference and single writer.
     unsafe {
-        crate::scheduler::mark_current_reply_channel_consumed(ch.cast());
+        crate::execution_context::mark_current_reply_channel_consumed(ch.cast());
         hew_reply_channel_mark_failed(ch, crate::internal::types::HEW_REPLY_FAIL_HANDLER_TRAPPED);
         publish_reply_from_sender_ref(ch, ptr::null_mut(), 0);
     }

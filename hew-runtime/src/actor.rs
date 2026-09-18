@@ -10,27 +10,20 @@
 
 use crate::lifetime::live_actors;
 use std::cell::Cell;
-#[cfg(not(target_arch = "wasm32"))]
 use std::collections::HashMap;
 // live on not(wasm32) — drain_actors; dead here; caller actor.rs:2729
-#[cfg(not(target_arch = "wasm32"))]
 use std::collections::HashSet;
 use std::ffi::{c_int, c_void};
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU32, AtomicU64, Ordering};
-#[cfg(not(target_arch = "wasm32"))]
 use std::sync::{Condvar, Mutex, OnceLock, PoisonError};
-#[cfg(not(target_arch = "wasm32"))]
 use std::thread::ThreadId;
 
-#[cfg(not(target_arch = "wasm32"))]
 use crate::execution_context::HewExecutionContext;
 use crate::internal::types::{
     AskError, HewActorState, HewDispatchFn, HewError, HewOverflowPolicy, HewSysDispatchFn,
 };
-#[cfg(not(target_arch = "wasm32"))]
 use crate::mailbox::{self, HewMailbox};
-#[cfg(not(target_arch = "wasm32"))]
 use crate::reply_channel::{self, HewReplyChannel};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::scheduler;
@@ -51,11 +44,9 @@ type CrashTeardownOrderHook = Option<fn(c_int)>;
 #[cfg(not(target_arch = "wasm32"))]
 static CRASH_TEARDOWN_ORDER_HOOK: Mutex<CrashTeardownOrderHook> = Mutex::new(None);
 
-#[cfg(not(target_arch = "wasm32"))]
 #[doc(hidden)]
 pub const HEW_ACTOR_CRASH_TEARDOWN_BEFORE_EXIT_PROPAGATION: c_int = 1;
 
-#[cfg(not(target_arch = "wasm32"))]
 #[doc(hidden)]
 pub const HEW_ACTOR_CRASH_TEARDOWN_AFTER_EXIT_PROPAGATION: c_int = 2;
 
@@ -67,7 +58,6 @@ pub const HEW_ACTOR_CRASH_TEARDOWN_AFTER_EXIT_PROPAGATION: c_int = 2;
 /// so the exit-status authority must already carry this crash by the time this
 /// event fires. That is what makes the ordering testable rather than a race
 /// whose outcome depends on which platform's scheduler is faster.
-#[cfg(not(target_arch = "wasm32"))]
 #[doc(hidden)]
 pub const HEW_ACTOR_CRASH_TEARDOWN_BEFORE_FIRST_WAKE: c_int = 3;
 
@@ -80,7 +70,6 @@ pub fn hew_actor_set_crash_teardown_order_hook(hook: Option<fn(c_int)>) {
     *guard = hook;
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn run_crash_teardown_order_hook(event: c_int) {
     let hook = {
         let guard = CRASH_TEARDOWN_ORDER_HOOK
@@ -563,7 +552,6 @@ pub const HEW_ACTOR_STATE_LOCK_OK: c_int = 0;
 /// Runtime ABI return code for failed actor-state lock operations.
 pub const HEW_ACTOR_STATE_LOCK_ERR: c_int = -1;
 
-#[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug, Default)]
 struct ActorStateLockState {
     held: bool,
@@ -571,27 +559,23 @@ struct ActorStateLockState {
     poisoned: bool,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug, Default)]
 struct ActorStateLock {
     state: Mutex<ActorStateLockState>,
     available: Condvar,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn actor_state_locks() -> &'static Mutex<HashMap<usize, std::sync::Arc<ActorStateLock>>> {
     static LOCKS: OnceLock<Mutex<HashMap<usize, std::sync::Arc<ActorStateLock>>>> = OnceLock::new();
     LOCKS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn recover_runtime_mutex<T>(
     err: PoisonError<std::sync::MutexGuard<'_, T>>,
 ) -> std::sync::MutexGuard<'_, T> {
     err.into_inner()
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn lookup_actor_state_lock(actor: *mut HewActor) -> Option<std::sync::Arc<ActorStateLock>> {
     let locks = actor_state_locks()
         .lock()
@@ -599,7 +583,6 @@ fn lookup_actor_state_lock(actor: *mut HewActor) -> Option<std::sync::Arc<ActorS
     locks.get(&(actor as usize)).cloned()
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn actor_state_lock_seat(
     actor: *mut HewActor,
 ) -> *mut crate::execution_context::HewActorStateLockState {
@@ -637,7 +620,6 @@ fn unregister_actor_state_lock(actor: *mut HewActor) {
     locks.remove(&(actor as usize));
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn acquire_actor_state_lock_ref(lock: &ActorStateLock) -> c_int {
     let current = std::thread::current().id();
     let mut state = lock.state.lock().unwrap_or_else(recover_runtime_mutex);
@@ -662,7 +644,6 @@ fn acquire_actor_state_lock_ref(lock: &ActorStateLock) -> c_int {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn release_actor_state_lock_ref(lock: &ActorStateLock) -> c_int {
     let current = std::thread::current().id();
     let mut state = lock.state.lock().unwrap_or_else(recover_runtime_mutex);
@@ -731,7 +712,6 @@ pub unsafe extern "C" fn hew_actor_state_lock_release(actor: *mut HewActor) -> c
     release_actor_state_lock_ref(&lock)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) unsafe fn hew_actor_state_lock_acquire_for_context(
     ctx: *mut HewExecutionContext,
 ) -> c_int {
@@ -751,7 +731,6 @@ pub(crate) unsafe fn hew_actor_state_lock_acquire_for_context(
     acquire_actor_state_lock_ref(lock)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) unsafe fn hew_actor_state_lock_release_for_context(
     ctx: *mut HewExecutionContext,
 ) -> c_int {
@@ -771,7 +750,6 @@ pub(crate) unsafe fn hew_actor_state_lock_release_for_context(
     release_actor_state_lock_ref(lock)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 unsafe fn actor_state_lock_release_after_panic_impl(actor: *mut HewActor, poison: bool) -> c_int {
     if actor.is_null() {
         return HEW_ACTOR_STATE_LOCK_OK;
@@ -810,7 +788,6 @@ unsafe fn actor_state_lock_release_after_panic_impl(actor: *mut HewActor, poison
 /// # Safety
 ///
 /// `actor` may be null. If non-null, it must be a valid actor pointer.
-#[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_state_lock_release_after_panic(actor: *mut HewActor) -> c_int {
     // SAFETY: this extern entry point forwards its documented raw-pointer
@@ -1570,7 +1547,7 @@ pub(crate) fn clear_suspended_cancel_token(actor: &HewActor) {
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn retire_parked_activation_reply(actor: &HewActor) {
     #[cfg(not(target_arch = "wasm32"))]
-    crate::scheduler::retire_suspended_reply_channel(actor);
+    crate::activation::retire_suspended_reply_channel(actor);
 }
 
 // ── Codegen-mirrored ABI offsets ────────────────────────────────────────
@@ -1962,7 +1939,7 @@ fn abandon_parked_activation(a: &HewActor) {
     // remember. The swap inside `retire_suspended_reply_channel` keeps it
     // exactly once even though `free_actor_resources` sweeps the
     // same slot on the way out.
-    crate::scheduler::retire_suspended_reply_channel(a);
+    crate::activation::retire_suspended_reply_channel(a);
     // `destroy_parked` above just ran the pump frame's `coro.destroy` cleanup
     // outline, which releases the generator companion (heap env + coro handle)
     // living as a local INSIDE that frame via its normal scope-exit drop
@@ -2345,7 +2322,7 @@ unsafe fn free_actor_resources(actor: *mut HewActor) {
     // `hew_actor_free_inner` (`cleanup_all_actors`, `drain_quiesced_actor`,
     // supervisor child teardown); the swap makes it exactly once when they
     // overlap.
-    crate::scheduler::retire_suspended_reply_channel(a);
+    crate::activation::retire_suspended_reply_channel(a);
 
     // Same argument, other debt: if this actor was running a `receive gen fn`
     // pump, its registered sink is the consumer's only source of values and no
@@ -2509,7 +2486,6 @@ unsafe fn free_actor_resources(actor: *mut HewActor) {
 ///
 /// # Safety
 /// No active handler or lifecycle callback may borrow the actor's state.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) unsafe fn drop_initialized_actor_state(a: &HewActor) {
     let state_drop_consumed = a.state_drop_consumed.swap(true, Ordering::AcqRel);
     if !a.state_drop_borrowed.load(Ordering::Acquire) && !state_drop_consumed {
@@ -2535,7 +2511,6 @@ pub(crate) unsafe fn drop_initialized_actor_state(a: &HewActor) {
 ///
 /// `actor` must be a valid pointer to a live [`HewActor`] in a terminal
 /// state (`Stopped`) that is not currently being dispatched.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) unsafe fn call_terminate_fn(actor: *mut HewActor) {
     // SAFETY: caller guarantees `actor` is valid.
     let a = unsafe { &*actor };
@@ -3404,7 +3379,6 @@ pub unsafe extern "C" fn hew_actor_spawn_native(
 ///
 /// # Safety
 /// `envelope` is uniquely owned and transfers only on successful admission.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) unsafe fn try_submit_native_envelope(
     token: crate::lifetime::local_handles::HewLocalPidId,
     message: i32,
@@ -3415,7 +3389,6 @@ pub(crate) unsafe fn try_submit_native_envelope(
 }
 
 /// Register native capacity readiness while the exact destination is pinned.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn register_native_capacity(
     token: crate::lifetime::local_handles::HewLocalPidId,
     waker: &std::sync::Arc<crate::wake::OwnedWaker>,
@@ -3433,7 +3406,6 @@ pub(crate) fn register_native_capacity(
 ///
 /// # Safety
 /// Both unpublished references transfer only on successful admission.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) unsafe fn try_submit_native_request(
     token: crate::lifetime::local_handles::HewLocalPidId,
     message: i32,
@@ -3444,7 +3416,6 @@ pub(crate) unsafe fn try_submit_native_request(
     unsafe { submit_native_request(token, message, envelope, reply, false) }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) unsafe fn submit_native_terminal(
     token: crate::lifetime::local_handles::HewLocalPidId,
     message: i32,
@@ -3454,7 +3425,6 @@ pub(crate) unsafe fn submit_native_terminal(
     unsafe { submit_native_request(token, message, envelope, std::ptr::null_mut(), true) }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 unsafe fn submit_native_request(
     token: crate::lifetime::local_handles::HewLocalPidId,
     message: i32,
@@ -3894,7 +3864,6 @@ pub unsafe extern "C" fn hew_actor_try_send(
 ///
 /// `actor`, `a`, and `mb` must name the same live actor/mailbox allocation, and
 /// the mailbox must already be closed.
-#[cfg(not(target_arch = "wasm32"))]
 unsafe fn try_terminalize_idle_actor(
     actor: *mut HewActor,
     a: &HewActor,
@@ -3970,7 +3939,6 @@ pub unsafe extern "C" fn hew_actor_close(actor: *mut HewActor) {
 /// # Safety
 ///
 /// `actor` must be a valid pointer returned by a spawn function.
-#[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_stop(actor: *mut HewActor) {
     cabi_guard!(actor.is_null());
@@ -4020,7 +3988,7 @@ pub unsafe extern "C" fn hew_actor_stop(actor: *mut HewActor) {
             )
             .is_ok()
     {
-        crate::scheduler::sched_enqueue(actor);
+        crate::resume::sched_enqueue(actor);
     }
 }
 
@@ -5244,7 +5212,6 @@ fn actor_runtime_matches(a: &HewActor) -> bool {
 /// gate observes terminal and the close runs — the inherent "sent the instant
 /// before the crash" case, drained by `hew_mailbox_free`, identical to every
 /// prior ordering.
-#[cfg(not(target_arch = "wasm32"))]
 #[inline]
 fn actor_send_is_terminal(a: &HewActor) -> bool {
     let state = a.actor_state.load(Ordering::Acquire);
@@ -5435,7 +5402,6 @@ unsafe fn reclaim_terminal_enqueue_if_unowned_inner(a: &HewActor, close_dispatch
 /// # Safety
 ///
 /// `actor` must be live for the call and `a` must borrow the same allocation.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) unsafe fn finish_mailbox_enqueue(actor: *mut HewActor, a: &HewActor) {
     // SAFETY: production always includes terminal handoff.
     unsafe { finish_mailbox_enqueue_inner(actor, a, true) };
@@ -5449,7 +5415,6 @@ pub(crate) unsafe fn finish_mailbox_enqueue(actor: *mut HewActor, a: &HewActor) 
 /// # Safety
 ///
 /// Same contract as [`finish_mailbox_enqueue`].
-#[cfg(not(target_arch = "wasm32"))]
 unsafe fn finish_mailbox_enqueue_inner(
     actor: *mut HewActor,
     a: &HewActor,
@@ -5528,7 +5493,6 @@ pub(crate) unsafe fn send_system_message(
 /// # Safety
 ///
 /// `actor` must be a valid pointer and `a` must borrow the same actor.
-#[cfg(not(target_arch = "wasm32"))]
 unsafe fn schedule_actor_after_enqueue(actor: *mut HewActor, a: &HewActor, msg_type: i32) {
     let sender = hew_actor_self();
     let trace_actor_id = if sender.is_null() {
@@ -6130,7 +6094,6 @@ pub unsafe extern "C" fn hew_actor_gen_sink_complete(
 /// Idempotent: swaps the slot to null before touching the sink, so a second
 /// call (or a race between callers) sees an already-null slot and is a no-op —
 /// the sink is fault-closed exactly once.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn fault_close_registered_gen_sink(a: &HewActor) {
     let raw = a.gen_sink.swap(ptr::null_mut(), Ordering::AcqRel);
     if raw.is_null() {
@@ -6144,6 +6107,20 @@ pub(crate) fn fault_close_registered_gen_sink(a: &HewActor) {
 }
 
 // ── Trap / Error ────────────────────────────────────────────────────────
+
+/// Publish a DOWN notification for a dead actor.
+///
+/// `link` and `monitor` are a manifest reject on wasm32 (`link-monitor`), so no
+/// program this target admits can hold either: there is no watcher to notify
+/// and no graph entry to reclaim.
+pub(crate) fn notify_monitors_on_death(actor_id: u64, state: i32, reason: i32) {
+    #[cfg(not(target_arch = "wasm32"))]
+    crate::monitor::notify_monitors_on_death(actor_id, state, reason);
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (actor_id, state, reason);
+    }
+}
 
 /// Trap (panic) an actor: store an error code, close the mailbox, and
 /// transition to a terminal state. If the actor has a supervisor, notify it.
@@ -6207,13 +6184,11 @@ unsafe fn defer_external_trap_until_checked_drain(actor: *mut HewActor, error_co
 }
 
 /// Consume a deferred external terminal request after its checked turn drains.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn take_deferred_external_trap(a: &HewActor) -> Option<i32> {
     let code = a.pending_external_trap_code.swap(0, Ordering::AcqRel);
     (code != 0).then_some(code)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 #[derive(Clone, Copy)]
 enum TrapMailboxReclaim {
     /// The caller is the scheduler frame that owns the mailbox consumer.
@@ -6232,7 +6207,6 @@ enum TrapMailboxReclaim {
 ///
 /// `actor` must be the live actor whose activation the calling scheduler frame
 /// owns.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) unsafe fn hew_actor_trap_from_activation(actor: *mut HewActor, error_code: i32) {
     // SAFETY: forwarded contract; the caller supplies the sole-consumer proof.
     unsafe { hew_actor_trap_inner(actor, error_code, TrapMailboxReclaim::OwnedActivation) };
@@ -6256,7 +6230,6 @@ pub(crate) unsafe fn hew_actor_trap_from_activation(actor: *mut HewActor, error_
 /// rule on it. A SUPERVISED one gets its record opened here, and the caller
 /// carries the id to the supervisor notification. Both are therefore accounted
 /// for before the crash is observable at all.
-#[cfg(not(target_arch = "wasm32"))]
 fn publish_crash_fault_record(
     terminal: i32,
     supervisor: *mut c_void,
@@ -6292,7 +6265,6 @@ fn publish_crash_fault_record(
 /// # Safety
 ///
 /// Same contract as [`hew_actor_trap`].
-#[cfg(not(target_arch = "wasm32"))]
 #[expect(
     clippy::too_many_lines,
     reason = "terminal publication keeps its ordering proof beside every notification edge"
@@ -8302,7 +8274,7 @@ mod tests {
         _borrow_mode: i32,
     ) -> *mut c_void {
         ASK_SEND_BY_ID_DISPATCH_COUNT.fetch_add(1, Ordering::AcqRel);
-        let ch = crate::scheduler::hew_get_reply_channel();
+        let ch = crate::execution_context::hew_get_reply_channel();
         if ch.is_null() {
             return std::ptr::null_mut();
         }
@@ -8416,7 +8388,8 @@ mod tests {
         _size: usize,
         _borrow_mode: i32,
     ) -> *mut c_void {
-        let ch = crate::scheduler::hew_get_reply_channel().cast::<reply_channel::HewReplyChannel>();
+        let ch = crate::execution_context::hew_get_reply_channel()
+            .cast::<reply_channel::HewReplyChannel>();
         LAST_NATIVE_ASK_REPLY_CHANNEL.store(ch, Ordering::Release);
         hew_actor_self_stop();
 
@@ -8431,7 +8404,7 @@ mod tests {
         _size: usize,
         _borrow_mode: i32,
     ) -> *mut c_void {
-        let ch = crate::scheduler::hew_get_reply_channel();
+        let ch = crate::execution_context::hew_get_reply_channel();
         if ch.is_null() {
             return std::ptr::null_mut();
         }
@@ -8458,7 +8431,7 @@ mod tests {
         _borrow_mode: i32,
     ) -> *mut c_void {
         std::thread::sleep(std::time::Duration::from_millis(20));
-        let ch = crate::scheduler::hew_get_reply_channel();
+        let ch = crate::execution_context::hew_get_reply_channel();
         if ch.is_null() {
             return std::ptr::null_mut();
         }
@@ -8484,7 +8457,7 @@ mod tests {
         _size: usize,
         _borrow_mode: i32,
     ) -> *mut c_void {
-        let ch = crate::scheduler::hew_get_reply_channel();
+        let ch = crate::execution_context::hew_get_reply_channel();
         if ch.is_null() {
             return std::ptr::null_mut();
         }

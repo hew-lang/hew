@@ -8,7 +8,6 @@
 
 use crate::activation::SchedulerQueueEntry;
 use crate::actor::HewActor;
-use crate::lifetime::live_actors::ActorIncarnation;
 
 /// Submit an actor to this target's run queue.
 pub(crate) fn sched_enqueue(actor: *mut HewActor) {
@@ -26,17 +25,7 @@ pub(crate) fn sched_enqueue_owned(entry: SchedulerQueueEntry) {
     publish(entry);
 }
 
-/// Wake the parked activation of one live incarnation.
-///
-/// A wake recorded before the registrant died is dropped rather than delivered
-/// to whatever later occupies the allocation (#3069); the incarnation check is
-/// what makes that true, and it is the same check on every target.
-pub(crate) fn enqueue_resume_by_incarnation(target: ActorIncarnation) {
-    #[cfg(not(target_arch = "wasm32"))]
-    crate::scheduler::enqueue_resume_by_incarnation(target);
-    #[cfg(target_arch = "wasm32")]
-    crate::wasm_driver::enqueue_resume_by_incarnation(target);
-}
+pub(crate) use crate::activation::enqueue_resume_by_incarnation;
 
 fn publish(entry: SchedulerQueueEntry) {
     #[cfg(not(target_arch = "wasm32"))]

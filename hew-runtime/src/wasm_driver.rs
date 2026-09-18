@@ -10,9 +10,12 @@
 //! emits — the timer wheel, `hew_sched_init`, `hew_native_runtime_finish` and
 //! `hew_exit` — so there is exactly one process driver on this target.
 
+use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::ptr;
 use std::sync::atomic::{AtomicPtr, Ordering};
 
+use crate::activation::{activate_queued_actor, SchedulerQueueEntry};
 use crate::timer_wheel::{
     hew_timer_wheel_new, hew_timer_wheel_next_deadline_ms, timer_wheel_tick_to, HewTimerWheel,
 };
@@ -41,6 +44,43 @@ pub(crate) fn global_wheel() -> *mut HewTimerWheel {
     }
 }
 
+thread_local! {
+    /// Actors this target has made runnable, in the order they became so.
+    ///
+    /// The native scheduler hands an entry to a work-stealing deque and wakes a
+    /// worker; wasm32 has no worker, so the entry waits here until the process
+    /// next looks. One thread, so a `RefCell` is the whole synchronisation
+    /// story.
+    static RUN_QUEUE: RefCell<VecDeque<SchedulerQueueEntry>> = RefCell::new(VecDeque::new());
+}
+
+/// Accept a runnable actor from [`crate::resume`].
+pub(crate) fn publish_queue_entry(mut entry: SchedulerQueueEntry) {
+    entry.disarm();
+    let actor = entry.actor;
+    RUN_QUEUE.with(|queue| queue.borrow_mut().push_back(entry));
+    let _ = actor;
+}
+
+/// Run one queued activation, if any. Returns whether one ran.
+///
+/// The queue borrow is released before the activation, because an activation
+/// that yields or exhausts its budget re-publishes the same actor.
+fn run_one_queued_activation() -> bool {
+    let Some(entry) = RUN_QUEUE.with(|queue| queue.borrow_mut().pop_front()) else {
+        return false;
+    };
+    let actor = entry.actor;
+    std::mem::forget(entry);
+    activate_queued_actor(actor);
+    true
+}
+
+/// Whether any actor is waiting to run.
+pub(crate) fn has_queued_work() -> bool {
+    RUN_QUEUE.with(|queue| !queue.borrow().is_empty())
+}
+
 /// Advance the process one readiness step while the root is parked.
 ///
 /// Ticks the wheel to the WASI clock; when nothing is due yet, sleeps until the
@@ -49,6 +89,9 @@ pub(crate) fn global_wheel() -> *mut HewTimerWheel {
 /// compiler or runtime defect rather than a program outcome, so the module
 /// fails closed instead of hanging.
 pub(crate) fn step() {
+    if run_one_queued_activation() {
+        return;
+    }
     let wheel = global_wheel();
     // SAFETY: `global_wheel` returns a live process-owned wheel or null.
     let fired = unsafe { timer_wheel_tick_to(wheel, crate::clock::hew_now_ms()) };
@@ -57,8 +100,11 @@ pub(crate) fn step() {
     }
     // SAFETY: same live wheel; the query takes the wheel's own lock.
     let remaining = unsafe { hew_timer_wheel_next_deadline_ms(wheel) };
-    if remaining < 0 {
-        eprintln!("hew: fail-closed: the wasm32 process root is parked with no pending timer");
+    if remaining < 0 && !has_queued_work() {
+        eprintln!(
+            "hew: fail-closed: the wasm32 process is parked with no runnable actor and no \
+             pending timer"
+        );
         std::process::abort();
     }
     // A zero remainder means the deadline is due and the next tick fires it.
@@ -78,15 +124,23 @@ pub unsafe extern "C" fn hew_sched_init() -> i32 {
     0
 }
 
-/// Finish the process runtime and resolve the process exit status.
+/// Run the process to quiescence: every runnable actor, then every timer that
+/// is already due, until neither has anything left.
 ///
-/// Nothing is left to drain: the wasm32 driver runs every unit of work inline
-/// on the process thread, so by the time the entry adapter returns the run is
-/// over. The status still goes through the one exit-status authority.
-///
-/// # Safety
-/// No preconditions.
-#[no_mangle]
-pub unsafe extern "C" fn hew_native_runtime_finish(status: i32) -> i32 {
-    crate::exit_status::hew_process_exit_byte(status)
+/// A periodic handler re-arms its timer, so the wheel is never permanently
+/// empty while one is live; quiescence is therefore "no runnable actor and no
+/// timer due now", which is what the native shutdown phase settles on once its
+/// workers park.
+pub(crate) fn drain_to_quiescence() -> i32 {
+    let wheel = global_wheel();
+    loop {
+        if run_one_queued_activation() {
+            continue;
+        }
+        // SAFETY: `global_wheel` returns the live process-owned wheel.
+        let fired = unsafe { timer_wheel_tick_to(wheel, crate::clock::hew_now_ms()) };
+        if fired == 0 && !has_queued_work() {
+            return 0;
+        }
+    }
 }

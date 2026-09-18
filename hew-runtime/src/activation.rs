@@ -17,9 +17,18 @@ use crate::set_last_error;
 use crate::actor::{self, HewActor, HEW_DEFAULT_REDUCTIONS, HEW_MSG_BUDGET};
 use crate::execution_context::HewExecutionContext;
 use crate::internal::types::{HewActorState, HewDispatchFn, HewSysDispatchFn};
+use crate::lifetime::live_actors::ActorIncarnation;
 use crate::mailbox::{self, hew_mailbox_has_messages, hew_msg_node_free, HewMailbox};
 use crate::mailbox_header::{HewSysMsg, Origin};
-use crate::resume::sched_enqueue;
+use crate::resume::{sched_enqueue, sched_enqueue_owned};
+
+/// Activations running right now, and activations finished. The native
+/// scheduler reports these as its worker and task counters; the wasm32 driver
+/// has one activation at a time by construction.
+pub(crate) static ACTIVE_ACTIVATIONS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+pub(crate) static ACTIVATIONS_COMPLETED: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
 
 #[cfg(any(test, debug_assertions))]
 fn dispatch_lock_seat_for_actor(
@@ -1322,7 +1331,7 @@ pub(crate) fn activate_queued_actor(actor: *mut HewActor) {
             // run it too.
             if a.native_completion.is_none() {
                 // Native completion publishes DOWN after typed state cleanup.
-                crate::monitor::notify_monitors_on_death(a.id, HewActorState::Stopped as i32, 0);
+                crate::actor::notify_monitors_on_death(a.id, HewActorState::Stopped as i32, 0);
             }
             crate::actor_group::notify_actor_death(a.id);
             // SAFETY: actor just transitioned to Stopped; dispatch is finished.
@@ -1452,14 +1461,14 @@ pub(crate) fn activate_actor(actor: *mut HewActor) {
 struct ActivationMetricsGuard;
 impl ActivationMetricsGuard {
     fn new() -> Self {
-        crate::scheduler::ACTIVE_WORKERS.fetch_add(1, Ordering::Relaxed);
+        ACTIVE_ACTIVATIONS.fetch_add(1, Ordering::Relaxed);
         Self
     }
 }
 impl Drop for ActivationMetricsGuard {
     fn drop(&mut self) {
-        crate::scheduler::ACTIVE_WORKERS.fetch_sub(1, Ordering::Relaxed);
-        crate::scheduler::TASKS_COMPLETED.fetch_add(1, Ordering::Relaxed);
+        ACTIVE_ACTIVATIONS.fetch_sub(1, Ordering::Relaxed);
+        ACTIVATIONS_COMPLETED.fetch_add(1, Ordering::Relaxed);
     }
 }
 #[cfg(any(test, debug_assertions))]
@@ -1836,7 +1845,7 @@ fn settle_after_activation(actor: *mut HewActor, msgs_processed: u32) {
             // finalize. See the companion comment in `activate_actor`.
             if a.native_completion.is_none() {
                 // Native completion publishes DOWN after typed state cleanup.
-                crate::monitor::notify_monitors_on_death(a.id, HewActorState::Stopped as i32, 0);
+                crate::actor::notify_monitors_on_death(a.id, HewActorState::Stopped as i32, 0);
             }
             crate::actor_group::notify_actor_death(a.id);
             // SAFETY: actor just transitioned to Stopped; dispatch is finished.
@@ -2087,4 +2096,283 @@ fn restore_current_context_after_dispatch() {
         let prev = unsafe { (*ctx).prev_context };
         let _ = crate::execution_context::set_current_context(prev);
     }
+}
+/// Wake a `Suspended` actor whose parked continuation has become resumable.
+///
+/// This is the SINGLE resume edge every readiness source feeds: the seed/test
+/// source today, and post-slice-4 the reactor (NEW-1), reply slot (NEW-3),
+/// channels (NEW-4), and wire reply (NEW-5). It is the dual of `sched_enqueue`
+/// for a parked-then-woken actor and is structurally identical to the
+/// `Sleeping → Runnable` re-enqueue the wasm sleeper-drain already proves.
+///
+/// `cont` is the continuation the source has made resumable. If the actor's
+/// resume slot is empty (the park has not finished publishing — the FG3
+/// lost-wake window), the wake is RECORDED via `mark_pending_wake` and the
+/// suspend edge drains it; the wake is never lost.
+///
+/// CAS discipline (fail-closed): the wake only enqueues on a successful
+/// `Suspended → Runnable` CAS. If the actor is terminal (`Stopped`/`Crashed`)
+/// or not yet `Suspended`, the CAS fails and the actor is NOT enqueued —
+/// mirroring the `Idle → Runnable` waker discipline in `activate_actor`, which
+/// closes the use-after-free window against a freed actor.
+///
+/// RECORDED-vs-DIRECT delivery is exclusive (stale-wake guard): a call that
+/// wins the CAS delivers DIRECTLY and must CONSUME any `pending_wake` marker —
+/// including one this same call recorded moments earlier in the mid-park
+/// window. A marker left set after a direct delivery is a STALE wake: it
+/// survives into the actor's NEXT park cycle, whose FG3 drain re-enqueues a
+/// wake with no readiness behind it, and a suspending `select` resumed by that
+/// stale wake scans `hew_select_ready_index() == -1` and fabricates a timeout
+/// (the `after` arm fires with the deadline unexpired — the event sits queued,
+/// unconsumed, until teardown). Consuming under the registry lock BEFORE the
+/// enqueue is race-free: the actor is `Runnable` but not yet on the queue, so
+/// nothing can run it and re-park between the CAS and the consume.
+///
+/// # Not a wake entry point
+///
+/// A pointer names an ADDRESS, and addresses are recycled, so this cannot be
+/// the edge a readiness source calls: the registry probe below proves the
+/// address is live, never that it still holds the incarnation that parked.
+/// Production reaches this only through [`enqueue_resume_by_incarnation`],
+/// which resolves an [`ActorIncarnation`] and holds a pin over the call. The
+/// scheduler's own unit tests call it directly to exercise the CAS and
+/// pending-wake discipline in isolation.
+///
+/// That is enforced by visibility, not by this comment: the function is private
+/// to this module, so the only callers it can ever have are
+/// `enqueue_resume_by_incarnation` and the tests below. A readiness source in
+/// another module cannot name it, and so cannot reintroduce the address-keyed
+/// wake this change removed.
+///
+/// # Safety
+///
+/// `actor`, if non-null, must be pinned live by the caller for the duration of
+/// this call. `cont`, if non-null, must be the continuation parked on `actor`
+/// (a `coro.begin` frame). The caller (a readiness source) owns the wake edge;
+/// the executor owns teardown.
+unsafe fn enqueue_resume_pinned(actor: *mut HewActor, cont: *mut c_void) {
+    if actor.is_null() {
+        return;
+    }
+
+    // W6.010 caller-actor UAF guard (S1). This entry point is reached not only by
+    // a live reply but also by the orphan-retire teardown
+    // (`hew_reply_channel_retire_orphaned_ask_sender_ref`), which the CALLEE
+    // mailbox runs during its own teardown. `cleanup_all_actors` frees actors in
+    // nondeterministic `HashMap` order, so the caller box can already be freed
+    // when the callee teardown fires this wake. Dereferencing `actor` directly
+    // would be a heap-use-after-free. (Production callers arrive through
+    // `enqueue_resume_by_incarnation`, which has already refused a wake whose
+    // incarnation is gone; this guard is what makes the raw-pointer entry point
+    // safe for the scheduler's own tests and for a pin held across the call.)
+    //
+    // `with_live_actor` makes the liveness check and the wake one atomic action:
+    // it holds the `LIVE_ACTORS` registry lock across the closure, and EVERY free
+    // path (`hew_actor_free_inner`, `drain_quiesced_actor`, `cleanup_all_actors`)
+    // removes the actor from `LIVE_ACTORS` BEFORE reclaiming the box. So while the
+    // closure runs the box cannot be freed, and if the caller was already torn
+    // down the closure never runs (the pointer is no longer tracked) — the stale
+    // wake is dropped, never dereferenced. The freed caller's continuation is
+    // already destroyed by its own C1 teardown, so dropping the wake is correct.
+    let enqueued = crate::lifetime::live_actors::with_live_actor(actor, |a| {
+        // Capture the actor's owning-runtime id under the registry lock (the
+        // actor is guaranteed live here). The R4 wake-routing net is asserted
+        // AFTER `with_live_actor` returns and the lock is released (below), so a
+        // trap never poisons the registry lock.
+        let actor_runtime_id = a.runtime_id;
+        // If the park has not yet stored a handle, the suspend edge is mid-park
+        // (the FG3 window). Record the wake so the suspend edge re-enqueues; do
+        // NOT store the handle ourselves (the suspend edge owns the slot write).
+        let parked = a.suspended_cont.load(Ordering::Acquire);
+        if parked.is_null() {
+            crate::coro_exec::mark_pending_wake(a);
+            // The actor is not yet `Suspended`; the CAS below would fail anyway.
+            // Re-check after marking: if the park JUST finished publishing
+            // `Suspended` between our load and the mark, fall through to the CAS
+            // so the wake is delivered now rather than waiting on the suspend
+            // edge's pending-wake drain. (Two-phase park, both directions.)
+            if a.actor_state.load(Ordering::Acquire) != HewActorState::Suspended as i32 {
+                let _ = cont; // handle is owned by the suspend edge; nothing to store.
+                return (None, actor_runtime_id);
+            }
+        }
+
+        // Own the prospective queue entry before publishing Runnable. The
+        // registry lock keeps the allocation live while this reference is
+        // acquired; afterward the entry itself closes the pre-publish window.
+        // SAFETY: `with_live_actor` holds registry authority for this actor.
+        let queue_entry = unsafe { SchedulerQueueEntry::retain(actor) };
+
+        // CAS Suspended → Runnable; only enqueue on success (fail-closed against
+        // a terminal or not-yet-parked actor). The loop runs AT MOST twice: the
+        // second iteration exists only for the mark-after-drain window (see the
+        // `Err(_)` arm) and every second-iteration outcome is terminal.
+        let mut retried = false;
+        loop {
+            match a.actor_state.compare_exchange(
+                HewActorState::Suspended as i32,
+                HewActorState::Runnable as i32,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => {
+                    // Direct delivery won: consume the pending marker so recorded
+                    // and direct delivery collapse into ONE wake. Without this,
+                    // the mark at the top of this call (mid-park window, park
+                    // published `Suspended` between the slot load and the
+                    // re-check) leaks past the park's own FG3 drain and fires a
+                    // stale wake on the actor's NEXT park — the
+                    // fabricated-timeout race (see the fn doc). Consuming a
+                    // CONCURRENT racer's marker here is equally correct: its
+                    // readiness deposit happens-before its mark (deposit-then-
+                    // wake contract), so the single direct wake's resume scan
+                    // observes that readiness too.
+                    let _ = crate::coro_exec::take_pending_wake(a);
+                    break (Some(queue_entry), actor_runtime_id);
+                }
+                Err(observed) if observed == HewActorState::Runnable as i32 => {
+                    // `Runnable`: a delivery is ALREADY enqueued — either the
+                    // park's FG3 drain (it consumed a marker and re-enqueued) or
+                    // another source's direct CAS win. Marking here would be the
+                    // stale-wake duplicate: if this call's own mark above was
+                    // already drained, a second mark survives into a later park
+                    // and fires with no readiness behind it. No wake is lost by
+                    // not marking:
+                    // - if the drain consumed OUR mark, its AcqRel swap reading
+                    //   our Release mark orders our readiness deposit before the
+                    //   drain's enqueue and hence before the resume's scan;
+                    // - if another source won directly, every enqueue_resume
+                    //   source settles a one-shot arbiter BEFORE waking — our
+                    //   source either won it (its readiness is published before
+                    //   the completion the resume edge observes, so the resume's
+                    //   status-gated re-scan finds it) or lost it (the winner
+                    //   carries the resume; our effect is resolved by the
+                    //   arbiter).
+                    break (None, actor_runtime_id);
+                }
+                Err(_) => {
+                    // `Running` (dispatch park not yet published — the FG3
+                    // window) or `Idle` (lifecycle park's Idle → Suspended
+                    // window): the wake could genuinely be missed — record it so
+                    // the park's drain delivers. Terminal actors
+                    // (`Stopped`/`Crashed`) also land here; the mark is inert (a
+                    // terminal actor never parks again).
+                    #[cfg(test)]
+                    run_enqueue_resume_cas_fail_hook(actor);
+                    crate::coro_exec::mark_pending_wake(a);
+                    // Mark-after-drain guard: the park can publish `Suspended`
+                    // AND run its ONE-SHOT drain inside the gap between our
+                    // failed CAS and the mark above. The mark then lands after
+                    // the only drain that would have consumed it, stranding the
+                    // actor `Suspended` with a set marker (the lifecycle park
+                    // has no second drain; the dispatch park's is equally
+                    // one-shot). Re-check: if the state now reads `Suspended`,
+                    // retry the CAS ourselves — the `Ok` arm consumes the
+                    // marker, so the retry self-cleans. ONE retry suffices;
+                    // every retry outcome is terminal:
+                    // - `Ok`: delivered, marker consumed;
+                    // - `Err(Runnable)`: another delivery is in flight (the
+                    //   no-mark arm's safety argument applies; the residual
+                    //   marker is at worst one honest respark);
+                    // - `Err(Running|Idle)`: a NEW park cycle began after our
+                    //   mark, so its future drain (which runs after it publishes
+                    //   `Suspended`) is ordered after our mark and consumes it —
+                    //   the strand needs mark-after-drain, and our mark is now
+                    //   provably before that park's drain.
+                    if !retried
+                        && a.actor_state.load(Ordering::Acquire) == HewActorState::Suspended as i32
+                    {
+                        retried = true;
+                        continue;
+                    }
+                    break (None, actor_runtime_id);
+                }
+            }
+        }
+    });
+
+    // The owned entry keeps the allocation live after dropping the registry
+    // lock and until the queue consumer claims dispatch ownership.
+    //
+    // R4 wake-routing net: `sched_enqueue` resolves its scheduler through
+    // `get_scheduler()` → `rt_default()`, which `enter()` does not reroute, so an
+    // actor owned by a non-default runtime would wake on the WRONG scheduler.
+    // Fail closed before the enqueue (single-runtime actors pass straight
+    // through). The runtime id was captured under the registry lock above, so
+    // this reads no freed memory.
+    if let Some((Some(entry), actor_runtime_id)) = enqueued {
+        assert_wake_routes_to_owning_runtime(actor_runtime_id);
+        sched_enqueue_owned(entry);
+    }
+}
+/// Wake the exact actor incarnation a readiness source parked.
+///
+/// This is the single wake edge every readiness source calls: the reactor, the
+/// reply slot, channels, task scopes, await-cancel, supervisor restart-await,
+/// the wire reply, and mailbox block-send admission.
+///
+/// The source records an [`ActorIncarnation`] at park time, not a pointer.
+/// Resolution here refuses two distinct failures and is silent about both,
+/// because dropping the wake is the correct answer to each:
+///
+/// - the id is untracked — the actor died and its own teardown already
+///   destroyed the continuation this wake would have resumed;
+/// - the id resolves but the `spawn_serial` differs — the address (or the id,
+///   after a 2^48 wrap that the spawn allocator refuses anyway) now belongs to
+///   a DIFFERENT incarnation. Waking it would CAS a stranger
+///   `Suspended -> Runnable` with no readiness behind it, and a suspending
+///   `select` resumed that way fabricates a timeout.
+///
+/// The refusal happens before any mutation of the resolved actor, so a stale
+/// wake cannot leave a `pending_wake` marker on the wrong incarnation either.
+/// The pin taken during resolution is held across the enqueue, so the target
+/// cannot die or have its address reused mid-call.
+pub(crate) fn enqueue_resume_by_incarnation(target: ActorIncarnation) {
+    let _ = crate::lifetime::live_actors::with_live_incarnation(target, |pin| {
+        // SAFETY: the pin keeps THIS incarnation's allocation live across the
+        // wake; the free path drains `send_pin_count` before reclaiming it.
+        // `cont` is null because the suspend edge owns the parked handle — the
+        // resume edge reads it from `suspended_cont`, never from here.
+        unsafe { enqueue_resume_pinned(pin.as_ptr(), std::ptr::null_mut()) };
+    });
+}
+/// Fail-closed wake-routing net (R4).
+///
+/// The scheduler wake path resolves its scheduler through [`get_scheduler`] →
+/// [`runtime::rt_default`], **independent** of `rt_current()`, so an `enter()`
+/// (or [`runtime::enter_actor_runtime`]) does NOT reroute the wake. Until M4
+/// reroutes the wake to the actor's owning runtime, a wake for a non-default
+/// actor would silently enqueue on the default runtime's scheduler — the same
+/// silent-default hazard `enter_actor_runtime` traps on the send/teardown side.
+///
+/// This asserts the resolved (default) scheduler's runtime owns the actor about
+/// to be enqueued, and traps otherwise (`no-fail-open-fallback-after-authority`:
+/// assert-net first, reroute/delete at M4). A single-runtime
+/// (`RuntimeId::DEFAULT`) actor never trips it — `rt_default()` IS its runtime —
+/// so the production hot path is unaffected. Full rerouting of the wake to the
+/// owning runtime's scheduler is M4; this change only installs the trap.
+#[inline]
+fn assert_wake_routes_to_owning_runtime(actor_runtime_id: crate::runtime_id::RuntimeId) {
+    if actor_runtime_id == crate::runtime_id::RuntimeId::DEFAULT {
+        return;
+    }
+    #[cfg(target_arch = "wasm32")]
+    panic!(
+        "hew-runtime: enqueue_resume: a wake for an actor owned by runtime {} reached the one \
+         wasm32 runtime; there is no second scheduler to route it to",
+        actor_runtime_id.as_u64(),
+    );
+    #[cfg(not(target_arch = "wasm32"))]
+    let resolved = crate::runtime::rt_default().map(crate::runtime::RuntimeInner::runtime_id);
+    #[cfg(not(target_arch = "wasm32"))]
+    assert_eq!(
+        resolved,
+        Some(actor_runtime_id),
+        "hew-runtime: enqueue_resume: a wake for an actor owned by runtime {} would route \
+         through the default scheduler (runtime {:?}); the scheduler wake path is not yet \
+         rerouted to the owning runtime (M4) — failing closed rather than waking on a \
+         foreign scheduler",
+        actor_runtime_id.as_u64(),
+        resolved.map(crate::runtime_id::RuntimeId::as_u64),
+    );
 }

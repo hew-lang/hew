@@ -106,7 +106,7 @@ pub(crate) unsafe fn finish_native_terminal(actor: &HewActor) {
         // Native cleanup owns normal DOWN publication, including an idle
         // actor closed without another scheduler activation. Queue the
         // notification before a close observer can release its monitor owner.
-        crate::monitor::notify_monitors_on_death(actor.id, state, 0);
+        crate::actor::notify_monitors_on_death(actor.id, state, 0);
     }
     completion.finish(actor.error_code.load(Ordering::Acquire));
 }

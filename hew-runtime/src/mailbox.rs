@@ -38,8 +38,14 @@ use crate::mailbox_header::{normalize_coalesce_fallback, Origin};
 use crate::read_slot::{
     hew_read_slot_free, read_slot_deposit_status, read_slot_retain, HewReadSlot, ReadStatus,
 };
-use crate::scheduler::{MESSAGES_RECEIVED, MESSAGES_SENT};
 use crate::set_last_error;
+
+/// Messages this process has sent and received. The scheduler reports them as
+/// its own counters; the mailbox is what increments them.
+pub(crate) static MESSAGES_SENT: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+pub(crate) static MESSAGES_RECEIVED: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
 use crate::tracing::HewTraceContext;
 
 // Exact ask-node identity ledger for ownership regressions. A queued ask moves
@@ -2319,7 +2325,6 @@ unsafe fn enqueue_reserved_fast_user_node(mb: &HewMailbox, node: *mut HewMsgNode
 ///
 /// # Safety
 /// The mailbox is pinned and both references are unpublished and uniquely owned.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) unsafe fn try_admit_native_request(
     mb: &HewMailbox,
     msg_type: i32,
@@ -2331,7 +2336,6 @@ pub(crate) unsafe fn try_admit_native_request(
 }
 
 /// Admit a terminal attachment event behind queued data, bypassing capacity.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) unsafe fn admit_native_terminal(
     mb: &HewMailbox,
     msg_type: i32,
@@ -2446,7 +2450,6 @@ fn evict_oldest_one_way(mb: &HewMailbox, queue: &mut SlowPathQueue) -> bool {
     true
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 unsafe fn admit_native_request(
     mb: &HewMailbox,
     msg_type: i32,
@@ -2853,7 +2856,7 @@ unsafe fn wake_blocked_sender(waiter: &BlockedSender, status: ReadStatus) {
     if should_wake && !waiter.sender.is_none() {
         #[cfg(test)]
         run_blocked_sender_pre_wake_hook(waiter.sender.actor_id());
-        crate::scheduler::enqueue_resume_by_incarnation(waiter.sender);
+        crate::resume::enqueue_resume_by_incarnation(waiter.sender);
     }
     // SAFETY: the waiter owns exactly one retained slot ref.
     unsafe { hew_read_slot_free(waiter.slot) };
@@ -2863,7 +2866,7 @@ unsafe fn wake_blocked_sender(waiter: &BlockedSender, status: ReadStatus) {
 ///
 /// Identical to [`hew_mailbox_send`] but also sets the `reply_channel`
 /// field on the allocated message node so the receiver can reply via
-/// [`hew_get_reply_channel`](crate::scheduler::hew_get_reply_channel).
+/// [`hew_get_reply_channel`](crate::execution_context::hew_get_reply_channel).
 ///
 /// # Safety
 ///

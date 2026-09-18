@@ -1756,7 +1756,6 @@ pub extern "C" fn hew_cont_frame_handoff(frame: *mut c_void) {
     let _ = active_coroutine_leave(frame, ActiveCoroutinePhase::Ramp);
 }
 
-#[cfg(any(not(target_arch = "wasm32"), test))]
 unsafe fn drain_active_coroutine_frames_excluding(
     excluded: *mut c_void,
     mut reclaim: impl FnMut(*mut c_void),
@@ -1841,7 +1840,6 @@ unsafe fn drain_active_coroutine_frames_excluding(
 /// sole owner of that root allocation, and `abandon_resuming_after_crash` frees
 /// it after nested frames have been drained. Typed field drops run separately
 /// before this raw drain.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) unsafe fn reclaim_active_coroutine_frames_excluding(excluded: *mut c_void) -> usize {
     // SAFETY: scheduler calls this only after catch_unwind has retired every
     // non-excluded active frame on this thread.
@@ -4271,7 +4269,6 @@ mod tests {
     // the synthesized IR on that target), so the helpers and tests in this block
     // are gated off wasm32.
 
-    #[cfg(not(target_arch = "wasm32"))]
     use std::sync::atomic::AtomicU32;
 
     // Separate counters per test so the dispatch tests stay isolated under

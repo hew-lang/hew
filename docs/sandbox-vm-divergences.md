@@ -39,6 +39,8 @@ Module resolution reads `.hew` sources through filesystem paths, and the browser
 
 What a standard-library module can then *do* in the sandbox is a separate question, answered by the capability entries below: the sources resolve, and a function reaching a native-only authority is still refused.
 
+One module is refused in the browser for a reason that is not a capability. A compiler intrinsic may only be declared by a module the compiler can prove is the shipped source, and that proof is the file's canonical path. The browser has no paths to canonicalize, so `std.math` — whose functions are `#[intrinsic]` declarations — compiles natively and is refused in the browser build, although the VM implements every one of its intrinsics and matches native on all of them. Closing this means giving compiled-in sources a provenance of their own, which is a question about who may declare an intrinsic rather than about what the sandbox can execute.
+
 ## Scheduler determinism vs native preemption
 
 Native execution may be preempted by the host scheduler. The sandbox VM instead uses deterministic scheduling points so a run can be replayed from the same bytecode package, seed, and input stream. Programs must not rely on native thread interleavings, timing races, or host scheduling fairness as observable behavior.

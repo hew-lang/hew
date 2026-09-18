@@ -1,6 +1,6 @@
 [[case]]
 id = "mailbox_drop_new_visible"
-intent = "A `.DropNewest` mailbox view reports the discard to its sender as the submission's own outcome: the policy chose to lose the message, so it is a described delivery, not a failure."
+intent = "A discarded submission reports the loss to its sender as the submission's own outcome: a policy chose to lose the message, so it is a described delivery, not a failure. The sender spells `.DropNewest` over an actor that already declares `drop_new`."
 source = "../vertical-slice/accept/mailbox_drop_new_visible.hew"
 suites = ["acceptance"]
 timeout_seconds = 30

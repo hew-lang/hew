@@ -746,7 +746,7 @@ unsafe fn msg_node_alloc_with_trace(
 /// function consumes one refcount.
 ///
 /// Live alias-send path: reached from [`hew_mailbox_send_aliased`] /
-/// [`send_aliased_with_overflow`] (and through them from
+/// [`admit_native_request`] (and through them from
 /// [`crate::actor::hew_actor_send_aliased`]). On `malloc` failure the
 /// node is null and the envelope refcount is **not** consumed — the
 /// caller releases it.
@@ -2359,271 +2359,6 @@ unsafe fn enqueue_reserved_fast_user_node(mb: &HewMailbox, node: *mut HewMsgNode
     MESSAGES_SENT.fetch_add(1, Ordering::Relaxed);
 }
 
-/// Overflow-policy-aware enqueue for the **envelope-mode alias path**.
-///
-/// The caller transfers exactly one refcount on `envelope`. This
-/// function builds a single envelope-mode [`HewMsgNode`] up front and
-/// from that point routes the envelope refcount through exactly one of
-/// two release mechanisms, so the buffer is released **exactly once**
-/// on every exit:
-///
-/// 1. **Node allocation failed** — the node never took ownership, so we
-///    release the caller-transferred envelope refcount directly via
-///    [`hew_msg_envelope_release`].
-/// 2. **Node allocated** — the node owns the refcount. Every reject /
-///    drop exit frees the node through [`hew_msg_node_free`] (which
-///    calls [`hew_msg_envelope_release`] once); every enqueue exit
-///    hands the node to the queue, where the eventual
-///    [`hew_msg_node_free`] (dispatch, drain, close, supervisor-cancel,
-///    session-reset, mailbox-free) performs the single release.
-///
-/// This is a deliberate parallel to [`send_with_overflow`] rather than a
-/// shared body: copy-mode allocates lazily at each reject site (to skip
-/// a `malloc`+`memcpy` that would be discarded) and byte-coalesces
-/// matching payloads in place. Envelope payloads are pre-built, opaque,
-/// refcounted buffers that cannot be lazily synthesised or byte-replaced,
-/// so the alias path allocates once and applies the coalesce *fallback*
-/// policy without the key-match/replace step.
-///
-/// # Safety
-///
-/// - `mb` must reference a valid, live [`HewMailbox`].
-/// - `envelope` carries exactly one caller-transferred refcount (it may
-///   be null, in which case the node delivers an empty payload and the
-///   node free path is a no-op `crate::mem::buf_free(null)`).
-#[cfg(not(target_arch = "wasm32"))]
-#[expect(
-    clippy::too_many_lines,
-    reason = "mirrors send_with_overflow's overflow-policy dispatch; splitting would scatter the single-release exit enumeration"
-)]
-unsafe fn send_aliased_with_overflow(
-    mb: &HewMailbox,
-    msg_type: i32,
-    envelope: *mut HewMsgEnvelope,
-    non_blocking: bool,
-) -> SendOutcome {
-    // Build the envelope-mode node up front. On success the node owns
-    // the single caller-transferred envelope refcount; every subsequent
-    // exit releases it exactly once by routing the node through
-    // `hew_msg_node_free`.
-    // SAFETY: `envelope` carries one refcount per the alias-send contract.
-    let node = unsafe { msg_node_alloc_aliased(msg_type, envelope, ptr::null_mut()) };
-    if node.is_null() {
-        // EXIT(alloc-failure): the node never took ownership of the
-        // envelope, so release the caller-transferred refcount here —
-        // exactly once.
-        // SAFETY: we still own the single refcount transferred in.
-        unsafe { hew_msg_envelope_release(envelope) };
-        return SendOutcome::Oom;
-    }
-
-    // EXIT(closed): the destination mailbox is closed; free the node
-    // (single envelope release) and report closed.
-    if mb.closed.load(Ordering::Acquire) {
-        // SAFETY: `node` is owned here and was allocated by msg_node_alloc_aliased.
-        unsafe { hew_msg_node_free(node) };
-        return SendOutcome::Closed;
-    }
-
-    // The node is already allocated on the alias path, but lock-free bounded
-    // mailboxes still reserve capacity atomically before publishing it.
-    if mb.capacity > 0 && !mb.use_slow_path {
-        if !try_reserve_fast_path_capacity(mb) {
-            // SAFETY: `node` is still exclusively owned here.
-            unsafe { hew_msg_node_free(node) };
-            return match mb.overflow {
-                HewOverflowPolicy::DropNew => SendOutcome::Dropped,
-                HewOverflowPolicy::Fail => SendOutcome::Failed,
-                HewOverflowPolicy::Block
-                | HewOverflowPolicy::DropOld
-                | HewOverflowPolicy::Coalesce => {
-                    unreachable!("complex overflow policies use the slow path")
-                }
-            };
-        }
-
-        // SAFETY: `node` is owned here with next == null; the successful CAS
-        // above reserved its count slot.
-        unsafe { enqueue_reserved_fast_user_node(mb, node) };
-        return SendOutcome::Enqueued;
-    }
-
-    // Bounded slow-path policies admit from the mutex-protected queue length,
-    // never from `count`.  Retain this guard from the decision until the node
-    // and its observability count are published.
-    if mb.capacity > 0 && mb.use_slow_path {
-        let mut q = mb.slow_path.lock_or_recover();
-        let len = i64::try_from(q.user_queue.len()).unwrap_or(i64::MAX);
-        if len >= mb.capacity {
-            match mb.overflow {
-                HewOverflowPolicy::DropNew => {
-                    // EXIT(drop-new): reject the new message.
-                    // SAFETY: `node` owned here.
-                    unsafe { hew_msg_node_free(node) };
-                    return SendOutcome::Dropped;
-                }
-                HewOverflowPolicy::Fail => {
-                    // EXIT(fail): policy rejects on overflow.
-                    // SAFETY: `node` owned here.
-                    unsafe { hew_msg_node_free(node) };
-                    return SendOutcome::Failed;
-                }
-                HewOverflowPolicy::Block => {
-                    if non_blocking {
-                        // EXIT(block-nonblocking): caller must not wait.
-                        // SAFETY: `node` owned here.
-                        unsafe { hew_msg_node_free(node) };
-                        return SendOutcome::Failed;
-                    }
-                    loop {
-                        if mb.closed.load(Ordering::Acquire) {
-                            drop(q);
-                            // EXIT(block-closed-while-waiting): mailbox
-                            // closed under us.
-                            // SAFETY: `node` owned here.
-                            unsafe { hew_msg_node_free(node) };
-                            return SendOutcome::Closed;
-                        }
-                        let len = i64::try_from(q.user_queue.len()).unwrap_or(i64::MAX);
-                        if len < mb.capacity {
-                            break;
-                        }
-                        let wait = mb.block_wait.lock_or_recover();
-                        if mb.closed.load(Ordering::Acquire) {
-                            drop(wait);
-                            drop(q);
-                            // SAFETY: `node` remains owned here.
-                            unsafe { hew_msg_node_free(node) };
-                            return SendOutcome::Closed;
-                        }
-                        #[cfg(test)]
-                        run_block_pre_wait_hook(mb);
-                        drop(q);
-                        let wait = mb.not_full.wait_or_recover(wait);
-                        drop(wait);
-                        q = mb.slow_path.lock_or_recover();
-                    }
-                    // EXIT(block-enqueued): capacity freed; node enqueued.
-                    enqueue_bounded_slow_path_node(mb, &mut q, node);
-                    drop(q);
-                    update_high_water_mark(mb);
-                    MESSAGES_SENT.fetch_add(1, Ordering::Relaxed);
-                    return SendOutcome::Enqueued;
-                }
-                HewOverflowPolicy::Coalesce => {
-                    // Envelope payloads are opaque refcounted buffers and
-                    // cannot be byte-coalesced in place, so apply the
-                    // configured coalesce *fallback* policy directly.
-                    match normalize_coalesce_fallback(mb.coalesce_fallback) {
-                        HewOverflowPolicy::DropNew => {
-                            drop(q);
-                            // EXIT(coalesce-fallback-drop-new).
-                            // SAFETY: `node` owned here.
-                            unsafe { hew_msg_node_free(node) };
-                            return SendOutcome::Dropped;
-                        }
-                        HewOverflowPolicy::Fail => {
-                            drop(q);
-                            // EXIT(coalesce-fallback-fail).
-                            // SAFETY: `node` owned here.
-                            unsafe { hew_msg_node_free(node) };
-                            return SendOutcome::Failed;
-                        }
-                        HewOverflowPolicy::Block => {
-                            if non_blocking {
-                                drop(q);
-                                // EXIT(coalesce-fallback-block-nonblocking).
-                                // SAFETY: `node` owned here.
-                                unsafe { hew_msg_node_free(node) };
-                                return SendOutcome::Failed;
-                            }
-                            loop {
-                                if mb.closed.load(Ordering::Acquire) {
-                                    drop(q);
-                                    // EXIT(coalesce-fallback-block-closed).
-                                    // SAFETY: `node` owned here.
-                                    unsafe { hew_msg_node_free(node) };
-                                    return SendOutcome::Closed;
-                                }
-                                let len = i64::try_from(q.user_queue.len()).unwrap_or(i64::MAX);
-                                if len < mb.capacity {
-                                    break;
-                                }
-                                let wait = mb.block_wait.lock_or_recover();
-                                if mb.closed.load(Ordering::Acquire) {
-                                    drop(wait);
-                                    drop(q);
-                                    // SAFETY: `node` remains owned here.
-                                    unsafe { hew_msg_node_free(node) };
-                                    return SendOutcome::Closed;
-                                }
-                                #[cfg(test)]
-                                run_block_pre_wait_hook(mb);
-                                drop(q);
-                                let wait = mb.not_full.wait_or_recover(wait);
-                                drop(wait);
-                                q = mb.slow_path.lock_or_recover();
-                            }
-                            // EXIT(coalesce-fallback-block-enqueued).
-                            enqueue_bounded_slow_path_node(mb, &mut q, node);
-                            drop(q);
-                            update_high_water_mark(mb);
-                            MESSAGES_SENT.fetch_add(1, Ordering::Relaxed);
-                            return SendOutcome::Enqueued;
-                        }
-                        HewOverflowPolicy::DropOld => {
-                            if let Some(old) = q.user_queue.pop_front() {
-                                // SAFETY: `old` was allocated by one of the
-                                // msg_node_alloc family; its own payload /
-                                // envelope is released exactly once here.
-                                unsafe {
-                                    hew_msg_node_free_with_message_drop(old, mb.message_drop_fn);
-                                };
-                                mb.count.fetch_sub(1, Ordering::Release);
-                            }
-                            // EXIT(coalesce-fallback-drop-old): old freed,
-                            // new node enqueued.
-                            enqueue_bounded_slow_path_node(mb, &mut q, node);
-                            update_high_water_mark(mb);
-                            MESSAGES_SENT.fetch_add(1, Ordering::Relaxed);
-                            return SendOutcome::DroppedOld;
-                        }
-                        HewOverflowPolicy::Coalesce => {
-                            unreachable!("normalize_coalesce_fallback never returns Coalesce")
-                        }
-                    }
-                }
-                HewOverflowPolicy::DropOld => {
-                    if let Some(old) = q.user_queue.pop_front() {
-                        // SAFETY: `old` was allocated by one of the
-                        // msg_node_alloc family; released exactly once here.
-                        unsafe {
-                            hew_msg_node_free_with_message_drop(old, mb.message_drop_fn);
-                        };
-                        mb.count.fetch_sub(1, Ordering::Release);
-                    }
-                    // EXIT(drop-old): old freed, new node enqueued.
-                    enqueue_bounded_slow_path_node(mb, &mut q, node);
-                    update_high_water_mark(mb);
-                    MESSAGES_SENT.fetch_add(1, Ordering::Relaxed);
-                    return SendOutcome::DroppedOld;
-                }
-            }
-        } else {
-            enqueue_bounded_slow_path_node(mb, &mut q, node);
-            drop(q);
-            update_high_water_mark(mb);
-            MESSAGES_SENT.fetch_add(1, Ordering::Relaxed);
-            return SendOutcome::Enqueued;
-        }
-    }
-
-    // EXIT(fast-path): unbounded, or slow-path below capacity; node enqueued.
-    // SAFETY: `node` owned here with next == null.
-    unsafe { enqueue_user_node(mb, node) };
-    SendOutcome::Enqueued
-}
-
 /// Admit one envelope and its optional sender-side reply reference together.
 /// Rejection preserves both references for the caller.
 ///
@@ -2698,6 +2433,29 @@ unsafe fn coalesce_native_request(
     Some(SendOutcome::Coalesced)
 }
 
+/// Evict the oldest queued one-way message so a `drop_old` admission has room.
+///
+/// A queued completion call owes its caller a reply, so it is never the one
+/// evicted: dropping it would leave that caller waiting for a reply no handler
+/// will send. When every queued message is a completion call there is nothing
+/// this policy may discard and the submission reports a full queue instead.
+#[cfg(not(target_arch = "wasm32"))]
+fn evict_oldest_one_way(mb: &HewMailbox, queue: &mut SlowPathQueue) -> bool {
+    let Some(index) = queue.user_queue.iter().position(|&node| {
+        // SAFETY: every queued node is live while the queue lock is held.
+        unsafe { (*node).reply_channel.is_null() }
+    }) else {
+        return false;
+    };
+    let Some(old) = queue.user_queue.remove(index) else {
+        return false;
+    };
+    // SAFETY: every queued node came from this mailbox's own allocator.
+    unsafe { hew_msg_node_free(old) };
+    mb.count.fetch_sub(1, Ordering::Release);
+    true
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 unsafe fn admit_native_request(
     mb: &HewMailbox,
@@ -2721,50 +2479,58 @@ unsafe fn admit_native_request(
         } else if !terminal
             && i64::try_from(queue.user_queue.len()).unwrap_or(i64::MAX) >= mb.capacity
         {
-            // The declared mailbox policy answers a full queue before the
-            // sender's own `on_full` view does. A completion call is exempt:
-            // superseding or discarding it would leave its caller waiting for
-            // a reply no handler will send, so it parks for a slot instead.
-            if mb.overflow == HewOverflowPolicy::Coalesce && reply.is_null() {
-                // SAFETY: the queue is locked and the caller owns `envelope`.
-                match unsafe { coalesce_native_request(mb, &queue, msg_type, envelope) } {
-                    Some(outcome) => {
-                        // SAFETY: nothing published this node; the envelope
-                        // either transferred to the queued message or was
-                        // released with it.
-                        unsafe {
-                            (*node).envelope = ptr::null_mut();
-                            (*node).reply_channel = ptr::null_mut();
-                            hew_msg_node_free(node);
-                        }
-                        return outcome;
-                    }
-                    None => match normalize_coalesce_fallback(mb.coalesce_fallback) {
-                        HewOverflowPolicy::DropNew => {
-                            // SAFETY: the unpublished envelope is this
-                            // producer's; the declared policy discards it.
-                            unsafe { hew_msg_envelope_release(envelope) };
-                            (*node).envelope = ptr::null_mut();
-                            (*node).reply_channel = ptr::null_mut();
-                            // SAFETY: the node was never published.
-                            unsafe { hew_msg_node_free(node) };
-                            return SendOutcome::Dropped;
-                        }
-                        HewOverflowPolicy::DropOld => {
-                            if let Some(old) = queue.user_queue.pop_front() {
-                                // SAFETY: every queued node came from this
-                                // mailbox's own allocator.
-                                unsafe { hew_msg_node_free(old) };
-                                mb.count.fetch_sub(1, Ordering::Release);
+            // The destination's declared mailbox policy is the authority on a
+            // full queue: it answers before the sender's own `on_full` view
+            // does, and the sender's view only decides what happens when the
+            // declaration did not resolve the submission. A completion call is
+            // exempt from every discarding policy: superseding or discarding it
+            // would leave its caller waiting for a reply no handler will send,
+            // so it parks for a slot instead.
+            if reply.is_null() {
+                let declared = if mb.overflow == HewOverflowPolicy::Coalesce {
+                    // SAFETY: the queue is locked and the caller owns `envelope`.
+                    match unsafe { coalesce_native_request(mb, &queue, msg_type, envelope) } {
+                        Some(outcome) => {
+                            // SAFETY: nothing published this node; the envelope
+                            // either transferred to the queued message or was
+                            // released with it.
+                            unsafe {
+                                (*node).envelope = ptr::null_mut();
+                                (*node).reply_channel = ptr::null_mut();
+                                hew_msg_node_free(node);
                             }
-                            enqueue_bounded_slow_path_node(mb, &mut queue, node);
-                            drop(queue);
-                            update_high_water_mark(mb);
-                            MESSAGES_SENT.fetch_add(1, Ordering::Relaxed);
-                            return SendOutcome::Enqueued;
+                            return outcome;
                         }
-                        _ => SendOutcome::Failed,
-                    },
+                        None => normalize_coalesce_fallback(mb.coalesce_fallback),
+                    }
+                } else {
+                    mb.overflow
+                };
+                match declared {
+                    HewOverflowPolicy::DropNew => {
+                        // SAFETY: the unpublished envelope is this producer's;
+                        // the declared policy discards it.
+                        unsafe { hew_msg_envelope_release(envelope) };
+                        (*node).envelope = ptr::null_mut();
+                        (*node).reply_channel = ptr::null_mut();
+                        // SAFETY: the node was never published.
+                        unsafe { hew_msg_node_free(node) };
+                        return SendOutcome::Dropped;
+                    }
+                    HewOverflowPolicy::DropOld if evict_oldest_one_way(mb, &mut queue) => {
+                        enqueue_bounded_slow_path_node(mb, &mut queue, node);
+                        drop(queue);
+                        update_high_water_mark(mb);
+                        MESSAGES_SENT.fetch_add(1, Ordering::Relaxed);
+                        return SendOutcome::Enqueued;
+                    }
+                    // `block` leaves the wait to the sender, which parks
+                    // cooperatively; a scheduler worker never blocks here.
+                    // `drop_old` with nothing it may evict says the same.
+                    HewOverflowPolicy::DropOld
+                    | HewOverflowPolicy::Block
+                    | HewOverflowPolicy::Fail
+                    | HewOverflowPolicy::Coalesce => SendOutcome::Failed,
                 }
             } else {
                 SendOutcome::Failed
@@ -2781,6 +2547,17 @@ unsafe fn admit_native_request(
             // SAFETY: this producer owns the node and its reserved capacity slot.
             unsafe { enqueue_reserved_fast_user_node(mb, node) };
             return SendOutcome::Enqueued;
+        }
+        // `drop_new` is the one declared policy the fast path carries
+        // (`needs_slow_path`), and it discards this submission itself.
+        if mb.overflow == HewOverflowPolicy::DropNew && reply.is_null() {
+            // SAFETY: the unpublished envelope is this producer's.
+            unsafe { hew_msg_envelope_release(envelope) };
+            (*node).envelope = ptr::null_mut();
+            (*node).reply_channel = ptr::null_mut();
+            // SAFETY: the node was never published.
+            unsafe { hew_msg_node_free(node) };
+            return SendOutcome::Dropped;
         }
         SendOutcome::Failed
     } else {
@@ -2807,7 +2584,7 @@ unsafe fn admit_native_request(
 /// [`hew_msg_envelope_payload_ptr`]; the single refcount is released
 /// exactly once when the node is freed via [`hew_msg_node_free`]
 /// (on dispatch, drain, close, supervisor-cancel, session-reset, or
-/// mailbox-free) — see [`send_aliased_with_overflow`] for the full
+/// mailbox-free) — see [`admit_native_request`] for the full
 /// single-release exit enumeration.
 ///
 /// Returns `0` ([`HewError::Ok`]) on success, `-2`
@@ -2842,15 +2619,28 @@ pub unsafe extern "C" fn hew_mailbox_send_aliased(
     }
     // SAFETY: Caller guarantees `mb` is valid (non-null checked above).
     let mb = unsafe { &*mb };
-    // SAFETY: `envelope` carries one refcount per the alias-send contract;
-    // `send_aliased_with_overflow` consumes it on every exit.
-    match unsafe { send_aliased_with_overflow(mb, msg_type, envelope, false) } {
+    // This entry has no reply reference, so the destination's declared policy
+    // governs its admission. Admission preserves a refused request for its
+    // caller; the alias-send contract consumes the refcount on every exit, so
+    // this wrapper releases what admission handed back.
+    // SAFETY: `envelope` carries one refcount per the alias-send contract.
+    match unsafe { admit_native_request(mb, msg_type, envelope, ptr::null_mut(), false) } {
+        // The queue owns the envelope, or the declared policy already
+        // discarded it along with the message it superseded.
         SendOutcome::Enqueued | SendOutcome::Coalesced | SendOutcome::DroppedOld => {
             HewError::Ok as i32
         }
-        SendOutcome::Closed => HewError::ErrActorStopped as i32,
-        SendOutcome::Dropped | SendOutcome::Failed => HewError::ErrMailboxFull as i32,
-        SendOutcome::Oom => HewError::ErrOom as i32,
+        SendOutcome::Dropped => HewError::ErrMailboxFull as i32,
+        // Refused: admission left the single refcount with this caller.
+        outcome => {
+            // SAFETY: nothing published the envelope; this is its one release.
+            unsafe { hew_msg_envelope_release(envelope) };
+            match outcome {
+                SendOutcome::Closed => HewError::ErrActorStopped as i32,
+                SendOutcome::Oom => HewError::ErrOom as i32,
+                _ => HewError::ErrMailboxFull as i32,
+            }
+        }
     }
 }
 
@@ -4384,16 +4174,15 @@ mod tests {
                         assert!(!env.is_null());
                         start.wait();
                         // SAFETY: mailbox outlives the joined producer.
-                        let outcome = send_aliased_with_overflow(
-                            &*ptr::without_provenance_mut::<HewMailbox>(mb_addr),
+                        let outcome = hew_mailbox_send_aliased(
+                            ptr::without_provenance_mut::<HewMailbox>(mb_addr),
                             i32::try_from(producer).expect("producer fits i32"),
                             env,
-                            true,
                         );
-                        if matches!(outcome, SendOutcome::Enqueued | SendOutcome::DroppedOld) {
+                        if outcome == HewError::Ok as i32 {
                             successes.fetch_add(1, Ordering::SeqCst);
                         } else {
-                            assert!(matches!(outcome, SendOutcome::Failed));
+                            assert_eq!(outcome, HewError::ErrMailboxFull as i32);
                             rejects.fetch_add(1, Ordering::SeqCst);
                         }
                     }));
@@ -6228,15 +6017,13 @@ mod tests {
         }
     }
 
+    /// A refusing declaration - `fail`, `block` - hands the message back intact
+    /// so its sender may park, retry or readdress it. The sender keeps the one
+    /// refcount, so nothing is released until it says so.
     #[test]
-    fn native_admission_preserves_rejected_message_across_mailbox_policies() {
+    fn a_refusing_declaration_preserves_the_rejected_message() {
         let _guard = ENVELOPE_DROP_LOCK.lock().unwrap();
-        for policy in [
-            HewOverflowPolicy::Fail,
-            HewOverflowPolicy::DropNew,
-            HewOverflowPolicy::DropOld,
-            HewOverflowPolicy::Block,
-        ] {
+        for policy in [HewOverflowPolicy::Fail, HewOverflowPolicy::Block] {
             ENVELOPE_DROP_COUNT.store(0, Ordering::SeqCst);
             // SAFETY: this test owns both mailboxes and the unpublished envelope.
             unsafe {
@@ -6271,6 +6058,140 @@ mod tests {
                 hew_mailbox_free(backup);
                 assert_eq!(ENVELOPE_DROP_COUNT.load(Ordering::SeqCst), 1);
             }
+        }
+    }
+
+    /// A discarding declaration - `drop_new`, `drop_old` - answers the full
+    /// queue itself and owns the message it chose to lose. `drop_new` releases
+    /// the arriving one; `drop_old` admits it and releases the queued one it
+    /// evicted. Neither hands anything back, so neither is retryable.
+    #[test]
+    fn a_discarding_declaration_answers_a_full_queue_itself() {
+        let _guard = ENVELOPE_DROP_LOCK.lock().unwrap();
+        for policy in [HewOverflowPolicy::DropNew, HewOverflowPolicy::DropOld] {
+            ENVELOPE_DROP_COUNT.store(0, Ordering::SeqCst);
+            // SAFETY: this test owns the mailbox and both unpublished envelopes.
+            unsafe {
+                let full = hew_mailbox_new_with_policy(1, policy);
+                assert!(!full.is_null());
+                let queued = hew_msg_envelope_new(
+                    alloc_test_payload(b"queued"),
+                    6,
+                    Some(envelope_test_drop_glue),
+                );
+                assert!(matches!(
+                    try_admit_native_request(&*full, 7, queued, ptr::null_mut()),
+                    SendOutcome::Enqueued
+                ));
+                let arriving = hew_msg_envelope_new(
+                    alloc_test_payload(b"arriving"),
+                    8,
+                    Some(envelope_test_drop_glue),
+                );
+                let outcome = try_admit_native_request(&*full, 7, arriving, ptr::null_mut());
+                let decided = match policy {
+                    // `drop_new` loses the arriving message.
+                    HewOverflowPolicy::DropNew => matches!(outcome, SendOutcome::Dropped),
+                    // `drop_old` admits it over the one it evicted.
+                    _ => matches!(outcome, SendOutcome::Enqueued),
+                };
+                assert!(decided, "{policy:?} decides a full queue");
+                assert_eq!(
+                    ENVELOPE_DROP_COUNT.load(Ordering::SeqCst),
+                    1,
+                    "{policy:?} releases the message it discarded, exactly once"
+                );
+                assert_eq!(hew_mailbox_len(full), 1, "{policy:?} respects its bound");
+                hew_mailbox_free(full);
+                assert_eq!(
+                    ENVELOPE_DROP_COUNT.load(Ordering::SeqCst),
+                    2,
+                    "{policy:?} leaves exactly one message queued"
+                );
+            }
+        }
+    }
+
+    /// `drop_old` never evicts a queued completion call: its caller is waiting
+    /// for a reply no handler would then send. With nothing else to discard the
+    /// submission reports a full queue and its sender parks instead.
+    #[test]
+    fn drop_old_evicts_a_queued_submission_and_never_a_queued_ask() {
+        let _guard = ENVELOPE_DROP_LOCK.lock().unwrap();
+        ENVELOPE_DROP_COUNT.store(0, Ordering::SeqCst);
+        // SAFETY: this test owns the mailbox, the reply channel and each envelope.
+        unsafe {
+            let mb = hew_mailbox_new_with_policy(2, HewOverflowPolicy::DropOld);
+            let channel = crate::reply_channel::hew_reply_channel_new();
+            assert!(!mb.is_null() && !channel.is_null());
+            let ask =
+                hew_msg_envelope_new(alloc_test_payload(b"ask"), 3, Some(envelope_test_drop_glue));
+            assert!(matches!(
+                try_admit_native_request(&*mb, 7, ask, channel.cast()),
+                SendOutcome::Enqueued
+            ));
+            let one_way = hew_msg_envelope_new(
+                alloc_test_payload(b"one-way"),
+                7,
+                Some(envelope_test_drop_glue),
+            );
+            assert!(matches!(
+                try_admit_native_request(&*mb, 7, one_way, ptr::null_mut()),
+                SendOutcome::Enqueued
+            ));
+
+            // The queue is full and its oldest message is the ask, so eviction
+            // takes the one-way message behind it.
+            let newest = hew_msg_envelope_new(
+                alloc_test_payload(b"newest"),
+                7,
+                Some(envelope_test_drop_glue),
+            );
+            assert!(matches!(
+                try_admit_native_request(&*mb, 7, newest, ptr::null_mut()),
+                SendOutcome::Enqueued
+            ));
+            assert_eq!(ENVELOPE_DROP_COUNT.load(Ordering::SeqCst), 1);
+            let head = hew_mailbox_try_recv(mb);
+            assert!(!head.is_null());
+            assert!(
+                !(*head).reply_channel.is_null(),
+                "the queued ask must survive a drop_old admission"
+            );
+            hew_msg_node_free(head);
+
+            hew_mailbox_free(mb);
+
+            // With every queued message an ask there is nothing this policy may
+            // discard, so the submission reports a full queue and parks.
+            let asks_only = hew_mailbox_new_with_policy(2, HewOverflowPolicy::DropOld);
+            assert!(!asks_only.is_null());
+            for slot in 0..2 {
+                let channel = crate::reply_channel::hew_reply_channel_new();
+                let ask = hew_msg_envelope_new(
+                    alloc_test_payload(b"ask"),
+                    3,
+                    Some(envelope_test_drop_glue),
+                );
+                assert!(matches!(
+                    try_admit_native_request(&*asks_only, slot, ask, channel.cast()),
+                    SendOutcome::Enqueued
+                ));
+            }
+            let refused = hew_msg_envelope_new(
+                alloc_test_payload(b"refused"),
+                7,
+                Some(envelope_test_drop_glue),
+            );
+            assert!(
+                matches!(
+                    try_admit_native_request(&*asks_only, 7, refused, ptr::null_mut()),
+                    SendOutcome::Failed
+                ),
+                "with only asks to evict, drop_old refuses instead"
+            );
+            hew_msg_envelope_release(refused);
+            hew_mailbox_free(asks_only);
         }
     }
 
@@ -6824,7 +6745,7 @@ mod tests {
 
     // ── Per-exit single-release regression suite (P5.3) ─────────────────
     //
-    // `send_aliased_with_overflow` is the single-release state machine for
+    // `admit_native_request` is the single-release state machine for
     // the aliased send path: it allocates one envelope-mode node up front,
     // after which *every* exit routes the caller-transferred envelope
     // refcount through exactly one release. The tests below pin each exit
@@ -6852,9 +6773,9 @@ mod tests {
             // (the node alloc inside the send) returns null. The mailbox is
             // already built, so no earlier allocation consumes the trigger.
             let _fail = fail_mailbox_alloc_on_nth(0);
-            let outcome = send_aliased_with_overflow(&*mb, 7, env, false);
+            let outcome = hew_mailbox_send_aliased(mb, 7, env);
             assert!(
-                matches!(outcome, SendOutcome::Oom),
+                outcome == HewError::ErrOom as i32,
                 "node-alloc failure must report Oom"
             );
             assert_eq!(
@@ -6904,13 +6825,12 @@ mod tests {
         }
     }
 
-    /// EXIT(block-nonblocking): a bounded `Block` mailbox at capacity with
-    /// `non_blocking = true` must not wait — it rejects and releases the
-    /// envelope exactly once. Exercised by calling
-    /// `send_aliased_with_overflow` directly (the public alias FFI always
-    /// passes `non_blocking = false`).
+    /// EXIT(block): a bounded `Block` mailbox at capacity refuses rather
+    /// than waiting — a submission never blocks the calling thread, so the
+    /// sender parks cooperatively on the refusal — and releases the envelope
+    /// exactly once.
     #[test]
-    fn envelope_alias_send_block_nonblocking_releases_once() {
+    fn envelope_alias_send_block_full_releases_once() {
         let _guard = ENVELOPE_DROP_LOCK.lock().unwrap();
         ENVELOPE_DROP_COUNT.store(0, Ordering::SeqCst);
         // SAFETY: test owns the mailbox exclusively.
@@ -6929,218 +6849,15 @@ mod tests {
 
             let payload = alloc_test_payload(b"wouldblock");
             let env = hew_msg_envelope_new(payload, 10, Some(envelope_test_drop_glue));
-            let outcome = send_aliased_with_overflow(&*mb, 2, env, true);
+            let outcome = hew_mailbox_send_aliased(mb, 2, env);
             assert!(
-                matches!(outcome, SendOutcome::Failed),
-                "Block + non_blocking must fail rather than wait"
+                outcome == HewError::ErrMailboxFull as i32,
+                "a full `block` mailbox must refuse rather than wait"
             );
             assert_eq!(
                 ENVELOPE_DROP_COUNT.load(Ordering::SeqCst),
                 1,
-                "block-nonblocking exit must release the envelope exactly once"
-            );
-
-            hew_mailbox_free(mb);
-        }
-    }
-
-    /// EXIT(block-closed-while-waiting): close is published in the exact gap
-    /// after a blocked aliased sender checks `closed` but before it enters
-    /// `Condvar::wait`. The closer must join `block_wait`, so its one-shot
-    /// notification happens only after the sender atomically releases that
-    /// predicate mutex into the wait. This is the lost-wake counterexample:
-    /// notifying without acquiring the predicate mutex strands the sender.
-    #[test]
-    fn envelope_alias_send_block_closed_while_waiting_releases_once() {
-        let _guard = ENVELOPE_DROP_LOCK.lock().unwrap();
-        ENVELOPE_DROP_COUNT.store(0, Ordering::SeqCst);
-        // SAFETY: the mailbox outlives both worker threads (joined before free).
-        unsafe {
-            let mb = hew_mailbox_new_with_policy(1, HewOverflowPolicy::Block);
-            let filler: i32 = 1;
-            assert_eq!(
-                hew_mailbox_send(
-                    mb,
-                    0,
-                    (&raw const filler).cast_mut().cast(),
-                    size_of::<i32>()
-                ),
-                HewError::Ok as i32
-            );
-
-            let (_hook, entered, release) = BlockPreWaitHookGuard::install(mb);
-            let mb_addr = mb as usize;
-            let worker = std::thread::spawn(move || {
-                // SAFETY: main joins this thread before freeing `mb`
-                // (covered by the test's outer `unsafe` scope).
-                let mb = mb_addr as *mut HewMailbox;
-                let payload = alloc_test_payload(b"closed-wait");
-                let env = hew_msg_envelope_new(payload, 11, Some(envelope_test_drop_glue));
-                matches!(
-                    send_aliased_with_overflow(&*mb, 2, env, false),
-                    SendOutcome::Closed
-                )
-            });
-
-            // The sender owns slow_path + block_wait at the check-to-park seam.
-            entered.wait();
-
-            let closer = std::thread::spawn(move || {
-                // SAFETY: main joins this thread before freeing `mb`.
-                mailbox_close(mb_addr as *mut HewMailbox);
-            });
-
-            // `mailbox_close` publishes closed before joining block_wait.
-            // Prove publication happened while the sender still owns that
-            // predicate mutex; the closer cannot yet have notified.
-            let close_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-            while !(*mb).closed.load(Ordering::Acquire) {
-                assert!(
-                    std::time::Instant::now() < close_deadline,
-                    "closer did not publish the closed predicate"
-                );
-                std::thread::yield_now();
-            }
-            release.wait();
-            closer.join().expect("closer thread panicked");
-
-            assert!(
-                worker.join().unwrap(),
-                "blocked sender must observe the close and report Closed"
-            );
-            assert_eq!(
-                ENVELOPE_DROP_COUNT.load(Ordering::SeqCst),
-                1,
-                "block-closed-while-waiting exit must release the envelope exactly once"
-            );
-
-            hew_mailbox_free(mb);
-        }
-    }
-
-    #[test]
-    fn envelope_alias_send_coalesce_block_close_gap_releases_once() {
-        let _guard = ENVELOPE_DROP_LOCK.lock().unwrap();
-        ENVELOPE_DROP_COUNT.store(0, Ordering::SeqCst);
-        // SAFETY: the mailbox outlives both worker threads.
-        unsafe {
-            let mb = hew_mailbox_new_coalesce(1);
-            hew_mailbox_set_coalesce_config(mb, None, HewOverflowPolicy::Block);
-            let filler: i32 = 1;
-            assert_eq!(
-                hew_mailbox_send(
-                    mb,
-                    0,
-                    (&raw const filler).cast_mut().cast(),
-                    size_of::<i32>(),
-                ),
-                HewError::Ok as i32
-            );
-
-            let (_hook, entered, release) = BlockPreWaitHookGuard::install(mb);
-            let mb_addr = mb.addr();
-            let worker = std::thread::spawn(move || {
-                let mb = ptr::without_provenance_mut::<HewMailbox>(mb_addr);
-                let payload = alloc_test_payload(b"coalesce-closed");
-                let env = hew_msg_envelope_new(payload, 15, Some(envelope_test_drop_glue));
-                matches!(
-                    send_aliased_with_overflow(&*mb, 2, env, false),
-                    SendOutcome::Closed
-                )
-            });
-
-            entered.wait();
-            let closer = std::thread::spawn(move || {
-                mailbox_close(ptr::without_provenance_mut(mb_addr));
-            });
-            let close_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-            while !(*mb).closed.load(Ordering::Acquire) {
-                assert!(
-                    std::time::Instant::now() < close_deadline,
-                    "closer did not publish the closed predicate"
-                );
-                std::thread::yield_now();
-            }
-            release.wait();
-
-            closer.join().expect("closer thread panicked");
-            assert!(
-                worker.join().expect("aliased sender panicked"),
-                "Coalesce→Block aliased sender must wake closed"
-            );
-            assert_eq!(
-                ENVELOPE_DROP_COUNT.load(Ordering::SeqCst),
-                1,
-                "closed Coalesce→Block alias must release once"
-            );
-            hew_mailbox_free(mb);
-        }
-    }
-
-    /// EXIT(block-enqueued): a blocked aliased sender that is woken by a
-    /// concurrent drain (capacity freed) enqueues its node; the surviving
-    /// node releases the envelope exactly once when later drained.
-    #[test]
-    fn envelope_alias_send_block_enqueued_after_wait_releases_once() {
-        let _guard = ENVELOPE_DROP_LOCK.lock().unwrap();
-        ENVELOPE_DROP_COUNT.store(0, Ordering::SeqCst);
-        // SAFETY: the mailbox outlives the worker thread (joined before free).
-        unsafe {
-            let mb = hew_mailbox_new_with_policy(1, HewOverflowPolicy::Block);
-            let filler: i32 = 1;
-            assert_eq!(
-                hew_mailbox_send(
-                    mb,
-                    0,
-                    (&raw const filler).cast_mut().cast(),
-                    size_of::<i32>()
-                ),
-                HewError::Ok as i32
-            );
-
-            let (_hook, entered, release) = BlockPreWaitHookGuard::install(mb);
-            let mb_addr = mb as usize;
-            let worker = std::thread::spawn(move || {
-                // SAFETY: main joins this thread before freeing `mb`
-                // (covered by the test's outer `unsafe` scope).
-                let mb = mb_addr as *mut HewMailbox;
-                let payload = alloc_test_payload(b"enqueue-wait");
-                let env = hew_msg_envelope_new(payload, 12, Some(envelope_test_drop_glue));
-                matches!(
-                    send_aliased_with_overflow(&*mb, 2, env, false),
-                    SendOutcome::Enqueued
-                )
-            });
-
-            // Prove the sender reached the check-to-park seam while owning the
-            // queue + predicate mutexes. Release it, then drain: receive first
-            // waits for the queue and its notification then waits for
-            // block_wait until the sender atomically enters Condvar::wait.
-            entered.wait();
-            release.wait();
-            let filler_node = hew_mailbox_try_recv(mb);
-            assert!(!filler_node.is_null());
-            hew_msg_node_free(filler_node); // copy-mode: does not touch the counter
-
-            assert!(
-                worker.join().unwrap(),
-                "woken sender must enqueue and report Enqueued"
-            );
-            assert_eq!(
-                ENVELOPE_DROP_COUNT.load(Ordering::SeqCst),
-                0,
-                "alias node enqueued but not yet drained: no release yet"
-            );
-
-            // Drain the surviving alias node → single release.
-            let node = hew_mailbox_try_recv(mb);
-            assert!(!node.is_null());
-            assert_eq!((*node).msg_type, 2);
-            hew_msg_node_free(node);
-            assert_eq!(
-                ENVELOPE_DROP_COUNT.load(Ordering::SeqCst),
-                1,
-                "block-enqueued exit must release the envelope exactly once on drain"
+                "the block exit must release the envelope exactly once"
             );
 
             hew_mailbox_free(mb);
@@ -7222,12 +6939,10 @@ mod tests {
         }
     }
 
-    /// EXIT(coalesce-fallback-block-nonblocking): the `Block` fallback with
-    /// `non_blocking = true` must not wait — it rejects and releases the
-    /// envelope exactly once. Driven through `send_aliased_with_overflow`
-    /// directly to set `non_blocking`.
+    /// EXIT(coalesce-fallback-block): the `Block` fallback refuses rather
+    /// than waiting and releases the envelope exactly once.
     #[test]
-    fn envelope_alias_send_coalesce_fallback_block_nonblocking_releases_once() {
+    fn envelope_alias_send_coalesce_fallback_block_releases_once() {
         let _guard = ENVELOPE_DROP_LOCK.lock().unwrap();
         ENVELOPE_DROP_COUNT.store(0, Ordering::SeqCst);
         // SAFETY: test owns the mailbox exclusively.
@@ -7235,9 +6950,9 @@ mod tests {
             let mb = coalesce_fallback_mailbox_at_capacity(HewOverflowPolicy::Block);
             let payload = alloc_test_payload(b"c-block-nb");
             let env = hew_msg_envelope_new(payload, 10, Some(envelope_test_drop_glue));
-            let outcome = send_aliased_with_overflow(&*mb, 2, env, true);
+            let outcome = hew_mailbox_send_aliased(mb, 2, env);
             assert!(
-                matches!(outcome, SendOutcome::Failed),
+                outcome == HewError::ErrMailboxFull as i32,
                 "coalesce→Block + non_blocking must fail rather than wait"
             );
             assert_eq!(

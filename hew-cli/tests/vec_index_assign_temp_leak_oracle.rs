@@ -158,7 +158,7 @@ fn main() {\n\
 \x20       var v: Vec<Holder> = Vec.new();\n\
 \x20       v.push(Holder { items: mkItems() });\n\
 \x20       v[0] = h;\n\
-\x20       v[0].items.len()\n\
+\x20       v[0].items.len() + h.items.len()\n\
 \x20   };\n\
 \x20   print(assign());\n\
 \x20   print(assign());\n\
@@ -395,14 +395,22 @@ fn vec_index_assign_consumed_bound_local_moves_in() {
     );
 }
 
-/// Borrowed bound-local negative control: a closure capture remains COPY-IN and
-/// can be used by two invocations without transferring the capture's heap.
+/// Borrowed bound-local negative control: the store never hands the closure
+/// env's own `Holder` to the vector, so the capture serves both invocations.
+///
+/// The store's runtime symbol is not the invariant. The compiler clones the
+/// capture and moves that clone in, which `hew_vec_set_owned_move` is the
+/// correct and non-redundant symbol for; demanding the copy-in symbol would
+/// forbid the clone and buy a second allocation. What has to hold is that the
+/// env survives: each invocation reads `h` back AFTER its own store, so a store
+/// that aliased the env fails inside that same call, and the second invocation
+/// fails again if the env was released.
 #[cfg_attr(
     not(target_os = "macos"),
     ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
 )]
 #[test]
-fn vec_index_assign_borrowed_capture_stays_copy_in() {
+fn vec_index_assign_borrowed_capture_survives_its_own_store() {
     require_codegen();
 
     let dir = tempfile::Builder::new()
@@ -410,27 +418,6 @@ fn vec_index_assign_borrowed_capture_stays_copy_in() {
         .tempdir()
         .expect("tempdir");
     let bin = compile_to_native(BORROWED_CAPTURE_SOURCE, dir.path(), "borrowed_capture");
-
-    let obj = dir.path().join("borrowed_capture.o");
-    let nm = Command::new("nm")
-        .arg(&obj)
-        .output()
-        .expect("invoke nm on emitted object");
-    assert!(
-        nm.status.success(),
-        "nm failed on {}:\n{}",
-        obj.display(),
-        describe_output(&nm)
-    );
-    let symbols = String::from_utf8_lossy(&nm.stdout);
-    assert!(
-        symbols.contains("hew_vec_set_owned")
-            && !symbols
-                .lines()
-                .any(|line| line.contains("hew_vec_set_owned_move")),
-        "borrowed closure-captured bound local must emit COPY-IN \
-         `hew_vec_set_owned`, never `hew_vec_set_owned_move`. Emitted symbols were:\n{symbols}"
-    );
 
     let output = Command::new(&bin)
         .env("MallocScribble", "1")
@@ -445,8 +432,10 @@ fn vec_index_assign_borrowed_capture_stays_copy_in() {
     );
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
-        "22OK",
-        "borrowed capture must survive both index assignments;\n{}",
+        "44OK",
+        "each invocation must read the stored element and the still-live capture \
+         back as two elements each, so a store that handed the env's `Holder` to \
+         the vector shows up in that same call;\n{}",
         describe_output(&output)
     );
 }

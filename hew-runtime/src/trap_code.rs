@@ -129,10 +129,10 @@ pub(crate) fn fmt_decimal_i64(value: i64, buf: &mut [u8; 20]) -> &[u8] {
 /// outside actor dispatch so callers can preserve their target-specific
 /// non-actor fallback (native `llvm.trap`, WASM `llvm.trap`, or explicit panic).
 #[cfg_attr(
-    not(any(target_arch = "wasm32", test)),
+    not(test),
     allow(
         dead_code,
-        reason = "native exports hew_trap_with_code from supervisor.rs; this helper is used by wasm32 and native parity tests"
+        reason = "native exports hew_trap_with_code from supervisor.rs; wasm32 reaches it once the actor core lands"
     )
 )]
 pub(crate) fn stamp_current_actor_error_code(code: c_int) -> bool {

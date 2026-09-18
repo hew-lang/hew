@@ -13252,222 +13252,256 @@
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "unclassified-stdlib",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_regex_capture( *const HewRegex, *const HewString, i64, ) -> *mut HewString"
+        "native": "fn hew_regex_capture( *const HewRegex, *const HewString, i64, ) -> *mut HewString",
+        "wasm32-wasip1": "fn hew_regex_capture( *const HewRegex, *const HewString, i64, ) -> *mut HewString"
       },
       "symbol": "hew_regex_capture"
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_regex_capture_index_one( *const HewRegex, *const HewString, i64, ) -> *mut HewVec"
+        "native": "fn hew_regex_capture_index_one( *const HewRegex, *const HewString, i64, ) -> *mut HewVec",
+        "wasm32-wasip1": "fn hew_regex_capture_index_one( *const HewRegex, *const HewString, i64, ) -> *mut HewVec"
       },
       "symbol": "hew_regex_capture_index_one"
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_regex_capture_name_one( *const HewRegex, *const HewString, *const HewString, ) -> *mut HewVec"
+        "native": "fn hew_regex_capture_name_one( *const HewRegex, *const HewString, *const HewString, ) -> *mut HewVec",
+        "wasm32-wasip1": "fn hew_regex_capture_name_one( *const HewRegex, *const HewString, *const HewString, ) -> *mut HewVec"
       },
       "symbol": "hew_regex_capture_name_one"
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_regex_capture_width( *const HewRegex) -> i64"
+        "native": "fn hew_regex_capture_width( *const HewRegex) -> i64",
+        "wasm32-wasip1": "fn hew_regex_capture_width( *const HewRegex) -> i64"
       },
       "symbol": "hew_regex_capture_width"
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_regex_captures_flat( *const HewRegex, *const HewString, ) -> *mut HewVec"
+        "native": "fn hew_regex_captures_flat( *const HewRegex, *const HewString, ) -> *mut HewVec",
+        "wasm32-wasip1": "fn hew_regex_captures_flat( *const HewRegex, *const HewString, ) -> *mut HewVec"
       },
       "symbol": "hew_regex_captures_flat"
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_regex_clone( *const HewRegex) -> *mut HewRegex"
+        "native": "fn hew_regex_clone( *const HewRegex) -> *mut HewRegex",
+        "wasm32-wasip1": "fn hew_regex_clone( *const HewRegex) -> *mut HewRegex"
       },
       "symbol": "hew_regex_clone"
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "unclassified-stdlib",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_regex_compile( *const HewString) -> *mut HewRegex"
+        "native": "fn hew_regex_compile( *const HewString) -> *mut HewRegex",
+        "wasm32-wasip1": "fn hew_regex_compile( *const HewString) -> *mut HewRegex"
       },
       "symbol": "hew_regex_compile"
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_regex_find( *const HewRegex, *const HewString, ) -> *mut HewString"
+        "native": "fn hew_regex_find( *const HewRegex, *const HewString, ) -> *mut HewString",
+        "wasm32-wasip1": "fn hew_regex_find( *const HewRegex, *const HewString, ) -> *mut HewString"
       },
       "symbol": "hew_regex_find"
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_regex_find_all( *const HewRegex, *const HewString, ) -> *mut HewVec"
+        "native": "fn hew_regex_find_all( *const HewRegex, *const HewString, ) -> *mut HewVec",
+        "wasm32-wasip1": "fn hew_regex_find_all( *const HewRegex, *const HewString, ) -> *mut HewVec"
       },
       "symbol": "hew_regex_find_all"
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_regex_find_all_submatch_flat( *const HewRegex, *const HewString, ) -> *mut HewVec"
+        "native": "fn hew_regex_find_all_submatch_flat( *const HewRegex, *const HewString, ) -> *mut HewVec",
+        "wasm32-wasip1": "fn hew_regex_find_all_submatch_flat( *const HewRegex, *const HewString, ) -> *mut HewVec"
       },
       "symbol": "hew_regex_find_all_submatch_flat"
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_regex_free( *mut HewRegex)"
+        "native": "fn hew_regex_free( *mut HewRegex)",
+        "wasm32-wasip1": "fn hew_regex_free( *mut HewRegex)"
       },
       "symbol": "hew_regex_free"
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "unclassified-stdlib",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_regex_free_capture( *mut HewString)"
+        "native": "fn hew_regex_free_capture( *mut HewString)",
+        "wasm32-wasip1": "fn hew_regex_free_capture( *mut HewString)"
       },
       "symbol": "hew_regex_free_capture"
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_regex_is_match( *const HewRegex, *const HewString) -> bool"
+        "native": "fn hew_regex_is_match( *const HewRegex, *const HewString) -> bool",
+        "wasm32-wasip1": "fn hew_regex_is_match( *const HewRegex, *const HewString) -> bool"
       },
       "symbol": "hew_regex_is_match"
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_regex_is_valid( *const HewRegex) -> bool"
+        "native": "fn hew_regex_is_valid( *const HewRegex) -> bool",
+        "wasm32-wasip1": "fn hew_regex_is_valid( *const HewRegex) -> bool"
       },
       "symbol": "hew_regex_is_valid"
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "unclassified-stdlib",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_regex_match( *const HewRegex, *const HewString) -> i32"
+        "native": "fn hew_regex_match( *const HewRegex, *const HewString) -> i32",
+        "wasm32-wasip1": "fn hew_regex_match( *const HewRegex, *const HewString) -> i32"
       },
       "symbol": "hew_regex_match"
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_regex_new( *const HewString) -> *mut HewRegex"
+        "native": "fn hew_regex_new( *const HewString) -> *mut HewRegex",
+        "wasm32-wasip1": "fn hew_regex_new( *const HewString) -> *mut HewRegex"
       },
       "symbol": "hew_regex_new"
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_regex_replace( *const HewRegex, *const HewString, *const HewString, ) -> *mut HewString"
+        "native": "fn hew_regex_replace( *const HewRegex, *const HewString, *const HewString, ) -> *mut HewString",
+        "wasm32-wasip1": "fn hew_regex_replace( *const HewRegex, *const HewString, *const HewString, ) -> *mut HewString"
       },
       "symbol": "hew_regex_replace"
     },

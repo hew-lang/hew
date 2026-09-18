@@ -436,7 +436,7 @@ form consumed by browser/playground tooling and the WASI e2e test suite.
 | `types/vec_inclusive_slice` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
 | `types/record_clone` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
 | `types/fn_field_call` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
-| `types/method_clone` | `unsupported` | The wasm32-wasip1 runtime does not yet provide the regex FFI symbols used by this example |
+| `types/method_clone` | `runnable` | Runnable in the playground manifest and exercised by the WASI E2E gate |
 <!-- END GENERATED: playground-wasi-capability-summary -->
 
 The typed `[[playground_wasi]]` rows in `wasm-capability-manifest.toml` are the

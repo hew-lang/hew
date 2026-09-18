@@ -782,8 +782,3 @@ reason = "Machine runtime is not yet wired into the WASI/LLVM path"
 id = "language/string_slicing"
 status = "unsupported"
 reason = "hew_string_slice currently has a wasm32-wasi linker signature mismatch"
-
-[[playground_wasi]]
-id = "types/method_clone"
-status = "unsupported"
-reason = "The wasm32-wasip1 runtime does not yet provide the regex FFI symbols used by this example"

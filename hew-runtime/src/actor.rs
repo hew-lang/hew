@@ -10,6 +10,7 @@
 
 use crate::lifetime::live_actors;
 use std::cell::Cell;
+#[cfg(not(target_arch = "wasm32"))]
 use std::collections::HashMap;
 // live on not(wasm32) — drain_actors; dead here; caller actor.rs:2729
 #[cfg(not(target_arch = "wasm32"))]
@@ -22,6 +23,7 @@ use std::sync::{Condvar, Mutex, OnceLock, PoisonError};
 #[cfg(not(target_arch = "wasm32"))]
 use std::thread::ThreadId;
 
+#[cfg(not(target_arch = "wasm32"))]
 use crate::execution_context::HewExecutionContext;
 use crate::internal::types::{
     AskError, HewActorState, HewDispatchFn, HewError, HewOverflowPolicy, HewSysDispatchFn,
@@ -467,6 +469,13 @@ fn actor_ask_null(err: AskError) -> *mut c_void {
 /// all" (dogfood F1, mechanism 2). Every refuse/failure path in the ask
 /// family must therefore record a real kind before returning its code.
 #[inline]
+#[cfg_attr(
+    target_arch = "wasm32",
+    allow(
+        dead_code,
+        reason = "the ask family reaches wasm32 with the actor core"
+    )
+)]
 pub(crate) fn record_ask_error(err: AskError) {
     LAST_ACTOR_ASK_ERROR.with(|c| c.set(err as i32));
 }
@@ -2719,7 +2728,7 @@ struct ActorSpawnConfig {
     budget: i32,
     coalesce_key_fn: Option<unsafe extern "C" fn(i32, *mut c_void, usize) -> u64>,
     /// Checker-derived cycle capability for future Machine Lane B handling.
-    #[expect(
+    #[allow(
         dead_code,
         reason = "receiver-side ABI bit is staged for the Machine Lane B cycle-detection consumer"
     )]
@@ -5063,6 +5072,7 @@ pub unsafe extern "C" fn hew_actor_set_state_drop(
 ///
 /// `actor` must be a live actor pointer or null. `message_drop_fn` must match
 /// every handler payload layout for the actor and remain valid for its lifetime.
+#[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_set_message_drop(
     actor: *mut HewActor,
@@ -6699,6 +6709,7 @@ pub extern "C" fn hew_actor_self() -> *mut HewActor {
 /// inside dispatch; outside an actor context there is no recovery seam, where
 /// the trampoline's `llvm.trap` is unreachable because a `HewSysMsg::Exit` only
 /// arrives at a scheduler-driven dispatch.
+#[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub extern "C-unwind" fn hew_actor_exit_unhandled(reason: i32) {
     // Coerce a zero (clean) reason to a non-zero crash sentinel: an unhandled

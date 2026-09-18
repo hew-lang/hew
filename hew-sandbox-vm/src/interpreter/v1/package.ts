@@ -148,6 +148,7 @@ export type OpV1 =
       op: "const.float";
       dst: number;
       value?: number;
+      ty: string;
       nonfinite?: "nan" | "inf" | "-inf";
     })
   | (OpBase & { op: "const.char"; dst: number; value: string })

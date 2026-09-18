@@ -9,7 +9,7 @@ The sandbox VM is deterministic by design. It admits programs whose observable b
 ## Contents
 
 - [One lowering, two engines](#one-lowering-two-engines)
-- [Standard-library modules in the browser build](#standard-library-modules-in-the-browser-build)
+- [The standard library travels in the browser package](#the-standard-library-travels-in-the-browser-package)
 - [Scheduler determinism vs native preemption](#scheduler-determinism-vs-native-preemption)
 - [Virtual clock vs wall-clock](#virtual-clock-vs-wall-clock)
 - [Seeded PRNG vs host entropy](#seeded-prng-vs-host-entropy)
@@ -33,9 +33,11 @@ The sandbox VM executes bytecode emitted from the same verified ownership semant
 
 Source spans in a sandbox trace are carets rather than extents. Semantic lowering records one source byte per operation site, so a trace names where an operation began and not how wide its expression was.
 
-## Standard-library modules in the browser build
+## The standard library travels in the browser package
 
-A program that imports a standard-library module compiles natively but not in the browser-hosted compiler. Module resolution reads `.hew` sources through filesystem search roots, and the browser build has no filesystem, so `import std.io` and its siblings do not resolve there. Programs built from the language's own surfaces — including records, enums, collections and closures — compile and run in the browser unaffected. Closing this means shipping the standard-library sources inside the wasm package.
+Module resolution reads `.hew` sources through filesystem paths, and the browser has no filesystem, so the shipped standard-library sources travel inside the wasm package and resolution reads them from there. The browser therefore compiles against the same standard library the native compiler does, from the same sources, rather than a browser-specific subset. A module present on disk but missing from the package would compile natively and fail in the browser, so the package's copy is generated from the shipped tree and pinned against it.
+
+What a standard-library module can then *do* in the sandbox is a separate question, answered by the capability entries below: the sources resolve, and a function reaching a native-only authority is still refused.
 
 ## Scheduler determinism vs native preemption
 

@@ -1079,6 +1079,8 @@ function toComparable(value: VmValue): unknown {
   }
 }
 
+/// A literal is held at its declared precision from the moment it is loaded,
+/// so an `f32` never carries digits a single cannot represent.
 function floatConst(op: Extract<OpV1, { op: "const.float" }>): number {
   switch (op.nonfinite) {
     case "nan":
@@ -1088,7 +1090,7 @@ function floatConst(op: Extract<OpV1, { op: "const.float" }>): number {
     case "-inf":
       return Number.NEGATIVE_INFINITY;
     default:
-      return op.value ?? 0;
+      return narrowFloat(op.value ?? 0, op.ty);
   }
 }
 

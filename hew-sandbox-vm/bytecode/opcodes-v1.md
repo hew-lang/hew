@@ -184,6 +184,10 @@ unwind successor.
 | `actor.call`    | `operation`, `args`, `result`, `normal`, `unwind`                              |
 | `wire.codec`    | `direction`, `plan`, `args`, `result`, `normal`, `unwind`                      |
 
+`Print` carries the kind of the value it is given, so a program printing a
+scalar reaches `Print` directly with that kind; the `ToString` families appear
+only where a value is rendered into a larger string, as in interpolation.
+
 A runtime family that mutates its receiver takes it by `move` and hands it back
 as the call's result, so the caller can store the value it now owns.
 `Vector(Push)` and `Map(Insert)` are the two in the sequential set; a shim that

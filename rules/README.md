@@ -66,13 +66,14 @@ Counts are findings on the tree when written; `0` rules are regression guards.
 | `lock-unwrap`                                   | 10   | `$M.lock().unwrap()/.expect()` — unwraps a poisoned lock (CLAUDE.md §9; prefer the poison-safe accessor).                                     |
 | `explicit-leak-review`                          | 3    | `mem::forget` / `Box::leak` — RAII escapes to audit for drop-safety (CLAUDE.md §1).                                                           |
 
-### Rust — hygiene (`warning` / `hint`)
+### Rust — hygiene (`error` / `warning` / `hint`)
 
-| Rule                    | Hits | Catches                                                                                                    |
-| ----------------------- | ---- | ---------------------------------------------------------------------------------------------------------- |
-| `unsafe-without-safety` | 54   | `unsafe { … }` block lacking a `// SAFETY:` justification (the repo convention; ~98.5% already carry one). |
-| `transmute-audit`       | 10   | `mem::transmute(…)` / `transmute::<…>(…)` — the most dangerous `unsafe` op; review inventory.              |
-| `dbg-macro`             | 0    | `dbg!(…)` left in code — preventive guard against shipping debug output.                                   |
+| Rule                                         | Hits | Catches                                                                                                                                                                                                                                 |
+| -------------------------------------------- | ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `unsafe-without-safety`                      | 54   | `unsafe { … }` block lacking a `// SAFETY:` justification (the repo convention; ~98.5% already carry one).                                                                                                                              |
+| `transmute-audit`                            | 10   | `mem::transmute(…)` / `transmute::<…>(…)` — the most dangerous `unsafe` op; review inventory.                                                                                                                                           |
+| `dbg-macro`                                  | 0    | `dbg!(…)` left in code — preventive guard against shipping debug output.                                                                                                                                                                |
+| `unwinding-call-in-plain-c-export` (`error`) | 0    | A `#[no_mangle] extern "C"` export in `hew-runtime`/`hew-std`/`hew-cabi` calling `hew_panic`, `hew_fault_trap`, `hew_trap_with_code`, a `*_walk` release walker or a drop thunk. Those are `extern "C-unwind"`; the export must be too. |
 
 ### Hew (`.hew`)
 

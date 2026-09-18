@@ -60,6 +60,7 @@ python3 scripts/canonical-keyspace-lint.py --ast-grep "$AST_GREP"
 python3 scripts/tests/test_qualified_identity_literal_rule.py "$AST_GREP"
 python3 scripts/tests/test_supervisor_roster_lock_rule.py "$AST_GREP"
 python3 scripts/tests/test_no_lifecycle_state_drop_suppression_rule.py "$AST_GREP"
+python3 scripts/tests/test_unwinding_c_export_rule.py "$AST_GREP"
 # CI needs every finding and the real severity-derived exit status, but rich
 # source previews turn the existing advisory backlog into thousands of log
 # lines. Keep one actionable path/severity/message line per finding; developers

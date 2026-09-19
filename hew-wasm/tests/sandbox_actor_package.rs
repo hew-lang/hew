@@ -848,6 +848,42 @@ fn cancellation_preserves_a_resource_close_failure() {
 }
 
 #[test]
+fn trait_object_release_waits_for_its_resources_peer_call() {
+    let trace = execute(
+        r#"
+actor Audit {
+    receive fn record(id: i64) { sleep(1ms); println(f"closed {id}"); }
+}
+#[resource]
+type Ticket { audit: Audit, id: i64, }
+impl Ticket {
+    fn close(consume self) { self.audit.record(self.id).expect("close ticket"); }
+}
+trait Identified { fn id(value: Self) -> i64; }
+impl Identified for Ticket { fn id(value: Ticket) -> i64 { value.id } }
+actor Worker {
+    receive fn run(audit: Audit) {
+        {
+            let ticket: dyn Identified = Ticket { audit: audit, id: 7 };
+            println(ticket.id());
+        }
+        println("released");
+    }
+}
+fn main() {
+    let audit = spawn Audit;
+    let worker = spawn Worker;
+    worker.run(audit).expect("run worker");
+    close(worker);
+    close(audit);
+}
+"#,
+    );
+    assert_eq!(stdout(&trace), "7\nclosed 7\nreleased\n");
+    assert_eq!(trace["final_state"]["exit_code"], 0);
+}
+
+#[test]
 fn task_results_transfer_or_close_their_owned_resources() {
     let trace = execute(
         r#"

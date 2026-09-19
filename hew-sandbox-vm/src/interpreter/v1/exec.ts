@@ -2130,6 +2130,9 @@ class ExecutorV1 {
           case "closure":
             pending.push(value.environment);
             break;
+          case "dyn":
+            pending.push(value.value);
+            break;
           case "record": {
             const resource = (this.pkg.resources ?? []).find(
               (resource) =>

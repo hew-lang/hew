@@ -3343,37 +3343,6 @@ fn record_fn_field_method_dispatch_runs() {
     );
 }
 
-/// Closure-valued actor state fails closed at compile time (restart needs
-/// the clone direction; a closure env has a sole owner and no clone path).
-#[test]
-fn check_actor_state_closure_field_fails_closed() {
-    require_codegen();
-
-    let source = repo_root().join("tests/vertical-slice/reject/actor_state_closure_field.hew");
-    let output = Command::new(hew_binary())
-        .arg("check")
-        .arg(&source)
-        .current_dir(repo_root())
-        .output()
-        .expect("invoke hew check");
-
-    assert!(
-        !output.status.success(),
-        "expected check to fail; stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let combined = format!(
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(
-        combined.contains("closure-valued actor state is not supported"),
-        "expected fail-closed diagnostic; got: {combined}"
-    );
-}
-
 /// Non-generic cross-module named functions are first-class values: stored,
 /// passed, returned, held as Vec elements and record fields, and invoked
 /// through each path. The fixture exercises all six behaviours against a

@@ -426,16 +426,6 @@ impl Builder<'_, '_> {
         value_needs_close(self.service, ty)
     }
 
-    /// Cleanup combines any producer fault with the current fault. The enclosing
-    /// lexical cleanup dispatch decides whether source execution can continue.
-    pub(super) fn close_value(
-        &mut self,
-        place: Option<PlaceId>,
-        value: Option<ValueId>,
-    ) -> Result<(), String> {
-        self.close_selected_value(place, value, None)
-    }
-
     pub(super) fn close_selected_value(
         &mut self,
         place: Option<PlaceId>,

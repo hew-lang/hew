@@ -145,6 +145,7 @@ fn semantic_value_callees(
 fn semantic_release_dependencies(
     module: &hew_sir::SemModule,
     ty: &hew_types::ResolvedTy,
+    body: Option<CallableId>,
 ) -> (bool, BTreeSet<CallableId>) {
     use hew_types::{BuiltinType, ResolvedTy};
     let mut pending = vec![ty.clone()];
@@ -155,7 +156,9 @@ fn semantic_release_dependencies(
         if !seen.insert(ty.clone()) {
             continue;
         }
-        if let Some(release) = module.resources.get(&ty) {
+        let own_record_close = matches!(module.resources.get(&ty),
+            Some(hew_sir::ResourceRelease::RecordClose { close, .. }) if Some(*close) == body);
+        if let Some(release) = module.resources.get(&ty).filter(|_| !own_record_close) {
             match release {
                 hew_sir::ResourceRelease::RecordClose { close, .. }
                 | hew_sir::ResourceRelease::OpaqueClose { close, .. } => {
@@ -163,6 +166,7 @@ fn semantic_release_dependencies(
                 }
                 hew_sir::ResourceRelease::Generator
                 | hew_sir::ResourceRelease::ActorCall
+                | hew_sir::ResourceRelease::ActorRequest
                 | hew_sir::ResourceRelease::Stream
                 | hew_sir::ResourceRelease::Sink => intrinsic = true,
                 _ => {}
@@ -263,7 +267,8 @@ pub(super) fn semantic_callables(checked: &hew_sir::CheckedModule<'_>) -> BTreeS
                     _ => None,
                 };
                 if let Some(ty) = ty {
-                    let (intrinsic, dependencies) = semantic_release_dependencies(module, ty);
+                    let (intrinsic, dependencies) =
+                        semantic_release_dependencies(module, ty, Some(function.callable));
                     if intrinsic {
                         resumable.insert(function.callable);
                     }
@@ -275,7 +280,7 @@ pub(super) fn semantic_callables(checked: &hew_sir::CheckedModule<'_>) -> BTreeS
             }
             if let hew_sir::SemTerminator::ActorCall { operation, .. } = &block.terminator {
                 for ty in actor_release_types(&module.actors, operation) {
-                    let (intrinsic, dependencies) = semantic_release_dependencies(module, ty);
+                    let (intrinsic, dependencies) = semantic_release_dependencies(module, ty, None);
                     // Actor payload/state cleanup uses the checked continuation
                     // ABI even for a pure close, so a retained fault cannot
                     // unwind through the scheduler's synchronous drop callback.
@@ -357,8 +362,11 @@ pub(super) fn semantic_callables(checked: &hew_sir::CheckedModule<'_>) -> BTreeS
                 }
                 hew_sir::SemTerminator::RtCall { family, args, .. } => {
                     if family.releases_receiver_contents() {
-                        let (intrinsic, dependencies) =
-                            semantic_release_dependencies(module, &types[&args[0].operand.value]);
+                        let (intrinsic, dependencies) = semantic_release_dependencies(
+                            module,
+                            &types[&args[0].operand.value],
+                            None,
+                        );
                         if intrinsic {
                             resumable.insert(function.callable);
                         }
@@ -541,8 +549,8 @@ pub(super) fn verify_callables(module: &PhysicalModule) -> Result<(), PhysicalEr
     for callable in &module.callables {
         if callable.is_resumable != expected.contains(&callable.id) {
             return Err(PhysicalError::new(format!(
-                "callable {} has an inconsistent resumable ABI",
-                callable.id.0
+                "callable {} (`{}`) has an inconsistent resumable ABI",
+                callable.id.0, callable.symbol
             )));
         }
     }

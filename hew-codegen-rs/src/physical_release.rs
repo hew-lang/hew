@@ -355,6 +355,14 @@ fn body<'ctx>(
                 combine(values, frame, fault, status)
             }
             hew_mir::physical::ResourceRelease::Generator => generator(values, frame, source),
+            hew_mir::physical::ResourceRelease::ActorRequest => cursor(
+                values,
+                frame,
+                source,
+                "hew_msg_envelope_release_begin",
+                false,
+                None,
+            ),
             hew_mir::physical::ResourceRelease::ActorCall => {
                 let owner = values
                     .builder

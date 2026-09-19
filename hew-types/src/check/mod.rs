@@ -2952,6 +2952,16 @@ impl Checker {
                 }
             }
             Item::Actor(actor) => {
+                for field in &actor.fields {
+                    if let Some((default, span)) = &field.default {
+                        self.classify_escapes_in_expr(
+                            default,
+                            span,
+                            false,
+                            AnonContext::StoredInBinding,
+                        );
+                    }
+                }
                 for method in &actor.methods {
                     self.classify_escapes_in_block(&method.body, false);
                 }
@@ -3591,6 +3601,11 @@ fn collect_lambda_spans_in_item(item: &Item, out: &mut Vec<(Span, Option<String>
             }
         }
         Item::Actor(actor) => {
+            for field in &actor.fields {
+                if let Some((default, span)) = &field.default {
+                    collect_lambda_spans_in_expr(default, span, out);
+                }
+            }
             for method in &actor.methods {
                 collect_lambda_spans_in_block(&method.body, out);
             }

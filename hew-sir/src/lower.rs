@@ -4377,9 +4377,6 @@ impl<'hir, 'service> Builder<'hir, 'service> {
 
     fn emit_destroy(&mut self, value: ValueId) -> Result<(), String> {
         if let Some(ty) = self.value_ty(value) {
-            if self.value_needs_close(&ty) {
-                self.close_value(None, Some(value))?;
-            }
             self.note_release_may_fault(&ty);
         }
         let id = OpId(self.ops);
@@ -8515,6 +8512,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             hew_types::RuntimeCallFamily::StreamClose
                 | hew_types::RuntimeCallFamily::SinkClose
                 | hew_types::RuntimeCallFamily::ActorCallFree
+                | hew_types::RuntimeCallFamily::ActorRequestRelease
         ) {
             let [owner] = args else {
                 return Err("consuming release requires exactly one owner".into());

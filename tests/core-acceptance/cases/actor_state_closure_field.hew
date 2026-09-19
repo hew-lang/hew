@@ -1,0 +1,35 @@
+actor Audit {
+    receive fn record(id: i64) {
+        sleep(1ms);
+        println(f"closed {id}");
+    }
+}
+
+#[resource]
+type Ticket { audit: Audit, id: i64, }
+impl Ticket {
+    fn close(consume self) { self.audit.record(self.id).expect("audit close"); }
+}
+
+actor Worker {
+    var callback: fn(i64) -> i64 = |value: i64| value,
+    receive fn apply(value: i64) -> i64 { callback(value) }
+    receive fn configure(audit: Audit) {
+        let held = Rc.new(Ticket { audit: audit, id: 5 });
+        callback = move |value: i64| {
+            assert(held.strong_count() > 0);
+            value + 40
+        };
+    }
+}
+
+fn main() {
+    let audit = spawn Audit;
+    let worker = spawn Worker;
+    println(worker.apply(1).expect("default closure"));
+    worker.configure(audit).expect("configure closure");
+    println(worker.apply(2).expect("capturing closure"));
+    close(worker);
+    println("barrier");
+    close(audit);
+}

@@ -1,0 +1,14 @@
+[[case]]
+id = "resource-close-task-results"
+intent = "Unclaimed scope results, unused await results and a race winner finish authored close through peer calls before their enclosing continuation resumes."
+source = "cases/resource-close-task-results.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 20
+
+[case.env]
+HEW_WORKERS = "1"
+
+[case.expected]
+stdout = "closed 1\nunclaimed done\nclosed 2\nunused await done\nclosed 3\nrace done\n"
+stderr = ""
+exit = 0

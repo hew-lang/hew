@@ -68,6 +68,7 @@ impl ReleaseEffects {
                         }
                         hew_sir::ResourceRelease::Generator
                         | hew_sir::ResourceRelease::ActorCall
+                        | hew_sir::ResourceRelease::ActorRequest
                         | hew_sir::ResourceRelease::Stream
                         | hew_sir::ResourceRelease::Sink => true,
                         _ => false,
@@ -114,6 +115,8 @@ fn authored_closes(module: &PhysicalModule) -> Vec<bool> {
                     | hew_sir::ResourceRelease::Stream
                     | hew_sir::ResourceRelease::Sink
                     | hew_sir::ResourceRelease::ActorCall
+                    | hew_sir::ResourceRelease::ActorRequest
+                    | hew_sir::ResourceRelease::Generator
             )
         })
         .collect()

@@ -1,0 +1,51 @@
+actor Audit {
+    receive fn record(id: i64) {
+        sleep(1ms);
+        println(f"closed {id}");
+    }
+}
+
+#[resource]
+type Ticket { audit: Audit, id: i64, }
+impl Ticket {
+    fn close(consume self) { self.audit.record(self.id).expect("close ticket"); }
+}
+
+#[resource]
+type Parcel { ticket: Ticket, }
+impl Parcel {
+    fn close(consume self) { println("parcel body"); }
+}
+
+trait Identified { fn id(value: Self) -> i64; }
+impl Identified for Ticket { fn id(value: Ticket) -> i64 { value.id } }
+
+actor Worker {
+    receive fn run(audit: Audit) {
+        { let _parcel = Parcel { ticket: Ticket { audit: audit, id: 1 } }; }
+        {
+            let erased: dyn Identified = Ticket { audit: audit, id: 2 };
+            println(f"erased {erased.id()}");
+        }
+        {
+            let ticket = Ticket { audit: audit, id: 3 };
+            let _unused: fn[once]() -> i64 = move || ticket.id;
+        }
+        {
+            let callback = {
+                let ticket = Rc.new(Ticket { audit: audit, id: 4 });
+                move || ticket.strong_count()
+            };
+            assert(callback() > 0);
+        }
+        println("erased owners complete");
+    }
+}
+
+fn main() {
+    let audit = spawn Audit;
+    let worker = spawn Worker;
+    worker.run(audit).expect("run erased owners");
+    close(worker);
+    close(audit);
+}

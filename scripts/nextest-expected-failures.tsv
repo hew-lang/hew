@@ -68,7 +68,6 @@ macos	failure	hew-cli::recv_loop_leak_oracle	parked_for_await_receiver_handoff_h
 linux,macos,windows,freebsd	failure	hew-cli::run_e2e	check_actor_state_closure_field_fails_closed	#3366 carries capture metadata for a match-arm binding into HIR
 linux,macos,freebsd	failure	hew-cli::shutdown_drain_e2e	tcp_handler_finishing_inside_budget_delivers_response_and_exits_zero	#3397 delivers an in-budget handler's response before the drained socket closes
 linux,macos,windows,freebsd	failure	hew-cli::supervisor_init_args_e2e	supervisor_missing_field_diagnostic_points_at_child_declaration	#3393 makes hew check and hew compile agree on a supervisor child
-macos	failure	hew-cli::vec_index_assign_temp_leak_oracle	vec_index_assign_borrowed_capture_stays_copy_in	#3448 selects the copy-in vector store for a borrowed capture
 macos	failure	hew-cli::vec_iter_closure_unwind_leak_oracle	temporary_vec_iter_closure_trap_invokes_guarded_cleanup_without_leak	#3449 emits a closure call in a guarded region as an invoke
 linux,macos,windows,freebsd	failure	hew-cli::wasi_run_e2e	actor_panic_is_module_fatal_on_production_wasi	#3368 implements sandbox emission on the physical path
 linux,macos,windows,freebsd	failure	hew-cli::wasi_run_e2e	actor_start_panic_remains_module_fatal_on_production_wasi	#3368 implements sandbox emission on the physical path

@@ -1,0 +1,13 @@
+[[case]]
+id = "pipe_recv_waits_for_an_actor_send"
+intent = "A read on an empty pipe waits for the send from an actor that still holds the sink."
+source = "../vertical-slice/accept/pipe_recv_waits_for_an_actor_send.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "from actor\n"
+exit = 0

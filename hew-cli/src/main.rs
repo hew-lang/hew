@@ -806,7 +806,14 @@ fn compile_build_binary_with_hew_lib(
         Some(input),
     )?;
     if target.is_wasm() {
-        return link_wasm_module_for_target(&artefacts, output_path, target);
+        link_wasm_module_for_target(&artefacts, output_path, target)?;
+        // The object is an intermediate here exactly as on the native path:
+        // `hew build` names a module, not an emit directory.
+        if let Some(object) = &artefacts.wasm_obj_path {
+            remove_intermediate_object(object)?;
+        }
+        measure_compile_phase("total", wall_started.elapsed());
+        return Ok(());
     }
     let object = artefacts.native_obj_path.as_deref().ok_or_else(|| {
         eprintln!("E_NOT_YET_IMPLEMENTED: physical codegen did not produce a native object");

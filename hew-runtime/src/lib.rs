@@ -649,13 +649,11 @@ pub mod stdio;
 
 /// Target-neutral COW mailbox payload envelope lifecycle.
 pub mod cow_envelope;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod crash;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod deque;
 pub mod fault;
 pub mod host_api;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod mailbox;
 /// Mailbox envelope payload classification and cross-node send guards.
 pub mod mailbox_envelope;
@@ -691,34 +689,32 @@ pub mod exit_status;
 // on wasm32, while the shared finalizer guard keeps this module available.
 pub mod signal;
 
+/// One actor's dispatch turn: the same code on every target, published to the
+/// native work-stealing queue or the wasm32 driver's queue by `resume`.
+pub(crate) mod activation;
 pub mod actor;
 pub mod actor_balance;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod actor_call_native;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod actor_group;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod actor_native;
 pub mod arena;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod duplex;
 pub mod execution_context;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod read_slot;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod reply_channel;
+/// Where a runnable actor goes, per target.
+pub(crate) mod resume;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod semaphore;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod async_io;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod await_cancel;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod blocking_pool;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod task_scope;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod timer_periodic;
 pub mod wake;
 /// The single-threaded wasm32 process driver: the timer wheel and the root
@@ -745,7 +741,9 @@ pub mod transport_checked;
 #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "sim-transport")))]
 pub mod sim_transport;
 
-#[cfg(not(target_arch = "wasm32"))]
+/// The suspending queue behind an in-memory pipe. Ungated: a parked producer
+/// or consumer is resumed through [`resume`], so the native scheduler and the
+/// wasm32 driver share it.
 pub mod channel_core;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod cluster;
@@ -771,7 +769,6 @@ pub mod observe;
 pub mod peer_binding;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod phi_accrual;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod pid;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod pool;
@@ -793,7 +790,10 @@ pub mod routing;
 /// WASM cooperative scheduler and the native work-stealing scheduler share
 /// this module.  Hooks are registered per-platform at init time.
 pub mod session;
-#[cfg(not(target_arch = "wasm32"))]
+/// `Stream<T>` and `Sink<T>`. Ungated: the in-memory pipe runs on every target.
+/// The file and socket backings of the same handle types need the I/O reactor,
+/// so their entries stay native and the manifest rejects the surface that
+/// reaches them.
 pub mod stream;
 /// Single-owner stream/sink error channel. Ungated: it owns the `hew_stream_*`
 /// C ABI for the whole linked image (see the module docs for why this must be

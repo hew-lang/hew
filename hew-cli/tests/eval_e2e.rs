@@ -1765,11 +1765,9 @@ fn eval_wasm_fast_typecheck_rejects_wasm_unsupported_ops() {
 }
 
 // `compile_wasm_rejects_for_await_receiver_before_link` was deleted with the
-// old `std.channel` surface: the one pipe family (`stream.pipe`/`Sink`/
-// `Stream`) that replaced it is native-only end to end and is rejected
-// before code generation on wasm32 for any use, not specifically `for` over
-// a `Stream` (`wasm-capability-manifest.toml`, id `streams`). There is no
-// wasm-channel-shaped compile path left to pin here.
+// old `std.channel` surface. The one pipe family (`stream.pipe`/`Sink`/
+// `Stream`) that replaced it now runs on wasm32 as well, so there is no
+// rejection to pin here; the parity cases live in `wasi_run_e2e.rs`.
 
 // ── Runtime-failure output contract ──────────────────────────────────────────
 //
@@ -1910,6 +1908,51 @@ fn eval_wasm_inline_runtime_failure_exits_with_child_exit_code() {
         Some(1),
         "expected child exit code 1 (Hew panic via WASM), got {:?}",
         output.status.code()
+    );
+}
+
+/// `exit(code)` round-trips on both targets up to the WASI ceiling, and the
+/// documented limit above it holds.
+///
+/// WASI `proc_exit` refuses a status above 125, so a Hew program that asks for
+/// one reaches the host as 1. The runtime does not remap the status to hide
+/// that: the manifest's `exit-status-range` row states the limit, and this
+/// case is what states it in code.
+#[test]
+fn exit_status_matches_native_up_to_the_wasi_ceiling() {
+    require_codegen();
+    support::require_wasi_runner();
+
+    let status_for = |code: &str, target: Option<&str>| {
+        let mut args = vec!["eval"];
+        if let Some(target) = target {
+            args.extend_from_slice(&["--target", target]);
+        }
+        let expression = format!("exit({code})");
+        args.push(&expression);
+        Command::new(hew_binary())
+            .args(&args)
+            .current_dir(repo_root())
+            .output()
+            .unwrap()
+            .status
+            .code()
+    };
+
+    for code in ["0", "3", "125"] {
+        assert_eq!(
+            status_for(code, Some("wasm32-wasi")),
+            status_for(code, None),
+            "exit({code}) must round-trip identically on both targets"
+        );
+    }
+
+    assert_eq!(status_for("200", None), Some(200), "native exit(200)");
+    assert_eq!(
+        status_for("200", Some("wasm32-wasi")),
+        Some(1),
+        "WASI refuses a proc_exit status above 125; the program's own code does \
+         not reach the host and the module ends as a failure"
     );
 }
 

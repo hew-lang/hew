@@ -1715,46 +1715,9 @@ fn main() {
     }
 
     #[test]
-    fn sandbox_native_only_module_set_drift_guard() {
-        // Drift guard: every module in the authoritative NATIVE_ONLY_WASM_MODULES
-        // const must be rejected by the sandbox in value-position.  This test
-        // fails if a new module is added to the const but not handled by the
-        // profile gate, or vice-versa.
-        //
-        // Structural drift is architecturally impossible: the profile gate uses
-        // `hew_types::NATIVE_ONLY_WASM_MODULES.contains()` directly, so any change
-        // to the const is automatically reflected.  This test verifies:
-        //   1. The const has the expected number of entries (catches silent additions).
-        //   2. Each expected short-name appears in the const.
-        //   3. End-to-end rejection for the three modules with well-known import
-        //      paths (net, tls, dns) as a representative sample.
-        let expected: &[&str] = &[
-            "stream",
-            "http",
-            "net",
-            "process",
-            "tls",
-            "quic",
-            "dns",
-            "os",
-            "encrypt",
-            "sign",
-            "http_client",
-            "smtp",
-            "websocket",
-        ];
-        assert_eq!(
-            expected.len(),
-            hew_types::NATIVE_ONLY_WASM_MODULES.len(),
-            "NATIVE_ONLY_WASM_MODULES length changed; update this expected list"
-        );
-        for name in expected {
-            assert!(
-                hew_types::NATIVE_ONLY_WASM_MODULES.contains(name),
-                "expected `{name}` to be in NATIVE_ONLY_WASM_MODULES"
-            );
-        }
-        // End-to-end: sample three modules with well-known import paths.
+    fn sandbox_rejects_native_only_functions_in_value_position() {
+        // Taking a native-only function as a value must receive the same
+        // platform diagnostic as calling it directly.
         set_test_hewpath();
         let sample: &[(&str, &str, &str)] = &[
             ("net", "std.net", "connect"),

@@ -10,29 +10,22 @@
 
 use crate::lifetime::live_actors;
 use std::cell::Cell;
-#[cfg(not(target_arch = "wasm32"))]
 use std::collections::HashMap;
 // live on not(wasm32) — drain_actors; dead here; caller actor.rs:2729
-#[cfg(not(target_arch = "wasm32"))]
 use std::collections::HashSet;
 use std::ffi::{c_int, c_void};
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU32, AtomicU64, Ordering};
-#[cfg(not(target_arch = "wasm32"))]
 use std::sync::{Condvar, Mutex, OnceLock, PoisonError};
-#[cfg(not(target_arch = "wasm32"))]
 use std::thread::ThreadId;
 
-#[cfg(not(target_arch = "wasm32"))]
 use crate::execution_context::HewExecutionContext;
 use crate::internal::types::{
     AskError, HewActorState, HewDispatchFn, HewError, HewOverflowPolicy, HewSysDispatchFn,
 };
-#[cfg(not(target_arch = "wasm32"))]
 use crate::mailbox::{self, HewMailbox};
-#[cfg(not(target_arch = "wasm32"))]
 use crate::reply_channel::{self, HewReplyChannel};
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(test)]
 use crate::scheduler;
 
 /// Policy-sensitive actor-send status: the incoming send completed, but the
@@ -45,17 +38,13 @@ pub const HEW_ACTOR_SEND_MESSAGE_LOST: i32 = 1;
 
 // ── Crash teardown ordering hook ─────────────────────────────────────────
 
-#[cfg(not(target_arch = "wasm32"))]
 type CrashTeardownOrderHook = Option<fn(c_int)>;
 
-#[cfg(not(target_arch = "wasm32"))]
 static CRASH_TEARDOWN_ORDER_HOOK: Mutex<CrashTeardownOrderHook> = Mutex::new(None);
 
-#[cfg(not(target_arch = "wasm32"))]
 #[doc(hidden)]
 pub const HEW_ACTOR_CRASH_TEARDOWN_BEFORE_EXIT_PROPAGATION: c_int = 1;
 
-#[cfg(not(target_arch = "wasm32"))]
 #[doc(hidden)]
 pub const HEW_ACTOR_CRASH_TEARDOWN_AFTER_EXIT_PROPAGATION: c_int = 2;
 
@@ -67,7 +56,6 @@ pub const HEW_ACTOR_CRASH_TEARDOWN_AFTER_EXIT_PROPAGATION: c_int = 2;
 /// so the exit-status authority must already carry this crash by the time this
 /// event fires. That is what makes the ordering testable rather than a race
 /// whose outcome depends on which platform's scheduler is faster.
-#[cfg(not(target_arch = "wasm32"))]
 #[doc(hidden)]
 pub const HEW_ACTOR_CRASH_TEARDOWN_BEFORE_FIRST_WAKE: c_int = 3;
 
@@ -80,7 +68,6 @@ pub fn hew_actor_set_crash_teardown_order_hook(hook: Option<fn(c_int)>) {
     *guard = hook;
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn run_crash_teardown_order_hook(event: c_int) {
     let hook = {
         let guard = CRASH_TEARDOWN_ORDER_HOOK
@@ -563,7 +550,6 @@ pub const HEW_ACTOR_STATE_LOCK_OK: c_int = 0;
 /// Runtime ABI return code for failed actor-state lock operations.
 pub const HEW_ACTOR_STATE_LOCK_ERR: c_int = -1;
 
-#[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug, Default)]
 struct ActorStateLockState {
     held: bool,
@@ -571,27 +557,23 @@ struct ActorStateLockState {
     poisoned: bool,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug, Default)]
 struct ActorStateLock {
     state: Mutex<ActorStateLockState>,
     available: Condvar,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn actor_state_locks() -> &'static Mutex<HashMap<usize, std::sync::Arc<ActorStateLock>>> {
     static LOCKS: OnceLock<Mutex<HashMap<usize, std::sync::Arc<ActorStateLock>>>> = OnceLock::new();
     LOCKS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn recover_runtime_mutex<T>(
     err: PoisonError<std::sync::MutexGuard<'_, T>>,
 ) -> std::sync::MutexGuard<'_, T> {
     err.into_inner()
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn lookup_actor_state_lock(actor: *mut HewActor) -> Option<std::sync::Arc<ActorStateLock>> {
     let locks = actor_state_locks()
         .lock()
@@ -599,7 +581,6 @@ fn lookup_actor_state_lock(actor: *mut HewActor) -> Option<std::sync::Arc<ActorS
     locks.get(&(actor as usize)).cloned()
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn actor_state_lock_seat(
     actor: *mut HewActor,
 ) -> *mut crate::execution_context::HewActorStateLockState {
@@ -621,7 +602,6 @@ pub(crate) fn actor_state_lock_seat(
     })
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn register_actor_state_lock(actor: *mut HewActor) {
     let mut locks = actor_state_locks()
         .lock()
@@ -629,7 +609,6 @@ fn register_actor_state_lock(actor: *mut HewActor) {
     locks.insert(actor as usize, std::sync::Arc::default());
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn unregister_actor_state_lock(actor: *mut HewActor) {
     let mut locks = actor_state_locks()
         .lock()
@@ -637,7 +616,6 @@ fn unregister_actor_state_lock(actor: *mut HewActor) {
     locks.remove(&(actor as usize));
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn acquire_actor_state_lock_ref(lock: &ActorStateLock) -> c_int {
     let current = std::thread::current().id();
     let mut state = lock.state.lock().unwrap_or_else(recover_runtime_mutex);
@@ -662,7 +640,6 @@ fn acquire_actor_state_lock_ref(lock: &ActorStateLock) -> c_int {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn release_actor_state_lock_ref(lock: &ActorStateLock) -> c_int {
     let current = std::thread::current().id();
     let mut state = lock.state.lock().unwrap_or_else(recover_runtime_mutex);
@@ -731,7 +708,6 @@ pub unsafe extern "C" fn hew_actor_state_lock_release(actor: *mut HewActor) -> c
     release_actor_state_lock_ref(&lock)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) unsafe fn hew_actor_state_lock_acquire_for_context(
     ctx: *mut HewExecutionContext,
 ) -> c_int {
@@ -751,7 +727,6 @@ pub(crate) unsafe fn hew_actor_state_lock_acquire_for_context(
     acquire_actor_state_lock_ref(lock)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) unsafe fn hew_actor_state_lock_release_for_context(
     ctx: *mut HewExecutionContext,
 ) -> c_int {
@@ -771,7 +746,6 @@ pub(crate) unsafe fn hew_actor_state_lock_release_for_context(
     release_actor_state_lock_ref(lock)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 unsafe fn actor_state_lock_release_after_panic_impl(actor: *mut HewActor, poison: bool) -> c_int {
     if actor.is_null() {
         return HEW_ACTOR_STATE_LOCK_OK;
@@ -810,7 +784,6 @@ unsafe fn actor_state_lock_release_after_panic_impl(actor: *mut HewActor, poison
 /// # Safety
 ///
 /// `actor` may be null. If non-null, it must be a valid actor pointer.
-#[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_state_lock_release_after_panic(actor: *mut HewActor) -> c_int {
     // SAFETY: this extern entry point forwards its documented raw-pointer
@@ -1444,7 +1417,6 @@ pub struct HewActor {
     /// before its frame can be destroyed. Null between checked turns.
     pub checked_invocation: AtomicPtr<c_void>,
     /// Retained terminal cleanup result for checked native actor observers.
-    #[cfg(not(target_arch = "wasm32"))]
     pub native_completion: Option<std::sync::Arc<crate::actor_native::NativeActorCompletion>>,
     /// An externally requested crash deferred until a parked checked turn has
     /// drained its coroutine-owned state. Zero means no deferred terminal.
@@ -1456,7 +1428,6 @@ pub struct HewActor {
     /// only after it has cleared [`Self::checked_invocation`].
     ///
     /// Appended at the tail so codegen-mirrored offsets remain stable.
-    #[cfg(not(target_arch = "wasm32"))]
     pub pending_external_trap_code: AtomicI32,
 }
 
@@ -1570,7 +1541,7 @@ pub(crate) fn clear_suspended_cancel_token(actor: &HewActor) {
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn retire_parked_activation_reply(actor: &HewActor) {
     #[cfg(not(target_arch = "wasm32"))]
-    crate::scheduler::retire_suspended_reply_channel(actor);
+    crate::activation::retire_suspended_reply_channel(actor);
 }
 
 // ── Codegen-mirrored ABI offsets ────────────────────────────────────────
@@ -1613,7 +1584,6 @@ static NEXT_ACTOR_SERIAL: AtomicU64 = AtomicU64::new(1);
 /// survives the pack. WASM stores the raw serial as the id — nothing is packed,
 /// so the only unrepresentable value is `0` (the invalid-actor sentinel) and the
 /// bound is the last serial short of the `u64` wrap that would reach it.
-#[cfg(not(target_arch = "wasm32"))]
 const MAX_SPAWN_SERIAL: u64 = crate::pid::MAX_ACTOR_SERIAL;
 
 /// Take the next representable actor serial from `counter`, or `None` once the
@@ -1624,7 +1594,6 @@ const MAX_SPAWN_SERIAL: u64 = crate::pid::MAX_ACTOR_SERIAL;
 /// increment would only walk toward a `u64` wrap that re-enters the valid range
 /// and re-issues ids already live. Refusing is the only outcome that cannot
 /// alias.
-#[cfg(not(target_arch = "wasm32"))]
 fn take_actor_serial(counter: &AtomicU64) -> Option<u64> {
     counter
         .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |serial| {
@@ -1656,8 +1625,22 @@ fn seed_next_actor_serial(serial: u64) {
     NEXT_ACTOR_SERIAL_SEED.with(|slot| slot.set(Some(serial)));
 }
 
+/// The runtime this process spawns into.
+///
+/// wasm32 has exactly one, so every actor carries the default id; natively the
+/// installed runtime names itself.
+fn owning_runtime_id() -> crate::runtime_id::RuntimeId {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        crate::runtime::rt_current().runtime_id()
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        crate::runtime_id::RuntimeId::DEFAULT
+    }
+}
+
 /// Allocate the next actor serial, or `None` when the serial space is exhausted.
-#[cfg(not(target_arch = "wasm32"))]
 fn allocate_actor_serial() -> Option<u64> {
     #[cfg(test)]
     if let Some(seed) = NEXT_ACTOR_SERIAL_SEED.with(Cell::take) {
@@ -1670,9 +1653,7 @@ fn allocate_actor_serial() -> Option<u64> {
 
 // ── Live actor tracking (delegated to lifetime::live_actors) ──────────────
 
-#[cfg(not(target_arch = "wasm32"))]
 const TERMINATE_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
-#[cfg(not(target_arch = "wasm32"))]
 const TERMINATE_WAIT_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(1);
 
 #[cfg(test)]
@@ -1962,7 +1943,7 @@ fn abandon_parked_activation(a: &HewActor) {
     // remember. The swap inside `retire_suspended_reply_channel` keeps it
     // exactly once even though `free_actor_resources` sweeps the
     // same slot on the way out.
-    crate::scheduler::retire_suspended_reply_channel(a);
+    crate::activation::retire_suspended_reply_channel(a);
     // `destroy_parked` above just ran the pump frame's `coro.destroy` cleanup
     // outline, which releases the generator companion (heap env + coro handle)
     // living as a local INSIDE that frame via its normal scope-exit drop
@@ -2316,7 +2297,6 @@ pub(crate) unsafe fn cleanup_all_actors() {
 ///
 /// `actor` must be a valid pointer to a live `HewActor` that is not
 /// currently being dispatched.
-#[cfg(not(target_arch = "wasm32"))]
 unsafe fn free_actor_resources(actor: *mut HewActor) {
     #[cfg(feature = "profiler")]
     // SAFETY: `actor` is valid.
@@ -2345,7 +2325,7 @@ unsafe fn free_actor_resources(actor: *mut HewActor) {
     // `hew_actor_free_inner` (`cleanup_all_actors`, `drain_quiesced_actor`,
     // supervisor child teardown); the swap makes it exactly once when they
     // overlap.
-    crate::scheduler::retire_suspended_reply_channel(a);
+    crate::activation::retire_suspended_reply_channel(a);
 
     // Same argument, other debt: if this actor was running a `receive gen fn`
     // pump, its registered sink is the consumer's only source of values and no
@@ -2509,7 +2489,6 @@ unsafe fn free_actor_resources(actor: *mut HewActor) {
 ///
 /// # Safety
 /// No active handler or lifecycle callback may borrow the actor's state.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) unsafe fn drop_initialized_actor_state(a: &HewActor) {
     let state_drop_consumed = a.state_drop_consumed.swap(true, Ordering::AcqRel);
     if !a.state_drop_borrowed.load(Ordering::Acquire) && !state_drop_consumed {
@@ -2535,7 +2514,6 @@ pub(crate) unsafe fn drop_initialized_actor_state(a: &HewActor) {
 ///
 /// `actor` must be a valid pointer to a live [`HewActor`] in a terminal
 /// state (`Stopped`) that is not currently being dispatched.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) unsafe fn call_terminate_fn(actor: *mut HewActor) {
     // SAFETY: caller guarantees `actor` is valid.
     let a = unsafe { &*actor };
@@ -2591,6 +2569,7 @@ pub(crate) unsafe fn call_terminate_fn(actor: *mut HewActor) {
     // `take_default` at cleanup, after all workers join). It therefore outlives
     // this guard and every `rt_current()` deref taken through it during the
     // terminate body, satisfying `enter`'s lifetime obligation.
+    #[cfg(not(target_arch = "wasm32"))]
     let _rt_guard = crate::runtime::rt_default().map(|rt| unsafe { crate::runtime::enter(rt) });
 
     // The emitted terminate callback acquires the actor-state lock. Structured
@@ -2711,7 +2690,6 @@ pub type HewNativeCrashFn =
     unsafe extern "C" fn(*mut c_void, i64, *const hew_cabi::string::HewString) -> i32;
 
 struct ActorSpawnConfig {
-    #[cfg(not(target_arch = "wasm32"))]
     native_crash: Option<HewNativeCrashFn>,
     dispatch_ownership: HewDispatchOwnership,
     /// The generated `#[on(stop)]` sequence, installed before publication so
@@ -2746,7 +2724,6 @@ struct ActorSpawnConfig {
     adopt: bool,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 unsafe fn free_spawn_mailbox(mailbox: *mut c_void) {
     let mb = mailbox.cast::<HewMailbox>();
     if !mb.is_null() {
@@ -2762,7 +2739,6 @@ unsafe fn free_spawn_mailbox(mailbox: *mut c_void) {
 /// - `config.state` and `init_state` must be allocations owned by the spawn path,
 ///   or null.
 /// - `config.mailbox` must be a mailbox pointer transferred to the spawn path, or null.
-#[cfg(not(target_arch = "wasm32"))]
 unsafe fn cleanup_failed_spawn(config: &ActorSpawnConfig, init_state: *mut c_void) {
     // SAFETY: caller guarantees these pointers are owned by the in-progress spawn.
     unsafe {
@@ -2800,40 +2776,28 @@ struct SpawnIdentity {
 /// whole purpose is to fabricate the out-of-range serial that proves the
 /// downstream identity checks refuse an aliased `id` (`supervisor.rs`
 /// `role_ask_masked_id_alias_refuses_closed_never_enqueues`).
-#[cfg(not(target_arch = "wasm32"))]
 fn next_spawn_actor_identity() -> Option<SpawnIdentity> {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        #[cfg(test)]
-        if let Some((id, serial)) = NEXT_SPAWN_ACTOR_ID_OVERRIDE.with(Cell::take) {
-            return Some(SpawnIdentity { id, serial });
-        }
-        let serial = allocate_actor_serial()?;
-        Some(SpawnIdentity {
-            id: crate::pid::next_actor_id(serial)?,
-            serial,
-        })
+    #[cfg(test)]
+    if let Some((id, serial)) = NEXT_SPAWN_ACTOR_ID_OVERRIDE.with(Cell::take) {
+        return Some(SpawnIdentity { id, serial });
     }
-
-    // WASM stores the raw serial as the `id` rather than packing a route slot,
-    // so `MAX_SPAWN_SERIAL` is the wrap boundary rather than the pack boundary;
-    // the refusal keeps `id == 0` (the invalid-actor sentinel) unreachable.
+    let serial = allocate_actor_serial()?;
+    Some(SpawnIdentity {
+        id: crate::pid::next_actor_id(serial)?,
+        serial,
+    })
 }
 
 #[expect(
     clippy::needless_pass_by_value,
     reason = "config is a lightweight aggregate of Copy fields; consuming it reads clearly at call sites"
 )]
-#[cfg(not(target_arch = "wasm32"))]
 fn build_spawned_actor(
     config: ActorSpawnConfig,
     identity: SpawnIdentity,
     init_state: *mut c_void,
     arena: *mut crate::arena::ActorArena,
 ) -> Box<HewActor> {
-    #[cfg(not(target_arch = "wasm32"))]
-    let rt = crate::runtime::rt_current();
-
     Box::new(HewActor {
         dispatch_ownership: config.dispatch_ownership,
         sched_link_next: AtomicPtr::new(ptr::null_mut()),
@@ -2863,7 +2827,6 @@ fn build_spawned_actor(
         hibernating: AtomicI32::new(0),
         prof_messages_processed: AtomicU64::new(0),
         prof_processing_time_ns: AtomicU64::new(0),
-        #[cfg(not(target_arch = "wasm32"))]
         arena,
         suspended_cont: AtomicPtr::new(ptr::null_mut()),
         cont_tag: AtomicI32::new(crate::internal::types::ContTag::Empty as i32),
@@ -2875,10 +2838,9 @@ fn build_spawned_actor(
         // programs always resolve `RuntimeId::DEFAULT`. The wasm cooperative
         // runtime is single-runtime by construction and has no `rt_current`,
         // so it stamps `DEFAULT` directly.
+        runtime_id: owning_runtime_id(),
         #[cfg(not(target_arch = "wasm32"))]
-        runtime_id: rt.runtime_id(),
-        #[cfg(not(target_arch = "wasm32"))]
-        runtime: rt as *const crate::runtime::RuntimeInner,
+        runtime: crate::runtime::rt_current() as *const crate::runtime::RuntimeInner,
         send_pin_count: AtomicU32::new(0),
         gen_sink: AtomicPtr::new(ptr::null_mut()),
         local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
@@ -2888,9 +2850,7 @@ fn build_spawned_actor(
         state_drop_borrowed: AtomicBool::new(false),
         parked_ask_channel: AtomicPtr::new(std::ptr::null_mut()),
         checked_invocation: AtomicPtr::new(std::ptr::null_mut()),
-        #[cfg(not(target_arch = "wasm32"))]
         pending_external_trap_code: AtomicI32::new(0),
-        #[cfg(not(target_arch = "wasm32"))]
         native_completion: (config.dispatch_ownership == HewDispatchOwnership::UniqueEnvelope)
             .then(|| {
                 std::sync::Arc::new(crate::actor_native::NativeActorCompletion::with_crash(
@@ -2900,15 +2860,20 @@ fn build_spawned_actor(
     })
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 unsafe fn finalize_spawned_actor(raw: *mut HewActor, actor_id: u64) -> bool {
-    // SAFETY: same caller guarantee; `runtime_id` is initialized before track.
-    let runtime_id = unsafe { (*raw).runtime_id };
-    // SAFETY: native spawn stamps this non-null owner from the same runtime
-    // read as `runtime_id`; the owner outlives actor construction and routes.
-    let owner = unsafe { &*(*raw).runtime };
-    let publication =
-        match crate::lifetime::local_handles::begin_actor_publication_in(&owner.local_handles) {
+    // The local-PID control table lives on the runtime instance, which is a
+    // native authority; `hew_local_pid_*` is gated off wasm32, so nothing there
+    // resolves a token and the actor publishes its liveness directly.
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        // SAFETY: same caller guarantee; `runtime_id` is initialized before track.
+        let runtime_id = unsafe { (*raw).runtime_id };
+        // SAFETY: native spawn stamps this non-null owner from the same runtime
+        // read as `runtime_id`; the owner outlives actor construction and routes.
+        let owner = unsafe { &*(*raw).runtime };
+        let publication = match crate::lifetime::local_handles::begin_actor_publication_in(
+            &owner.local_handles,
+        ) {
             Ok(publication) => publication,
             Err(error) => {
                 crate::set_last_error(format!(
@@ -2917,31 +2882,69 @@ unsafe fn finalize_spawned_actor(raw: *mut HewActor, actor_id: u64) -> bool {
                 return false;
             }
         };
-    let token = match publication.register_actor(runtime_id, actor_id) {
-        Ok(token) => token,
-        Err(error) => {
+        let token = match publication.register_actor(runtime_id, actor_id) {
+            Ok(token) => token,
+            Err(error) => {
+                crate::set_last_error(format!(
+                    "hew_actor_spawn: local handle allocation failed: {error:?}"
+                ));
+                return false;
+            }
+        };
+        // Initialise the complete semantic identity before publishing liveness.
+        // SAFETY: raw is owned by this unpublished spawn and fully initialised.
+        unsafe { (*raw).local_pid_id = token };
+        #[cfg(test)]
+        run_spawn_publication_hook();
+        // SAFETY: caller guarantees raw is valid and fully initialised.
+        if !unsafe { live_actors::track_actor(raw) } {
+            let retired = publication.retire_actor(token, actor_id);
+            debug_assert_eq!(
+                retired,
+                crate::lifetime::local_handles::RetireActorResult::Retired
+            );
             crate::set_last_error(format!(
-                "hew_actor_spawn: local handle allocation failed: {error:?}"
+                "hew_actor_spawn: actor identity collision: {actor_id}"
             ));
             return false;
         }
-    };
-    // Initialise the complete semantic identity before publishing liveness.
-    // SAFETY: raw is owned by this unpublished spawn and fully initialised.
-    unsafe { (*raw).local_pid_id = token };
-    #[cfg(test)]
-    run_spawn_publication_hook();
-    // SAFETY: caller guarantees raw is valid and fully initialised.
-    if !unsafe { live_actors::track_actor(raw) } {
-        let retired = publication.retire_actor(token, actor_id);
-        debug_assert_eq!(
-            retired,
-            crate::lifetime::local_handles::RetireActorResult::Retired
-        );
-        crate::set_last_error(format!(
-            "hew_actor_spawn: actor identity collision: {actor_id}"
-        ));
-        return false;
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        // SAFETY: same caller guarantee; `runtime_id` is initialized before track.
+        let runtime_id = unsafe { (*raw).runtime_id };
+        let publication = match crate::lifetime::local_handles::begin_current_actor_publication() {
+            Ok(publication) => publication,
+            Err(error) => {
+                crate::set_last_error(format!(
+                    "hew_actor_spawn: local handle publication failed: {error:?}"
+                ));
+                return false;
+            }
+        };
+        let token = match publication.register_actor(runtime_id, actor_id) {
+            Ok(token) => token,
+            Err(error) => {
+                crate::set_last_error(format!(
+                    "hew_actor_spawn: local handle allocation failed: {error:?}"
+                ));
+                return false;
+            }
+        };
+        // SAFETY: raw is owned by this unpublished spawn and fully initialised.
+        unsafe { (*raw).local_pid_id = token };
+        // SAFETY: caller guarantees raw is valid and fully initialised.
+        if !unsafe { live_actors::track_actor(raw) } {
+            let retired = publication.retire_actor(token, actor_id);
+            debug_assert_eq!(
+                retired,
+                crate::lifetime::local_handles::RetireActorResult::Retired
+            );
+            crate::set_last_error(format!(
+                "hew_actor_spawn: actor identity collision: {actor_id}"
+            ));
+            return false;
+        }
     }
     #[cfg(feature = "profiler")]
     // SAFETY: `raw` was just allocated by `Box::into_raw` and is valid.
@@ -2957,7 +2960,6 @@ unsafe fn finalize_spawned_actor(raw: *mut HewActor, actor_id: u64) -> bool {
 /// Centralises the `cap_bytes == 0` / `cap_bytes > 0` branch and provides a
 /// test-only injection point: when `FAIL_ARENA_ALLOC_NEXT` is set, the first
 /// call returns null to simulate an OOM on the arena allocation step.
-#[cfg(not(target_arch = "wasm32"))]
 fn alloc_actor_arena(cap_bytes: usize) -> *mut crate::arena::ActorArena {
     #[cfg(test)]
     if should_fail_arena_alloc() {
@@ -2976,7 +2978,6 @@ fn alloc_actor_arena(cap_bytes: usize) -> *mut crate::arena::ActorArena {
 ///
 /// - `config.state` must be a deep-copied allocation (or null for zero-sized state).
 /// - `config.mailbox` must be a valid mailbox pointer (already configured).
-#[cfg(not(target_arch = "wasm32"))]
 unsafe fn spawn_actor_internal(config: ActorSpawnConfig) -> *mut HewActor {
     // Adopt-state path (set by hew_actor_spawn_opts_adopt): `config.state` is
     // already an independently-owned deep clone (state_clone_fn output); skip
@@ -3074,7 +3075,6 @@ pub unsafe extern "C" fn hew_actor_spawn(
     // SAFETY: actor_state is a fresh deep-copy; mailbox is valid.
     unsafe {
         spawn_actor_internal(ActorSpawnConfig {
-            #[cfg(not(target_arch = "wasm32"))]
             native_crash: None,
             dispatch_ownership: HewDispatchOwnership::CopiedPayload,
             terminate_fn: None,
@@ -3142,7 +3142,6 @@ pub unsafe extern "C" fn hew_actor_spawn_opts(opts: *const HewActorOpts) -> *mut
     // SAFETY: actor_state is a fresh deep-copy; mailbox is valid.
     unsafe {
         spawn_actor_internal(ActorSpawnConfig {
-            #[cfg(not(target_arch = "wasm32"))]
             native_crash: None,
             dispatch_ownership: HewDispatchOwnership::CopiedPayload,
             terminate_fn: None,
@@ -3246,7 +3245,6 @@ pub unsafe extern "C" fn hew_actor_spawn_opts_adopt(
     // SAFETY: cloned_state ownership has been transferred to us; mailbox is valid.
     unsafe {
         spawn_actor_internal(ActorSpawnConfig {
-            #[cfg(not(target_arch = "wasm32"))]
             native_crash: None,
             dispatch_ownership: HewDispatchOwnership::CopiedPayload,
             terminate_fn: None,
@@ -3284,7 +3282,6 @@ pub struct HewNativePeriodicHandler {
 /// runs once with the initialized state at the terminal transition. `fault`
 /// is a writable, initially null fault slot. `periodic` points to
 /// `periodic_count` valid descriptors, or is null when the count is zero.
-#[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 #[allow(
     clippy::too_many_arguments,
@@ -3404,7 +3401,6 @@ pub unsafe extern "C" fn hew_actor_spawn_native(
 ///
 /// # Safety
 /// `envelope` is uniquely owned and transfers only on successful admission.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) unsafe fn try_submit_native_envelope(
     token: crate::lifetime::local_handles::HewLocalPidId,
     message: i32,
@@ -3415,7 +3411,6 @@ pub(crate) unsafe fn try_submit_native_envelope(
 }
 
 /// Register native capacity readiness while the exact destination is pinned.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn register_native_capacity(
     token: crate::lifetime::local_handles::HewLocalPidId,
     waker: &std::sync::Arc<crate::wake::OwnedWaker>,
@@ -3433,7 +3428,6 @@ pub(crate) fn register_native_capacity(
 ///
 /// # Safety
 /// Both unpublished references transfer only on successful admission.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) unsafe fn try_submit_native_request(
     token: crate::lifetime::local_handles::HewLocalPidId,
     message: i32,
@@ -3444,7 +3438,6 @@ pub(crate) unsafe fn try_submit_native_request(
     unsafe { submit_native_request(token, message, envelope, reply, false) }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) unsafe fn submit_native_terminal(
     token: crate::lifetime::local_handles::HewLocalPidId,
     message: i32,
@@ -3454,7 +3447,6 @@ pub(crate) unsafe fn submit_native_terminal(
     unsafe { submit_native_request(token, message, envelope, std::ptr::null_mut(), true) }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 unsafe fn submit_native_request(
     token: crate::lifetime::local_handles::HewLocalPidId,
     message: i32,
@@ -3528,7 +3520,6 @@ pub unsafe extern "C" fn hew_actor_spawn_bounded(
     // SAFETY: actor_state is a fresh deep-copy; mailbox is valid.
     unsafe {
         spawn_actor_internal(ActorSpawnConfig {
-            #[cfg(not(target_arch = "wasm32"))]
             native_crash: None,
             dispatch_ownership: HewDispatchOwnership::CopiedPayload,
             terminate_fn: None,
@@ -3563,7 +3554,6 @@ pub unsafe extern "C" fn hew_actor_spawn_bounded(
 /// - `actor` must be a valid pointer returned by a spawn function.
 /// - `data` must point to at least `size` readable bytes, or be null
 ///   when `size` is 0.
-#[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_send(
     actor: *mut HewActor,
@@ -3734,7 +3724,6 @@ pub unsafe extern "C" fn hew_actor_await_send_by_id(
 ///
 /// `actor` must remain pinned, `data` must cover `size` readable bytes, and
 /// `sender`/`slot` must satisfy [`mailbox::mailbox_await_send`].
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) unsafe fn actor_await_send_pinned(
     actor: *mut HewActor,
     msg_type: i32,
@@ -3894,7 +3883,6 @@ pub unsafe extern "C" fn hew_actor_try_send(
 ///
 /// `actor`, `a`, and `mb` must name the same live actor/mailbox allocation, and
 /// the mailbox must already be closed.
-#[cfg(not(target_arch = "wasm32"))]
 unsafe fn try_terminalize_idle_actor(
     actor: *mut HewActor,
     a: &HewActor,
@@ -3970,7 +3958,6 @@ pub unsafe extern "C" fn hew_actor_close(actor: *mut HewActor) {
 /// # Safety
 ///
 /// `actor` must be a valid pointer returned by a spawn function.
-#[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_stop(actor: *mut HewActor) {
     cabi_guard!(actor.is_null());
@@ -4020,7 +4007,7 @@ pub unsafe extern "C" fn hew_actor_stop(actor: *mut HewActor) {
             )
             .is_ok()
     {
-        crate::scheduler::sched_enqueue(actor);
+        crate::resume::sched_enqueue(actor);
     }
 }
 
@@ -4687,7 +4674,7 @@ pub unsafe extern "C" fn hew_actor_drain_set(
 /// - `dispatch` must be a valid dispatch function for the actor type.
 /// - `name` must point to a valid NUL-terminated UTF-8 string with `'static`
 ///   lifetime.
-#[cfg(all(not(target_arch = "wasm32"), feature = "profiler"))]
+#[cfg(feature = "profiler")]
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_register_type(
     dispatch: *const c_void,
@@ -4740,7 +4727,7 @@ pub unsafe extern "C" fn hew_actor_register_type(
 /// This stub never dereferences its arguments, so any pointer values are
 /// accepted. The signature stays `unsafe extern "C"` to match the
 /// profiler-enabled variant that codegen links against.
-#[cfg(all(not(target_arch = "wasm32"), not(feature = "profiler")))]
+#[cfg(not(feature = "profiler"))]
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_register_type(
     _dispatch: *const c_void,
@@ -4766,7 +4753,7 @@ pub unsafe extern "C" fn hew_actor_register_type(
 /// - `dispatch` must be a valid dispatch function for the actor type.
 /// - `name` must point to a valid NUL-terminated UTF-8 string with `'static`
 ///   lifetime.
-#[cfg(all(not(target_arch = "wasm32"), feature = "profiler"))]
+#[cfg(feature = "profiler")]
 #[no_mangle]
 pub unsafe extern "C" fn hew_register_handler_name(
     dispatch: *const c_void,
@@ -4799,7 +4786,7 @@ pub unsafe extern "C" fn hew_register_handler_name(
 /// This stub never dereferences its arguments, so any pointer values are
 /// accepted. The signature stays `unsafe extern "C"` to match the
 /// profiler-enabled variant that codegen links against.
-#[cfg(all(not(target_arch = "wasm32"), not(feature = "profiler")))]
+#[cfg(not(feature = "profiler"))]
 #[no_mangle]
 pub unsafe extern "C" fn hew_register_handler_name(
     _dispatch: *const c_void,
@@ -5195,29 +5182,38 @@ pub unsafe extern "C" fn hew_actor_get_priority(actor: *const HewActor) -> c_int
 /// is the wall that keeps two runtimes' actors from accepting each other's
 /// pointers. A mismatch is a logic error, not a normal outcome, so it is logged
 /// once at the boundary before the refusal.
-#[cfg(not(target_arch = "wasm32"))]
 #[inline]
 fn actor_runtime_matches(a: &HewActor) -> bool {
-    // Resolve the calling runtime's id without trapping when none is installed.
-    // With no runtime bound there is no second runtime the actor could be
-    // foreign to, so the boundary treats the send as in-runtime — it must not
-    // introduce a "runtime must be installed" precondition the pre-check never
-    // had (e.g. an alias send before init, or a unit test driving a send path
-    // without a runtime guard).
-    let Some(current) = crate::runtime::rt_current_id() else {
-        return true;
-    };
-    if current == a.runtime_id {
-        return true;
+    // wasm32 has one runtime by construction, so no actor can be foreign to the
+    // caller and the boundary is always in-runtime.
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = a;
+        true
     }
-    eprintln!(
-        "hew-runtime: refused a send to actor {:#x} owned by runtime {} from runtime {} \
-         (cross-runtime boundary; pointer not routed)",
-        a.id,
-        a.runtime_id.as_u64(),
-        current.as_u64(),
-    );
-    false
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        // Resolve the calling runtime's id without trapping when none is installed.
+        // With no runtime bound there is no second runtime the actor could be
+        // foreign to, so the boundary treats the send as in-runtime — it must not
+        // introduce a "runtime must be installed" precondition the pre-check never
+        // had (e.g. an alias send before init, or a unit test driving a send path
+        // without a runtime guard).
+        let Some(current) = crate::runtime::rt_current_id() else {
+            return true;
+        };
+        if current == a.runtime_id {
+            return true;
+        }
+        eprintln!(
+            "hew-runtime: refused a send to actor {:#x} owned by runtime {} from runtime {} \
+             (cross-runtime boundary; pointer not routed)",
+            a.id,
+            a.runtime_id.as_u64(),
+            current.as_u64(),
+        );
+        false
+    }
 }
 
 /// Terminal-state send gate: `true` once the actor has been published into a
@@ -5244,14 +5240,12 @@ fn actor_runtime_matches(a: &HewActor) -> bool {
 /// gate observes terminal and the close runs — the inherent "sent the instant
 /// before the crash" case, drained by `hew_mailbox_free`, identical to every
 /// prior ordering.
-#[cfg(not(target_arch = "wasm32"))]
 #[inline]
 fn actor_send_is_terminal(a: &HewActor) -> bool {
     let state = a.actor_state.load(Ordering::Acquire);
     state == HewActorState::Crashed as i32 || state == HewActorState::Stopped as i32
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 unsafe fn actor_send_result_internal(
     actor: *mut HewActor,
     msg_type: i32,
@@ -5267,7 +5261,6 @@ unsafe fn actor_send_result_internal(
 /// # Safety
 ///
 /// `data` must point to `size` readable bytes.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) unsafe fn actor_send_pinned(
     pin: &crate::lifetime::live_actors::ActorPin,
     msg_type: i32,
@@ -5281,7 +5274,6 @@ pub(crate) unsafe fn actor_send_pinned(
 
 /// Like [`actor_send_result_internal`] but with an explicit reply channel
 /// that is set on the message node (for the ask pattern).
-#[cfg(not(target_arch = "wasm32"))]
 unsafe fn actor_send_result_internal_reply(
     actor: *mut HewActor,
     msg_type: i32,
@@ -5375,7 +5367,6 @@ unsafe fn actor_send_result_internal_reply(
 /// # Safety
 ///
 /// `a` must remain live through the terminal-state and dispatch-owner probes.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) unsafe fn reclaim_terminal_enqueue_if_unowned(a: &HewActor) {
     // SAFETY: production always closes the dispatch-owner handoff. The
     // test-only false branch below is the exact pre-fix omission oracle.
@@ -5390,7 +5381,6 @@ pub(crate) unsafe fn reclaim_terminal_enqueue_if_unowned(a: &HewActor) {
 /// # Safety
 ///
 /// Same contract as [`reclaim_terminal_enqueue_if_unowned`].
-#[cfg(not(target_arch = "wasm32"))]
 unsafe fn reclaim_terminal_enqueue_if_unowned_inner(a: &HewActor, close_dispatch_handoff: bool) {
     // A terminal publisher may have drained before this producer, which had
     // already passed the mailbox-open check, completed its enqueue. Once the
@@ -5435,7 +5425,6 @@ unsafe fn reclaim_terminal_enqueue_if_unowned_inner(a: &HewActor, close_dispatch
 /// # Safety
 ///
 /// `actor` must be live for the call and `a` must borrow the same allocation.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) unsafe fn finish_mailbox_enqueue(actor: *mut HewActor, a: &HewActor) {
     // SAFETY: production always includes terminal handoff.
     unsafe { finish_mailbox_enqueue_inner(actor, a, true) };
@@ -5449,7 +5438,6 @@ pub(crate) unsafe fn finish_mailbox_enqueue(actor: *mut HewActor, a: &HewActor) 
 /// # Safety
 ///
 /// Same contract as [`finish_mailbox_enqueue`].
-#[cfg(not(target_arch = "wasm32"))]
 unsafe fn finish_mailbox_enqueue_inner(
     actor: *mut HewActor,
     a: &HewActor,
@@ -5468,7 +5456,7 @@ unsafe fn finish_mailbox_enqueue_inner(
     // loses, dropping the unused entry releases the reference; if it wins,
     // ownership moves through the queue into `dispatch_active`.
     // SAFETY: the function contract guarantees the actor is live.
-    let queue_entry = unsafe { scheduler::SchedulerQueueEntry::retain(actor) };
+    let queue_entry = unsafe { crate::activation::SchedulerQueueEntry::retain(actor) };
     if a.actor_state
         .compare_exchange(
             HewActorState::Idle as i32,
@@ -5480,7 +5468,7 @@ unsafe fn finish_mailbox_enqueue_inner(
     {
         a.idle_count.store(0, Ordering::Relaxed);
         a.hibernating.store(0, Ordering::Relaxed);
-        scheduler::sched_enqueue_owned(queue_entry);
+        crate::resume::sched_enqueue_owned(queue_entry);
     } else {
         drop(queue_entry);
         if close_terminal_handoff {
@@ -5528,7 +5516,6 @@ pub(crate) unsafe fn send_system_message(
 /// # Safety
 ///
 /// `actor` must be a valid pointer and `a` must borrow the same actor.
-#[cfg(not(target_arch = "wasm32"))]
 unsafe fn schedule_actor_after_enqueue(actor: *mut HewActor, a: &HewActor, msg_type: i32) {
     let sender = hew_actor_self();
     let trace_actor_id = if sender.is_null() {
@@ -5554,7 +5541,6 @@ unsafe fn schedule_actor_after_enqueue(actor: *mut HewActor, a: &HewActor, msg_t
 /// # Safety
 ///
 /// Same requirements as [`hew_actor_send`].
-#[cfg(not(target_arch = "wasm32"))]
 unsafe fn actor_send_internal(
     actor: *mut HewActor,
     msg_type: i32,
@@ -6130,7 +6116,6 @@ pub unsafe extern "C" fn hew_actor_gen_sink_complete(
 /// Idempotent: swaps the slot to null before touching the sink, so a second
 /// call (or a race between callers) sees an already-null slot and is a no-op —
 /// the sink is fault-closed exactly once.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn fault_close_registered_gen_sink(a: &HewActor) {
     let raw = a.gen_sink.swap(ptr::null_mut(), Ordering::AcqRel);
     if raw.is_null() {
@@ -6140,10 +6125,32 @@ pub(crate) fn fault_close_registered_gen_sink(a: &HewActor) {
     // `HewSink` pointer and has not been consumed — the swap-to-null above is
     // the single point that can observe it non-null, so no other caller can
     // race this release.
-    unsafe { crate::stream::fault_close_registered_sink(raw.cast(), a.id) };
+    #[cfg(not(target_arch = "wasm32"))]
+    // SAFETY: see above.
+    unsafe {
+        crate::stream::fault_close_registered_sink(raw.cast(), a.id);
+    };
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = raw;
+    }
 }
 
 // ── Trap / Error ────────────────────────────────────────────────────────
+
+/// Publish a DOWN notification for a dead actor.
+///
+/// `link` and `monitor` are a manifest reject on wasm32 (`link-monitor`), so no
+/// program this target admits can hold either: there is no watcher to notify
+/// and no graph entry to reclaim.
+pub(crate) fn notify_monitors_on_death(actor_id: u64, state: i32, reason: u32) {
+    #[cfg(not(target_arch = "wasm32"))]
+    crate::monitor::notify_monitors_on_death(actor_id, state, reason);
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (actor_id, state, reason);
+    }
+}
 
 /// Trap (panic) an actor: store an error code, close the mailbox, and
 /// transition to a terminal state. If the actor has a supervisor, notify it.
@@ -6207,13 +6214,11 @@ unsafe fn defer_external_trap_until_checked_drain(actor: *mut HewActor, error_co
 }
 
 /// Consume a deferred external terminal request after its checked turn drains.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn take_deferred_external_trap(a: &HewActor) -> Option<i32> {
     let code = a.pending_external_trap_code.swap(0, Ordering::AcqRel);
     (code != 0).then_some(code)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 #[derive(Clone, Copy)]
 enum TrapMailboxReclaim {
     /// The caller is the scheduler frame that owns the mailbox consumer.
@@ -6232,7 +6237,6 @@ enum TrapMailboxReclaim {
 ///
 /// `actor` must be the live actor whose activation the calling scheduler frame
 /// owns.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) unsafe fn hew_actor_trap_from_activation(actor: *mut HewActor, error_code: i32) {
     // SAFETY: forwarded contract; the caller supplies the sole-consumer proof.
     unsafe { hew_actor_trap_inner(actor, error_code, TrapMailboxReclaim::OwnedActivation) };
@@ -6256,7 +6260,6 @@ pub(crate) unsafe fn hew_actor_trap_from_activation(actor: *mut HewActor, error_
 /// rule on it. A SUPERVISED one gets its record opened here, and the caller
 /// carries the id to the supervisor notification. Both are therefore accounted
 /// for before the crash is observable at all.
-#[cfg(not(target_arch = "wasm32"))]
 fn publish_crash_fault_record(
     terminal: i32,
     supervisor: *mut c_void,
@@ -6274,6 +6277,7 @@ fn publish_crash_fault_record(
     // every ancestor role above it, so an `await_restart` on any of them treats
     // the crash as pending until a ruling settles it. Attribution happens here,
     // with the record, and therefore also before the first wake.
+    #[cfg(not(target_arch = "wasm32"))]
     if let Ok(child_index) = u32::try_from(supervisor_child_index) {
         // SAFETY: the back-pointer was set by `hew_supervisor_add_child` and
         // the supervisor outlives the child that names it.
@@ -6292,7 +6296,6 @@ fn publish_crash_fault_record(
 /// # Safety
 ///
 /// Same contract as [`hew_actor_trap`].
-#[cfg(not(target_arch = "wasm32"))]
 #[expect(
     clippy::too_many_lines,
     reason = "terminal publication keeps its ordering proof beside every notification edge"
@@ -6465,6 +6468,7 @@ unsafe fn hew_actor_trap_inner(
         unsafe { crate::actor_native::finish_native_terminal(a) };
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     if terminal == HewActorState::Crashed as i32 {
         let scope = crate::task_scope::current_task_scope();
         if !scope.is_null() {
@@ -6483,11 +6487,13 @@ unsafe fn hew_actor_trap_inner(
     // two-process link fixture can confirm a LOCAL linked actor actually crashed
     // (terminal Crashed == 5) after a cross-node link-down, surviving the actor's
     // free. Gated by HEW_LINK_PROBE so production pays nothing.
+    #[cfg(not(target_arch = "wasm32"))]
     crate::link::record_link_probe_terminal(actor_id, terminal);
 
     // Propagate exit to linked actors and notify monitors.
     // Do this BEFORE notifying supervisor to ensure proper ordering.
     run_crash_teardown_order_hook(HEW_ACTOR_CRASH_TEARDOWN_BEFORE_EXIT_PROPAGATION);
+    #[cfg(not(target_arch = "wasm32"))]
     crate::link::propagate_exit_to_links(actor_id, error_code);
     run_crash_teardown_order_hook(HEW_ACTOR_CRASH_TEARDOWN_AFTER_EXIT_PROPAGATION);
     let crash_kind = if terminal == HewActorState::Crashed as i32 {
@@ -6495,7 +6501,7 @@ unsafe fn hew_actor_trap_inner(
     } else {
         0
     };
-    crate::monitor::notify_monitors_on_death(actor_id, terminal, crash_kind);
+    notify_monitors_on_death(actor_id, terminal, crash_kind);
 
     // Wake any actor group condvars waiting on this actor.
     crate::actor_group::notify_actor_death(actor_id);
@@ -6505,6 +6511,10 @@ unsafe fn hew_actor_trap_inner(
     // there is nothing to notify — the `u32` parameter makes that case a
     // conversion failure here rather than a negative index the supervisor has
     // to reinterpret.
+    // `supervision-trees` is a manifest reject on wasm32, so no admitted
+    // program has a supervisor back-pointer to notify; an unsupervised crash
+    // settles as unrecovered below, the same as natively.
+    #[cfg(not(target_arch = "wasm32"))]
     if !supervisor.is_null() {
         if let Ok(child_index) = u32::try_from(supervisor_child_index) {
             // Hand the record opened at the terminal CAS to the supervisor on
@@ -6935,9 +6945,7 @@ pub mod composition_test_support {
             state_drop_borrowed: AtomicBool::new(false),
             parked_ask_channel: AtomicPtr::new(std::ptr::null_mut()),
             checked_invocation: AtomicPtr::new(std::ptr::null_mut()),
-            #[cfg(not(target_arch = "wasm32"))]
             pending_external_trap_code: AtomicI32::new(0),
-            #[cfg(not(target_arch = "wasm32"))]
             native_completion: None,
         }))
     }
@@ -8302,7 +8310,7 @@ mod tests {
         _borrow_mode: i32,
     ) -> *mut c_void {
         ASK_SEND_BY_ID_DISPATCH_COUNT.fetch_add(1, Ordering::AcqRel);
-        let ch = crate::scheduler::hew_get_reply_channel();
+        let ch = crate::execution_context::hew_get_reply_channel();
         if ch.is_null() {
             return std::ptr::null_mut();
         }
@@ -8416,7 +8424,8 @@ mod tests {
         _size: usize,
         _borrow_mode: i32,
     ) -> *mut c_void {
-        let ch = crate::scheduler::hew_get_reply_channel().cast::<reply_channel::HewReplyChannel>();
+        let ch = crate::execution_context::hew_get_reply_channel()
+            .cast::<reply_channel::HewReplyChannel>();
         LAST_NATIVE_ASK_REPLY_CHANNEL.store(ch, Ordering::Release);
         hew_actor_self_stop();
 
@@ -8431,7 +8440,7 @@ mod tests {
         _size: usize,
         _borrow_mode: i32,
     ) -> *mut c_void {
-        let ch = crate::scheduler::hew_get_reply_channel();
+        let ch = crate::execution_context::hew_get_reply_channel();
         if ch.is_null() {
             return std::ptr::null_mut();
         }
@@ -8458,7 +8467,7 @@ mod tests {
         _borrow_mode: i32,
     ) -> *mut c_void {
         std::thread::sleep(std::time::Duration::from_millis(20));
-        let ch = crate::scheduler::hew_get_reply_channel();
+        let ch = crate::execution_context::hew_get_reply_channel();
         if ch.is_null() {
             return std::ptr::null_mut();
         }
@@ -8484,7 +8493,7 @@ mod tests {
         _size: usize,
         _borrow_mode: i32,
     ) -> *mut c_void {
-        let ch = crate::scheduler::hew_get_reply_channel();
+        let ch = crate::execution_context::hew_get_reply_channel();
         if ch.is_null() {
             return std::ptr::null_mut();
         }
@@ -8561,9 +8570,7 @@ mod tests {
                 state_drop_borrowed: AtomicBool::new(false),
                 parked_ask_channel: AtomicPtr::new(std::ptr::null_mut()),
                 checked_invocation: AtomicPtr::new(std::ptr::null_mut()),
-                #[cfg(not(target_arch = "wasm32"))]
                 pending_external_trap_code: AtomicI32::new(0),
-                #[cfg(not(target_arch = "wasm32"))]
                 native_completion: None,
             }));
             (actor, mailbox)

@@ -290,14 +290,13 @@ mod wasm_rejects {
         );
     }
 
-    // The former channel-specific `wasm_rejects_blocking_channel_recv` and
-    // `wasm_rejects_for_await_receiver` tests are gone with the channel
-    // family: `wasm_rejects_for_await_stream` and `wasm_rejects_stream_method`
-    // below already pin the single `WasmUnsupportedFeature::Streams` gate
-    // that any `Stream<T>` method call goes through on wasm32.
+    // The pipe runs on wasm32, so the `for` loop and the `Stream<T>` methods
+    // are admitted on both targets; the pair below is the parity oracle. The
+    // backings that still need the native I/O reactor are rejected by their own
+    // rows (`filesystem-streams`, `tcp-networking`).
 
     #[test]
-    fn wasm_rejects_for_await_stream() {
+    fn wasm_admits_for_await_pipe_stream() {
         let source = concat!(
             "import std.stream;\n",
             "fn main() {\n",
@@ -318,13 +317,8 @@ mod wasm_rejects {
         checker.enable_wasm_target();
         let output = checker.check_program(&result.program);
         assert!(
-            has_platform_limitation_error(&output),
-            "`for` over Stream<T> should be a compile-time error on WASM; got errors: {:?}",
-            output.errors
-        );
-        assert!(
-            platform_error_contains(&output, "Stream operations"),
-            "error message should mention Stream operations; got: {:?}",
+            !has_platform_limitation_error(&output),
+            "`for` over a pipe stream should compile on WASM; got errors: {:?}",
             output.errors
         );
     }
@@ -450,7 +444,7 @@ mod wasm_rejects {
     // ── Stream<T> methods ────────────────────────────────────────────────────
 
     #[test]
-    fn wasm_rejects_stream_method() {
+    fn wasm_admits_pipe_stream_method() {
         // Use a function that accepts a Stream<string> and calls .next().
         // The stream module must be imported to register Stream types.
         let source = concat!(
@@ -469,13 +463,32 @@ mod wasm_rejects {
         checker.enable_wasm_target();
         let output = checker.check_program(&result.program);
         assert!(
-            has_platform_limitation_error(&output),
-            "Stream<T>::next should be a compile-time error on WASM; got errors: {:?}",
+            !has_platform_limitation_error(&output),
+            "Stream<T>::next should compile on WASM; got errors: {:?}",
             output.errors
         );
+    }
+
+    #[test]
+    fn wasm_rejects_file_backed_stream_open() {
+        let source = concat!(
+            "import std.stream;\n",
+            "fn main() {\n",
+            "    let _ = stream.open(\"data.txt\");\n",
+            "}\n",
+        );
+        let result = hew_parser::parse(source);
         assert!(
-            platform_error_contains(&output, "Stream"),
-            "error message should mention Stream feature; got: {:?}",
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new(test_registry());
+        checker.enable_wasm_target();
+        let output = checker.check_program(&result.program);
+        assert!(
+            platform_error_contains(&output, "File-backed stream operations"),
+            "stream.open reads through the native I/O reactor and must stay rejected; got: {:?}",
             output.errors
         );
     }
@@ -1715,48 +1728,10 @@ fn main() {
     }
 
     #[test]
-    fn wasm_multi_arm_literal_timed_select_is_not_warning() {
-        let output = check_wasm(
-            r"
-            actor Responder {
-                let value: i64,
-                receive fn get() -> i64 {
-                    value
-                }
-            }
-
-            fn main() {
-                let a = spawn Responder(value: 1);
-                let b = spawn Responder(value: 2);
-                let result = select {
-                    x from a.get() => match x { .Ok(value) => value, .Err(_) => -2 },
-                    y from b.get() => match y { .Ok(value) => value, .Err(_) => -2 },
-                    after 1ms => -1,
-                };
-                println(result);
-            }
-        ",
-        );
-        assert!(
-            !output
-                .warnings
-                .iter()
-                .any(|w| w.kind == TypeErrorKind::PlatformLimitation),
-            "literal timed select should no longer warn on WASM; got warnings: {:?}",
-            output.warnings
-        );
-        assert!(
-            !output
-                .errors
-                .iter()
-                .any(|e| e.kind == TypeErrorKind::PlatformLimitation),
-            "literal timed select should not error on WASM; got errors: {:?}",
-            output.errors
-        );
-    }
-
-    #[test]
-    fn wasm_computed_timed_select_no_longer_warns() {
+    fn wasm_rejects_a_computed_timed_select_like_any_other() {
+        // The literal-timeout twin of this case is gone: both existed to pin
+        // that a select emitted no spurious warning on wasm32, and the reject
+        // that replaced that claim does not read the timeout expression at all.
         let output = check_wasm(
             r"
             actor Responder {
@@ -1779,19 +1754,28 @@ fn main() {
             }
         ",
         );
+        // A select builds its readiness waitset in the task-scope runtime, which
+        // wasm32 does not compile, so the reject is the select itself and does
+        // not depend on how the timeout is spelled: one error, no warning.
         assert!(
             !output.warnings.iter().any(
                 |w| w.kind == TypeErrorKind::PlatformLimitation && w.message.contains("Select")
             ),
-            "computed timed select should not warn on WASM; got warnings: {:?}",
+            "the select reject is an error, not a warning; got warnings: {:?}",
             output.warnings
         );
-        assert!(
-            !output
-                .errors
-                .iter()
-                .any(|e| e.kind == TypeErrorKind::PlatformLimitation),
-            "computed timed select should not error on WASM; got errors: {:?}",
+        let rejects: Vec<_> = output
+            .errors
+            .iter()
+            .filter(|e| {
+                e.kind == TypeErrorKind::PlatformLimitation
+                    && e.message.contains("`select {}` operations")
+            })
+            .collect();
+        assert_eq!(
+            rejects.len(),
+            1,
+            "a computed timeout must not change the select reject; got errors: {:?}",
             output.errors
         );
     }

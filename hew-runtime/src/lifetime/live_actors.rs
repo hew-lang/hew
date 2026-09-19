@@ -343,7 +343,6 @@ pub(crate) fn has_drain_blocking_suspended_actor(
 /// OUTSIDE the lock (it may run reply destructors). Falls back to a bare swap
 /// when no runtime is installed — the scan resolves through the same runtime
 /// slot, so no scan can be racing in that case.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn swap_slot_under_registry_lock(
     slot: &std::sync::atomic::AtomicPtr<std::ffi::c_void>,
 ) -> *mut std::ffi::c_void {

@@ -80,9 +80,25 @@ fn ticker_park_notify() {
     park.cv.notify_one();
 }
 
-/// Return (or create) the global timer wheel and ensure the ticker thread
-/// is running.
+/// Return (or create) the process timer wheel, ensuring something ticks it.
+///
+/// Natively that is a background ticker thread parked on the next deadline.
+/// wasm32 has no thread to park: the process drives the wheel itself between
+/// readiness steps, so the wheel lives with the driver and nothing is started
+/// here.
 pub(crate) fn global_wheel() -> *mut HewTimerWheel {
+    #[cfg(target_arch = "wasm32")]
+    {
+        crate::wasm_driver::global_wheel()
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        native_global_wheel()
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn native_global_wheel() -> *mut HewTimerWheel {
     GLOBAL_WHEEL.access(|guard| {
         if guard.0.is_null() {
             // SAFETY: hew_timer_wheel_new has no preconditions.
@@ -608,6 +624,7 @@ pub unsafe extern "C" fn hew_actor_schedule_periodic(
     if !handle.is_null() {
         // SAFETY: `tw` was validated above and is still live.
         unsafe {
+            #[cfg(not(target_arch = "wasm32"))]
             assert_ticker_alive("hew_actor_schedule_periodic: after first insert", tw);
         }
     }
@@ -687,7 +704,10 @@ unsafe fn schedule_periodic_on_wheel(
 /// # Safety
 ///
 /// `tw` must be a valid pointer returned by `hew_timer_wheel_new`.
-#[cfg(debug_assertions)]
+/// Only the native target has a ticker thread to be alive: wasm32 ticks the
+/// wheel from the process driver between readiness steps, so the premise of
+/// this check does not hold there.
+#[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
 unsafe fn assert_ticker_alive(context: &str, tw: *mut HewTimerWheel) {
     let ticker_running = TICKER_RUNNING.load(Ordering::SeqCst);
     let handle_finished = TICKER_HANDLE.get().and_then(|handle_mutex| {

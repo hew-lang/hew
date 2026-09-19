@@ -1,6 +1,6 @@
 [[case]]
 id = "collection-callback-actor"
-intent = "Hash and Eq ask a peer actor on one worker through collision-heavy map and set resize, lookup, replacement and removal, and through vector membership and derived equality."
+intent = "Hash and Eq ask a peer actor on one worker through collision-heavy map/set operations and vector equality, while pure callbacks remain usable in synchronous start hooks."
 source = "cases/collection-callback-actor.hew"
 suites = ["acceptance", "safety"]
 timeout_seconds = 20

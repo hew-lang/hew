@@ -9252,6 +9252,13 @@ mod tests {
             .unwrap()
             .result_ty;
         let mut module = scalar_entry_module();
+        module.value_capabilities = lower_source(
+            r#"fn main() {
+            let keys: HashMap<string, string> = HashMap.new();
+        }"#,
+        )
+        .value_capabilities;
+
         module.entry_callable = None;
         module.entry_exit_plan = None;
         if matches!(

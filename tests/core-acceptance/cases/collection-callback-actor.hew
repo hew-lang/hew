@@ -16,6 +16,13 @@ impl Eq for Key {
 }
 
 actor Store {
+    #[on(start)]
+    fn starting() {
+        var ready: HashMap<string, i64> = HashMap.new();
+        ready.insert("ready", 1);
+        assert(ready["ready"] == 1);
+    }
+
     receive fn exercise(oracle: Oracle) -> string {
         var values: HashMap<Key, string> = HashMap.new();
         var keys: HashSet<Key> = HashSet.new();

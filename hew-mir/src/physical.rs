@@ -11539,7 +11539,7 @@ mod tests {
         assert!(verify_physical_module(&absent_keys)
             .unwrap_err()
             .message
-            .contains("selected key capability"));
+            .contains("selected capability"));
     }
 
     #[test]

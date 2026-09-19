@@ -8627,9 +8627,16 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 .ok_or_else(|| "collection operation has no canonical receiver type".to_string())?;
             self.service.require_key_capabilities(&arguments[0])?;
         }
-        if family == hew_types::RuntimeCallFamily::Vector(hew_types::VecValueOp::Contains) {
+        for capability in family.value_callback_capabilities() {
+            let (_, [element, ..]) = parameter_types
+                .first()
+                .and_then(collection_type_arguments)
+                .ok_or_else(|| "collection callback has no canonical receiver type".to_string())?
+            else {
+                return Err("collection callback has no element type".into());
+            };
             self.service
-                .require_value_capability(&parameter_types[1], hew_types::ValueCapability::Eq)?;
+                .require_value_capability(element, *capability)?;
         }
         if family == hew_types::RuntimeCallFamily::StructuralFormat {
             self.service

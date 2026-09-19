@@ -832,30 +832,44 @@ fn verify_required_value_capabilities(
         });
     }
     for block in &function.blocks {
-        if let SemTerminator::RtCall {
-            family: RuntimeCallFamily::Vector(hew_types::VecValueOp::Contains),
-            args,
-            ..
+        let mut required = Vec::new();
+        if let SemTerminator::RtCall { family, args, .. } = &block.terminator {
+            if let Some((_, [element, ..])) = args
+                .first()
+                .and_then(|argument| types.get(&argument.operand.value))
+                .and_then(hew_types::runtime_call::collection_type_arguments)
+            {
+                required.extend(
+                    family
+                        .value_callback_capabilities()
+                        .iter()
+                        .map(|capability| (element.clone(), *capability)),
+                );
+            }
+        }
+        if let SemTerminator::WireCodec {
+            direction, plan, ..
         } = &block.terminator
         {
-            if let Some(ty) = args
-                .get(1)
-                .and_then(|argument| types.get(&argument.operand.value))
+            if !direction.is_serialize() {
+                plan.visit_decode_capabilities(&mut |ty, capability| {
+                    required.push((ty.clone(), capability))
+                });
+            }
+        }
+        for (ty, capability) in required {
+            if !module
+                .value_capabilities
+                .contains_key(&(ty.clone(), capability))
             {
-                if !module
-                    .value_capabilities
-                    .contains_key(&(ty.clone(), ValueCapability::Eq))
-                {
-                    diagnostics.push(diag(
-                        function,
-                        SirDiagnosticKind::InvalidValueCapability {
-                            ty: ty.clone(),
-                            capability: ValueCapability::Eq,
-                            reason: "vector membership requires its selected element equality"
-                                .into(),
-                        },
-                    ));
-                }
+                diagnostics.push(diag(
+                    function,
+                    SirDiagnosticKind::InvalidValueCapability {
+                        ty,
+                        capability,
+                        reason: "collection callback requires its selected value method".into(),
+                    },
+                ));
             }
         }
         if let SemTerminator::ValueCall { ty, capability, .. } = &block.terminator {

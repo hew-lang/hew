@@ -45,10 +45,12 @@
 
 mod support;
 
+use std::process::Command;
+
 use support::leak_slope::{
     assert_frame_slope_below_tolerance, compile_to_native, run_under_malloc_scribble,
 };
-use support::{describe_output, require_codegen};
+use support::{describe_output, require_codegen, run_bounded_command};
 
 // ── fixtures ──────────────────────────────────────────────────────────────
 
@@ -98,20 +100,25 @@ fn cancellation_window() -> i64 {
 }
 
 actor Worker {
-    receive fn run() {
+    receive fn run() -> bool {
         scope within 20ms {
             fork {
                 cancellation_window();
             };
-        };
+            false
+        } handle failure {
+            match failure {
+                .Deadline { message } => true,
+                .Fault { message } => panic(message),
+            }
+        }
     }
 }
 
-fn main() -> i64 {
+fn main() {
     let worker = spawn Worker;
-    let _ = worker.run();
-    sleep(500ms);
-    0
+    assert(worker.run().expect("worker completion"));
+    println("deadline recovered");
 }
 "#;
 
@@ -253,6 +260,23 @@ fn match_bound_owned_payload_no_double_free_under_malloc_scribble() {
 /// A nested enum payload binder is a shallow alias of its parent Result, not a
 /// second owner. Cancellation must drop the parent shell without also walking
 /// the bound `NetError` payload.
+#[test]
+fn nested_enum_deadline_recovers_after_the_child_drains() {
+    require_codegen();
+    let dir = tempfile::tempdir().expect("nested enum deadline directory");
+    let bin = compile_to_native(
+        NESTED_ENUM_CANCEL_SCRIBBLE_SOURCE,
+        dir.path(),
+        "nested_enum_deadline",
+    );
+    let output = run_bounded_command(Command::new(&bin), "nested enum scope deadline");
+    assert!(output.status.success(), "{}", describe_output(&output));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "deadline recovered\n"
+    );
+}
+
 #[cfg_attr(
     not(target_os = "macos"),
     ignore = "the deterministic double-free witness requires the Darwin poisoned allocator"
@@ -277,9 +301,10 @@ fn nested_enum_payload_cancel_drops_parent_exactly_once() {
         "cancellation must not drop both the shallow NetError binder and its parent Result:\n{}",
         describe_output(&output)
     );
-    assert!(
-        output.stdout.is_empty(),
-        "the cancellation witness must remain silent:\n{}",
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "deadline recovered\n",
+        "the scope must drain before delivering its recovered value:\n{}",
         describe_output(&output)
     );
 }

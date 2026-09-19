@@ -144,7 +144,13 @@ pub(crate) struct ImplMethodBinders {
     pub receiver: crate::Ty,
     pub impl_params: Vec<String>,
     pub method_params: Vec<String>,
-    pub obligations: Option<Vec<(String, MarkerTrait)>>,
+    pub obligations: Option<Vec<(String, ImplMethodObligation)>>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum ImplMethodObligation {
+    Marker(MarkerTrait),
+    Display,
 }
 
 impl ImplMethodBinders {
@@ -153,6 +159,16 @@ impl ImplMethodBinders {
         method: &crate::DefId,
         receiver: &ResolvedTy,
         registry: &TraitRegistry,
+    ) -> Result<Vec<ResolvedTy>, ClassError> {
+        self.instantiate_with_display(method, receiver, registry, &mut |_| Ok(false))
+    }
+
+    fn instantiate_with_display(
+        &self,
+        method: &crate::DefId,
+        receiver: &ResolvedTy,
+        registry: &TraitRegistry,
+        display: &mut dyn FnMut(&ResolvedTy) -> Result<bool, ClassError>,
     ) -> Result<Vec<ResolvedTy>, ClassError> {
         if let Some(name) = self.method_params.first() {
             return Err(ClassError::TypeParam { name: name.clone() });
@@ -201,13 +217,19 @@ impl ImplMethodBinders {
         let refusal = || ClassError::UnknownDeclaration {
             name: method.display_name().to_string(),
         };
-        for (param, marker) in self.obligations.as_ref().ok_or_else(refusal)? {
+        for (param, obligation) in self.obligations.as_ref().ok_or_else(refusal)? {
             let position = self
                 .impl_params
                 .iter()
                 .position(|name| name == param)
                 .ok_or_else(refusal)?;
-            if !registry.implements_marker(&type_args[position].to_ty(), *marker) {
+            let satisfied = match obligation {
+                ImplMethodObligation::Marker(marker) => {
+                    registry.implements_marker(&type_args[position].to_ty(), *marker)
+                }
+                ImplMethodObligation::Display => display(&type_args[position])?,
+            };
+            if !satisfied {
                 return Err(refusal());
             }
         }
@@ -263,6 +285,51 @@ pub struct TypeFactContext {
     type_defs: HashMap<String, TypeDef>,
     method_ids: HashMap<(String, String, String), crate::DefId>,
     method_binders: HashMap<crate::DefId, ImplMethodBinders>,
+    display_trait: String,
+    aliases: HashMap<String, crate::check::TypeAliasDef>,
+    rendering_members: HashMap<String, RenderingMembers>,
+}
+
+/// Source type identities before storage normalization expands aliases.
+#[derive(Debug, Clone)]
+pub(crate) struct RenderingMembers {
+    pub type_params: Vec<String>,
+    pub fields: HashMap<String, crate::Ty>,
+    pub variants: HashMap<String, crate::check::VariantDef>,
+}
+
+impl RenderingMembers {
+    pub(crate) fn new(definition: &TypeDef, resolve: impl Fn(&crate::Ty) -> crate::Ty) -> Self {
+        Self {
+            type_params: definition.type_params.clone(),
+            fields: definition
+                .fields
+                .iter()
+                .map(|(name, ty)| (name.clone(), resolve(ty)))
+                .collect(),
+            variants: definition
+                .variants
+                .iter()
+                .map(|(name, variant)| {
+                    let variant = match variant {
+                        crate::check::VariantDef::Unit => crate::check::VariantDef::Unit,
+                        crate::check::VariantDef::Tuple(fields) => {
+                            crate::check::VariantDef::Tuple(fields.iter().map(&resolve).collect())
+                        }
+                        crate::check::VariantDef::Struct(fields) => {
+                            crate::check::VariantDef::Struct(
+                                fields
+                                    .iter()
+                                    .map(|(name, ty)| (name.clone(), resolve(ty)))
+                                    .collect(),
+                            )
+                        }
+                    };
+                    (name.clone(), variant)
+                })
+                .collect(),
+        }
+    }
 }
 
 impl TypeFactContext {
@@ -278,6 +345,9 @@ impl TypeFactContext {
             type_defs,
             method_ids: HashMap::new(),
             method_binders: HashMap::new(),
+            display_trait: "Display".to_string(),
+            aliases: HashMap::new(),
+            rendering_members: HashMap::new(),
         }
     }
 
@@ -294,6 +364,27 @@ impl TypeFactContext {
     #[must_use]
     pub fn declarations(&self) -> &BTreeMap<String, DeclaredType> {
         &self.declarations
+    }
+
+    pub(crate) fn with_display_trait(mut self, identity: String) -> Self {
+        self.display_trait = identity;
+        self
+    }
+
+    pub(crate) fn with_aliases(
+        mut self,
+        aliases: HashMap<String, crate::check::TypeAliasDef>,
+    ) -> Self {
+        self.aliases = aliases;
+        self
+    }
+
+    pub(crate) fn with_rendering_members(
+        mut self,
+        members: HashMap<String, RenderingMembers>,
+    ) -> Self {
+        self.rendering_members = members;
+        self
     }
 }
 
@@ -459,6 +550,132 @@ impl TypeFactService {
                 capability,
                 plan,
             }))
+    }
+
+    /// Select rendering by its source identity while binding the method to
+    /// the normalized value type used by the callable ABI.
+    ///
+    /// # Errors
+    /// Refuses abstract receivers or inconsistent implementation binders.
+    pub fn display_method_for_type(
+        &self,
+        value: &ResolvedTy,
+        source: &ResolvedTy,
+    ) -> Result<Option<(crate::DefId, Vec<ResolvedTy>)>, ClassError> {
+        self.select_display_method(value, source, &mut HashSet::new())
+    }
+
+    fn select_display_method(
+        &self,
+        ty: &ResolvedTy,
+        source: &ResolvedTy,
+        visiting: &mut HashSet<ResolvedTy>,
+    ) -> Result<Option<(crate::DefId, Vec<ResolvedTy>)>, ClassError> {
+        require_concrete_capability_type(ty)?;
+        if !visiting.insert(ty.clone()) {
+            return Ok(None);
+        }
+        let builtin_owner = crate::Checker::canonical_primitive_or_builtin_key(&source.to_ty());
+        let (owner, args) = match source {
+            ResolvedTy::Named { name, args, .. } => (
+                if self.context.aliases.contains_key(name) {
+                    name
+                } else {
+                    builtin_owner.as_deref().unwrap_or(name)
+                },
+                args.as_slice(),
+            ),
+            _ => (builtin_owner.as_deref().unwrap_or(""), &[][..]),
+        };
+        let Some((method, _)) = selected_impl_method(
+            &self.context.method_ids,
+            owner,
+            args,
+            &self.context.display_trait,
+            "fmt",
+        ) else {
+            visiting.remove(ty);
+            return Ok(None);
+        };
+        let binders = self.context.method_binders.get(&method).ok_or_else(|| {
+            ClassError::UnknownDeclaration {
+                name: method.display_name().to_string(),
+            }
+        })?;
+        let args =
+            binders.instantiate_with_display(&method, ty, &self.context.registry, &mut |ty| {
+                self.select_display_method(ty, ty, visiting)
+                    .map(|selected| selected.is_some())
+            })?;
+        visiting.remove(ty);
+        Ok(Some((method, args)))
+    }
+
+    /// Expand only a source alias's head through its checked declaration.
+    /// Nested alias identities stay intact for the child rendering selections.
+    ///
+    /// # Errors
+    /// Refuses recursive aliases, incorrect arity or unresolved target types.
+    pub fn rendering_source(&self, source: &ResolvedTy) -> Result<ResolvedTy, String> {
+        let mut source = source.clone();
+        let mut visited = HashSet::new();
+        while let ResolvedTy::Named { name, args, .. } = &source {
+            let Some(alias) = self.context.aliases.get(name) else {
+                break;
+            };
+            if !visited.insert(name.clone()) {
+                return Err("recursive rendering alias".into());
+            }
+            let target = alias
+                .instantiate(&args.iter().map(ResolvedTy::to_ty).collect::<Vec<_>>())
+                .ok_or_else(|| "rendering alias has inconsistent type arguments".to_string())?;
+            source = ResolvedTy::from_ty(&target).map_err(|error| error.to_string())?;
+        }
+        Ok(source)
+    }
+
+    /// Preserve an explicitly authored field type for rendering, before alias
+    /// expansion erases its distinct Display implementation.
+    ///
+    /// # Errors
+    /// Refuses a field whose checked type still contains inference variables.
+    pub fn rendering_field(
+        &self,
+        source: &ResolvedTy,
+        variant: Option<&str>,
+        field: &str,
+    ) -> Result<Option<ResolvedTy>, String> {
+        let ResolvedTy::Named { name, args, .. } = source else {
+            return Ok(None);
+        };
+        let Some(definition) = self.context.rendering_members.get(name) else {
+            return Ok(None);
+        };
+        let ty = if let Some(variant) = variant {
+            match definition.variants.get(variant) {
+                Some(crate::check::VariantDef::Tuple(fields)) => field
+                    .parse::<usize>()
+                    .ok()
+                    .and_then(|index| fields.get(index)),
+                Some(crate::check::VariantDef::Struct(fields)) => fields
+                    .iter()
+                    .find_map(|(name, ty)| (name == field).then_some(ty)),
+                _ => None,
+            }
+        } else {
+            definition.fields.get(field)
+        };
+        ty.map(|ty| {
+            let parameters = definition.type_params.iter().cloned().collect();
+            let source = ResolvedTy::from_ty_with_type_params(ty, &parameters)
+                .map_err(|error| error.to_string())?;
+            Ok(crate::value_class::substitute(
+                &source,
+                &definition.type_params,
+                args,
+            ))
+        })
+        .transpose()
     }
 
     fn select_capability(

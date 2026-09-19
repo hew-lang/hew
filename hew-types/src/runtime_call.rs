@@ -8356,7 +8356,7 @@ impl RuntimeCallFamily {
                         effect: E::Borrow,
                     }],
                     result: R::FreshOwned(K::String),
-                    failures: &[],
+                    failures: &[RuntimeLogicalFailure::CallbackFault],
                 }),
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,

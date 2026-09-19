@@ -9,7 +9,7 @@ pub use hew_sir::{
     ActorId, ActorIngressAdapter, ActorOperation, LocalObservationKind, SemActor, SemActorCoalesce,
     SemActorField, SemActorHandler, SemActorOverflow, SemCoalesceFallback, SemCoalesceKey,
     SemCoalesceKeyKind, SemFailureDisplay, SemRestartPolicy, SemRestartStrategy, SemSupervisedRole,
-    SemSupervisor, SupervisorId, TaskScopeJoinMode, TaskSelectionOrder,
+    SemSupervisor, SemVariantKind, SupervisorId, TaskScopeJoinMode, TaskSelectionOrder,
 };
 use hew_types::runtime_call::{sequence_element_type, ArrayValueOp};
 
@@ -4381,8 +4381,30 @@ fn verify_structural_glue(module: &PhysicalModule) -> Result<(), PhysicalError> 
             }
             PhysicalStructuralShape::Enum { cases } => cases
                 .iter()
-                .flat_map(|case| case.fields.iter().copied())
+                .flat_map(|case| case.fields.iter().map(|field| field.recipe))
                 .collect(),
+            PhysicalStructuralShape::Display { callable } => {
+                let callee = module
+                    .callables
+                    .get(callable.0 as usize)
+                    .filter(|callee| callee.id == *callable)
+                    .ok_or_else(|| {
+                        PhysicalError::new("structural Display names an absent callable")
+                    })?;
+                if callee.params.len() != 1
+                    || callee.params[0].ty != glue.ty
+                    || !matches!(
+                        callee.params[0].passing,
+                        SemParamPassing::Borrow | SemParamPassing::ReadOnly
+                    )
+                    || callee.return_ty != ResolvedTy::String
+                {
+                    return Err(PhysicalError::new(
+                        "structural Display has an incompatible borrowed formatter signature",
+                    ));
+                }
+                Vec::new()
+            }
             PhysicalStructuralShape::Vector { element } => vec![*element],
             PhysicalStructuralShape::Map { key, value } => vec![*key, *value],
             PhysicalStructuralShape::SignedInt
@@ -9703,6 +9725,7 @@ mod tests {
             },
         );
         SemModule {
+            structural_display: BTreeMap::new(),
             debug: hew_sir::SemDebugFacts::default(),
             regex_patterns: Vec::new(),
             actors: Vec::new(),

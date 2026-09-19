@@ -21,7 +21,9 @@ use std::ffi::{c_void, CStr};
 use std::fmt::Write as _;
 use std::os::raw::c_char;
 
-pub type HewStructuralFormatFn = unsafe extern "C" fn(*mut c_void, *const c_void);
+/// A borrowed formatter returning a status and publishing its owned fault on failure.
+pub type HewStructuralFormatFn =
+    unsafe extern "C" fn(*mut c_void, *const c_void, *mut *mut c_void) -> i32;
 
 #[derive(Debug, Default)]
 pub struct HewStringBuilder {

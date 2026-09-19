@@ -2462,6 +2462,21 @@ pub struct TypeAliasDef {
     pub file_index: u32,
 }
 
+impl TypeAliasDef {
+    pub(crate) fn instantiate(&self, args: &[Ty]) -> Option<Ty> {
+        if self.type_params.len() != args.len() {
+            return None;
+        }
+        let substitutions = self
+            .type_params
+            .iter()
+            .cloned()
+            .zip(args.iter().cloned())
+            .collect();
+        Some(self.target.substitute_named_params_parallel(&substitutions))
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ResolvedTraitDefault {
     pub trait_id: crate::DefId,

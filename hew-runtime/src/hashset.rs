@@ -114,6 +114,24 @@ pub struct HewLayoutHashSet {
     map: *mut HewLayoutHashMap,
 }
 
+/// Begin a borrowed set lookup or insertion using the map's shared probe.
+///
+/// # Safety
+/// Set and query are live and remain borrowed until commit/free. A callback
+/// must be completed or cancelled and drained before those loans end.
+#[no_mangle]
+pub unsafe extern "C" fn hew_hashset_probe_begin(
+    set: *mut HewLayoutHashSet,
+    elem: *const c_void,
+    inserting: i32,
+) -> *mut crate::hashmap::HewLayoutMapProbe {
+    // SAFETY: the caller lends a live set and matching element through the probe.
+    unsafe {
+        validate_set_op_elem(set, elem);
+        crate::hashmap::hew_hashmap_probe_begin((*set).map, elem, inserting)
+    }
+}
+
 /// Opaque borrowing cursor over a layout-backed set.
 #[repr(C)]
 #[derive(Debug)]

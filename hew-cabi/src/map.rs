@@ -23,6 +23,17 @@ pub use crate::value::{
     HewTypeOwnershipKind, HewValueCloneThunk, HewValueDropThunk, HewValueLayout,
 };
 
+/// The next action of a borrowed map or set probe. A caller may suspend while
+/// computing the requested result; all operand storage stays borrowed until
+/// the probe is committed or freed.
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HewMapProbeStatus {
+    Ready = 0,
+    NeedHash = 1,
+    NeedEq = 2,
+}
+
 /// Hash a borrowed key's typed values, excluding padding bytes.
 ///
 /// # Safety
@@ -47,7 +58,8 @@ pub type HewMapKeyEqThunk = unsafe extern "C" fn(
 
 /// A shared value protocol plus key identity callbacks.
 ///
-/// Missing hash/equality callbacks are rejected at construction. Plain values
+/// Hash/equality callbacks serve synchronous C callers and may be absent when
+/// a compiler drives the borrowed probe with resumable methods. Plain values
 /// need no clone/drop callbacks. Owning values require a drop callback; copying
 /// also requires a clone callback. Hashing and equality borrow the complete
 /// value and never read padding or release its owners.

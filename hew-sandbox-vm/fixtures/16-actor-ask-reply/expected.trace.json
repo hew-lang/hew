@@ -147,7 +147,7 @@
     }
   ],
   "final_state": {
-    "budget_remaining": 981,
+    "budget_remaining": 980,
     "diagnostics": [],
     "exit_code": 0,
     "globals": [],
@@ -168,7 +168,7 @@
     "stdout": [
       "pong\n"
     ],
-    "step_count": 19,
+    "step_count": 20,
     "virtual_clock": {
       "current_ms": 0,
       "epoch_ms": 0,

@@ -195,41 +195,15 @@
             }
           ],
           "term": {
-            "arms": [
-              {
-                "edge": {
-                  "args": [
-                    5
-                  ],
-                  "to": 9
-                },
-                "fields": [
-                  {
-                    "own": "owned",
-                    "value": 5
-                  }
-                ],
-                "variant": 0
-              },
-              {
-                "edge": {
-                  "args": [
-                    7
-                  ],
-                  "to": 10
-                },
-                "fields": [
-                  {
-                    "own": "none",
-                    "value": 7
-                  }
-                ],
-                "variant": 1
-              }
-            ],
-            "op": "switch.variant",
-            "scrutinee": 4,
-            "shape": 0,
+            "fault": {
+              "args": [],
+              "to": 10
+            },
+            "normal": {
+              "args": [],
+              "to": 9
+            },
+            "op": "cleanup.dispatch",
             "span": {
               "end": 142,
               "start": 142
@@ -294,6 +268,87 @@
         },
         {
           "id": 9,
+          "ops": [],
+          "params": [],
+          "term": {
+            "arms": [
+              {
+                "edge": {
+                  "args": [
+                    5
+                  ],
+                  "to": 12
+                },
+                "fields": [
+                  {
+                    "own": "owned",
+                    "value": 5
+                  }
+                ],
+                "variant": 0
+              },
+              {
+                "edge": {
+                  "args": [
+                    7
+                  ],
+                  "to": 13
+                },
+                "fields": [
+                  {
+                    "own": "none",
+                    "value": 7
+                  }
+                ],
+                "variant": 1
+              }
+            ],
+            "op": "switch.variant",
+            "scrutinee": 4,
+            "shape": 0,
+            "span": {
+              "end": 142,
+              "start": 142
+            }
+          }
+        },
+        {
+          "id": 10,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 11
+            },
+            "op": "goto",
+            "span": {
+              "end": 142,
+              "start": 142
+            }
+          }
+        },
+        {
+          "id": 11,
+          "ops": [
+            {
+              "dst": null,
+              "op": "destroy_value",
+              "span": null,
+              "value": 4
+            }
+          ],
+          "params": [],
+          "term": {
+            "op": "resume_unwind",
+            "span": {
+              "end": 142,
+              "start": 142
+            }
+          }
+        },
+        {
+          "id": 12,
           "ops": [
             {
               "dst": null,
@@ -336,7 +391,7 @@
               "args": [
                 9
               ],
-              "to": 14
+              "to": 17
             },
             "op": "goto",
             "span": {
@@ -346,7 +401,7 @@
           }
         },
         {
-          "id": 10,
+          "id": 13,
           "ops": [
             {
               "dst": 10,
@@ -392,7 +447,7 @@
               "args": [
                 12
               ],
-              "to": 11
+              "to": 14
             },
             "op": "runtime.call",
             "releases_contents": false,
@@ -411,7 +466,7 @@
           }
         },
         {
-          "id": 11,
+          "id": 14,
           "ops": [
             {
               "dst": null,
@@ -435,7 +490,7 @@
           "term": {
             "cleanup": {
               "args": [],
-              "to": 12
+              "to": 15
             },
             "message": {
               "decision": "borrow",
@@ -449,13 +504,13 @@
           }
         },
         {
-          "id": 12,
+          "id": 15,
           "ops": [],
           "params": [],
           "term": {
             "edge": {
               "args": [],
-              "to": 13
+              "to": 16
             },
             "op": "goto",
             "span": {
@@ -465,7 +520,7 @@
           }
         },
         {
-          "id": 13,
+          "id": 16,
           "ops": [
             {
               "dst": null,
@@ -484,7 +539,7 @@
           }
         },
         {
-          "id": 14,
+          "id": 17,
           "ops": [],
           "params": [
             {
@@ -503,7 +558,7 @@
             "family": 1,
             "normal": {
               "args": [],
-              "to": 15
+              "to": 18
             },
             "op": "runtime.call",
             "releases_contents": false,
@@ -519,7 +574,7 @@
           }
         },
         {
-          "id": 15,
+          "id": 18,
           "ops": [
             {
               "dst": null,
@@ -532,7 +587,7 @@
           "term": {
             "edge": {
               "args": [],
-              "to": 16
+              "to": 19
             },
             "op": "goto",
             "span": {
@@ -542,7 +597,7 @@
           }
         },
         {
-          "id": 16,
+          "id": 19,
           "ops": [],
           "params": [],
           "term": {

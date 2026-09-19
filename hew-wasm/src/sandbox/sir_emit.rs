@@ -585,6 +585,7 @@ impl<'m> Walker<'m> {
                     ResourceRelease::Nominal { release, .. } => serde_json::json!({"kind": "nominal", "ty": ty.user_facing().to_string(), "release": release.symbol}),
                     ResourceRelease::Task => serde_json::json!({"kind": "task"}),
                     ResourceRelease::ActorCall => serde_json::json!({"kind": "actor_call"}),
+                    ResourceRelease::ActorRequest => serde_json::json!({"kind": "actor_request"}),
                     ResourceRelease::Generator => serde_json::json!({"kind": "generator"}),
                     ResourceRelease::Stream => serde_json::json!({"kind": "stream"}),
                     ResourceRelease::Sink => serde_json::json!({"kind": "sink"}),

@@ -37,6 +37,7 @@
               "nominal",
               "task",
               "actor_call",
+              "actor_request",
               "generator",
               "stream",
               "sink"

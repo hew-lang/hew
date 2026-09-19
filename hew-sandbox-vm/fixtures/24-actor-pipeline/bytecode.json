@@ -294,11 +294,15 @@
             }
           ],
           "term": {
-            "edge": {
+            "fault": {
+              "args": [],
+              "to": 13
+            },
+            "normal": {
               "args": [],
               "to": 12
             },
-            "op": "goto",
+            "op": "cleanup.dispatch",
             "span": {
               "end": 258,
               "start": 258
@@ -363,6 +367,50 @@
         },
         {
           "id": 12,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 15
+            },
+            "op": "goto",
+            "span": {
+              "end": 258,
+              "start": 258
+            }
+          }
+        },
+        {
+          "id": 13,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 14
+            },
+            "op": "goto",
+            "span": {
+              "end": 258,
+              "start": 258
+            }
+          }
+        },
+        {
+          "id": 14,
+          "ops": [],
+          "params": [],
+          "term": {
+            "op": "resume_unwind",
+            "span": {
+              "end": 258,
+              "start": 258
+            }
+          }
+        },
+        {
+          "id": 15,
           "ops": [],
           "params": [],
           "term": {
@@ -625,11 +673,15 @@
             }
           ],
           "term": {
-            "edge": {
+            "fault": {
+              "args": [],
+              "to": 11
+            },
+            "normal": {
               "args": [],
               "to": 10
             },
-            "op": "goto",
+            "op": "cleanup.dispatch",
             "span": {
               "end": 156,
               "start": 156
@@ -694,6 +746,50 @@
         },
         {
           "id": 10,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 13
+            },
+            "op": "goto",
+            "span": {
+              "end": 156,
+              "start": 156
+            }
+          }
+        },
+        {
+          "id": 11,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 12
+            },
+            "op": "goto",
+            "span": {
+              "end": 156,
+              "start": 156
+            }
+          }
+        },
+        {
+          "id": 12,
+          "ops": [],
+          "params": [],
+          "term": {
+            "op": "resume_unwind",
+            "span": {
+              "end": 156,
+              "start": 156
+            }
+          }
+        },
+        {
+          "id": 13,
           "ops": [],
           "params": [],
           "term": {

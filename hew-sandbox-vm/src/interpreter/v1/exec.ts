@@ -1736,28 +1736,6 @@ class ExecutorV1 {
         }
         return;
       }
-      case "ValueClose": {
-        const place = valueCloseePlace(term.detail);
-        let value: VmValue = UNIT;
-        if (place !== null) {
-          const ref = this.placeRef(act, place);
-          value = liveRef(ref) ? readRef(ref) : UNIT;
-          if (liveRef(ref)) invalidateRef(ref);
-        } else if (term.inputs[0]) {
-          value = this.boundary(act, term.inputs[0]);
-        }
-        if (term.detail.selection === "vector_element") {
-          const index = this.boundary(act, term.inputs[1]!);
-          if (value.kind !== "vector" || index.kind !== "i64")
-            throw new Error("element close has no vector index");
-          value = value.items[Number(index.value)]!;
-        }
-        const wake = this.park(act, term);
-        this.closeValueAsync(value, this.pipeFault(act), (fault) =>
-          wake(UNIT, fault),
-        );
-        return;
-      }
       case "StreamSend": {
         const [sink, value] = term.inputs.map((input) =>
           this.boundary(act, input),
@@ -1916,16 +1894,17 @@ class ExecutorV1 {
         const cancelRequest = this.ask(
           protocol,
           inputs,
-          (value, error, closeFault) =>
-            wake(
+          (value, error, closeFault) => {
+            act.fault ??= closeFault ?? null;
+            return wake(
               this.completion(
                 term.result_shape,
                 term.error_shape,
                 value,
                 error,
               ),
-              closeFault,
-            ),
+            );
+          },
           term.request_shapes,
         );
         const cancel = act.context.cancel!;
@@ -1966,7 +1945,8 @@ class ExecutorV1 {
         const outcome = pending!;
         act.context.cancel = undefined;
         const finish = (closeFault: Fault | null = null) => {
-          const fault = closeFault ?? outcome.fault;
+          const fault =
+            closeFault ?? (outcome.fault ? (act.fault ?? outcome.fault) : null);
           if (fault) {
             act.fault = fault;
             this.takeEdge(
@@ -1990,7 +1970,7 @@ class ExecutorV1 {
         if (outcome.fault)
           this.closeValueAsync(
             outcome.value,
-            this.faultText(outcome.fault),
+            this.faultText(act.fault ?? outcome.fault),
             finish,
             act.context.actor,
           );
@@ -2476,10 +2456,7 @@ class ExecutorV1 {
         const task = this.taskFor(args[0]!);
         if (!task.done)
           throw new Error("actor completion taken before readiness");
-        if (task.fault) {
-          this.raiseFault(act, task.fault, term.unwind);
-          return;
-        }
+        act.fault ??= task.fault;
         const value = task.value;
         task.value = UNIT;
         this.completeShim(
@@ -2542,12 +2519,8 @@ class ExecutorV1 {
                 payload,
                 this.pipeFault(act),
                 (fault) => {
-                  if (fault) {
-                    this.raiseFault(act, fault, term.unwind);
-                    this.scheduler.enqueue(act.context.id, () =>
-                      this.runFrame(act),
-                    );
-                  } else finish(accepted(true));
+                  act.fault ??= fault;
+                  finish(accepted(true));
                 },
                 act.context.actor,
               );
@@ -2896,6 +2869,13 @@ class ExecutorV1 {
 
   private dispatchActor(actor: ActorInstance): void {
     if (actor.busy || !actor.alive || actor.drainingMailbox) return;
+    if (actor.closing && actor.mailbox.length > 0) {
+      this.drainMailbox(actor, this.faultText(actor.closingFault), (fault) => {
+        actor.closingFault ??= fault;
+        this.dispatchActor(actor);
+      });
+      return;
+    }
     if (actor.mailbox.length === 0) {
       if (actor.closing) {
         if (actor.closingFault) this.crashActor(actor, actor.closingFault);
@@ -2905,6 +2885,11 @@ class ExecutorV1 {
     }
     actor.busy = true;
     this.scheduler.enqueue(actor.id, () => {
+      if (actor.closing) {
+        actor.busy = false;
+        this.dispatchActor(actor);
+        return;
+      }
       const message = actor.mailbox.shift();
       if (!message || !actor.alive) {
         actor.busy = false;
@@ -3297,14 +3282,10 @@ class ExecutorV1 {
   private requestActorClose(actor: ActorInstance): void {
     if (actor.closing || actor.completed) return;
     actor.closing = true;
-    // Hold terminal state release until both the active turn and queued owners
-    // have drained; authored message cleanup can itself call or suspend.
-    actor.drainingMailbox = true;
+    // The active turn drains first. Queued owners follow it before state and
+    // stop hooks, and each authored close may call a peer or suspend.
     actor.active?.cancel?.();
-    this.drainMailbox(actor, null, (fault) => {
-      actor.closingFault ??= fault;
-      this.dispatchActor(actor);
-    });
+    this.dispatchActor(actor);
     for (const admit of actor.admission.splice(0)) admit();
   }
 
@@ -3503,11 +3484,6 @@ function floatConst(op: Extract<OpV1, { op: "const.float" }>): number {
     default:
       return narrowFloat(op.value ?? 0, op.ty);
   }
-}
-
-function valueCloseePlace(detail: unknown): number | null {
-  const place = (detail as { place?: unknown } | null | undefined)?.place;
-  return typeof place === "number" ? place : null;
 }
 
 function trapMessage(trap: TrapName): string {

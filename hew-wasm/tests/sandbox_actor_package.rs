@@ -863,6 +863,40 @@ fn dead_actor_calls_drain_their_consumed_message_before_returning() {
 }
 
 #[test]
+fn consuming_close_matches_the_shared_native_manifests() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/core-acceptance");
+    for name in [
+        "actor_state_closure_field",
+        "resource-close-actor-composition",
+        "resource-close-actor-queued",
+        "resource-close-erased-owners",
+        "resource-close-task-results",
+        "resource-close-sealed-request",
+        "resource-close-displaced-values",
+        "resource-close-displaced-fault",
+        "resource-close-actor-generator",
+    ] {
+        let manifest = std::fs::read_to_string(root.join(format!("cases/{name}.toml")))
+            .expect("shared native manifest");
+        let manifest: toml::Value = toml::from_str(&manifest).expect("valid manifest");
+        let case = &manifest["case"][0];
+        let source = std::fs::read_to_string(root.join(case["source"].as_str().unwrap()))
+            .expect("shared native source");
+        let trace = execute(&source);
+        assert_eq!(
+            stdout(&trace),
+            case["expected"]["stdout"].as_str().unwrap(),
+            "{name}"
+        );
+        assert_eq!(
+            trace["final_state"]["exit_code"].as_i64(),
+            case["expected"]["exit"].as_integer(),
+            "{name}"
+        );
+    }
+}
+
+#[test]
 fn a_cancelled_unadmitted_call_closes_its_payload_before_recovery() {
     let trace = execute(include_str!(
         "../../tests/core-acceptance/cases/resource-close-pending-ask.hew"

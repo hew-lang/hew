@@ -42,4 +42,5 @@ serde_json.workspace = true
 assert_cmd = "2"
 hew-testutil = { path = "../hew-testutil" }
 tempfile.workspace = true
+toml.workspace = true
 walkdir = "2"

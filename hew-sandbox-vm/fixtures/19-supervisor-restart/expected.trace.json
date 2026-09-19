@@ -249,14 +249,14 @@
       "type": "replay.input"
     },
     {
-      "budget_remaining": 987,
+      "budget_remaining": 986,
       "id": "actor:root",
       "id_kind": "actor",
       "message": "actor.scheduler-step",
       "phase": "run",
       "seq": 24,
       "span": null,
-      "step_count": 13,
+      "step_count": 14,
       "type": "step.committed"
     },
     {
@@ -290,14 +290,14 @@
       "type": "state.snapshot"
     },
     {
-      "budget_remaining": 985,
+      "budget_remaining": 984,
       "id": "actor:a2",
       "id_kind": "actor",
       "message": "actor.scheduler-step",
       "phase": "run",
       "seq": 28,
       "span": null,
-      "step_count": 15,
+      "step_count": 16,
       "type": "step.committed"
     },
     {
@@ -331,14 +331,14 @@
       "type": "state.snapshot"
     },
     {
-      "budget_remaining": 982,
+      "budget_remaining": 981,
       "id": "actor:root",
       "id_kind": "actor",
       "message": "actor.scheduler-step",
       "phase": "run",
       "seq": 32,
       "span": null,
-      "step_count": 18,
+      "step_count": 19,
       "type": "step.committed"
     },
     {
@@ -379,7 +379,7 @@
     }
   ],
   "final_state": {
-    "budget_remaining": 971,
+    "budget_remaining": 969,
     "diagnostics": [],
     "exit_code": 0,
     "globals": [],
@@ -403,7 +403,7 @@
     "stdout": [
       "done\n"
     ],
-    "step_count": 29,
+    "step_count": 31,
     "virtual_clock": {
       "current_ms": 0,
       "epoch_ms": 0,

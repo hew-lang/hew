@@ -139,7 +139,6 @@ export function resolveExternShim(symbol: string): RuntimeShim | undefined {
 /// The suspend kinds a sequential package may carry. `NativeIo` is absent, so
 /// a package that suspends on native I/O is refused at load.
 export const SUPPORTED_SUSPEND_KINDS: ReadonlySet<string> = new Set([
-  "ValueClose",
   "GeneratorNext",
   "Yield",
   "Sleep",
@@ -203,6 +202,7 @@ const UNIT_FAMILY_SHIMS: Record<string, RuntimeShim | undefined> = {
   StringConcat: (_host, args) => str(`${text(args, 0)}${text(args, 1)}`),
   StringClone: (_host, args) => str(text(args, 0)),
   StringEquals: (_host, args) => bool(text(args, 0) === text(args, 1)),
+  StringContains: (_host, args) => bool(text(args, 0).includes(text(args, 1))),
   // Native string length counts codepoints, not bytes.
   StringLen: (_host, args) => int(BigInt([...text(args, 0)].length)),
   StringReplace: (_host, args) =>

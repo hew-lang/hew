@@ -505,6 +505,14 @@ fn matches_single(v: Version, constraint: string) -> bool {
         matches = cmp != 0;
     } else if op == "^" {
         matches = cmp >= 0 && v.maj == req_ver.maj;
+        // Compatibility stops at the left-most non-zero component. Compare
+        // components directly so unbounded version numbers need no increment.
+        if req_ver.maj == "0" {
+            matches = matches && v.min == req_ver.min;
+            if req_ver.min == "0" {
+                matches = matches && v.pat == req_ver.pat;
+            }
+        }
     } else if op == "~" {
         matches = cmp >= 0 && v.maj == req_ver.maj && v.min == req_ver.min;
     }

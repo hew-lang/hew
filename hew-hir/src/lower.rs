@@ -101,15 +101,23 @@ fn expand_arm_binding_leaf(
     id: BindingId,
     name: &str,
     ty: &ResolvedTy,
+    span: &Span,
     by_source: &std::collections::HashMap<BindingId, &[HirDestructureField]>,
-    out: &mut Vec<(String, BindingId, ResolvedTy)>,
+    out: &mut Vec<(String, BindingId, ResolvedTy, Span)>,
 ) {
     if let Some(fields) = by_source.get(&id) {
         for binding in fields.iter().filter_map(|field| field.binding.as_ref()) {
-            expand_arm_binding_leaf(binding.id, &binding.name, &binding.ty, by_source, out);
+            expand_arm_binding_leaf(
+                binding.id,
+                &binding.name,
+                &binding.ty,
+                &binding.span,
+                by_source,
+                out,
+            );
         }
     } else {
-        out.push((name.to_string(), id, ty.clone()));
+        out.push((name.to_string(), id, ty.clone(), span.clone()));
     }
 }
 
@@ -118,11 +126,16 @@ fn expand_arm_binding_leaf(
 /// of a nested variant, not of the arm's own shape.
 fn expand_nested_predicate_bindings(
     predicates: &[HirPayloadVariantPredicate],
-    out: &mut Vec<(String, BindingId, ResolvedTy)>,
+    out: &mut Vec<(String, BindingId, ResolvedTy, Span)>,
 ) {
     for predicate in predicates {
         for binding in &predicate.bindings {
-            out.push((binding.name.clone(), binding.binding, binding.ty.clone()));
+            out.push((
+                binding.name.clone(),
+                binding.binding,
+                binding.ty.clone(),
+                binding.span.clone(),
+            ));
         }
         expand_nested_predicate_bindings(&predicate.nested, out);
     }
@@ -140,7 +153,7 @@ fn expand_arm_bindings(
     bindings: &[HirMatchArmBinding],
     nested: &[HirPayloadVariantPredicate],
     prelude: &[HirStmt],
-) -> Vec<(String, BindingId, ResolvedTy)> {
+) -> Vec<(String, BindingId, ResolvedTy, Span)> {
     let mut by_source: std::collections::HashMap<BindingId, &[HirDestructureField]> =
         std::collections::HashMap::new();
     for stmt in prelude {
@@ -160,6 +173,7 @@ fn expand_arm_bindings(
             binding.binding,
             &binding.name,
             &binding.ty,
+            &binding.span,
             &by_source,
             &mut out,
         );
@@ -16037,6 +16051,7 @@ impl LowerCtx {
             let bound = self.bind(temp_name.clone(), field_ty.clone(), false, sub_span.clone());
             let temp_id = bound.id;
             bindings.push(HirMatchArmBinding {
+                span: bound.span.clone(),
                 binding: temp_id,
                 field_idx: field_idx_u32,
                 name: temp_name.clone(),
@@ -16144,6 +16159,7 @@ impl LowerCtx {
             let bound = self.bind(temp_name.clone(), field_ty.clone(), false, sub_span.clone());
             let temp_id = bound.id;
             bindings.push(HirMatchArmBinding {
+                span: bound.span.clone(),
                 binding: temp_id,
                 field_idx: field_idx_u32,
                 name: temp_name.clone(),
@@ -16219,13 +16235,13 @@ impl LowerCtx {
             HirExprKind::Block(block) => &block.statements,
             _ => &[],
         };
-        let mut escapees: Vec<(String, ResolvedTy)> = expand_arm_bindings(
+        let mut escapees: Vec<(String, ResolvedTy, Span)> = expand_arm_bindings(
             &hir_arms[0].bindings,
             &hir_arms[0].payload_variant_predicates,
             arm0_prelude,
         )
         .into_iter()
-        .map(|(name, _, ty)| (name, ty))
+        .map(|(name, _, ty, span)| (name, ty, span))
         .collect();
         escapees.sort_by(|a, b| a.0.cmp(&b.0));
 
@@ -16247,19 +16263,20 @@ impl LowerCtx {
         let kind = match escapees.len() {
             0 => HirStmtKind::Expr(match_expr),
             1 => {
-                let (name, ty) = escapees.into_iter().next().expect("checked len == 1");
-                let bound = self.bind(name, ty, false, pattern_span.clone());
+                let (name, ty, binding_span) =
+                    escapees.into_iter().next().expect("checked len == 1");
+                let bound = self.bind(name, ty, false, binding_span);
                 HirStmtKind::Let(bound, Some(match_expr))
             }
             _ => {
                 let fields = escapees
                     .into_iter()
                     .enumerate()
-                    .map(|(idx, (name, ty))| HirDestructureField {
+                    .map(|(idx, (name, ty, binding_span))| HirDestructureField {
                         selector: HirDestructureSelector::Tuple(
                             u32::try_from(idx).expect("let-else binding count exceeds u32::MAX"),
                         ),
-                        binding: Some(self.bind(name, ty, false, pattern_span.clone())),
+                        binding: Some(self.bind(name, ty, false, binding_span)),
                         nested: false,
                     })
                     .collect();
@@ -19246,6 +19263,25 @@ impl LowerCtx {
             },
             closure_ty,
         )
+    }
+
+    fn match_payload_binding_span(
+        &mut self,
+        payload: &hew_types::PayloadBinding,
+        pattern_span: &Span,
+    ) -> Option<Span> {
+        if let Some(span) = &payload.def_span {
+            return Some(span.clone());
+        }
+        self.diagnostics.push(HirDiagnostic::new(
+            HirDiagnosticKind::CheckerBoundaryViolation {
+                name: payload.binding_name.clone(),
+                reason: "match payload binding has no checker definition occurrence".into(),
+            },
+            pattern_span.clone(),
+            "checker did not retain the match payload binding's definition occurrence",
+        ));
+        None
     }
 
     fn materialize_closure_captures(
@@ -25227,6 +25263,7 @@ impl LowerCtx {
         self.push_scope();
         let loop_binding = self.bind(var_name.clone(), elem_ty.clone(), false, pattern.1.clone());
         let some_binding = HirMatchArmBinding {
+            span: loop_binding.span.clone(),
             binding: loop_binding.id,
             field_idx: 0,
             name: var_name.clone(),
@@ -27511,6 +27548,7 @@ impl LowerCtx {
                         scope: Some(self.ids.scope()),
                         predicate: payload_predicate,
                         bindings: vec![HirMatchArmBinding {
+                            span: span.clone(),
                             binding: payload_binding,
                             field_idx: 0,
                             name: binding_name.to_string(),
@@ -27567,6 +27605,7 @@ impl LowerCtx {
                         scope: Some(self.ids.scope()),
                         predicate: payload_predicate,
                         bindings: vec![HirMatchArmBinding {
+                            span: span.clone(),
                             binding: payload_binding,
                             field_idx: 0,
                             name: binding_name.to_string(),
@@ -27842,6 +27881,7 @@ impl LowerCtx {
         {
             let binding = self.bind(name.clone(), error_ty.clone(), false, binding_span.clone());
             vec![HirMatchArmBinding {
+                span: binding.span.clone(),
                 binding: binding.id,
                 field_idx: 0,
                 name: name.clone(),
@@ -27857,6 +27897,7 @@ impl LowerCtx {
                 scope: Some(self.ids.scope()),
                 predicate: success_predicate,
                 bindings: vec![HirMatchArmBinding {
+                    span: span.clone(),
                     binding: success_binding,
                     field_idx: 0,
                     name: "__recovery_value".to_string(),
@@ -27989,6 +28030,7 @@ impl LowerCtx {
                 scope: Some(self.ids.scope()),
                 predicate: ok_predicate,
                 bindings: vec![HirMatchArmBinding {
+                    span: span.clone(),
                     binding: ok_binding,
                     field_idx: 0,
                     name: ok_name.to_string(),
@@ -28004,6 +28046,7 @@ impl LowerCtx {
                 scope: Some(self.ids.scope()),
                 predicate: err_predicate,
                 bindings: vec![HirMatchArmBinding {
+                    span: span.clone(),
                     binding: err_binding,
                     field_idx: 0,
                     name: err_name.to_string(),
@@ -28055,6 +28098,7 @@ impl LowerCtx {
                 scope: Some(self.ids.scope()),
                 predicate: some_predicate,
                 bindings: vec![HirMatchArmBinding {
+                    span: span.clone(),
                     binding: some_binding,
                     field_idx: 0,
                     name: some_name.to_string(),
@@ -29078,7 +29122,12 @@ impl LowerCtx {
                     binding_error = true;
                     continue;
                 };
-                binding_specs.push((field_idx, payload.binding_name.clone(), ty));
+                let Some(binding_span) = self.match_payload_binding_span(payload, pattern_span)
+                else {
+                    binding_error = true;
+                    continue;
+                };
+                binding_specs.push((field_idx, payload.binding_name.clone(), ty, binding_span));
             }
             if binding_error {
                 self.walk_pattern_arm_body(&arm.body);
@@ -29163,9 +29212,10 @@ impl LowerCtx {
 
             // Materialise payload bindings (constructor payload fields).
             let mut bindings = Vec::with_capacity(binding_specs.len());
-            for (field_idx, name, ty) in binding_specs {
-                let bound = self.bind(name.clone(), ty.clone(), false, pattern_span.clone());
+            for (field_idx, name, ty, binding_span) in binding_specs {
+                let bound = self.bind(name.clone(), ty.clone(), false, binding_span);
                 bindings.push(HirMatchArmBinding {
+                    span: bound.span.clone(),
                     binding: bound.id,
                     field_idx,
                     name,
@@ -29380,15 +29430,15 @@ impl LowerCtx {
         ordered.sort_by(|a, b| a.0.cmp(&b.0));
         match ordered.as_slice() {
             [] => self.make_unit_expr(span),
-            [(name, id, ty)] => self.binding_ref_expr(name.clone(), *id, ty.clone(), span),
+            [(name, id, ty, _)] => self.binding_ref_expr(name.clone(), *id, ty.clone(), span),
             many => {
                 let elements: Vec<HirExpr> = many
                     .iter()
-                    .map(|(name, id, ty)| {
+                    .map(|(name, id, ty, _)| {
                         self.binding_ref_expr(name.clone(), *id, ty.clone(), span.clone())
                     })
                     .collect();
-                let ty = ResolvedTy::Tuple(many.iter().map(|(_, _, ty)| ty.clone()).collect());
+                let ty = ResolvedTy::Tuple(many.iter().map(|(_, _, ty, _)| ty.clone()).collect());
                 HirExpr {
                     node: self.ids.node(),
                     site: self.ids.site(),
@@ -29609,13 +29659,15 @@ impl LowerCtx {
                 );
                 return None;
             };
+            let binding_span = self.match_payload_binding_span(payload, pattern_span)?;
             let bound = self.bind(
                 payload.binding_name.clone(),
                 ty.clone(),
                 false,
-                pattern_span.clone(),
+                binding_span,
             );
             bindings.push(HirMatchArmBinding {
+                span: bound.span.clone(),
                 binding: bound.id,
                 field_idx: inner_field_idx,
                 name: payload.binding_name.clone(),

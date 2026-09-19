@@ -1330,6 +1330,9 @@ pub struct PayloadBinding {
     pub field_idx: usize,
     /// Surface name the binding introduces in the arm body scope.
     pub binding_name: String,
+    /// Exact definition occurrence recorded when the checker bound this name.
+    /// Captures and lowered lexical bindings must refer to this same occurrence.
+    pub def_span: Option<Span>,
     /// Fully resolved type of the payload at this position.
     ///
     /// Carries a `Ty::Var` while inference is in flight; resolved to a

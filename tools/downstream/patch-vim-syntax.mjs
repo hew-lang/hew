@@ -103,12 +103,13 @@ const categoryMap = {
     group: 'hewControl',
     keywords: [...new Set([
       ...kw.control_flow.filter(k => k !== 'for'),
-      // Actor keywords that serve as control flow. `for` is handled by a
-      // dedicated negative-lookahead match below so `for await` can remain
-      // visibly retired while ordinary `for` stays a control keyword.
+      // Keep plain stream iteration distinct from the retired `for await`.
       'select', 'race', 'yield', 'after', 'from', 'await', 'await_restart',
       'scope',
     ])],
+    extraLines: [
+      'syn match   hewControl    "\\<for\\>\\%(\\s\\+await\\>\\)\\@!"',
+    ],
   },
 
   declarations: {

@@ -76,6 +76,10 @@ export function resolveExternShim(symbol: string): RuntimeShim | undefined {
 export const SUPPORTED_SUSPEND_KINDS: ReadonlySet<string> = new Set([
   "ValueClose",
   "Sleep",
+  "Ask",
+  "Await",
+  "Join",
+  "Select",
 ]);
 
 // ── families ────────────────────────────────────────────────────────────────

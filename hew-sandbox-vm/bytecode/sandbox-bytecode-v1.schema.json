@@ -257,6 +257,18 @@
           }
         }
       }
+    },
+    "actors": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/actor"
+      }
+    },
+    "supervisors": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/supervisor"
+      }
     }
   },
   "$defs": {
@@ -406,6 +418,9 @@
               },
               "environment": {
                 "$ref": "#/$defs/id"
+              },
+              "initialized": {
+                "type": "boolean"
               }
             }
           }
@@ -550,6 +565,199 @@
         },
         "span": {
           "$ref": "#/$defs/span"
+        }
+      }
+    },
+    "actor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "state_fields", "stop", "handlers", "overflow"],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "state_fields": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["mutable", "deferred"],
+            "properties": {
+              "mutable": {
+                "type": "boolean"
+              },
+              "deferred": {
+                "type": "boolean"
+              }
+            }
+          }
+        },
+        "init": {
+          "$ref": "#/$defs/id"
+        },
+        "start": {
+          "$ref": "#/$defs/id"
+        },
+        "crash": {
+          "$ref": "#/$defs/id"
+        },
+        "exit": {
+          "$ref": "#/$defs/id"
+        },
+        "down": {
+          "$ref": "#/$defs/id"
+        },
+        "stop": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "handlers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "message_id",
+              "callable",
+              "params",
+              "streams",
+              "fallible",
+              "result_shape"
+            ],
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "message_id": {
+                "$ref": "#/$defs/id"
+              },
+              "every_ns": {
+                "type": "integer"
+              },
+              "callable": {
+                "$ref": "#/$defs/id"
+              },
+              "params": {
+                "$ref": "#/$defs/id"
+              },
+              "streams": {
+                "type": "boolean"
+              },
+              "fallible": {
+                "type": "boolean"
+              },
+              "result_shape": {
+                "type": ["integer", "null"],
+                "minimum": 0
+              }
+            }
+          }
+        },
+        "mailbox_capacity": {
+          "$ref": "#/$defs/id"
+        },
+        "overflow": {
+          "type": "string"
+        },
+        "max_heap_bytes": {
+          "$ref": "#/$defs/id"
+        },
+        "coalesce": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["fallback", "keys"],
+          "properties": {
+            "fallback": {
+              "type": "string"
+            },
+            "keys": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["message", "param", "kind"],
+                "properties": {
+                  "message": {
+                    "$ref": "#/$defs/id"
+                  },
+                  "param": {
+                    "$ref": "#/$defs/id"
+                  },
+                  "kind": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "supervisor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "strategy", "max_restarts", "window_secs", "children"],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "strategy": {
+          "type": "string"
+        },
+        "max_restarts": {
+          "$ref": "#/$defs/id"
+        },
+        "window_secs": {
+          "$ref": "#/$defs/id"
+        },
+        "children": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "role", "restart", "spawn"],
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "role": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["actor"],
+                    "properties": {
+                      "actor": {
+                        "$ref": "#/$defs/id"
+                      }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["supervisor"],
+                    "properties": {
+                      "supervisor": {
+                        "$ref": "#/$defs/id"
+                      }
+                    }
+                  }
+                ]
+              },
+              "restart": {
+                "type": "string"
+              },
+              "pool_count": {
+                "$ref": "#/$defs/id"
+              },
+              "spawn": {
+                "$ref": "#/$defs/id"
+              }
+            }
+          }
         }
       }
     }

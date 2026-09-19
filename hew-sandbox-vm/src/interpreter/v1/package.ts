@@ -96,7 +96,14 @@ export type PlaceDecl =
       field: number;
     }
   | { id: number; origin: "capture"; environment: number; field: number }
-  | { id: number; origin: "runtime" | "actor_state" };
+  | {
+      id: number;
+      origin: "actor_state";
+      environment: number;
+      field: number;
+      initialized: boolean;
+    }
+  | { id: number; origin: "runtime" };
 
 /// A value capability the checker selected for a concrete type. `callable` is a
 /// user implementation to call; without it the operation is the derived,
@@ -144,6 +151,7 @@ export interface BlockV1 {
 }
 
 interface OpBase {
+  own?: Own;
   dst?: number | null;
   span?: SpanV1 | null;
 }
@@ -294,9 +302,21 @@ export type OpV1 =
       scope: number;
       dependencies: Operand[];
     })
-  | (OpBase & { op: "generator.make" | "stream.pipe" | "task_scope.enter" })
   | (OpBase & {
-      op: "task_scope.close" | "task.spawn" | "actor.ingress_adapter";
+      op: "generator.make" | "stream.pipe" | "actor.ingress_adapter";
+    })
+  | (OpBase & {
+      op: "task_scope.enter";
+      scope: number;
+      parent: number | null;
+      duration: Operand | null;
+    })
+  | (OpBase & { op: "task_scope.close"; scope: number })
+  | (OpBase & {
+      op: "task.spawn";
+      dst: number;
+      scope: number;
+      callable: Operand;
     });
 
 export type OpName = OpV1["op"];
@@ -318,7 +338,7 @@ export interface CheckedFailure {
 
 /// The fields every call terminator shares. `normal` is absent exactly when
 /// `result` is `"never"`; `unwind` is `null` when the call cannot raise.
-interface CallShape {
+export interface CallShape {
   args: BoundaryOperand[];
   result: CallResult;
   normal?: Edge;
@@ -363,7 +383,13 @@ export type TermV1 =
         extern: number;
         result_shape: number | null;
       })
-  | (TermBase & CallShape & { op: "actor.call"; operation: string })
+  | (TermBase &
+      CallShape & {
+        op: "actor.call";
+        operation: ActorOperation;
+        result_shape: number | null;
+        error_shape: number | null;
+      })
   | (TermBase &
       CallShape & { op: "wire.codec"; direction: string; plan: number })
   | (TermBase & { op: "panic"; message: BoundaryOperand; cleanup: Edge })
@@ -375,6 +401,7 @@ export type TermV1 =
   | (TermBase & { op: "finish_defer"; defer: number; park: number; next: Edge })
   | (TermBase & {
       op: "recover_fault";
+      result_shape?: number | null;
       result: ValueDef;
       deadline_variant: number;
       fault_variant: number;
@@ -384,7 +411,9 @@ export type TermV1 =
   | (TermBase & {
       op: "suspend";
       kind: string;
-      detail?: unknown;
+      detail?: any;
+      result_shape?: number | null;
+      error_shape?: number | null;
       inputs: BoundaryOperand[];
       result: CallResult;
       resumes: Edge[];
@@ -397,6 +426,76 @@ export type TermName = TermV1["op"];
 export interface EntryPlan {
   function: number;
   exit: "unit" | "status";
+}
+
+export interface ActorProtocol {
+  actor: number;
+  message: number;
+  policy: "reject" | "wait" | "drop_newest" | "replace_latest";
+  deadline_ns: number | null;
+  sealed: boolean;
+}
+
+export type ActorOperation =
+  | { op: "spawn" | "self_handle" | "close" | "await_closed"; actor: number }
+  | { op: "call_start" | "call_take"; protocol: ActorProtocol }
+  | { op: "submit"; actor: number; policy: ActorProtocol["policy"] }
+  | { op: "stream_start"; actor: number; message: number }
+  | { op: "local_observation"; kind: string }
+  | {
+      op: "supervisor_spawn" | "supervisor_stop" | "supervisor_await_closed";
+      supervisor: number;
+    }
+  | {
+      op:
+        | "supervisor_child"
+        | "supervisor_await_restart"
+        | "supervisor_pool_view";
+      supervisor: number;
+      child: number;
+      owner_is_role: boolean;
+    }
+  | {
+      op: "supervisor_role_await_closed";
+      supervisor: number;
+      closing: boolean;
+    };
+
+export interface ActorShape {
+  id: number;
+  state_fields: Array<{ mutable: boolean; deferred: boolean }>;
+  init?: number;
+  start?: number;
+  stop: number[];
+  crash?: number;
+  exit?: number;
+  down?: number;
+  handlers: Array<{
+    name: string;
+    message_id: number;
+    callable: number;
+    params: number;
+    streams: boolean;
+    fallible: boolean;
+    result_shape: number | null;
+    every_ns?: number;
+  }>;
+  mailbox_capacity?: number;
+  overflow: string;
+}
+
+export interface SupervisorShape {
+  id: number;
+  strategy: string;
+  max_restarts: number;
+  window_secs: number;
+  children: Array<{
+    name: string;
+    role: { actor: number } | { supervisor: number };
+    restart: string;
+    pool_count?: number;
+    spawn: number;
+  }>;
 }
 
 export interface PackageV1 {
@@ -417,6 +516,8 @@ export interface PackageV1 {
   value_capabilities: ValueCapability[];
   closures: ClosureShape[];
   vtables: VtableShape[];
+  actors?: ActorShape[];
+  supervisors?: SupervisorShape[];
   functions: FunctionV1[];
 }
 

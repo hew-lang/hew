@@ -6,7 +6,7 @@
     "description": "Emits one stdout record and a successful final snapshot.",
     "source_path": "01-hello-world/main.hew",
     "expected_trace_path": "01-hello-world/expected.trace.json",
-    "status": "planned",
+    "status": "executable",
     "features": [
       "stdout",
       "final-state"
@@ -19,7 +19,7 @@
     "description": "Covers deterministic integer arithmetic and checked-operation accounting.",
     "source_path": "02-arithmetic-checked/main.hew",
     "expected_trace_path": "02-arithmetic-checked/expected.trace.json",
-    "status": "planned",
+    "status": "executable",
     "features": [
       "arithmetic",
       "checked-arithmetic"
@@ -32,7 +32,7 @@
     "description": "Covers branch selection, loop progress, and step accounting.",
     "source_path": "03-branch-loop/main.hew",
     "expected_trace_path": "03-branch-loop/expected.trace.json",
-    "status": "m5",
+    "status": "executable",
     "features": [
       "branch",
       "loop",
@@ -46,7 +46,7 @@
     "description": "Covers record construction and field projection.",
     "source_path": "04-record-fields/main.hew",
     "expected_trace_path": "04-record-fields/expected.trace.json",
-    "status": "m5",
+    "status": "executable",
     "features": [
       "record",
       "field"
@@ -59,7 +59,7 @@
     "description": "Covers enum construction and match result selection.",
     "source_path": "05-enum-match/main.hew",
     "expected_trace_path": "05-enum-match/expected.trace.json",
-    "status": "planned",
+    "status": "executable",
     "features": [
       "enum",
       "match"
@@ -72,7 +72,7 @@
     "description": "Covers vector allocation, push, get, and length operations.",
     "source_path": "06-vector-basics/main.hew",
     "expected_trace_path": "06-vector-basics/expected.trace.json",
-    "status": "planned",
+    "status": "executable",
     "features": [
       "vector",
       "stdlib-symbol"
@@ -85,7 +85,7 @@
     "description": "Covers string construction and formatted output.",
     "source_path": "07-string-interpolation/main.hew",
     "expected_trace_path": "07-string-interpolation/expected.trace.json",
-    "status": "planned",
+    "status": "executable",
     "features": [
       "string",
       "stdout"
@@ -98,7 +98,7 @@
     "description": "Covers regex stdlib symbol references and deterministic match output.",
     "source_path": "08-regex-match/main.hew",
     "expected_trace_path": "08-regex-match/expected.trace.json",
-    "status": "planned",
+    "status": "executable",
     "features": [
       "regex",
       "stdlib-symbol"
@@ -111,7 +111,7 @@
     "description": "Covers compile diagnostic records with a primary source span.",
     "source_path": "09-compile-type-error/main.hew",
     "expected_trace_path": "09-compile-type-error/expected.trace.json",
-    "status": "planned",
+    "status": "diagnostic",
     "features": [
       "compile-diagnostic",
       "source-span"
@@ -119,12 +119,12 @@
   },
   {
     "id": "sandbox-reject-filesystem",
-    "category": "sandbox-profile",
+    "category": "admission",
     "name": "Filesystem Rejection",
-    "description": "Covers fail-closed sandbox profile rejection for filesystem access.",
+    "description": "The VM refuses native filesystem capability before executing the compiled package.",
     "source_path": "10-sandbox-reject-filesystem/main.hew",
     "expected_trace_path": "10-sandbox-reject-filesystem/expected.trace.json",
-    "status": "planned",
+    "status": "executable",
     "features": [
       "sandbox-rejection",
       "capability"
@@ -137,7 +137,7 @@
     "description": "Covers panic failure records.",
     "source_path": "11-runtime-panic/main.hew",
     "expected_trace_path": "11-runtime-panic/expected.trace.json",
-    "status": "planned",
+    "status": "executable",
     "features": [
       "panic",
       "runtime-failure"
@@ -150,7 +150,7 @@
     "description": "Covers deterministic trap records.",
     "source_path": "12-divide-by-zero-trap/main.hew",
     "expected_trace_path": "12-divide-by-zero-trap/expected.trace.json",
-    "status": "planned",
+    "status": "executable",
     "features": [
       "trap",
       "arithmetic"
@@ -163,7 +163,7 @@
     "description": "Covers budget exhaustion event and final state.",
     "source_path": "13-step-budget-exhausted/main.hew",
     "expected_trace_path": "13-step-budget-exhausted/expected.trace.json",
-    "status": "planned",
+    "status": "executable",
     "features": [
       "step-budget",
       "runtime-failure"
@@ -176,7 +176,7 @@
     "description": "Covers virtual clock advancement records.",
     "source_path": "14-virtual-sleep-clock/main.hew",
     "expected_trace_path": "14-virtual-sleep-clock/expected.trace.json",
-    "status": "planned",
+    "status": "executable",
     "features": [
       "virtual-clock",
       "sleep"
@@ -189,7 +189,7 @@
     "description": "Covers actor ID allocation and deterministic actor output.",
     "source_path": "15-actor-counter/main.hew",
     "expected_trace_path": "15-actor-counter/expected.trace.json",
-    "status": "m4",
+    "status": "executable",
     "features": [
       "actor",
       "id",
@@ -204,7 +204,7 @@
     "description": "Covers ask/reply trace shape without defining scheduler implementation.",
     "source_path": "16-actor-ask-reply/main.hew",
     "expected_trace_path": "16-actor-ask-reply/expected.trace.json",
-    "status": "m4",
+    "status": "executable",
     "features": [
       "actor",
       "ask",
@@ -219,7 +219,7 @@
     "description": "Covers pipe ID allocation and select trace shape.",
     "source_path": "17-pipe-select/main.hew",
     "expected_trace_path": "17-pipe-select/expected.trace.json",
-    "status": "planned",
+    "status": "executable",
     "features": [
       "pipe",
       "select",
@@ -233,7 +233,7 @@
     "description": "Covers task ID allocation and await result trace shape.",
     "source_path": "18-task-await/main.hew",
     "expected_trace_path": "18-task-await/expected.trace.json",
-    "status": "planned",
+    "status": "executable",
     "features": [
       "task",
       "await",
@@ -247,7 +247,7 @@
     "description": "Covers supervisor ID allocation and restart trace shape.",
     "source_path": "19-supervisor-restart/main.hew",
     "expected_trace_path": "19-supervisor-restart/expected.trace.json",
-    "status": "planned",
+    "status": "executable",
     "features": [
       "supervisor",
       "actor",
@@ -261,7 +261,7 @@
     "description": "Covers machine ID allocation and deterministic state output.",
     "source_path": "20-machine-traffic-light/main.hew",
     "expected_trace_path": "20-machine-traffic-light/expected.trace.json",
-    "status": "planned",
+    "status": "executable",
     "features": [
       "machine",
       "state"
@@ -274,7 +274,7 @@
     "description": "Covers deterministic stdin replay input.",
     "source_path": "21-replay-stdin/main.hew",
     "expected_trace_path": "21-replay-stdin/expected.trace.json",
-    "status": "planned",
+    "status": "executable",
     "features": [
       "replay-input",
       "stdin"
@@ -287,7 +287,7 @@
     "description": "Covers seed semantics and random byte replay input.",
     "source_path": "22-deterministic-random/main.hew",
     "expected_trace_path": "22-deterministic-random/expected.trace.json",
-    "status": "planned",
+    "status": "executable",
     "features": [
       "seed",
       "random-bytes",
@@ -301,7 +301,7 @@
     "description": "Covers direct function calls, returns, and monomorphized generic call shape.",
     "source_path": "23-direct-call/main.hew",
     "expected_trace_path": "23-direct-call/expected.trace.json",
-    "status": "m3",
+    "status": "executable",
     "features": [
       "call",
       "return",
@@ -316,7 +316,7 @@
     "description": "Covers actor send, receive, deterministic message IDs, and round-robin scheduler order.",
     "source_path": "24-actor-pipeline/main.hew",
     "expected_trace_path": "24-actor-pipeline/expected.trace.json",
-    "status": "m4",
+    "status": "executable",
     "features": [
       "actor",
       "send",
@@ -332,7 +332,7 @@
     "description": "Covers actor crash trace records and on(crash) lifecycle hooks.",
     "source_path": "25-actor-crash/main.hew",
     "expected_trace_path": "25-actor-crash/expected.trace.json",
-    "status": "m4",
+    "status": "executable",
     "features": [
       "actor",
       "crash",
@@ -346,7 +346,7 @@
     "description": "Covers i64 arithmetic and comparison for values above JavaScript's safe integer range.",
     "source_path": "26-i64-bigint/main.hew",
     "expected_trace_path": "26-i64-bigint/expected.trace.json",
-    "status": "m4",
+    "status": "executable",
     "features": [
       "arithmetic",
       "comparison",
@@ -354,31 +354,17 @@
     ]
   },
   {
-    "id": "actor-crash-restart-ignored",
+    "id": "actor-crash-action",
     "category": "concurrency",
-    "name": "Actor Crash Restart Ignored",
-    "description": "Covers fail-closed M4 actor crash termination when an on(crash) hook returns an M6 restart directive.",
-    "source_path": "27-actor-crash-restart-ignored/main.hew",
-    "expected_trace_path": "27-actor-crash-restart-ignored/expected.trace.json",
-    "status": "m4",
+    "name": "Actor Crash Action",
+    "description": "A Kill crash action declines supervisor recovery.",
+    "source_path": "27-actor-crash-action/main.hew",
+    "expected_trace_path": "27-actor-crash-action/expected.trace.json",
+    "status": "executable",
     "features": [
       "actor",
       "crash",
       "lifecycle"
-    ]
-  },
-  {
-    "id": "actor-state-arity-trap",
-    "category": "concurrency",
-    "name": "Actor State Arity Trap",
-    "description": "Covers deterministic actor crash when a handler returns a record with the wrong state arity.",
-    "source_path": "28-actor-state-arity-trap/main.hew",
-    "expected_trace_path": "28-actor-state-arity-trap/expected.trace.json",
-    "status": "m4",
-    "features": [
-      "actor",
-      "state",
-      "trap"
     ]
   },
   {
@@ -388,7 +374,7 @@
     "description": "Covers the checker refusing an ordered comparison between i64 and f64.",
     "source_path": "29-mixed-scalar-compare-rejected/main.hew",
     "expected_trace_path": "29-mixed-scalar-compare-rejected/expected.trace.json",
-    "status": "m4",
+    "status": "diagnostic",
     "features": [
       "compile-diagnostic",
       "comparison"

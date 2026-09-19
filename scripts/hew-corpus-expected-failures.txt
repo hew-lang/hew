@@ -122,16 +122,6 @@ hew-parser/tests/fmt_roundtrip_corpus/assoc_types/generic_projection_where.hew
 # sandbox VM — it is designed to fail hew check
 hew-sandbox-vm/fixtures/09-compile-type-error/main.hew
 
-# deferred-nyi / stale-syntax: sandbox fixtures using surfaces the compiler has
-# not built or no longer spells this way
-hew-sandbox-vm/fixtures/15-actor-counter/main.hew
-hew-sandbox-vm/fixtures/16-actor-ask-reply/main.hew
-hew-sandbox-vm/fixtures/18-task-await/main.hew
-hew-sandbox-vm/fixtures/19-supervisor-restart/main.hew
-hew-sandbox-vm/fixtures/25-actor-crash/main.hew
-hew-sandbox-vm/fixtures/27-actor-crash-restart-ignored/main.hew
-hew-sandbox-vm/fixtures/28-actor-state-arity-trap/main.hew
-
 # sandbox-intentional-error: fixture 29 demonstrates the checker refusing an
 # ordered comparison between i64 and f64 — it is designed to fail hew check
 hew-sandbox-vm/fixtures/29-mixed-scalar-compare-rejected/main.hew

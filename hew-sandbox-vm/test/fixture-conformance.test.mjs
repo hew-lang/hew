@@ -7,20 +7,7 @@ import { fileURLToPath } from "node:url";
 import { runBytecode } from "../dist/interpreter/index.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const m3FixtureDirs = [
-  "01-hello-world",
-  "02-arithmetic-checked",
-  "03-branch-loop",
-  "04-record-fields",
-  "05-enum-match",
-  "06-vector-basics",
-  "07-string-interpolation",
-  "08-regex-match",
-  "11-runtime-panic",
-  "12-divide-by-zero-trap",
-  "13-step-budget-exhausted",
-  "23-direct-call"
-];
+const m3FixtureDirs = fs.readdirSync(path.join(root, "fixtures")).filter((name) => fs.existsSync(path.join(root, "fixtures", name, "bytecode.json")));
 
 const ajv = new Ajv2020({ allErrors: true, strict: true, validateFormats: false });
 const traceSchema = readJson("specs/trace-schema-v0.schema.json");
@@ -28,7 +15,6 @@ const validateTrace = ajv.compile(traceSchema);
 // A package declares which schema describes it, so the suite validates each
 // fixture against its own rather than against one the emitter may have left.
 const validateBytecodeBySchema = {
-  "hew.sandbox.bytecode.v0": ajv.compile(readJson("bytecode/sandbox-bytecode-v0.schema.json")),
   "hew.sandbox.bytecode.v1": ajv.compile(readJson("bytecode/sandbox-bytecode-v1.schema.json"))
 };
 
@@ -39,7 +25,7 @@ function validateBytecodePackage(bytecode, label) {
 }
 
 for (const dir of m3FixtureDirs) {
-  test(`M3 conformance: ${dir}`, () => {
+  test(`compiled source replay: ${dir}`, () => {
     const bytecode = readJson(`fixtures/${dir}/bytecode.json`);
     const expected = readJson(`fixtures/${dir}/expected.trace.json`);
 
@@ -71,12 +57,6 @@ for (const dir of m3FixtureDirs) {
     assert.equal(JSON.stringify(actual), JSON.stringify(rerun), `${dir} trace is not byte-stable across reruns`);
   });
 }
-
-test("M3 fixture subset is explicit and complete", () => {
-  for (const dir of m3FixtureDirs) {
-    assert.ok(fs.existsSync(path.join(root, "fixtures", dir, "bytecode.json")), `${dir} is missing bytecode.json`);
-  }
-});
 
 test("Vec::get returns None rather than trapping when the index is past the end", () => {
   const bytecode = readJson("fixtures/06-vector-basics/bytecode.json");

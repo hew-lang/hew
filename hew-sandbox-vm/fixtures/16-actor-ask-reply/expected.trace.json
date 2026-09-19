@@ -1,1 +1,175 @@
-{"schema_version":"hew.sandbox.trace.v0","trace_id":"trace:actor-ask-reply","fixture_id":"actor-ask-reply","profile":"sandbox.educational.v0","hew_version": "0.6.0-rc4","sandbox_version":"0.0.0-spec","result":"ok","replay":{"seed":16,"step_budget":1000,"virtual_clock":{"epoch_ms":0,"tick_ms":1,"current_ms":0},"inputs":[{"kind":"user_event","data":{"family":"actor.scheduler-step","actor_id":"actor:a1"}},{"kind":"user_event","data":{"family":"actor.scheduler-step","actor_id":"actor:a1"}}]},"events":[{"seq":0,"type":"trace.started","phase":"run","span":null,"message":"fixture start"},{"seq":1,"type":"runtime.id_allocated","phase":"run","span":null,"id_kind":"actor","id":"actor:a1","parent_id":"actor:root"},{"seq":2,"type":"state.snapshot","phase":"run","span":null,"message":"actor.spawn","text":"{\"actor_id\":\"actor:a1\",\"alive\":true,\"layout\":\"type:Echo\",\"mailbox_depth\":0,\"parent_id\":\"actor:root\",\"state\":[]}"},{"seq":3,"type":"state.snapshot","phase":"run","span":null,"message":"actor.ask","text":"{\"actor_id\":\"actor:a1\",\"handler\":\"echo\",\"payload\":[\"pong\"],\"reply_id\":\"reply:r1\"}"},{"seq":4,"type":"state.snapshot","phase":"run","span":null,"message":"actor.send","text":"{\"actor_id\":\"actor:a1\",\"from\":\"actor:root\",\"handler\":\"echo\",\"mailbox_depth\":1,\"message_id\":\"message:m1\",\"payload\":[\"pong\"],\"reply_id\":\"reply:r1\"}"},{"seq":5,"type":"state.snapshot","phase":"run","span":null,"message":"actor.mailbox-watermark","text":"{\"actor_id\":\"actor:a1\",\"mailbox_depth\":1,\"max_mailbox\":4,\"threshold\":25}"},{"seq":6,"type":"step.committed","phase":"run","span":null,"message":"actor.scheduler-step","id_kind":"actor","id":"actor:a1","step_count":4,"budget_remaining":996},{"seq":7,"type":"replay.input","phase":"replay","span":null,"replay_input":{"kind":"user_event","data":{"family":"actor.scheduler-step","actor_id":"actor:a1"}}},{"seq":8,"type":"step.committed","phase":"run","span":null,"message":"actor.scheduler-step","id_kind":"actor","id":"actor:a1","step_count":5,"budget_remaining":995},{"seq":9,"type":"replay.input","phase":"replay","span":null,"replay_input":{"kind":"user_event","data":{"family":"actor.scheduler-step","actor_id":"actor:a1"}}},{"seq":10,"type":"state.snapshot","phase":"run","span":null,"message":"actor.receive","text":"{\"actor_id\":\"actor:a1\",\"from\":\"actor:root\",\"handler\":\"echo\",\"mailbox_depth\":0,\"message_id\":\"message:m1\",\"payload\":[\"pong\"],\"reply_id\":\"reply:r1\"}"},{"seq":11,"type":"state.snapshot","phase":"run","span":null,"message":"actor.reply","text":"{\"actor_id\":\"actor:a1\",\"reply_id\":\"reply:r1\",\"value\":\"pong\"}"},{"seq":12,"type":"io.stdout","phase":"run","span":null,"text":"pong\n"},{"seq":13,"type":"trace.ended","phase":"run","span":null,"message":"ok"}],"final_state":{"status":"ok","exit_code":0,"step_count":9,"budget_remaining":991,"virtual_clock":{"epoch_ms":0,"tick_ms":1,"current_ms":0},"stdout":["pong\n"],"stderr":[],"ids":{"actors":["actor:root","actor:a1"],"channels":[],"tasks":[],"supervisors":[],"machines":[]},"diagnostics":[],"sandbox_rejections":[],"runtime_failures":[],"globals":[]}}
+{
+  "events": [
+    {
+      "message": "fixture start",
+      "phase": "run",
+      "seq": 0,
+      "span": null,
+      "type": "trace.started"
+    },
+    {
+      "id": "actor:a1",
+      "id_kind": "actor",
+      "parent_id": "actor:root",
+      "phase": "run",
+      "seq": 1,
+      "span": null,
+      "type": "runtime.id_allocated"
+    },
+    {
+      "message": "actor.spawn",
+      "phase": "run",
+      "seq": 2,
+      "span": null,
+      "text": "{\"actor_id\":\"actor:a1\"}",
+      "type": "state.snapshot"
+    },
+    {
+      "message": "actor.ask",
+      "phase": "run",
+      "seq": 3,
+      "span": null,
+      "text": "{\"actor_id\":\"actor:a1\",\"handler\":\"echo\"}",
+      "type": "state.snapshot"
+    },
+    {
+      "budget_remaining": 997,
+      "id": "actor:a1",
+      "id_kind": "actor",
+      "message": "actor.scheduler-step",
+      "phase": "run",
+      "seq": 4,
+      "span": null,
+      "step_count": 3,
+      "type": "step.committed"
+    },
+    {
+      "phase": "replay",
+      "replay_input": {
+        "data": {
+          "actor_id": "actor:a1",
+          "family": "actor.scheduler-step"
+        },
+        "kind": "user_event"
+      },
+      "seq": 5,
+      "span": null,
+      "type": "replay.input"
+    },
+    {
+      "message": "actor.receive",
+      "phase": "run",
+      "seq": 6,
+      "span": null,
+      "text": "{\"actor_id\":\"actor:a1\",\"handler\":\"echo\"}",
+      "type": "state.snapshot"
+    },
+    {
+      "message": "actor.reply",
+      "phase": "run",
+      "seq": 7,
+      "span": null,
+      "text": "{\"actor_id\":\"actor:a1\",\"value\":\"pong\"}",
+      "type": "state.snapshot"
+    },
+    {
+      "budget_remaining": 991,
+      "id": "actor:root",
+      "id_kind": "actor",
+      "message": "actor.scheduler-step",
+      "phase": "run",
+      "seq": 8,
+      "span": null,
+      "step_count": 9,
+      "type": "step.committed"
+    },
+    {
+      "phase": "replay",
+      "replay_input": {
+        "data": {
+          "actor_id": "actor:root",
+          "family": "actor.scheduler-step"
+        },
+        "kind": "user_event"
+      },
+      "seq": 9,
+      "span": null,
+      "type": "replay.input"
+    },
+    {
+      "phase": "run",
+      "seq": 10,
+      "span": null,
+      "text": "pong\n",
+      "type": "io.stdout"
+    },
+    {
+      "message": "ok",
+      "phase": "run",
+      "seq": 11,
+      "span": null,
+      "type": "trace.ended"
+    }
+  ],
+  "final_state": {
+    "budget_remaining": 981,
+    "diagnostics": [],
+    "exit_code": 0,
+    "globals": [],
+    "ids": {
+      "actors": [
+        "actor:root",
+        "actor:a1"
+      ],
+      "channels": [],
+      "machines": [],
+      "supervisors": [],
+      "tasks": []
+    },
+    "runtime_failures": [],
+    "sandbox_rejections": [],
+    "status": "ok",
+    "stderr": [],
+    "stdout": [
+      "pong\n"
+    ],
+    "step_count": 19,
+    "virtual_clock": {
+      "current_ms": 0,
+      "epoch_ms": 0,
+      "tick_ms": 1
+    }
+  },
+  "fixture_id": "actor-ask-reply",
+  "hew_version": "0.6.0-rc4",
+  "profile": "sandbox.sandbox-vm-export.v0",
+  "replay": {
+    "inputs": [
+      {
+        "data": {
+          "actor_id": "actor:a1",
+          "family": "actor.scheduler-step"
+        },
+        "kind": "user_event"
+      },
+      {
+        "data": {
+          "actor_id": "actor:root",
+          "family": "actor.scheduler-step"
+        },
+        "kind": "user_event"
+      }
+    ],
+    "seed": 16,
+    "step_budget": 1000,
+    "virtual_clock": {
+      "current_ms": 0,
+      "epoch_ms": 0,
+      "tick_ms": 1
+    }
+  },
+  "result": "ok",
+  "sandbox_version": "0.0.0-spec",
+  "schema_version": "hew.sandbox.trace.v0",
+  "trace_id": "trace:actor-ask-reply"
+}

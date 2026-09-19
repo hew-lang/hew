@@ -1,12 +1,9 @@
-# Sandbox VM scaffolding
+# Sandbox package validation
 
-This directory contains tooling for the specification-only sandbox VM layer.
-It is deliberately small and browser-runtime-neutral:
+`validate-sandbox-vm.mjs` checks the package and trace schemas, source-fixture
+catalog and documentation links. `record-trace.mjs` executes a compiled source
+package and writes its deterministic trace.
 
-- `../package.json` defines the private validation package.
-- `scripts/validate-sandbox-vm.mjs` validates schema syntax, fixture traces, the
-  minimum fixture count, and Markdown links.
-
-The scaffold must stay free of interpreter logic. Runtime behavior belongs to
-later milestones after the canonical frontend reuse and sandbox stdlib surfaces
-are available.
+Use `make sandbox-fixtures-record` and `make sandbox-fixtures-check` from the
+repository root. Runtime admission is implemented by the VM loader; these
+repository checks do not decide which language features can execute.

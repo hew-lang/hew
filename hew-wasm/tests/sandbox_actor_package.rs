@@ -683,3 +683,14 @@ fn yielded_and_returned_generators_keep_distinct_owned_outputs() {
         "yielded\nreceived\nyielded cleaned\nreturned\nreturned cleaned\nfinished\ndone\n"
     );
 }
+
+#[test]
+fn generic_actors_stream_owned_values_with_backpressure() {
+    let trace = execute(include_str!(
+        "../../tests/core-acceptance/cases/actor-generic-instances.hew"
+    ));
+    assert_eq!(
+        stdout(&trace),
+        "distinct generic actors and owned replies\n"
+    );
+}

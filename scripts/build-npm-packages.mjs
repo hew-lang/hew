@@ -135,10 +135,7 @@ function buildSandboxVm({ version }) {
         import: "./dist/interpreter/index.js",
         types: "./dist/interpreter/index.d.ts",
       },
-      "./scheduler": {
-        import: "./dist/scheduler/scheduler.js",
-        types: "./dist/scheduler/scheduler.d.ts",
-      },
+
     },
     files: ["dist/"],
     keywords: srcPkg.keywords ?? ["hew", "sandbox", "interpreter", "wasm"],

@@ -1,67 +1,175 @@
 {
-  "schema_version": "hew.sandbox.trace.v0",
-  "trace_id": "trace:pipe-select",
-  "fixture_id": "pipe-select",
-  "profile": "sandbox.educational.v0",
-  "hew_version": "0.6.0-rc4",
-  "sandbox_version": "0.0.0-spec",
-  "result": "ok",
-  "replay": {
-    "seed": 17,
-    "step_budget": 1000,
-    "virtual_clock": { "epoch_ms": 0, "tick_ms": 1, "current_ms": 0 },
-    "inputs": []
-  },
   "events": [
     {
+      "message": "fixture start",
+      "phase": "run",
       "seq": 0,
-      "type": "trace.started",
-      "phase": "run",
       "span": null,
-      "message": "fixture start"
+      "type": "trace.started"
     },
     {
-      "seq": 1,
-      "type": "runtime.id_allocated",
-      "phase": "run",
-      "span": null,
-      "id_kind": "channel",
       "id": "channel:c1",
-      "parent_id": null
+      "id_kind": "channel",
+      "parent_id": "actor:root",
+      "phase": "run",
+      "seq": 1,
+      "span": null,
+      "type": "runtime.id_allocated"
     },
     {
+      "budget_remaining": 950,
+      "id": "actor:root",
+      "id_kind": "actor",
+      "message": "actor.scheduler-step",
+      "phase": "run",
       "seq": 2,
-      "type": "io.stdout",
-      "phase": "run",
       "span": null,
-      "text": "7\n"
+      "step_count": 50,
+      "type": "step.committed"
     },
     {
+      "phase": "replay",
+      "replay_input": {
+        "data": {
+          "actor_id": "actor:root",
+          "family": "actor.scheduler-step"
+        },
+        "kind": "user_event"
+      },
       "seq": 3,
-      "type": "trace.ended",
-      "phase": "run",
       "span": null,
-      "message": "ok"
+      "type": "replay.input"
+    },
+    {
+      "budget_remaining": 936,
+      "id": "actor:root",
+      "id_kind": "actor",
+      "message": "actor.scheduler-step",
+      "phase": "run",
+      "seq": 4,
+      "span": null,
+      "step_count": 64,
+      "type": "step.committed"
+    },
+    {
+      "phase": "replay",
+      "replay_input": {
+        "data": {
+          "actor_id": "actor:root",
+          "family": "actor.scheduler-step"
+        },
+        "kind": "user_event"
+      },
+      "seq": 5,
+      "span": null,
+      "type": "replay.input"
+    },
+    {
+      "budget_remaining": 932,
+      "id": "actor:root",
+      "id_kind": "actor",
+      "message": "actor.scheduler-step",
+      "phase": "run",
+      "seq": 6,
+      "span": null,
+      "step_count": 68,
+      "type": "step.committed"
+    },
+    {
+      "phase": "replay",
+      "replay_input": {
+        "data": {
+          "actor_id": "actor:root",
+          "family": "actor.scheduler-step"
+        },
+        "kind": "user_event"
+      },
+      "seq": 7,
+      "span": null,
+      "type": "replay.input"
+    },
+    {
+      "phase": "run",
+      "seq": 8,
+      "span": null,
+      "text": "7\n",
+      "type": "io.stdout"
+    },
+    {
+      "message": "ok",
+      "phase": "run",
+      "seq": 9,
+      "span": null,
+      "type": "trace.ended"
     }
   ],
   "final_state": {
-    "status": "ok",
-    "exit_code": 0,
-    "step_count": 14,
-    "budget_remaining": 986,
-    "virtual_clock": { "epoch_ms": 0, "tick_ms": 1, "current_ms": 0 },
-    "stdout": ["7\n"],
-    "stderr": [],
-    "ids": {
-      "actors": ["actor:root"],
-      "channels": ["channel:c1"],
-      "tasks": [],
-      "supervisors": [],
-      "machines": []
-    },
+    "budget_remaining": 915,
     "diagnostics": [],
-    "sandbox_rejections": [],
+    "exit_code": 0,
+    "globals": [],
+    "ids": {
+      "actors": [
+        "actor:root"
+      ],
+      "channels": [
+        "channel:c1"
+      ],
+      "machines": [],
+      "supervisors": [],
+      "tasks": []
+    },
     "runtime_failures": [],
-    "globals": []
-  }
+    "sandbox_rejections": [],
+    "status": "ok",
+    "stderr": [],
+    "stdout": [
+      "7\n"
+    ],
+    "step_count": 85,
+    "virtual_clock": {
+      "current_ms": 0,
+      "epoch_ms": 0,
+      "tick_ms": 1
+    }
+  },
+  "fixture_id": "pipe-select",
+  "hew_version": "0.6.0-rc4",
+  "profile": "sandbox.sandbox-vm-export.v0",
+  "replay": {
+    "inputs": [
+      {
+        "data": {
+          "actor_id": "actor:root",
+          "family": "actor.scheduler-step"
+        },
+        "kind": "user_event"
+      },
+      {
+        "data": {
+          "actor_id": "actor:root",
+          "family": "actor.scheduler-step"
+        },
+        "kind": "user_event"
+      },
+      {
+        "data": {
+          "actor_id": "actor:root",
+          "family": "actor.scheduler-step"
+        },
+        "kind": "user_event"
+      }
+    ],
+    "seed": 17,
+    "step_budget": 1000,
+    "virtual_clock": {
+      "current_ms": 0,
+      "epoch_ms": 0,
+      "tick_ms": 1
+    }
+  },
+  "result": "ok",
+  "sandbox_version": "0.0.0-spec",
+  "schema_version": "hew.sandbox.trace.v0",
+  "trace_id": "trace:pipe-select"
 }

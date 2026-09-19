@@ -20,8 +20,32 @@
       "type": "clock.virtual_advance"
     },
     {
+      "budget_remaining": 998,
+      "id": "actor:root",
+      "id_kind": "actor",
+      "message": "actor.scheduler-step",
       "phase": "run",
       "seq": 2,
+      "span": null,
+      "step_count": 2,
+      "type": "step.committed"
+    },
+    {
+      "phase": "replay",
+      "replay_input": {
+        "data": {
+          "actor_id": "actor:root",
+          "family": "actor.scheduler-step"
+        },
+        "kind": "user_event"
+      },
+      "seq": 3,
+      "span": null,
+      "type": "replay.input"
+    },
+    {
+      "phase": "run",
+      "seq": 4,
       "span": null,
       "text": "awake\n",
       "type": "io.stdout"
@@ -29,7 +53,7 @@
     {
       "message": "ok",
       "phase": "run",
-      "seq": 3,
+      "seq": 5,
       "span": null,
       "type": "trace.ended"
     }
@@ -66,7 +90,15 @@
   "hew_version": "0.6.0-rc4",
   "profile": "sandbox.sandbox-vm-export.v0",
   "replay": {
-    "inputs": [],
+    "inputs": [
+      {
+        "data": {
+          "actor_id": "actor:root",
+          "family": "actor.scheduler-step"
+        },
+        "kind": "user_event"
+      }
+    ],
     "seed": 14,
     "step_budget": 1000,
     "virtual_clock": {

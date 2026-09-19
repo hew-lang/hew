@@ -236,6 +236,52 @@ pub unsafe extern "C-unwind" fn hew_rc_drop(ptr: *mut u8) {
     }
 }
 
+/// Release one strong reference, transferring the final payload to a cursor.
+/// A temporary weak reference pins the header while the payload close suspends.
+/// # Safety
+/// `value` is null or one live strong owner. `layout` is its exact immutable
+/// payload descriptor and remains valid through the consuming traversal.
+#[no_mangle]
+pub unsafe extern "C" fn hew_rc_release_begin(
+    value: *mut u8,
+    layout: *const hew_cabi::value::HewValueLayout,
+) -> *mut crate::release_walker::HewReleaseCursor {
+    use crate::release_walker::{HewReleaseCursor, ReleaseItem};
+    unsafe fn release_pin(header: *mut std::ffi::c_void) {
+        // SAFETY: this is the temporary weak owner reserved below.
+        unsafe { hew_weak_drop_rc(header.cast()) };
+    }
+    let mut pending = Vec::new();
+    if !value.is_null() {
+        // SAFETY: the caller transfers one strong owner and its exact descriptor.
+        unsafe {
+            let header = header_from_data(value);
+            let inner = &mut *header;
+            assert!(inner.strong > 0, "Rc strong owner already released");
+            let layout = *layout;
+            assert_eq!(
+                (layout.size, layout.align),
+                (inner.data_size, inner.data_align)
+            );
+            inner.strong -= 1;
+            if inner.strong == 0 {
+                inner.weak = inner.weak.checked_add(1).expect("Rc weak count overflow");
+                pending.push(ReleaseItem::Storage {
+                    owner: header.cast(),
+                    free: release_pin,
+                });
+                if layout.drop_fn.is_some() || layout.release_start.is_some() {
+                    pending.push(ReleaseItem::Value {
+                        slot: value.cast(),
+                        layout,
+                    });
+                }
+            }
+        }
+    }
+    HewReleaseCursor::new(pending)
+}
+
 /// Get the current strong reference count.
 ///
 /// # Safety

@@ -164,6 +164,7 @@ fn key_layout_i64() -> HewMapKeyLayout {
     HewMapKeyLayout {
         value: HewValueLayout {
             visit_close: None,
+            release_start: None,
             size: 8,
             align: 8,
             ownership_kind: HewTypeOwnershipKind::Plain,
@@ -179,6 +180,7 @@ fn key_layout_i32() -> HewMapKeyLayout {
     HewMapKeyLayout {
         value: HewValueLayout {
             visit_close: None,
+            release_start: None,
             size: 4,
             align: 4,
             ownership_kind: HewTypeOwnershipKind::Plain,
@@ -194,6 +196,7 @@ fn key_layout_point() -> HewMapKeyLayout {
     HewMapKeyLayout {
         value: HewValueLayout {
             visit_close: None,
+            release_start: None,
             size: 16,
             align: 8,
             ownership_kind: HewTypeOwnershipKind::Plain,
@@ -208,6 +211,7 @@ fn key_layout_point() -> HewMapKeyLayout {
 fn val_layout(size: usize, align: usize) -> HewValueLayout {
     HewValueLayout {
         visit_close: None,
+        release_start: None,
         size,
         align,
         ownership_kind: HewTypeOwnershipKind::Plain,
@@ -601,6 +605,7 @@ fn layout_hashmap_managed_key_without_drop_aborts() {
     let kl = HewMapKeyLayout {
         value: HewValueLayout {
             visit_close: None,
+            release_start: None,
             size: 8,
             align: 8,
             ownership_kind: HewTypeOwnershipKind::LayoutManaged,
@@ -621,6 +626,7 @@ fn layout_hashmap_managed_key_without_drop_aborts() {
 fn layout_hashmap_managed_value_without_drop_aborts() {
     let vl = HewValueLayout {
         visit_close: None,
+        release_start: None,
         size: 8,
         align: 8,
         ownership_kind: HewTypeOwnershipKind::LayoutManaged,
@@ -663,6 +669,7 @@ fn layout_hashmap_zero_size_key_keeps_nonzero_metadata_stride() {
     let kl = HewMapKeyLayout {
         value: HewValueLayout {
             visit_close: None,
+            release_start: None,
             size: 0,
             align: 1,
             ownership_kind: HewTypeOwnershipKind::Plain,
@@ -686,6 +693,7 @@ fn layout_hashmap_invalid_align_aborts() {
     let kl = HewMapKeyLayout {
         value: HewValueLayout {
             visit_close: None,
+            release_start: None,
             size: 8,
             align: 3,
             ownership_kind: HewTypeOwnershipKind::Plain,
@@ -703,6 +711,7 @@ fn layout_hashmap_invalid_align_aborts() {
 fn layout_hashmap_zero_size_value_with_nonunit_align_aborts() {
     let vl = HewValueLayout {
         visit_close: None,
+        release_start: None,
         size: 0,
         align: 8, // invalid: size==0 requires align==1 (HashSet ZST contract)
         ownership_kind: HewTypeOwnershipKind::Plain,
@@ -721,6 +730,7 @@ fn layout_hashmap_stride_overflow_aborts() {
     let kl = HewMapKeyLayout {
         value: HewValueLayout {
             visit_close: None,
+            release_start: None,
             size: usize::MAX / 2,
             align: 8,
             ownership_kind: HewTypeOwnershipKind::Plain,

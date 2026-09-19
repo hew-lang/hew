@@ -4862,6 +4862,7 @@ mod tests {
     fn plain_elem_layout(size: usize, align: usize) -> HewValueLayout {
         HewValueLayout {
             visit_close: None,
+            release_start: None,
             size,
             align,
             ownership_kind: HewTypeOwnershipKind::Plain,
@@ -4873,6 +4874,7 @@ mod tests {
     fn string_elem_layout() -> HewValueLayout {
         HewValueLayout {
             visit_close: None,
+            release_start: None,
             size: size_of::<*const HewString>(),
             align: align_of::<*const HewString>(),
             ownership_kind: HewTypeOwnershipKind::String,
@@ -4884,6 +4886,7 @@ mod tests {
     fn bytes_elem_layout() -> HewValueLayout {
         HewValueLayout {
             visit_close: None,
+            release_start: None,
             size: size_of::<crate::bytes::BytesTriple>(),
             align: align_of::<crate::bytes::BytesTriple>(),
             ownership_kind: HewTypeOwnershipKind::Bytes,
@@ -5083,6 +5086,7 @@ mod tests {
     fn st_owned_layout() -> HewValueLayout {
         HewValueLayout {
             visit_close: None,
+            release_start: None,
             size: size_of::<StOwnedElem>(),
             align: align_of::<StOwnedElem>(),
             ownership_kind: HewTypeOwnershipKind::LayoutManaged,

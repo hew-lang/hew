@@ -273,7 +273,9 @@ unsafe fn validate_elem_layout(layout: *const HewValueLayout) {
             write_stderr(b"PANIC: HewValueLayout size must preserve element alignment\n");
             libc::abort();
         }
-        if descriptor.ownership_kind != HewTypeOwnershipKind::Plain && descriptor.drop_fn.is_none()
+        if descriptor.ownership_kind != HewTypeOwnershipKind::Plain
+            && descriptor.drop_fn.is_none()
+            && descriptor.release_start.is_none()
         {
             let msg = b"PANIC: HewValueLayout non-Plain ownership requires drop_fn\n\0";
             write_stderr(&msg[..msg.len() - 1]);
@@ -543,6 +545,7 @@ pub unsafe extern "C" fn hew_vec_new_with_layout(layout: *const HewTypeLayout) -
         };
         (*v).layout_storage = HewValueLayout {
             visit_close: None,
+            release_start: None,
             size: descriptor.size,
             align: descriptor.align,
             ownership_kind: descriptor.ownership_kind,
@@ -1449,36 +1452,9 @@ unsafe fn element_needs_drop(v: *mut HewVec) -> bool {
     // SAFETY: caller guarantees `v` is valid.
     unsafe {
         let vec = &*v;
-        let descriptor_drop = !vec.layout.is_null() && (*vec.layout).drop_fn.is_some();
+        let descriptor_drop = !vec.layout.is_null()
+            && ((*vec.layout).drop_fn.is_some() || (*vec.layout).release_start.is_some());
         descriptor_drop || vec.elem_kind == ElemKind::String
-    }
-}
-
-/// Drop the live elements at `indices` through the Vec's single descriptor
-/// protocol.
-///
-/// # Safety
-///
-/// `v` must be valid and every index must be below `(*v).len`.
-unsafe fn drop_elements(v: *mut HewVec, indices: impl Iterator<Item = usize>) {
-    // SAFETY: caller guarantees `v` and the indices are valid.
-    unsafe {
-        let vec = &*v;
-        if !vec.layout.is_null() {
-            let layout = &*vec.layout;
-            if let Some(drop_fn) = layout.drop_fn {
-                for index in indices {
-                    drop_fn(vec.data.add(index * layout.size).cast::<c_void>());
-                }
-                return;
-            }
-        }
-        if vec.elem_kind == ElemKind::String {
-            for index in indices {
-                let slot = vec.data.cast::<*mut HewString>().add(index);
-                release_string_element(slot.read());
-            }
-        }
     }
 }
 
@@ -1487,16 +1463,16 @@ unsafe fn drop_elements(v: *mut HewVec, indices: impl Iterator<Item = usize>) {
 /// # Safety
 ///
 /// `v` must be a Vec allocation the walk in progress exclusively owns.
-pub(crate) unsafe fn expand_vector(v: *mut HewVec) {
+pub(crate) unsafe fn expand_vector(v: *mut HewVec, pending: &mut Vec<ReleaseItem>) {
     // SAFETY: caller guarantees the allocation contract.
     unsafe {
         // The elements sit above the storage step, so the buffer outlives every
         // element slot the cursor still addresses.
-        release_walker::queue(ReleaseItem::VectorStorage { vec: v });
+        pending.push(ReleaseItem::VectorStorage { vec: v });
         if (*v).data.is_null() || (*v).len == 0 {
             return;
         }
-        release_walker::queue(ReleaseItem::VectorElements {
+        pending.push(ReleaseItem::VectorElements {
             vec: v,
             next: 0,
             end: (*v).len,
@@ -1509,21 +1485,39 @@ pub(crate) unsafe fn expand_vector(v: *mut HewVec) {
 /// # Safety
 ///
 /// `v` must be a Vec the walk owns, with `next < end <= (*v).len`.
-pub(crate) unsafe fn release_element_chunk(v: *mut HewVec, next: usize, end: usize) {
-    // SAFETY: caller guarantees the element range is live.
+pub(crate) unsafe fn release_element_chunk(
+    v: *mut HewVec,
+    next: usize,
+    end: usize,
+    pending: &mut Vec<ReleaseItem>,
+) {
+    // SAFETY: the walk owns this live range and retains the buffer below it.
     unsafe {
-        let count = (end - next).min(release_walker::STEP_ELEMENTS);
-        // The remaining range stays beneath whatever this chunk queues, so an
-        // element's whole subtree is released before the rest of the range.
-        let stop = next + count;
+        let vec = &*v;
+        let stop = next + (end - next).min(release_walker::STEP_ELEMENTS);
         if stop < end {
-            release_walker::queue(ReleaseItem::VectorElements {
+            pending.push(ReleaseItem::VectorElements {
                 vec: v,
                 next: stop,
                 end,
             });
         }
-        drop_elements(v, next..stop);
+        // The stack consumes forward indices, completing each subtree before
+        // the following sibling. Descriptor copies outlive their yielded slot.
+        for index in (next..stop).rev() {
+            if let Some(layout) = vec.layout.as_ref() {
+                if layout.drop_fn.is_some() || layout.release_start.is_some() {
+                    pending.push(ReleaseItem::Value {
+                        slot: vec.data.add(index * layout.size).cast(),
+                        layout: *layout,
+                    });
+                }
+            } else if vec.elem_kind == ElemKind::String {
+                pending.push(ReleaseItem::String {
+                    value: vec.data.cast::<*mut HewString>().add(index).read(),
+                });
+            }
+        }
     }
 }
 
@@ -5176,6 +5170,7 @@ mod vec_owned_tests {
     fn zero_sized_elements_preserve_length_without_reading_or_writing_payload() {
         let layout = HewValueLayout {
             visit_close: None,
+            release_start: None,
             size: 0,
             align: 1,
             ownership_kind: HewTypeOwnershipKind::Plain,
@@ -5218,6 +5213,7 @@ mod vec_owned_tests {
     fn plain_descriptor_uses_the_same_value_operations_without_thunks() {
         let layout = HewValueLayout {
             visit_close: None,
+            release_start: None,
             size: size_of::<(i64, i64)>(),
             align: align_of::<(i64, i64)>(),
             ownership_kind: HewTypeOwnershipKind::Plain,
@@ -5371,6 +5367,7 @@ mod vec_owned_tests {
     fn owned_layout() -> HewValueLayout {
         HewValueLayout {
             visit_close: None,
+            release_start: None,
             size: core::mem::size_of::<OwnedElem>(),
             align: core::mem::align_of::<OwnedElem>(),
             ownership_kind: HewTypeOwnershipKind::LayoutManaged,
@@ -5426,6 +5423,7 @@ mod vec_owned_tests {
         unsafe {
             let layout = HewValueLayout {
                 visit_close: None,
+                release_start: None,
                 size: core::mem::size_of::<OwnedElem>(),
                 align: core::mem::align_of::<OwnedElem>(),
                 ownership_kind: HewTypeOwnershipKind::LayoutManaged,
@@ -5468,6 +5466,7 @@ mod vec_owned_tests {
         unsafe {
             let layout = HewValueLayout {
                 visit_close: None,
+                release_start: None,
                 size: core::mem::size_of::<OwnedElem>(),
                 align: core::mem::align_of::<OwnedElem>(),
                 ownership_kind: HewTypeOwnershipKind::LayoutManaged,
@@ -5518,6 +5517,7 @@ mod vec_owned_tests {
         unsafe {
             let layout = HewValueLayout {
                 visit_close: None,
+                release_start: None,
                 size: core::mem::size_of::<OwnedElem>(),
                 align: core::mem::align_of::<OwnedElem>(),
                 ownership_kind: HewTypeOwnershipKind::LayoutManaged,
@@ -5866,6 +5866,7 @@ mod vec_owned_tests {
         }
         let layout = HewValueLayout {
             visit_close: None,
+            release_start: None,
             size: core::mem::size_of::<OwnedElem>(),
             align: core::mem::align_of::<OwnedElem>(),
             ownership_kind: HewTypeOwnershipKind::LayoutManaged,

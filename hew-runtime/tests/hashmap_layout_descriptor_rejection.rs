@@ -95,6 +95,7 @@ extern "C-unwind" fn snapshot_drop(_blob: *mut c_void) {
 fn plain_v_layout() -> HewValueLayout {
     HewValueLayout {
         visit_close: None,
+        release_start: None,
         size: 8,
         align: 8,
         ownership_kind: HewTypeOwnershipKind::Plain,
@@ -107,6 +108,7 @@ fn plain_k_layout() -> HewMapKeyLayout {
     HewMapKeyLayout {
         value: HewValueLayout {
             visit_close: None,
+            release_start: None,
             size: 8,
             align: 8,
             ownership_kind: HewTypeOwnershipKind::Plain,
@@ -128,6 +130,7 @@ fn rejects_string_key_without_drop_fn() {
     let kl = HewMapKeyLayout {
         value: HewValueLayout {
             visit_close: None,
+            release_start: None,
             size: 8,
             align: 8,
             ownership_kind: HewTypeOwnershipKind::String,
@@ -149,6 +152,7 @@ fn rejects_layout_managed_key_without_drop_fn() {
     let kl = HewMapKeyLayout {
         value: HewValueLayout {
             visit_close: None,
+            release_start: None,
             size: 8,
             align: 8,
             ownership_kind: HewTypeOwnershipKind::LayoutManaged,
@@ -170,6 +174,7 @@ fn rejects_string_value_without_drop_fn() {
     let kl = plain_k_layout();
     let vl = HewValueLayout {
         visit_close: None,
+        release_start: None,
         size: 8,
         align: 8,
         ownership_kind: HewTypeOwnershipKind::String,
@@ -187,6 +192,7 @@ fn rejects_layout_managed_value_without_drop_fn() {
     let kl = plain_k_layout();
     let vl = HewValueLayout {
         visit_close: None,
+        release_start: None,
         size: 8,
         align: 8,
         ownership_kind: HewTypeOwnershipKind::LayoutManaged,
@@ -219,6 +225,7 @@ fn accepts_plain_with_drop_fn_no_op() {
     let kl = HewMapKeyLayout {
         value: HewValueLayout {
             visit_close: None,
+            release_start: None,
             drop_fn: Some(snapshot_drop as HewValueDropThunk),
             ..plain_k_layout().value
         },
@@ -226,6 +233,7 @@ fn accepts_plain_with_drop_fn_no_op() {
     };
     let vl = HewValueLayout {
         visit_close: None,
+        release_start: None,
         drop_fn: Some(snapshot_drop as HewValueDropThunk),
         ..plain_v_layout()
     };
@@ -249,6 +257,7 @@ fn kernel_honours_snapshot_after_caller_mutates_descriptors() {
     let mut kl = HewMapKeyLayout {
         value: HewValueLayout {
             visit_close: None,
+            release_start: None,
             size: size_of::<i64>(),
             align: align_of::<i64>(),
             ownership_kind: HewTypeOwnershipKind::LayoutManaged,
@@ -260,6 +269,7 @@ fn kernel_honours_snapshot_after_caller_mutates_descriptors() {
     };
     let mut vl = HewValueLayout {
         visit_close: None,
+        release_start: None,
         size: size_of::<i64>(),
         align: align_of::<i64>(),
         ownership_kind: HewTypeOwnershipKind::LayoutManaged,

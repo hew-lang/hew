@@ -145,6 +145,7 @@ unsafe extern "C-unwind" fn drop_pair(slot: *mut c_void) {
 
 const RECORD_LAYOUT: HewValueLayout = HewValueLayout {
     visit_close: None,
+    release_start: None,
     size: size_of::<Record>(),
     align: align_of::<Record>(),
     ownership_kind: HewTypeOwnershipKind::LayoutManaged,
@@ -160,6 +161,7 @@ const KEY_LAYOUT: HewMapKeyLayout = HewMapKeyLayout {
 
 const PAIR_LAYOUT: HewValueLayout = HewValueLayout {
     visit_close: None,
+    release_start: None,
     size: size_of::<Pair>(),
     align: align_of::<Pair>(),
     ownership_kind: HewTypeOwnershipKind::LayoutManaged,
@@ -455,6 +457,7 @@ fn zero_sized_value_callbacks_follow_logical_owners() {
     assert_eq!(ZERO_OWNERS.load(Ordering::SeqCst), 0);
     let layout = HewValueLayout {
         visit_close: None,
+        release_start: None,
         size: 0,
         align: 1,
         ownership_kind: HewTypeOwnershipKind::LayoutManaged,
@@ -540,6 +543,7 @@ fn aligned_zero_sized_vector_preserves_callback_alignment() {
     assert_eq!(ZERO_OWNERS.load(Ordering::SeqCst), 0);
     let layout = HewValueLayout {
         visit_close: None,
+        release_start: None,
         size: size_of::<AlignedUnit>(),
         align: align_of::<AlignedUnit>(),
         ownership_kind: HewTypeOwnershipKind::LayoutManaged,

@@ -27,10 +27,14 @@ unsafe fn environment_layout(descriptor: *const HewCallableDescriptor) -> Option
             || layout.ownership_kind != HewTypeOwnershipKind::Plain
             || layout.clone_fn.is_some()
             || layout.drop_fn.is_some()
+            || layout.release_start.is_some()
         {
             return None;
         }
-    } else if layout.ownership_kind != HewTypeOwnershipKind::Plain && layout.drop_fn.is_none() {
+    } else if layout.ownership_kind != HewTypeOwnershipKind::Plain
+        && layout.drop_fn.is_none()
+        && layout.release_start.is_none()
+    {
         return None;
     }
     Some(layout)
@@ -188,6 +192,50 @@ pub unsafe extern "C" fn hew_callable_drop(value: *mut HewCallableValue) {
     }
 }
 
+/// Transfer a callable environment to its exact consuming release traversal.
+/// # Safety
+/// `value` is null, cleared, or a uniquely owned carrier with a valid descriptor.
+/// Its environment may not be accessed after this call.
+#[no_mangle]
+pub unsafe extern "C" fn hew_callable_release_begin(
+    value: *mut HewCallableValue,
+) -> *mut crate::release_walker::HewReleaseCursor {
+    use crate::release_walker::{HewReleaseCursor, ReleaseItem};
+    let mut pending = Vec::new();
+    if !value.is_null() {
+        // SAFETY: detach ownership before any callback may execute.
+        let carrier = unsafe {
+            value.replace(HewCallableValue {
+                environment: ptr::null_mut(),
+                descriptor: ptr::null(),
+            })
+        };
+        if !carrier.descriptor.is_null() || !carrier.environment.is_null() {
+            // SAFETY: the caller retains this exact immutable descriptor.
+            let Some(layout) = (unsafe { environment_layout(carrier.descriptor) }) else {
+                std::process::abort();
+            };
+            if (layout.size == 0) != carrier.environment.is_null() {
+                std::process::abort();
+            }
+            if layout.size != 0 {
+                pending.push(ReleaseItem::Allocation {
+                    pointer: carrier.environment,
+                    size: layout.size,
+                    align: layout.align,
+                });
+                if layout.drop_fn.is_some() || layout.release_start.is_some() {
+                    pending.push(ReleaseItem::Value {
+                        slot: carrier.environment,
+                        layout,
+                    });
+                }
+            }
+        }
+    }
+    HewReleaseCursor::new(pending)
+}
+
 /// Visit live captures through the environment's existing layout and masks.
 /// # Safety
 /// The callable remains exclusively borrowed until the selected children drain.
@@ -244,6 +292,7 @@ mod tests {
 
     const ENVIRONMENT_LAYOUT: HewValueLayout = HewValueLayout {
         visit_close: None,
+        release_start: None,
         size: size_of::<Environment>(),
         align: align_of::<Environment>(),
         ownership_kind: HewTypeOwnershipKind::LayoutManaged,
@@ -506,6 +555,7 @@ mod tests {
         // A captured ZST still has a mask byte, independently allocated/copied.
         let layout = HewValueLayout {
             visit_close: None,
+            release_start: None,
             size: 1,
             align: 1,
             ownership_kind: HewTypeOwnershipKind::Plain,
@@ -559,6 +609,7 @@ mod tests {
         }
         let layout = HewValueLayout {
             visit_close: None,
+            release_start: None,
             size: 0,
             align: 1,
             ownership_kind: HewTypeOwnershipKind::Plain,

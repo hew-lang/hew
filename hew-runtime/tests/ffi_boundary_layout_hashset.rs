@@ -97,6 +97,7 @@ fn elem_layout_point() -> HewMapKeyLayout {
     HewMapKeyLayout {
         value: HewValueLayout {
             visit_close: None,
+            release_start: None,
             size: 16,
             align: 8,
             ownership_kind: HewTypeOwnershipKind::Plain,
@@ -366,6 +367,7 @@ fn layout_hashset_managed_elem_without_drop_aborts() {
     let kl = HewMapKeyLayout {
         value: HewValueLayout {
             visit_close: None,
+            release_start: None,
             size: 16,
             align: 8,
             ownership_kind: HewTypeOwnershipKind::LayoutManaged,
@@ -379,6 +381,7 @@ fn layout_hashset_managed_elem_without_drop_aborts() {
     // for this gate-level test we synthesize an equivalent value descriptor.
     let vl = hew_cabi::map::HewValueLayout {
         visit_close: None,
+        release_start: None,
         size: 0,
         align: 1,
         ownership_kind: HewTypeOwnershipKind::Plain,

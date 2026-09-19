@@ -72,8 +72,8 @@ use crate::{
     OpId, Operand, PlaceId, PlaceOrigin, Provenance, SemAbiParam, SemAggregateField,
     SemAggregateShape, SemBlock, SemCallConv, SemCallable, SemCallableKind, SemFunction,
     SemGenericTemplate, SemModule, SemOp, SemOpKind, SemParamPassing, SemSignature, SemTerminator,
-    SemVariant, SemVariantArm, SemVariantField, SemVariantShape, SirInstanceKey, ValueDef, ValueId,
-    VariantShapeId,
+    SemVariant, SemVariantArm, SemVariantField, SemVariantKind, SemVariantShape, SirInstanceKey,
+    ValueDef, ValueId, VariantShapeId,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -563,6 +563,7 @@ struct InstanceService<'a> {
     wire_plans: HashMap<ResolvedTy, std::sync::Arc<crate::SemWirePlan>>,
     value_capabilities:
         BTreeMap<(ResolvedTy, hew_types::ValueCapability), crate::SemValueMethodPlan>,
+    structural_display: BTreeMap<crate::StructuralType, crate::SemStructuralRender>,
 }
 
 /// The declared type parameter a receiver-pattern position names, if any.
@@ -697,6 +698,7 @@ fn concrete_builtin_variant_shape(
                     .iter()
                     .map(|variant| SemVariant {
                         name: variant.name.to_string(),
+                        kind: SemVariantKind::Unit,
                         fields: Vec::new(),
                     })
                     .collect(),
@@ -720,6 +722,11 @@ fn concrete_builtin_variant_shape(
         .iter()
         .map(|variant| SemVariant {
             name: variant.name.to_string(),
+            kind: if variant.payload_type_args.is_empty() {
+                SemVariantKind::Unit
+            } else {
+                SemVariantKind::Tuple
+            },
             fields: variant
                 .payload_type_args
                 .iter()
@@ -881,6 +888,11 @@ fn sem_variants_from_decl(
             }
             Ok(SemVariant {
                 name: variant.name.clone(),
+                kind: match variant.kind {
+                    hew_hir::HirVariantKind::Unit => SemVariantKind::Unit,
+                    hew_hir::HirVariantKind::Tuple(_) => SemVariantKind::Tuple,
+                    hew_hir::HirVariantKind::Struct(_) => SemVariantKind::Struct,
+                },
                 fields: names
                     .into_iter()
                     .zip(tys)
@@ -1079,6 +1091,7 @@ impl<'a> InstanceService<'a> {
             string_literals: BTreeMap::new(),
             bytes_literals: BTreeMap::new(),
             value_capabilities: BTreeMap::new(),
+            structural_display: BTreeMap::new(),
             wire_plans: HashMap::new(),
         }
     }
@@ -1178,6 +1191,148 @@ impl<'a> InstanceService<'a> {
             }
         }
         Ok(())
+    }
+
+    fn require_structural_rendering(&mut self, key: &crate::StructuralType) -> Result<(), String> {
+        if self.structural_display.contains_key(key) {
+            return Ok(());
+        }
+        let ty = &key.value;
+        self.require_type_facts(ty)?;
+        // Reserve the type before descending through recursive variants.
+        self.structural_display
+            .insert(key.clone(), crate::SemStructuralRender::default());
+        if let Some((method, type_args)) = self
+            .checked_facts
+            .display_method_for_type(ty, &key.source)
+            .map_err(|error| format!("cannot select Display for `{}`: {error}", ty.user_facing()))?
+        {
+            let instance = if type_args.is_empty() && !self.table.templates.contains_key(&method) {
+                hew_types::EntryCallableInstance::Declared
+            } else {
+                hew_types::EntryCallableInstance::Generic { type_args }
+            };
+            let callable = self.resolve_entry_display(&method, &instance)?;
+            if callable.signature.return_ty != ResolvedTy::String
+                || callable.signature.params.len() != 1
+                || callable.signature.params[0].ty != *ty
+                || !matches!(
+                    callable.signature.params[0].passing,
+                    SemParamPassing::Borrow | SemParamPassing::ReadOnly
+                )
+            {
+                return Err(
+                    "selected Display has an incompatible borrowed formatter signature".into(),
+                );
+            }
+            self.structural_display.insert(
+                key.clone(),
+                crate::SemStructuralRender {
+                    display: Some(callable.id),
+                    members: Vec::new(),
+                },
+            );
+            return Ok(());
+        }
+        let members = self.structural_rendering_members(key)?;
+        for member in &members {
+            self.require_structural_rendering(member)?;
+        }
+        self.structural_display.insert(
+            key.clone(),
+            crate::SemStructuralRender {
+                display: None,
+                members,
+            },
+        );
+        Ok(())
+    }
+
+    fn structural_rendering_members(
+        &self,
+        key: &crate::StructuralType,
+    ) -> Result<Vec<crate::StructuralType>, String> {
+        let ty = &key.value;
+        let source = self.checked_facts.rendering_source(&key.source)?;
+        let source_args = match &source {
+            ResolvedTy::Tuple(args) | ResolvedTy::Named { args, .. } => args.as_slice(),
+            _ => &[],
+        };
+        Ok(match ty {
+            ResolvedTy::Tuple(members) => members
+                .iter()
+                .enumerate()
+                .map(|(index, value)| crate::StructuralType {
+                    value: value.clone(),
+                    source: source_args.get(index).unwrap_or(value).clone(),
+                })
+                .collect(),
+            ResolvedTy::Named {
+                args,
+                builtin: Some(hew_types::BuiltinType::Vec | hew_types::BuiltinType::HashMap),
+                ..
+            } => args
+                .iter()
+                .enumerate()
+                .map(|(index, value)| crate::StructuralType {
+                    value: value.clone(),
+                    source: source_args.get(index).unwrap_or(value).clone(),
+                })
+                .collect(),
+            ResolvedTy::Named {
+                is_opaque: true, ..
+            } => Vec::new(),
+            _ => {
+                let mut members = Vec::new();
+                if let Some(shape) = self
+                    .aggregate_shapes
+                    .iter()
+                    .find(|shape| shape.aggregate_ty == *ty)
+                {
+                    for field in &shape.fields {
+                        let source = self
+                            .checked_facts
+                            .rendering_field(&source, None, &field.name)?
+                            .unwrap_or_else(|| field.ty.clone());
+                        members.push(crate::StructuralType {
+                            value: field.ty.clone(),
+                            source,
+                        });
+                    }
+                } else if let Some(shape) = self
+                    .variant_shapes
+                    .iter()
+                    .find(|shape| shape.enum_ty == *ty)
+                {
+                    for (index, variant) in shape.variants.iter().enumerate() {
+                        for (position, field) in variant.fields.iter().enumerate() {
+                            let declared = self.checked_facts.rendering_field(
+                                &source,
+                                Some(&variant.name),
+                                &field.name,
+                            )?;
+                            let source_builtin = match &source {
+                                ResolvedTy::Named { builtin, .. } => *builtin,
+                                _ => None,
+                            };
+                            let builtin_argument = source_builtin
+                                .and_then(hew_types::BuiltinType::generic_enum)
+                                .and_then(|decl| decl.variants.get(index))
+                                .and_then(|variant| variant.payload_type_args.get(position))
+                                .and_then(|argument| source_args.get(*argument));
+                            let source = declared
+                                .or_else(|| builtin_argument.cloned())
+                                .unwrap_or_else(|| field.ty.clone());
+                            members.push(crate::StructuralType {
+                                value: field.ty.clone(),
+                                source,
+                            });
+                        }
+                    }
+                }
+                members
+            }
+        })
     }
 
     fn require_type_facts(&mut self, ty: &ResolvedTy) -> Result<(), String> {
@@ -2348,6 +2503,7 @@ impl<'a> InstanceService<'a> {
             string_literals,
             bytes_literals,
             value_capabilities,
+            structural_display,
             ..
         } = self;
         let debug = crate::SemDebugFacts::project(module);
@@ -2417,6 +2573,7 @@ impl<'a> InstanceService<'a> {
             }
         }
         SemModule {
+            structural_display,
             debug,
             actors,
             supervisors,
@@ -8474,6 +8631,12 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         if family == hew_types::RuntimeCallFamily::Vector(hew_types::VecValueOp::Contains) {
             self.service
                 .require_value_capability(&parameter_types[1], hew_types::ValueCapability::Eq)?;
+        }
+        if family == hew_types::RuntimeCallFamily::StructuralFormat {
+            self.service
+                .require_structural_rendering(&crate::StructuralType::canonical(
+                    &parameter_types[0],
+                ))?;
         }
         if matches!(contract.result, RuntimeResultEffect::IndependentValue(_)) {
             self.service.require_type_facts(&instantiated.result_ty)?;

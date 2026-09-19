@@ -16385,36 +16385,6 @@
     },
     {
       "availability": [
-        "native",
-        "wasm32-wasip1"
-      ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_structural_format_hashmap( *mut c_void, *const HewLayoutHashMap, Option<HewStructuralFormatFn>, Option<HewStructuralFormatFn>, )",
-        "wasm32-wasip1": "fn hew_structural_format_hashmap( *mut c_void, *const HewLayoutHashMap, Option<HewStructuralFormatFn>, Option<HewStructuralFormatFn>, )"
-      },
-      "symbol": "hew_structural_format_hashmap"
-    },
-    {
-      "availability": [
-        "native",
-        "wasm32-wasip1"
-      ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_structural_format_vec( *mut c_void, *const HewVec, Option<HewStructuralFormatFn>, )",
-        "wasm32-wasip1": "fn hew_structural_format_vec( *mut c_void, *const HewVec, Option<HewStructuralFormatFn>, )"
-      },
-      "symbol": "hew_structural_format_vec"
-    },
-    {
-      "availability": [
         "native"
       ],
       "classification": "non-declarable",

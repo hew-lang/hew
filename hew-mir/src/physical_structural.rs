@@ -12,8 +12,7 @@
 
 use std::collections::BTreeMap;
 
-use hew_sir::SemModule;
-use hew_types::runtime_call::vector_element_type;
+use hew_sir::{CallableId, SemModule, SemVariantKind, StructuralType};
 use hew_types::{BuiltinType, ResolvedTy};
 
 use super::PhysicalError;
@@ -33,13 +32,18 @@ pub struct PhysicalStructuralField {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PhysicalStructuralCase {
     pub name: String,
+    pub kind: SemVariantKind,
     /// Payload recipes in declaration order; empty for a unit case.
-    pub fields: Vec<PhysicalStructuralId>,
+    pub fields: Vec<PhysicalStructuralField>,
 }
 
 /// How one concrete type renders.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PhysicalStructuralShape {
+    /// Borrow the receiver through its checker-selected `Display::fmt` body.
+    Display {
+        callable: CallableId,
+    },
     /// Sign-extend the value's own integer width and append it as `i64`.
     SignedInt,
     /// Zero-extend the value's own integer width and append it as `u64`.
@@ -66,7 +70,7 @@ pub enum PhysicalStructuralShape {
         name: String,
         fields: Vec<PhysicalStructuralField>,
     },
-    /// `Case` or `Case(a, b)`, selected by the value's tag.
+    /// `Case`, `Case(a, b)` or `Case { field: value }`, selected by the tag.
     Enum {
         cases: Vec<PhysicalStructuralCase>,
     },
@@ -87,6 +91,45 @@ pub struct PhysicalStructuralGlue {
     pub id: PhysicalStructuralId,
     pub ty: ResolvedTy,
     pub shape: PhysicalStructuralShape,
+    /// A selected formatter can suspend, directly or through another member.
+    pub is_resumable: bool,
+}
+
+pub(super) fn display_callees(
+    glue: &[PhysicalStructuralGlue],
+    root: PhysicalStructuralId,
+) -> Result<std::collections::BTreeSet<CallableId>, PhysicalError> {
+    let mut pending = vec![root];
+    let mut seen = std::collections::BTreeSet::new();
+    let mut callees = std::collections::BTreeSet::new();
+    while let Some(id) = pending.pop() {
+        if !seen.insert(id) {
+            continue;
+        }
+        let recipe = glue
+            .get(id.0 as usize)
+            .filter(|recipe| recipe.id == id)
+            .ok_or_else(|| PhysicalError::new("structural call graph names an unknown recipe"))?;
+        match &recipe.shape {
+            PhysicalStructuralShape::Display { callable } => {
+                callees.insert(*callable);
+            }
+            PhysicalStructuralShape::Tuple { fields } => pending.extend(fields),
+            PhysicalStructuralShape::Record { fields, .. } => {
+                pending.extend(fields.iter().map(|field| field.recipe));
+            }
+            PhysicalStructuralShape::Enum { cases } => pending.extend(
+                cases
+                    .iter()
+                    .flat_map(|case| &case.fields)
+                    .map(|field| field.recipe),
+            ),
+            PhysicalStructuralShape::Vector { element } => pending.push(*element),
+            PhysicalStructuralShape::Map { key, value } => pending.extend([*key, *value]),
+            _ => {}
+        }
+    }
+    Ok(callees)
 }
 
 /// Interning builder over the types reached by structural rendering.
@@ -95,7 +138,7 @@ pub struct PhysicalStructuralGlue {
 /// that reaches itself through an indirect enum terminates here.
 #[derive(Debug, Default)]
 pub(super) struct StructuralGlue {
-    ids: BTreeMap<ResolvedTy, PhysicalStructuralId>,
+    ids: BTreeMap<StructuralType, PhysicalStructuralId>,
     glue: Vec<Option<PhysicalStructuralGlue>>,
 }
 
@@ -111,19 +154,35 @@ impl StructuralGlue {
         module: &SemModule,
         ty: &ResolvedTy,
     ) -> Result<PhysicalStructuralId, PhysicalError> {
-        if let Some(id) = self.ids.get(ty) {
+        self.intern_source(module, &StructuralType::canonical(ty))
+    }
+
+    fn intern_source(
+        &mut self,
+        module: &SemModule,
+        key: &StructuralType,
+    ) -> Result<PhysicalStructuralId, PhysicalError> {
+        if let Some(id) = self.ids.get(key) {
             return Ok(*id);
         }
         let index = u32::try_from(self.glue.len())
             .map_err(|_| PhysicalError::new("structural recipe count exceeds u32"))?;
         let id = PhysicalStructuralId(index);
-        self.ids.insert(ty.clone(), id);
+        self.ids.insert(key.clone(), id);
         self.glue.push(None);
-        let shape = self.shape(module, ty)?;
+        let selected = module.structural_display.get(key).ok_or_else(|| {
+            PhysicalError::new("structural rendering lacks its checked source selection")
+        })?;
+        let shape = if let Some(callable) = selected.display {
+            PhysicalStructuralShape::Display { callable }
+        } else {
+            self.shape(module, &key.value, &selected.members)?
+        };
         self.glue[index as usize] = Some(PhysicalStructuralGlue {
             id,
-            ty: ty.clone(),
+            ty: key.value.clone(),
             shape,
+            is_resumable: false,
         });
         Ok(id)
     }
@@ -149,6 +208,7 @@ impl StructuralGlue {
         &mut self,
         module: &SemModule,
         ty: &ResolvedTy,
+        members: &[StructuralType],
     ) -> Result<PhysicalStructuralShape, PhysicalError> {
         match ty {
             ResolvedTy::I8
@@ -166,19 +226,19 @@ impl StructuralGlue {
             ResolvedTy::Char => Ok(PhysicalStructuralShape::Char),
             ResolvedTy::Unit => Ok(PhysicalStructuralShape::Unit),
             ResolvedTy::String => Ok(PhysicalStructuralShape::String),
-            ResolvedTy::Tuple(members) => {
+            ResolvedTy::Tuple(_) => {
                 let fields = members
                     .iter()
-                    .map(|member| self.intern(module, member))
+                    .map(|member| self.intern_source(module, member))
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok(PhysicalStructuralShape::Tuple { fields })
             }
             ResolvedTy::Named {
                 name,
-                args,
                 builtin,
                 is_opaque,
-            } => self.named_shape(module, ty, name, args, *builtin, *is_opaque),
+                ..
+            } => self.named_shape(module, ty, name, *builtin, *is_opaque, members),
             _ => Err(refusal(ty)),
         }
     }
@@ -188,24 +248,25 @@ impl StructuralGlue {
         module: &SemModule,
         ty: &ResolvedTy,
         name: &str,
-        args: &[ResolvedTy],
         builtin: Option<BuiltinType>,
         is_opaque: bool,
+        members: &[StructuralType],
     ) -> Result<PhysicalStructuralShape, PhysicalError> {
         if builtin == Some(BuiltinType::Vec) {
-            let element = vector_element_type(ty).ok_or_else(|| refusal(ty))?.clone();
+            let [element] = members else {
+                return Err(refusal(ty));
+            };
             return Ok(PhysicalStructuralShape::Vector {
-                element: self.intern(module, &element)?,
+                element: self.intern_source(module, element)?,
             });
         }
         if builtin == Some(BuiltinType::HashMap) {
-            let [key, value] = args else {
+            let [key, value] = members else {
                 return Err(refusal(ty));
             };
-            let (key, value) = (key.clone(), value.clone());
             return Ok(PhysicalStructuralShape::Map {
-                key: self.intern(module, &key)?,
-                value: self.intern(module, &value)?,
+                key: self.intern_source(module, key)?,
+                value: self.intern_source(module, value)?,
             });
         }
         // An opaque handle is not its members, so it renders as its identity
@@ -216,6 +277,7 @@ impl StructuralGlue {
             });
         }
         if let Some(shape) = module.variant_shape_for_type(ty) {
+            let mut members = members.iter();
             let cases = shape
                 .variants
                 .iter()
@@ -223,10 +285,19 @@ impl StructuralGlue {
                     let fields = variant
                         .fields
                         .iter()
-                        .map(|field| self.intern(module, &field.ty))
+                        .map(|field| {
+                            Ok(PhysicalStructuralField {
+                                name: field.name.clone(),
+                                recipe: self.intern_source(
+                                    module,
+                                    members.next().ok_or_else(|| refusal(ty))?,
+                                )?,
+                            })
+                        })
                         .collect::<Result<Vec<_>, _>>()?;
                     Ok(PhysicalStructuralCase {
                         name: variant.name.clone(),
+                        kind: variant.kind,
                         fields,
                     })
                 })
@@ -234,17 +305,14 @@ impl StructuralGlue {
             return Ok(PhysicalStructuralShape::Enum { cases });
         }
         if let Some(shape) = module.aggregate_shape_for_type(ty) {
-            let members = shape
+            let fields = shape
                 .fields
                 .iter()
-                .map(|field| (field.name.clone(), field.ty.clone()))
-                .collect::<Vec<_>>();
-            let fields = members
-                .into_iter()
-                .map(|(name, ty)| {
+                .zip(members)
+                .map(|(field, member)| {
                     Ok(PhysicalStructuralField {
-                        name,
-                        recipe: self.intern(module, &ty)?,
+                        name: field.name.clone(),
+                        recipe: self.intern_source(module, member)?,
                     })
                 })
                 .collect::<Result<Vec<_>, PhysicalError>>()?;

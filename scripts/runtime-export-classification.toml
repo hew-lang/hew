@@ -643,8 +643,6 @@ stable = [
   "hew_string_to_lowercase",
   "hew_string_to_uppercase",
   "hew_string_trim",
-  "hew_structural_format_hashmap",
-  "hew_structural_format_vec",
   "hew_supervisor_add_child_supervisor",
   "hew_supervisor_add_child_supervisor_with_init",
   "hew_supervisor_child_count",
@@ -3255,20 +3253,6 @@ params = []
 release-symbol = "hew_string_builder_finish"
 discharge-depth = "shallow"
 result-retention = "transferred"
-
-[[ownership.contracts]]
-symbol = "hew_structural_format_hashmap"
-result = "none"
-params = ["borrow", "borrow", "borrow", "borrow"]
-release-symbol = ""
-discharge-depth = "none"
-
-[[ownership.contracts]]
-symbol = "hew_structural_format_vec"
-result = "none"
-params = ["borrow", "borrow", "borrow"]
-release-symbol = ""
-discharge-depth = "none"
 
 [[ownership.contracts]]
 symbol = "hew_unicode_is_alnum"

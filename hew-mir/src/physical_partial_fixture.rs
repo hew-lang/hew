@@ -238,6 +238,7 @@ pub fn module(case: Case) -> sir::SemModule {
         facts.require(&ty).unwrap();
     }
     sir::SemModule {
+        structural_display: BTreeMap::new(),
         debug: hew_sir::SemDebugFacts::default(),
         regex_patterns: Vec::new(),
         actors: Vec::new(),

@@ -115,6 +115,23 @@ pub(super) fn semantic_callables(checked: &hew_sir::CheckedModule<'_>) -> BTreeS
     let mut resumable = BTreeSet::new();
     let mut calls = BTreeMap::<_, Vec<_>>::new();
     for function in &module.functions {
+        let mut types = BTreeMap::new();
+        for parameter in &function.params {
+            types.insert(parameter.value, parameter.ty.clone());
+        }
+        for block in &function.blocks {
+            for parameter in &block.args {
+                types.insert(parameter.value, parameter.ty.clone());
+            }
+            for operation in &block.ops {
+                for result in &operation.results {
+                    types.insert(result.id, result.ty.clone());
+                }
+            }
+            block.terminator.visit_results(|result| {
+                types.insert(result.id, result.ty.clone());
+            });
+        }
         let lifetimes = checked
             .function(function.callable)
             .expect("verified callable body")
@@ -154,6 +171,26 @@ pub(super) fn semantic_callables(checked: &hew_sir::CheckedModule<'_>) -> BTreeS
                     ..
                 } => {
                     resumable.insert(function.callable);
+                }
+                hew_sir::SemTerminator::RtCall {
+                    family: hew_types::RuntimeCallFamily::StructuralFormat,
+                    args,
+                    ..
+                } => {
+                    let mut pending = vec![hew_sir::StructuralType::canonical(
+                        &types[&args[0].operand.value],
+                    )];
+                    let mut seen = BTreeSet::new();
+                    while let Some(key) = pending.pop() {
+                        if !seen.insert(key.clone()) {
+                            continue;
+                        }
+                        let selected = &module.structural_display[&key];
+                        if let Some(callee) = selected.display {
+                            calls.entry(function.callable).or_default().push(callee);
+                        }
+                        pending.extend(selected.members.iter().cloned());
+                    }
                 }
                 hew_sir::SemTerminator::Call { callee, .. } => {
                     calls.entry(function.callable).or_default().push(*callee);
@@ -202,6 +239,13 @@ pub(super) fn verify_callables(module: &PhysicalModule) -> Result<(), PhysicalEr
                 } if policy.may_suspend() => {
                     resumable.insert(function.callable);
                 }
+                PhysicalTerminator::RuntimeCall { action, .. } => {
+                    if let super::PhysicalRuntimeCarrier::StructuralFormat(glue) = action.carrier {
+                        calls.entry(function.callable).or_default().extend(
+                            super::structural::display_callees(&module.structural_glue, glue)?,
+                        );
+                    }
+                }
                 PhysicalTerminator::Call { callee, .. } => {
                     calls.entry(function.callable).or_default().push(*callee);
                 }
@@ -210,6 +254,16 @@ pub(super) fn verify_callables(module: &PhysicalModule) -> Result<(), PhysicalEr
         }
     }
     let expected = close_callers(resumable, &calls);
+    for glue in &module.structural_glue {
+        let may_suspend = super::structural::display_callees(&module.structural_glue, glue.id)?
+            .iter()
+            .any(|callee| expected.contains(callee));
+        if glue.is_resumable != may_suspend {
+            return Err(PhysicalError::new(
+                "structural rendering has an inconsistent resumable ABI",
+            ));
+        }
+    }
     for callable in &module.callables {
         if callable.is_resumable != expected.contains(&callable.id) {
             return Err(PhysicalError::new(format!(

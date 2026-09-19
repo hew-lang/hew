@@ -4635,7 +4635,13 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 return self.emit_result_edge(result, normal);
             }
             PhysicalRuntimeCarrier::StructuralFormat(glue) => {
-                return self.emit_structural_format(glue, transfers, required_result()?, normal);
+                return self.emit_structural_format(
+                    glue,
+                    transfers,
+                    required_result()?,
+                    normal,
+                    failure,
+                );
             }
             PhysicalRuntimeCarrier::Variant(option)
                 if action.family == RuntimeCallFamily::WeakUpgradeRc =>
@@ -9956,6 +9962,7 @@ mod tests {
             bindings: vec![],
         };
         SemModule {
+            structural_display: BTreeMap::new(),
             debug: hew_sir::SemDebugFacts::default(),
             regex_patterns: Vec::new(),
             actors: Vec::new(),
@@ -10150,6 +10157,7 @@ mod tests {
             bindings: vec![],
         };
         SemModule {
+            structural_display: BTreeMap::new(),
             debug: hew_sir::SemDebugFacts::default(),
             regex_patterns: Vec::new(),
             actors: Vec::new(),

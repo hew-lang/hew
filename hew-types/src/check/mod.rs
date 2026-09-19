@@ -735,10 +735,15 @@ impl Checker {
             })
             .collect();
         TypeFactContext::new(rendered, self.registry.clone(), self.type_defs.clone())
+            .with_aliases(self.type_aliases.clone())
             .with_impl_methods(
                 self.trait_impl_method_declaration_ids.clone(),
                 self.trait_impl_method_binders.clone(),
             )
+            .with_display_trait(self.lang_items.get(crate::LANG_ITEM_DISPLAY).map_or_else(
+                || self.trait_defs_key_for_bound("Display"),
+                |binding| binding.trait_id.full_path().to_string(),
+            ))
     }
 
     /// The §1.1 declaration lookup backed by this checker's tables.
@@ -2223,6 +2228,18 @@ impl Checker {
         // with the table populated - carried the canonical `probe.cfg.Config`.
         // Only std spellings survived, through the `canonical_std_module_sources`
         // disjunct.
+        let rendering_members = self
+            .type_defs
+            .iter()
+            .map(|(name, definition)| {
+                (
+                    name.clone(),
+                    crate::type_facts::RenderingMembers::new(definition, |ty| {
+                        self.subst.resolve(ty).materialize_literal_defaults()
+                    }),
+                )
+            })
+            .collect();
         let mut resolved_type_defs: HashMap<String, TypeDef> = self
             .type_defs
             .iter()
@@ -2441,7 +2458,7 @@ impl Checker {
         let (type_fact_context, type_facts) = if self.errors.is_empty() {
             let (context, facts, refusals) = self.build_type_facts(&resolved_expr_types_typed);
             self.errors.extend(refusals);
-            (context, facts)
+            (context.with_rendering_members(rendering_members), facts)
         } else {
             (TypeFactContext::default(), BTreeMap::new())
         };

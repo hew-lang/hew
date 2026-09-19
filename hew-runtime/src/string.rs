@@ -21,8 +21,6 @@ use std::ffi::{c_void, CStr};
 use std::fmt::Write as _;
 use std::os::raw::c_char;
 
-pub type HewStructuralFormatFn = unsafe extern "C" fn(*mut c_void, *const c_void);
-
 #[derive(Debug, Default)]
 pub struct HewStringBuilder {
     bytes: Vec<u8>,

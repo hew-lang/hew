@@ -1611,6 +1611,10 @@ impl Checker {
                 Some(PayloadBinding {
                     field_idx,
                     binding_name: binding_name.clone(),
+                    def_span: self
+                        .env
+                        .lookup_ref(binding_name)
+                        .and_then(|binding| binding.def_span.clone()),
                     ty: self.project_assoc_types(ty),
                 })
             })
@@ -1804,6 +1808,10 @@ impl Checker {
                             Some(PayloadBinding {
                                 field_idx,
                                 binding_name: binding_name.clone(),
+                                def_span: self
+                                    .env
+                                    .lookup_ref(binding_name)
+                                    .and_then(|binding| binding.def_span.clone()),
                                 ty: self.project_assoc_types(ty),
                             })
                         } else {
@@ -2059,6 +2067,10 @@ impl Checker {
                         };
                         binding_name.map(|binding_name| PayloadBinding {
                             field_idx,
+                            def_span: self
+                                .env
+                                .lookup_ref(&binding_name)
+                                .and_then(|binding| binding.def_span.clone()),
                             binding_name,
                             ty: self.project_assoc_types(&ty),
                         })
@@ -2145,6 +2157,10 @@ impl Checker {
                         }
                         binding_name_for_pattern(sub_pat).map(|binding_name| PayloadBinding {
                             field_idx,
+                            def_span: self
+                                .env
+                                .lookup_ref(&binding_name)
+                                .and_then(|binding| binding.def_span.clone()),
                             binding_name,
                             ty: self.project_assoc_types(ty),
                         })
@@ -2236,6 +2252,10 @@ impl Checker {
                                     Some(PayloadBinding {
                                         field_idx: field.decl_idx as usize,
                                         binding_name: binding_name.clone(),
+                                        def_span: self
+                                            .env
+                                            .lookup_ref(binding_name)
+                                            .and_then(|binding| binding.def_span.clone()),
                                         ty: self.project_assoc_types(&field.ty),
                                     })
                                 })
@@ -2335,6 +2355,10 @@ impl Checker {
                                             Some(PayloadBinding {
                                                 field_idx: field.decl_idx as usize,
                                                 binding_name: binding_name.clone(),
+                                                def_span: self
+                                                    .env
+                                                    .lookup_ref(binding_name)
+                                                    .and_then(|binding| binding.def_span.clone()),
                                                 ty: self.project_assoc_types(&field.ty),
                                             })
                                         })
@@ -2500,6 +2524,10 @@ impl Checker {
                     bindings.push(PayloadBinding {
                         field_idx: inner_idx,
                         binding_name: binding_name.clone(),
+                        def_span: self
+                            .env
+                            .lookup_ref(binding_name)
+                            .and_then(|binding| binding.def_span.clone()),
                         ty: self.project_assoc_types(&inner_ty),
                     });
                 }

@@ -1,0 +1,96 @@
+type Spec {
+    nodes: Vec<i64>,
+}
+
+enum Job {
+    Named { label: string, spec: Spec },
+    Left(string),
+    Right(string),
+}
+
+fn route(spec: Spec, apply: fn(i64) -> i64) -> i64 {
+    apply(spec.nodes.len())
+}
+
+fn pipeline(loaded: Result<Spec, string>) -> i64 {
+    match loaded {
+        .Ok(spec) => route(spec, |count: i64| -> i64 {
+            spec.nodes[0] + count
+        }),
+        .Err(reason) => reason.len(),
+    }
+}
+
+fn named(job: Job) -> fn() -> string {
+    match job {
+        .Named { label: label, spec: spec } => || -> string {
+            label + f"/{spec.nodes[0]}"
+        },
+        .Left(label) | .Right(label) => || -> string {
+            label + "/other"
+        },
+    }
+}
+
+fn nested(value: (Result<Option<string>, string>, string)) -> fn() -> string {
+    let _text = "outer";
+    let outer = || -> string {
+        _text + "/saved"
+    };
+    match value {
+        (.Ok(.Some(_text)), suffix) if _text.len() > 100 => || -> string {
+            _text + suffix
+        },
+        (.Ok(.Some(_text)), suffix) => || -> string {
+            outer() + "/" + _text + suffix
+        },
+        (_, suffix) => || -> string {
+            outer() + suffix
+        },
+    }
+}
+
+fn conditional(value: Option<string>) -> fn() -> string {
+    if let .Some(text) = value {
+        || -> string {
+            text + "/if"
+        }
+    } else {
+        || -> string {
+            "absent"
+        }
+    }
+}
+
+fn required(value: Option<string>) -> fn() -> string {
+    let .Some(text) = value else {
+        return || -> string {
+            "missing"
+        };
+    };
+    || -> string {
+        text + "/let"
+    }
+}
+
+fn main() {
+    println(pipeline(.Ok(Spec { nodes: [3, 5] })));
+    let describe = named(.Named { label: "work", spec: Spec { nodes: [7] } });
+    println(describe());
+    println(describe());
+    let left = named(.Left("left"));
+    let right = named(.Right("right"));
+    println(left());
+    println(right());
+    let selected = nested((.Ok(.Some("inner")), "/tail"));
+    println(selected());
+    println(selected());
+    let fallback = nested((.Err("unused"), "/fallback"));
+    println(fallback());
+    let present = conditional(.Some("present"));
+    println(present());
+    let found = required(.Some("found"));
+    let missing = required(.None);
+    println(found());
+    println(missing());
+}

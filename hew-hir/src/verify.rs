@@ -945,9 +945,12 @@ impl Verifier {
                             arm.span.clone(),
                         );
                     }
-                    self.nested_payload_literals(&arm.payload_variant_predicates, arm.span.clone());
+                    self.nested_payload_predicates(
+                        &arm.payload_variant_predicates,
+                        arm.span.clone(),
+                    );
                     for binding in &arm.bindings {
-                        self.binding(binding.binding, arm.span.clone());
+                        self.binding(binding.binding, binding.span.clone());
                     }
                     if let Some(guard) = &arm.guard {
                         self.expr(guard);
@@ -1004,16 +1007,19 @@ impl Verifier {
         }
     }
 
-    fn nested_payload_literals(
+    fn nested_payload_predicates(
         &mut self,
         predicates: &[crate::node::HirPayloadVariantPredicate],
         span: Range<usize>,
     ) {
         for predicate in predicates {
+            for binding in &predicate.bindings {
+                self.binding(binding.binding, binding.span.clone());
+            }
             for literal in &predicate.literals {
                 self.match_literal_predicate(&literal.literal, &literal.ty, span.clone());
             }
-            self.nested_payload_literals(&predicate.nested, span.clone());
+            self.nested_payload_predicates(&predicate.nested, span.clone());
         }
     }
 

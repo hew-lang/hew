@@ -2307,6 +2307,8 @@ pub struct HirMatchArm {
 /// reads resolve correctly.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirMatchArmBinding {
+    /// Definition occurrence retained when a pattern binding escapes its arm.
+    pub span: Span,
     /// Fresh binding id allocated for this slot. Same shape as a `let`
     /// binding's id — references in the arm body resolve to it via
     /// `lookup`/`BindingRef`.

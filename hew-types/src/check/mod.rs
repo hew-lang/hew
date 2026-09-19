@@ -3006,7 +3006,17 @@ impl Checker {
     )]
     fn classify_escapes_in_stmt(&mut self, stmt: &Stmt, in_fork: bool) {
         match stmt {
-            Stmt::Let { value, .. } | Stmt::Var { value, .. } => {
+            Stmt::Let {
+                value, else_block, ..
+            } => {
+                if let Some((e, span)) = value {
+                    self.classify_escapes_in_expr(e, span, in_fork, AnonContext::StoredInBinding);
+                }
+                if let Some(block) = else_block {
+                    self.classify_escapes_in_block(block, in_fork);
+                }
+            }
+            Stmt::Var { value, .. } => {
                 if let Some((e, span)) = value {
                     // `let f = || ...` was handled at the block level.
                     // Other shapes (block expr, struct init, …) descend
@@ -3601,7 +3611,17 @@ fn collect_lambda_spans_in_block(block: &Block, out: &mut Vec<(Span, Option<Stri
 )]
 fn collect_lambda_spans_in_stmt(stmt: &Stmt, out: &mut Vec<(Span, Option<String>)>) {
     match stmt {
-        Stmt::Let { value, .. } | Stmt::Var { value, .. } => {
+        Stmt::Let {
+            value, else_block, ..
+        } => {
+            if let Some((e, s)) = value {
+                collect_lambda_spans_in_expr(e, s, out);
+            }
+            if let Some(block) = else_block {
+                collect_lambda_spans_in_block(block, out);
+            }
+        }
+        Stmt::Var { value, .. } => {
             if let Some((e, s)) = value {
                 collect_lambda_spans_in_expr(e, s, out);
             }

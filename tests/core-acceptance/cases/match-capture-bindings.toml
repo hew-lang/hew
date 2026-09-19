@@ -1,0 +1,10 @@
+[[case]]
+id = "match-capture-bindings"
+intent = "Closures capture the selected match binding through tuple, named and nested variants, including guarded alternatives, or-patterns and shadowed names; returned captures remain alive after the arm exits."
+source = "cases/match-capture-bindings.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "5\nwork/7\nwork/7\nleft/other\nright/other\nouter/saved/inner/tail\nouter/saved/inner/tail\nouter/saved/fallback\npresent/if\nfound/let\nmissing\n"
+exit = 0

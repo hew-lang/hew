@@ -1284,17 +1284,6 @@ impl Checker {
                         // not visible inside it (they are bound only on the
                         // success path).
                         (Some(_), Some(else_blk)) => {
-                            // Record-pattern plans carry the exact payload
-                            // binding indices consumed by HIR. Prepare the
-                            // plan without binding names so the failure block
-                            // still cannot observe success-path bindings.
-                            self.prepare_record_pattern_plan(&pattern.0, &val_ty, &pattern.1);
-                            // Record the success-path pattern resolution so HIR
-                            // lowering can consume the same `pattern_resolutions`
-                            // side-table that powers `if let` / `match` /
-                            // `while let`. Without this the let-else lowering
-                            // finds no resolution and fails closed.
-                            self.record_arm_resolution(&pattern.0, &pattern.1, &val_ty);
                             // The else block is the failure arm of a two-way
                             // branch whose success arm is the binding path that
                             // continues below. It must diverge, so whatever it
@@ -1383,6 +1372,12 @@ impl Checker {
                             value.as_ref().and_then(|(expr, _)| self.expr_place(expr));
                         self.bind_pattern(&pattern.0, &val_ty, false, &pattern.1);
                         self.pattern_place = None;
+                    }
+                    if maybe_refutable_kind.is_some() && else_block.is_some() {
+                        // Record the success arm after binding so payload
+                        // origins name the same definitions as later captures.
+                        // The failure block above cannot see these bindings.
+                        self.record_arm_resolution(&pattern.0, &pattern.1, &val_ty);
                     }
                 }
             }

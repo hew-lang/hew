@@ -33,28 +33,66 @@ fn inherited(value: &Value) -> bool {
     value.get("workspace").and_then(Value::as_bool) == Some(true)
 }
 
-fn workspace(crate_dir: &Path, manifest: &Table) -> io::Result<(PathBuf, Table)> {
-    if manifest.contains_key("workspace") {
-        return Ok((crate_dir.to_owned(), manifest.clone()));
+fn workspace(crate_dir: &Path) -> io::Result<(PathBuf, Table)> {
+    // Cargo owns workspace discovery, including excluded members and explicit
+    // package.workspace paths. This query does not resolve or build dependencies.
+    let output = std::process::Command::new("cargo")
+        .args([
+            "locate-project",
+            "--workspace",
+            "--message-format",
+            "plain",
+            "--manifest-path",
+        ])
+        .arg(crate_dir.join("Cargo.toml"))
+        .current_dir(crate_dir)
+        .output()?;
+    if !output.status.success() {
+        return Err(invalid(format!(
+            "cannot locate native Cargo workspace: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
     }
-    if let Some(path) = manifest
-        .get("package")
-        .and_then(|package| package.get("workspace"))
-        .and_then(Value::as_str)
+    let path = PathBuf::from(
+        std::str::from_utf8(&output.stdout)
+            .map_err(|error| invalid(error.to_string()))?
+            .trim(),
+    );
+    let root = path
+        .parent()
+        .ok_or_else(|| invalid("Cargo returned a manifest without a parent directory"))?;
+    Ok((root.to_owned(), read_manifest(&path)?))
+}
+
+fn effective_resolver(workspace: &Table) -> Value {
+    if let Some(resolver) = workspace
+        .get("workspace")
+        .and_then(|value| value.get("resolver"))
     {
-        let root = crate_dir.join(path).canonicalize()?;
-        return Ok((root.clone(), read_manifest(&root.join("Cargo.toml"))?));
+        return resolver.clone();
     }
-    for parent in crate_dir.ancestors().skip(1) {
-        let path = parent.join("Cargo.toml");
-        if path.is_file() {
-            let manifest = read_manifest(&path)?;
-            if manifest.contains_key("workspace") {
-                return Ok((parent.to_owned(), manifest));
-            }
+    let Some(root_package) = workspace.get("package") else {
+        // Virtual workspaces have no edition to supply a resolver default.
+        return Value::String("1".to_owned());
+    };
+    if let Some(resolver) = root_package.get("resolver") {
+        return resolver.clone();
+    }
+    let mut edition = root_package.get("edition");
+    if edition.is_some_and(inherited) {
+        edition = workspace
+            .get("workspace")
+            .and_then(|value| value.get("package"))
+            .and_then(|value| value.get("edition"));
+    }
+    Value::String(
+        match edition.and_then(Value::as_str) {
+            Some("2024") => "3",
+            Some("2021") => "2",
+            _ => "1",
         }
-    }
-    Ok((crate_dir.to_owned(), Table::new()))
+        .to_owned(),
+    )
 }
 
 fn relative(from: &Path, to: &Path) -> String {
@@ -196,7 +234,12 @@ impl Bundler<'_> {
 
     fn crate_manifest(&mut self, source: &Path, destination: &Path, root: bool) -> io::Result<()> {
         let mut manifest = read_manifest(&source.join("Cargo.toml"))?;
-        let (workspace_root, workspace_manifest) = workspace(source, &manifest)?;
+        if !manifest.contains_key("package") {
+            return Err(invalid(
+                "native crate must point to a Cargo package, not a virtual workspace",
+            ));
+        }
+        let (workspace_root, workspace_manifest) = workspace(source)?;
         let empty = Table::new();
         let workspace = workspace_manifest
             .get("workspace")
@@ -268,7 +311,6 @@ impl Bundler<'_> {
                 destination,
                 &workspace_root,
                 &workspace_manifest,
-                workspace,
             )?;
         }
         self.replace_file(&destination.join("Cargo.toml"), encode(&manifest)?)
@@ -279,15 +321,15 @@ impl Bundler<'_> {
         destination: &Path,
         workspace_root: &Path,
         workspace_manifest: &Table,
-        workspace: &Table,
     ) -> io::Result<()> {
         let empty = Table::new();
         // Keep this crate independent of any Cargo workspace surrounding the
         // consumer's Hew package cache. Bundled path dependencies join it.
-        let mut isolated = Table::new();
-        if let Some(resolver) = workspace.get("resolver") {
-            isolated.insert("resolver".to_owned(), resolver.clone());
+        let resolver = effective_resolver(workspace_manifest);
+        if let Some(package) = manifest.get_mut("package").and_then(Value::as_table_mut) {
+            package.remove("resolver");
         }
+        let isolated = Table::from_iter([("resolver".to_owned(), resolver)]);
         manifest.insert("workspace".to_owned(), Value::Table(isolated));
         for key in ["profile", "patch", "replace"] {
             if let Some(value) = workspace_manifest.get(key) {
@@ -494,6 +536,53 @@ local = []
             manifest["profile"]["release"]["panic"].as_str(),
             Some("abort")
         );
+    }
+
+    #[test]
+    fn virtual_workspace_default_preserves_build_dependency_features() {
+        let source = native_workspace();
+        let root_path = source.path().join("Cargo.toml");
+        let mut root = read_manifest(&root_path).unwrap();
+        root["workspace"].as_table_mut().unwrap().remove("resolver");
+        std::fs::write(root_path, encode(&root).unwrap()).unwrap();
+        let client_path = source.path().join("client/Cargo.toml");
+        let mut client = std::fs::read_to_string(&client_path).unwrap();
+        client.push_str(
+            "\n[build-dependencies]\nsql = { workspace = true, features = [\"build-only\"] }\n",
+        );
+        std::fs::write(client_path, client).unwrap();
+        write(source.path(), "client/build.rs", "fn main() {}\n");
+        let sql_path = source.path().join("sql/Cargo.toml");
+        let sql = std::fs::read_to_string(&sql_path).unwrap() + "build-only = []\n";
+        std::fs::write(sql_path, sql).unwrap();
+        write(
+            source.path(),
+            "sql/src/lib.rs",
+            "#[cfg(feature = \"build-only\")]\npub enum Param { Null }\n",
+        );
+        let packed = crate::tarball::pack(&source.path().join("client"), &[], &[]).unwrap();
+        let installed = tempfile::tempdir().unwrap();
+        crate::tarball::unpack(&packed.data, installed.path()).unwrap();
+        source.close().unwrap();
+        let manifest_path = installed.path().join("Cargo.toml");
+        let target = installed.path().join("target");
+        let output =
+            hew_testutil::cargo_build_isolated(&manifest_path, &target, &["--offline"]).unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        // Resolver 2 intentionally separates the build dependency's features:
+        // the same client then fails because its ordinary dependency lacks Param.
+        let mut manifest = read_manifest(&manifest_path).unwrap();
+        manifest["workspace"]["resolver"] = Value::String("2".to_owned());
+        std::fs::write(&manifest_path, encode(&manifest).unwrap()).unwrap();
+        let counterfactual =
+            hew_testutil::cargo_build_isolated(&manifest_path, &target, &["--offline"]).unwrap();
+        assert!(!counterfactual.status.success());
+        assert!(String::from_utf8_lossy(&counterfactual.stderr).contains("sql::Param"));
     }
 
     #[test]

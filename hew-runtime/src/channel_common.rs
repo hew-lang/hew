@@ -162,6 +162,7 @@ pub(crate) fn drop_elem_envelope(
     unsafe {
         let cursor =
             crate::release_walker::HewReleaseCursor::detached(envelope.as_ptr().cast(), *layout);
+        drop(envelope);
         crate::release_walker::hew_release_sync(cursor);
     }
 }

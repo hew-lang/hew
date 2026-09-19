@@ -401,6 +401,8 @@ pub unsafe extern "C" fn hew_checked_task_wait_private_status(
 }
 
 /// Transfer a completed result or fault, leaving outputs untouched if pending.
+/// # Panics
+/// Panics if an owned result is discarded without a writable release cursor output.
 ///
 /// # Safety
 /// Wait is live; output has its exact checked result layout and fault is a
@@ -550,6 +552,8 @@ pub unsafe extern "C" fn hew_checked_scope_wait_cancel_losers(wait: *mut HewChec
 /// Wait and scope remain live. Returns 1 only after all child frames have
 /// completed cleanup and abandoned results have closed. An observed child fault
 /// requests cancellation of siblings. Calls on one wait must be serialized.
+/// # Panics
+/// Panics if completed task storage violates the checked scope ownership contract.
 #[no_mangle]
 pub unsafe extern "C-unwind" fn hew_checked_scope_wait_status(
     wait: *const HewCheckedScopeWait,

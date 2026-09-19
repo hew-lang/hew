@@ -847,8 +847,8 @@ pub unsafe extern "C-unwind" fn hew_hashmap_insert_clone_layout(
         Ok(probe) => probe,
         Err(status) => return status,
     };
-    // SAFETY: callbacks completed; commit follows this entry's copy/take contract.
     let mut cursor = ptr::null_mut();
+    // SAFETY: callbacks completed; commit follows this entry's copy/take contract.
     let inserted = unsafe { hew_hashmap_probe_insert_clone(probe, val, &raw mut cursor) };
     // SAFETY: C callers use synchronous descriptors and own the returned cursor.
     unsafe { release_walker::hew_release_sync(cursor) };
@@ -891,8 +891,8 @@ pub unsafe extern "C-unwind" fn hew_hashmap_insert_take_layout(
         Ok(probe) => probe,
         Err(status) => return status,
     };
-    // SAFETY: callbacks completed; commit follows this entry's copy/take contract.
     let mut cursor = ptr::null_mut();
+    // SAFETY: callbacks completed; commit follows this entry's copy/take contract.
     let inserted = unsafe { hew_hashmap_probe_insert_take(probe, val, &raw mut cursor) };
     // SAFETY: C callers use synchronous descriptors and own the returned cursor.
     unsafe { release_walker::hew_release_sync(cursor) };
@@ -1205,8 +1205,8 @@ pub unsafe extern "C" fn hew_hashmap_remove_take_layout(
         Ok(probe) => probe,
         Err(status) => return status,
     };
-    // SAFETY: ready removal transfers the value into disjoint output storage.
     let mut cursor = ptr::null_mut();
+    // SAFETY: ready removal transfers the value into disjoint output storage.
     let found = unsafe { hew_hashmap_probe_remove_take(probe, out, &raw mut cursor) };
     // SAFETY: C callers use synchronous descriptors and own the returned cursor.
     unsafe { release_walker::hew_release_sync(cursor) };

@@ -664,6 +664,8 @@ pub unsafe extern "C" fn hew_release_finish(cursor: *mut HewReleaseCursor) {
 }
 
 /// Consume a traversal whose selected value recipes cannot suspend.
+/// # Panics
+/// Panics if the caller transfers a cursor with an outstanding yielded slot.
 /// # Safety
 /// The caller transfers the fresh cursor and retains any outer release fault
 /// sink. Every descriptor must have no consuming continuation.

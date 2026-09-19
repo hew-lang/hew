@@ -91,3 +91,257 @@ fn an_actor_call_names_its_operation_rather_than_a_symbol() {
         "an actor program reaches at least one actor operation"
     );
 }
+
+fn execute(source: &str) -> serde_json::Value {
+    let module = semantics(source);
+    let package = sir_emit::emit_package(&module.module, "sandbox-vm-export", "0", "test")
+        .expect("verified actor semantics emit");
+    let file = tempfile::NamedTempFile::new().expect("package file");
+    serde_json::to_writer(file.as_file(), &package).expect("serialize package");
+    let output = std::process::Command::new("node")
+        .current_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/../hew-sandbox-vm"))
+        .args([
+            "--input-type=module",
+            "-e",
+            r"
+            import fs from 'node:fs';
+            import { runBytecode } from './dist/interpreter/index.js';
+            const package_ = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
+            process.stdout.write(JSON.stringify(runBytecode(package_)));
+        ",
+        ])
+        .arg(file.path())
+        .output()
+        .expect("run the package in Node");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let trace: serde_json::Value = serde_json::from_slice(&output.stdout).expect("VM trace");
+    assert_eq!(trace["result"], "ok", "{trace:#}");
+    trace
+}
+
+fn stdout(trace: &serde_json::Value) -> String {
+    trace["final_state"]["stdout"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|value| value.as_str().unwrap())
+        .collect()
+}
+
+#[test]
+fn actor_state_is_shared_between_completed_turns() {
+    let trace = execute(
+        r"
+actor Counter {
+    var count: i64,
+    receive fn bump(n: i64) -> i64 { count = count + n; count }
+}
+fn main() {
+    let counter = spawn Counter(count: 2);
+    println(match counter.bump(3) { .Ok(n) => n, .Err(_) => -1 });
+    println(match counter.bump(4) { .Ok(n) => n, .Err(_) => -1 });
+}
+",
+    );
+    assert_eq!(stdout(&trace), "5\n9\n");
+}
+
+#[test]
+fn a_parked_handler_resumes_with_its_state_after_another_actor_replies() {
+    let trace = execute(
+        r"
+actor Doubler {
+    receive fn twice(n: i64) -> i64 { n * 2 }
+}
+actor Relay {
+    let worker: Doubler,
+    var calls: i64,
+    receive fn forward(n: i64) -> i64 {
+        calls = calls + 1;
+        let result = match worker.twice(n) { .Ok(value) => value, .Err(_) => -1 };
+        result + calls
+    }
+}
+fn main() {
+    let worker = spawn Doubler;
+    let relay = spawn Relay(worker: worker, calls: 0);
+    println(match relay.forward(5) { .Ok(n) => n, .Err(_) => -1 });
+    println(match relay.forward(7) { .Ok(n) => n, .Err(_) => -1 });
+}
+",
+    );
+    assert_eq!(stdout(&trace), "11\n16\n");
+}
+
+#[test]
+fn a_handler_fault_is_contained_and_later_calls_observe_the_dead_actor() {
+    let trace = execute(
+        r#"
+actor Worker {
+    receive fn fail() -> i64 { panic("worker failed"); }
+}
+fn main() {
+    let worker = spawn Worker;
+    println(match worker.fail() {
+        .Err(.Trapped) => "contained",
+        _ => "wrong outcome",
+    });
+    println(match worker.fail() {
+        .Err(.Dead) => "dead",
+        _ => "wrong outcome",
+    });
+}
+"#,
+    );
+    assert_eq!(stdout(&trace), "contained\ndead\n");
+}
+
+#[test]
+fn supervisor_children_execute_their_declared_spawn_functions() {
+    let trace = execute(include_str!(
+        "../../examples/playground/concurrency/supervisor.hew"
+    ));
+    assert_eq!(
+        stdout(&trace),
+        "Worker 1 processing 10\nWorker 2 processing 20\nw1 -> 10\nw2 -> 20\n"
+    );
+}
+
+#[test]
+fn a_supervised_role_resolves_the_fresh_state_after_a_fault() {
+    let trace = execute(
+        r#"
+actor Worker {
+    var count: i64,
+    receive fn bump() -> i64 { count = count + 1; count }
+    receive fn fail() { panic("restart me"); }
+}
+supervisor Tree {
+    strategy: one_for_one,
+    intensity: 3 within 10s,
+    child worker: Worker(count: 10),
+}
+fn main() {
+    let tree = spawn Tree;
+    let role = tree.worker;
+    println(match role.bump() { .Ok(n) => n, .Err(_) => -1 });
+    let _ = role.fail();
+    println(match role.bump() { .Ok(n) => n, .Err(_) => -1 });
+}
+"#,
+    );
+    assert_eq!(stdout(&trace), "11\n11\n");
+}
+
+#[test]
+fn close_waits_for_the_stop_hook() {
+    let trace = execute(
+        r#"
+actor Worker {
+    #[on(stop)]
+    fn stopped() { println("stopped"); }
+    receive fn work() { println("worked"); }
+}
+fn main() {
+    let worker = spawn Worker;
+    let _ = worker.work();
+    close(worker);
+    println("closed");
+}
+"#,
+    );
+    assert_eq!(stdout(&trace), "worked\nstopped\nclosed\n");
+}
+
+#[test]
+fn a_declared_handler_failure_is_the_callers_typed_error() {
+    let trace = execute(
+        r#"
+actor Worker {
+    receive fn work(n: i64) -> i64 fails string {
+        if n < 0 { return error "negative"; }
+        n * 2
+    }
+}
+fn main() {
+    let worker = spawn Worker;
+    println(match worker.work(-1) { .Err(.Failed(message)) => message, _ => "wrong outcome" });
+    println(match worker.work(5) { .Ok(n) => n, .Err(_) => -1 });
+}
+"#,
+    );
+    assert_eq!(stdout(&trace), "negative\n10\n");
+}
+
+#[test]
+fn forked_tasks_publish_values_and_a_scope_joins_discarded_handles() {
+    let trace = execute(
+        r#"
+fn double(n: i64) -> i64 { sleep(1ms); n * 2 }
+fn main() {
+    scope {
+        let first = fork double(3);
+        let second = fork double(4);
+        println(await first);
+        println(await second);
+        fork { sleep(2ms); println("drained"); };
+    }
+    println("scope finished");
+}
+"#,
+    );
+    assert_eq!(stdout(&trace), "6\n8\ndrained\nscope finished\n");
+}
+
+#[test]
+fn select_keeps_a_losing_task_joinable() {
+    let trace = execute(
+        r#"
+fn delayed(n: i64, delay: duration) -> i64 { sleep(delay); n }
+fn main() {
+    scope {
+        let slow = fork delayed(2, 20ms);
+        let fast = fork delayed(1, 1ms);
+        select {
+            value from slow => println(value),
+            value from fast => { println(value); println(await slow); },
+        }
+    }
+}
+"#,
+    );
+    assert_eq!(stdout(&trace), "1\n2\n");
+}
+
+#[test]
+fn select_waits_on_actor_completions() {
+    let trace = execute(
+        r#"
+actor Worker {
+    let delay: duration,
+    receive fn work(n: i64) -> i64 { sleep(delay); n }
+}
+fn main() {
+    let slow = spawn Worker(delay: 20ms);
+    let fast = spawn Worker(delay: 1ms);
+    select {
+        result from slow.work(2) => println(result.expect("slow")),
+        result from fast.work(1) => println(result.expect("fast")),
+    }
+}
+"#,
+    );
+    assert_eq!(stdout(&trace), "1\n");
+}
+
+#[test]
+fn an_actor_handler_joins_parallel_requests_without_reentering_its_state() {
+    let trace = execute(include_str!(
+        "../../tests/core-acceptance/cases/scope-result-task-handle.hew"
+    ));
+    assert_eq!(stdout(&trace), "18\n");
+}

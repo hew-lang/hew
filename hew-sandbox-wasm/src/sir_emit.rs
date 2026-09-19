@@ -149,6 +149,8 @@ pub struct ActorHandler {
     pub callable: u32,
     pub params: u32,
     pub streams: bool,
+    pub fallible: bool,
+    pub result_shape: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -486,6 +488,19 @@ impl<'m> Walker<'m> {
         }
     }
 
+    /// The checked error envelope of a runtime-produced Result.
+    fn error_shape(&self, result: &CallResult) -> serde_json::Value {
+        let CallResult::Value(def) = result else {
+            return serde_json::Value::Null;
+        };
+        let hew_types::ResolvedTy::Named { args, .. } = &def.ty else {
+            return serde_json::Value::Null;
+        };
+        args.get(1)
+            .and_then(|ty| self.module.variant_shape_for_type(ty))
+            .map_or(serde_json::Value::Null, |shape| shape.id.0.into())
+    }
+
     fn suspend_kind_id(&mut self, name: &str) {
         if !self.suspend_kinds.iter().any(|kind| kind == name) {
             self.suspend_kinds.push(name.to_string());
@@ -631,6 +646,11 @@ impl<'m> Walker<'m> {
                                 callable: self.function_id(handler.callable)?,
                                 params: table_index(handler.params.len()),
                                 streams: handler.stream.is_some(),
+                                fallible: handler.failure_display.is_some(),
+                                result_shape: self
+                                    .module
+                                    .variant_shape_for_type(&handler.return_ty)
+                                    .map(|shape| shape.id.0),
                             })
                         })
                         .collect::<Result<Vec<_>, EmitError>>()?,
@@ -1154,6 +1174,9 @@ impl<'m> Walker<'m> {
             Some(dst) => dst.into(),
             None => serde_json::Value::Null,
         };
+        if let Some(result) = op.results.first().filter(|_| dst.is_some()) {
+            encoded["own"] = own_name(result.own).into();
+        }
         encoded["span"] = span;
         Ok(encoded)
     }
@@ -1360,6 +1383,7 @@ impl<'m> Walker<'m> {
             } => serde_json::json!({
                 "op": "recover_fault",
                 "result": value_def(result),
+                "result_shape": self.module.variant_shape_for_type(&result.ty).map(|shape| shape.id.0),
                 "deadline_variant": deadline_variant,
                 "fault_variant": fault_variant,
                 "normal": encode_edge(normal),
@@ -1379,6 +1403,8 @@ impl<'m> Walker<'m> {
                     "op": "suspend",
                     "kind": name,
                     "detail": detail,
+                    "result_shape": self.result_shape(result),
+                    "error_shape": self.error_shape(result),
                     "inputs": boundaries(inputs),
                     "result": call_result(result),
                     "resumes": resumes.iter().map(encode_edge).collect::<Vec<_>>(),
@@ -1397,6 +1423,7 @@ impl<'m> Walker<'m> {
             } => serde_json::json!({
                 "op": "actor.call",
                 "operation": actor_operation(operation),
+                "error_shape": self.error_shape(result),
                 "args": boundaries(args),
                 "result": call_result(result),
                 "result_shape": self.result_shape(result),

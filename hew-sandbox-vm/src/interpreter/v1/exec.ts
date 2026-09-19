@@ -35,6 +35,7 @@ import type {
   ValueDef,
   VariantShape,
 } from "./package.js";
+import { StructuralRenderer } from "./structural.js";
 import { Pipes } from "./pipes.js";
 import { FrameScheduler } from "./scheduler.js";
 import { DeterministicIds } from "../../scheduler/ids.js";
@@ -48,7 +49,6 @@ import {
 import { admitPackage } from "./validate.js";
 
 const DEFAULT_STEP_BUDGET = 1_000_000;
-const NANOS_PER_MS = 1_000_000n;
 
 /// A storage cell. Every SSA value and every place owns one; a loan refers to
 /// one rather than holding a snapshot of its contents.
@@ -73,8 +73,21 @@ interface FrameContext {
   id: string;
   actor: ActorInstance | null;
   cancel?: (fault?: Fault) => void;
+  generator?: GeneratorEntry;
   returned(value: VmValue): void;
   failed(fault: Fault): void;
+}
+
+interface GeneratorEntry {
+  id: string;
+  frame: Activation;
+  callable: VmValue;
+  started: boolean;
+  done: boolean;
+  fault: Fault | null;
+  resume?: () => void;
+  receive?: (value: VmValue | null, fault: Fault | null) => void;
+  closed: Array<(fault: Fault | null) => void>;
 }
 
 interface ActorMessage {
@@ -268,6 +281,7 @@ class ExecutorV1 {
   private readonly supervisors = new Map<string, SupervisorInstance>();
   private readonly roles = new Map<string, RoleSlot>();
   private readonly pipes = new Pipes();
+  private readonly generators = new Map<string, GeneratorEntry>();
   private readonly tasks = new Map<string, TaskEntry>();
   private completedTasks = 0;
   private running = false;
@@ -344,10 +358,24 @@ class ExecutorV1 {
       const act = this.current;
       for (const op of act.block.ops) {
         this.commitStep();
-        this.execute(act, op);
+        try {
+          this.execute(act, op);
+        } catch (error) {
+          if (error instanceof Halt) throw error;
+          throw new Error(
+            `${act.fn.name} block ${act.block.id} ${op.op}: ${String(error)}`,
+          );
+        }
       }
       this.commitStep();
-      this.terminate(act, act.block.term);
+      try {
+        this.terminate(act, act.block.term);
+      } catch (error) {
+        if (error instanceof Halt) throw error;
+        throw new Error(
+          `${act.fn.name} block ${act.block.id} ${act.block.term.op}: ${String(error)}`,
+        );
+      }
     }
   }
 
@@ -823,6 +851,41 @@ class ExecutorV1 {
         act.scopes.delete(op.scope);
         return;
       }
+      case "generator.make": {
+        const callable = this.read(act, op.callable);
+        this.invalidate(act, op.callable);
+        const id = `generator:${this.generators.size}`;
+        const context: FrameContext = {
+          id,
+          actor: act.context.actor,
+          returned: (value) =>
+            this.closeValueAsync(value, null, (fault) =>
+              this.finishGenerator(generator, fault),
+            ),
+          failed: (fault) => this.finishGenerator(generator, fault),
+        };
+        const generator: GeneratorEntry = {
+          id,
+          callable,
+          started: false,
+          done: false,
+          fault: null,
+          closed: [],
+          frame: this.activate(
+            this.functionAt(calleeFunction(callable)),
+            callable.kind === "closure" ? [callable.environment] : [],
+            null,
+            null,
+            undefined,
+            null,
+            context,
+          ),
+        };
+        context.generator = generator;
+        this.generators.set(id, generator);
+        this.define(act, op.dst, { kind: "generator", id });
+        return;
+      }
       case "task.spawn": {
         const group = act.scopes.get(op.scope);
         if (!group) throw new Error(`task scope ${op.scope} is missing`);
@@ -1065,6 +1128,10 @@ class ExecutorV1 {
         return;
       case "runtime.call": {
         const entry = this.pkg.runtime_families[term.family];
+        if (entry?.family === "StructuralFormat") {
+          this.structuralFormat(act, term);
+          return;
+        }
         const shim = entry ? resolveRuntimeShim(entry) : undefined;
         if (!entry || !shim) {
           throw new Error(
@@ -1143,7 +1210,10 @@ class ExecutorV1 {
         if (parked === undefined) {
           throw new Error(`${act.fn.name}: finish_defer has no active body`);
         }
-        act.fault = parked ?? act.fault;
+        act.fault =
+          parked?.kind === "panic" && parked.cancelled
+            ? (act.fault ?? parked)
+            : (parked ?? act.fault);
         this.takeEdge(act, term.next);
         return;
       }
@@ -1235,6 +1305,43 @@ class ExecutorV1 {
       throw error;
     }
     this.completeShim(act, term, value);
+  }
+
+  private structuralFormat(
+    act: Activation,
+    term: Extract<TermV1, { op: "runtime.call" }>,
+  ): void {
+    if (term.structural == null)
+      throw new Error("StructuralFormat has no checked recipe");
+    const renderer = new StructuralRenderer(
+      this.pkg.structural_render ?? [],
+      term.structural,
+      this.boundary(act, term.args[0]!),
+    );
+    this.running = false;
+    const continueRendering = () => {
+      const next = renderer.next();
+      if (typeof next === "string") {
+        this.completeShim(act, term, { kind: "string", value: next });
+        this.scheduler.enqueue(act.context.id, () => this.runFrame(act));
+        return;
+      }
+      const callback = this.invokeFrame(
+        act.context.actor,
+        next.callee,
+        [next.value],
+        (value) => {
+          renderer.append(value);
+          continueRendering();
+        },
+        (fault) => {
+          this.raiseFault(act, fault, term.unwind);
+          this.scheduler.enqueue(act.context.id, () => this.runFrame(act));
+        },
+      );
+      act.context.cancel = (fault) => callback.cancel?.(fault);
+    };
+    continueRendering();
   }
 
   /// A shim returned: bind the call's result on its normal edge and continue.
@@ -1334,21 +1441,82 @@ class ExecutorV1 {
     term: Extract<TermV1, { op: "suspend" }>,
   ): void {
     switch (term.kind) {
-      case "ValueClose": {
-        // Release the named place; a value holding no resource releases to
-        // nothing and the activation resumes immediately.
-        const place = valueCloseePlace(term.detail);
-        if (place !== null) {
-          const ref = this.placeRef(act, place);
-          this.closeValue(readRef(ref), this.pipeFault(act));
-          invalidateRef(ref);
-        } else if (term.inputs[0]) {
-          this.closeValue(
-            this.boundary(act, term.inputs[0]),
-            this.pipeFault(act),
+      case "Yield": {
+        const generator = act.context.generator;
+        if (!generator || !generator.receive)
+          throw new Error("yield has no generator consumer");
+        const value = this.boundary(act, term.inputs[0]!);
+        const wake = this.park(act, term);
+        generator.resume = () => wake(UNIT);
+        const receive = generator.receive;
+        generator.receive = undefined;
+        receive(value, null);
+        return;
+      }
+      case "GeneratorNext": {
+        const generator = this.generatorFor(
+          this.boundary(act, term.inputs[0]!),
+        );
+        const wake = this.park(act, term);
+        const receive = (value: VmValue | null, fault: Fault | null) => {
+          if (fault) wake(UNIT, fault);
+          else
+            wake(
+              this.variant(
+                term.result_shape,
+                value === null ? "None" : "Some",
+                value === null ? [] : [value],
+              ),
+            );
+        };
+        if (generator.done) {
+          receive(null, generator.fault);
+          return;
+        }
+        if (generator.receive)
+          throw new Error("generator already has a pending next");
+        generator.receive = receive;
+        const cancel = act.context.cancel;
+        act.context.cancel = (fault) => {
+          generator.receive = undefined;
+          this.closeGenerator(generator, (closeFault) =>
+            cancel?.(closeFault ?? fault),
+          );
+        };
+        if (generator.started) {
+          const resume = generator.resume;
+          generator.resume = undefined;
+          if (!resume) throw new Error("generator has no suspended yield");
+          resume();
+        } else {
+          generator.started = true;
+          this.scheduler.enqueue(generator.id, () =>
+            this.runFrame(generator.frame),
           );
         }
-        break;
+        return;
+      }
+      case "ValueClose": {
+        const place = valueCloseePlace(term.detail);
+        let value: VmValue = UNIT;
+        if (place !== null) {
+          const ref = this.placeRef(act, place);
+          value = liveRef(ref) ? readRef(ref) : UNIT;
+          if (liveRef(ref)) invalidateRef(ref);
+        } else if (term.inputs[0]) {
+          value = this.boundary(act, term.inputs[0]);
+        }
+        if (term.detail.selection === "vector_element") {
+          const index = this.boundary(act, term.inputs[1]!);
+          if (value.kind !== "vector" || index.kind !== "i64")
+            throw new Error("element close has no vector index");
+          value = value.items[Number(index.value)]!;
+        }
+        const wake = this.park(act, term);
+        this.closeValueAsync(value, this.pipeFault(act), (fault) =>
+          wake(UNIT, fault),
+        );
+        return;
       }
       case "StreamSend": {
         const [sink, value] = term.inputs.map((input) =>
@@ -1497,33 +1665,16 @@ class ExecutorV1 {
           ? this.boundary(act, term.inputs[0])
           : UNIT;
         const nanos = duration.kind === "i64" ? duration.value : 0n;
-        if (
-          act.context.actor ||
-          this.actors.size > 0 ||
-          this.tasks.size > 0 ||
-          act.scopes.size > 0
-        ) {
-          let cancelTimer = () => {};
-          const wake = this.park(act, term, () => cancelTimer());
-          cancelTimer = this.scheduler.after(nanos, () => wake(UNIT));
-          return;
-        }
-        this.trace.advanceVirtualClock(Number(nanos / NANOS_PER_MS), null);
-        break;
+        let cancelTimer = () => {};
+        const wake = this.park(act, term, () => cancelTimer());
+        cancelTimer = this.scheduler.after(nanos, () => wake(UNIT));
+        return;
       }
       default:
         throw new Error(
           `suspension kind ${term.kind} resolved no handler after admission`,
         );
     }
-    const resume = term.resumes[0];
-    if (!resume) {
-      throw new Error(`suspension ${term.kind} names no resume edge`);
-    }
-    if (term.result && term.result !== "never") {
-      this.define(act, term.result.value, UNIT);
-    }
-    this.takeEdge(act, resume);
   }
 
   private park(
@@ -1591,6 +1742,86 @@ class ExecutorV1 {
     return this.faultText(act.context.actor?.crashing ?? act.fault);
   }
 
+  private generatorFor(value: VmValue): GeneratorEntry {
+    if (value.kind !== "generator")
+      throw new Error("generator operand has no generator identity");
+    const generator = this.generators.get(value.id);
+    if (!generator) throw new Error("generator does not exist");
+    return generator;
+  }
+
+  private finishGenerator(
+    generator: GeneratorEntry,
+    fault: Fault | null,
+  ): void {
+    if (generator.done) return;
+    generator.done = true;
+    generator.fault = fault?.kind === "panic" && fault.cancelled ? null : fault;
+    this.closeValueAsync(
+      generator.callable,
+      this.faultText(fault),
+      (closeFault) => {
+        generator.fault ??= closeFault;
+        const receive = generator.receive;
+        generator.receive = undefined;
+        receive?.(null, generator.fault);
+        for (const closed of generator.closed.splice(0))
+          closed(generator.fault);
+      },
+    );
+  }
+
+  private closeGenerator(
+    generator: GeneratorEntry,
+    done: (fault: Fault | null) => void,
+  ): void {
+    if (generator.done) {
+      done(generator.fault);
+      return;
+    }
+    generator.closed.push(done);
+    if (!generator.started) this.finishGenerator(generator, null);
+    else generator.frame.context.cancel?.();
+  }
+
+  private closeValueAsync(
+    value: VmValue,
+    fault: string | null,
+    done: (fault: Fault | null) => void,
+  ): void {
+    const pending = [value];
+    let firstFault: Fault | null = null;
+    const next = (failure: Fault | null = null) => {
+      firstFault ??= failure;
+      while (pending.length) {
+        const value = pending.pop()!;
+        switch (value.kind) {
+          case "generator":
+            this.closeGenerator(this.generatorFor(value), next);
+            return;
+          case "closure":
+            pending.push(value.environment);
+            break;
+          case "record":
+            pending.push(...[...value.fields].reverse());
+            break;
+          case "enum":
+            pending.push(...[...value.payload].reverse());
+            break;
+          case "vector":
+            pending.push(...[...value.items].reverse());
+            break;
+          case "sink":
+          case "stream":
+            this.pipes.close(value, fault);
+            break;
+        }
+      }
+      done(firstFault);
+    };
+    next();
+  }
+
   private closeValue(value: VmValue, fault: string | null): void {
     if (value.kind === "closure") this.closeValue(value.environment, fault);
     else if (value.kind === "sink" || value.kind === "stream")
@@ -1645,7 +1876,7 @@ class ExecutorV1 {
     args: VmValue[],
     returned: (value: VmValue) => void,
     failed: (fault: Fault) => void,
-  ): void {
+  ): FrameContext {
     const frame = this.activate(
       this.functionAt(callable),
       args,
@@ -1661,6 +1892,7 @@ class ExecutorV1 {
       },
     );
     this.scheduler.enqueue(frame.context.id, () => this.runFrame(frame));
+    return frame.context;
   }
 
   private variant(
@@ -2849,4 +3081,8 @@ function asFloat(value: VmValue): number {
 
 function asString(value: VmValue): string {
   return value.kind === "string" ? value.value : canonical(value);
+}
+
+function liveRef(ref: Ref): boolean {
+  return ref.kind === "cell" ? ref.cell.valid : liveRef(ref.parent);
 }

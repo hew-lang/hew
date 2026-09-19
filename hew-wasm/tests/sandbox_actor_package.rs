@@ -601,3 +601,85 @@ fn crash_info_uses_the_native_fault_code_and_class() {
     assert_eq!(stdout(&trace), "212\nUserPanic\n");
     assert_eq!(trace["final_state"]["exit_code"], 42);
 }
+
+#[test]
+fn structural_display_preserves_checked_nested_and_alias_selections() {
+    for (source, expected) in [
+        (include_str!("../../tests/core-acceptance/cases/structural-rendering-display.hew"), "Report { current: west=3C, history: [Some(west=3C), None], tagged: reviewed:9 }\n(west=3C, archived:kept)\n[Circle { radius: 3 }, Square(1), Sample { reading: west=3C }, Missing]\n{latest: west=3C}\nwest=3C\nwest\n"),
+        (include_str!("../../tests/core-acceptance/cases/structural-rendering-aliases.hew"), "Report { readings: readings(2), archived: Some(readings(2)), plain: [3, 5], pair: (readings(2), west) }\n[Update { readings: readings(2) }, History(Some(readings(2)))]\nStations { values: {west: readings(2)} }\nreadings(2)\n"),
+    ] {
+        assert_eq!(stdout(&execute(source)), expected);
+    }
+}
+
+#[test]
+fn a_nested_display_fault_skips_later_callbacks_and_unwinds() {
+    let trace = execute_expected(
+        include_str!("../../tests/core-acceptance/cases/structural-rendering-display-fault.hew"),
+        "trap",
+    );
+    assert_eq!(trace["result"], "trap");
+    assert_eq!(stdout(&trace), "");
+}
+
+#[test]
+fn generators_stay_lazy_and_drain_early_close_before_returning() {
+    let trace = execute(include_str!(
+        "../../tests/core-acceptance/cases/generator-values.hew"
+    ));
+    assert_eq!(
+        stdout(&trace),
+        "WORD\nWORD:0\nWORD:1\nWORD:2\nWORD cleaned\nEARLY:0\nEARLY cleaned\nafter early\ndone\n"
+    );
+}
+
+#[test]
+fn generators_close_through_records_variants_captures_and_lazy_owners() {
+    let trace = execute(include_str!(
+        "../../tests/core-acceptance/cases/generator-nested-values.hew"
+    ));
+    assert_eq!(stdout(&trace), "record\nrecord cleaned\nenum\nenum cleaned\nclosure\nclosure cleaned\npartial\nEXTRACTED\npartial cleaned\nlazy\nlazy cleaned\ndone\n");
+}
+
+#[test]
+fn a_generator_cleanup_fault_unwinds_its_consumer() {
+    let trace = execute_expected(
+        include_str!("../../tests/core-acceptance/cases/generator-close-fault.hew"),
+        "panic",
+    );
+    assert_eq!(stdout(&trace), "first\n");
+}
+
+#[test]
+fn generator_close_composes_with_race_cancellation() {
+    let trace = execute(include_str!(
+        "../../tests/core-acceptance/cases/race-loser-generator-cleanup.hew"
+    ));
+    assert_eq!(
+        stdout(&trace),
+        "closed loser\nselected\ndone\nclosed winner\n"
+    );
+}
+
+#[test]
+fn generator_deadline_drains_producer_and_consumer_cleanup() {
+    let trace = execute_expected(
+        include_str!("../../tests/core-acceptance/cases/generator-deadline.hew"),
+        "panic",
+    );
+    assert_eq!(
+        stdout(&trace),
+        "PRODUCER\nPRODUCER cleaned\nCONSUMER cleaned\n"
+    );
+}
+
+#[test]
+fn yielded_and_returned_generators_keep_distinct_owned_outputs() {
+    let trace = execute(include_str!(
+        "../../tests/core-acceptance/cases/generator-nested-outputs.hew"
+    ));
+    assert_eq!(
+        stdout(&trace),
+        "yielded\nreceived\nyielded cleaned\nreturned\nreturned cleaned\nfinished\ndone\n"
+    );
+}

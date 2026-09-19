@@ -24,6 +24,28 @@
     "vtables"
   ],
   "properties": {
+    "structural_render": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["kind"],
+        "properties": {
+          "kind": {
+            "enum": [
+              "scalar",
+              "unit",
+              "display",
+              "identity",
+              "tuple",
+              "vector",
+              "map",
+              "record",
+              "enum"
+            ]
+          }
+        }
+      }
+    },
     "schema_version": {
       "const": "hew.sandbox.bytecode.v1"
     },

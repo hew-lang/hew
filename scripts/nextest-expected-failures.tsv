@@ -40,7 +40,6 @@ linux,macos,freebsd	failure	hew-cli::ffi_link_e2e	ffi_borrow_boundary_links_and_
 macos	failure	hew-cli::ffi_link_e2e	ffi_link_duplicate_runtime_symbol_fails_closed_with_hint	#3452 fails the link closed on a duplicate runtime symbol
 macos	failure	hew-cli::ffi_link_e2e	link_line_carries_single_runtime_archive	#3452 restores the linker shim's argv capture
 macos	failure	hew-cli::hashmap_borrowed_string_ingress_leak_oracle	borrowed_string_collection_ingress_does_not_double_free	#3445 copies a borrowed string into the map
-macos	failure	hew-cli::http_ws_string_result_retention_leak_oracle	shipped_websocket_message_text_wrapper_has_no_per_call_leak	#3451 makes the shipped-transport probes complete their work
 macos	failure	hew-cli::identity_monitor_leak_oracle	cross_process_monitor_close_has_zero_leak_slope_and_no_poisoned_allocator_failure	#3373 lowers a remote actor ask; the identity contracts this fixture also needs landed
 macos	failure	hew-cli::identity_monitor_leak_oracle	identity_display_temporaries_have_zero_leak_slope_and_no_poisoned_allocator_failure	#3373 lowers a remote actor ask; the identity contracts this fixture also needs landed
 macos	failure	hew-cli::indirect_enum_drop_leak_oracle	indirect_enum_dead_actor_select_request_no_corruption_under_malloc_scribble	#3450 fixes the observable result of a recovery edge

@@ -2,6 +2,7 @@
 //! the public browser compiler and the sandbox VM.
 
 use hew_wasm::sandbox::sir_emit;
+use std::fmt::Write as _;
 
 fn semantics(source: &str) -> hew_sir::LoweredModule {
     let state = hew_compile::run_source_frontend(
@@ -935,7 +936,7 @@ fn collection_callbacks_drain_affine_owners_on_cancellation_and_fault() {
     let mut expected = String::new();
     for phase in 0..3 {
         for collection in ["map", "set"] {
-            expected.push_str(&format!("cancel {collection} phase {phase}\nCALLBACK LOCAL CLOSED\nowner 0 closed\nowner 99 closed\n{collection} closed\n"));
+            writeln!(expected, "cancel {collection} phase {phase}\nCALLBACK LOCAL CLOSED\nowner 0 closed\nowner 99 closed\n{collection} closed").unwrap();
         }
     }
     expected.push_str("fault during rehash\nCALLBACK LOCAL CLOSED\nowner 0 closed\nowner 99 closed\ncallback fault returned\n");
@@ -1066,4 +1067,68 @@ fn main() {
         "panic",
     );
     assert_eq!(stdout(&trace), "main owner closed\nactor owner closed\n");
+}
+
+#[test]
+fn checked_wait_policy_overrides_the_destination_overflow_declaration() {
+    let source = r#"
+actor Worker {
+    mailbox 1 overflow OVERFLOW,
+    receive fn work(value: i64) { println(value); }
+}
+actor Driver {
+    receive fn run(worker: Worker) {
+        let inbox = mailbox(worker, on_full: .Wait);
+        for value in 0..3 { inbox.work(value).expect("waited admission"); }
+    }
+}
+fn main() {
+    let worker = spawn Worker;
+    let driver = spawn Driver;
+    driver.run(worker).expect("driver");
+    sleep(1ms);
+    close(worker);
+    close(driver);
+}
+"#;
+    for overflow in ["fail", "drop_old", "drop_new"] {
+        let trace = execute(&source.replace("OVERFLOW", overflow));
+        assert_eq!(stdout(&trace), "0\n1\n2\n");
+        assert_eq!(trace["final_state"]["exit_code"], 0);
+    }
+}
+
+#[test]
+fn drop_newest_runs_the_discarded_messages_authored_close() {
+    let trace = execute(
+        r#"
+#[resource]
+type Ticket { id: i64, }
+impl Ticket { fn close(consume self) { println(f"closed {self.id}"); } }
+actor Worker {
+    mailbox 1 overflow fail,
+    receive fn work(ticket: Ticket) { println(f"handled {ticket.id}"); }
+}
+actor Driver {
+    receive fn run(worker: Worker) {
+        let inbox = mailbox(worker, on_full: .DropNewest);
+        inbox.work(Ticket { id: 1 }).expect("first");
+        inbox.work(Ticket { id: 2 }).expect("discarded");
+    }
+}
+fn main() {
+    let worker = spawn Worker;
+    let driver = spawn Driver;
+    driver.run(worker).expect("driver");
+    close(worker);
+    close(driver);
+    println("barrier");
+}
+"#,
+    );
+    let output = stdout(&trace);
+    let mut lines: Vec<_> = output.lines().collect();
+    assert_eq!(lines.pop(), Some("barrier"));
+    lines.sort_unstable();
+    assert_eq!(lines, ["closed 1", "closed 2", "handled 1"]);
 }

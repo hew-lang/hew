@@ -2492,30 +2492,36 @@ class ExecutorV1 {
             actor.layout.mailbox_capacity !== undefined &&
             actor.mailbox.length >= actor.layout.mailbox_capacity;
           if (full) {
-            if (
-              actor.layout.overflow === "drop_new" ||
-              operation.policy === "drop_newest"
-            ) {
-              finish(accepted(true));
-              return;
-            }
-            if (
-              actor.layout.overflow === "drop_old" ||
-              operation.policy === "replace_latest"
-            ) {
-              actor.mailbox.shift()?.complete(null, "Dead");
-            } else if (
-              actor.layout.overflow === "fail" ||
-              operation.policy === "reject"
-            ) {
-              finish(rejected("Full"));
-              return;
-            } else {
+            if (operation.policy === "drop_newest") {
               parked = true;
               this.running = false;
-              actor.admission.push(submit);
+              this.closeValueAsync(
+                payload,
+                this.pipeFault(act),
+                (fault) => {
+                  if (fault) {
+                    this.raiseFault(act, fault, term.unwind);
+                    this.scheduler.enqueue(act.context.id, () =>
+                      this.runFrame(act),
+                    );
+                  } else finish(accepted(true));
+                },
+                act.context.actor,
+              );
               return;
             }
+            if (operation.policy === "reject") {
+              finish(rejected("Full"));
+              return;
+            }
+            // The checker already resolved declaration defaults and explicit
+            // overrides. Coalescing is refused by admission until implemented.
+            if (operation.policy !== "wait")
+              throw new Error("submission has no admitted policy");
+            parked = true;
+            this.running = false;
+            actor.admission.push(submit);
+            return;
           }
           actor.mailbox.push({
             handler,

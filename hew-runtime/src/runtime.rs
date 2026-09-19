@@ -78,6 +78,9 @@ pub(crate) struct RuntimeInner {
     /// failed). Was the `SHUTDOWN_PHASE` global. `PHASE_RUNNING == 0`, so a
     /// freshly-constructed runtime starts running.
     pub(crate) shutdown_phase: AtomicI32,
+    /// External work admitted before explicit shutdown, including publication
+    /// that has not yet reached an actor mailbox or scheduler queue.
+    pub(crate) shutdown_ingress: crate::shutdown::ExternalIngress,
     /// Registered top-level supervisors stopped (bottom-up) during graceful
     /// shutdown and freed by `hew_runtime_cleanup`. Was the
     /// `TOP_LEVEL_SUPERVISORS` global.
@@ -133,6 +136,7 @@ impl RuntimeInner {
             local_handles: LocalHandles::new(),
             registry: ShardedRegistry::new(),
             shutdown_phase: AtomicI32::new(crate::shutdown::PHASE_RUNNING),
+            shutdown_ingress: crate::shutdown::ExternalIngress::default(),
             supervisor_roots: PoisonSafe::new(Vec::new()),
             node: NodeSlot::new(),
             metrics: crate::metrics::MetricsState::new(),

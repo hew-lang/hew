@@ -60,6 +60,18 @@ pub type HewValueCloneThunk = unsafe extern "C" fn(src: *const c_void, dst: *mut
 ///
 pub type HewValueDropThunk = unsafe extern "C-unwind" fn(slot: *mut c_void);
 
+/// Start consuming one value through resumable destruction. The slot remains
+/// allocated until the returned continuation completes. The invocation state
+/// belongs to cleanup and shields the close body from the caller's cancellation.
+/// Completion publishes the private status in that state and transfers any
+/// fault through `fault_out`; the caller then destroys the continuation and
+/// releases the outer slot storage without invoking `drop_fn` again.
+pub type HewValueReleaseStart = unsafe extern "C" fn(
+    slot: *mut c_void,
+    fault_out: *mut *mut c_void,
+    invocation_state: *mut c_void,
+) -> *mut c_void;
+
 /// Poll a uniquely borrowed owner through cooperative cleanup. The invocation
 /// state supplies cancellation and readiness; the result uses `CoroStatus`.
 /// Pending retains the borrow. A terminal fault transfers one fault owner.
@@ -106,6 +118,7 @@ const _: () = assert!(
 ///     HewValueCloneThunk       clone_fn;  /* NULL for plain or release-only values */
 ///     HewValueDropThunk        drop_fn;   /* may be NULL only when ownership_kind == Plain */
 ///     HewValueCloseVisit      visit_close; /* optional child walk before drop */
+///     HewValueReleaseStart    release_start; /* optional consuming continuation */
 /// } HewValueLayout;
 /// ```
 #[repr(C)]
@@ -126,6 +139,9 @@ pub struct HewValueLayout {
     pub drop_fn: Option<HewValueDropThunk>,
     /// Optional initialized-child walk performed before synchronous drop.
     pub visit_close: Option<HewValueCloseVisit>,
+    /// Consuming destruction continuation for values whose release can suspend.
+    /// The synchronous drop slot is used only when this callback is absent.
+    pub release_start: Option<HewValueReleaseStart>,
 }
 
 #[cfg(target_pointer_width = "64")]
@@ -136,7 +152,8 @@ const _: () = {
     assert!(core::mem::offset_of!(HewValueLayout, clone_fn) == 24);
     assert!(core::mem::offset_of!(HewValueLayout, drop_fn) == 32);
     assert!(core::mem::offset_of!(HewValueLayout, visit_close) == 40);
-    assert!(core::mem::size_of::<HewValueLayout>() == 48);
+    assert!(core::mem::offset_of!(HewValueLayout, release_start) == 48);
+    assert!(core::mem::size_of::<HewValueLayout>() == 56);
 };
 
 #[cfg(target_pointer_width = "32")]
@@ -147,5 +164,6 @@ const _: () = {
     assert!(core::mem::offset_of!(HewValueLayout, clone_fn) == 12);
     assert!(core::mem::offset_of!(HewValueLayout, drop_fn) == 16);
     assert!(core::mem::offset_of!(HewValueLayout, visit_close) == 20);
-    assert!(core::mem::size_of::<HewValueLayout>() == 24);
+    assert!(core::mem::offset_of!(HewValueLayout, release_start) == 24);
+    assert!(core::mem::size_of::<HewValueLayout>() == 28);
 };

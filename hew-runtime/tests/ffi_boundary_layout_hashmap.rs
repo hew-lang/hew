@@ -216,6 +216,83 @@ fn val_layout(size: usize, align: usize) -> HewValueLayout {
     }
 }
 
+#[test]
+fn layout_hashmap_staged_callbacks_preserve_contents_across_abandonment() {
+    use hew_cabi::map::HewMapProbeStatus;
+    use hew_runtime::hashmap::{
+        hew_hashmap_probe_begin, hew_hashmap_probe_free, hew_hashmap_probe_get_clone,
+        hew_hashmap_probe_insert_take, hew_hashmap_probe_left, hew_hashmap_probe_remove_take,
+        hew_hashmap_probe_right, hew_hashmap_probe_step, hew_hashmap_probe_submit_eq,
+        hew_hashmap_probe_submit_hash, HewLayoutMapProbe,
+    };
+
+    // Deliberately collide every key, and supply results outside the runtime
+    // callback ABI, as a resumed compiler continuation does.
+    unsafe fn finish(probe: *mut HewLayoutMapProbe) {
+        loop {
+            match unsafe { hew_hashmap_probe_step(probe) } {
+                value if value == HewMapProbeStatus::Ready as i32 => return,
+                value if value == HewMapProbeStatus::NeedHash as i32 => unsafe {
+                    hew_hashmap_probe_submit_hash(probe, 0);
+                },
+                value if value == HewMapProbeStatus::NeedEq as i32 => unsafe {
+                    let left = *hew_hashmap_probe_left(probe).cast::<i64>();
+                    let right = *hew_hashmap_probe_right(probe).cast::<i64>();
+                    hew_hashmap_probe_submit_eq(probe, left == right);
+                },
+                value => panic!("unexpected probe request {value}"),
+            }
+        }
+    }
+
+    let mut key_layout = key_layout_i64();
+    key_layout.hash_fn = None;
+    key_layout.eq_fn = None;
+    let value_layout = val_layout(8, 8);
+    // Each pending request keeps its map and stack query alive. Commit takes
+    // plain copied values, and map free is the sole collection storage owner.
+    unsafe {
+        let map = hew_hashmap_new_with_layout(&raw const key_layout, &raw const value_layout);
+        for key in 0_i64..40 {
+            let value = key * 7;
+            let abandoned = hew_hashmap_probe_begin(map, (&raw const key).cast(), 1);
+            assert_eq!(
+                hew_hashmap_probe_step(abandoned),
+                HewMapProbeStatus::NeedHash as i32
+            );
+            hew_hashmap_probe_submit_hash(abandoned, 0);
+            // Abandon at hash completion, including while a resize is staged.
+            hew_hashmap_probe_free(abandoned);
+            assert_eq!(hew_hashmap_len_layout(map), key);
+
+            let probe = hew_hashmap_probe_begin(map, (&raw const key).cast(), 1);
+            finish(probe);
+            assert!(hew_hashmap_probe_insert_take(
+                probe,
+                (&raw const value).cast()
+            ));
+        }
+        for key in 0_i64..40 {
+            let probe = hew_hashmap_probe_begin(map, (&raw const key).cast(), 0);
+            finish(probe);
+            let mut value = -1_i64;
+            assert!(hew_hashmap_probe_get_clone(probe, (&raw mut value).cast()));
+            assert_eq!(value, key * 7);
+        }
+        let key = 5_i64;
+        let probe = hew_hashmap_probe_begin(map, (&raw const key).cast(), 0);
+        finish(probe);
+        let mut value = -1_i64;
+        assert!(hew_hashmap_probe_remove_take(
+            probe,
+            (&raw mut value).cast()
+        ));
+        assert_eq!(value, 35);
+        assert_eq!(hew_hashmap_len_layout(map), 39);
+        hew_hashmap_free_layout(map);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Happy-path round trips
 // ---------------------------------------------------------------------------
@@ -516,42 +593,6 @@ fn layout_hashmap_null_val_layout_aborts() {
 }
 
 #[test]
-#[should_panic(expected = "hash_fn is None")]
-fn layout_hashmap_null_hash_fn_aborts() {
-    let kl = HewMapKeyLayout {
-        value: HewValueLayout {
-            visit_close: None,
-            size: 8,
-            align: 8,
-            ownership_kind: HewTypeOwnershipKind::Plain,
-            clone_fn: None,
-            drop_fn: None,
-        },
-        hash_fn: None,
-        eq_fn: Some(eq_i64 as HewMapKeyEqThunk),
-    };
-    unsafe { validate_key_layout(&raw const kl) };
-}
-
-#[test]
-#[should_panic(expected = "eq_fn is None")]
-fn layout_hashmap_null_eq_fn_aborts() {
-    let kl = HewMapKeyLayout {
-        value: HewValueLayout {
-            visit_close: None,
-            size: 8,
-            align: 8,
-            ownership_kind: HewTypeOwnershipKind::Plain,
-            clone_fn: None,
-            drop_fn: None,
-        },
-        hash_fn: Some(hash_i64 as HewMapKeyHashThunk),
-        eq_fn: None,
-    };
-    unsafe { validate_key_layout(&raw const kl) };
-}
-
-#[test]
 #[should_panic(expected = "key_layout ownership_kind=LayoutManaged requires drop_fn")]
 fn layout_hashmap_managed_key_without_drop_aborts() {
     // W4.001 Stage C0a: LayoutManaged is admitted by validate_key_layout
@@ -725,15 +766,12 @@ fn op_inputs_null_key_aborts() {
     let kl = key_layout_i64();
     let vl = val_layout(8, 8);
     let m = unsafe { hew_hashmap_new_with_layout(&raw const kl, &raw const vl) };
-    // Use catch_unwind-incompatible approach: just call and let should_panic
-    // observe the unwind under the test profile. We deliberately do NOT free
-    // the map (the unwind aborts the test fn before reaching cleanup; the
-    // process exits and the leak is harmless for a should_panic test).
-    unsafe {
+    // Preserve the original rejection after releasing the otherwise valid map.
+    let rejection = std::panic::catch_unwind(|| unsafe {
         validate_op_inputs(m.cast_const(), ptr::null(), None);
-    }
-    // Unreachable; satisfy the type system.
+    });
     unsafe { hew_hashmap_free_layout(m) };
+    std::panic::resume_unwind(rejection.expect_err("null key must be rejected"));
 }
 
 #[test]
@@ -745,14 +783,15 @@ fn op_inputs_null_val_with_nonzero_size_aborts() {
     let vl = val_layout(8, 8);
     let m = unsafe { hew_hashmap_new_with_layout(&raw const kl, &raw const vl) };
     let key: i64 = 0;
-    unsafe {
+    let rejection = std::panic::catch_unwind(|| unsafe {
         validate_op_inputs(
             m.cast_const(),
             (&raw const key).cast::<c_void>(),
             Some(ptr::null()),
         );
-    }
+    });
     unsafe { hew_hashmap_free_layout(m) };
+    std::panic::resume_unwind(rejection.expect_err("null nonzero value must be rejected"));
 }
 
 #[test]

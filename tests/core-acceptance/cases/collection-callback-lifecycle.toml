@@ -1,0 +1,14 @@
+[[case]]
+id = "collection-callback-lifecycle"
+intent = "Cancellation during query Hash, collision Eq and rehash releases callback locals, retained map/set entries and incoming affine owners once; a suspended rehash fault remains primary."
+source = "cases/collection-callback-lifecycle.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 20
+
+[case.env]
+HEW_WORKERS = "1"
+
+[case.expected]
+stdout = "cancel map phase 0\nCALLBACK LOCAL CLOSED\nowner 0 closed\nowner 99 closed\nmap closed\ncancel set phase 0\nCALLBACK LOCAL CLOSED\nowner 0 closed\nowner 99 closed\nset closed\ncancel map phase 1\nCALLBACK LOCAL CLOSED\nowner 0 closed\nowner 99 closed\nmap closed\ncancel set phase 1\nCALLBACK LOCAL CLOSED\nowner 0 closed\nowner 99 closed\nset closed\ncancel map phase 2\nCALLBACK LOCAL CLOSED\nowner 0 closed\nowner 99 closed\nmap closed\ncancel set phase 2\nCALLBACK LOCAL CLOSED\nowner 0 closed\nowner 99 closed\nset closed\nfault during rehash\nCALLBACK LOCAL CLOSED\nowner 0 closed\nowner 99 closed\ncallback fault returned\n"
+stderr = "hew: failure: UserPanic (212): selected callback failed\nhew: actor crash in Store.map (actor 8): UserPanic\n"
+exit = 1

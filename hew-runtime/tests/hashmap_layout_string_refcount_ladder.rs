@@ -41,10 +41,13 @@ mod map_status;
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicU32, Ordering};
 
+use hew_cabi::map::HewMapProbeStatus;
 use hew_cabi::string::{string_from_str, HewString};
 use hew_runtime::hashmap::{
     hew_hashmap_clone_layout, hew_hashmap_free_layout, hew_hashmap_insert_layout,
-    hew_hashmap_new_with_layout, hew_hashmap_remove_layout,
+    hew_hashmap_new_with_layout, hew_hashmap_probe_begin, hew_hashmap_probe_free,
+    hew_hashmap_probe_left, hew_hashmap_probe_step, hew_hashmap_probe_submit_hash,
+    hew_hashmap_remove_layout,
 };
 use hew_runtime::hashset::{
     hew_hashset_clone_layout, hew_hashset_free_layout, hew_hashset_insert_layout,
@@ -362,5 +365,71 @@ fn hashset_string_element_clone_retains_and_free_releases() {
         // Free both sets; the clone owns the last reference, freed at 0.
         hew_hashset_free_layout(s);
         hew_hashset_free_layout(cloned);
+    }
+}
+
+#[test]
+fn hashmap_abandoned_resize_preserves_string_owners() {
+    // SAFETY: retained strings outlive the borrowed probes and map. Each probe
+    // is drained synchronously before its allocation or receiver is released.
+    unsafe {
+        let map = hew_hashmap_new_with_layout(
+            &raw const hew_layout_key_string,
+            &raw const hew_layout_val_string,
+        );
+        let mut owners = Vec::new();
+        // The next insertion crosses the initial table's resize threshold.
+        for index in 0..11 {
+            let key = make_string(&format!("key {index}"));
+            let value = make_string(&format!("value {index}"));
+            assert!(insert_move(
+                map,
+                hew_string_clone(key),
+                hew_string_clone(value)
+            ));
+            owners.push((key, value));
+        }
+        let query = owners[3].0;
+        for stop_during_rehash in [true, false] {
+            let probe = hew_hashmap_probe_begin(map, (&raw const query).cast(), 1);
+            let mut hashes = 0;
+            loop {
+                let request = hew_hashmap_probe_step(probe);
+                if request == HewMapProbeStatus::NeedEq as i32 {
+                    assert!(!stop_during_rehash);
+                    assert_eq!(hashes, 12, "old keys and query each hash once");
+                    break;
+                }
+                assert_eq!(request, HewMapProbeStatus::NeedHash as i32);
+                if stop_during_rehash && hashes == 5 {
+                    break;
+                }
+                let mut hash = 0;
+                let mut fault = std::ptr::null_mut();
+                assert_eq!(
+                    hew_layout_key_string.hash_fn.unwrap()(
+                        hew_hashmap_probe_left(probe),
+                        &raw mut hash,
+                        &raw mut fault,
+                    ),
+                    0,
+                );
+                assert!(fault.is_null());
+                hew_hashmap_probe_submit_hash(probe, hash);
+                hashes += 1;
+            }
+            hew_hashmap_probe_free(probe);
+            for &(key, value) in &owners {
+                assert_eq!(element_refcount(key), 2);
+                assert_eq!(element_refcount(value), 2);
+            }
+        }
+        hew_hashmap_free_layout(map);
+        for (key, value) in owners {
+            assert_eq!(element_refcount(key), 1);
+            assert_eq!(element_refcount(value), 1);
+            hew_string_drop(key);
+            hew_string_drop(value);
+        }
     }
 }

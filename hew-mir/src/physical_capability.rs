@@ -26,6 +26,8 @@ pub enum PhysicalValueMethod {
 pub struct PhysicalValueCapability {
     pub selection: hew_sir::SemValueMethodPlan,
     pub method: PhysicalValueMethod,
+    /// A selected user operation can suspend directly or through a component.
+    pub is_resumable: bool,
 }
 
 pub(super) fn build(
@@ -45,10 +47,38 @@ pub(super) fn build(
                 PhysicalValueCapability {
                     selection: selection.clone(),
                     method,
+                    is_resumable: false,
                 },
             ))
         })
         .collect()
+}
+
+pub(super) fn callees(
+    module: &PhysicalModule,
+    ty: &ResolvedTy,
+    capability: ValueCapability,
+) -> Result<std::collections::BTreeSet<hew_sir::CallableId>, PhysicalError> {
+    let mut pending = vec![ty];
+    let mut seen = std::collections::BTreeSet::new();
+    let mut callees = std::collections::BTreeSet::new();
+    while let Some(ty) = pending.pop() {
+        if !seen.insert(ty) {
+            continue;
+        }
+        let selected = module
+            .value_capabilities
+            .get(&(ty.clone(), capability))
+            .ok_or_else(|| {
+                PhysicalError::new("callback call graph lacks its selected capability")
+            })?;
+        if let PhysicalValueMethod::User(id) = selected.method {
+            callees.insert(id);
+        } else {
+            pending.extend(derived_components(module, ty, selected.method)?);
+        }
+    }
+    Ok(callees)
 }
 
 fn derived_method(

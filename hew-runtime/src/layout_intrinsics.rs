@@ -316,9 +316,9 @@ extern "C-unwind" fn hew_layout_bytes_drop(blob: *mut c_void) {
 // ---------------------------------------------------------------------------
 //
 // Float K descriptors are shipped with `hash_fn = None` / `eq_fn = None`.
-// Float never satisfies Hash at the checker; the kernel's
-// `validate_key_layout` (hashmap.rs:932-939) already aborts on None thunks.
-// Belt-and-suspenders DI-003 fail-closed-by-absence per plan §4 Stage C0b.
+// Float never satisfies Hash at the checker. Synchronous C operations reject
+// a missing callback when probing requests it; generated probes invoke only
+// the concrete key capabilities verified by the compiler.
 
 macro_rules! key_layout {
     ($name:ident, $ty:ty, $hash:expr, $eq:expr, $ownership:expr, $drop:expr) => {

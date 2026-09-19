@@ -1,0 +1,60 @@
+actor Oracle {
+    receive fn hash() -> i64 { 7 }
+    receive fn equal(left: i64, right: i64) -> bool { left == right }
+}
+
+#[wire]
+type Key { id: i64 @1 }
+
+impl Hash for Key {
+    fn hash(self) -> i64 {
+        let oracle = spawn Oracle;
+        let hash = oracle.hash().expect("hash reply");
+        close(oracle);
+        hash
+    }
+}
+
+impl Eq for Key {
+    fn eq(self, other: Key) -> bool {
+        let oracle = spawn Oracle;
+        let equal = oracle.equal(self.id, other.id).expect("equality reply");
+        close(oracle);
+        equal
+    }
+}
+
+#[wire]
+type Registry {
+    groups: Vec<HashMap<Key, Vec<string>>> @1,
+    keys: HashSet<Key> @2,
+}
+
+actor Decoder {
+    receive fn exercise() -> string {
+        var values: HashMap<Key, Vec<string>> = HashMap.new();
+        var keys: HashSet<Key> = HashSet.new();
+        for id in 0..8 {
+            let key = Key { id: id };
+            values.insert(key, [f"item {id}"]);
+            keys.insert(key);
+        }
+        let source = Registry { groups: [values], keys: keys };
+        let binary = Registry.decode(source.encode());
+        let json = Registry.from_json(source.to_json()).expect("JSON decode");
+        let yaml = Registry.from_yaml(source.to_yaml()).expect("YAML decode");
+        for result in [binary, json, yaml] {
+            assert(result.groups[0].get(Key { id: 7 }).expect("decoded value")[0] == "item 7");
+            assert(result.keys.contains(Key { id: 3 }));
+        }
+        let duplicate = "{\"groups\":[[[{\"id\":1},[\"first\"]],[{\"id\":1},[\"duplicate\"]]]],\"keys\":[]}";
+        assert(Registry.from_json(duplicate).is_err());
+        "wire callbacks complete"
+    }
+}
+
+fn main() {
+    let decoder = spawn Decoder;
+    println(decoder.exercise().expect("wire exercise"));
+    close(decoder);
+}

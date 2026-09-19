@@ -18,24 +18,34 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         let mut callbacks = BTreeMap::new();
         // Declare the complete selected graph before emitting any body. Symbols
         // encode table order, never a type's display name or a reconstructed plan.
-        for (index, (key, _)) in self.module.value_capabilities.iter().enumerate() {
+        for (index, (key, selected)) in self.module.value_capabilities.iter().enumerate() {
             let arity = match key.1 {
                 ValueCapability::Hash => 3,
                 ValueCapability::Eq => 4,
             };
             let function = self.llvm.add_function(
                 &format!("__hew_value_callback_{index}"),
-                self.ctx
-                    .i32_type()
-                    .fn_type(&vec![pointer.into(); arity], false),
+                if selected.is_resumable {
+                    pointer.fn_type(&vec![pointer.into(); arity + 1], false)
+                } else {
+                    self.ctx
+                        .i32_type()
+                        .fn_type(&vec![pointer.into(); arity], false)
+                },
                 Some(Linkage::Internal),
             );
             callbacks.insert(key.clone(), function);
         }
         for ((ty, capability), selection) in &self.module.value_capabilities {
             let function = callbacks[&(ty.clone(), *capability)];
-            SelectedValueEmitter::new(self, &callbacks, function, *capability)?
-                .emit(ty, selection)?;
+            SelectedValueEmitter::new(
+                self,
+                &callbacks,
+                function,
+                *capability,
+                selection.is_resumable,
+            )?
+            .emit(ty, selection)?;
         }
         for function in &self.module.functions {
             for block in &function.blocks {
@@ -130,8 +140,20 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         );
         let descriptor = descriptor_ty.const_named_struct(&[
             value.into(),
-            hash.as_global_value().as_pointer_value().into(),
-            eq.as_global_value().as_pointer_value().into(),
+            if self.module.value_capabilities[&(recipe.ty.clone(), ValueCapability::Hash)]
+                .is_resumable
+            {
+                pointer.const_null().into()
+            } else {
+                hash.as_global_value().as_pointer_value().into()
+            },
+            if self.module.value_capabilities[&(recipe.ty.clone(), ValueCapability::Eq)]
+                .is_resumable
+            {
+                pointer.const_null().into()
+            } else {
+                eq.as_global_value().as_pointer_value().into()
+            },
         ]);
         let global = self.llvm.add_global(descriptor_ty, None, name);
         global.set_linkage(Linkage::Internal);
@@ -149,6 +171,8 @@ struct SelectedValueEmitter<'a, 'ctx, 'm> {
     capability: ValueCapability,
     out: PointerValue<'ctx>,
     fault: PointerValue<'ctx>,
+    frame: Option<coro::Frame<'ctx>>,
+    allocations: BasicBlock<'ctx>,
 }
 
 impl<'a, 'ctx, 'm> SelectedValueEmitter<'a, 'ctx, 'm> {
@@ -157,6 +181,7 @@ impl<'a, 'ctx, 'm> SelectedValueEmitter<'a, 'ctx, 'm> {
         callbacks: &'a CallbackTable<'ctx>,
         function: FunctionValue<'ctx>,
         capability: ValueCapability,
+        resumable: bool,
     ) -> CodegenResult<Self> {
         let output_index = match capability {
             ValueCapability::Hash => 1,
@@ -176,6 +201,18 @@ impl<'a, 'ctx, 'm> SelectedValueEmitter<'a, 'ctx, 'm> {
             .build_unconditional_branch(body)
             .llvm_ctx("enter key callback")?;
         builder.position_at_end(body);
+        let frame = if resumable {
+            Some(coro::begin(
+                parent.ctx,
+                &parent.llvm,
+                &builder,
+                function,
+                parameter(output_index + 2)?,
+            )?)
+        } else {
+            None
+        };
+        let allocations = builder.get_insert_block().expect("callback body exists");
         Ok(Self {
             parent,
             callbacks,
@@ -184,6 +221,8 @@ impl<'a, 'ctx, 'm> SelectedValueEmitter<'a, 'ctx, 'm> {
             capability,
             out: parameter(output_index)?,
             fault: parameter(output_index + 1)?,
+            frame,
+            allocations,
         })
     }
 
@@ -350,6 +389,65 @@ impl<'a, 'ctx, 'm> SelectedValueEmitter<'a, 'ctx, 'm> {
         )
     }
 
+    fn scratch(&self, ty: BasicTypeEnum<'ctx>, name: &str) -> CodegenResult<PointerValue<'ctx>> {
+        let builder = self.parent.ctx.create_builder();
+        if let Some(end) = self.allocations.get_terminator() {
+            builder.position_before(&end);
+        } else {
+            builder.position_at_end(self.allocations);
+        }
+        builder
+            .build_alloca(ty, name)
+            .llvm_ctx("allocate callback scratch in its frame")
+    }
+
+    fn return_status(&self, status: IntValue<'ctx>) -> CodegenResult<()> {
+        if let Some(frame) = &self.frame {
+            let pointer = self.parent.ctx.ptr_type(AddressSpace::default());
+            let finish = coro::external(
+                &self.parent.llvm,
+                "hew_coro_state_finish",
+                self.parent
+                    .ctx
+                    .i32_type()
+                    .fn_type(&[pointer.into(), self.parent.ctx.i32_type().into()], false),
+            )?;
+            self.builder
+                .build_call(finish, &[frame.state.into(), status.into()], "")
+                .llvm_ctx("publish selected callback outcome")?;
+            self.jump(frame.finish)
+        } else {
+            self.builder
+                .build_return(Some(&status))
+                .llvm_ctx("return selected callback status")?;
+            Ok(())
+        }
+    }
+
+    fn invoke_selected(
+        &self,
+        function: FunctionValue<'ctx>,
+        resumable: bool,
+        args: &[BasicMetadataValueEnum<'ctx>],
+    ) -> CodegenResult<IntValue<'ctx>> {
+        if resumable {
+            let frame = self.frame.as_ref().ok_or_else(|| {
+                CodegenError::FailClosed("suspending value callback lacks its parent frame".into())
+            })?;
+            suspend::invoke_child(
+                self.parent.ctx,
+                &self.parent.llvm,
+                &self.builder,
+                self.function,
+                frame,
+                function,
+                args,
+            )
+        } else {
+            Ok(self.call(function, args)?.into_int_value())
+        }
+    }
+
     fn finish(&self, value: IntValue<'ctx>) -> CodegenResult<()> {
         let value = if self.capability == ValueCapability::Eq {
             self.builder
@@ -370,10 +468,7 @@ impl<'a, 'ctx, 'm> SelectedValueEmitter<'a, 'ctx, 'm> {
                     .const_null(),
             )
             .llvm_ctx("clear successful key fault")?;
-        self.builder
-            .build_return(Some(&self.parent.ctx.i32_type().const_zero()))
-            .llvm_ctx("return key success")?;
-        Ok(())
+        self.return_status(self.parent.ctx.i32_type().const_zero())
     }
 
     fn status(&self, status: IntValue<'ctx>) -> CodegenResult<()> {
@@ -387,9 +482,7 @@ impl<'a, 'ctx, 'm> SelectedValueEmitter<'a, 'ctx, 'm> {
         self.builder.position_at_end(failed);
         // The callee wrote the opaque fault directly. Preserve its exact status,
         // do not read its result storage, and leave our caller's output untouched.
-        self.builder
-            .build_return(Some(&status))
-            .llvm_ctx("propagate selected key fault")?;
+        self.return_status(status)?;
         self.builder.position_at_end(success);
         Ok(())
     }
@@ -422,16 +515,16 @@ impl<'a, 'ctx, 'm> SelectedValueEmitter<'a, 'ctx, 'm> {
                 ))
             })?;
         let result_ty = self.result_type();
-        let output = self
-            .values()
-            .entry_scratch(result_ty.into(), "key.component.result")?;
+        let output = self.scratch(result_ty.into(), "key.component.result")?;
         let mut args = vec![lhs.into()];
         if let Some(rhs) = rhs {
             args.push(rhs.into());
         }
         args.push(output.into());
         args.push(self.fault.into());
-        let status = self.call(selected, &args)?.into_int_value();
+        let resumable =
+            self.parent.module.value_capabilities[&(ty.clone(), self.capability)].is_resumable;
+        let status = self.invoke_selected(selected, resumable, &args)?;
         self.status(status)?;
         Ok(self.load(result_ty.into(), output)?.into_int_value())
     }
@@ -450,7 +543,12 @@ impl<'a, 'ctx, 'm> SelectedValueEmitter<'a, 'ctx, 'm> {
         rhs: Option<PointerValue<'ctx>>,
     ) -> CodegenResult<()> {
         let callable = callable(self.parent.module, id)?;
-        let selected = self.parent.functions.get(&id).copied().ok_or_else(|| {
+        let functions = if callable.is_resumable {
+            &self.parent.ramps
+        } else {
+            &self.parent.functions
+        };
+        let selected = functions.get(&id).copied().ok_or_else(|| {
             CodegenError::FailClosed("selected user key method has no LLVM declaration".into())
         })?;
         let inputs = if let Some(rhs) = rhs {
@@ -477,10 +575,10 @@ impl<'a, 'ctx, 'm> SelectedValueEmitter<'a, 'ctx, 'm> {
             CodegenError::FailClosed("selected user key method has no result layout".into())
         })?;
         let result_ty = llvm_type(self.parent.ctx, &result.repr)?;
-        let output = self.values().entry_scratch(result_ty, "key.user.result")?;
+        let output = self.scratch(result_ty, "key.user.result")?;
         args.push(output.into());
         args.push(self.fault.into());
-        self.status(self.call(selected, &args)?.into_int_value())?;
+        self.status(self.invoke_selected(selected, callable.is_resumable, &args)?)?;
         self.finish(self.load(result_ty, output)?.into_int_value())
     }
 
@@ -799,9 +897,7 @@ impl<'a, 'ctx, 'm> SelectedValueEmitter<'a, 'ctx, 'm> {
         let right = self.handle(rhs)?;
         let len = self.length("hew_vec_len", left)?;
         self.continue_equal(self.equal(len, self.length("hew_vec_len", right)?)?)?;
-        let index = self
-            .values()
-            .entry_scratch(ctx.i64_type().into(), "key.vector.index")?;
+        let index = self.scratch(ctx.i64_type().into(), "key.vector.index")?;
         self.builder
             .build_store(index, ctx.i64_type().const_zero())
             .llvm_ctx("initialize vector cursor")?;

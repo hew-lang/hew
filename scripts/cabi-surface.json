@@ -7476,6 +7476,201 @@
         "native",
         "wasm32-wasip1"
       ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_hashmap_probe_begin( *mut HewLayoutHashMap, *const c_void, i32, ) -> *mut HewLayoutMapProbe",
+        "wasm32-wasip1": "fn hew_hashmap_probe_begin( *mut HewLayoutHashMap, *const c_void, i32, ) -> *mut HewLayoutMapProbe"
+      },
+      "symbol": "hew_hashmap_probe_begin"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_hashmap_probe_contains( *mut HewLayoutMapProbe) -> bool",
+        "wasm32-wasip1": "fn hew_hashmap_probe_contains( *mut HewLayoutMapProbe) -> bool"
+      },
+      "symbol": "hew_hashmap_probe_contains"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_hashmap_probe_free( *mut HewLayoutMapProbe)",
+        "wasm32-wasip1": "fn hew_hashmap_probe_free( *mut HewLayoutMapProbe)"
+      },
+      "symbol": "hew_hashmap_probe_free"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_hashmap_probe_get_borrow( *mut HewLayoutMapProbe, *mut c_void, ) -> bool",
+        "wasm32-wasip1": "fn hew_hashmap_probe_get_borrow( *mut HewLayoutMapProbe, *mut c_void, ) -> bool"
+      },
+      "symbol": "hew_hashmap_probe_get_borrow"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_hashmap_probe_get_clone( *mut HewLayoutMapProbe, *mut c_void, ) -> bool",
+        "wasm32-wasip1": "fn hew_hashmap_probe_get_clone( *mut HewLayoutMapProbe, *mut c_void, ) -> bool"
+      },
+      "symbol": "hew_hashmap_probe_get_clone"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_hashmap_probe_insert_clone( *mut HewLayoutMapProbe, *const c_void, ) -> bool",
+        "wasm32-wasip1": "fn hew_hashmap_probe_insert_clone( *mut HewLayoutMapProbe, *const c_void, ) -> bool"
+      },
+      "symbol": "hew_hashmap_probe_insert_clone"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_hashmap_probe_insert_take( *mut HewLayoutMapProbe, *const c_void, ) -> bool",
+        "wasm32-wasip1": "fn hew_hashmap_probe_insert_take( *mut HewLayoutMapProbe, *const c_void, ) -> bool"
+      },
+      "symbol": "hew_hashmap_probe_insert_take"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_hashmap_probe_left( *const HewLayoutMapProbe) -> *const c_void",
+        "wasm32-wasip1": "fn hew_hashmap_probe_left( *const HewLayoutMapProbe) -> *const c_void"
+      },
+      "symbol": "hew_hashmap_probe_left"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_hashmap_probe_remove_take( *mut HewLayoutMapProbe, *mut c_void, ) -> bool",
+        "wasm32-wasip1": "fn hew_hashmap_probe_remove_take( *mut HewLayoutMapProbe, *mut c_void, ) -> bool"
+      },
+      "symbol": "hew_hashmap_probe_remove_take"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_hashmap_probe_right( *const HewLayoutMapProbe) -> *const c_void",
+        "wasm32-wasip1": "fn hew_hashmap_probe_right( *const HewLayoutMapProbe) -> *const c_void"
+      },
+      "symbol": "hew_hashmap_probe_right"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_hashmap_probe_step( *mut HewLayoutMapProbe) -> i32",
+        "wasm32-wasip1": "fn hew_hashmap_probe_step( *mut HewLayoutMapProbe) -> i32"
+      },
+      "symbol": "hew_hashmap_probe_step"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_hashmap_probe_submit_eq( *mut HewLayoutMapProbe, bool)",
+        "wasm32-wasip1": "fn hew_hashmap_probe_submit_eq( *mut HewLayoutMapProbe, bool)"
+      },
+      "symbol": "hew_hashmap_probe_submit_eq"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_hashmap_probe_submit_hash( *mut HewLayoutMapProbe, u64)",
+        "wasm32-wasip1": "fn hew_hashmap_probe_submit_hash( *mut HewLayoutMapProbe, u64)"
+      },
+      "symbol": "hew_hashmap_probe_submit_hash"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
@@ -7740,6 +7935,66 @@
         "wasm32-wasip1": "fn hew_hashset_new_with_layout( *const HewMapKeyLayout, ) -> *mut HewLayoutHashSet"
       },
       "symbol": "hew_hashset_new_with_layout"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_hashset_probe_begin( *mut HewLayoutHashSet, *const c_void, i32, ) -> *mut HewLayoutMapProbe",
+        "wasm32-wasip1": "fn hew_hashset_probe_begin( *mut HewLayoutHashSet, *const c_void, i32, ) -> *mut HewLayoutMapProbe"
+      },
+      "symbol": "hew_hashset_probe_begin"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_hashset_probe_insert_clone( *mut HewLayoutMapProbe, ) -> bool",
+        "wasm32-wasip1": "fn hew_hashset_probe_insert_clone( *mut HewLayoutMapProbe, ) -> bool"
+      },
+      "symbol": "hew_hashset_probe_insert_clone"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_hashset_probe_insert_take( *mut HewLayoutMapProbe, ) -> bool",
+        "wasm32-wasip1": "fn hew_hashset_probe_insert_take( *mut HewLayoutMapProbe, ) -> bool"
+      },
+      "symbol": "hew_hashset_probe_insert_take"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_hashset_probe_remove( *mut HewLayoutMapProbe) -> bool",
+        "wasm32-wasip1": "fn hew_hashset_probe_remove( *mut HewLayoutMapProbe) -> bool"
+      },
+      "symbol": "hew_hashset_probe_remove"
     },
     {
       "availability": [

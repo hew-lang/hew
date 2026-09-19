@@ -832,30 +832,60 @@ fn verify_required_value_capabilities(
         });
     }
     for block in &function.blocks {
+        let mut required = Vec::new();
+        if let SemTerminator::RtCall { family, args, .. } = &block.terminator {
+            if let Some((_, [element, ..])) = args
+                .first()
+                .and_then(|argument| types.get(&argument.operand.value))
+                .and_then(hew_types::runtime_call::collection_type_arguments)
+            {
+                required.extend(
+                    family
+                        .value_callback_capabilities()
+                        .iter()
+                        .map(|capability| (element.clone(), *capability)),
+                );
+            }
+        }
+        if let SemTerminator::WireCodec {
+            direction, plan, ..
+        } = &block.terminator
+        {
+            if !direction.is_serialize() {
+                plan.visit_decode_capabilities(&mut |ty, capability| {
+                    required.push((ty.clone(), capability));
+                });
+            }
+        }
         if let SemTerminator::RtCall {
-            family: RuntimeCallFamily::Vector(hew_types::VecValueOp::Contains),
-            args,
+            family:
+                RuntimeCallFamily::Map(MapValueOp::New) | RuntimeCallFamily::Set(SetValueOp::New),
+            result: crate::CallResult::Value(result),
             ..
         } = &block.terminator
         {
-            if let Some(ty) = args
-                .get(1)
-                .and_then(|argument| types.get(&argument.operand.value))
+            if let Some((_, [key, ..])) =
+                hew_types::runtime_call::collection_type_arguments(&result.ty)
             {
-                if !module
-                    .value_capabilities
-                    .contains_key(&(ty.clone(), ValueCapability::Eq))
-                {
-                    diagnostics.push(diag(
-                        function,
-                        SirDiagnosticKind::InvalidValueCapability {
-                            ty: ty.clone(),
-                            capability: ValueCapability::Eq,
-                            reason: "vector membership requires its selected element equality"
-                                .into(),
-                        },
-                    ));
-                }
+                required.extend(
+                    [ValueCapability::Hash, ValueCapability::Eq]
+                        .map(|capability| (key.clone(), capability)),
+                );
+            }
+        }
+        for (ty, capability) in required {
+            if !module
+                .value_capabilities
+                .contains_key(&(ty.clone(), capability))
+            {
+                diagnostics.push(diag(
+                    function,
+                    SirDiagnosticKind::InvalidValueCapability {
+                        ty,
+                        capability,
+                        reason: "collection callback requires its selected value method".into(),
+                    },
+                ));
             }
         }
         if let SemTerminator::ValueCall { ty, capability, .. } = &block.terminator {
@@ -873,37 +903,6 @@ fn verify_required_value_capabilities(
                         ty: ty.clone(),
                         capability: *capability,
                         reason,
-                    },
-                ));
-            }
-        }
-        let SemTerminator::RtCall {
-            family:
-                RuntimeCallFamily::Map(MapValueOp::New) | RuntimeCallFamily::Set(SetValueOp::New),
-            result: crate::CallResult::Value(result),
-            ..
-        } = &block.terminator
-        else {
-            continue;
-        };
-        let Some((_, arguments)) = hew_types::runtime_call::collection_type_arguments(&result.ty)
-        else {
-            continue;
-        };
-        let Some(key) = arguments.first() else {
-            continue;
-        };
-        for capability in [ValueCapability::Hash, ValueCapability::Eq] {
-            if !module
-                .value_capabilities
-                .contains_key(&(key.clone(), capability))
-            {
-                diagnostics.push(diag(
-                    function,
-                    SirDiagnosticKind::InvalidValueCapability {
-                        ty: key.clone(),
-                        capability,
-                        reason: "collection construction requires a selected key method".into(),
                     },
                 ));
             }

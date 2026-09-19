@@ -162,7 +162,8 @@ fn add_recipe_callback<'ctx>(
         ramps: BTreeMap::new(),
         value_callbacks: BTreeMap::new(),
     };
-    let mut emitter = SelectedValueEmitter::new(&parent, &callbacks, function, capability).unwrap();
+    let mut emitter =
+        SelectedValueEmitter::new(&parent, &callbacks, function, capability, false).unwrap();
     let lhs = emitter.parameter(0).unwrap();
     let rhs = if capability == ValueCapability::Eq {
         Some(emitter.parameter(1).unwrap())
@@ -246,9 +247,23 @@ fn engine<'ctx>(llvm: &Module<'ctx>, optimized: bool) -> ExecutionEngine<'ctx> {
         hashmap::hew_hashmap_new_with_layout,
         hashmap::hew_hashmap_free_layout,
         hashmap::hew_hashmap_clone_layout,
-        hashmap::hew_hashmap_insert_clone_layout,
-        hashmap::hew_hashmap_insert_take_layout,
-        hashmap::hew_hashmap_get_clone_layout,
+        hashmap::hew_hashmap_probe_begin,
+        hashmap::hew_hashmap_probe_step,
+        hashmap::hew_hashmap_probe_left,
+        hashmap::hew_hashmap_probe_right,
+        hashmap::hew_hashmap_probe_submit_hash,
+        hashmap::hew_hashmap_probe_submit_eq,
+        hashmap::hew_hashmap_probe_free,
+        hashmap::hew_hashmap_probe_contains,
+        hashmap::hew_hashmap_probe_insert_clone,
+        hashmap::hew_hashmap_probe_insert_take,
+        hashmap::hew_hashmap_probe_get_clone,
+        hashmap::hew_hashmap_probe_get_borrow,
+        hashmap::hew_hashmap_probe_remove_take,
+        hashset::hew_hashset_probe_begin,
+        hashmap::hew_hashset_probe_insert_clone,
+        hashmap::hew_hashset_probe_insert_take,
+        hashmap::hew_hashset_probe_remove,
         hashmap::hew_hashmap_free_layout_walk,
         hashmap::hew_hashmap_len_layout,
         hashmap::hew_hashmap_iter_new_layout,

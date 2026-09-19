@@ -1645,6 +1645,25 @@ pub fn lower_physical_module(
         regex_patterns: module.regex_patterns.clone(),
         debug,
     };
+    let callback_resumption = physical
+        .value_capabilities
+        .keys()
+        .map(|key| {
+            Ok((
+                key.clone(),
+                capability::callees(&physical, &key.0, key.1)?
+                    .iter()
+                    .any(|callee| resumable.contains(callee)),
+            ))
+        })
+        .collect::<Result<Vec<_>, PhysicalError>>()?;
+    for (key, is_resumable) in callback_resumption {
+        physical
+            .value_capabilities
+            .get_mut(&key)
+            .ok_or_else(|| PhysicalError::new("selected callback disappeared during lowering"))?
+            .is_resumable = is_resumable;
+    }
     physical.releases = ReleaseEffects::compute(&physical);
     verify_physical_module(&physical)?;
     Ok(VerifiedPhysicalModule(physical))
@@ -11520,7 +11539,7 @@ mod tests {
         assert!(verify_physical_module(&absent_keys)
             .unwrap_err()
             .message
-            .contains("selected key capability"));
+            .contains("selected capability"));
     }
 
     #[test]

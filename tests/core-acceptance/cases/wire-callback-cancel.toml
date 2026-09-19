@@ -1,0 +1,14 @@
+[[case]]
+id = "wire-callback-cancel"
+intent = "Cancelling a decoder suspended in selected Hash drains its callback before releasing the partial map, pending key/value and wire reader."
+source = "cases/wire-callback-cancel.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.env]
+HEW_WORKERS = "1"
+
+[case.expected]
+stdout = "WIRE CALLBACK LOCAL CLOSED\n42\n"
+stderr = ""
+exit = 0

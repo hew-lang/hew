@@ -1,0 +1,133 @@
+actor Oracle {
+    var capability: i64 = -1,
+    var action: i64 = 0,
+    var old_only: bool = false,
+    var entered: bool = false,
+
+    receive fn arm(next_capability: i64, next_action: i64, require_old: bool) {
+        self.capability = next_capability;
+        self.action = next_action;
+        self.old_only = require_old;
+        self.entered = false;
+    }
+
+    receive fn inspect(requested: i64, id: i64) -> i64 {
+        if requested == self.capability && (!self.old_only || id == 0) {
+            self.entered = true;
+            return self.action;
+        }
+        0
+    }
+
+    receive fn started() -> bool { self.entered }
+}
+
+#[resource]
+type Payload { id: i64, label: string }
+
+impl Payload {
+    fn close(consume self) {
+        if self.id == 0 || self.id == 99 {
+            println(self.label);
+        }
+    }
+}
+
+fn probe(oracle: Oracle, id: i64, capability: i64) {
+    let action = oracle.inspect(capability, id).expect("callback policy");
+    if action > 0 {
+        let guard = Payload { id: 0, label: "callback local closed".to_upper() };
+        if action == 1 {
+            sleep(1ms);
+            panic("selected callback failed");
+        }
+        sleep(1h);
+        println(guard.label);
+    }
+}
+
+type Key { oracle: Oracle, id: i64, label: string }
+
+impl Hash for Key {
+    fn hash(self) -> i64 { probe(self.oracle, self.id, 0); 7 }
+}
+
+impl Eq for Key {
+    fn eq(self, other: Key) -> bool {
+        probe(self.oracle, self.id, 1);
+        self.id == other.id
+    }
+}
+
+#[resource]
+type Element { key: Key }
+
+impl Element {
+    fn close(consume self) {
+        if self.key.id == 0 || self.key.id == 99 { println(self.key.label); }
+    }
+}
+
+impl Hash for Element {
+    fn hash(self) -> i64 { self.key.hash() }
+}
+
+impl Eq for Element {
+    fn eq(self, other: Element) -> bool { self.key == other.key }
+}
+
+fn key(oracle: Oracle, id: i64) -> Key {
+    Key { oracle: oracle, id: id, label: f"owner {id} closed" }
+}
+
+actor Store {
+    receive fn map(oracle: Oracle, phase: i64, action: i64) {
+        var values: HashMap<Key, Payload> = HashMap.new();
+        let count = if phase == 2 { 11 } else { 1 };
+        for id in 0..count {
+            values.insert(key(oracle, id), Payload { id: id, label: f"owner {id} closed" });
+        }
+        // The twelfth insertion rehashes existing slots before probing its key.
+        oracle.arm(if phase == 1 { 1 } else { 0 }, action, phase == 2).expect("arm callback");
+        values.insert(key(oracle, 99), Payload { id: 99, label: "owner 99 closed".to_lower() });
+        panic("callback did not interrupt insertion");
+    }
+
+    receive fn set(oracle: Oracle, phase: i64, action: i64) {
+        var values: HashSet<Element> = HashSet.new();
+        let count = if phase == 2 { 11 } else { 1 };
+        for id in 0..count { values.insert(Element { key: key(oracle, id) }); }
+        oracle.arm(if phase == 1 { 1 } else { 0 }, action, phase == 2).expect("arm callback");
+        values.insert(Element { key: key(oracle, 99) });
+        panic("callback did not interrupt insertion");
+    }
+}
+
+fn main() {
+    let oracle = spawn Oracle;
+    for phase in 0..3 {
+        println(f"cancel map phase {phase}");
+        let store = spawn Store;
+        oracle.arm(-1, 0, false).expect("reset callback");
+        mailbox(store).map(oracle, phase, 2).expect("submit map");
+        while !oracle.started().expect("wait for map callback") { sleep(1ms); }
+        close(store);
+        println("map closed");
+
+        println(f"cancel set phase {phase}");
+        let set_store = spawn Store;
+        oracle.arm(-1, 0, false).expect("reset callback");
+        mailbox(set_store).set(oracle, phase, 2).expect("submit set");
+        while !oracle.started().expect("wait for set callback") { sleep(1ms); }
+        close(set_store);
+        println("set closed");
+    }
+    println("fault during rehash");
+    let store = spawn Store;
+    oracle.arm(-1, 0, false).expect("reset callback");
+    match store.map(oracle, 2, 1) {
+        .Err(_) => println("callback fault returned"),
+        .Ok(_) => panic("callback fault lost"),
+    }
+    close(oracle);
+}

@@ -91,6 +91,10 @@ fn actor_value_release<'ctx>(
 }
 
 impl<'ctx> ModuleEmitter<'ctx, '_> {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "reply emission needs the handler ABI and its enclosing cleanup frame"
+    )]
     fn emit_actor_reply(
         &self,
         builder: &Builder<'ctx>,

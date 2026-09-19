@@ -55,12 +55,12 @@ pub(super) fn custom<'ctx>(
         PointerValue<'ctx>,
     ) -> CodegenResult<()>,
 ) -> CodegenResult<FunctionValue<'ctx>> {
-    if let Some(function) = llvm.get_function(&name) {
+    if let Some(function) = llvm.get_function(name) {
         return Ok(function);
     }
     let pointer = ctx.ptr_type(AddressSpace::default());
     let function = llvm.add_function(
-        &name,
+        name,
         pointer.fn_type(&[pointer.into(); 3], false),
         Some(Linkage::Internal),
     );

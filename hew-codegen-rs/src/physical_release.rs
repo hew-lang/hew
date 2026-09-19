@@ -32,7 +32,15 @@ pub(super) fn callback<'ctx>(
 ) -> CodegenResult<FunctionValue<'ctx>> {
     let name = symbol(action);
     custom(ctx, llvm, module, &name, |values, frame, source| {
-        body(values, frame, source, layout, action)
+        if module.releases.suspends(action) {
+            body(values, frame, source, layout, action)
+        } else {
+            let value = values
+                .builder
+                .build_load(llvm_type(ctx, &layout.repr)?, source, "release.sync.owner")
+                .llvm_ctx("consume synchronous callback owner")?;
+            values.destroy_loaded_value(value, layout, action)
+        }
     })
 }
 
@@ -80,6 +88,7 @@ pub(super) fn custom<'ctx>(
         fault_sink: Some((fault, status)),
     };
     emit(&values, &frame, source)?;
+    publish_fault(&values, &frame)?;
     let status = builder
         .build_load(ctx.i32_type(), status, "release.outcome")
         .llvm_ctx("read release outcome")?;
@@ -104,6 +113,7 @@ fn invoke<'ctx>(
     callee: PointerValue<'ctx>,
     source: PointerValue<'ctx>,
 ) -> CodegenResult<()> {
+    publish_fault(values, frame)?;
     let pointer = values.ctx.ptr_type(AddressSpace::default());
     let fault = scratch(values, frame, pointer.into(), "release.child.fault")?;
     values
@@ -144,11 +154,36 @@ fn invoke<'ctx>(
         child,
         child_frame,
     )?;
-    combine(values, fault, status)
+    combine(values, frame, fault, status)
+}
+
+fn publish_fault<'ctx>(
+    values: &ValueEmitter<'_, 'ctx>,
+    frame: &coro::Frame<'ctx>,
+) -> CodegenResult<()> {
+    let (fault, _) = values
+        .fault_sink
+        .ok_or_else(|| CodegenError::FailClosed("release context lacks a fault slot".into()))?;
+    let pointer = values.ctx.ptr_type(AddressSpace::default());
+    let raised = values
+        .builder
+        .build_load(pointer, fault, "release.context.fault")
+        .llvm_ctx("borrow retained cleanup fault")?;
+    let publish = coro::external(
+        values.llvm,
+        "hew_coro_state_set_cleanup_fault",
+        values.ctx.void_type().fn_type(&[pointer.into(); 2], false),
+    )?;
+    values
+        .builder
+        .build_call(publish, &[frame.state.into(), raised.into()], "")
+        .llvm_ctx("publish cleanup context to following siblings")?;
+    Ok(())
 }
 
 fn combine<'ctx>(
     values: &ValueEmitter<'_, 'ctx>,
+    frame: &coro::Frame<'ctx>,
     fault: PointerValue<'ctx>,
     status: IntValue<'ctx>,
 ) -> CodegenResult<()> {
@@ -184,6 +219,7 @@ fn combine<'ctx>(
         .fault_sink
         .ok_or_else(|| CodegenError::FailClosed("consuming release has no fault owner".into()))?;
     values.record_release_fault(primary, primary_status, raised, status)?;
+    publish_fault(values, frame)?;
     values
         .builder
         .build_unconditional_branch(done)
@@ -216,7 +252,8 @@ pub(super) fn slot<'ctx>(
                 "release.value",
             )
             .llvm_ctx("load synchronous release value")?;
-        values.destroy_loaded_value(value, layout, action)
+        values.destroy_loaded_value(value, layout, action)?;
+        publish_fault(values, frame)
     }
 }
 
@@ -315,7 +352,7 @@ fn body<'ctx>(
                     callee,
                     &[receiver, fault.into()],
                 )?;
-                combine(values, fault, status)
+                combine(values, frame, fault, status)
             }
             hew_mir::physical::ResourceRelease::Generator => generator(values, frame, source),
             hew_mir::physical::ResourceRelease::ActorCall => {
@@ -346,9 +383,14 @@ fn body<'ctx>(
                 false,
                 None,
             ),
-            hew_mir::physical::ResourceRelease::Sink => {
-                cursor(values, frame, source, "hew_sink_release_begin", false, None)
-            }
+            hew_mir::physical::ResourceRelease::Sink => cursor(
+                values,
+                frame,
+                source,
+                "hew_sink_release_begin",
+                false,
+                Some(frame.state.into()),
+            ),
             _ => Err(CodegenError::FailClosed(
                 "synchronous resource selected for consuming continuation".into(),
             )),
@@ -568,7 +610,7 @@ pub(super) fn drain_operation<'ctx>(
         "release.operation.code",
     )?
     .into_int_value();
-    combine(values, fault, code)
+    combine(values, frame, fault, code)
 }
 
 fn cursor<'ctx>(
@@ -833,7 +875,7 @@ fn generator<'ctx>(
         "release.generator.code",
     )?
     .into_int_value();
-    combine(values, fault, code)?;
+    combine(values, frame, fault, code)?;
     let free = external_drop(values.ctx, values.llvm, "hew_checked_generator_free")?;
     values
         .builder

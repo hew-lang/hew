@@ -276,7 +276,10 @@ pub(super) fn semantic_callables(checked: &hew_sir::CheckedModule<'_>) -> BTreeS
             if let hew_sir::SemTerminator::ActorCall { operation, .. } = &block.terminator {
                 for ty in actor_release_types(&module.actors, operation) {
                     let (intrinsic, dependencies) = semantic_release_dependencies(module, ty);
-                    if intrinsic {
+                    // Actor payload/state cleanup uses the checked continuation
+                    // ABI even for a pure close, so a retained fault cannot
+                    // unwind through the scheduler's synchronous drop callback.
+                    if intrinsic || !dependencies.is_empty() {
                         resumable.insert(function.callable);
                     }
                     calls
@@ -412,7 +415,9 @@ pub(super) fn verify_callables(module: &PhysicalModule) -> Result<(), PhysicalEr
                         .actor_recipes
                         .get(ty)
                         .and_then(|recipe| recipe.destroy)
-                        .is_some_and(|action| releases.suspends(action))
+                        .is_some_and(|action| {
+                            releases.suspends(action) || releases.raises_fault(action)
+                        })
                     {
                         resumable.insert(function.callable);
                     }

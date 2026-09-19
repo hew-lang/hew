@@ -1142,6 +1142,11 @@ impl<'a> Flow<'a> {
                             returned.fault |= LIVE;
                         }
                     }
+                    if let SemTerminator::ActorCall { operation, .. } = &block.terminator {
+                        if operation.retains_cleanup_fault() {
+                            returned.fault |= LIVE;
+                        }
+                    }
                     successors.extend(self.edge(id, normal, returned, emit));
                 }
                 if let CallUnwind::Cleanup(edge) = unwind {
@@ -1240,6 +1245,7 @@ impl<'a> Flow<'a> {
                 }
             }
             SemTerminator::Suspend {
+                kind,
                 resumes,
                 cancel,
                 unwind,
@@ -1248,6 +1254,9 @@ impl<'a> Flow<'a> {
                 Self::require_fault(id, DEAD, &state, emit);
                 for (index, edge) in resumes.iter().enumerate() {
                     let mut resumed = state.clone();
+                    if matches!(kind, crate::SuspendKind::Ask { .. }) {
+                        resumed.fault |= LIVE;
+                    }
                     if index == 0 {
                         block
                             .terminator

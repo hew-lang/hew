@@ -896,6 +896,8 @@ impl Builder<'_, '_> {
         if own == OwnKind::Owned {
             self.owned_live.insert(value, output);
         }
+        self.cleanup_may_fail = true;
+        self.dispatch_value_cleanup()?;
         Ok(value)
     }
 
@@ -1190,6 +1192,7 @@ impl Builder<'_, '_> {
         signature: SemSignature,
         args: Vec<ValueId>,
     ) -> Result<Option<ValueId>, String> {
+        let retains_cleanup_fault = operation.retains_cleanup_fault();
         let args: Vec<_> = args
             .into_iter()
             .zip(&signature.params)
@@ -1261,6 +1264,10 @@ impl Builder<'_, '_> {
                     self.value_ty(value).ok_or("actor result lacks its type")?,
                 );
             }
+        }
+        if retains_cleanup_fault {
+            self.cleanup_may_fail = true;
+            self.dispatch_value_cleanup()?;
         }
         Ok(continuation)
     }

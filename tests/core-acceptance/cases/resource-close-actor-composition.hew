@@ -1,0 +1,48 @@
+actor Audit {
+    receive fn record(id: i64) {
+        sleep(1ms);
+        println(f"closed {id}");
+    }
+}
+
+#[resource]
+type Ticket { audit: Audit, id: i64, }
+impl Ticket {
+    fn close(consume self) {
+        self.audit.record(self.id).expect("audit close");
+    }
+}
+
+enum Parcel { Empty, Held(Ticket), }
+
+actor Worker {
+    receive fn run(audit: Audit) {
+        {
+            let _pair = (Ticket { audit: audit, id: 1 }, Ticket { audit: audit, id: 2 });
+        }
+        { let _parcel: Parcel = .Held(Ticket { audit: audit, id: 3 }); }
+        {
+            var tickets: Vec<Ticket> = Vec.new();
+            tickets.push(Ticket { audit: audit, id: 4 });
+            tickets.push(Ticket { audit: audit, id: 5 });
+        }
+        {
+            let shared = Rc.new(Ticket { audit: audit, id: 6 });
+            let _retained = shared.clone();
+        }
+        {
+            var tickets: HashMap<i64, Ticket> = HashMap.new();
+            tickets.insert(1, Ticket { audit: audit, id: 7 });
+        }
+        println("worker complete");
+    }
+}
+
+fn main() {
+    let audit = spawn Audit;
+    let worker = spawn Worker;
+    worker.run(audit).expect("worker cleanup");
+    println("barrier");
+    close(worker);
+    close(audit);
+}

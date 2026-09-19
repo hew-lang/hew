@@ -9185,6 +9185,7 @@ mod tests {
             offset_of!(HewValueLayout, clone_fn),
             offset_of!(HewValueLayout, drop_fn),
             offset_of!(HewValueLayout, visit_close),
+            offset_of!(HewValueLayout, release_start),
         ]
         .into_iter()
         .enumerate()

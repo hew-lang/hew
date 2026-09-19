@@ -60,6 +60,67 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             drop.into(),
             self.emit_environment_close(&format!("{name}_close"), glue, layout)?
                 .into(),
+            if glue.fields.iter().any(|field| {
+                field
+                    .destroy
+                    .is_some_and(|action| self.module.releases.suspends(action))
+            }) {
+                release::custom(
+                    self.ctx,
+                    &self.llvm,
+                    self.module,
+                    &format!("{name}_release"),
+                    |values, frame, environment| {
+                        for (index, field) in glue.fields.iter().enumerate().rev() {
+                            let index = index as u32;
+                            let live =
+                                environment_mask_bit(self.ctx, values.builder, environment, index)?;
+                            let destroy =
+                                self.ctx.append_basic_block(values.value, "capture.release");
+                            let next = self.ctx.append_basic_block(values.value, "capture.next");
+                            values
+                                .builder
+                                .build_conditional_branch(live, destroy, next)
+                                .llvm_ctx("select retained capture")?;
+                            values.builder.position_at_end(destroy);
+                            set_environment_mask_bit(
+                                self.ctx,
+                                values.builder,
+                                environment,
+                                index,
+                                false,
+                            )?;
+                            if let Some(action) = field.destroy {
+                                let slot = environment_field(
+                                    self.ctx,
+                                    values.builder,
+                                    layout,
+                                    environment,
+                                    index,
+                                )?;
+                                let field_layout =
+                                    self.module.target.layout(&field.ty).ok_or_else(|| {
+                                        CodegenError::FailClosed(
+                                            "capture release lacks layout".into(),
+                                        )
+                                    })?;
+                                release::slot(values, frame, slot, field_layout, action)?;
+                            }
+                            values
+                                .builder
+                                .build_unconditional_branch(next)
+                                .llvm_ctx("continue capture cleanup")?;
+                            values.builder.position_at_end(next);
+                        }
+                        Ok(())
+                    },
+                )?
+                .as_global_value()
+                .as_pointer_value()
+            } else {
+                pointer.const_null()
+            }
+            .into(),
         ]);
         let global = self.llvm.add_global(descriptor_ty, None, name);
         global.set_linkage(Linkage::Internal);

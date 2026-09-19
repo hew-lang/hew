@@ -76,7 +76,9 @@ fn actor_value_release<'ctx>(
         .get(ty)
         .and_then(|recipe| recipe.destroy);
     match action {
-        Some(action) if module.releases.suspends(action) => {
+        Some(action)
+            if module.releases.suspends(action) || module.releases.raises_fault(action) =>
+        {
             let layout = module.target.layout(ty).ok_or_else(|| {
                 CodegenError::FailClosed("actor value release lacks layout".into())
             })?;
@@ -777,9 +779,9 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         let ptr = self.ctx.ptr_type(AddressSpace::default());
         let message_ty = message_type(self.module, self.ctx, handler)?;
         if handler.params.iter().any(|ty| {
-            self.module.actor_recipes[ty]
-                .destroy
-                .is_some_and(|action| self.module.releases.suspends(action))
+            self.module.actor_recipes[ty].destroy.is_some_and(|action| {
+                self.module.releases.suspends(action) || self.module.releases.raises_fault(action)
+            })
         }) {
             release::custom(
                 self.ctx,
@@ -1108,7 +1110,10 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                     .actor_recipes
                     .get(&handler.return_ty)
                     .and_then(|recipe| recipe.destroy)
-                    .is_some_and(|action| self.module.releases.suspends(action))
+                    .is_some_and(|action| {
+                        self.module.releases.suspends(action)
+                            || self.module.releases.raises_fault(action)
+                    })
             {
                 let ramp = self.emit_actor_handler_ramp(actor, handler)?;
                 let handle = call_value(
@@ -1457,6 +1462,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             self.module.actors.get(id.0 as usize).ok_or_else(|| {
                 CodegenError::FailClosed("missing native actor descriptor".into())
             })?;
+        let retains_cleanup_fault = operation.retains_cleanup_fault();
         let status = match operation {
             ActorOperation::LocalObservation { .. }
             | ActorOperation::CallStart(_)
@@ -1544,22 +1550,17 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     result,
                     unwind,
                 )?;
-                self.builder
-                    .build_load(
-                        self.ctx.i32_type(),
-                        self.active_status,
-                        "submission.cleanup.status",
-                    )
-                    .llvm_ctx("retain discarded payload fault")?
-                    .into_int_value()
+                self.ctx.i32_type().const_zero()
             }
         };
         for source in sources {
             self.clear_owned(source)?;
         }
-        self.builder
-            .build_store(self.active_status, status)
-            .llvm_ctx("record actor boundary status")?;
+        if !retains_cleanup_fault {
+            self.builder
+                .build_store(self.active_status, status)
+                .llvm_ctx("record actor boundary status")?;
+        }
         self.emit_call_outcome(status, result, Some(normal), unwind)
     }
 
@@ -1969,6 +1970,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     ptr.into(),
                     self.ctx.i32_type().into(),
                     ptr.into(),
+                    ptr.into(),
                 ],
                 false,
             ),
@@ -2003,13 +2005,23 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             ),
         };
         let state_release = match self.module.actor_recipes[&actor.state_ty].destroy {
-            Some(action) if self.module.releases.suspends(action) => {
+            Some(action)
+                if self.module.releases.suspends(action)
+                    || self.module.releases.raises_fault(action) =>
+            {
                 release::callback(self.ctx, self.llvm, self.module, layout, action)?
                     .as_global_value()
                     .as_pointer_value()
             }
             _ => ptr.const_null(),
         };
+        let rejected = self
+            .builder
+            .build_alloca(ptr, "spawn.rejected.release")
+            .llvm_ctx("allocate rejected state cleanup cursor")?;
+        self.builder
+            .build_store(rejected, ptr.const_null())
+            .llvm_ctx("initialize rejected state cleanup cursor")?;
         let token = self
             .builder
             .build_call(
@@ -2045,6 +2057,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                         .const_int(coalesce_fallback, false)
                         .into(),
                     state_release.into(),
+                    rejected.into(),
                 ],
                 "spawn.token",
             )
@@ -2053,6 +2066,14 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .basic()
             .unwrap()
             .into_int_value();
+        if let Some(frame) = &self.frame {
+            let cursor = self
+                .builder
+                .build_load(ptr, rejected, "spawn.rejected.cursor")
+                .llvm_ctx("take rejected state cleanup cursor")?
+                .into_pointer_value();
+            release::drain_cursor(&self.value_emitter(), frame, cursor)?;
+        }
         self.store(result, token.into())?;
         let failed = self
             .builder

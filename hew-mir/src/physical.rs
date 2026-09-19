@@ -7024,6 +7024,7 @@ fn terminator_successors(
                 block,
                 "ask result",
             )?;
+            completed.fault = FaultState::MaybeActive;
             let mut successors = vec![apply_edge(function, borrows, normal, completed, block)?];
             state.fault = FaultState::Active;
             let mut cancelled = state.clone();
@@ -7475,21 +7476,28 @@ fn terminator_successors(
             block,
         ),
         PhysicalTerminator::ActorCall {
+            operation,
             args,
             result,
             normal,
             unwind,
             ..
-        } => call_successors(
-            function,
-            borrows,
-            args,
-            *result,
-            Some(normal),
-            unwind.as_ref(),
-            state,
-            block,
-        ),
+        } => {
+            let mut successors = call_successors(
+                function,
+                borrows,
+                args,
+                *result,
+                Some(normal),
+                unwind.as_ref(),
+                state,
+                block,
+            )?;
+            if operation.retains_cleanup_fault() {
+                successors[0].1.fault = FaultState::MaybeActive;
+            }
+            Ok(successors)
+        }
         PhysicalTerminator::WireCodec {
             input,
             result,

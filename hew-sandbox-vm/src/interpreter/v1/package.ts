@@ -504,6 +504,11 @@ export interface ActorShape {
   }>;
   mailbox_capacity?: number;
   overflow: string;
+  coalesce?: {
+    fallback: string;
+    keys: Array<{ message: number; param: number; kind: string }>;
+  };
+  max_heap_bytes?: number;
 }
 
 export interface SupervisorShape {

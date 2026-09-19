@@ -13,7 +13,7 @@
         "capability": "FileRead::LastErrorKind",
         "category": "native_only",
         "code": "sandbox.capability.unsupported",
-        "message": "runtime family FileRead::LastErrorKind has no sandbox shim",
+        "message": "Filesystem access requires native execution.",
         "span": null
       },
       "seq": 1,
@@ -48,7 +48,7 @@
         "capability": "FileRead::LastErrorKind",
         "category": "native_only",
         "code": "sandbox.capability.unsupported",
-        "message": "runtime family FileRead::LastErrorKind has no sandbox shim",
+        "message": "Filesystem access requires native execution.",
         "span": null
       }
     ],

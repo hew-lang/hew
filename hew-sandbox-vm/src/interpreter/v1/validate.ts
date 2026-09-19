@@ -103,6 +103,61 @@ const TERMS = new Set([
   "unreachable",
 ]);
 
+const ACTOR_OPS = new Set([
+  "spawn",
+  "self_handle",
+  "close",
+  "await_closed",
+  "call_start",
+  "call_take",
+  "submit",
+  "stream_start",
+  "supervisor_spawn",
+  "supervisor_child",
+  "supervisor_await_restart",
+  "supervisor_pool_view",
+  "supervisor_stop",
+  "supervisor_await_closed",
+  "supervisor_role_await_closed",
+]);
+
+function capabilityMessage(capability: string, native: boolean): string {
+  const nativeFeatures: Record<string, string> = {
+    FileRead: "Filesystem access",
+    Tcp: "Network sockets",
+    TcpAttachLocal: "Network streams",
+    AsyncIo: "Host input and output",
+    NativeIo: "Host input and output",
+    Read: "Host input and output",
+    Accept: "Accepting network connections",
+    RemoteAsk: "Remote actor calls",
+  };
+  const features: Record<string, string> = {
+    Vector: "This vector operation",
+    Map: "This map operation",
+    Set: "This set operation",
+    "actor.periodic": "Periodic actor handlers",
+    "actor.local_observation": "Actor links and monitors",
+    "actor.mailbox.coalesce": "Mailbox coalescing",
+    "actor.heap_limit": "Per-actor heap limits",
+    "actor.ingress_adapter": "Actor ingress adapters",
+    "wire.codec": "Wire encoding",
+  };
+  return native
+    ? `${nativeFeatures[capability] ?? "This host capability"} requires native execution.`
+    : `${features[capability] ?? "This language or standard-library operation"} is not available in the browser runtime yet.`;
+}
+
+function unavailable(capability: string): SandboxRejection {
+  return {
+    category: "not_implemented",
+    code: UNSUPPORTED,
+    capability,
+    message: capabilityMessage(capability, false),
+    span: null,
+  };
+}
+
 /// The first refusal, or `null` when every declared capability has a shim.
 export function admitPackage(pkg: PackageV1): SandboxRejection | null {
   if (!pkg.entry) {
@@ -117,6 +172,15 @@ export function admitPackage(pkg: PackageV1): SandboxRejection | null {
 
   for (const function_ of pkg.functions) {
     for (const block of function_.blocks) {
+      if (block.ops.some((op) => op.op === "actor.ingress_adapter"))
+        return unavailable("actor.ingress_adapter");
+      if (String(block.term.op) === "wire.codec")
+        return unavailable("wire.codec");
+      if (
+        block.term.op === "actor.call" &&
+        !ACTOR_OPS.has(block.term.operation.op)
+      )
+        return unavailable(`actor.${block.term.operation.op}`);
       const unknown =
         block.ops.find((op) => !OPS.has(op.op))?.op ??
         (!TERMS.has(block.term.op) ? block.term.op : null);
@@ -131,6 +195,15 @@ export function admitPackage(pkg: PackageV1): SandboxRejection | null {
     }
   }
 
+  for (const actor of pkg.actors ?? []) {
+    if (actor.handlers.some((handler) => handler.every_ns != null))
+      return unavailable("actor.periodic");
+    if (actor.exit != null || actor.down != null)
+      return unavailable("actor.local_observation");
+    if (actor.coalesce != null) return unavailable("actor.mailbox.coalesce");
+    if (actor.max_heap_bytes != null) return unavailable("actor.heap_limit");
+  }
+
   for (const entry of pkg.runtime_families) {
     if (!resolveRuntimeShim(entry)) {
       return {
@@ -139,7 +212,10 @@ export function admitPackage(pkg: PackageV1): SandboxRejection | null {
           : "not_implemented",
         code: UNSUPPORTED,
         capability: familyIdentity(entry.family, entry.detail),
-        message: `runtime family ${familyIdentity(entry.family, entry.detail)} has no sandbox shim`,
+        message: capabilityMessage(
+          entry.family,
+          NATIVE_FAMILIES.has(entry.family),
+        ),
         span: null,
       };
     }
@@ -151,7 +227,8 @@ export function admitPackage(pkg: PackageV1): SandboxRejection | null {
         category: "not_implemented",
         code: UNSUPPORTED,
         capability: entry.symbol,
-        message: `extern symbol ${entry.symbol} has no sandbox shim`,
+        message:
+          "This external-library operation is not available in the browser runtime yet.",
         span: null,
       };
     }
@@ -165,7 +242,7 @@ export function admitPackage(pkg: PackageV1): SandboxRejection | null {
           : "not_implemented",
         code: UNSUPPORTED,
         capability: kind,
-        message: `suspension kind ${kind} is not a sandbox capability`,
+        message: capabilityMessage(kind, NATIVE_SUSPENSIONS.has(kind)),
         span: null,
       };
     }

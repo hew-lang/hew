@@ -91,6 +91,45 @@ pub struct PhysicalStructuralGlue {
     pub id: PhysicalStructuralId,
     pub ty: ResolvedTy,
     pub shape: PhysicalStructuralShape,
+    /// A selected formatter can suspend, directly or through another member.
+    pub is_resumable: bool,
+}
+
+pub(super) fn display_callees(
+    glue: &[PhysicalStructuralGlue],
+    root: PhysicalStructuralId,
+) -> Result<std::collections::BTreeSet<CallableId>, PhysicalError> {
+    let mut pending = vec![root];
+    let mut seen = std::collections::BTreeSet::new();
+    let mut callees = std::collections::BTreeSet::new();
+    while let Some(id) = pending.pop() {
+        if !seen.insert(id) {
+            continue;
+        }
+        let recipe = glue
+            .get(id.0 as usize)
+            .filter(|recipe| recipe.id == id)
+            .ok_or_else(|| PhysicalError::new("structural call graph names an unknown recipe"))?;
+        match &recipe.shape {
+            PhysicalStructuralShape::Display { callable } => {
+                callees.insert(*callable);
+            }
+            PhysicalStructuralShape::Tuple { fields } => pending.extend(fields),
+            PhysicalStructuralShape::Record { fields, .. } => {
+                pending.extend(fields.iter().map(|field| field.recipe));
+            }
+            PhysicalStructuralShape::Enum { cases } => pending.extend(
+                cases
+                    .iter()
+                    .flat_map(|case| &case.fields)
+                    .map(|field| field.recipe),
+            ),
+            PhysicalStructuralShape::Vector { element } => pending.push(*element),
+            PhysicalStructuralShape::Map { key, value } => pending.extend([*key, *value]),
+            _ => {}
+        }
+    }
+    Ok(callees)
 }
 
 /// Interning builder over the types reached by structural rendering.
@@ -143,6 +182,7 @@ impl StructuralGlue {
             id,
             ty: key.value.clone(),
             shape,
+            is_resumable: false,
         });
         Ok(id)
     }

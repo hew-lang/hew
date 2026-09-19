@@ -303,8 +303,12 @@ export type OpV1 =
       dependencies: Operand[];
     })
   | (OpBase & {
-      op: "generator.make" | "actor.ingress_adapter";
+      op: "generator.make";
+      dst: number;
+      closure: number;
+      callable: Operand;
     })
+  | (OpBase & { op: "actor.ingress_adapter" })
   | (OpBase & { op: "stream.pipe"; capacity: number; results: ValueDef[] })
   | (OpBase & {
       op: "task_scope.enter";
@@ -384,6 +388,7 @@ export type TermV1 =
       CallShape & {
         op: "runtime.call";
         family: number;
+        structural?: number | null;
         result_shape: number | null;
       })
   | (TermBase &
@@ -516,6 +521,7 @@ export interface SupervisorShape {
 }
 
 export interface PackageV1 {
+  structural_render?: import("./structural.js").StructuralRecipe[];
   schema_version: "hew.sandbox.bytecode.v1";
   hew_version: string;
   compiler_version: string;

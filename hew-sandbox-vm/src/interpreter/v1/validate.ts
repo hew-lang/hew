@@ -69,6 +69,7 @@ const OPS = new Set([
   "bytes.eq",
   "function.make",
   "closure.make",
+  "generator.make",
   "callable.coerce",
   "dyn.make",
   "register_defer",

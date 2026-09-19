@@ -50,6 +50,7 @@ impl std::error::Error for EmitError {}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Package {
+    pub structural_render: Vec<serde_json::Value>,
     pub schema_version: String,
     pub hew_version: String,
     pub compiler_version: String,
@@ -555,6 +556,7 @@ impl<'m> Walker<'m> {
         };
 
         Ok(Package {
+            structural_render: self.structural_render()?,
             schema_version: SCHEMA_VERSION.to_string(),
             hew_version: hew_version.to_string(),
             compiler_version: compiler_version.to_string(),
@@ -623,6 +625,58 @@ impl<'m> Walker<'m> {
             suspend_kinds: self.suspend_kinds,
             functions,
         })
+    }
+
+    /// Project the checked structural selections, retaining alias identities
+    /// and variant forms rather than inferring them from runtime values.
+    fn structural_id(&self, ty: &hew_sir::StructuralType) -> Result<u32, EmitError> {
+        self.module
+            .structural_display
+            .keys()
+            .position(|key| key == ty)
+            .map(table_index)
+            .ok_or_else(|| EmitError::new("structural type lacks its checked selection"))
+    }
+
+    fn structural_render(&self) -> Result<Vec<serde_json::Value>, EmitError> {
+        use hew_types::{BuiltinType, ResolvedTy};
+        self.module.structural_display.iter().map(|(key, selected)| {
+            if let Some(callable) = selected.display {
+                return Ok(serde_json::json!({ "kind": "display", "callee": self.function_id(callable)? }));
+            }
+            let members = selected.members.iter().map(|member| self.structural_id(member)).collect::<Result<Vec<_>, _>>()?;
+            let scalar = |kind| Ok(serde_json::json!({"kind": kind}));
+            match &key.value {
+                ResolvedTy::Unit => scalar("unit"),
+                ResolvedTy::I8 | ResolvedTy::I16 | ResolvedTy::I32 | ResolvedTy::I64 | ResolvedTy::Isize |
+                ResolvedTy::U8 | ResolvedTy::U16 | ResolvedTy::U32 | ResolvedTy::U64 | ResolvedTy::Usize |
+                ResolvedTy::F32 | ResolvedTy::F64 | ResolvedTy::Bool | ResolvedTy::Char | ResolvedTy::String => scalar("scalar"),
+                ResolvedTy::Tuple(_) => Ok(serde_json::json!({"kind": "tuple", "members": members})),
+                ResolvedTy::Named { name, builtin, is_opaque, .. } => {
+                    if *builtin == Some(BuiltinType::Vec) { return Ok(serde_json::json!({"kind": "vector", "members": members})); }
+                    if *builtin == Some(BuiltinType::HashMap) { return Ok(serde_json::json!({"kind": "map", "members": members})); }
+                    if *is_opaque { return Ok(serde_json::json!({"kind": "identity", "name": name})); }
+                    if let Some(shape) = self.module.variant_shape_for_type(&key.value) {
+                        let mut offset = 0;
+                        let cases: Vec<_> = shape.variants.iter().map(|variant| {
+                            let kind = match variant.kind { hew_sir::SemVariantKind::Unit => "unit", hew_sir::SemVariantKind::Tuple => "tuple", hew_sir::SemVariantKind::Struct => "struct" };
+                            let fields: Vec<_> = variant.fields.iter().map(|field| {
+                                let recipe = members[offset]; offset += 1;
+                                serde_json::json!({"name": field.name, "recipe": recipe})
+                            }).collect();
+                            serde_json::json!({"name": variant.name, "kind": kind, "fields": fields})
+                        }).collect();
+                        return Ok(serde_json::json!({"kind": "enum", "cases": cases}));
+                    }
+                    if let Some(shape) = self.module.aggregate_shape_for_type(&key.value) {
+                        let fields: Vec<_> = shape.fields.iter().zip(members).map(|(field, recipe)| serde_json::json!({"name": field.name, "recipe": recipe})).collect();
+                        return Ok(serde_json::json!({"kind": "record", "name": name, "fields": fields}));
+                    }
+                    Err(EmitError::new("structural named type has no shape"))
+                }
+                _ => Err(EmitError::new("structural type has no sandbox representation")),
+            }
+        }).collect()
     }
 
     /// Project each demanded actor. Every callable becomes a function index,
@@ -1349,6 +1403,9 @@ impl<'m> Walker<'m> {
             } => serde_json::json!({
                 "op": "runtime.call",
                 "family": self.family_id(*family)?,
+                "structural": if *family == hew_types::RuntimeCallFamily::StructuralFormat {
+                    Some(self.structural_id(&hew_sir::StructuralType::canonical(self.value_types.get(&args[0].operand.value).ok_or_else(|| EmitError::new("format operand has no type"))?))?)
+                } else { None },
                 "args": boundaries(args),
                 "result": call_result(result),
                 "result_shape": self.result_shape(result),

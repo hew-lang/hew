@@ -12,6 +12,7 @@ export type VmValue =
   | { kind: "reply"; id: string }
   | { kind: "channel"; id: string }
   | { kind: "task"; id: string }
+  | { kind: "generator"; id: string }
   | { kind: "stream"; channelId: string }
   | { kind: "sink"; channelId: string }
   | { kind: "duplex"; channelId: string }
@@ -53,6 +54,7 @@ export function cloneValue(value: VmValue): VmValue {
     case "monitor":
     case "reply":
     case "channel":
+    case "generator":
     case "task":
     case "stream":
     case "sink":
@@ -227,6 +229,7 @@ export function renderStdout(value: VmValue): string {
       return value.id;
     case "channel":
       return value.id;
+    case "generator":
     case "task":
       return value.id;
     case "stream":
@@ -276,6 +279,7 @@ export function toJsonValue(value: VmValue): JsonValue {
       return value.id;
     case "channel":
       return value.id;
+    case "generator":
     case "task":
       return value.id;
     case "stream":

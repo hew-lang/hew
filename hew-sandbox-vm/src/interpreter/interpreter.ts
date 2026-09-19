@@ -3394,8 +3394,9 @@ function renderComparable(value: VmValue): JsonValue {
       return { kind: "reply", id: value.id };
     case "channel":
       return { kind: "channel", id: value.id };
+    case "generator":
     case "task":
-      return { kind: "task", id: value.id };
+      return { kind: value.kind, id: value.id };
     case "stream":
     case "sink":
     case "duplex":

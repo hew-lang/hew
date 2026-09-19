@@ -1381,6 +1381,7 @@ function heapUnits(value: VmValue): number {
     case "monitor":
     case "reply":
     case "channel":
+    case "generator":
     case "task":
     case "stream":
     case "sink":

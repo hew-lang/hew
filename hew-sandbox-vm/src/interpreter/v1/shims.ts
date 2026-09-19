@@ -59,6 +59,10 @@ export function resolveRuntimeShim(
   entry: RuntimeFamilyEntry,
 ): RuntimeShim | undefined {
   switch (entry.family) {
+    case "StructuralFormat":
+      return () => {
+        throw new Error("StructuralFormat requires its resumable executor");
+      };
     case "FileRead":
       return entry.detail === "LastError"
         ? () => ({ kind: "string", value: "" })
@@ -84,6 +88,8 @@ export function resolveExternShim(symbol: string): RuntimeShim | undefined {
 /// a package that suspends on native I/O is refused at load.
 export const SUPPORTED_SUSPEND_KINDS: ReadonlySet<string> = new Set([
   "ValueClose",
+  "GeneratorNext",
+  "Yield",
   "Sleep",
   "Ask",
   "Await",

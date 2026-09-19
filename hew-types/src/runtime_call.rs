@@ -11449,31 +11449,24 @@ impl RuntimeCallFamily {
         self.row().contract
     }
 
-    /// The argument position whose value replaces one the receiver already
-    /// owns, for the operations that release what they displace.
+    /// Whether this operation releases receiver-typed contents inside its call.
     ///
-    /// The displaced value's release runs inside the call, so a `#[resource]`
-    /// in it runs its `close` there and that release can fail like any other
-    /// (HEW-SPEC-2026 §3.7.8.5). SIR reads the operand's type at this position
-    /// to decide whether the call needs a cleanup dispatch, and physical MIR
-    /// arms the same fault from the carrier's element or payload recipe, so
-    /// both stages answer from this one position.
-    ///
-    /// `HashMap.insert` and `HashSet.insert` displace and release too, but
-    /// their calls also run a user `hash`/`eq` callback and leave on an
-    /// explicit failure edge when one faults. A release sink armed around the
-    /// whole call would not be disarmed on that edge, so those two keep the
-    /// trap path until the callback emission ends its sink on both
-    /// continuations - folding the collected fault into the frame's record on
-    /// the normal edge and discarding it on the callback-fault edge, where the
-    /// frame already owns a fault.
+    /// Replacement, removal and clearing can run an authored `close`, as can
+    /// discarding an incoming set duplicate of the receiver's element type.
+    /// SIR uses the receiver's contained-release effects, and physical MIR uses
+    /// the same carrier's release recipe, to require a fault dispatch after the
+    /// call. Callback failures have their own failure edge; internal releases
+    /// join that fault without replacing it (HEW-SPEC-2026 §3.7.8.5).
     #[must_use]
-    pub const fn displaced_argument(self) -> Option<usize> {
-        match self {
-            Self::RcSet => Some(1),
-            Self::Vector(VecValueOp::Set) | Self::Array(ArrayValueOp::Set) => Some(2),
-            _ => None,
-        }
+    pub const fn releases_receiver_contents(self) -> bool {
+        matches!(
+            self,
+            Self::RcSet
+                | Self::Vector(VecValueOp::Set | VecValueOp::Clear)
+                | Self::Array(ArrayValueOp::Set)
+                | Self::Map(MapValueOp::Insert | MapValueOp::Remove | MapValueOp::Clear)
+                | Self::Set(SetValueOp::Insert | SetValueOp::Remove | SetValueOp::Clear)
+        )
     }
 
     /// Return-value ownership for the closed scalar Vec ABI surface.

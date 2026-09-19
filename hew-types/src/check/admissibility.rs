@@ -1168,13 +1168,13 @@ impl Checker {
         false
     }
 
-    /// Checker boundary for a `HashMap` operation that copies its values out:
-    /// `m[k]`, `values()`, `entries()`, `clone()`, `into_iter()` and the
-    /// `for (k, v) in m` desugar. A value with no clone stays in the map; the
-    /// borrowed `get` reads it and the owning `remove` moves it out.
-    pub(super) fn validate_hashmap_value_clone_type(
+    /// Checker boundary for map value and set element copying operations.
+    /// Projections, cloning and snapshot iteration require a copy operation;
+    /// inserting, borrowing, removing and clearing affine elements do not.
+    pub(super) fn validate_collection_value_clone_type(
         &mut self,
         ty: &Ty,
+        collection: BuiltinType,
         operation: &str,
         span: &Span,
     ) -> bool {
@@ -1185,11 +1185,12 @@ impl Checker {
         // Inference is still in flight here; the obligation is checked once the
         // value type has settled.
         if resolved.has_inference_var() {
-            self.deferred_hashmap_value_copy
+            self.deferred_collection_value_copy
                 .entry(SpanKey::in_module(span, self.current_module_idx))
-                .or_insert_with(|| super::types::DeferredHashMapValueCopy {
+                .or_insert_with(|| super::types::DeferredCollectionValueCopy {
                     span: span.clone(),
                     val_ty: ty.clone(),
+                    collection,
                     operation: operation.to_string(),
                     source_module: self.current_module.clone(),
                 });
@@ -1203,15 +1204,20 @@ impl Checker {
                 return false;
             }
             let blocker = blocker.concrete_text();
-            self.report_error(
-                TypeErrorKind::InvalidOperation,
-                span,
-                format!(
+            let message = match collection {
+                BuiltinType::HashMap => format!(
                     "E_ELEMENT_NO_COPY: `{operation}` copies each value out of the map, but \
                      the value type {blocker} has no copy operation; read it with `get(k)`, \
                      which borrows, or move it out with `remove(k)`"
                 ),
-            );
+                BuiltinType::HashSet => format!(
+                    "E_ELEMENT_NO_COPY: `{operation}` copies each element out of the set, but \
+                     the element type {blocker} has no copy operation; move the set instead \
+                     of copying its elements"
+                ),
+                _ => unreachable!("copy projection admission names a map or set"),
+            };
+            self.report_error(TypeErrorKind::InvalidOperation, span, message);
             return false;
         }
         true

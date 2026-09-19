@@ -34,3 +34,29 @@ fn _copy_map_value(index: HashMap<string, Conn>) {
 }
 
 fn main() {}
+
+impl Hash for Conn {
+    fn hash(self) -> i64 {
+        self.id
+    }
+}
+
+impl Eq for Conn {
+    fn eq(self, other: Conn) -> bool {
+        self.id == other.id
+    }
+}
+
+fn _clone_resource_set(values: HashSet<Conn>) {
+    let _copy = values.clone();
+}
+
+fn _snapshot_resource_set(values: HashSet<Conn>) {
+    let _copy = values.to_vec();
+}
+
+fn _iterate_resource_set(values: HashSet<Conn>) {
+    for item in values {
+        println(item.id);
+    }
+}

@@ -116,7 +116,8 @@ impl Tables {
                 settled &= !raise(&mut table.variant[glue.id.0 as usize], holds);
             }
             for glue in &module.vector_glue {
-                let holds = table.recipe(&glue.element);
+                let holds = !matches!(glue.ty, hew_types::ResolvedTy::Array(_, 0))
+                    && table.recipe(&glue.element);
                 settled &= !raise(&mut table.vector[glue.id.0 as usize], holds);
             }
             for glue in &module.map_glue {

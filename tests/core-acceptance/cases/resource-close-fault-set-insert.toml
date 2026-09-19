@@ -1,0 +1,11 @@
+[[case]]
+id = "resource-close-fault-set-insert"
+intent = "A set keeps its stored element, releases an incoming duplicate, and propagates that close failure after releasing the set and surrounding resource."
+source = "cases/resource-close-fault-set-insert.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "close 12\nclose 11\nclose 99\n"
+stderr = "hew: failure: UserPanic (212): close 12 failed\nhew: secondary failure: UserPanic (212): close 11 failed\nhew: secondary failure: UserPanic (212): close 99 failed\n"
+exit = 1

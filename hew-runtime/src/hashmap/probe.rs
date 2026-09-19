@@ -2,7 +2,12 @@
 //! caller, so a callback can suspend without retaining a Rust stack or holding
 //! a scheduler worker. Only commit changes the map's ownership.
 
-use super::*;
+use super::{
+    abort_layout_clone, alloc_layout_entries, clone_layout_blob, dealloc_layout_entries, key_eq,
+    key_hash, require_clone, slot_key, slot_state, slot_val, validate_op_inputs, HewLayoutHashMap,
+    EMPTY, LOAD_PCTG, OCCUPIED, TOMBSTONE,
+};
+use core::{ffi::c_void, ptr};
 use hew_cabi::map::HewMapProbeStatus;
 
 #[derive(Debug, Clone, Copy)]
@@ -151,6 +156,9 @@ impl HewLayoutMapProbe {
 /// Begin a lookup or insertion without invoking a user callback. An insertion
 /// stages any required resize; all original owners remain in the old map.
 ///
+/// # Panics
+/// Panics if doubling the table capacity overflows.
+///
 /// # Safety
 /// Map and key are live, match the map's descriptors, and remain exclusively
 /// borrowed until commit/free. Drain any pending callback before ending that
@@ -216,6 +224,9 @@ pub unsafe extern "C" fn hew_hashmap_probe_step(probe: *mut HewLayoutMapProbe) -
     unsafe { (*probe).advance() as i32 }
 }
 
+/// # Panics
+/// Panics if the probe has no pending callback request.
+///
 /// # Safety
 /// The last step requested Hash or Eq. The returned key is borrowed until the
 /// matching result is submitted or the probe is freed after callback drain.
@@ -245,7 +256,7 @@ pub unsafe extern "C" fn hew_hashmap_probe_right(probe: *const HewLayoutMapProbe
 }
 
 /// # Safety
-/// Submit exactly one result for the last NeedHash request; the callback has
+/// Submit exactly one result for the last `NeedHash` request; the callback has
 /// completed and no longer accesses its borrowed operands.
 #[no_mangle]
 pub unsafe extern "C" fn hew_hashmap_probe_submit_hash(probe: *mut HewLayoutMapProbe, hash: u64) {
@@ -253,8 +264,11 @@ pub unsafe extern "C" fn hew_hashmap_probe_submit_hash(probe: *mut HewLayoutMapP
     unsafe { (*probe).accept_hash(hash) };
 }
 
+/// # Panics
+/// Panics if the probe did not request equality.
+///
 /// # Safety
-/// Submit exactly one result for the last NeedEq request after its callback
+/// Submit exactly one result for the last `NeedEq` request after its callback
 /// has completed and released its operand loans.
 #[no_mangle]
 pub unsafe extern "C" fn hew_hashmap_probe_submit_eq(probe: *mut HewLayoutMapProbe, equal: bool) {
@@ -287,9 +301,9 @@ pub unsafe extern "C" fn hew_hashmap_probe_free(probe: *mut HewLayoutMapProbe) {
     }
 }
 
-unsafe fn ready(probe: *mut HewLayoutMapProbe) -> Box<HewLayoutMapProbe> {
+unsafe fn ready(probe: *mut HewLayoutMapProbe) -> HewLayoutMapProbe {
     // SAFETY: a commit transfers the unique live probe allocation.
-    let probe = unsafe { Box::from_raw(probe) };
+    let probe = unsafe { *Box::from_raw(probe) };
     assert!(
         matches!(probe.phase, Phase::Ready),
         "map probe is not ready to commit"
@@ -389,10 +403,10 @@ pub unsafe extern "C-unwind" fn hew_hashmap_probe_remove_take(
     out: *mut c_void,
 ) -> bool {
     // SAFETY: forwarded ready probe, live receiver and disjoint output contract.
-    unsafe { remove(ready(probe), Some(out)) }
+    unsafe { remove(&ready(probe), Some(out)) }
 }
 
-unsafe fn remove(probe: Box<HewLayoutMapProbe>, output: Option<*mut c_void>) -> bool {
+unsafe fn remove(probe: &HewLayoutMapProbe, output: Option<*mut c_void>) -> bool {
     if !probe.found {
         return false;
     }
@@ -426,11 +440,7 @@ enum InsertMode {
     RawTransfer,
 }
 
-unsafe fn insert(
-    mut probe: Box<HewLayoutMapProbe>,
-    value: *const c_void,
-    mode: InsertMode,
-) -> bool {
+unsafe fn insert(mut probe: HewLayoutMapProbe, value: *const c_void, mode: InsertMode) -> bool {
     // SAFETY: snapshot geometry before allocating or changing the map.
     let (key_layout, value_layout, stride, key_offset, val_offset) = unsafe {
         (
@@ -545,7 +555,7 @@ pub unsafe extern "C-unwind" fn hew_hashset_probe_insert_take(
 #[no_mangle]
 pub unsafe extern "C-unwind" fn hew_hashset_probe_remove(probe: *mut HewLayoutMapProbe) -> bool {
     // SAFETY: the set probe borrows its wrapped map, whose value is plain ZST.
-    unsafe { remove(ready(probe), None) }
+    unsafe { remove(&ready(probe), None) }
 }
 
 /// The synchronous C ABI uses the same state machine. Generated Hew code
@@ -610,7 +620,7 @@ pub(super) unsafe fn get_pointer(probe: *mut HewLayoutMapProbe) -> *const c_void
 
 pub(super) unsafe fn remove_drop(probe: *mut HewLayoutMapProbe) -> bool {
     // SAFETY: the caller transfers a ready removal probe and captures releases.
-    unsafe { remove(ready(probe), None) }
+    unsafe { remove(&ready(probe), None) }
 }
 
 pub(super) unsafe fn insert_transfer(probe: *mut HewLayoutMapProbe, value: *const c_void) -> bool {

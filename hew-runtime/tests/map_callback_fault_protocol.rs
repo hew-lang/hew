@@ -318,12 +318,8 @@ fn map_lookup_and_removal_faults_leave_every_result_and_owner_untouched() {
     }
 }
 
-fn assert_scratch_released(before: Counts, clones: usize) {
-    let after = COUNTS.get();
-    assert_eq!(after.created, before.created);
-    assert_eq!(after.cloned, before.cloned + clones);
-    assert_eq!(after.dropped, before.dropped + clones);
-    assert_eq!(after.live(), before.live());
+fn assert_probe_owners_unchanged(before: Counts) {
+    assert_eq!(COUNTS.get(), before);
 }
 
 unsafe fn map_insert_fault(len: i64, number: i64, copy_in: bool, failure: Failure) {
@@ -357,7 +353,7 @@ unsafe fn map_insert_fault(len: i64, number: i64, copy_in: bool, failure: Failur
         take_fault(status, fault, failure);
         assert!(present);
         assert_eq!(((*map).entries, (*map).cap, (*map).len), geometry);
-        assert_scratch_released(before, if copy_in { 2 } else { 0 });
+        assert_probe_owners_unchanged(before);
         assert_eq!(*key.number, number);
         assert_eq!(*value.number, 9000);
         assert_map_values(map, len);
@@ -369,7 +365,7 @@ unsafe fn map_insert_fault(len: i64, number: i64, copy_in: bool, failure: Failur
 
 /// The clone-free ingress: the key is copied in and the value owner transfers.
 /// A callback failure transfers nothing, so the caller still holds its value
-/// and the staged key clone is released.
+/// and probing never acquires a key clone.
 unsafe fn map_insert_take_fault(len: i64, number: i64, failure: Failure) {
     // SAFETY: map and two independent input owners stay live until explicit cleanup.
     unsafe {
@@ -391,8 +387,8 @@ unsafe fn map_insert_take_fault(len: i64, number: i64, failure: Failure) {
         take_fault(status, fault, failure);
         assert!(present);
         assert_eq!(((*map).entries, (*map).cap, (*map).len), geometry);
-        // One staged key clone, released; the value never left the caller.
-        assert_scratch_released(before, 1);
+        // Probing acquired no scratch owners; key and value stay with the caller.
+        assert_probe_owners_unchanged(before);
         assert_eq!(*key.number, number);
         assert_eq!(*value.number, 9000);
         assert_map_values(map, len);
@@ -519,7 +515,7 @@ fn copy_in_failure_preserves_inputs_borrowed_from_the_same_map() {
                 );
                 take_fault(status, fault, failure);
                 assert!(present);
-                assert_scratch_released(before, 2);
+                assert_probe_owners_unchanged(before);
                 assert_eq!(*(*key.cast::<Owned>()).number, old_key);
                 assert_eq!(*(*value.cast::<Owned>()).number, old_value);
                 assert_map_values(map, len);
@@ -603,7 +599,7 @@ unsafe fn set_operation_fault(len: i64, number: i64, action: SetAction, failure:
         };
         take_fault(status, fault, failure);
         assert!(present);
-        assert_scratch_released(before, usize::from(matches!(action, SetAction::CopyInsert)));
+        assert_probe_owners_unchanged(before);
         assert_eq!(*value.number, number);
         assert_set_values(set, len);
         drop_owned((&raw mut value).cast());
@@ -671,7 +667,7 @@ fn set_copy_in_fault_preserves_an_element_borrowed_from_the_same_set() {
                 );
                 take_fault(status, fault, failure);
                 assert!(present);
-                assert_scratch_released(before, 1);
+                assert_probe_owners_unchanged(before);
                 assert_eq!(*(*element.cast::<Owned>()).number, old_value);
                 assert_set_values(set, len);
                 set::hew_hashset_free_layout(set);

@@ -1044,7 +1044,8 @@ pub unsafe extern "C" fn hew_hashmap_get_clone_layout(
     unsafe { validate_op_inputs(m, key, None) };
     // SAFETY: the validated map's descriptor determines output storage needs.
     if unsafe { (*m).val_layout.size > 0 || (*m).val_layout.clone_fn.is_some() } && out.is_null() {
-        panic!("map lookup output is null for a value that requires storage");
+        crate::set_last_error("hew_hashmap_get_clone_layout: out must hold the cloned value");
+        std::process::abort();
     }
     // SAFETY: lookup only borrows the map; its contents stay live throughout.
     let probe = match unsafe { probe::drive(m.cast_mut(), key, false, fault_out) } {
@@ -1091,7 +1092,8 @@ pub unsafe extern "C" fn hew_hashmap_get_borrow_layout(
     unsafe { validate_op_inputs(m, key, None) };
     // SAFETY: the validated map's descriptor determines output storage needs.
     if unsafe { (*m).val_layout.size > 0 } && out.is_null() {
-        panic!("map lookup output is null for a value that requires storage");
+        crate::set_last_error("hew_hashmap_get_borrow_layout: out must hold the borrowed value");
+        std::process::abort();
     }
     // SAFETY: lookup only borrows the map; its contents stay live throughout.
     let probe = match unsafe { probe::drive(m.cast_mut(), key, false, fault_out) } {
@@ -1211,7 +1213,8 @@ pub unsafe extern "C" fn hew_hashmap_remove_take_layout(
     unsafe { validate_op_inputs(m, key, None) };
     // SAFETY: the validated map's value descriptor determines output size.
     if unsafe { (*m).val_layout.size > 0 } && out.is_null() {
-        panic!("map removal output is null for a nonzero value");
+        crate::set_last_error("hew_hashmap_remove_take_layout: out is null for non-zero value");
+        std::process::abort();
     }
     // SAFETY: no mutation occurs until every callback finishes.
     let probe = match unsafe { probe::drive(m, key, false, fault_out) } {

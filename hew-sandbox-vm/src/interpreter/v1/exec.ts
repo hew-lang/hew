@@ -39,6 +39,7 @@ import { StructuralRenderer } from "./structural.js";
 import {
   selectedValue,
   collectionOperation,
+  sharedOperation,
   type ValueProgram,
 } from "./value-operations.js";
 import { Pipes } from "./pipes.js";
@@ -112,6 +113,9 @@ interface ActorInstance {
   alive: boolean;
   completed: boolean;
   closing: boolean;
+  drainingMailbox: boolean;
+  mailboxDrained: Array<() => void>;
+  closingFault: Fault | null;
   crashing: Fault | null;
   active: FrameContext | null;
   closed: Array<() => void>;
@@ -308,6 +312,7 @@ class ExecutorV1 {
   private readonly consumedResources = new WeakSet<object>();
   private running = false;
   private rootComplete = false;
+  private rootFault: Fault | null = null;
 
   constructor(
     private readonly pkg: PackageV1,
@@ -358,7 +363,10 @@ class ExecutorV1 {
               ? Number(value.value)
               : 0;
         },
-        failed: (fault) => this.haltWithFault(fault),
+        failed: (fault) => {
+          this.rootFault = fault;
+          this.rootComplete = true;
+        },
       },
     );
   }
@@ -377,6 +385,7 @@ class ExecutorV1 {
     for (const actor of this.actors.values())
       if (!actor.supervisor && actor.alive) this.requestActorClose(actor);
     this.scheduler.run();
+    if (this.rootFault) this.haltWithFault(this.rootFault);
     if (this.trace.exitCode === 0 && this.faultDebts.size)
       this.trace.exitCode = 1;
   }
@@ -1196,18 +1205,41 @@ class ExecutorV1 {
           entry &&
           (entry.family === "Map" ||
             entry.family === "Set" ||
-            (entry.family === "Vector" && entry.detail === "Contains"))
+            (entry.family === "Array" && entry.detail === "Set") ||
+            (entry.family === "Vector" &&
+              ["Contains", "Clear", "Set"].includes(String(entry.detail))))
         ) {
           const args = term.args.map((operand) => this.boundary(act, operand));
           const iterator = collectionOperation(
             this.pkg,
-            entry.family,
+            entry.family === "Array" ? "Vector" : entry.family,
             String(entry.detail),
             args,
             term.callbacks ?? [],
             term.result_member_shapes?.[1] ?? term.result_shape,
           );
           this.runValueProgram(act, term, args, iterator);
+          return;
+        }
+        if (
+          entry &&
+          [
+            "RcNew",
+            "RcClone",
+            "RcGet",
+            "RcIsUnique",
+            "RcSet",
+            "RcStrongCount",
+            "RcWeakCount",
+          ].includes(entry.family)
+        ) {
+          const args = term.args.map((operand) => this.boundary(act, operand));
+          this.runValueProgram(
+            act,
+            term,
+            args,
+            sharedOperation(entry.family, args),
+          );
           return;
         }
         if (entry?.family === "SupervisorPool") {
@@ -1436,9 +1468,18 @@ class ExecutorV1 {
         resume();
       } else if (step.value.kind === "release") {
         const request = step.value;
-        this.closeValueAsync(request.value, this.pipeFault(act), (fault) =>
-          fault ? fail(fault, request.onFault) : next(),
-        );
+        this.closeValueAsync(request.value, this.pipeFault(act), (fault) => {
+          if (fault) {
+            if (term.op !== "runtime.call" || !term.releases_contents) {
+              fail(fault, request.onFault);
+              return;
+            }
+            // The shared contract republishes the receiver and result owners
+            // before SIR dispatches a failure from releasing their contents.
+            act.fault ??= fault;
+          }
+          next();
+        });
       } else {
         const request = step.value;
         const child = this.invokeFrame(
@@ -2045,6 +2086,7 @@ class ExecutorV1 {
     value: VmValue,
     fault: string | null,
     done: (fault: Fault | null) => void,
+    actor: ActorInstance | null = this.current.context.actor,
   ): void {
     const pending = [value];
     let firstFault: Fault | null = null;
@@ -2053,6 +2095,15 @@ class ExecutorV1 {
       while (pending.length) {
         const value = pending.pop()!;
         switch (value.kind) {
+          case "rc":
+            if (!value.closed) {
+              value.closed = true;
+              if (--value.cell.refs === 0) {
+                pending.push(value.cell.value);
+                value.cell.value = UNIT;
+              }
+            }
+            break;
           case "task": {
             // Dropping a handle does not cancel scoped work. Join drains the
             // task, and scope close releases any result that was never taken.
@@ -2084,7 +2135,7 @@ class ExecutorV1 {
               if (this.consumedResources.has(value)) break;
               if (!this.closingResources.has(value)) {
                 this.invokeFrame(
-                  this.current.context.actor,
+                  actor,
                   resource.close,
                   [value],
                   () => next(),
@@ -2274,6 +2325,9 @@ class ExecutorV1 {
           alive: true,
           completed: false,
           closing: false,
+          drainingMailbox: false,
+          mailboxDrained: [],
+          closingFault: null,
           crashing: null,
           active: null,
           closed: [],
@@ -2725,9 +2779,12 @@ class ExecutorV1 {
   }
 
   private dispatchActor(actor: ActorInstance): void {
-    if (actor.busy || !actor.alive) return;
+    if (actor.busy || !actor.alive || actor.drainingMailbox) return;
     if (actor.mailbox.length === 0) {
-      if (actor.closing) this.stopActor(actor);
+      if (actor.closing) {
+        if (actor.closingFault) this.crashActor(actor, actor.closingFault);
+        else this.stopActor(actor);
+      }
       return;
     }
     actor.busy = true;
@@ -2735,7 +2792,7 @@ class ExecutorV1 {
       const message = actor.mailbox.shift();
       if (!message || !actor.alive) {
         actor.busy = false;
-        if (actor.closing && actor.alive) this.stopActor(actor);
+        if (actor.closing && actor.alive) this.dispatchActor(actor);
         return;
       }
       for (const admit of actor.admission.splice(0)) admit();
@@ -2811,29 +2868,32 @@ class ExecutorV1 {
       message: this.faultText(fault),
     });
     const finished = (action: string) => {
-      this.closeValueAsync(actor.state, this.faultText(fault), () => {
-        for (const message of actor.mailbox.splice(0)) {
-          this.closeValue(
-            { kind: "record", typeId: "", fields: message.payload },
-            this.faultText(fault),
-          );
-          message.complete(null, "Dead");
-        }
-        actor.completed = true;
-        for (const wake of actor.closed.splice(0)) wake();
-        for (const admit of actor.admission.splice(0)) admit();
-        if (actor.supervisor) {
-          const { owner, child } = actor.supervisor;
-          if (action === "Restart") this.restartChild(owner, child, [debt]);
-          else if (action === "Escalate")
-            this.escalateSupervisor(owner, [debt]);
-          else {
-            owner.spent.add(child);
-            owner.recovering.delete(child);
-            this.wakeRoles();
-          }
-        }
-      });
+      if (actor.drainingMailbox) {
+        actor.mailboxDrained.push(() => finished(action));
+        return;
+      }
+      this.closeValueAsync(
+        actor.state,
+        this.faultText(fault),
+        () =>
+          this.drainMailbox(actor, this.faultText(fault), () => {
+            actor.completed = true;
+            for (const wake of actor.closed.splice(0)) wake();
+            for (const admit of actor.admission.splice(0)) admit();
+            if (actor.supervisor) {
+              const { owner, child } = actor.supervisor;
+              if (action === "Restart") this.restartChild(owner, child, [debt]);
+              else if (action === "Escalate")
+                this.escalateSupervisor(owner, [debt]);
+              else {
+                owner.spent.add(child);
+                owner.recovering.delete(child);
+                this.wakeRoles();
+              }
+            }
+          }),
+        actor,
+      );
     };
     if (actor.layout.crash !== undefined) {
       const [code, message] =
@@ -3087,19 +3147,46 @@ class ExecutorV1 {
     next();
   }
 
+  private drainMailbox(
+    actor: ActorInstance,
+    fault: string | null,
+    done: (fault: Fault | null) => void,
+  ): void {
+    const messages = actor.mailbox.splice(0);
+    actor.drainingMailbox = true;
+    this.closeValueAsync(
+      {
+        kind: "vector",
+        elementType: "message",
+        items: messages.map((message) => ({
+          kind: "record",
+          typeId: "",
+          fields: message.payload,
+        })),
+      },
+      fault,
+      (closeFault) => {
+        actor.drainingMailbox = false;
+        for (const message of messages) message.complete(null, "Dead");
+        done(closeFault);
+        for (const wake of actor.mailboxDrained.splice(0)) wake();
+      },
+      actor,
+    );
+  }
+
   private requestActorClose(actor: ActorInstance): void {
     if (actor.closing || actor.completed) return;
     actor.closing = true;
-    for (const message of actor.mailbox.splice(0)) {
-      this.closeValue(
-        { kind: "record", typeId: "", fields: message.payload },
-        null,
-      );
-      message.complete(null, "Dead");
-    }
-    for (const admit of actor.admission.splice(0)) admit();
+    // Hold terminal state release until both the active turn and queued owners
+    // have drained; authored message cleanup can itself call or suspend.
+    actor.drainingMailbox = true;
     actor.active?.cancel?.();
-    this.dispatchActor(actor);
+    this.drainMailbox(actor, null, (fault) => {
+      actor.closingFault ??= fault;
+      this.dispatchActor(actor);
+    });
+    for (const admit of actor.admission.splice(0)) admit();
   }
 
   private stopActor(actor: ActorInstance): void {
@@ -3261,6 +3348,8 @@ function toComparable(value: VmValue): unknown {
       return [value.tag, value.payload.map(toComparable)];
     case "vector":
       return value.items.map(toComparable);
+    case "rc":
+      return toComparable(value.cell.value);
     case "map":
       return [...value.entries.values()].map((entry) => [
         toComparable(entry.key),

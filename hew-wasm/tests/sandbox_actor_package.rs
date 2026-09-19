@@ -926,3 +926,144 @@ fn main() {
     );
     assert_eq!(stdout(&trace), "map lookup cleaned\n");
 }
+
+#[test]
+fn collection_callbacks_drain_affine_owners_on_cancellation_and_fault() {
+    let trace = execute(include_str!(
+        "../../tests/core-acceptance/cases/collection-callback-lifecycle.hew"
+    ));
+    let mut expected = String::new();
+    for phase in 0..3 {
+        for collection in ["map", "set"] {
+            expected.push_str(&format!("cancel {collection} phase {phase}\nCALLBACK LOCAL CLOSED\nowner 0 closed\nowner 99 closed\n{collection} closed\n"));
+        }
+    }
+    expected.push_str("fault during rehash\nCALLBACK LOCAL CLOSED\nowner 0 closed\nowner 99 closed\ncallback fault returned\n");
+    assert_eq!(stdout(&trace), expected);
+    assert_eq!(trace["final_state"]["exit_code"], 1);
+}
+
+#[test]
+fn displaced_map_close_fault_releases_the_published_replacement() {
+    let trace = execute_expected(
+        include_str!("../../tests/core-acceptance/cases/resource-close-fault-map-insert.hew"),
+        "panic",
+    );
+    assert_eq!(stdout(&trace), "close 1\nclose 2\nclose 99\n");
+}
+
+#[test]
+fn sets_own_affine_elements_through_duplicate_remove_and_clear() {
+    let trace = execute(include_str!(
+        "../../tests/core-acceptance/cases/resource-set-lifecycle.hew"
+    ));
+    assert_eq!(
+        stdout(&trace),
+        "close 12\nclose 11\nclose 22\nempty\nclose 15\n"
+    );
+}
+
+#[test]
+fn displaced_resource_faults_drain_shared_vector_and_array_owners() {
+    for (source, expected) in [
+        (
+            include_str!("../../tests/core-acceptance/cases/resource-close-fault-rc-set.hew"),
+            "working\nclose 1\nclose 2\n",
+        ),
+        (
+            include_str!("../../tests/core-acceptance/cases/resource-close-fault-vec-set.hew"),
+            "working\nclose 1\nclose 2\n",
+        ),
+        (
+            include_str!("../../tests/core-acceptance/cases/resource-close-fault-vec-clear.hew"),
+            "close 1\nclose 99\n",
+        ),
+        (
+            include_str!("../../tests/core-acceptance/cases/resource-close-fault-array-set.hew"),
+            "working\nclose 1\nclose 2\nclose 3\n",
+        ),
+    ] {
+        let trace = execute_expected(source, "panic");
+        assert_eq!(stdout(&trace), expected);
+    }
+}
+
+#[test]
+fn map_removal_owns_its_result_before_retiring_the_query() {
+    let trace = execute_expected(
+        include_str!("../../tests/core-acceptance/cases/resource-close-fault-map-remove.hew"),
+        "panic",
+    );
+    assert_eq!(stdout(&trace), "close 1\nclose 3\nclose 2\nclose 99\n");
+}
+
+#[test]
+fn actor_close_drains_active_and_queued_resource_messages_before_its_barrier() {
+    let source = r#"
+import std.stream;
+actor Audit { receive fn record(id: i64) { sleep(1ms); println(f"closed {id}"); } }
+#[resource]
+type Ticket { audit: Audit, id: i64, fail_close: bool, }
+impl Ticket {
+    fn close(consume self) {
+        self.audit.record(self.id).expect("audit");
+        if self.fail_close { panic("queued close failed"); }
+    }
+}
+actor Worker {
+    receive fn hold(ticket: Ticket, started: Sink<i64>) {
+        started.send(ticket.id).expect("started");
+        sleep(1h);
+        println("unreached");
+    }
+}
+fn main() {
+    let audit = spawn Audit;
+    let worker = spawn Worker;
+    let (output, input): (Sink<i64>, Stream<i64>) = stream.pipe(1).expect("pipe");
+    mailbox(worker).hold(Ticket { audit: audit, id: 1, fail_close: false }, output.clone()).expect("first");
+    input.recv().expect("started");
+    mailbox(worker).hold(Ticket { audit: audit, id: 2, fail_close: FAIL_CLOSE }, output.clone()).expect("queued");
+    close(worker);
+    println("barrier");
+    output.close();
+    input.close();
+    close(audit);
+}
+"#;
+    for fails in [false, true] {
+        let trace = execute(&source.replace("FAIL_CLOSE", if fails { "true" } else { "false" }));
+        let output = stdout(&trace);
+        let mut lines: Vec<_> = output.lines().collect();
+        assert_eq!(lines.pop(), Some("barrier"));
+        lines.sort_unstable();
+        assert_eq!(lines, ["closed 1", "closed 2"]);
+        assert_eq!(trace["final_state"]["exit_code"], i32::from(fails));
+        assert!(
+            trace["final_state"]["virtual_clock"]["current_ms"]
+                .as_f64()
+                .unwrap()
+                < 100.0
+        );
+    }
+}
+
+#[test]
+fn a_main_fault_still_closes_idle_actor_resources() {
+    let trace = execute_expected(
+        r#"
+#[resource]
+type Ticket { name: string, }
+impl Ticket { fn close(consume self) { println(self.name); } }
+actor Owner { var ticket: Ticket, receive fn ready() {} }
+fn main() {
+    let owner = spawn Owner(ticket: Ticket { name: "actor owner closed" });
+    owner.ready().expect("ready");
+    let _local = Ticket { name: "main owner closed" };
+    panic("main failed");
+}
+"#,
+        "panic",
+    );
+    assert_eq!(stdout(&trace), "main owner closed\nactor owner closed\n");
+}

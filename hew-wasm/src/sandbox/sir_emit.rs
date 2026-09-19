@@ -1498,6 +1498,7 @@ impl<'m> Walker<'m> {
                 "op": "runtime.call",
                 "family": self.family_id(*family)?,
                 "callbacks": self.collection_callbacks(*family, args)?,
+                "releases_contents": family.releases_receiver_contents(),
                 "result_member_shapes": self.result_member_shapes(result),
                 "structural": if *family == hew_types::RuntimeCallFamily::StructuralFormat {
                     Some(self.structural_id(&hew_sir::StructuralType::canonical(self.value_types.get(&args[0].operand.value).ok_or_else(|| EmitError::new("format operand has no type"))?))?)

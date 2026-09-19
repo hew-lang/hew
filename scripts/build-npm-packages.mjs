@@ -21,12 +21,10 @@ import { fileURLToPath } from "node:url";
 
 const SCRIPT_REPO_ROOT = resolve(fileURLToPath(import.meta.url), "../..");
 const REPO_ROOT = resolve(process.env.HEW_SOURCE_ROOT ?? SCRIPT_REPO_ROOT);
+const STAGING_ROOT = resolve(REPO_ROOT, process.env.HEW_NPM_STAGE_ROOT ?? "target/npm/@hew-lang");
 const GITHUB_PACKAGES_REGISTRY = "https://npm.pkg.github.com";
 
-// Honour NPM_WASM_PROFILE=dev for fast local builds.
-// WHY: wasm-pack release builds run wasm-opt which takes minutes; dev skips it.
-// WHEN obsolete: never — this is the intentional local-vs-CI distinction.
-// REAL solution: this IS the real solution.
+// Use the development Wasm profile for fast local iteration.
 const wasmProfile = process.env.NPM_WASM_PROFILE === "dev" ? "dev" : "release";
 
 /** Read the workspace Cargo.toml and extract the package version. */
@@ -50,7 +48,7 @@ function run(cmd, args, opts = {}) {
  * `publishConfig` for GitHub Packages.
  */
 function buildWasmCrate({ crate, outName, version }) {
-  const stagingDir = join(REPO_ROOT, "target", "npm", "@hew-lang", outName);
+  const stagingDir = join(STAGING_ROOT, outName);
 
   console.log(`\n==> Building ${crate} (profile: ${wasmProfile}) → @hew-lang/${outName}`);
 
@@ -95,7 +93,7 @@ function buildWasmCrate({ crate, outName, version }) {
 function buildSandboxVm({ version }) {
   const vmDir = join(REPO_ROOT, "hew-sandbox-vm");
   const distDir = join(vmDir, "dist");
-  const stagingDir = join(REPO_ROOT, "target", "npm", "@hew-lang", "sandbox-vm");
+  const stagingDir = join(STAGING_ROOT, "sandbox-vm");
 
   console.log(`\n==> Building hew-sandbox-vm (tsc) → @hew-lang/sandbox-vm`);
 
@@ -163,12 +161,12 @@ async function main() {
   const version = workspaceVersion();
   console.log(`Building Hew npm packages at version ${version} (wasm profile: ${wasmProfile})`);
 
-  mkdirSync(join(REPO_ROOT, "target", "npm"), { recursive: true });
+  mkdirSync(STAGING_ROOT, { recursive: true });
 
   buildWasmCrate({ crate: "hew-wasm", outName: "wasm", version });
   buildSandboxVm({ version });
 
-  console.log(`\nAll packages staged under target/npm/@hew-lang/`);
+  console.log(`\nAll packages staged under ${STAGING_ROOT}`);
   console.log(`  @hew-lang/wasm@${version}`);
   console.log(`  @hew-lang/sandbox-vm@${version}`);
   console.log(`\nTo verify: npm pack --dry-run  in each staged directory.`);

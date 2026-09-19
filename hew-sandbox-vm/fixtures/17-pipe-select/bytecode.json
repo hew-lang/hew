@@ -249,6 +249,7 @@
               "to": 6
             },
             "op": "runtime.call",
+            "releases_contents": false,
             "result": null,
             "result_member_shapes": [],
             "result_shape": null,
@@ -954,6 +955,7 @@
               "to": 24
             },
             "op": "runtime.call",
+            "releases_contents": false,
             "result": {
               "own": "owned",
               "value": 35
@@ -1356,6 +1358,7 @@
               "to": 46
             },
             "op": "runtime.call",
+            "releases_contents": false,
             "result": null,
             "result_member_shapes": [],
             "result_shape": null,
@@ -1539,6 +1542,7 @@
               "to": 42
             },
             "op": "runtime.call",
+            "releases_contents": false,
             "result": {
               "own": "owned",
               "value": 47
@@ -1582,6 +1586,7 @@
               "to": 44
             },
             "op": "runtime.call",
+            "releases_contents": false,
             "result": null,
             "result_member_shapes": [],
             "result_shape": null,
@@ -1616,6 +1621,7 @@
               "to": 43
             },
             "op": "runtime.call",
+            "releases_contents": false,
             "result": null,
             "result_member_shapes": [],
             "result_shape": null,
@@ -1751,6 +1757,7 @@
               "to": 48
             },
             "op": "runtime.call",
+            "releases_contents": false,
             "result": null,
             "result_member_shapes": [],
             "result_shape": null,
@@ -1801,6 +1808,7 @@
               "to": 49
             },
             "op": "runtime.call",
+            "releases_contents": false,
             "result": null,
             "result_member_shapes": [],
             "result_shape": null,
@@ -1945,6 +1953,7 @@
               "to": 3
             },
             "op": "runtime.call",
+            "releases_contents": false,
             "result": {
               "own": "owned",
               "value": 4
@@ -2023,6 +2032,7 @@
               "to": 4
             },
             "op": "runtime.call",
+            "releases_contents": false,
             "result": {
               "own": "owned",
               "value": 6
@@ -2083,6 +2093,7 @@
               "to": 5
             },
             "op": "runtime.call",
+            "releases_contents": false,
             "result": {
               "own": "owned",
               "value": 9
@@ -2257,6 +2268,7 @@
               "to": 11
             },
             "op": "runtime.call",
+            "releases_contents": false,
             "result": {
               "own": "owned",
               "value": 19
@@ -2296,6 +2308,7 @@
               "to": 17
             },
             "op": "runtime.call",
+            "releases_contents": false,
             "result": {
               "own": "owned",
               "value": 30
@@ -2364,6 +2377,7 @@
               "to": 12
             },
             "op": "runtime.call",
+            "releases_contents": false,
             "result": {
               "own": "none",
               "value": 23
@@ -2579,6 +2593,7 @@
               "to": 18
             },
             "op": "runtime.call",
+            "releases_contents": false,
             "result": {
               "own": "owned",
               "value": 33

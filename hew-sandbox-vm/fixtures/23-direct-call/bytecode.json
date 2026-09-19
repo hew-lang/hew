@@ -80,6 +80,7 @@
               "to": 4
             },
             "op": "runtime.call",
+            "releases_contents": false,
             "result": null,
             "result_member_shapes": [],
             "result_shape": null,

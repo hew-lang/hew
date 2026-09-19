@@ -9,7 +9,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const sourceRoot = resolve(
   process.env.HEW_SOURCE_ROOT ?? join(dirname(fileURLToPath(import.meta.url)), ".."),
 );
-const stagingRoot = resolve(process.argv[2] ?? join(sourceRoot, "target/npm/@hew-lang"));
+const stagingRoot = resolve(sourceRoot, process.argv[2] ?? process.env.HEW_NPM_STAGE_ROOT ?? "target/npm/@hew-lang");
 
 async function loadPackage(name, wasm = false) {
   const root = join(stagingRoot, name);

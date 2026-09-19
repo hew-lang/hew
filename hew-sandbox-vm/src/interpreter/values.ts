@@ -1,6 +1,7 @@
 import type { JsonValue } from "./types.js";
 
 export type VmValue =
+  | { kind: "rc"; cell: { value: VmValue; refs: number }; closed: boolean }
   | { kind: "unit" }
   | { kind: "bool"; value: boolean }
   | { kind: "i64"; value: bigint }
@@ -48,6 +49,10 @@ const I64_LITERAL_DECIMAL = /^(?:0|-?[1-9]\d*)$/;
 
 export function cloneValue(value: VmValue): VmValue {
   switch (value.kind) {
+    case "rc":
+      if (value.closed) throw new Error("cannot copy a released Rc");
+      value.cell.refs += 1;
+      return { kind: "rc", cell: value.cell, closed: false };
     case "unit":
       return UNIT;
     case "bool":
@@ -258,6 +263,8 @@ export function renderStdout(value: VmValue): string {
       });
     case "vector":
       return canonicalJson(value.items.map((item) => toJsonValue(item)));
+    case "rc":
+      return renderStdout(value.cell.value);
     case "map":
       return canonicalJson(mapEntriesJson(value));
     case "dyn":
@@ -305,6 +312,8 @@ export function toJsonValue(value: VmValue): JsonValue {
       };
     case "vector":
       return value.items.map(toJsonValue);
+    case "rc":
+      return toJsonValue(value.cell.value);
     case "map":
       return mapEntriesJson(value);
     case "dyn":

@@ -588,6 +588,7 @@
               "to": 19
             },
             "op": "runtime.call",
+            "releases_contents": false,
             "result": {
               "own": "owned",
               "value": 15
@@ -698,6 +699,7 @@
               "to": 23
             },
             "op": "runtime.call",
+            "releases_contents": false,
             "result": null,
             "result_member_shapes": [],
             "result_shape": null,

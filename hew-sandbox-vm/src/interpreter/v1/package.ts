@@ -392,6 +392,7 @@ export type TermV1 =
         family: number;
         structural?: number | null;
         callbacks?: number[];
+        releases_contents?: boolean;
         result_member_shapes?: Array<number | null>;
         result_shape: number | null;
       })

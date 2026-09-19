@@ -563,6 +563,7 @@
               "to": 19
             },
             "op": "runtime.call",
+            "releases_contents": false,
             "result": null,
             "result_member_shapes": [],
             "result_shape": null,
@@ -661,6 +662,7 @@
               "to": 1
             },
             "op": "runtime.call",
+            "releases_contents": false,
             "result": null,
             "result_member_shapes": [],
             "result_shape": null,

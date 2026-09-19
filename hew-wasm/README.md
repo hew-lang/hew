@@ -61,7 +61,8 @@ make playground-check  # browser analysis and Wasm build
 
 Packages are staged under `target/npm/@hew-lang/{wasm,sandbox-vm}`. The compiler
 entry is `wasm.js` with its accompanying `wasm_bg.wasm`. Use the same workspace
-version for compiler and VM.
+version for compiler and VM. Set `HEW_NPM_STAGE_ROOT` to build and smoke-test a
+separate candidate directory without replacing an existing consumer stage.
 
 For WASI execution (`hew build --target=wasm32-wasi`), consult the separate
 [WASM capability matrix](../docs/wasm-capability-matrix.md).

@@ -195,6 +195,37 @@ function option(
   };
 }
 
+export function* sharedOperation(
+  operation: string,
+  args: VmValue[],
+): ValueProgram {
+  if (operation === "RcNew")
+    return { kind: "rc", cell: { value: args[0]!, refs: 1 }, closed: false };
+  const receiver = args[0];
+  if (receiver?.kind !== "rc" || receiver.closed)
+    throw new Error("shared operation has no live Rc");
+  switch (operation) {
+    case "RcClone":
+      return cloneValue(receiver);
+    case "RcGet":
+      return cloneValue(receiver.cell.value);
+    case "RcIsUnique":
+      return boolean(receiver.cell.refs === 1);
+    case "RcStrongCount":
+      return integer(BigInt(receiver.cell.refs));
+    case "RcWeakCount":
+      return integer(0n);
+    case "RcSet": {
+      const old = receiver.cell.value;
+      receiver.cell.value = args[1]!;
+      yield { kind: "release", value: old };
+      return UNIT;
+    }
+    default:
+      throw new Error(`shared operation ${operation} has no executor`);
+  }
+}
+
 /** Open-addressed collection operations preserve native callback ordering:
  * growth hashes occupied slots before probing the incoming key. Staged slots
  * borrow their owners until every fallible callback has completed. */
@@ -210,6 +241,26 @@ export function* collectionOperation(
     const receiver = args[0];
     if (receiver?.kind !== "vector")
       throw new Error("vector operation has no vector");
+    if (operation === "Clear") {
+      const items = receiver.items.splice(0);
+      yield {
+        kind: "release",
+        value: { kind: "vector", elementType: receiver.elementType, items },
+      };
+      return receiver;
+    }
+    if (operation === "Set") {
+      const index = args[1];
+      if (index?.kind !== "i64")
+        throw new Error("vector mutation has no index");
+      const at = Number(index.value);
+      if (at < 0 || at >= receiver.items.length)
+        throw new ShimFault("vector_bounds", "vector index out of bounds");
+      const old = receiver.items[at]!;
+      receiver.items[at] = args[2]!;
+      yield { kind: "release", value: old };
+      return receiver;
+    }
     for (const item of receiver.items) {
       const equal = yield* selectedValue(pkg, callbacks[0]!, [item, args[1]!]);
       if (equal.kind !== "bool")

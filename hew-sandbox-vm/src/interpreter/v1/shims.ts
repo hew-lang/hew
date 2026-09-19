@@ -77,14 +77,30 @@ export function resolveRuntimeShim(
         : undefined;
     case "Print":
       return printShim(entry.detail);
+    case "RcNew":
+    case "RcClone":
+    case "RcGet":
+    case "RcIsUnique":
+    case "RcSet":
+    case "RcStrongCount":
+    case "RcWeakCount":
+      return () => {
+        throw new Error("shared operation requires its resumable executor");
+      };
     case "Vector":
-      return entry.detail === "Contains"
+      return ["Contains", "Set", "Clear"].includes(String(entry.detail))
         ? () => {
             throw new Error(
               "vector Contains requires its selected Eq executor",
             );
           }
         : VECTOR_SHIMS[detailName(entry.detail)];
+    case "Array":
+      return entry.detail === "Set"
+        ? () => {
+            throw new Error("array mutation requires its resumable executor");
+          }
+        : undefined;
     case "Map":
     case "Set":
       return [

@@ -181,6 +181,7 @@
               "to": 7
             },
             "op": "runtime.call",
+            "releases_contents": false,
             "result": {
               "own": "owned",
               "value": 6
@@ -279,6 +280,7 @@
               "to": 8
             },
             "op": "runtime.call",
+            "releases_contents": false,
             "result": null,
             "result_member_shapes": [],
             "result_shape": null,

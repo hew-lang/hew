@@ -89,6 +89,7 @@
   "hew_version": "0.6.0-rc4",
   "profile": "sandbox.sandbox-vm-export.v0",
   "regex_patterns": [],
+  "resources": [],
   "runtime_families": [],
   "schema_version": "hew.sandbox.bytecode.v1",
   "strings": [

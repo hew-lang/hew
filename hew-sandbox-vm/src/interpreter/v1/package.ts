@@ -526,6 +526,12 @@ export interface SupervisorShape {
 }
 
 export interface PackageV1 {
+  resources?: Array<{
+    kind: string;
+    ty?: string;
+    close?: number;
+    release?: string;
+  }>;
   structural_render?: import("./structural.js").StructuralRecipe[];
   schema_version: "hew.sandbox.bytecode.v1";
   hew_version: string;

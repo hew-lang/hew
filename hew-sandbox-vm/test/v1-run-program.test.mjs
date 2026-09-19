@@ -118,7 +118,7 @@ test("runProgram reports a load-time refusal rather than an empty run", () => {
   assert.equal(result.sandbox_rejections[0].capability, "FileRead::Open");
   assert.ok(
     result.diagnostics.some(
-      (diagnostic) => diagnostic.severity === "error" && diagnostic.message.includes("FileRead")
+      (diagnostic) => diagnostic.severity === "error" && diagnostic.capability === "FileRead::Open" && diagnostic.message.includes("requires native execution")
     ),
     `a refused capability must reach the page: ${JSON.stringify(result.diagnostics)}`
   );

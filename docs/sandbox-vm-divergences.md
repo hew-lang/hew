@@ -1,144 +1,79 @@
-# Sandbox VM divergences
+# Browser runtime behaviour and limits
 
-> Source syntax follows the [language guide](hew-language-guide.md); older
-> runtime dispositions below do not authorize retired source forms.
+The browser compiler uses the same frontend and verified ownership SIR as
+native Hew. `@hew-lang/wasm` exports editor analysis and
+`compileToSandboxBytecode`; `@hew-lang/sandbox-vm` executes the resulting v1
+package. There is no separate AST emitter or source-language profile.
 
+The package carries the compiler's ownership transfers, cleanup edges,
+checked operations, selected callables, actor protocols and suspension
+points. The VM loader admits its declared operations before execution.
+Successful compilation alone does not establish browser execution support.
 
-The sandbox VM is deterministic by design. It admits programs whose observable behavior can be reproduced in a browser-hosted runtime and rejects native-only APIs that require host operating-system authority. This document is the public catalog for accepted runtime divergences and out-of-scope native surfaces.
+## Executed language surfaces
 
-## Contents
+The VM executes ordinary functions, closures, records, enums, machines,
+collections and checked arithmetic. Resumable frames support actors,
+supervisors, tasks, scopes, deadlines, select, race, generators and bounded
+in-memory pipes. Structural formatting follows the checked nested `Display`
+selections and can suspend or fail through those callbacks.
 
-- [One lowering, two engines](#one-lowering-two-engines)
-- [The standard library travels in the browser package](#the-standard-library-travels-in-the-browser-package)
-- [Scheduler determinism vs native preemption](#scheduler-determinism-vs-native-preemption)
-- [Virtual clock vs wall-clock](#virtual-clock-vs-wall-clock)
-- [Seeded PRNG vs host entropy](#seeded-prng-vs-host-entropy)
-- [Logical heap accounting vs allocator](#logical-heap-accounting-vs-allocator)
-- [Native-64 `isize`/`usize` parity](#native-64-isizeusize-parity)
-- [Deterministic actor/message IDs](#deterministic-actormessage-ids)
-- [Page stdout/stderr/stdin vs OS streams](#page-stdoutstderrstdin-vs-os-streams)
-- [In-memory streams only (no file/network backing)](#in-memory-streams-only-no-filenetwork-backing)
-- [Web Worker single-threaded execution](#web-worker-single-threaded-execution)
-- [Regex engine differences](#regex-engine-differences)
-- [Windows parity enforcement](#windows-parity-enforcement)
-- [Profile admission diagnostics](#profile-admission-diagnostics)
-- [v0.5 substrate surface admission](#v05-substrate-surface-admission)
-- [Admitted-but-not-yet-runnable constructs](#admitted-but-not-yet-runnable-constructs)
-- [Out-of-scope native surfaces](#out-of-scope-native-surfaces)
+Authored resource close runs during normal cleanup and fault recovery.
+Task results, generator captures and buffered pipe items retain their owned
+cleanup obligations. Supervised roles follow replacement incarnations;
+observing a failed call alone does not settle the run's crash debt.
 
-## One lowering, two engines
+`make sandbox-parity` compiles and executes source programs with both the
+native compiler and VM. Additional browser tests exercise concurrency,
+recovery, cleanup and deterministic replay. These checks cover their source
+programs; they do not establish parity for every possible composition.
 
-The sandbox VM executes bytecode emitted from the same verified ownership semantics the native compiler uses. The bytecode package is a projection of `hew_sir::SemModule`, so copies, transfers, releases, cleanup edges, checked-arithmetic failures and suspension points are facts the compiler proved and the VM executes, not decisions the VM makes for itself. There is no second lowering of the source and no separate set of semantics for the browser. What the VM adds is the execution model below: determinism, a virtual clock and a page-hosted environment.
+## Capability refusal
 
-Source spans in a sandbox trace are carets rather than extents. Semantic lowering records one source byte per operation site, so a trace names where an operation began and not how wide its expression was.
+The loader returns `sandbox_rejected` with entries containing `category`,
+`code`, `capability`, `message` and `span`. The message is intended for
+developers; `capability` retains the operation identity for tooling.
 
-## The standard library travels in the browser package
-
-Module resolution reads `.hew` sources through filesystem paths, and the browser has no filesystem, so the shipped standard-library sources travel inside the wasm package and resolution reads them from there. The browser therefore compiles against the same standard library the native compiler does, from the same sources, rather than a browser-specific subset. A module present on disk but missing from the package would compile natively and fail in the browser, so the package's copy is generated from the shipped tree and pinned against it.
-
-What a standard-library module can then *do* in the sandbox is a separate question, answered by the capability entries below: the sources resolve, and a function reaching a native-only authority is still refused.
-
-One module is refused in the browser for a reason that is not a capability. A compiler intrinsic may only be declared by a module the compiler can prove is the shipped source, and that proof is the file's canonical path. The browser has no paths to canonicalize, so `std.math` — whose functions are `#[intrinsic]` declarations — compiles natively and is refused in the browser build, although the VM implements every one of its intrinsics and matches native on all of them. Closing this means giving compiled-in sources a provenance of their own, which is a question about who may declare an intrinsic rather than about what the sandbox can execute.
-
-## Scheduler determinism vs native preemption
-
-Native execution may be preempted by the host scheduler. The sandbox VM instead uses deterministic scheduling points so a run can be replayed from the same bytecode package, seed, and input stream. Programs must not rely on native thread interleavings, timing races, or host scheduling fairness as observable behavior.
-
-## Virtual clock vs wall-clock
-
-Sandbox time is virtual. Sleep and deadline behavior advances through the VM clock rather than the browser or operating-system wall clock. This keeps replay stable and prevents host load from changing program results.
-
-## Seeded PRNG vs host entropy
-
-Sandbox random APIs are seeded by the VM run configuration. They do not read host entropy sources. The same seed and input stream produce the same random sequence.
-
-## Logical heap accounting vs allocator
-
-The sandbox VM accounts heap usage logically at VM allocation boundaries. Native allocator layout, fragmentation, and platform-specific allocation overhead are not part of the sandbox contract. Heap-limit diagnostics therefore refer to the VM accounting model, not the host allocator's byte-for-byte behavior.
-
-## Native-64 `isize`/`usize` parity
-
-Browser-sandbox `isize` and `usize` follow native-64 parity semantics, using a host-native `hew run` as the parity reference. This is intentional: they do **not** follow wasm32 pointer-width semantics.
-
-## Deterministic actor/message IDs
-
-Actor and message identifiers are allocated deterministically by the sandbox runtime. Native runtimes may derive identifiers from process-local runtime state or concurrent allocation order; sandbox IDs are stable for replay and comparison.
-
-## Page stdout/stderr/stdin vs OS streams
-
-Sandbox standard input, output, and error are page-owned streams. They are provided by the embedding page or test harness, not by operating-system file descriptors. Output ordering is defined by VM execution order.
-
-Standard input arrives as a `stdin` replay input and is consumed one line per `read_line` call while the program runs, so a loop reads successive lines and sees `""` at end of input. It is not baked into the bytecode ahead of execution.
-
-## In-memory streams only (no file/network backing)
-
-Sandbox streams are in-memory values. They do not open host files, sockets, pipes, terminals, or device handles. Programs that require file-backed or network-backed streams must run on a native target.
-
-## Web Worker single-threaded execution
-
-The browser sandbox runs inside a Web Worker and executes VM work on a single JavaScript worker thread. This isolates execution from the page UI thread and avoids shared-memory data races, but it does not expose native threads or host parallelism.
-
-## Regex engine differences
-
-Sandbox regex support is limited to the admitted sandbox profile and may use the browser-compatible implementation selected by the VM. Patterns that depend on native-engine extensions, locale-specific behavior, or implementation-defined backtracking limits are outside the sandbox compatibility contract.
-
-## Windows parity enforcement
-
-Native↔sandbox parity is enforced on Linux CI through the provisioned `make sandbox-parity` gate. Windows currently skips that parity harness because the Windows runner does not provision the `hew-sandbox-vm` Node/npm toolchain for it. This tracked gap is issue #1823.
-
-## Profile admission diagnostics
-
-The bytecode exporter rejects source that cannot be represented by the current sandbox profile. These diagnostics are accepted profile divergences until the corresponding VM surface is admitted:
-
-| Anchor | Diagnostic kind | Meaning |
+| Category | Meaning | Examples |
 | --- | --- | --- |
-| <a id="reserved-control-flow-lowering"></a>Reserved control-flow lowering | `reserved_control_flow` | Loop and branch forms that need a later bytecode lowering pass are not exported yet. |
-| <a id="reserved-runtime-feature-lowering"></a>Reserved runtime feature lowering | `reserved_runtime_feature` | Actor, supervisor, machine, async, generator, and structured-concurrency features that need additional VM runtime support are not exported yet. |
-| <a id="unknown-actor-method-symbol"></a>Unknown actor method symbol | `unknown_method_symbol` | Method calls that cannot be resolved through the current sandbox profile allowlist are rejected. |
-| <a id="unknown-profile-symbol"></a>Unknown profile symbol | `unknown_symbol` | Helpers or builtins outside the current sandbox profile allowlist are rejected. |
-| <a id="unsafe-rejected"></a>Unsafe rejected | `unsafe_rejected` | Unsafe blocks are rejected by the browser sandbox profile. |
+| `native_only` | The operation requires a host capability. | Filesystem access, network sockets, remote actor calls. |
+| `not_implemented` | The browser executor has no implementation yet. | Periodic handlers, links and monitors, mailbox coalescing, per-actor heap limits, wire codecs, opaque resource close, missing library shims. |
+| `invalid_package` | The package does not satisfy the supported bytecode contract. | Missing entry point, unknown schema or opcode. |
 
-## v0.5 substrate surface admission
+Unimplemented features are refused before the program prints output.
+Compiler diagnostics, language panics, checked traps, VM failures and step
+budget exhaustion have separate result statuses. A consumer may offer
+explicit remote execution; it should not silently reroute failures.
 
-The current sandbox profile is explicit allowlist first. Native v0.5 surfaces that are not yet represented by sandbox bytecode or the TypeScript VM must reject before bytecode emission with a typed diagnostic.
+The shipped standard library is embedded in the Wasm compiler from the same
+sources as native Hew, including intrinsic provenance. Resolving an import
+does not grant the browser its host capabilities.
 
-| Surface | Sandbox disposition | Diagnostic / opcode evidence |
-| --- | --- | --- |
-| `extern` / native FFI | Rejected as native-only. | `Unsupported::NATIVE_ONLY`; covered by sandbox profile tests. |
-| `unsafe` blocks | Rejected. | `unsafe_rejected`; covered by sandbox profile tests. |
-| `while let` | Rejected until loop/control-flow lowering is admitted. | `reserved_control_flow`; covered by sandbox profile tests. |
-| `string` methods | `len` and `slice` are admitted; broader native string methods remain rejected until the VM has matching shims. | `string.len` / `string.slice` bytecode tests for admitted methods; `unknown_method_symbol` tests for unsupported methods. |
-| Machine generics | Rejected with the rest of machine runtime declarations. | `reserved_runtime_feature`; covered by sandbox profile tests. |
-| Record construction / auto-derived record layout | Admitted for deterministic value records. | `record.new` and `record.get` bytecode tests. |
-| `is` identity operator | Rejected until sandbox heap identity semantics are admitted. | `reserved_runtime_feature`; covered by sandbox profile tests. |
+## Deterministic execution
 
-## Admitted-but-not-yet-runnable constructs
+The VM schedules resumable frames on one JavaScript thread. The bytecode,
+seed and recorded inputs reproduce the same scheduler choices. Native
+thread interleavings and host scheduling fairness are outside that promise.
 
-Some constructs pass the profile admission gate (they compile to bytecode with no diagnostic) but the emitter or interpreter cannot yet run them correctly: they trap at run time, or the emitter fails closed mid-lowering. These are **not** parity-proven and must not be treated as runnable. They are the most dangerous class of gap — an admitted construct with no parity case can silently diverge from native (the float-as-i64 bug was exactly this).
+Sleep and deadline operations advance a virtual clock. Random APIs use the
+run's seeded PRNG. Actor identifiers and scheduler resume tickets are
+deterministic. A step budget bounds execution; it does not represent native
+CPU time or allocator usage.
 
-The sandbox parity ratchet catalogues every one of these and verifies, on each run, that it genuinely does not run at parity (`tests/parity_ratchet.rs`, `not_yet_runnable_constructs_do_not_run_at_parity`). The moment graduation work makes one of these runnable, that test fails until that work adds a required parity case — so a construct cannot become runnable without joining the ratchet. A construct is "runnable in the sandbox" if and only if it is in `REQUIRED_PARITY_TEST_NAMES` with a green stdout+exit parity case under `HEW_SEED=42`.
+Browser `isize` and `usize` use 64-bit semantics to match the native parity
+reference, rather than wasm32 pointer width. Strings and owned byte arrays
+retain their Hew value semantics.
 
-| Construct | Observed sandbox failure today | Root cause |
-| --- | --- | --- |
-| Scalar-literal `match` (`i64` / `string` / `bool` scrutinee) | `invalid_enum_tag` trap | The match lowering dispatches every scrutinee through `enum.tag`; a non-enum scrutinee has no enum tag. Enum/constructor matches work; scalar-literal matches do not. |
-| Tuple value + tuple-`let` destructure | `unsupported_instruction` trap | No tuple lowering in the emitter. |
-| Expression-position `if let` | `unsupported_instruction` trap | No `if let` expression lowering in the emitter (statement position is profile-rejected separately). |
-| Numeric cast (`as`) | `unsupported_instruction` trap | No cast lowering in the emitter. |
-| Postfix-try (`?`) | `unsupported_instruction` trap | No try-propagation lowering in the emitter. |
-| `Option` `Some`/`None` construction | `unsupported_instruction` trap | `Some`/`None` are not registered as enum constructors for the emitter (unlike `Ok`/`Err`, which are). |
-| Struct pattern in a `match` arm | `unsupported_instruction` trap | The match lowering rejects struct/tuple arm patterns. |
-| `const` item reference | `unsupported_instruction` trap (renders unit) | Top-level `const` values are not bound for the emitter; references lower to unit. |
+## Host differences
 
-These graduate one at a time through the staged sandbox roadmap; each graduation lands the profile admission, the emitter lowering, the interpreter handler, and the parity case together (the lockstep rule), at which point the construct moves from this table into the parity ratchet.
+Standard input and output belong to the embedding application. Input is
+consumed one line per `read_line` call and recorded for replay; end of input
+returns an empty string. Pipes connect in-memory producers and consumers,
+without opening operating-system handles.
 
-## Out-of-scope native surfaces
+Regex matching uses the JavaScript engine. Engine-specific pattern features
+and matching behaviour require separate parity checks before being relied
+on across targets.
 
-The following native surfaces are rejected by the sandbox profile. The stable typed diagnostic kind is `Unsupported::NATIVE_ONLY`.
-
-| Surface | Examples | Diagnostic kind |
-| --- | --- | --- |
-| File I/O beyond stdin | `std::fs`, `std::io::File*` | `Unsupported::NATIVE_ONLY` |
-| Network sockets | `std::net::tcp`, `std::net::udp` | `Unsupported::NATIVE_ONLY` |
-| Native FFI | `extern` blocks, raw pointer FFI surfaces | `Unsupported::NATIVE_ONLY` |
-| OS signals, processes, env vars | `std::process`, `std::os`, `std::env` | `Unsupported::NATIVE_ONLY` |
-| Real-time / wall-clock APIs | `std::time` | `Unsupported::NATIVE_ONLY` |
+The native-to-VM parity harness runs on Linux. Windows currently skips that
+Node-based harness; native and WASI checks are separate evidence.

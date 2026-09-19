@@ -24,6 +24,31 @@
     "vtables"
   ],
   "properties": {
+    "resources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["kind"],
+        "properties": {
+          "kind": {
+            "enum": [
+              "record",
+              "opaque",
+              "nominal",
+              "task",
+              "actor_call",
+              "generator",
+              "stream",
+              "sink"
+            ]
+          },
+          "ty": { "type": "string" },
+          "close": { "type": "integer", "minimum": 0 },
+          "release": { "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    },
     "structural_render": {
       "type": "array",
       "items": {

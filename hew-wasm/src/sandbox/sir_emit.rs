@@ -51,6 +51,7 @@ impl std::error::Error for EmitError {}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Package {
     pub structural_render: Vec<serde_json::Value>,
+    pub resources: Vec<serde_json::Value>,
     pub schema_version: String,
     pub hew_version: String,
     pub compiler_version: String,
@@ -525,6 +526,22 @@ impl<'m> Walker<'m> {
         }
     }
 
+    fn resources(&self) -> Result<Vec<serde_json::Value>, EmitError> {
+        self.module.resources.iter().map(|(ty, release)| {
+                use hew_sir::ResourceRelease;
+                Ok(match release {
+                    ResourceRelease::RecordClose { close, .. } => serde_json::json!({"kind": "record", "ty": ty.user_facing().to_string(), "close": self.function_id(*close)?}),
+                    ResourceRelease::OpaqueClose { close, .. } => serde_json::json!({"kind": "opaque", "ty": ty.user_facing().to_string(), "close": self.function_id(*close)?}),
+                    ResourceRelease::Nominal { release, .. } => serde_json::json!({"kind": "nominal", "ty": ty.user_facing().to_string(), "release": release.symbol}),
+                    ResourceRelease::Task => serde_json::json!({"kind": "task"}),
+                    ResourceRelease::ActorCall => serde_json::json!({"kind": "actor_call"}),
+                    ResourceRelease::Generator => serde_json::json!({"kind": "generator"}),
+                    ResourceRelease::Stream => serde_json::json!({"kind": "stream"}),
+                    ResourceRelease::Sink => serde_json::json!({"kind": "sink"}),
+                })
+            }).collect::<Result<Vec<_>, EmitError>>()
+    }
+
     fn emit(
         mut self,
         profile: &str,
@@ -557,6 +574,7 @@ impl<'m> Walker<'m> {
 
         Ok(Package {
             structural_render: self.structural_render()?,
+            resources: self.resources()?,
             schema_version: SCHEMA_VERSION.to_string(),
             hew_version: hew_version.to_string(),
             compiler_version: compiler_version.to_string(),

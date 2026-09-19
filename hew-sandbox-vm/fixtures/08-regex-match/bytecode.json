@@ -1256,6 +1256,13 @@
   "hew_version": "0.6.0-rc4",
   "profile": "sandbox.sandbox-vm-export.v0",
   "regex_patterns": [],
+  "resources": [
+    {
+      "close": 3,
+      "kind": "record",
+      "ty": "std.text.regex.Pattern"
+    }
+  ],
   "runtime_families": [
     {
       "detail": {

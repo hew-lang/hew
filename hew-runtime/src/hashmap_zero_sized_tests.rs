@@ -303,8 +303,9 @@ fn empty_key_faults_preserve_results_entries_and_staged_owners() {
                 failure
             );
             assert!(inserted);
-            assert_eq!(CLONES.get(), before_clones + 1);
-            assert_eq!(DROPS.get(), before_drops + 1);
+            // Failed probes borrow inputs and never acquire scratch owners.
+            assert_eq!(CLONES.get(), before_clones);
+            assert_eq!(DROPS.get(), before_drops);
             release_fault(fault);
             let sentinel = (&raw const key).cast();
             let mut result = sentinel;
@@ -347,12 +348,12 @@ fn empty_key_faults_preserve_results_entries_and_staged_owners() {
 }
 
 #[test]
-fn empty_key_rehash_moves_owners_and_rolls_back_hash_fault() {
+fn empty_key_pending_probe_abandonment_keeps_owner() {
+    use hew_cabi::map::HewMapProbeStatus;
     let (key_layout, unit) = layouts(64, true);
     let key = AlignedUnit;
-    // Equal empty keys cannot fill a table. Exercise the private staged growth
-    // path directly without inventing address-dependent Hash/Eq semantics.
-    // SAFETY: the test commits a successful resize using the production geometry.
+    // Pending hash and equality callbacks only borrow the aligned empty key.
+    // Abandonment must not release the owner the map already holds.
     unsafe {
         let map = hew_hashmap_new_with_layout(&raw const key_layout, &raw const unit);
         assert!(success(|out, fault| hew_hashmap_insert_clone_layout(
@@ -362,22 +363,33 @@ fn empty_key_rehash_moves_owners_and_rolls_back_hash_fault() {
             out,
             fault
         )));
-        let old_entries = (*map).entries;
-        let old_cap = (*map).cap;
+        let probe = hew_hashmap_probe_begin(map, (&raw const key).cast(), 1);
+        assert_eq!(
+            hew_hashmap_probe_step(probe),
+            HewMapProbeStatus::NeedHash as i32
+        );
+        hew_hashmap_probe_free(probe);
+        assert_eq!(CLONES.get(), 1);
+        assert_eq!(DROPS.get(), 0);
+
+        let probe = hew_hashmap_probe_begin(map, (&raw const key).cast(), 1);
+        assert_eq!(
+            hew_hashmap_probe_step(probe),
+            HewMapProbeStatus::NeedHash as i32
+        );
         let mut fault = ptr::null_mut();
-        FAIL.set(-7);
-        assert_eq!(layout_resize(map, &raw mut fault), Err(-7));
-        release_fault(fault);
-        assert_eq!((*map).entries, old_entries);
-        assert_eq!((*map).cap, old_cap);
-        FAIL.set(0);
-        fault = ptr::null_mut();
-        let (entries, cap) = layout_resize(map, &raw mut fault).unwrap();
-        assert!(fault.is_null());
-        assert_eq!(cap, old_cap * 2);
-        dealloc_layout_entries(old_entries, old_cap, (*map).stride, 64);
-        (*map).entries = entries;
-        (*map).cap = cap;
+        let hash = key_hash(
+            key_layout.hash_fn.unwrap(),
+            hew_hashmap_probe_left(probe),
+            &raw mut fault,
+        )
+        .unwrap();
+        hew_hashmap_probe_submit_hash(probe, hash);
+        assert_eq!(
+            hew_hashmap_probe_step(probe),
+            HewMapProbeStatus::NeedEq as i32
+        );
+        hew_hashmap_probe_free(probe);
         assert_eq!(CLONES.get(), 1);
         assert_eq!(DROPS.get(), 0);
         assert!(success(|out, fault| hew_hashmap_contains_key_layout(

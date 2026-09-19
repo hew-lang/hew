@@ -178,6 +178,9 @@ pub struct HewLayoutHashMapIter {
     next_slot: usize,
 }
 
+mod probe;
+pub use probe::*;
+
 /// Create an iterator over the occupied entries in `m`.
 ///
 /// # Safety
@@ -371,7 +374,7 @@ unsafe fn slot_val(entries: *mut u8, idx: usize, stride: usize, val_offset: usiz
 ///
 /// # Panics
 ///
-/// Panics if `key_layout` is null, `hash_fn`/`eq_fn` are `None`, or `align`
+/// Panics if `key_layout` is null or `align`
 /// is not a power of two. Zero-sized keys retain their logical descriptor:
 /// the state byte provides nonzero slot stride, and callbacks receive aligned,
 /// non-null key addresses even when no payload bytes exist.
@@ -391,14 +394,6 @@ pub unsafe fn validate_key_layout(key_layout: *const HewMapKeyLayout) {
     }
     // SAFETY: caller guarantees non-null + valid.
     let kl = unsafe { &*key_layout };
-    if kl.hash_fn.is_none() {
-        crate::set_last_error("HewLayoutHashMap: key_layout.hash_fn is None");
-        panic!("HewLayoutHashMap: key_layout.hash_fn is None");
-    }
-    if kl.eq_fn.is_none() {
-        crate::set_last_error("HewLayoutHashMap: key_layout.eq_fn is None");
-        panic!("HewLayoutHashMap: key_layout.eq_fn is None");
-    }
     if !kl.value.align.is_power_of_two() {
         crate::set_last_error("HewLayoutHashMap: key_layout.value.align is not a power of two");
         panic!("HewLayoutHashMap: key_layout.value.align is not a power of two");
@@ -633,210 +628,6 @@ pub unsafe fn validate_op_map(m: *const HewLayoutHashMap) {
     }
 }
 
-/// Probe the map for `key` starting at its hashed slot. Returns the slot index
-/// of an existing OCCUPIED match, the first TOMBSTONE encountered, or the
-/// first EMPTY slot. The shared walker is used by insert, get, contains, and
-/// remove — there is exactly one probe implementation in this module.
-///
-/// `found_existing` is set to `true` when the returned slot already contains
-/// the searched-for key (OCCUPIED + eq).
-///
-/// # Safety
-///
-/// All pointers must come from a live `HewLayoutHashMap`. `hash_fn` and
-/// `eq_fn` must be the thunks registered on its `key_layout`. `cap` must be a
-/// non-zero power of two.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "layout fields are read as separate locals before reborrow to avoid \
-              re-deriving them through &self mid-resize (council Rev 1 §7)"
-)]
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "hash truncation u64 -> usize is intentional masking via probe modulus"
-)]
-unsafe fn layout_probe(
-    entries: *mut u8,
-    cap: usize,
-    stride: usize,
-    key_offset: usize,
-    key: *const c_void,
-    hash_fn: HewMapKeyHashThunk,
-    eq_fn: HewMapKeyEqThunk,
-    fault_out: *mut *mut c_void,
-) -> Result<(usize, bool), i32> {
-    let mask = cap - 1;
-    // SAFETY: caller guarantees key is valid for the type.
-    let h = unsafe { key_hash(hash_fn, key, fault_out)? };
-    let start = (h as usize) & mask;
-    let mut idx = start;
-    let mut first_tombstone: Option<usize> = None;
-    loop {
-        // SAFETY: idx < cap; stride/key_offset come from a valid map.
-        let state_ptr = unsafe { slot_state(entries, idx, stride) };
-        // SAFETY: state byte is in-bounds.
-        let state = unsafe { *state_ptr };
-        match state {
-            EMPTY => {
-                return Ok((first_tombstone.unwrap_or(idx), false));
-            }
-            OCCUPIED => {
-                // SAFETY: key offset is in-bounds.
-                let slot_key_ptr = unsafe { slot_key(entries, idx, stride, key_offset) };
-                // SAFETY: caller-supplied thunk; both pointers valid for layout.
-                let eq = unsafe { key_eq(eq_fn, slot_key_ptr.cast::<c_void>(), key, fault_out)? };
-                if eq {
-                    return Ok((idx, true));
-                }
-            }
-            TOMBSTONE => {
-                if first_tombstone.is_none() {
-                    first_tombstone = Some(idx);
-                }
-            }
-            _ => unreachable!("HewLayoutHashMap: invalid slot state"),
-        }
-        idx = (idx + 1) & mask;
-        if idx == start {
-            // Probed the whole table; must have a tombstone or we would have
-            // hit EMPTY (resize keeps load < 100%).
-            let Some(slot) = first_tombstone else {
-                crate::set_last_error("HewLayoutHashMap: full table without empty/tombstone");
-                std::process::abort();
-            };
-            return Ok((slot, false));
-        }
-    }
-}
-
-/// Stage double-capacity storage, re-hashing every occupied slot.
-/// The old table remains the owner until the caller commits this storage.
-///
-/// # Safety
-///
-/// `m` must be a valid, fully-initialised `HewLayoutHashMap` pointer.
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "hash truncation u64 -> usize on 32-bit targets is intentional probe masking"
-)]
-unsafe fn layout_resize(
-    m: *mut HewLayoutHashMap,
-    fault_out: *mut *mut c_void,
-) -> Result<(*mut u8, usize), i32> {
-    // Council Rev 1 §7: bind every layout-derived value as a scalar / raw-pointer
-    // local BEFORE any allocator call. No Rust reference (`&*m`, `&mut *m`, or
-    // a reference borrowed through them) is retained across `alloc(...)` or
-    // `dealloc(...)`. The rebuild loop below operates exclusively on these
-    // locals and the raw entries pointers. The caller commits the new storage
-    // only after its remaining fallible probes succeed.
-
-    // -- Step 1: copy all needed map fields as scalars / raw pointers ----------
-    // SAFETY: caller guarantees `m` is a valid, fully-initialised pointer; the
-    // raw field projections below read plain scalar / raw-pointer fields and
-    // do not borrow `*m`.
-    //
-    // W4.001 Stage C0a: `key_layout` / `val_layout` are now owned by-value
-    // snapshots on the map (not raw pointers). We read their *fields* as
-    // scalar locals here — never borrowing the descriptor itself across the
-    // allocator — preserving the council Rev 1 §7 discipline.
-    let (old_entries, old_cap, stride, key_offset, val_offset): (
-        *mut u8,
-        usize,
-        usize,
-        usize,
-        usize,
-    ) = unsafe {
-        (
-            (*m).entries,
-            (*m).cap,
-            (*m).stride,
-            (*m).key_offset,
-            (*m).val_offset,
-        )
-    };
-
-    // -- Step 2: copy needed layout descriptor fields as scalars ---------------
-    // SAFETY: `m` valid; reads of the by-value descriptor's scalar fields are
-    // plain scalar loads and do not borrow `*m`.
-    let (key_size, key_align, val_size, val_align, hash_fn_opt) = unsafe {
-        (
-            (*m).key_layout.value.size,
-            (*m).key_layout.value.align,
-            (*m).val_layout.size,
-            (*m).val_layout.align,
-            (*m).key_layout.hash_fn,
-        )
-    };
-    let entries_align = core::cmp::max(key_align, val_align);
-
-    let Some(hash_fn) = hash_fn_opt else {
-        crate::set_last_error(
-            "HewLayoutHashMap: hash_fn None at resize (constructor guard violated)",
-        );
-        std::process::abort();
-    };
-
-    let Some(new_cap) = old_cap.checked_mul(2) else {
-        crate::set_last_error("HewLayoutHashMap: capacity doubling overflow");
-        std::process::abort();
-    };
-
-    // -- Step 3: allocate new entries (no Rust reference to *m is live here) --
-    // SAFETY: stride > 0 by construction; new_cap > 0.
-    let new_entries = unsafe { alloc_layout_entries(new_cap, stride, entries_align) };
-
-    // -- Step 4: rebuild via raw pointers and scalar locals only --------------
-    let new_mask = new_cap - 1;
-    for i in 0..old_cap {
-        // SAFETY: i < old_cap; old_entries valid for the original table.
-        let state = unsafe { *slot_state(old_entries, i, stride) };
-        if state != OCCUPIED {
-            continue;
-        }
-        // SAFETY: occupied slot has valid key + value blobs at known offsets.
-        let src_key = unsafe { slot_key(old_entries, i, stride, key_offset) };
-        // SAFETY: hash_fn is the thunk registered on key_layout, which has not
-        // moved across the resize (caller-stable descriptors).
-        let h = match unsafe { key_hash(hash_fn, src_key.cast(), fault_out) } {
-            Ok(hash) => hash,
-            Err(status) => {
-                // Staged bytes borrow owners from the unchanged old table.
-                // SAFETY: This fresh buffer has the recorded allocation geometry and owns no values.
-                unsafe { dealloc_layout_entries(new_entries, new_cap, stride, entries_align) };
-                return Err(status);
-            }
-        };
-        let mut idx = (h as usize) & new_mask;
-        loop {
-            // SAFETY: idx < new_cap; new_entries freshly zero-initialised so
-            // every state byte is EMPTY (0) until we write OCCUPIED.
-            let dst_state = unsafe { slot_state(new_entries, idx, stride) };
-            // SAFETY: in-bounds; state byte is u8.
-            if unsafe { *dst_state } == EMPTY {
-                // SAFETY: dst_state is in-bounds; OCCUPIED constant is u8.
-                unsafe { *dst_state = OCCUPIED };
-                // SAFETY: dst key/value offsets in-bounds; src equally so;
-                // key_size / val_size are the scalar copies bound above.
-                unsafe {
-                    let dst_key = slot_key(new_entries, idx, stride, key_offset);
-                    ptr::copy_nonoverlapping(src_key, dst_key, key_size);
-                    if val_size > 0 {
-                        let src_val = slot_val(old_entries, i, stride, val_offset);
-                        let dst_val = slot_val(new_entries, idx, stride, val_offset);
-                        ptr::copy_nonoverlapping(src_val, dst_val, val_size);
-                    }
-                }
-                break;
-            }
-            idx = (idx + 1) & new_mask;
-        }
-    }
-
-    // The original table still owns every staged value until insertion's
-    // final probe succeeds. The caller commits or frees this buffer only.
-    Ok((new_entries, new_cap))
-}
-
 // ---------------------------------------------------------------------------
 // Constructor (layout-backed)
 // ---------------------------------------------------------------------------
@@ -844,7 +635,7 @@ unsafe fn layout_resize(
 /// Create a new layout-backed `HewLayoutHashMap`.
 ///
 /// Fail-closed gates (council Rev 2/3 + W4.001 Stage C0a): aborts on null
-/// layout pointers, missing hash/eq thunks, non-power-of-two
+/// layout pointers, non-power-of-two
 /// alignment, malformed ZST value layout, owned ownership without matching
 /// `drop_fn` (`String`/`LayoutManaged` require `Some(_)`), or stride overflow.
 ///
@@ -1071,63 +862,16 @@ pub unsafe extern "C-unwind" fn hew_hashmap_insert_clone_layout(
     present_out: *mut bool,
     fault_out: *mut *mut c_void,
 ) -> i32 {
-    // SAFETY: the caller supplies a live map and borrowed inputs.
+    // SAFETY: the caller lends initialized operands matching the descriptors.
     unsafe { validate_op_inputs(m, key, Some(val)) };
-    // SAFETY: copy the descriptor and geometry before any mutation or resize.
-    let (key_layout, val_layout, stride, key_offset, val_offset) = unsafe {
-        (
-            (*m).key_layout.value,
-            (*m).val_layout,
-            (*m).stride,
-            (*m).key_offset,
-            (*m).val_offset,
-        )
+    // SAFETY: all loans remain live while the shared probe drives C callbacks.
+    let probe = match unsafe { probe::drive(m, key, true, fault_out) } {
+        Ok(probe) => probe,
+        Err(status) => return status,
     };
-    require_clone(&key_layout, "map insert key");
-    require_clone(&val_layout, "map insert value");
-    if val.is_null() && val_layout.clone_fn.is_some() {
-        abort_layout_clone("map insert value: clone callback requires a non-null input slot");
-    }
-    let alignment = key_layout.align.max(val_layout.align);
-    // SAFETY: the map constructor validated this geometry. One slot is enough
-    // for the two staged values, including padding and zero-sized fields.
-    let scratch = unsafe { alloc_layout_entries(1, stride, alignment) };
-    // SAFETY: the stored field offsets are within this fresh aligned slot.
-    let (staged_key, staged_value) = unsafe { (scratch.add(key_offset), scratch.add(val_offset)) };
-    // SAFETY: both clones finish while their input map slots are still live.
-    // Insert then moves the staged value and either adopts or preserves the key.
-    let mut inserted = false;
-    // SAFETY: Both inputs and scratch slots match the copied descriptors.
-    let status = unsafe {
-        clone_layout_blob(key_layout, key.cast(), staged_key, "map insert key");
-        clone_layout_blob(val_layout, val.cast(), staged_value, "map insert value");
-        hew_hashmap_insert_layout(
-            m,
-            staged_key.cast(),
-            staged_value.cast(),
-            &raw mut inserted,
-            fault_out,
-        )
-    };
-    if status != 0 || !inserted {
-        if let Some(drop_key) = key_layout.drop_fn {
-            // SAFETY: replacement left this duplicate staged key with the caller.
-            unsafe { drop_key(staged_key.cast()) };
-        }
-    }
-    if status != 0 {
-        if let Some(drop_value) = val_layout.drop_fn {
-            // Failed transfer-in preserves both scratch owners.
-            // SAFETY: Failed transfer-in left this initialized scratch value uniquely owned.
-            unsafe { drop_value(staged_value.cast()) };
-        }
-    }
-    // SAFETY: all owners have moved or been released; only temporary slot storage remains.
-    unsafe { dealloc_layout_entries(scratch, 1, stride, alignment) };
-    if status != 0 {
-        return status;
-    }
-    // SAFETY: Caller supplies writable, disjoint scalar and fault outputs.
+    // SAFETY: callbacks completed; commit follows this entry's copy/take contract.
+    let inserted = unsafe { hew_hashmap_probe_insert_clone(probe, val) };
+    // SAFETY: the caller supplies writable result/fault output slots.
     unsafe { complete(present_out, inserted, fault_out) }
 }
 
@@ -1159,58 +903,16 @@ pub unsafe extern "C-unwind" fn hew_hashmap_insert_take_layout(
     present_out: *mut bool,
     fault_out: *mut *mut c_void,
 ) -> i32 {
-    // SAFETY: the caller supplies a live map and initialized inputs.
+    // SAFETY: the caller lends initialized operands matching the descriptors.
     unsafe { validate_op_inputs(m, key, Some(val)) };
-    // SAFETY: copy the descriptor and geometry before any mutation or resize.
-    let (key_layout, val_layout, stride, key_offset, val_offset) = unsafe {
-        (
-            (*m).key_layout.value,
-            (*m).val_layout,
-            (*m).stride,
-            (*m).key_offset,
-            (*m).val_offset,
-        )
+    // SAFETY: all loans remain live while the shared probe drives C callbacks.
+    let probe = match unsafe { probe::drive(m, key, true, fault_out) } {
+        Ok(probe) => probe,
+        Err(status) => return status,
     };
-    require_clone(&key_layout, "map insert key");
-    let alignment = key_layout.align.max(val_layout.align);
-    // SAFETY: the map constructor validated this geometry. One slot is enough
-    // for the two staged values, including padding and zero-sized fields.
-    let scratch = unsafe { alloc_layout_entries(1, stride, alignment) };
-    // SAFETY: the stored field offsets are within this fresh aligned slot.
-    let (staged_key, staged_value) = unsafe { (scratch.add(key_offset), scratch.add(val_offset)) };
-    let mut inserted = false;
-    // SAFETY: the key clone finishes while its input map slot is still live,
-    // and the value bytes are the caller's owner relocated into the staging
-    // slot. Insert then moves both on and adopts or preserves the key.
-    let status = unsafe {
-        clone_layout_blob(key_layout, key.cast(), staged_key, "map insert key");
-        if val_layout.size > 0 {
-            ptr::copy_nonoverlapping(val.cast::<u8>(), staged_value, val_layout.size);
-        }
-        hew_hashmap_insert_layout(
-            m,
-            staged_key.cast(),
-            staged_value.cast(),
-            &raw mut inserted,
-            fault_out,
-        )
-    };
-    if status != 0 || !inserted {
-        if let Some(drop_key) = key_layout.drop_fn {
-            // SAFETY: replacement or failure left this staged key clone ours.
-            unsafe { drop_key(staged_key.cast()) };
-        }
-    }
-    // A failed transfer-in never took the value: the staged bytes still alias
-    // the caller's owner, which the caller releases, so they are not dropped
-    // here.
-    // SAFETY: all owners have moved or been released; only temporary slot
-    // storage remains.
-    unsafe { dealloc_layout_entries(scratch, 1, stride, alignment) };
-    if status != 0 {
-        return status;
-    }
-    // SAFETY: Caller supplies writable, disjoint scalar and fault outputs.
+    // SAFETY: callbacks completed; commit follows this entry's copy/take contract.
+    let inserted = unsafe { hew_hashmap_probe_insert_take(probe, val) };
+    // SAFETY: the caller supplies writable result/fault output slots.
     unsafe { complete(present_out, inserted, fault_out) }
 }
 
@@ -1248,150 +950,17 @@ pub unsafe extern "C" fn hew_hashmap_insert_layout(
     present_out: *mut bool,
     fault_out: *mut *mut c_void,
 ) -> i32 {
-    // SAFETY: forwarded to the shared `pub` gate; null inputs abort under the
-    // workspace `panic = "abort"` profile.
-    unsafe { validate_op_inputs(m.cast_const(), key, Some(val)) };
-
-    // Council Rev 1 §7: do NOT hold a Rust reference (`&mut *m`) across the
-    // possible `layout_resize` call below. Read every needed scalar / raw
-    // pointer via raw projection BEFORE the resize decision. Re-read fields
-    // that resize may mutate (`entries`, `cap`) AFTER resize completes.
-
-    // Snapshot layout descriptor fields we need (descriptors are now owned
-    // by-value snapshots on the map; W4.001 Stage C0a).
-    // SAFETY: m non-null per validate_op_inputs above; reads of the by-value
-    // descriptor fields are plain scalar loads.
-    let (key_size, val_size, hash_fn_opt, eq_fn_opt, val_drop_fn_opt) = unsafe {
-        (
-            (*m).key_layout.value.size,
-            (*m).val_layout.size,
-            (*m).key_layout.hash_fn,
-            (*m).key_layout.eq_fn,
-            (*m).val_layout.drop_fn,
-        )
+    // SAFETY: caller supplies independent key/value owners of matching layouts.
+    unsafe { validate_op_inputs(m, key, Some(val)) };
+    // SAFETY: all operands remain live through callback completion.
+    let probe = match unsafe { probe::drive(m, key, true, fault_out) } {
+        Ok(probe) => probe,
+        Err(status) => return status,
     };
-    let (Some(hash_fn), Some(eq_fn)) = (hash_fn_opt, eq_fn_opt) else {
-        crate::set_last_error(
-            "hew_hashmap_insert_layout: hash_fn/eq_fn None (constructor guard violated)",
-        );
-        std::process::abort();
-    };
-
-    // Stage a resize without changing the table or moving any owners.
-    // SAFETY: Validated live map; these are copied scalars and raw pointers.
-    let (old_entries, old_cap, stride, key_offset, val_offset, len, alignment) = unsafe {
-        (
-            (*m).entries,
-            (*m).cap,
-            (*m).stride,
-            (*m).key_offset,
-            (*m).val_offset,
-            (*m).len,
-            (*m).key_layout.value.align.max((*m).val_layout.align),
-        )
-    };
-    let growing = len.saturating_add(1) * 100 >= old_cap * LOAD_PCTG;
-    let (entries, cap) = if growing {
-        // SAFETY: The live map remains unchanged while a new buffer is prepared.
-        match unsafe { layout_resize(m, fault_out) } {
-            Ok(staged) => staged,
-            Err(status) => return status,
-        }
-    } else {
-        (old_entries, old_cap)
-    };
-    // SAFETY: Both table choices have validated geometry and initialized occupied keys.
-    let (idx, existed) = match unsafe {
-        layout_probe(
-            entries, cap, stride, key_offset, key, hash_fn, eq_fn, fault_out,
-        )
-    } {
-        Ok(result) => result,
-        Err(status) => {
-            if growing {
-                // No staged slot owns its copied bits yet.
-                // SAFETY: The staged buffer has this geometry and still owns no element values.
-                unsafe { dealloc_layout_entries(entries, cap, stride, alignment) };
-            }
-            return status;
-        }
-    };
-    // All callbacks succeeded. Commit staged storage before changing owners.
-    if growing {
-        // SAFETY: The old allocation has this geometry; the successful stage now replaces it.
-        unsafe {
-            dealloc_layout_entries(old_entries, old_cap, stride, alignment);
-            (*m).entries = entries;
-            (*m).cap = cap;
-        }
-    }
-
-    // SAFETY: idx < cap, offsets in-bounds.
-    let state_ptr = unsafe { slot_state(entries, idx, stride) };
-    // SAFETY: idx < cap.
-    let dst_key = unsafe { slot_key(entries, idx, stride, key_offset) };
-    // SAFETY: idx < cap.
-    let dst_val = unsafe { slot_val(entries, idx, stride, val_offset) };
-
-    // SAFETY: state byte in-bounds.
-    unsafe { *state_ptr = OCCUPIED };
-
-    if existed {
-        // W4.001 Stage C0a contract (plan rev6 §4 "Acquisition / ownership
-        // contract", occupied-slot row + invariant 5: "Overwrite never
-        // drops K, always drops old V").
-        //
-        // 1. The stored slot K stays in place — it is the equality-witness
-        //    that the probe found, and re-copying caller-K bytes would leak
-        //    the stored K's owned allocation when K is `String` /
-        //    `LayoutManaged`. The duplicate K the caller passed is released by
-        //    the codegen conditional drop on the overwrite path
-        //    after a successful status with a false insertion result.
-        // 2. The old V is dropped via `val_layout.drop_fn` before the new V
-        //    overwrites it. `drop_fn = None` (Plain ownership) is the
-        //    no-op fast path.
-        // 3. The stored K's `drop_fn` is NEVER invoked here — the slot K is
-        //    reused, not freed.
-        if let Some(val_drop) = val_drop_fn_opt {
-            // SAFETY: dst_val points to the old V blob owned by the map;
-            // `drop_fn` is the descriptor-registered owned-V drop thunk and
-            // runs the type's drop plan in place (it must not deallocate
-            // the slot bytes themselves — the kernel owns slot storage).
-            val_drop(dst_val.cast::<c_void>());
-        }
-        // Raw-copy new V over the (now-dropped) old V slot bytes. For a
-        // `String` value this is the ownership-transfer MOVE described in the
-        // function header: the new V's sole owner relocates into the slot (no
-        // retain — the caller's V is consumed). The old V was already released
-        // by `val_drop` above, so the clone-retains / drop-releases symmetry
-        // holds and no allocation is leaked or double-freed.
-        if val_size > 0 {
-            // SAFETY: dst_val and val are valid blobs of `val_size` bytes (val
-            // non-null was enforced by validate_op_inputs when val_size > 0).
-            unsafe { ptr::copy_nonoverlapping(val.cast::<u8>(), dst_val, val_size) };
-        }
-    } else {
-        // Vacant slot: raw-copy K and V bytes into slot; possession transfers
-        // to the map (plan rev6 §4 contract-table vacant-slot row). For
-        // `String` K/V these two copies are the ownership-transfer MOVE: the
-        // caller's sole-owned, already-header-aware strings are relocated into
-        // the slots and consumed (no retain on ingress — see the function
-        // header's "MOVE on ingress" contract). The map's later
-        // `hew_hashmap_free_layout` / `hew_hashmap_remove_layout` release them
-        // through the descriptor `drop_fn`; `hew_hashmap_clone_layout` retains
-        // them. On this vacant path the caller's K is CONSUMED (contrast the
-        // overwrite path above, where the caller retains its duplicate K).
-        // SAFETY: dst_key and key are valid blobs of `key_size` bytes.
-        unsafe { ptr::copy_nonoverlapping(key.cast::<u8>(), dst_key, key_size) };
-        if val_size > 0 {
-            // SAFETY: dst_val and val are valid blobs of `val_size` bytes.
-            unsafe { ptr::copy_nonoverlapping(val.cast::<u8>(), dst_val, val_size) };
-        }
-        // SAFETY: m valid; raw scalar increment.
-        unsafe { (*m).len += 1 };
-    }
-    // SAFETY: Caller supplies writable, disjoint scalar and fault outputs.
-    unsafe { complete(present_out, !existed, fault_out) }
+    // SAFETY: ready transfer-in consumes value and a vacant key only.
+    let inserted = unsafe { probe::insert_transfer(probe, val) };
+    // SAFETY: caller supplies writable scalar and fault outputs.
+    unsafe { complete(present_out, inserted, fault_out) }
 }
 
 /// Look up a key. On success, writes a borrowed value pointer to `value_out`,
@@ -1430,46 +999,17 @@ pub unsafe extern "C" fn hew_hashmap_get_layout(
     value_out: *mut *const c_void,
     fault_out: *mut *mut c_void,
 ) -> i32 {
-    // SAFETY: shared fail-closed gate; no value pointer involved in lookup.
+    // SAFETY: the map and key remain live and unmodified during the lookup.
     unsafe { validate_op_inputs(m, key, None) };
-    // SAFETY: m non-null per gate.
-    let map = unsafe { &*m };
-    if map.cap == 0 || map.len == 0 {
-        // SAFETY: Caller supplies writable, disjoint scalar and fault outputs.
-        return unsafe { complete(value_out, ptr::null(), fault_out) };
-    }
-    // W4.001 Stage C0a: descriptors are owned by-value snapshots.
-    let kl = &map.key_layout;
-    let (Some(hash_fn), Some(eq_fn)) = (kl.hash_fn, kl.eq_fn) else {
-        crate::set_last_error(
-            "hew_hashmap_get_layout: hash_fn/eq_fn None (constructor guard violated)",
-        );
-        std::process::abort();
-    };
-    // SAFETY: layout fields valid.
-    let (idx, found) = match unsafe {
-        layout_probe(
-            map.entries,
-            map.cap,
-            map.stride,
-            map.key_offset,
-            key,
-            hash_fn,
-            eq_fn,
-            fault_out,
-        )
-    } {
-        Ok(result) => result,
+    // SAFETY: lookup probes only borrow the map; this cast grants no mutation.
+    let probe = match unsafe { probe::drive(m.cast_mut(), key, false, fault_out) } {
+        Ok(probe) => probe,
         Err(status) => return status,
     };
-    if !found {
-        // SAFETY: Caller supplies writable, disjoint scalar and fault outputs.
-        return unsafe { complete(value_out, ptr::null(), fault_out) };
-    }
-    // SAFETY: idx < cap; val_offset valid.
-    let val_ptr = unsafe { slot_val(map.entries, idx, map.stride, map.val_offset) };
-    // SAFETY: Caller supplies writable, disjoint scalar and fault outputs.
-    unsafe { complete(value_out, val_ptr.cast::<c_void>().cast_const(), fault_out) }
+    // SAFETY: the returned pointer remains borrowed from the caller's live map.
+    let value = unsafe { probe::get_pointer(probe) };
+    // SAFETY: caller supplies writable pointer and fault outputs.
+    unsafe { complete(value_out, value, fault_out) }
 }
 
 /// Look up a key and semantic-clone the stored value into caller-provided
@@ -1500,59 +1040,21 @@ pub unsafe extern "C" fn hew_hashmap_get_clone_layout(
     present_out: *mut bool,
     fault_out: *mut *mut c_void,
 ) -> i32 {
-    // SAFETY: shared fail-closed gate; no value pointer participates in lookup.
+    // SAFETY: caller provides a live map and matching key.
     unsafe { validate_op_inputs(m, key, None) };
-    // SAFETY: m non-null per gate.
-    let map = unsafe { &*m };
-    if (map.val_layout.size > 0 || map.val_layout.clone_fn.is_some()) && out.is_null() {
-        crate::set_last_error("hew_hashmap_get_clone_layout: out must hold the cloned value");
-        std::process::abort();
+    // SAFETY: the validated map's descriptor determines output storage needs.
+    if unsafe { (*m).val_layout.size > 0 || (*m).val_layout.clone_fn.is_some() } && out.is_null() {
+        panic!("map lookup output is null for a value that requires storage");
     }
-    if map.cap == 0 || map.len == 0 {
-        // SAFETY: Caller supplies writable, disjoint scalar and fault outputs.
-        return unsafe { complete(present_out, false, fault_out) };
-    }
-    let kl = &map.key_layout;
-    let (Some(hash_fn), Some(eq_fn)) = (kl.hash_fn, kl.eq_fn) else {
-        crate::set_last_error(
-            "hew_hashmap_get_clone_layout: hash_fn/eq_fn None (constructor guard violated)",
-        );
-        std::process::abort();
-    };
-    // SAFETY: layout fields valid.
-    let (idx, found) = match unsafe {
-        layout_probe(
-            map.entries,
-            map.cap,
-            map.stride,
-            map.key_offset,
-            key,
-            hash_fn,
-            eq_fn,
-            fault_out,
-        )
-    } {
-        Ok(result) => result,
+    // SAFETY: lookup only borrows the map; its contents stay live throughout.
+    let probe = match unsafe { probe::drive(m.cast_mut(), key, false, fault_out) } {
+        Ok(probe) => probe,
         Err(status) => return status,
     };
-    if !found {
-        // SAFETY: Caller supplies writable, disjoint scalar and fault outputs.
-        return unsafe { complete(present_out, false, fault_out) };
-    }
-    // SAFETY: idx < cap; val_offset valid.
-    let val_ptr = unsafe { slot_val(map.entries, idx, map.stride, map.val_offset) };
-    // SAFETY: val_ptr points at the occupied slot value and `out` was
-    // validated for this value layout above.
-    unsafe {
-        clone_layout_blob(
-            map.val_layout,
-            val_ptr,
-            out.cast::<u8>(),
-            "hew_hashmap_get_clone_layout value",
-        );
-    }
-    // SAFETY: Caller supplies writable, disjoint scalar and fault outputs.
-    unsafe { complete(present_out, true, fault_out) }
+    // SAFETY: ready lookup follows this entry's output ownership contract.
+    let found = unsafe { hew_hashmap_probe_get_clone(probe, out) };
+    // SAFETY: caller supplies writable scalar and fault outputs.
+    unsafe { complete(present_out, found, fault_out) }
 }
 
 /// Look up a key and copy the stored value's bytes into caller-provided
@@ -1585,55 +1087,21 @@ pub unsafe extern "C" fn hew_hashmap_get_borrow_layout(
     present_out: *mut bool,
     fault_out: *mut *mut c_void,
 ) -> i32 {
-    // SAFETY: shared fail-closed gate; no value pointer participates in lookup.
+    // SAFETY: caller provides a live map and matching key.
     unsafe { validate_op_inputs(m, key, None) };
-    // SAFETY: m non-null per gate.
-    let map = unsafe { &*m };
-    if map.val_layout.size > 0 && out.is_null() {
-        crate::set_last_error("hew_hashmap_get_borrow_layout: out must hold the borrowed value");
-        std::process::abort();
+    // SAFETY: the validated map's descriptor determines output storage needs.
+    if unsafe { (*m).val_layout.size > 0 } && out.is_null() {
+        panic!("map lookup output is null for a value that requires storage");
     }
-    if map.cap == 0 || map.len == 0 {
-        // SAFETY: Caller supplies writable, disjoint scalar and fault outputs.
-        return unsafe { complete(present_out, false, fault_out) };
-    }
-    let kl = &map.key_layout;
-    let (Some(hash_fn), Some(eq_fn)) = (kl.hash_fn, kl.eq_fn) else {
-        crate::set_last_error(
-            "hew_hashmap_get_borrow_layout: hash_fn/eq_fn None (constructor guard violated)",
-        );
-        std::process::abort();
-    };
-    // SAFETY: layout fields valid.
-    let (idx, found) = match unsafe {
-        layout_probe(
-            map.entries,
-            map.cap,
-            map.stride,
-            map.key_offset,
-            key,
-            hash_fn,
-            eq_fn,
-            fault_out,
-        )
-    } {
-        Ok(result) => result,
+    // SAFETY: lookup only borrows the map; its contents stay live throughout.
+    let probe = match unsafe { probe::drive(m.cast_mut(), key, false, fault_out) } {
+        Ok(probe) => probe,
         Err(status) => return status,
     };
-    if !found {
-        // SAFETY: Caller supplies writable, disjoint scalar and fault outputs.
-        return unsafe { complete(present_out, false, fault_out) };
-    }
-    // SAFETY: idx < cap; val_offset valid.
-    let val_ptr = unsafe { slot_val(map.entries, idx, map.stride, map.val_offset) };
-    if map.val_layout.size > 0 {
-        // SAFETY: val_ptr addresses the occupied slot's value blob and `out`
-        // was validated for this value layout above. The bytes are copied, not
-        // cloned: the map keeps the only owner.
-        unsafe { ptr::copy_nonoverlapping(val_ptr, out.cast::<u8>(), map.val_layout.size) };
-    }
-    // SAFETY: Caller supplies writable, disjoint scalar and fault outputs.
-    unsafe { complete(present_out, true, fault_out) }
+    // SAFETY: ready lookup follows this entry's output ownership contract.
+    let found = unsafe { hew_hashmap_probe_get_borrow(probe, out) };
+    // SAFETY: caller supplies writable scalar and fault outputs.
+    unsafe { complete(present_out, found, fault_out) }
 }
 
 /// Predicate form of `hew_hashmap_get_layout`.
@@ -1655,14 +1123,17 @@ pub unsafe extern "C" fn hew_hashmap_contains_key_layout(
     present_out: *mut bool,
     fault_out: *mut *mut c_void,
 ) -> i32 {
-    let mut value = ptr::null();
-    // SAFETY: the caller supplies live inputs and writable outputs.
-    let status = unsafe { hew_hashmap_get_layout(m, key, &raw mut value, fault_out) };
-    if status != 0 {
-        return status;
-    }
-    // SAFETY: Caller supplies writable, disjoint scalar and fault outputs.
-    unsafe { complete(present_out, !value.is_null(), fault_out) }
+    // SAFETY: caller provides a live map and matching borrowed key.
+    unsafe { validate_op_inputs(m, key, None) };
+    // SAFETY: lookup only borrows the map; its contents stay live throughout.
+    let probe = match unsafe { probe::drive(m.cast_mut(), key, false, fault_out) } {
+        Ok(probe) => probe,
+        Err(status) => return status,
+    };
+    // SAFETY: the ready probe is consumed without changing the map.
+    let found = unsafe { hew_hashmap_probe_contains(probe) };
+    // SAFETY: caller supplies writable scalar and fault outputs.
+    unsafe { complete(present_out, found, fault_out) }
 }
 
 /// Remove a key. On success, writes whether a matching entry was removed.
@@ -1684,76 +1155,17 @@ pub unsafe extern "C" fn hew_hashmap_remove_layout(
     present_out: *mut bool,
     fault_out: *mut *mut c_void,
 ) -> i32 {
-    // SAFETY: shared fail-closed gate.
-    unsafe { validate_op_inputs(m.cast_const(), key, None) };
-    // SAFETY: m non-null per gate.
-    let map = unsafe { &mut *m };
-    if map.cap == 0 || map.len == 0 {
-        // SAFETY: Caller supplies writable, disjoint scalar and fault outputs.
-        return unsafe { complete(present_out, false, fault_out) };
-    }
-    // W4.001 Stage C0a: descriptors are owned by-value snapshots.
-    // Snapshot the drop thunks + scalar layout fields BEFORE taking the
-    // mutable handle to the entries (avoids any aliasing between the
-    // descriptor read and the slot pointer arithmetic below).
-    let (hash_fn_opt, eq_fn_opt, key_drop_fn_opt, val_drop_fn_opt) = (
-        map.key_layout.hash_fn,
-        map.key_layout.eq_fn,
-        map.key_layout.value.drop_fn,
-        map.val_layout.drop_fn,
-    );
-    let (Some(hash_fn), Some(eq_fn)) = (hash_fn_opt, eq_fn_opt) else {
-        crate::set_last_error(
-            "hew_hashmap_remove_layout: hash_fn/eq_fn None (constructor guard violated)",
-        );
-        std::process::abort();
-    };
-    // SAFETY: layout fields valid.
-    let (idx, found) = match unsafe {
-        layout_probe(
-            map.entries,
-            map.cap,
-            map.stride,
-            map.key_offset,
-            key,
-            hash_fn,
-            eq_fn,
-            fault_out,
-        )
-    } {
-        Ok(result) => result,
+    // SAFETY: caller lends the live map exclusively and a matching query.
+    unsafe { validate_op_inputs(m, key, None) };
+    // SAFETY: no mutation occurs until every callback finishes.
+    let probe = match unsafe { probe::drive(m, key, false, fault_out) } {
+        Ok(probe) => probe,
         Err(status) => return status,
     };
-    if !found {
-        // SAFETY: Caller supplies writable, disjoint scalar and fault outputs.
-        return unsafe { complete(present_out, false, fault_out) };
-    }
-    // W4.001 Stage C0a (plan rev6 §4 contract-table remove row + invariant
-    // 3): drop the stored K + V via the descriptor thunks BEFORE tombstoning.
-    // The caller's borrowed lookup K is untouched (kernel never sees it
-    // again after `eq_fn` returned true). The drop+tombstone sequence is
-    // sync C with no `.await` between (CLAUDE.md §1 — kernel invariant
-    // documented in plan §4).
-    //
-    // SAFETY: idx < cap; offsets in-bounds; slot is OCCUPIED.
-    let slot_key_ptr = unsafe { slot_key(map.entries, idx, map.stride, map.key_offset) };
-    if let Some(key_drop) = key_drop_fn_opt {
-        // SAFETY: slot K is an owned blob registered to the K drop thunk.
-        key_drop(slot_key_ptr.cast::<c_void>());
-    }
-    if let Some(val_drop) = val_drop_fn_opt {
-        // SAFETY: slot V is an owned blob registered to the V drop thunk;
-        // val_size > 0 guarantees there is an actual blob to drop.
-        let slot_val_ptr = unsafe { slot_val(map.entries, idx, map.stride, map.val_offset) };
-        val_drop(slot_val_ptr.cast::<c_void>());
-    }
-    // SAFETY: idx < cap.
-    let state_ptr = unsafe { slot_state(map.entries, idx, map.stride) };
-    // SAFETY: state byte in-bounds.
-    unsafe { *state_ptr = TOMBSTONE };
-    map.len -= 1;
-    // SAFETY: Caller supplies writable, disjoint scalar and fault outputs.
-    unsafe { complete(present_out, true, fault_out) }
+    // SAFETY: the ready removal releases the occupied key and value once.
+    let found = unsafe { probe::remove_drop(probe) };
+    // SAFETY: caller supplies writable scalar and fault outputs.
+    unsafe { complete(present_out, found, fault_out) }
 }
 
 /// Remove a key, MOVING its value out into `out`. On success, writes whether
@@ -1795,81 +1207,21 @@ pub unsafe extern "C" fn hew_hashmap_remove_take_layout(
     present_out: *mut bool,
     fault_out: *mut *mut c_void,
 ) -> i32 {
-    // SAFETY: shared fail-closed gate; no value pointer participates in lookup.
-    unsafe { validate_op_inputs(m.cast_const(), key, None) };
-    // SAFETY: m non-null per gate.
-    let map = unsafe { &mut *m };
-    if map.val_layout.size > 0 && out.is_null() {
-        crate::set_last_error("hew_hashmap_remove_take_layout: out is null for non-zero value");
-        std::process::abort();
+    // SAFETY: caller lends the live map exclusively and a matching query.
+    unsafe { validate_op_inputs(m, key, None) };
+    // SAFETY: the validated map's value descriptor determines output size.
+    if unsafe { (*m).val_layout.size > 0 } && out.is_null() {
+        panic!("map removal output is null for a nonzero value");
     }
-    if map.cap == 0 || map.len == 0 {
-        // SAFETY: Caller supplies writable, disjoint scalar and fault outputs.
-        return unsafe { complete(present_out, false, fault_out) };
-    }
-    // Snapshot the drop thunks + scalar layout fields BEFORE taking the mutable
-    // handle to the entries (avoids aliasing the descriptor read against the
-    // slot pointer arithmetic below). NOTE: the VALUE drop thunk is deliberately
-    // NOT snapshotted — the value is moved out, never dropped here.
-    let (hash_fn_opt, eq_fn_opt, key_drop_fn_opt, val_size) = (
-        map.key_layout.hash_fn,
-        map.key_layout.eq_fn,
-        map.key_layout.value.drop_fn,
-        map.val_layout.size,
-    );
-    let (Some(hash_fn), Some(eq_fn)) = (hash_fn_opt, eq_fn_opt) else {
-        crate::set_last_error(
-            "hew_hashmap_remove_take_layout: hash_fn/eq_fn None (constructor guard violated)",
-        );
-        std::process::abort();
-    };
-    // SAFETY: layout fields valid.
-    let (idx, found) = match unsafe {
-        layout_probe(
-            map.entries,
-            map.cap,
-            map.stride,
-            map.key_offset,
-            key,
-            hash_fn,
-            eq_fn,
-            fault_out,
-        )
-    } {
-        Ok(result) => result,
+    // SAFETY: no mutation occurs until every callback finishes.
+    let probe = match unsafe { probe::drive(m, key, false, fault_out) } {
+        Ok(probe) => probe,
         Err(status) => return status,
     };
-    if !found {
-        // SAFETY: Caller supplies writable, disjoint scalar and fault outputs.
-        return unsafe { complete(present_out, false, fault_out) };
-    }
-    // Drop the KEY (the map owned it), then MOVE the VALUE out (transfer to the
-    // caller — NO val_drop), then tombstone + shrink. The drop+move+tombstone
-    // sequence is sync C with no `.await` between (kernel invariant).
-    //
-    // SAFETY: idx < cap; offsets in-bounds; slot is OCCUPIED.
-    let slot_key_ptr = unsafe { slot_key(map.entries, idx, map.stride, map.key_offset) };
-    if let Some(key_drop) = key_drop_fn_opt {
-        // SAFETY: slot K is an owned blob registered to the K drop thunk.
-        key_drop(slot_key_ptr.cast::<c_void>());
-    }
-    if val_size > 0 {
-        // SAFETY: idx < cap; val_offset valid.
-        let slot_val_ptr = unsafe { slot_val(map.entries, idx, map.stride, map.val_offset) };
-        // MOVE-OUT: byte-copy the value into `out`, transferring possession to
-        // the caller. NO `val_drop` runs — the caller is now the sole owner.
-        // `out` was validated for this value layout above.
-        // SAFETY: slot_val_ptr points at the occupied slot value; `out` has
-        // room for `val_size` bytes.
-        unsafe { core::ptr::copy_nonoverlapping(slot_val_ptr, out.cast::<u8>(), val_size) };
-    }
-    // SAFETY: idx < cap.
-    let state_ptr = unsafe { slot_state(map.entries, idx, map.stride) };
-    // SAFETY: state byte in-bounds.
-    unsafe { *state_ptr = TOMBSTONE };
-    map.len -= 1;
-    // SAFETY: Caller supplies writable, disjoint scalar and fault outputs.
-    unsafe { complete(present_out, true, fault_out) }
+    // SAFETY: ready removal transfers the value into disjoint output storage.
+    let found = unsafe { hew_hashmap_probe_remove_take(probe, out) };
+    // SAFETY: caller supplies writable scalar and fault outputs.
+    unsafe { complete(present_out, found, fault_out) }
 }
 
 /// Number of occupied entries.

@@ -2092,6 +2092,10 @@ class ExecutorV1 {
     let firstFault: Fault | null = null;
     const next = (failure: Fault | null = null) => {
       firstFault ??= failure;
+      // Authored cleanup can fail after this drain began. Later owned sinks
+      // must disclose that failure instead of publishing a clean end.
+      const currentFault =
+        fault ?? this.faultText(actor?.crashing ?? firstFault);
       while (pending.length) {
         const value = pending.pop()!;
         switch (value.kind) {
@@ -2111,7 +2115,7 @@ class ExecutorV1 {
             if (task?.done) {
               const result = task.value;
               task.value = UNIT;
-              this.closeValueAsync(result, fault, next);
+              this.closeValueAsync(result, currentFault, next, actor);
               return;
             }
             break;
@@ -2156,7 +2160,7 @@ class ExecutorV1 {
             break;
           case "sink":
           case "stream":
-            pending.push(...this.pipes.close(value, fault).reverse());
+            pending.push(...this.pipes.close(value, currentFault).reverse());
             break;
         }
       }
@@ -3205,17 +3209,22 @@ class ExecutorV1 {
           this.crashActor(actor, fault),
         );
       } else {
-        this.closeValueAsync(actor.state, null, (fault) => {
-          if (fault) {
-            this.crashActor(actor, fault);
-            return;
-          }
-          actor.completed = true;
-          actor.alive = false;
-          actor.busy = false;
-          this.trace.snapshot("actor.stop", { actor_id: actor.id });
-          for (const wake of actor.closed.splice(0)) wake();
-        });
+        this.closeValueAsync(
+          actor.state,
+          null,
+          (fault) => {
+            if (fault) {
+              this.crashActor(actor, fault);
+              return;
+            }
+            actor.completed = true;
+            actor.alive = false;
+            actor.busy = false;
+            this.trace.snapshot("actor.stop", { actor_id: actor.id });
+            for (const wake of actor.closed.splice(0)) wake();
+          },
+          actor,
+        );
       }
     };
     next();

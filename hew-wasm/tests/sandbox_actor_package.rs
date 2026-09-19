@@ -1050,6 +1050,37 @@ fn main() {
 }
 
 #[test]
+fn an_actor_state_close_fault_reaches_its_sibling_pipe_sink() {
+    let trace = execute_expected(
+        r#"
+import std.stream;
+#[resource]
+type Ticket { id: i64, }
+impl Ticket { fn close(consume self) { println(self.id); panic("state close failed"); } }
+actor Owner {
+    var output: Sink<i64>,
+    var ticket: Ticket,
+    receive fn ready() { output.send(42).expect("queued item"); }
+}
+fn main() {
+    let (output, input): (Sink<i64>, Stream<i64>) = stream.pipe(1).expect("pipe");
+    let owner = spawn Owner(output: output, ticket: Ticket { id: 7 });
+    owner.ready().expect("ready");
+    close(owner);
+    println(input.recv().expect("buffered item"));
+    let _end = input.recv();
+    println("incorrect clean end");
+}
+"#,
+        "panic",
+    );
+    assert_eq!(stdout(&trace), "7\n42\n");
+    assert!(trace["final_state"]["runtime_failures"]
+        .to_string()
+        .contains("state close failed"));
+}
+
+#[test]
 fn a_main_fault_still_closes_idle_actor_resources() {
     let trace = execute_expected(
         r#"

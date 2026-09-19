@@ -3454,6 +3454,16 @@ unsafe fn submit_native_request(
     reply: *mut c_void,
     terminal: bool,
 ) -> crate::mailbox::SendOutcome {
+    // Attachment termination is completion of work already admitted by its
+    // owner. Ordinary root/external sends must finish publication before drain.
+    let _ingress = if terminal {
+        None
+    } else {
+        match crate::shutdown::admit_external_work() {
+            Ok(permit) => Some(permit),
+            Err(()) => return mailbox::SendOutcome::Closed,
+        }
+    };
     let Some(actor_id) = crate::lifetime::local_handles::resolve_current_actor(token) else {
         return mailbox::SendOutcome::Closed;
     };
@@ -3737,6 +3747,9 @@ pub(crate) unsafe fn actor_await_send_pinned(
     if !actor_runtime_matches(target) {
         return (HewError::ErrForeignRuntime as i32, 0);
     }
+    let Ok(_ingress) = crate::shutdown::admit_external_work() else {
+        return (HewError::ErrActorStopped as i32, 0);
+    };
     if actor_send_is_terminal(target) {
         return (HewError::ErrActorStopped as i32, 0);
     }
@@ -3840,6 +3853,9 @@ pub unsafe extern "C" fn hew_actor_try_send(
     if !actor_runtime_matches(a) {
         return HewError::ErrForeignRuntime as i32;
     }
+    let Ok(_ingress) = crate::shutdown::admit_external_work() else {
+        return HewError::ErrClosed as i32;
+    };
     // Terminal-state send gate (see `actor_send_is_terminal`): reject once the
     // actor is terminal even if its mailbox is not yet closed, closing the
     // trap's terminal-CAS-before-mailbox-close window. The non-blocking caller
@@ -5291,6 +5307,10 @@ unsafe fn actor_send_result_internal_reply(
     if !actor_runtime_matches(a) {
         return HewError::ErrForeignRuntime as i32;
     }
+
+    let Ok(_ingress) = crate::shutdown::admit_external_work() else {
+        return HewError::ErrActorStopped as i32;
+    };
 
     // Terminal-state send gate (see `actor_send_is_terminal`): reject once the
     // actor is terminal, even if its mailbox is not yet closed — closes the

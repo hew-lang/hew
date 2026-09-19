@@ -109,13 +109,21 @@ pub(crate) fn reactor_await_async_io(
             "asynchronous TCP I/O requires an installed runtime",
         ));
     }
-    if REACTOR_STOP.load(Ordering::SeqCst) || LISTENER_ADMISSION_CLOSED.load(Ordering::SeqCst) {
+    let accept = matches!(action, AsyncIoAction::Accept);
+    let _ingress = crate::shutdown::admit_external_work().map_err(|()| {
+        IoFailure::from_io(
+            "register TCP I/O",
+            &io::Error::from_raw_os_error(libc::ECANCELED),
+        )
+    })?;
+    if REACTOR_STOP.load(Ordering::SeqCst)
+        || (accept && LISTENER_ADMISSION_CLOSED.load(Ordering::SeqCst))
+    {
         return Err(IoFailure::from_io(
             "register TCP I/O",
             &io::Error::from_raw_os_error(libc::ECANCELED),
         ));
     }
-    let accept = matches!(action, AsyncIoAction::Accept);
     let fd = if accept {
         crate::transport::tcp_listener_raw_fd(handle)
     } else {
@@ -142,7 +150,9 @@ pub(crate) fn reactor_await_async_io(
     }
     let operation = IoProducer::new(operation);
     let queued = REACTOR_STATE.access(|state| {
-        if REACTOR_STOP.load(Ordering::SeqCst) || LISTENER_ADMISSION_CLOSED.load(Ordering::SeqCst) {
+        if REACTOR_STOP.load(Ordering::SeqCst)
+            || (accept && LISTENER_ADMISSION_CLOSED.load(Ordering::SeqCst))
+        {
             return Err(IoFailure::from_io(
                 "register TCP I/O",
                 &io::Error::from_raw_os_error(libc::ECANCELED),

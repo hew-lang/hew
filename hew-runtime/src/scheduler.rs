@@ -312,7 +312,8 @@ pub(crate) fn drain_is_idle() -> bool {
         return true;
     };
 
-    if crate::activation::ACTIVE_ACTIVATIONS.load(Ordering::Acquire) != 0
+    if !crate::shutdown::external_work_is_idle()
+        || crate::activation::ACTIVE_ACTIVATIONS.load(Ordering::Acquire) != 0
         || activation_handoff_in_flight()
     {
         return false;
@@ -336,6 +337,7 @@ pub(crate) fn drain_is_idle() -> bool {
     // started inside this window is visible to one of the two reads.
     crate::activation::ACTIVE_ACTIVATIONS.load(Ordering::Acquire) == 0
         && !activation_handoff_in_flight()
+        && crate::shutdown::external_work_is_idle()
 }
 
 /// The scheduler owns the shared global queue, per-worker stealers,

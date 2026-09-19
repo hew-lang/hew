@@ -29,6 +29,7 @@ export interface ShimHost {
   pipes?: Pipes;
   newPipe?(capacity: number): VmValue;
   closePipe?(value: VmValue): void;
+  releaseValue?(value: VmValue): void;
   /// Write to the program's standard output.
   writeStdout(text: string): void;
   /// The next line of replay stdin, and the replay record for it.
@@ -375,6 +376,10 @@ const MAP_SHIMS: Record<string, RuntimeShim | undefined> = {
 // ── externs ─────────────────────────────────────────────────────────────────
 
 const EXTERN_SHIMS: Record<string, RuntimeShim | undefined> = {
+  hew_msg_envelope_release: (host, args) => {
+    host.releaseValue!(arg(args, 0));
+    return UNIT;
+  },
   hew_stream_channel: (host, args) => host.newPipe!(Number(integer(args, 0))),
   hew_stream_pair_is_valid: () => ({ kind: "bool", value: true }),
   hew_stream_pair_free: (host, args) => {

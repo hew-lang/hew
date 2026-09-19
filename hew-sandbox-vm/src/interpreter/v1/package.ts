@@ -339,11 +339,19 @@ export interface CheckedFailure {
 
 /// The fields every call terminator shares. `normal` is absent exactly when
 /// `result` is `"never"`; `unwind` is `null` when the call cannot raise.
+export interface RequestShapes {
+  failure: number | null;
+  reason: number | null;
+  message: number | null;
+  request: number | null;
+}
+
 export interface CallShape {
   args: BoundaryOperand[];
   result: CallResult;
   normal?: Edge;
   unwind: Edge | null;
+  request_shapes?: RequestShapes;
 }
 
 export type TermV1 =
@@ -418,6 +426,7 @@ export type TermV1 =
       op: "suspend";
       kind: string;
       detail?: any;
+      request_shapes?: RequestShapes;
       result_shape?: number | null;
       error_shape?: number | null;
       inputs: BoundaryOperand[];
@@ -474,6 +483,8 @@ export interface ActorShape {
   start?: number;
   stop: number[];
   crash?: number;
+  crash_info?: number;
+  crash_action?: number;
   exit?: number;
   down?: number;
   handlers: Array<{

@@ -20,6 +20,7 @@ import type {
   ActorShape,
   SupervisorShape,
   ActorProtocol,
+  RequestShapes,
   BlockV1,
   BoundaryDecision,
   BoundaryOperand,
@@ -92,6 +93,7 @@ interface ActorInstance {
   busy: boolean;
   alive: boolean;
   closing: boolean;
+  crashing: Fault | null;
   closed: Array<() => void>;
   supervisor?: { owner: SupervisorInstance; child: number };
 }
@@ -127,6 +129,7 @@ interface TaskGroup {
   tasks: TaskEntry[];
   changed: Array<() => void>;
   deadline: Fault | null;
+  joining: boolean;
   cancelTimer?: () => void;
 }
 
@@ -283,6 +286,8 @@ class ExecutorV1 {
       newPipe: (capacity) => this.newPipe(capacity),
       closePipe: (value) =>
         this.pipes.close(value, this.pipeFault(this.current)),
+      releaseValue: (value) =>
+        this.closeValue(value, this.pipeFault(this.current)),
       writeStdout: (text) => this.trace.writeStdout(text, null),
       readLine: () => {
         const line = stdin.readLine();
@@ -787,7 +792,12 @@ class ExecutorV1 {
         return;
       }
       case "task_scope.enter": {
-        const group: TaskGroup = { tasks: [], changed: [], deadline: null };
+        const group: TaskGroup = {
+          tasks: [],
+          changed: [],
+          deadline: null,
+          joining: false,
+        };
         act.scopes.set(op.scope, group);
         if (op.duration !== null) {
           const duration = this.read(act, op.duration);
@@ -800,7 +810,7 @@ class ExecutorV1 {
               deadline: true,
             };
             for (const task of group.tasks) if (!task.done) task.cancel();
-            act.context.cancel?.(group.deadline);
+            if (!group.joining) act.context.cancel?.(group.deadline);
             for (const changed of [...group.changed]) changed();
           });
         }
@@ -809,6 +819,7 @@ class ExecutorV1 {
       case "task_scope.close": {
         const group = act.scopes.get(op.scope);
         group?.cancelTimer?.();
+        for (const task of group?.tasks ?? []) this.tasks.delete(task.id);
         act.scopes.delete(op.scope);
         return;
       }
@@ -816,10 +827,29 @@ class ExecutorV1 {
         const group = act.scopes.get(op.scope);
         if (!group) throw new Error(`task scope ${op.scope} is missing`);
         const callable = this.read(act, op.callable);
+        this.invalidate(act, op.callable);
         const task = this.newTask();
         group.tasks.push(task);
         const settle = (value: VmValue, fault: Fault | null) => {
+          if (task.done) return;
+          if (
+            fault &&
+            !(fault.kind === "panic" && (fault.cancelled || fault.deadline)) &&
+            act.context.actor
+          )
+            act.context.actor.crashing ??= fault;
+          this.closeValue(
+            callable,
+            act.context.actor
+              ? this.faultText(act.context.actor.crashing)
+              : null,
+          );
           this.settleTask(task, value, fault);
+          if (fault && !(fault.kind === "panic" && fault.cancelled)) {
+            for (const sibling of group.tasks)
+              if (!sibling.done) sibling.cancel();
+            if (!group.joining) act.context.cancel?.(fault);
+          }
           for (const changed of [...group.changed]) changed();
         };
         const context: FrameContext = {
@@ -1084,11 +1114,13 @@ class ExecutorV1 {
       case "panic": {
         const message = this.boundary(act, term.message);
         act.fault = { kind: "panic", message: renderMessage(message) };
+        if (act.context.actor) act.context.actor.crashing ??= act.fault;
         this.takeEdge(act, term.cleanup);
         return;
       }
       case "checked_raise":
         act.fault = { kind: "trap", trap: term.trap };
+        if (act.context.actor) act.context.actor.crashing ??= act.fault;
         this.takeEdge(act, term.cleanup);
         return;
       case "trap":
@@ -1142,6 +1174,7 @@ class ExecutorV1 {
           ],
         };
         act.fault = null;
+        if (act.context.actor) act.context.actor.crashing = null;
         this.completeShim(act, term, value);
         return;
       }
@@ -1367,6 +1400,7 @@ class ExecutorV1 {
       case "Join": {
         const group = act.scopes.get(term.detail.scope);
         if (!group) throw new Error("join has no task scope");
+        group.joining = true;
         const wake = this.park(act, term);
         const mode = term.detail.mode;
         if (mode !== "wait")
@@ -1441,11 +1475,21 @@ class ExecutorV1 {
         const protocol = term.detail as ActorProtocol;
         const inputs = term.inputs.map((input) => this.boundary(act, input));
         const wake = this.park(act, term);
-        this.ask(protocol, inputs, (value, error) => {
-          wake(
-            this.completion(term.result_shape, term.error_shape, value, error),
-          );
-        });
+        this.ask(
+          protocol,
+          inputs,
+          (value, error) => {
+            wake(
+              this.completion(
+                term.result_shape,
+                term.error_shape,
+                value,
+                error,
+              ),
+            );
+          },
+          term.request_shapes,
+        );
         return;
       }
       case "Sleep": {
@@ -1534,8 +1578,7 @@ class ExecutorV1 {
     return this.pipes.create(id, capacity);
   }
 
-  private pipeFault(act: Activation): string | null {
-    const fault = act.fault;
+  private faultText(fault: Fault | null): string | null {
     return !fault ||
       (fault.kind === "panic" && (fault.cancelled || fault.deadline))
       ? null
@@ -1544,8 +1587,13 @@ class ExecutorV1 {
         : (fault.message ?? trapMessage(fault.trap));
   }
 
+  private pipeFault(act: Activation): string | null {
+    return this.faultText(act.context.actor?.crashing ?? act.fault);
+  }
+
   private closeValue(value: VmValue, fault: string | null): void {
-    if (value.kind === "sink" || value.kind === "stream")
+    if (value.kind === "closure") this.closeValue(value.environment, fault);
+    else if (value.kind === "sink" || value.kind === "stream")
       this.pipes.close(value, fault);
     else if (value.kind === "record")
       for (const field of value.fields) this.closeValue(field, fault);
@@ -1639,7 +1687,9 @@ class ExecutorV1 {
           this.variant(
             errorShape,
             error,
-            error === "Failed" && value ? [value] : [],
+            (error === "Failed" || error === "Rejected") && value
+              ? [value]
+              : [],
           ),
         ])
       : this.variant(result, "Ok", [value ?? UNIT]);
@@ -1688,6 +1738,7 @@ class ExecutorV1 {
           busy: true,
           alive: true,
           closing: false,
+          crashing: null,
           closed: [],
         };
         this.actors.set(actor.id, actor);
@@ -1872,6 +1923,7 @@ class ExecutorV1 {
         next();
         return;
       }
+      case "supervisor_await_restart":
       case "supervisor_child": {
         const owner = this.supervisorFor(args[0]!);
         const spec = owner.layout.children[operation.child];
@@ -1879,10 +1931,32 @@ class ExecutorV1 {
         const id = `${owner.id}:role:${operation.child}`;
         if (!this.roles.has(id))
           this.roles.set(id, { owner, child: operation.child, waiting: [] });
-        this.completeShim(act, term, {
+        const roleValue: VmValue = {
           kind: "actor" in spec.role ? "actor" : "supervisor",
           id,
-        });
+        };
+        const ready = () => {
+          const child = owner.children[operation.child];
+          return (
+            child !== null &&
+            (child.kind === "actor"
+              ? this.actorFor(child).alive
+              : this.supervisorFor(child).alive)
+          );
+        };
+        if (operation.op === "supervisor_await_restart" && !ready()) {
+          this.running = false;
+          this.roles.get(id)!.waiting.push(() => {
+            if (ready()) this.completeShim(act, term, roleValue);
+            else
+              this.raiseFault(
+                act,
+                { kind: "panic", message: "supervised child did not recover" },
+                term.unwind,
+              );
+            this.scheduler.enqueue(act.context.id, () => this.runFrame(act));
+          });
+        } else this.completeShim(act, term, roleValue);
         return;
       }
       case "supervisor_stop": {
@@ -1946,32 +2020,88 @@ class ExecutorV1 {
     protocol: ActorProtocol,
     inputs: VmValue[],
     complete: ActorMessage["complete"],
+    shapes?: RequestShapes,
   ): void {
+    let settled = false;
+    let cancelTimer = () => {};
+    const finish: ActorMessage["complete"] = (value, error) => {
+      if (settled) return;
+      settled = true;
+      cancelTimer();
+      complete(value, error);
+    };
+    if (protocol.deadline_ns != null)
+      cancelTimer = this.scheduler.after(BigInt(protocol.deadline_ns), () =>
+        finish(null, "Timeout"),
+      );
     const target = inputs[0]!;
-    const role = "id" in target ? this.roles.get(target.id) : undefined;
-    if (role && role.owner.alive && !role.owner.children[role.child]) {
-      role.waiting.push(() => this.ask(protocol, inputs, complete));
-      return;
-    }
-    const actor = this.actorFor(target);
-    if (!actor.alive || actor.closing) {
-      complete(null, "Dead");
-      return;
-    }
-    const handler = actor.layout.handlers.find(
-      (handler) => handler.message_id === protocol.message,
-    );
-    if (!handler)
-      throw new Error(`actor ${actor.id} has no message ${protocol.message}`);
-    // An unsealed call supplies one payload tuple; a sealed request carries
-    // its target and payload in the addressed request value.
-    const payload = inputs.slice(1);
-    actor.mailbox.push({ handler, payload, complete, reply: true });
-    this.trace.snapshot("actor.ask", {
-      actor_id: actor.id,
-      handler: handler.name,
-    });
-    this.dispatchActor(actor);
+    const payload = protocol.sealed ? fieldsOf(inputs[1]!) : inputs.slice(1);
+    const attempt = () => {
+      if (settled) return;
+      const role = "id" in target ? this.roles.get(target.id) : undefined;
+      if (role && role.owner.alive && !role.owner.children[role.child]) {
+        role.waiting.push(attempt);
+        return;
+      }
+      const actor = this.actorFor(target);
+      if (!actor.alive || actor.closing) {
+        finish(null, "Dead");
+        return;
+      }
+      const handler = actor.layout.handlers.find(
+        (handler) => handler.message_id === protocol.message,
+      );
+      if (!handler)
+        throw new Error(`actor ${actor.id} has no message ${protocol.message}`);
+      const full =
+        actor.layout.mailbox_capacity !== undefined &&
+        actor.mailbox.length >= actor.layout.mailbox_capacity;
+      if (full) {
+        if (protocol.policy === "reject") {
+          if (
+            !shapes ||
+            shapes.failure === null ||
+            shapes.reason === null ||
+            shapes.message === null ||
+            shapes.request === null
+          )
+            throw new Error("rejected call lacks its checked request shapes");
+          const record = (shape: number, fields: VmValue[]): VmValue => ({
+            kind: "record",
+            typeId: this.aggregateName(shape),
+            fields,
+          });
+          const owner: VmValue = {
+            kind: "record",
+            typeId: "",
+            fields: payload,
+          };
+          const request = record(shapes.request, [owner]);
+          const message = record(shapes.message, [
+            target,
+            { kind: "i64", value: BigInt(protocol.message) },
+            request,
+          ]);
+          finish(
+            record(shapes.failure, [
+              this.variant(shapes.reason, "Full"),
+              message,
+            ]),
+            "Rejected",
+          );
+        } else {
+          actor.admission.push(attempt);
+        }
+        return;
+      }
+      actor.mailbox.push({ handler, payload, complete: finish, reply: true });
+      this.trace.snapshot("actor.ask", {
+        actor_id: actor.id,
+        handler: handler.name,
+      });
+      this.dispatchActor(actor);
+    };
+    attempt();
   }
 
   private dispatchActor(actor: ActorInstance): void {
@@ -2039,18 +2169,63 @@ class ExecutorV1 {
   }
 
   private crashActor(actor: ActorInstance, fault: Fault): void {
+    actor.crashing ??= fault;
     actor.alive = false;
     actor.busy = false;
     this.trace.snapshot("actor.crash", {
       actor_id: actor.id,
-      message: fault.kind === "panic" ? fault.message : fault.trap,
+      message: this.faultText(fault),
     });
-    for (const message of actor.mailbox.splice(0))
-      message.complete(null, "Dead");
-    for (const wake of actor.closed.splice(0)) wake();
-    for (const admit of actor.admission.splice(0)) admit();
-    if (actor.supervisor)
-      this.restartChild(actor.supervisor.owner, actor.supervisor.child);
+    const finished = (action: string) => {
+      this.closeValue(actor.state, this.faultText(fault));
+      for (const message of actor.mailbox.splice(0))
+        message.complete(null, "Dead");
+      for (const wake of actor.closed.splice(0)) wake();
+      for (const admit of actor.admission.splice(0)) admit();
+      if (actor.supervisor) {
+        const { owner, child } = actor.supervisor;
+        if (action === "Restart") this.restartChild(owner, child);
+        else if (action === "Escalate") this.stopSupervisor(owner);
+        else
+          for (const wake of this.roles
+            .get(`${owner.id}:role:${child}`)
+            ?.waiting.splice(0) ?? [])
+            wake();
+      }
+    };
+    if (actor.layout.crash !== undefined) {
+      const [code, message] =
+        fault.kind === "panic"
+          ? [212, "UserPanic"]
+          : {
+              integer_overflow: [201, "IntegerOverflow"],
+              divide_by_zero: [202, "DivideByZero"],
+              shift_out_of_range: [204, "ShiftOutOfRange"],
+              vector_bounds: [205, "IndexOutOfBounds"],
+            }[fault.trap];
+      const info: VmValue = {
+        kind: "record",
+        typeId: this.aggregateName(actor.layout.crash_info!),
+        fields: [
+          { kind: "i64", value: BigInt(code!) },
+          { kind: "string", value: String(message) },
+        ],
+      };
+      this.invokeFrame(
+        actor,
+        actor.layout.crash,
+        [actor.state, info],
+        (value) => {
+          const shape = this.pkg.variants[actor.layout.crash_action!];
+          const action =
+            value.kind === "enum" ? shape?.cases[value.tag]?.name : undefined;
+          if (!action)
+            throw new Error("crash hook returned no declared action");
+          finished(action);
+        },
+        () => finished("Kill"),
+      );
+    } else finished("Restart");
   }
 
   private supervisorFor(value: VmValue): SupervisorInstance {
@@ -2152,6 +2327,7 @@ class ExecutorV1 {
           this.crashActor(actor, fault),
         );
       } else {
+        this.closeValue(actor.state, null);
         actor.alive = false;
         actor.busy = false;
         this.trace.snapshot("actor.stop", { actor_id: actor.id });
@@ -2206,9 +2382,8 @@ function writeRef(ref: Ref, value: VmValue): void {
 /// Only a cell of its own can be ended; a projection lives as long as the
 /// storage it reaches through.
 function invalidateRef(ref: Ref): void {
-  if (ref.kind === "cell") {
-    ref.cell.valid = false;
-  }
+  if (ref.kind === "cell") ref.cell.valid = false;
+  else writeRef(ref, UNIT);
 }
 
 function readRef(ref: Ref): VmValue {

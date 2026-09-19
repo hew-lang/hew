@@ -853,8 +853,24 @@ fn verify_required_value_capabilities(
         {
             if !direction.is_serialize() {
                 plan.visit_decode_capabilities(&mut |ty, capability| {
-                    required.push((ty.clone(), capability))
+                    required.push((ty.clone(), capability));
                 });
+            }
+        }
+        if let SemTerminator::RtCall {
+            family:
+                RuntimeCallFamily::Map(MapValueOp::New) | RuntimeCallFamily::Set(SetValueOp::New),
+            result: crate::CallResult::Value(result),
+            ..
+        } = &block.terminator
+        {
+            if let Some((_, [key, ..])) =
+                hew_types::runtime_call::collection_type_arguments(&result.ty)
+            {
+                required.extend(
+                    [ValueCapability::Hash, ValueCapability::Eq]
+                        .map(|capability| (key.clone(), capability)),
+                );
             }
         }
         for (ty, capability) in required {
@@ -887,37 +903,6 @@ fn verify_required_value_capabilities(
                         ty: ty.clone(),
                         capability: *capability,
                         reason,
-                    },
-                ));
-            }
-        }
-        let SemTerminator::RtCall {
-            family:
-                RuntimeCallFamily::Map(MapValueOp::New) | RuntimeCallFamily::Set(SetValueOp::New),
-            result: crate::CallResult::Value(result),
-            ..
-        } = &block.terminator
-        else {
-            continue;
-        };
-        let Some((_, arguments)) = hew_types::runtime_call::collection_type_arguments(&result.ty)
-        else {
-            continue;
-        };
-        let Some(key) = arguments.first() else {
-            continue;
-        };
-        for capability in [ValueCapability::Hash, ValueCapability::Eq] {
-            if !module
-                .value_capabilities
-                .contains_key(&(key.clone(), capability))
-            {
-                diagnostics.push(diag(
-                    function,
-                    SirDiagnosticKind::InvalidValueCapability {
-                        ty: key.clone(),
-                        capability,
-                        reason: "collection construction requires a selected key method".into(),
                     },
                 ));
             }

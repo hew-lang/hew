@@ -1,0 +1,10 @@
+[[case]]
+id = "structural-rendering-display"
+intent = "Render a report through generic functions, nested collections and enum fields while preserving declared variant forms and exact user Display specializations; all borrowed inputs remain usable."
+source = "cases/structural-rendering-display.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "Report { current: west=3C, history: [Some(west=3C), None], tagged: reviewed:9 }\n(west=3C, archived:kept)\n[Circle { radius: 3 }, Square(1), Sample { reading: west=3C }, Missing]\n{latest: west=3C}\nwest=3C\nwest\n"
+exit = 0

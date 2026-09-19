@@ -498,10 +498,27 @@ pub struct SemVariantField {
     pub ty: ResolvedTy,
 }
 
+/// How the source declares one variant's payload.
+///
+/// The declared form is a source fact, not something a consumer infers from
+/// field spelling: a tuple variant's field names are synthesized positions, so
+/// a reader that guessed from them would read `Square(1)` and `Circle(3)` the
+/// same way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SemVariantKind {
+    /// `Nil` - no payload.
+    Unit,
+    /// `Square(i64)` - positional payload.
+    Tuple,
+    /// `Circle { radius: i64 }` - the source names each payload field.
+    Struct,
+}
+
 /// One enum variant in declaration order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SemVariant {
     pub name: String,
+    pub kind: SemVariantKind,
     pub fields: Vec<SemVariantField>,
 }
 
@@ -645,8 +662,35 @@ pub fn runtime_variant_shape_refs(
     })
 }
 
+/// A rendering keeps source aliases distinct from their normalized storage type.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct StructuralType {
+    pub value: ResolvedTy,
+    pub source: ResolvedTy,
+}
+
+impl StructuralType {
+    #[must_use]
+    pub fn canonical(ty: &ResolvedTy) -> Self {
+        Self {
+            value: ty.clone(),
+            source: ty.clone(),
+        }
+    }
+}
+
+/// Checked Display selection and source identities of structural children.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SemStructuralRender {
+    pub display: Option<CallableId>,
+    pub members: Vec<StructuralType>,
+}
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct SemModule {
+    /// Checked rendering selections and alias-preserving child identities.
+    /// Only each key's value type participates in ownership and target layout.
+    pub structural_display: BTreeMap<StructuralType, SemStructuralRender>,
     /// Demanded actors with exact state, body and receive protocol identities.
     pub actors: Vec<crate::SemActor>,
     /// Demanded supervisors with their config, restart policy and child roles.

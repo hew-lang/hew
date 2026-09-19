@@ -34,6 +34,10 @@ pub enum SirDiagnosticKind {
         callable: CallableId,
         reason: String,
     },
+    InvalidStructuralRendering {
+        ty: ResolvedTy,
+        reason: String,
+    },
     InvalidAggregateShape {
         shape: AggregateShapeId,
         reason: String,
@@ -406,6 +410,12 @@ fn verify_variant_shapes(module: &SemModule, diagnostics: &mut Vec<SirDiagnostic
         }
         let mut variant_names = HashSet::new();
         for variant in &shape.variants {
+            if variant.kind == crate::SemVariantKind::Unit && !variant.fields.is_empty() {
+                refuse(format!(
+                    "unit variant `{}` carries payload fields",
+                    variant.name
+                ));
+            }
             if !variant_names.insert(&variant.name) {
                 refuse("descriptor repeats a variant name".to_string());
             }
@@ -608,6 +618,16 @@ pub fn check_module(module: &SemModule) -> Result<CheckedModule<'_>, Vec<SirDiag
     verify_vtables(module, &mut diagnostics);
     verify_resources(module, &mut diagnostics);
 
+    for (key, render) in &module.structural_display {
+        let result = verify_structural_rendering(module, key, render);
+        if let Err(reason) = result {
+            diagnostics.push(module_diag(SirDiagnosticKind::InvalidStructuralRendering {
+                ty: key.value.clone(),
+                reason,
+            }));
+        }
+    }
+
     for ((ty, capability), plan) in &module.value_capabilities {
         if let Err(reason) =
             crate::capability::verify_value_capability(module, ty, *capability, plan)
@@ -719,6 +739,72 @@ fn verify_constant_references(
             ));
         }
     }
+}
+
+fn verify_structural_rendering(
+    module: &SemModule,
+    key: &crate::StructuralType,
+    render: &crate::SemStructuralRender,
+) -> Result<(), String> {
+    if let Some(id) = render.display {
+        let callable = module
+            .callable(id)
+            .ok_or("structural Display names an absent callable")?;
+        if !render.members.is_empty()
+            || callable.signature.params.len() != 1
+            || callable.signature.params[0].ty != key.value
+            || !matches!(
+                callable.signature.params[0].passing,
+                SemParamPassing::Borrow | SemParamPassing::ReadOnly
+            )
+            || callable.signature.return_ty != ResolvedTy::String
+        {
+            return Err(
+                "structural Display has an incompatible borrowed formatter signature".into(),
+            );
+        }
+        return Ok(());
+    }
+    let expected: Vec<ResolvedTy> = match &key.value {
+        ResolvedTy::Tuple(fields) => fields.clone(),
+        ResolvedTy::Named {
+            is_opaque: true, ..
+        } => Vec::new(),
+        ResolvedTy::Named {
+            builtin: Some(hew_types::BuiltinType::Vec | hew_types::BuiltinType::HashMap),
+            args,
+            ..
+        } => args.clone(),
+        ty => module
+            .aggregate_shape_for_type(ty)
+            .map(|shape| shape.fields.iter().map(|field| field.ty.clone()).collect())
+            .or_else(|| {
+                module.variant_shape_for_type(ty).map(|shape| {
+                    shape
+                        .variants
+                        .iter()
+                        .flat_map(|variant| variant.fields.iter().map(|field| field.ty.clone()))
+                        .collect()
+                })
+            })
+            .unwrap_or_default(),
+    };
+    if expected
+        .iter()
+        .ne(render.members.iter().map(|member| &member.value))
+    {
+        return Err(
+            "structural rendering children disagree with the value's semantic fields".into(),
+        );
+    }
+    if render
+        .members
+        .iter()
+        .any(|member| !module.structural_display.contains_key(member))
+    {
+        return Err("structural rendering has an unselected child".into());
+    }
+    Ok(())
 }
 
 fn verify_required_value_capabilities(

@@ -55,9 +55,9 @@ pub use model::{
     Operand, OperandSlot, Provenance, RuntimeVariantShapeRefs, SemAbiParam, SemAggregateField,
     SemAggregateShape, SemBlock, SemCallConv, SemCallable, SemCallableKind, SemFunction,
     SemFunctionIndex, SemGenericTemplate, SemModule, SemOp, SemOpKind, SemParamPassing,
-    SemSignature, SemTerminator, SemVariant, SemVariantArm, SemVariantField, SemVariantShape,
-    SemVtable, SemVtableId, SemVtableSlot, SirInstanceKey, SuccessorSlot, UseSite, ValueDef,
-    ValueId, VariantShapeId,
+    SemSignature, SemStructuralRender, SemTerminator, SemVariant, SemVariantArm, SemVariantField,
+    SemVariantKind, SemVariantShape, SemVtable, SemVtableId, SemVtableSlot, SirInstanceKey,
+    StructuralType, SuccessorSlot, UseSite, ValueDef, ValueId, VariantShapeId,
 };
 pub use optimize::{
     canonicalize_module_constant_cfg, transfer_module_dead_local_reads, CfgCanonicalizationReport,

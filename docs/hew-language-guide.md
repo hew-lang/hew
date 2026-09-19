@@ -149,11 +149,20 @@ fn main() {
 
 `{value:?}` renders a value from its own parts: scalars, strings, tuples,
 records, enums, `Vec` and `HashMap`, nested to any depth. A type with an
-`impl Display` renders through that instead, so a type chooses its own
-spelling. An `#[opaque]` handle renders as its identity, `<Name@address>`,
+`impl Display` renders through that instead at every depth, including inside
+records, enum payloads and collections. A struct-like enum case preserves its
+field names (`Circle { radius: 3 }`); a tuple case renders positionally
+(`Square(1)`). `HashMap` uses its iteration order, and `f32` is widened to `f64`
+before rendering, as in ordinary `Display`.
+
+An `#[opaque]` handle renders as its identity, `<Name@address>`,
 without disclosing its contents. Anything else -- a callable, an actor
 handle, a task -- has no parts to spell, and `:?` on one is an error that
 names the type.
+
+The compiler currently reports an unrenderable nested field, such as a task
+inside a record, during native lowering. Supply a `Display` implementation for
+the enclosing type when its public spelling should omit such a field.
 
 ### Numeric conversion via `as`
 

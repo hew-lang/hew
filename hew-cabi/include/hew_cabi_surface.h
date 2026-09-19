@@ -5999,16 +5999,17 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1603] = {
     {"hew_structural_format_hashmap",
      "{\"native\": \"fn hew_structural_format_hashmap( *mut c_void, *const "
      "HewLayoutHashMap, Option<HewStructuralFormatFn>, "
-     "Option<HewStructuralFormatFn>, )\", \"wasm32-wasip1\": \"fn "
-     "hew_structural_format_hashmap( *mut c_void, *const HewLayoutHashMap, "
-     "Option<HewStructuralFormatFn>, Option<HewStructuralFormatFn>, )\"}",
+     "Option<HewStructuralFormatFn>, *mut *mut c_void, ) -> i32\", "
+     "\"wasm32-wasip1\": \"fn hew_structural_format_hashmap( *mut c_void, "
+     "*const HewLayoutHashMap, Option<HewStructuralFormatFn>, "
+     "Option<HewStructuralFormatFn>, *mut *mut c_void, ) -> i32\"}",
      "native,wasm32-wasip1", "stable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_structural_format_vec",
      "{\"native\": \"fn hew_structural_format_vec( *mut c_void, *const HewVec, "
-     "Option<HewStructuralFormatFn>, )\", \"wasm32-wasip1\": \"fn "
-     "hew_structural_format_vec( *mut c_void, *const HewVec, "
-     "Option<HewStructuralFormatFn>, )\"}",
+     "Option<HewStructuralFormatFn>, *mut *mut c_void, ) -> i32\", "
+     "\"wasm32-wasip1\": \"fn hew_structural_format_vec( *mut c_void, *const "
+     "HewVec, Option<HewStructuralFormatFn>, *mut *mut c_void, ) -> i32\"}",
      "native,wasm32-wasip1", "stable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_supervisor_add_child_dynamic",

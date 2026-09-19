@@ -7102,7 +7102,7 @@ impl Checker {
         valid
     }
 
-    /// Retain only obligations that the immutable marker registry can prove.
+    /// Retain obligations that the immutable marker and Display services prove.
     /// Other trait/associated-type predicates require the live solver and are
     /// explicitly refused by concrete value-method selection.
     fn value_method_obligations(
@@ -7110,7 +7110,7 @@ impl Checker {
         impl_params: Option<&Vec<TypeParam>>,
         impl_where: Option<&WhereClause>,
         method: &FnDecl,
-    ) -> Option<Vec<(String, MarkerTrait)>> {
+    ) -> Option<Vec<(String, crate::type_facts::ImplMethodObligation)>> {
         let params: Vec<_> = impl_params
             .into_iter()
             .flatten()
@@ -7128,8 +7128,19 @@ impl Checker {
                     return None;
                 }
                 let identity = self.trait_defs_key_for_bound(&bound.name);
-                let marker = MarkerTrait::from_name(&identity)?;
-                obligations.push((name.to_string(), marker));
+                let obligation = if self
+                    .lang_items
+                    .get(crate::LANG_ITEM_DISPLAY)
+                    .is_some_and(|binding| binding.trait_id.full_path() == identity)
+                    || identity == "Display"
+                {
+                    crate::type_facts::ImplMethodObligation::Display
+                } else {
+                    crate::type_facts::ImplMethodObligation::Marker(MarkerTrait::from_name(
+                        &identity,
+                    )?)
+                };
+                obligations.push((name.to_string(), obligation));
             }
             Some(())
         };

@@ -3259,14 +3259,14 @@ result-retention = "transferred"
 [[ownership.contracts]]
 symbol = "hew_structural_format_hashmap"
 result = "none"
-params = ["borrow", "borrow", "borrow", "borrow"]
+params = ["borrow", "borrow", "borrow", "borrow", "borrow"]
 release-symbol = ""
 discharge-depth = "none"
 
 [[ownership.contracts]]
 symbol = "hew_structural_format_vec"
 result = "none"
-params = ["borrow", "borrow", "borrow"]
+params = ["borrow", "borrow", "borrow", "borrow"]
 release-symbol = ""
 discharge-depth = "none"
 

@@ -1,11 +1,12 @@
 //! Structural rendering: `f"{v:?}"` on the physical path.
 //!
 //! Physical MIR selects the operand's rendering recipe; this emitter realizes
-//! one borrow-only thunk per recipe, `void(builder, value)`, and calls it
+//! one borrow-only thunk per recipe, `status(builder, value, fault_out)`, and calls it
 //! between the runtime builder's `new` and `finish`. A rendered value is
 //! borrowed throughout: no thunk clones, consumes or releases anything it
 //! walks, and the aggregate walks the runtime performs hand each element back
-//! through the same thunk ABI.
+//! through the same thunk ABI. A failing Display stops traversal and carries
+//! its fault back to the source call's cleanup edge.
 
 use super::*;
 use hew_mir::physical::{PhysicalStructuralGlue, PhysicalStructuralId, PhysicalStructuralShape};
@@ -22,6 +23,7 @@ impl FunctionEmitter<'_, '_> {
         transfers: &[ArgumentTransfer],
         result: StorageId,
         normal: &PhysicalEdge,
+        failure: Option<&PhysicalEdge>,
     ) -> CodegenResult<()> {
         let source = transfers.first().map(argument_source).ok_or_else(|| {
             CodegenError::FailClosed("structural rendering lacks its operand".into())
@@ -34,17 +36,51 @@ impl FunctionEmitter<'_, '_> {
         let builder = self
             .runtime_call_value(new, &[], "structural.builder")?
             .into_pointer_value();
-        self.runtime_call_void(
-            thunk,
-            &[builder.into(), self.slots[source.0 as usize].into()],
-            "structural.render",
-        )?;
+        self.builder
+            .build_store(self.active_fault, ptr.const_null())
+            .llvm_ctx("clear structural fault")?;
+        let status = self
+            .runtime_call_value(
+                thunk,
+                &[
+                    builder.into(),
+                    self.slots[source.0 as usize].into(),
+                    self.active_fault.into(),
+                ],
+                "structural.render",
+            )?
+            .into_int_value();
         let finish = get_or_declare_external(
             self.llvm,
             "hew_string_builder_finish",
             ptr.fn_type(&[ptr.into()], false),
         )?;
         let text = self.runtime_call_value(finish, &[builder.into()], "structural.text")?;
+        let ok = self
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                status,
+                self.ctx.i32_type().const_zero(),
+                "structural.ok",
+            )
+            .llvm_ctx("test structural outcome")?;
+        let success = self
+            .ctx
+            .append_basic_block(self.value, "structural.success");
+        let failed = self.ctx.append_basic_block(self.value, "structural.failed");
+        self.builder
+            .build_conditional_branch(ok, success, failed)
+            .llvm_ctx("branch on structural outcome")?;
+        self.builder.position_at_end(failed);
+        values.release_rendered_text(text)?;
+        self.builder
+            .build_store(self.active_status, status)
+            .llvm_ctx("retain structural failure status")?;
+        self.emit_edge(failure.ok_or_else(|| {
+            CodegenError::FailClosed("structural rendering lacks callback fault cleanup".into())
+        })?)?;
+        self.builder.position_at_end(success);
         self.store(result, text)?;
         self.emit_result_edge(Some(result), normal)
     }
@@ -60,8 +96,8 @@ impl<'ctx> ValueEmitter<'_, 'ctx> {
         let ptr = self.ctx.ptr_type(AddressSpace::default());
         let signature = self
             .ctx
-            .void_type()
-            .fn_type(&[ptr.into(), ptr.into()], false);
+            .i32_type()
+            .fn_type(&[ptr.into(), ptr.into(), ptr.into()], false);
         self.glue_function(
             &structural_thunk_symbol(id),
             signature,
@@ -81,7 +117,7 @@ impl<'ctx> ValueEmitter<'_, 'ctx> {
                 emitter.emit_structural_shape(glue, builder, value)?;
                 emitter
                     .builder
-                    .build_return(None)
+                    .build_return(Some(&emitter.ctx.i32_type().const_zero()))
                     .llvm_ctx("finish structural thunk")?;
                 Ok(())
             },
@@ -160,10 +196,122 @@ impl<'ctx> ValueEmitter<'_, 'ctx> {
         value: PointerValue<'ctx>,
     ) -> CodegenResult<()> {
         let thunk = self.structural_thunk(member)?;
+        self.render_call(
+            thunk,
+            &[
+                builder.into(),
+                value.into(),
+                self.structural_fault()?.into(),
+            ],
+        )
+    }
+
+    fn structural_fault(&self) -> CodegenResult<PointerValue<'ctx>> {
+        self.value
+            .get_nth_param(2)
+            .map(BasicValueEnum::into_pointer_value)
+            .ok_or_else(|| {
+                CodegenError::FailClosed("structural thunk lacks its fault output".into())
+            })
+    }
+
+    fn render_call(
+        &self,
+        function: FunctionValue<'ctx>,
+        args: &[BasicMetadataValueEnum<'ctx>],
+    ) -> CodegenResult<()> {
+        let status = self
+            .builder
+            .build_call(function, args, "structural.status")
+            .llvm_ctx("call structural formatter")?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| {
+                CodegenError::FailClosed("structural formatter returned no status".into())
+            })?
+            .into_int_value();
+        let ok = self
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                status,
+                self.ctx.i32_type().const_zero(),
+                "structural.ok",
+            )
+            .llvm_ctx("test structural member status")?;
+        let success = self
+            .ctx
+            .append_basic_block(self.value, "structural.member.success");
+        let failed = self
+            .ctx
+            .append_basic_block(self.value, "structural.member.failed");
         self.builder
-            .build_call(thunk, &[builder.into(), value.into()], "")
-            .llvm_ctx("render structural member")?;
+            .build_conditional_branch(ok, success, failed)
+            .llvm_ctx("branch on structural member status")?;
+        self.builder.position_at_end(failed);
+        self.builder
+            .build_return(Some(&status))
+            .llvm_ctx("propagate structural member fault")?;
+        self.builder.position_at_end(success);
         Ok(())
+    }
+
+    fn render_display(
+        &self,
+        id: CallableId,
+        builder: PointerValue<'ctx>,
+        value: PointerValue<'ctx>,
+    ) -> CodegenResult<()> {
+        let callee = callable(self.module, id)?;
+        let function = self
+            .llvm
+            .get_function(&emitted_symbol(self.module, callee))
+            .ok_or_else(|| {
+                CodegenError::FailClosed("structural Display has no emitted body".into())
+            })?;
+        let parameter = callee.params.first().ok_or_else(|| {
+            CodegenError::FailClosed("structural Display lacks its receiver".into())
+        })?;
+        let receiver: BasicMetadataValueEnum<'ctx> = match parameter.carrier {
+            ParamCarrier::Indirect => value.into(),
+            ParamCarrier::Direct => self
+                .builder
+                .build_load(
+                    llvm_type(self.ctx, &parameter.layout.repr)?,
+                    value,
+                    "structural.display.receiver",
+                )
+                .llvm_ctx("load structural Display receiver")?
+                .into(),
+        };
+        let ptr = self.ctx.ptr_type(AddressSpace::default());
+        let output = self.entry_scratch(ptr.into(), "structural.display.text")?;
+        self.render_call(
+            function,
+            &[receiver, output.into(), self.structural_fault()?.into()],
+        )?;
+        let text = self
+            .builder
+            .build_load(ptr, output, "structural.display.result")
+            .llvm_ctx("load structural Display result")?;
+        self.append_scalar(
+            "hew_string_builder_append_string",
+            ptr.into(),
+            builder,
+            text.into(),
+        )?;
+        self.release_rendered_text(text)
+    }
+
+    fn release_rendered_text(&self, text: BasicValueEnum<'ctx>) -> CodegenResult<()> {
+        let layout = self
+            .module
+            .target
+            .layout(&ResolvedTy::String)
+            .ok_or_else(|| {
+                CodegenError::FailClosed("structural text has no string layout".into())
+            })?;
+        self.destroy_loaded_value(text, layout, DestroyAction::StringRelease)
     }
 
     #[expect(
@@ -179,6 +327,9 @@ impl<'ctx> ValueEmitter<'_, 'ctx> {
         let ptr = self.ctx.ptr_type(AddressSpace::default());
         let i64_ty = self.ctx.i64_type();
         match &glue.shape {
+            PhysicalStructuralShape::Display { callable } => {
+                self.render_display(*callable, builder, value)
+            }
             PhysicalStructuralShape::Unit => self.append_literal(builder, "()"),
             PhysicalStructuralShape::SignedInt | PhysicalStructuralShape::UnsignedInt => {
                 let layout = self.structural_layout(glue)?;
@@ -396,14 +547,18 @@ impl<'ctx> ValueEmitter<'_, 'ctx> {
                     self.builder.position_at_end(*block);
                     let case = &cases[index];
                     self.append_literal(builder, &case.name)?;
-                    if !case.fields.is_empty() {
+                    if case.kind != hew_mir::physical::SemVariantKind::Unit {
                         let payload_ty =
                             llvm_type(self.ctx, &layout.variants[index].repr)?.into_struct_type();
                         let payload = self.variant_payload_ptr(object, layout)?;
-                        self.append_literal(builder, "(")?;
+                        let named = case.kind == hew_mir::physical::SemVariantKind::Struct;
+                        self.append_literal(builder, if named { " { " } else { "(" })?;
                         for (position, member) in case.fields.iter().enumerate() {
                             if position > 0 {
                                 self.append_literal(builder, ", ")?;
+                            }
+                            if named {
+                                self.append_literal(builder, &format!("{}: ", member.name))?;
                             }
                             let position = u32::try_from(position).map_err(|_| {
                                 CodegenError::FailClosed(
@@ -419,9 +574,9 @@ impl<'ctx> ValueEmitter<'_, 'ctx> {
                                     "structural.enum.field",
                                 )
                                 .llvm_ctx("address structural enum payload")?;
-                            self.render_member(*member, builder, field)?;
+                            self.render_member(member.recipe, builder, field)?;
                         }
-                        self.append_literal(builder, ")")?;
+                        self.append_literal(builder, if named { " }" } else { ")" })?;
                     }
                     self.builder
                         .build_unconditional_branch(complete)
@@ -442,21 +597,18 @@ impl<'ctx> ValueEmitter<'_, 'ctx> {
                     self.llvm,
                     "hew_structural_format_vec",
                     self.ctx
-                        .void_type()
-                        .fn_type(&[ptr.into(), ptr.into(), ptr.into()], false),
+                        .i32_type()
+                        .fn_type(&[ptr.into(), ptr.into(), ptr.into(), ptr.into()], false),
                 )?;
-                self.builder
-                    .build_call(
-                        render,
-                        &[
-                            builder.into(),
-                            vector.into(),
-                            elements.as_global_value().as_pointer_value().into(),
-                        ],
-                        "",
-                    )
-                    .llvm_ctx("render structural vector")?;
-                Ok(())
+                self.render_call(
+                    render,
+                    &[
+                        builder.into(),
+                        vector.into(),
+                        elements.as_global_value().as_pointer_value().into(),
+                        self.structural_fault()?.into(),
+                    ],
+                )
             }
             PhysicalStructuralShape::Map { key, value: entry } => {
                 let keys = self.structural_thunk(*key)?;
@@ -468,23 +620,21 @@ impl<'ctx> ValueEmitter<'_, 'ctx> {
                 let render = get_or_declare_external(
                     self.llvm,
                     "hew_structural_format_hashmap",
-                    self.ctx
-                        .void_type()
-                        .fn_type(&[ptr.into(), ptr.into(), ptr.into(), ptr.into()], false),
+                    self.ctx.i32_type().fn_type(
+                        &[ptr.into(), ptr.into(), ptr.into(), ptr.into(), ptr.into()],
+                        false,
+                    ),
                 )?;
-                self.builder
-                    .build_call(
-                        render,
-                        &[
-                            builder.into(),
-                            map.into(),
-                            keys.as_global_value().as_pointer_value().into(),
-                            entries.as_global_value().as_pointer_value().into(),
-                        ],
-                        "",
-                    )
-                    .llvm_ctx("render structural map")?;
-                Ok(())
+                self.render_call(
+                    render,
+                    &[
+                        builder.into(),
+                        map.into(),
+                        keys.as_global_value().as_pointer_value().into(),
+                        entries.as_global_value().as_pointer_value().into(),
+                        self.structural_fault()?.into(),
+                    ],
+                )
             }
         }
     }

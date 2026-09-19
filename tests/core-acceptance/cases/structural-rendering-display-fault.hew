@@ -1,0 +1,28 @@
+type Reading {
+    label: string,
+    divisor: i64,
+}
+
+impl Display for Reading {
+    fn fmt(value: Reading) -> string {
+        if value.label == "skipped" {
+            println("unexpected formatter after failure");
+        }
+        let text = value.label.to_upper();
+        let count = text.len() / value.divisor;
+        f"{text}:{count}"
+    }
+}
+
+type Report {
+    title: string,
+    readings: HashMap<string, Vec<Reading>>,
+    sibling: Vec<string>,
+}
+
+fn main() {
+    var readings: HashMap<string, Vec<Reading>> = HashMap.new();
+    readings.insert("west", [Reading { label: "first", divisor: 1 }, Reading { label: "failed", divisor: 0 }, Reading { label: "skipped", divisor: 1 }]);
+    let report = Report { title: "weather".to_upper(), readings: readings, sibling: ["retained".to_upper()] };
+    println(f"{report:?}");
+}

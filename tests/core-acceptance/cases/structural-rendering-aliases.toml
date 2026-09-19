@@ -1,0 +1,10 @@
+[[case]]
+id = "structural-rendering-aliases"
+intent = "Preserve alias Display in generic records, chained aliases, tuple and enum fields and nested map values while canonical collections with the same storage type retain structural rendering."
+source = "cases/structural-rendering-aliases.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "Report { readings: readings(2), archived: Some(readings(2)), plain: [3, 5], pair: (readings(2), west) }\n[Update { readings: readings(2) }, History(Some(readings(2)))]\nStations { values: {west: readings(2)} }\nreadings(2)\n"
+exit = 0

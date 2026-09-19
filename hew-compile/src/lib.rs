@@ -494,6 +494,14 @@ fn require_complete_semantics(
         }
     }
     let body_index = sir.module.function_index();
+    for callable in sir
+        .module
+        .structural_display
+        .values()
+        .filter_map(|render| render.display)
+    {
+        require_semantic_body(&sir.module, &body_index, callable)?;
+    }
     for plan in sir.module.value_capabilities.values() {
         if let Some(callable) = plan.callable {
             require_semantic_body(&sir.module, &body_index, callable)?;

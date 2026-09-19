@@ -2591,21 +2591,7 @@ impl Checker {
     }
 
     pub(super) fn alias_target_for_instance(&self, name: &str, args: &[Ty]) -> Option<Ty> {
-        let alias = self.type_aliases.get(name)?;
-        if alias.type_params.len() != args.len() {
-            return None;
-        }
-        let substitutions: HashMap<String, Ty> = alias
-            .type_params
-            .iter()
-            .cloned()
-            .zip(args.iter().cloned())
-            .collect();
-        Some(
-            alias
-                .target
-                .substitute_named_params_parallel(&substitutions),
-        )
+        self.type_aliases.get(name)?.instantiate(args)
     }
 
     /// Whether a just-registered top-level alias `name` is self-referential

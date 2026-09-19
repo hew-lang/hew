@@ -6,7 +6,8 @@ use hew_sir::{
     CallableId, CallableInstance, Edge, FunctionSourceOrigin, OpId, Operand, OwnKind, Provenance,
     SemAbiParam, SemAggregateField, SemAggregateShape, SemBlock, SemCallConv, SemCallable,
     SemCallableKind, SemFunction, SemModule, SemOp, SemOpKind, SemParamPassing, SemSignature,
-    SemTerminator, SemVariant, SemVariantField, SemVariantShape, ValueDef, ValueId, VariantShapeId,
+    SemTerminator, SemVariant, SemVariantField, SemVariantKind, SemVariantShape, ValueDef, ValueId,
+    VariantShapeId,
 };
 use hew_types::{
     BuiltinType, CloneKind, DefId, ResolvedTy, RuntimeCallFamily, SendFact, TypeFacts,
@@ -147,6 +148,7 @@ pub(super) fn decode_module() -> SemModule {
         type_facts.insert(TypeInstanceKey(ty), row);
     }
     SemModule {
+        structural_display: BTreeMap::new(),
         debug: hew_sir::SemDebugFacts::default(),
         regex_patterns: Vec::new(),
         actors: Vec::new(),
@@ -204,6 +206,7 @@ pub(super) fn decode_module() -> SemModule {
                 variants: vec![
                     SemVariant {
                         name: "Ok".to_string(),
+                        kind: SemVariantKind::Tuple,
                         fields: vec![SemVariantField {
                             name: "0".to_string(),
                             ty: ResolvedTy::String,
@@ -211,6 +214,7 @@ pub(super) fn decode_module() -> SemModule {
                     },
                     SemVariant {
                         name: "Err".to_string(),
+                        kind: SemVariantKind::Tuple,
                         fields: vec![SemVariantField {
                             name: "0".to_string(),
                             ty: error_ty,
@@ -225,6 +229,7 @@ pub(super) fn decode_module() -> SemModule {
                 variants: vec![
                     SemVariant {
                         name: "Some".to_string(),
+                        kind: SemVariantKind::Tuple,
                         fields: vec![SemVariantField {
                             name: "0".to_string(),
                             ty: ResolvedTy::I64,
@@ -232,6 +237,7 @@ pub(super) fn decode_module() -> SemModule {
                     },
                     SemVariant {
                         name: "None".to_string(),
+                        kind: SemVariantKind::Unit,
                         fields: Vec::new(),
                     },
                 ],

@@ -28,6 +28,13 @@ pub struct HewMsgEnvelope {
     pub payload_size: usize,
     /// Optional typed destructor run before the payload allocation is freed.
     pub drop_glue: Option<HewMsgEnvelopeDropFn>,
+    /// Checked consuming destructor for native payloads that may run user code.
+    pub release_start: Option<hew_cabi::value::HewValueReleaseStart>,
+    /// Exact receiver owning an admitted native payload, zero before admission.
+    pub release_actor: u64,
+    pub release_serial: u64,
+    /// Queued ask sender reference retired after its payload finishes cleanup.
+    pub release_reply: *mut c_void,
 }
 
 impl std::fmt::Debug for HewMsgEnvelope {
@@ -76,6 +83,10 @@ pub unsafe fn new(
         (*env).payload = payload;
         (*env).payload_size = payload_size;
         (*env).drop_glue = drop_glue;
+        (*env).release_start = None;
+        (*env).release_actor = 0;
+        (*env).release_serial = 0;
+        (*env).release_reply = ptr::null_mut();
     }
     env
 }
@@ -115,6 +126,53 @@ pub unsafe fn release(env: *mut HewMsgEnvelope) {
         debug_assert!(prev >= 1, "release on a zero-count envelope");
         if prev == 1 {
             header_validate((*env).header_bits.load(Ordering::Acquire));
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(start) = (*env).release_start {
+                let cursor = crate::release_walker::HewReleaseCursor::payload(
+                    (*env).payload,
+                    (*env).payload_size,
+                    start,
+                    true,
+                );
+                if !(*env).release_reply.is_null() {
+                    unsafe fn retire_reply(reply: *mut c_void) {
+                        // SAFETY: the cursor owns the queued sender reference.
+                        unsafe {
+                            crate::reply_channel::hew_reply_channel_retire_orphaned_ask_sender_ref(
+                                reply.cast(),
+                            )
+                        };
+                    }
+                    crate::release_walker::HewReleaseCursor::after(
+                        cursor,
+                        crate::release_walker::ReleaseItem::Storage {
+                            owner: (*env).release_reply,
+                            free: retire_reply,
+                        },
+                    );
+                }
+                let target = crate::lifetime::live_actors::ActorIncarnation::from_parts(
+                    (*env).release_actor,
+                    (*env).release_serial,
+                );
+                if target.is_none() {
+                    std::process::abort();
+                }
+                let queued = crate::lifetime::live_actors::with_live_incarnation(target, |pin| {
+                    let actor = pin.actor();
+                    let completion = actor
+                        .native_completion
+                        .as_ref()
+                        .expect("native payload owner");
+                    completion.cleanup.enqueue(cursor);
+                    crate::actor_native::cleanup::wake(actor);
+                });
+                if queued.is_none() {
+                    std::process::abort();
+                }
+                crate::mem::buf_free(env.cast());
+                return;
+            }
             if let Some(drop_fn) = (*env).drop_glue {
                 if !(*env).payload.is_null() {
                     drop_fn((*env).payload);
@@ -125,6 +183,105 @@ pub unsafe fn release(env: *mut HewMsgEnvelope) {
             }
             crate::mem::buf_free(env.cast()); // ALLOCATOR-PAIRING: GlobalAlloc
         }
+    }
+}
+
+/// Detach an unadmitted native payload for its caller's consuming cleanup.
+/// # Safety
+/// The caller transfers its envelope reference; no admitted receiver owns it.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) unsafe fn release_cursor(
+    env: *mut HewMsgEnvelope,
+) -> *mut crate::release_walker::HewReleaseCursor {
+    if env.is_null() {
+        return ptr::null_mut();
+    }
+    // SAFETY: the caller transfers one live reference and retains no payload loan.
+    unsafe {
+        assert_eq!(
+            (*env).release_actor,
+            0,
+            "admitted payload belongs to its receiver"
+        );
+        if let Some(start) = (*env).release_start {
+            let previous = (*env).refcount.fetch_sub(1, Ordering::AcqRel);
+            assert!(previous > 0);
+            if previous != 1 {
+                return ptr::null_mut();
+            }
+            let cursor = crate::release_walker::HewReleaseCursor::payload(
+                (*env).payload,
+                (*env).payload_size,
+                start,
+                true,
+            );
+            crate::mem::buf_free(env.cast());
+            cursor
+        } else {
+            release(env);
+            ptr::null_mut()
+        }
+    }
+}
+
+/// Consume an unadmitted sealed request through its selected release recipe.
+/// # Safety
+/// The caller transfers one envelope reference and retains no payload loan.
+#[cfg(not(target_arch = "wasm32"))]
+#[no_mangle]
+pub unsafe extern "C" fn hew_msg_envelope_release_begin(
+    env: *mut HewMsgEnvelope,
+) -> *mut crate::release_walker::HewReleaseCursor {
+    // SAFETY: the source owner transfers the unadmitted request.
+    unsafe { release_cursor(env) }
+}
+
+/// Attach receiver lifetime accounting before publishing a native payload.
+/// # Safety
+/// The envelope is unpublished and the actor is pinned through admission.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) unsafe fn bind_receiver(
+    env: *mut HewMsgEnvelope,
+    actor: &crate::actor::HewActor,
+) -> bool {
+    // SAFETY: admission owns this unpublished envelope through the attempt.
+    unsafe {
+        if (*env).release_start.is_none() {
+            return true;
+        }
+        assert_eq!((*env).release_actor, 0);
+        let Some(completion) = &actor.native_completion else {
+            return false;
+        };
+        if !completion.cleanup.register() {
+            return false;
+        }
+        (*env).release_actor = actor.id;
+        (*env).release_serial = actor.spawn_serial;
+        true
+    }
+}
+
+/// Failed admission leaves the caller's payload independent of receiver close.
+/// # Safety
+/// Admission still owns the unpublished envelope and pins the same actor.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) unsafe fn unbind_receiver(env: *mut HewMsgEnvelope, actor: &crate::actor::HewActor) {
+    // SAFETY: failed admission has not published this envelope.
+    unsafe {
+        if (*env).release_actor == 0 {
+            return;
+        }
+        assert_eq!((*env).release_actor, actor.id);
+        (*env).release_actor = 0;
+        (*env).release_serial = 0;
+        actor
+            .native_completion
+            .as_ref()
+            .expect("native receiver")
+            .cleanup
+            .retire_without_release();
+        crate::actor_native::cleanup::wake(actor);
     }
 }
 
@@ -151,6 +308,11 @@ pub unsafe fn fork_for_write(
     allocate: EnvelopeAlloc,
 ) -> *mut HewMsgEnvelope {
     if env.is_null() {
+        return ptr::null_mut();
+    }
+    // Native consuming payloads are affine and cannot acquire a byte alias.
+    // SAFETY: the caller retains the envelope throughout this check.
+    if unsafe { (*env).release_start.is_some() } {
         return ptr::null_mut();
     }
     // SAFETY: the caller guarantees a live envelope and the payload alias
@@ -238,10 +400,13 @@ mod tests {
     }
 
     #[test]
-    fn layout_fingerprint_is_a_five_word_c_abi_record() {
+    fn layout_fingerprint_preserves_the_payload_prefix() {
         let word = std::mem::size_of::<usize>();
-        assert_eq!(std::mem::align_of::<HewMsgEnvelope>(), word);
-        assert_eq!(std::mem::size_of::<HewMsgEnvelope>(), 5 * word);
+        assert_eq!(
+            std::mem::align_of::<HewMsgEnvelope>(),
+            word.max(align_of::<u64>())
+        );
+        assert!(std::mem::size_of::<HewMsgEnvelope>() >= 7 * word + 2 * size_of::<u64>());
         assert_eq!(std::mem::offset_of!(HewMsgEnvelope, refcount), 0);
         assert_eq!(std::mem::offset_of!(HewMsgEnvelope, header_bits), word);
         assert_eq!(std::mem::offset_of!(HewMsgEnvelope, payload), 2 * word);

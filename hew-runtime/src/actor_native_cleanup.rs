@@ -152,7 +152,7 @@ pub(crate) unsafe fn drive(actor: &HewActor) -> bool {
         prev_context: previous,
         ..crate::execution_context::HewExecutionContext::default()
     };
-    crate::execution_context::set_current_context(&raw mut context);
+    let _ = crate::execution_context::set_current_context(&raw mut context);
     let mut pending = false;
     loop {
         if let Some(driver) = work.driver.as_mut() {
@@ -216,7 +216,7 @@ pub(crate) unsafe fn drive(actor: &HewActor) -> bool {
         }
         break;
     }
-    crate::execution_context::set_current_context(previous);
+    let _ = crate::execution_context::set_current_context(previous);
     if pending {
         *cleanup.work.lock_or_recover() = Some(work);
         actor
@@ -244,21 +244,24 @@ pub(crate) unsafe fn drive(actor: &HewActor) -> bool {
     unsafe { crate::coro_state::hew_coro_state_free(work.state) };
     let terminal = cleanup.terminal.swap(0, Ordering::AcqRel);
     if !work.fault.is_null() {
-        // SAFETY: the driver owns this complete diagnostic through reporting.
+        // SAFETY: this driver owns the completed diagnostic while reporting it.
         let code = super::report_checked_failure(unsafe { &*work.fault });
-        // SAFETY: the completed release no longer borrows state or child work.
         unsafe { crate::fault::hew_fault_drop(work.fault) };
-        actor.error_code.store(code, Ordering::Release);
-        // This activation publishes the ordinary crash/supervisor contract.
-        // SAFETY: scheduler ownership pins the actor through notification.
-        unsafe {
-            crate::actor::hew_actor_trap_from_activation(ptr::from_ref(actor).cast_mut(), code)
-        };
-    } else if terminal != 0 {
-        actor.actor_state.store(terminal, Ordering::Release);
+        if actor.error_code.load(Ordering::Acquire) == 0 {
+            actor.error_code.store(code, Ordering::Release);
+        }
+        if terminal == 0 {
+            // SAFETY: a nonterminal discarded-payload failure faults its receiver.
+            unsafe {
+                crate::actor::hew_actor_trap_from_activation(ptr::from_ref(actor).cast_mut(), code)
+            };
+            return true;
+        }
     }
     if terminal != 0 {
-        completion.finish(actor.error_code.load(Ordering::Acquire));
+        actor.actor_state.store(terminal, Ordering::Release);
+        // SAFETY: all consuming callbacks and their frames have completed.
+        super::finish_actor_terminal(actor, terminal);
     } else {
         // SAFETY: this activation owns the completed cleanup turn.
         unsafe { crate::activation::settle_native_cleanup(ptr::from_ref(actor).cast_mut()) };

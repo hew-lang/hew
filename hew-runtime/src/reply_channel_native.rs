@@ -7,8 +7,10 @@ use super::{
     HewReplyDropFn,
 };
 use crate::internal::types::{AskError, HEW_REPLY_FAIL_HANDLER_TRAPPED, HEW_REPLY_FAIL_NONE};
+use crate::release_walker::HewReleaseCursor;
 use crate::util::MutexExt;
 use crate::wake::{HewWaker, OwnedWaker};
+use hew_cabi::value::HewValueReleaseStart;
 use std::{ffi::c_void, ptr, sync::atomic::Ordering};
 
 /// Create a receiver reference and register its retained readiness target and
@@ -21,12 +23,14 @@ use std::{ffi::c_void, ptr, sync::atomic::Ordering};
 pub unsafe extern "C" fn hew_reply_channel_new_native(
     waker: *const HewWaker,
     drop_reply: Option<HewReplyDropFn>,
+    reply_release: Option<HewValueReleaseStart>,
 ) -> *mut HewReplyChannel {
     let channel = hew_reply_channel_new();
     // SAFETY: the new channel is exclusively owned and the descriptor is live.
     unsafe {
         *(*channel).native_waker.lock_or_recover() = Some(OwnedWaker::retain(&*waker));
         hew_reply_channel_set_reply_drop_fn(channel, drop_reply);
+        (*channel).native_reply_release = reply_release;
     }
     channel
 }
@@ -139,28 +143,88 @@ pub unsafe extern "C-unwind" fn hew_actor_ask_submit_native(
     }
 }
 
-/// Transfer one completed handler reply under its current scheduler activation.
-/// A sender that no longer has a reply channel still releases the typed value.
-///
+/// Cancel observation and detach an already deposited reply for consuming cleanup.
+/// Publication and detachment use one lock, so late replies stay with their producer.
 /// # Safety
-/// `value` is an initialized reply wrapper borrowed from the completed handler;
-/// its fields transfer here. `drop_reply` releases those fields, not the wrapper.
+/// The channel is null or retained by its unique receiving operation.
+pub(crate) unsafe fn cancel_take_release(channel: *mut HewReplyChannel) -> *mut HewReleaseCursor {
+    if channel.is_null() {
+        return ptr::null_mut();
+    }
+    // SAFETY: the operation retains the receiving reference through detachment.
+    unsafe {
+        let mut guard = (*channel).native_waker.lock_or_recover();
+        (*channel).cancelled.store(true, Ordering::Release);
+        let waker = guard.take();
+        let value = std::mem::replace(&mut (*channel).value, ptr::null_mut());
+        let size = (*channel).value_size;
+        let start = (*channel).native_reply_release;
+        drop(guard);
+        drop(waker);
+        if value.is_null() {
+            return ptr::null_mut();
+        }
+        if let Some(start) = start {
+            HewReleaseCursor::payload(value, size, start, true)
+        } else {
+            super::run_registered_reply_drop_on_value(channel, value);
+            crate::mem::buf_free(value);
+            ptr::null_mut()
+        }
+    }
+}
+
+/// Transfer a completed reply or return its undelivered owners for cleanup.
+/// # Safety
+/// The result slot remains live until the returned cursor is fully consumed.
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_reply_native(
     value: *mut c_void,
     size: usize,
     drop_reply: Option<HewReplyDropFn>,
-) {
-    let channel = crate::execution_context::hew_get_reply_channel();
-    // SAFETY: the current activation owns its sender reference and the generated
-    // result slot is live until this synchronous transfer returns.
+    reply_release: Option<HewValueReleaseStart>,
+) -> *mut HewReleaseCursor {
+    let channel = crate::execution_context::hew_get_reply_channel().cast::<HewReplyChannel>();
+    let mut delivered = false;
+    // SAFETY: this activation owns the sender reference and the live result slot.
     unsafe {
-        if channel.is_null() {
-            if let Some(drop_reply) = drop_reply {
-                drop_reply(value);
+        if !channel.is_null() {
+            crate::scheduler::mark_current_reply_channel_consumed(channel.cast());
+            let mut guard = (*channel).native_waker.lock_or_recover();
+            if !(*channel).cancelled.load(Ordering::Acquire) {
+                let copied = if size == 0 {
+                    ptr::null_mut()
+                } else {
+                    super::alloc_reply_buffer(size)
+                };
+                if size == 0 || !copied.is_null() {
+                    if size != 0 {
+                        ptr::copy_nonoverlapping(value.cast::<u8>(), copied.cast::<u8>(), size);
+                    }
+                    (*channel).value = copied;
+                    (*channel).value_size = size;
+                    delivered = true;
+                } else {
+                    super::hew_reply_channel_mark_allocation_failed(channel);
+                }
+                (*channel).ready.store(true, Ordering::Release);
             }
+            let waker = guard.take();
+            drop(guard);
+            if let Some(waker) = waker {
+                waker.wake();
+            }
+            super::hew_reply_channel_free(channel);
+        }
+        if delivered {
+            ptr::null_mut()
+        } else if let Some(start) = reply_release {
+            HewReleaseCursor::payload(value, size, start, false)
         } else {
-            let _ = super::hew_reply(channel.cast(), value, size);
+            if let Some(drop) = drop_reply {
+                drop(value);
+            }
+            ptr::null_mut()
         }
     }
 }
@@ -199,7 +263,7 @@ mod tests {
         let drops = Arc::new(AtomicUsize::new(0));
         // SAFETY: descriptor and typed destructor meet the channel contract.
         unsafe {
-            let channel = hew_reply_channel_new_native(waker.descriptor(), Some(drop_reply));
+            let channel = hew_reply_channel_new_native(waker.descriptor(), Some(drop_reply), None);
             hew_reply_channel_retain(channel);
             drop(waker);
             let mut output = std::mem::MaybeUninit::<Reply>::uninit();
@@ -246,7 +310,7 @@ mod tests {
         let drops = Arc::new(AtomicUsize::new(0));
         // SAFETY: the sender retains the channel after its receiver abandons it.
         unsafe {
-            let channel = hew_reply_channel_new_native(waker.descriptor(), Some(drop_reply));
+            let channel = hew_reply_channel_new_native(waker.descriptor(), Some(drop_reply), None);
             hew_reply_channel_retain(channel);
             drop(waker);
             hew_reply_channel_cancel(channel);
@@ -269,7 +333,7 @@ mod tests {
         let drops = Arc::new(AtomicUsize::new(0));
         // SAFETY: the expected size is deliberately wrong but output is never read.
         unsafe {
-            let channel = hew_reply_channel_new_native(waker.descriptor(), Some(drop_reply));
+            let channel = hew_reply_channel_new_native(waker.descriptor(), Some(drop_reply), None);
             hew_reply_channel_retain(channel);
             let mut value = reply(&drops);
             assert!(hew_reply(
@@ -293,7 +357,7 @@ mod tests {
         let drops = Arc::new(AtomicUsize::new(0));
         // SAFETY: the unpublished malloc wrapper holds one initialized Reply.
         unsafe {
-            let channel = hew_reply_channel_new_native(waker.descriptor(), Some(drop_reply));
+            let channel = hew_reply_channel_new_native(waker.descriptor(), Some(drop_reply), None);
             let payload = crate::mem::buf_try_alloc(size_of::<Reply>()).cast::<Reply>();
             assert!(!payload.is_null());
             payload.write(reply(&drops));
@@ -335,7 +399,8 @@ mod tests {
                     ),
                     0
                 );
-                let channel = hew_reply_channel_new_native(waker.descriptor(), Some(drop_reply));
+                let channel =
+                    hew_reply_channel_new_native(waker.descriptor(), Some(drop_reply), None);
                 hew_reply_channel_retain(channel);
                 let payload = crate::mem::buf_try_alloc(size_of::<Reply>()).cast::<Reply>();
                 assert!(!payload.is_null());
@@ -374,7 +439,7 @@ mod tests {
         // SAFETY: each branch retains exactly one sender reference for publication.
         unsafe {
             for orphan in [false, true] {
-                let channel = hew_reply_channel_new_native(waker.descriptor(), None);
+                let channel = hew_reply_channel_new_native(waker.descriptor(), None, None);
                 hew_reply_channel_retain(channel);
                 if orphan {
                     hew_reply_channel_retire_orphaned_ask_sender_ref(channel);

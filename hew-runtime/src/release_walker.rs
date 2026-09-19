@@ -361,6 +361,29 @@ impl HewReleaseCursor {
         Self::new(pending)
     }
 
+    pub(crate) unsafe fn after(cursor: *mut Self, item: ReleaseItem) {
+        // SAFETY: the caller owns this fresh cursor before any consumption.
+        unsafe { (*cursor).pending.insert(0, item) };
+    }
+
+    /// Join freshly created cursors in consuming source order.
+    pub(crate) unsafe fn join(cursors: Vec<*mut Self>) -> *mut Self {
+        let mut pending = Vec::new();
+        for cursor in cursors.into_iter().rev() {
+            if !cursor.is_null() {
+                // SAFETY: each cursor is uniquely transferred before its first step.
+                let cursor = unsafe { Box::from_raw(cursor) };
+                assert!(cursor.current_layout.is_none());
+                pending.extend(cursor.pending);
+            }
+        }
+        if pending.is_empty() {
+            std::ptr::null_mut()
+        } else {
+            Self::new(pending)
+        }
+    }
+
     pub(crate) fn envelopes(
         values: Vec<Vec<u8>>,
         layout: Option<HewValueLayout>,
@@ -461,6 +484,7 @@ impl ReleaseDriver {
                 }
                 let layout = *hew_release_layout(self.cursor);
                 if let Some(start) = layout.release_start {
+                    hew_coro_state_set_cleanup_fault(parent, self.fault);
                     self.state = hew_coro_state_cleanup_child(parent);
                     if self.state.is_null() {
                         std::process::abort();

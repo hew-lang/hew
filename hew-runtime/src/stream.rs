@@ -1321,13 +1321,16 @@ pub unsafe extern "C" fn hew_sink_close(sink: *mut HewSink) {
 #[no_mangle]
 pub unsafe extern "C" fn hew_sink_release_begin(
     sink: *mut HewSink,
+    state: *const crate::coro_state::HewCoroState,
 ) -> *mut crate::release_walker::HewReleaseCursor {
     use crate::release_walker::{HewReleaseCursor, ReleaseItem};
     unsafe fn free_sink(owner: *mut c_void) {
         // SAFETY: the cursor owns this handle after discarded values finish.
         unsafe { hew_sink_close(owner.cast()) };
     }
-    let (layout, discarded) = if let Some(actor) = crate::fault::crashing_owner() {
+    let owner = unsafe { crate::coro_state::cleanup_fault_owner(state) }
+        .or_else(crate::fault::crashing_owner);
+    let (layout, discarded) = if let Some(actor) = owner {
         // SAFETY: a live channel sink retains its core through cursor completion.
         unsafe { sink_channel_core(sink) }
             .map_or_else(|| (None, Vec::new()), |core| core.fault_close_take(actor))

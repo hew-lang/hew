@@ -1282,7 +1282,7 @@ struct CompiledTempExecutable {
 }
 
 enum TempExecutableCleanup {
-    TempDir { _temp_dir: tempfile::TempDir },
+    TempDir { _temp_dir: run_temp::RunTempDir },
 }
 
 impl CompiledTempExecutable {

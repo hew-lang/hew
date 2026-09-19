@@ -59,6 +59,14 @@ export function resolveRuntimeShim(
   entry: RuntimeFamilyEntry,
 ): RuntimeShim | undefined {
   switch (entry.family) {
+    case "SupervisorPool":
+      return ["Member", "Get", "AwaitRestartMember"].includes(
+        String(entry.detail),
+      )
+        ? () => {
+            throw new Error("SupervisorPool requires its resumable executor");
+          }
+        : undefined;
     case "StructuralFormat":
       return () => {
         throw new Error("StructuralFormat requires its resumable executor");

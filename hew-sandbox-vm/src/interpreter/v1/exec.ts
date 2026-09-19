@@ -105,8 +105,10 @@ interface ActorInstance {
   admission: Array<() => void>;
   busy: boolean;
   alive: boolean;
+  completed: boolean;
   closing: boolean;
   crashing: Fault | null;
+  active: FrameContext | null;
   closed: Array<() => void>;
   supervisor?: { owner: SupervisorInstance; child: number };
 }
@@ -118,12 +120,21 @@ interface SupervisorInstance {
   children: Array<VmValue | null>;
   alive: boolean;
   restartTimes: number[];
+  specs: SupervisorShape["children"];
+  offsets: number[];
+  recovering: Set<number>;
+  restartBusy: boolean;
+  pendingRestarts: Array<{ child: number; debts: number[] }>;
+  spent: Set<number>;
+  completed: boolean;
+  supervisor?: { owner: SupervisorInstance; child: number };
   closed: Array<() => void>;
 }
 
 interface RoleSlot {
-  owner: SupervisorInstance;
+  ownerId: string;
   child: number;
+  latest: VmValue | null;
   waiting: Array<() => void>;
 }
 
@@ -284,6 +295,8 @@ class ExecutorV1 {
   private readonly generators = new Map<string, GeneratorEntry>();
   private readonly tasks = new Map<string, TaskEntry>();
   private completedTasks = 0;
+  private readonly faultDebts = new Set<number>();
+  private nextFaultDebt = 0;
   private running = false;
   private rootComplete = false;
 
@@ -349,6 +362,8 @@ class ExecutorV1 {
     if (!this.rootComplete) {
       throw new Error("the root frame is waiting with no runnable work");
     }
+    if (this.trace.exitCode === 0 && this.faultDebts.size)
+      this.trace.exitCode = 1;
   }
 
   private runFrame(frame: Activation): void {
@@ -1132,6 +1147,10 @@ class ExecutorV1 {
         return;
       case "runtime.call": {
         const entry = this.pkg.runtime_families[term.family];
+        if (entry?.family === "SupervisorPool") {
+          this.supervisorPool(act, term, String(entry.detail));
+          return;
+        }
         if (entry?.family === "StructuralFormat") {
           this.structuralFormat(act, term);
           return;
@@ -1309,6 +1328,50 @@ class ExecutorV1 {
       throw error;
     }
     this.completeShim(act, term, value);
+  }
+
+  private supervisorPool(
+    act: Activation,
+    term: Extract<TermV1, { op: "runtime.call" }>,
+    operation: string,
+  ): void {
+    const [view, index] = term.args.map((arg) => this.boundary(act, arg));
+    if (view?.kind !== "vector" || index?.kind !== "i64")
+      throw new Error("pool operation has no view and index");
+    const value = view.items[Number(index.value)];
+    if (operation === "Get") {
+      this.completeShim(
+        act,
+        term,
+        this.variant(
+          term.result_shape,
+          value ? "Some" : "None",
+          value ? [value] : [],
+        ),
+      );
+      return;
+    }
+    if (!value) {
+      this.raiseFault(
+        act,
+        { kind: "trap", trap: "vector_bounds" },
+        term.unwind,
+      );
+      return;
+    }
+    const role = this.roles.get((value as { id: string }).id)!;
+    if (operation === "AwaitRestartMember" && this.rolePending(role)) {
+      this.running = false;
+      const settled = () => {
+        if (this.rolePending(role)) {
+          role.waiting.push(settled);
+          return;
+        }
+        this.completeShim(act, term, value);
+        this.scheduler.enqueue(act.context.id, () => this.runFrame(act));
+      };
+      role.waiting.push(settled);
+    } else this.completeShim(act, term, value);
   }
 
   private structuralFormat(
@@ -1687,39 +1750,52 @@ class ExecutorV1 {
     cleanup: () => void = () => {},
   ): (value: VmValue, fault?: Fault | null, edgeIndex?: number) => void {
     this.running = false;
-    let resumed = false;
-    const resume = (
-      value: VmValue,
-      fault: Fault | null = null,
-      edgeIndex = 0,
-    ) => {
-      if (resumed) return;
-      resumed = true;
+    let pending: { value: VmValue; fault: Fault | null; edge: number } | null =
+      null;
+    const resume = (value: VmValue, fault: Fault | null = null, edge = 0) => {
+      if (pending) return;
+      pending = { value, fault, edge };
       cleanup();
-      act.context.cancel = undefined;
-      if (fault) {
-        act.fault = fault;
-        this.takeEdge(
-          act,
-          fault.kind === "panic" && fault.cancelled
-            ? term.cancel
-            : term.unwind!,
-        );
-        this.scheduler.enqueue(act.context.id, () => this.runFrame(act));
-        return;
-      }
-      if (term.result && term.result !== "never")
-        this.define(act, term.result.value, value);
-      const edge = term.resumes[edgeIndex];
-      if (!edge) throw new Error(`${term.kind} has no resume edge`);
-      this.takeEdge(act, edge);
-      this.scheduler.enqueue(act.context.id, () => this.runFrame(act));
+      this.scheduler.enqueue(act.context.id, () => {
+        const outcome = pending!;
+        act.context.cancel = undefined;
+        const finish = (closeFault: Fault | null = null) => {
+          const fault = closeFault ?? outcome.fault;
+          if (fault) {
+            act.fault = fault;
+            this.takeEdge(
+              act,
+              fault.kind === "panic" && fault.cancelled
+                ? term.cancel
+                : term.unwind!,
+            );
+          } else {
+            if (term.result && term.result !== "never")
+              this.define(act, term.result.value, outcome.value);
+            const edge = term.resumes[outcome.edge];
+            if (!edge) throw new Error(`${term.kind} has no resume edge`);
+            this.takeEdge(act, edge);
+          }
+          this.runFrame(act);
+        };
+        // A close can arrive after readiness but before this frame runs. Keep
+        // the cancellation latch live through that window and retire a result
+        // whose normal edge the consumer never entered.
+        if (outcome.fault)
+          this.closeValueAsync(
+            outcome.value,
+            this.faultText(outcome.fault),
+            finish,
+          );
+        else finish();
+      });
     };
-    act.context.cancel = (fault) =>
-      resume(
-        UNIT,
-        fault ?? { kind: "panic", message: "task cancelled", cancelled: true },
-      );
+    act.context.cancel = (
+      fault = { kind: "panic", message: "task cancelled", cancelled: true },
+    ) => {
+      if (pending) pending.fault ??= fault;
+      else resume(UNIT, fault);
+    };
     return resume;
   }
 
@@ -1895,7 +1971,17 @@ class ExecutorV1 {
         failed,
       },
     );
-    this.scheduler.enqueue(frame.context.id, () => this.runFrame(frame));
+    let cancelled: Fault | null = null;
+    frame.context.cancel = (
+      fault = { kind: "panic", message: "task cancelled", cancelled: true },
+    ) => {
+      cancelled = fault;
+    };
+    this.scheduler.enqueue(frame.context.id, () => {
+      frame.context.cancel = undefined;
+      if (cancelled) frame.context.failed(cancelled);
+      else this.runFrame(frame);
+    });
     return frame.context;
   }
 
@@ -1936,7 +2022,7 @@ class ExecutorV1 {
       throw new Error(`expected an actor handle, got ${value.kind}`);
     const role = this.roles.get(value.id);
     if (role) {
-      const child = role.owner.children[role.child];
+      const child = this.roleValue(role) ?? role.latest;
       if (!child) throw new Error("supervised role is between incarnations");
       return this.actorFor(child);
     }
@@ -1973,17 +2059,33 @@ class ExecutorV1 {
           admission: [],
           busy: true,
           alive: true,
+          completed: false,
           closing: false,
           crashing: null,
+          active: null,
           closed: [],
         };
         this.actors.set(actor.id, actor);
         this.trace.allocateId("actor", actor.id, act.context.id);
         this.trace.snapshot("actor.spawn", { actor_id: actor.id });
         const handle: VmValue = { kind: "actor", id: actor.id };
+        this.running = false;
+        const failed = (fault: Fault) => {
+          actor.alive = false;
+          this.closeValueAsync(actor.state, this.faultText(fault), () => {
+            actor.completed = true;
+            for (const message of actor.mailbox.splice(0))
+              message.complete(null, "Dead");
+            for (const closed of actor.closed.splice(0)) closed();
+            this.raiseFault(act, fault, term.unwind);
+            this.scheduler.enqueue(act.context.id, () => this.runFrame(act));
+          });
+        };
         const started = () => {
           actor.busy = false;
           this.dispatchActor(actor);
+          this.completeShim(act, term, handle);
+          this.scheduler.enqueue(act.context.id, () => this.runFrame(act));
         };
         const start = () => {
           if (layout.start !== undefined)
@@ -1992,31 +2094,19 @@ class ExecutorV1 {
               layout.start,
               [actor.state],
               started,
-              (fault) => this.crashActor(actor, fault),
+              failed,
             );
           else started();
         };
-        if (layout.init !== undefined) {
-          this.running = false;
+        if (layout.init !== undefined)
           this.invokeFrame(
             actor,
             layout.init,
             [actor.state, ...args.slice(supplied)],
-            () => {
-              start();
-              this.completeShim(act, term, handle);
-              this.scheduler.enqueue(act.context.id, () => this.runFrame(act));
-            },
-            (fault) => {
-              this.crashActor(actor, fault);
-              this.raiseFault(act, fault, term.unwind);
-              this.scheduler.enqueue(act.context.id, () => this.runFrame(act));
-            },
+            start,
+            failed,
           );
-        } else {
-          start();
-          this.completeShim(act, term, handle);
-        }
+        else start();
         return;
       }
       case "stream_start": {
@@ -2025,7 +2115,7 @@ class ExecutorV1 {
         this.running = false;
         const admit = () => {
           const role = "id" in target! ? this.roles.get(target.id) : undefined;
-          if (role && role.owner.alive && !role.owner.children[role.child]) {
+          if (role && this.rolePending(role)) {
             role.waiting.push(admit);
             return;
           }
@@ -2183,7 +2273,22 @@ class ExecutorV1 {
           id: this.ids.supervisor(),
           layout,
           config: args,
-          children: layout.children.map(() => null),
+          children: layout.children.flatMap((child) =>
+            Array.from({ length: child.pool_count ?? 1 }, () => null),
+          ),
+          specs: layout.children.flatMap((child) =>
+            Array.from({ length: child.pool_count ?? 1 }, () => child),
+          ),
+          offsets: layout.children.map((_child, index) =>
+            layout.children
+              .slice(0, index)
+              .reduce((sum, child) => sum + (child.pool_count ?? 1), 0),
+          ),
+          recovering: new Set(),
+          restartBusy: false,
+          pendingRestarts: [],
+          spent: new Set(),
+          completed: false,
           alive: true,
           restartTimes: [],
           closed: [],
@@ -2196,8 +2301,13 @@ class ExecutorV1 {
         const next = () => {
           if (child < owner.children.length) {
             this.startChild(owner, child++, next, (fault) => {
-              this.raiseFault(act, fault, term.unwind);
-              this.scheduler.enqueue(act.context.id, () => this.runFrame(act));
+              owner.closed.push(() => {
+                this.raiseFault(act, fault, term.unwind);
+                this.scheduler.enqueue(act.context.id, () =>
+                  this.runFrame(act),
+                );
+              });
+              this.stopSupervisor(owner);
             });
           } else {
             this.completeShim(act, term, { kind: "supervisor", id: owner.id });
@@ -2207,40 +2317,52 @@ class ExecutorV1 {
         next();
         return;
       }
+      case "supervisor_pool_view":
       case "supervisor_await_restart":
       case "supervisor_child": {
         const owner = this.supervisorFor(args[0]!);
         const spec = owner.layout.children[operation.child];
         if (!spec) throw new Error("supervisor child is missing");
-        const id = `${owner.id}:role:${operation.child}`;
-        if (!this.roles.has(id))
-          this.roles.set(id, { owner, child: operation.child, waiting: [] });
-        const roleValue: VmValue = {
-          kind: "actor" in spec.role ? "actor" : "supervisor",
-          id,
+        const ownerId = (args[0] as { id: string }).id;
+        const makeRole = (child: number): VmValue => {
+          const id = `${ownerId}:role:${child}`;
+          if (!this.roles.has(id))
+            this.roles.set(id, {
+              ownerId,
+              child,
+              latest: owner.children[child] ?? null,
+              waiting: [],
+            });
+          return { kind: "actor" in spec.role ? "actor" : "supervisor", id };
         };
-        const ready = () => {
-          const child = owner.children[operation.child];
-          return (
-            child !== null &&
-            (child.kind === "actor"
-              ? this.actorFor(child).alive
-              : this.supervisorFor(child).alive)
-          );
-        };
-        if (operation.op === "supervisor_await_restart" && !ready()) {
-          this.running = false;
-          this.roles.get(id)!.waiting.push(() => {
-            if (ready()) this.completeShim(act, term, roleValue);
-            else
-              this.raiseFault(
-                act,
-                { kind: "panic", message: "supervised child did not recover" },
-                term.unwind,
-              );
-            this.scheduler.enqueue(act.context.id, () => this.runFrame(act));
+        const offset = owner.offsets[operation.child]!;
+        if (operation.op === "supervisor_pool_view") {
+          this.completeShim(act, term, {
+            kind: "vector",
+            elementType: "role",
+            items: Array.from({ length: spec.pool_count ?? 1 }, (_, index) =>
+              makeRole(offset + index),
+            ),
           });
-        } else this.completeShim(act, term, roleValue);
+          return;
+        }
+        const value = makeRole(offset);
+        const role = this.roles.get((value as { id: string }).id)!;
+        if (
+          operation.op === "supervisor_await_restart" &&
+          this.rolePending(role)
+        ) {
+          this.running = false;
+          const settled = () => {
+            if (this.rolePending(role)) {
+              role.waiting.push(settled);
+              return;
+            }
+            this.completeShim(act, term, value);
+            this.scheduler.enqueue(act.context.id, () => this.runFrame(act));
+          };
+          role.waiting.push(settled);
+        } else this.completeShim(act, term, value);
         return;
       }
       case "supervisor_stop": {
@@ -2249,16 +2371,16 @@ class ExecutorV1 {
         this.completeShim(act, term, args[0]!);
         return;
       }
+      case "supervisor_role_await_closed":
       case "supervisor_await_closed": {
         const owner = this.supervisorFor(args[0]!);
         if (
-          owner.children.every(
-            (child) =>
-              !child || child.kind !== "actor" || !this.actorFor(child).alive,
-          )
-        ) {
-          this.completeShim(act, term, UNIT);
-        } else {
+          operation.op === "supervisor_role_await_closed" &&
+          operation.closing
+        )
+          this.stopSupervisor(owner);
+        if (owner.completed) this.completeShim(act, term, UNIT);
+        else {
           this.running = false;
           owner.closed.push(() => {
             this.completeShim(act, term, UNIT);
@@ -2277,14 +2399,13 @@ class ExecutorV1 {
         return;
       case "close": {
         const actor = this.actorFor(args[0]!);
-        actor.closing = true;
-        this.dispatchActor(actor);
+        this.requestActorClose(actor);
         this.completeShim(act, term, args[0]!);
         return;
       }
       case "await_closed": {
         const actor = this.actorFor(args[0]!);
-        if (!actor.alive) {
+        if (actor.completed) {
           this.completeShim(act, term, UNIT);
           return;
         }
@@ -2323,7 +2444,7 @@ class ExecutorV1 {
     const attempt = () => {
       if (settled) return;
       const role = "id" in target ? this.roles.get(target.id) : undefined;
-      if (role && role.owner.alive && !role.owner.children[role.child]) {
+      if (role && this.rolePending(role)) {
         role.waiting.push(attempt);
         return;
       }
@@ -2399,6 +2520,7 @@ class ExecutorV1 {
       const message = actor.mailbox.shift();
       if (!message || !actor.alive) {
         actor.busy = false;
+        if (actor.closing && actor.alive) this.stopActor(actor);
         return;
       }
       for (const admit of actor.admission.splice(0)) admit();
@@ -2417,6 +2539,7 @@ class ExecutorV1 {
           id: actor.id,
           actor,
           returned: (value) => {
+            actor.active = null;
             actor.busy = false;
             this.trace.snapshot("actor.reply", {
               actor_id: actor.id,
@@ -2443,16 +2566,28 @@ class ExecutorV1 {
             this.dispatchActor(actor);
           },
           failed: (fault) => {
-            this.crashActor(actor, fault);
-            message.complete(null, "Trapped");
+            actor.active = null;
+            actor.busy = false;
+            if (fault.kind === "panic" && fault.cancelled) {
+              message.complete(null, "Dead");
+              this.dispatchActor(actor);
+            } else {
+              this.crashActor(actor, fault);
+              message.complete(null, "Trapped");
+            }
           },
         },
       );
+      actor.active = frame.context;
       this.runFrame(frame);
     });
   }
 
   private crashActor(actor: ActorInstance, fault: Fault): void {
+    const debt = ++this.nextFaultDebt;
+    this.faultDebts.add(debt);
+    if (actor.supervisor)
+      actor.supervisor.owner.recovering.add(actor.supervisor.child);
     actor.crashing ??= fault;
     actor.alive = false;
     actor.busy = false;
@@ -2461,21 +2596,29 @@ class ExecutorV1 {
       message: this.faultText(fault),
     });
     const finished = (action: string) => {
-      this.closeValue(actor.state, this.faultText(fault));
-      for (const message of actor.mailbox.splice(0))
-        message.complete(null, "Dead");
-      for (const wake of actor.closed.splice(0)) wake();
-      for (const admit of actor.admission.splice(0)) admit();
-      if (actor.supervisor) {
-        const { owner, child } = actor.supervisor;
-        if (action === "Restart") this.restartChild(owner, child);
-        else if (action === "Escalate") this.stopSupervisor(owner);
-        else
-          for (const wake of this.roles
-            .get(`${owner.id}:role:${child}`)
-            ?.waiting.splice(0) ?? [])
-            wake();
-      }
+      this.closeValueAsync(actor.state, this.faultText(fault), () => {
+        for (const message of actor.mailbox.splice(0)) {
+          this.closeValue(
+            { kind: "record", typeId: "", fields: message.payload },
+            this.faultText(fault),
+          );
+          message.complete(null, "Dead");
+        }
+        actor.completed = true;
+        for (const wake of actor.closed.splice(0)) wake();
+        for (const admit of actor.admission.splice(0)) admit();
+        if (actor.supervisor) {
+          const { owner, child } = actor.supervisor;
+          if (action === "Restart") this.restartChild(owner, child, [debt]);
+          else if (action === "Escalate")
+            this.escalateSupervisor(owner, [debt]);
+          else {
+            owner.spent.add(child);
+            owner.recovering.delete(child);
+            this.wakeRoles();
+          }
+        }
+      });
     };
     if (actor.layout.crash !== undefined) {
       const [code, message] =
@@ -2516,7 +2659,7 @@ class ExecutorV1 {
     if (value.kind !== "supervisor")
       throw new Error("expected a supervisor handle");
     const role = this.roles.get(value.id);
-    if (role) return this.supervisorFor(role.owner.children[role.child]!);
+    if (role) return this.supervisorFor((this.roleValue(role) ?? role.latest)!);
     const owner = this.supervisors.get(value.id);
     if (!owner) throw new Error("supervisor does not exist");
     return owner;
@@ -2528,7 +2671,7 @@ class ExecutorV1 {
     done: () => void,
     failed: (fault: Fault) => void,
   ): void {
-    const spec = owner.layout.children[child]!;
+    const spec = owner.specs[child]!;
     this.invokeFrame(
       null,
       spec.spawn,
@@ -2537,8 +2680,10 @@ class ExecutorV1 {
         owner.children[child] = value;
         if (value.kind === "actor")
           this.actorFor(value).supervisor = { owner, child };
-        const slot = this.roles.get(`${owner.id}:role:${child}`);
-        for (const wake of slot?.waiting.splice(0) ?? []) wake();
+        else if (value.kind === "supervisor")
+          this.supervisorFor(value).supervisor = { owner, child };
+        owner.recovering.delete(child);
+        this.wakeRoles();
         this.trace.snapshot("supervisor.child", {
           supervisor_id: owner.id,
           child,
@@ -2549,56 +2694,197 @@ class ExecutorV1 {
     );
   }
 
-  private restartChild(owner: SupervisorInstance, child: number): void {
-    if (!owner.alive || owner.layout.children[child]!.restart === "temporary")
+  private roleOwner(role: RoleSlot): SupervisorInstance | null {
+    const parentRole = this.roles.get(role.ownerId);
+    const value = parentRole
+      ? this.roleValue(parentRole)
+      : ({ kind: "supervisor", id: role.ownerId } as const);
+    return value?.kind === "supervisor"
+      ? (this.supervisors.get(value.id) ?? null)
+      : null;
+  }
+
+  private roleValue(role: RoleSlot): VmValue | null {
+    const value = this.roleOwner(role)?.children[role.child] ?? null;
+    if (value) role.latest = value;
+    return value;
+  }
+
+  private rolePending(role: RoleSlot): boolean {
+    const parentRole = this.roles.get(role.ownerId);
+    if (parentRole && this.rolePending(parentRole)) return true;
+    const owner = this.roleOwner(role);
+    return (
+      !!owner?.alive &&
+      (owner.recovering.has(role.child) || owner.children[role.child] === null)
+    );
+  }
+
+  private wakeRoles(): void {
+    for (const role of this.roles.values()) {
+      this.roleValue(role);
+      if (!this.rolePending(role))
+        for (const wake of role.waiting.splice(0)) wake();
+    }
+  }
+
+  private restartChild(
+    owner: SupervisorInstance,
+    child: number,
+    debts: number[],
+  ): void {
+    if (
+      !owner.alive ||
+      owner.specs[child]!.restart === "temporary" ||
+      owner.spent.has(child)
+    ) {
+      owner.spent.add(child);
+      owner.recovering.delete(child);
+      this.wakeRoles();
       return;
+    }
+    if (owner.restartBusy) {
+      owner.pendingRestarts.push({ child, debts });
+      return;
+    }
     const now = this.trace.virtualTimeMs;
     owner.restartTimes = owner.restartTimes.filter(
       (at) => now - at < owner.layout.window_secs * 1000,
     );
     if (owner.restartTimes.length >= owner.layout.max_restarts) {
-      this.stopSupervisor(owner);
+      this.escalateSupervisor(owner, debts);
       return;
     }
     owner.restartTimes.push(now);
-    owner.children[child] = null;
+    owner.restartBusy = true;
+    const affected = owner.children
+      .map((_, index) => index)
+      .filter(
+        (index) =>
+          !owner.spent.has(index) &&
+          (owner.layout.strategy === "one_for_all" ||
+            (owner.layout.strategy === "rest_for_one" && index >= child) ||
+            index === child),
+      );
+    for (const index of affected) owner.recovering.add(index);
     this.trace.snapshot("supervisor.restart", {
       supervisor_id: owner.id,
       child,
     });
-    this.startChild(
-      owner,
-      child,
-      () => {},
-      () => this.restartChild(owner, child),
-    );
+    const stopping = [...affected].reverse();
+    const stop = () => {
+      const index = stopping.shift();
+      if (index === undefined) {
+        start();
+        return;
+      }
+      this.stopChild(owner.children[index]!, () => {
+        owner.children[index] = null;
+        stop();
+      });
+    };
+    const starting = [...affected];
+    const start = () => {
+      if (!owner.alive) {
+        owner.restartBusy = false;
+        this.wakeRoles();
+        return;
+      }
+      const index = starting.shift();
+      if (index === undefined) {
+        for (const debt of debts) this.faultDebts.delete(debt);
+        for (const pending of owner.pendingRestarts.filter((pending) =>
+          affected.includes(pending.child),
+        )) {
+          for (const debt of pending.debts) this.faultDebts.delete(debt);
+        }
+        owner.pendingRestarts = owner.pendingRestarts.filter(
+          (pending) => !affected.includes(pending.child),
+        );
+        owner.restartBusy = false;
+        this.wakeRoles();
+        const pending = owner.pendingRestarts.shift();
+        if (pending) this.restartChild(owner, pending.child, pending.debts);
+        return;
+      }
+      this.startChild(owner, index, start, () => {
+        owner.restartBusy = false;
+        this.restartChild(owner, index, debts);
+      });
+    };
+    stop();
+  }
+
+  private escalateSupervisor(owner: SupervisorInstance, debts: number[]): void {
+    const parent = owner.supervisor;
+    if (parent) parent.owner.recovering.add(parent.child);
+    owner.closed.push(() => {
+      if (parent) this.restartChild(parent.owner, parent.child, debts);
+      else this.wakeRoles();
+    });
+    this.stopSupervisor(owner);
+  }
+
+  private stopChild(value: VmValue | null, done: () => void): void {
+    if (!value) {
+      done();
+      return;
+    }
+    if (value.kind === "actor") {
+      const actor = this.actorFor(value);
+      if (actor.completed) {
+        done();
+        return;
+      }
+      actor.closed.push(done);
+      this.requestActorClose(actor);
+    } else if (value.kind === "supervisor") {
+      const nested = this.supervisorFor(value);
+      if (nested.completed) {
+        done();
+        return;
+      }
+      nested.closed.push(done);
+      this.stopSupervisor(nested);
+    } else throw new Error("supervisor child is neither actor nor supervisor");
   }
 
   private stopSupervisor(owner: SupervisorInstance): void {
+    if (!owner.alive) return;
     owner.alive = false;
-    const live = owner.children.filter(
-      (child): child is VmValue => child !== null,
-    );
-    let remaining = live.length;
-    const done = () => {
-      remaining -= 1;
-      if (remaining <= 0) for (const wake of owner.closed.splice(0)) wake();
-    };
-    for (const child of live) {
-      if (child.kind === "actor") {
-        const actor = this.actorFor(child);
-        if (actor.alive) {
-          actor.closed.push(done);
-          actor.closing = true;
-          this.dispatchActor(actor);
-        } else done();
-      } else if (child.kind === "supervisor") {
-        const nested = this.supervisorFor(child);
-        nested.closed.push(done);
-        this.stopSupervisor(nested);
+    const children = [...owner.children].reverse();
+    const next = () => {
+      if (children.length) {
+        this.stopChild(children.shift()!, next);
+        return;
       }
+      this.closeValueAsync(
+        { kind: "record", typeId: "", fields: owner.config },
+        null,
+        (fault) => {
+          if (fault) this.faultDebts.add(++this.nextFaultDebt);
+          owner.completed = true;
+          for (const wake of owner.closed.splice(0)) wake();
+          this.wakeRoles();
+        },
+      );
+    };
+    next();
+  }
+
+  private requestActorClose(actor: ActorInstance): void {
+    if (actor.closing || actor.completed) return;
+    actor.closing = true;
+    for (const message of actor.mailbox.splice(0)) {
+      this.closeValue(
+        { kind: "record", typeId: "", fields: message.payload },
+        null,
+      );
+      message.complete(null, "Dead");
     }
-    if (remaining === 0) for (const wake of owner.closed.splice(0)) wake();
+    for (const admit of actor.admission.splice(0)) admit();
+    actor.active?.cancel?.();
+    this.dispatchActor(actor);
   }
 
   private stopActor(actor: ActorInstance): void {
@@ -2611,11 +2897,17 @@ class ExecutorV1 {
           this.crashActor(actor, fault),
         );
       } else {
-        this.closeValue(actor.state, null);
-        actor.alive = false;
-        actor.busy = false;
-        this.trace.snapshot("actor.stop", { actor_id: actor.id });
-        for (const wake of actor.closed.splice(0)) wake();
+        this.closeValueAsync(actor.state, null, (fault) => {
+          if (fault) {
+            this.crashActor(actor, fault);
+            return;
+          }
+          actor.completed = true;
+          actor.alive = false;
+          actor.busy = false;
+          this.trace.snapshot("actor.stop", { actor_id: actor.id });
+          for (const wake of actor.closed.splice(0)) wake();
+        });
       }
     };
     next();

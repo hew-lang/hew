@@ -25,9 +25,34 @@
       "type": "state.snapshot"
     },
     {
-      "message": "actor.ask",
+      "budget_remaining": 999,
+      "id": "actor:root",
+      "id_kind": "actor",
+      "message": "actor.scheduler-step",
       "phase": "run",
       "seq": 3,
+      "span": null,
+      "step_count": 1,
+      "type": "step.committed"
+    },
+    {
+      "phase": "replay",
+      "replay_input": {
+        "data": {
+          "actor_id": "actor:root",
+          "family": "actor.scheduler-step",
+          "ready_id": 1
+        },
+        "kind": "user_event"
+      },
+      "seq": 4,
+      "span": null,
+      "type": "replay.input"
+    },
+    {
+      "message": "actor.ask",
+      "phase": "run",
+      "seq": 5,
       "span": null,
       "text": "{\"actor_id\":\"actor:a1\",\"handler\":\"explode\"}",
       "type": "state.snapshot"
@@ -38,7 +63,7 @@
       "id_kind": "actor",
       "message": "actor.scheduler-step",
       "phase": "run",
-      "seq": 4,
+      "seq": 6,
       "span": null,
       "step_count": 2,
       "type": "step.committed"
@@ -48,18 +73,19 @@
       "replay_input": {
         "data": {
           "actor_id": "actor:a1",
-          "family": "actor.scheduler-step"
+          "family": "actor.scheduler-step",
+          "ready_id": 2
         },
         "kind": "user_event"
       },
-      "seq": 5,
+      "seq": 7,
       "span": null,
       "type": "replay.input"
     },
     {
       "message": "actor.receive",
       "phase": "run",
-      "seq": 6,
+      "seq": 8,
       "span": null,
       "text": "{\"actor_id\":\"actor:a1\",\"handler\":\"explode\"}",
       "type": "state.snapshot"
@@ -67,7 +93,7 @@
     {
       "message": "actor.crash",
       "phase": "run",
-      "seq": 7,
+      "seq": 9,
       "span": null,
       "text": "{\"actor_id\":\"actor:a1\",\"message\":\"boom\"}",
       "type": "state.snapshot"
@@ -78,7 +104,7 @@
       "id_kind": "actor",
       "message": "actor.scheduler-step",
       "phase": "run",
-      "seq": 8,
+      "seq": 10,
       "span": null,
       "step_count": 7,
       "type": "step.committed"
@@ -88,17 +114,18 @@
       "replay_input": {
         "data": {
           "actor_id": "actor:a1",
-          "family": "actor.scheduler-step"
+          "family": "actor.scheduler-step",
+          "ready_id": 3
         },
         "kind": "user_event"
       },
-      "seq": 9,
+      "seq": 11,
       "span": null,
       "type": "replay.input"
     },
     {
       "phase": "run",
-      "seq": 10,
+      "seq": 12,
       "span": null,
       "text": "crashed\n",
       "type": "io.stdout"
@@ -109,7 +136,7 @@
       "id_kind": "actor",
       "message": "actor.scheduler-step",
       "phase": "run",
-      "seq": 11,
+      "seq": 13,
       "span": null,
       "step_count": 16,
       "type": "step.committed"
@@ -119,11 +146,12 @@
       "replay_input": {
         "data": {
           "actor_id": "actor:root",
-          "family": "actor.scheduler-step"
+          "family": "actor.scheduler-step",
+          "ready_id": 4
         },
         "kind": "user_event"
       },
-      "seq": 12,
+      "seq": 14,
       "span": null,
       "type": "replay.input"
     },
@@ -133,7 +161,7 @@
       "id_kind": "actor",
       "message": "actor.scheduler-step",
       "phase": "run",
-      "seq": 13,
+      "seq": 15,
       "span": null,
       "step_count": 17,
       "type": "step.committed"
@@ -143,17 +171,18 @@
       "replay_input": {
         "data": {
           "actor_id": "actor:root",
-          "family": "actor.scheduler-step"
+          "family": "actor.scheduler-step",
+          "ready_id": 5
         },
         "kind": "user_event"
       },
-      "seq": 14,
+      "seq": 16,
       "span": null,
       "type": "replay.input"
     },
     {
       "phase": "run",
-      "seq": 15,
+      "seq": 17,
       "span": null,
       "text": "dead\n",
       "type": "io.stdout"
@@ -161,7 +190,7 @@
     {
       "message": "ok",
       "phase": "run",
-      "seq": 16,
+      "seq": 18,
       "span": null,
       "type": "trace.ended"
     }
@@ -169,7 +198,7 @@
   "final_state": {
     "budget_remaining": 973,
     "diagnostics": [],
-    "exit_code": 0,
+    "exit_code": 1,
     "globals": [],
     "ids": {
       "actors": [
@@ -203,29 +232,41 @@
     "inputs": [
       {
         "data": {
-          "actor_id": "actor:a1",
-          "family": "actor.scheduler-step"
+          "actor_id": "actor:root",
+          "family": "actor.scheduler-step",
+          "ready_id": 1
         },
         "kind": "user_event"
       },
       {
         "data": {
           "actor_id": "actor:a1",
-          "family": "actor.scheduler-step"
+          "family": "actor.scheduler-step",
+          "ready_id": 2
+        },
+        "kind": "user_event"
+      },
+      {
+        "data": {
+          "actor_id": "actor:a1",
+          "family": "actor.scheduler-step",
+          "ready_id": 3
         },
         "kind": "user_event"
       },
       {
         "data": {
           "actor_id": "actor:root",
-          "family": "actor.scheduler-step"
+          "family": "actor.scheduler-step",
+          "ready_id": 4
         },
         "kind": "user_event"
       },
       {
         "data": {
           "actor_id": "actor:root",
-          "family": "actor.scheduler-step"
+          "family": "actor.scheduler-step",
+          "ready_id": 5
         },
         "kind": "user_event"
       }

@@ -35,7 +35,8 @@
       "replay_input": {
         "data": {
           "actor_id": "actor:root",
-          "family": "actor.scheduler-step"
+          "family": "actor.scheduler-step",
+          "ready_id": 1
         },
         "kind": "user_event"
       },
@@ -94,7 +95,8 @@
       {
         "data": {
           "actor_id": "actor:root",
-          "family": "actor.scheduler-step"
+          "family": "actor.scheduler-step",
+          "ready_id": 1
         },
         "kind": "user_event"
       }

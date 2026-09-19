@@ -93,6 +93,10 @@ fn execute(source: &str) -> serde_json::Value {
 }
 
 fn execute_expected(source: &str, status: &str) -> serde_json::Value {
+    execute_options(source, status, "{}")
+}
+
+fn execute_options(source: &str, status: &str, options: &str) -> serde_json::Value {
     let compiled =
         hew_wasm::sandbox::compile_to_sandbox_bytecode(source, Some("sandbox-vm-export"))
             .expect("compile through the public browser entry point");
@@ -117,10 +121,11 @@ fn execute_expected(source: &str, status: &str) -> serde_json::Value {
             import fs from 'node:fs';
             import { runBytecode } from './dist/interpreter/index.js';
             const package_ = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
-            process.stdout.write(JSON.stringify(runBytecode(package_)));
+            process.stdout.write(JSON.stringify(runBytecode(package_, JSON.parse(process.argv[2]))));
         ",
         ])
         .arg(file.path())
+        .arg(options)
         .output()
         .expect("run the package in Node");
     assert!(
@@ -310,7 +315,7 @@ fn main() {
 #[test]
 fn select_keeps_a_losing_task_joinable() {
     let trace = execute(
-        r#"
+        r"
 fn delayed(n: i64, delay: duration) -> i64 { sleep(delay); n }
 fn main() {
     scope {
@@ -322,7 +327,7 @@ fn main() {
         }
     }
 }
-"#,
+",
     );
     assert_eq!(stdout(&trace), "1\n2\n");
 }
@@ -423,7 +428,7 @@ fn main() {
 #[test]
 fn race_cancels_and_drains_the_loser_before_returning() {
     let trace = execute(
-        r#"
+        r"
 fn delayed(value: i64, delay: duration) -> i64 {
     defer println(value);
     sleep(delay);
@@ -432,7 +437,7 @@ fn delayed(value: i64, delay: duration) -> i64 {
 fn main() {
     println(race { delayed(1, 1ms), delayed(2, 10s) });
 }
-"#,
+",
     );
     assert_eq!(stdout(&trace), "1\n2\n1\n");
     assert_eq!(trace["final_state"]["virtual_clock"]["current_ms"], 1);
@@ -693,4 +698,110 @@ fn generic_actors_stream_owned_values_with_backpressure() {
         stdout(&trace),
         "distinct generic actors and owned replies\n"
     );
+}
+
+#[test]
+fn nested_supervisor_roles_follow_group_replacements() {
+    let trace = execute(include_str!(
+        "../../tests/core-acceptance/cases/supervisor-mixed-strategies.hew"
+    ));
+    assert_eq!(
+        stdout(&trace),
+        "mixed child kinds obey declaration-ordered restart strategies\n"
+    );
+    assert_eq!(trace["final_state"]["exit_code"], 0);
+}
+
+#[test]
+fn pools_restart_only_the_failed_member_from_its_template() {
+    let trace = execute(include_str!(
+        "../../tests/core-acceptance/cases/supervisor-pool-lifecycle.hew"
+    ));
+    assert_eq!(
+        stdout(&trace),
+        "4\nno member 4\n4\n4\n4\n4\n1\n3\n11\n4\n4\n4\nstopped\n"
+    );
+    assert_eq!(trace["final_state"]["exit_code"], 0);
+}
+
+#[test]
+fn declined_roles_stay_spent_and_keep_the_run_unsuccessful() {
+    let trace = execute(include_str!(
+        "../../tests/core-acceptance/cases/supervisor-declined-role-group-restart.hew"
+    ));
+    assert_eq!(
+        stdout(&trace),
+        "a declined role stays dead through a sibling group restart\n"
+    );
+    assert_eq!(trace["final_state"]["exit_code"], 1);
+}
+
+#[test]
+fn a_nested_start_failure_drains_previously_started_siblings() {
+    let trace = execute_expected(
+        include_str!("../../tests/core-acceptance/cases/supervisor-nested-init-fault.hew"),
+        "panic",
+    );
+    assert_eq!(stdout(&trace), "COMPLETED CHILD RELEASED\n");
+}
+
+#[test]
+fn zero_restart_budget_settles_nested_roles_without_restarting() {
+    let trace = execute(include_str!(
+        "../../tests/core-acceptance/cases/supervisor-zero-budget.hew"
+    ));
+    assert_eq!(
+        stdout(&trace),
+        "ONE INITIAL INCARNATION\nzero budget performs no restart\n"
+    );
+    assert_eq!(trace["final_state"]["exit_code"], 1);
+}
+
+#[test]
+fn simultaneous_sibling_faults_settle_after_effective_group_recovery() {
+    let source = r#"
+actor Worker {
+    var value: i64 = 7,
+    receive fn fail() { sleep(1ms); panic("group failure"); }
+    receive fn get() -> i64 { value }
+}
+supervisor Group {
+    strategy: one_for_all,
+    intensity: 1 within 60s,
+    child first: Worker,
+    child second: Worker,
+}
+fn main() {
+    let group = spawn Group;
+    scope {
+        let first = fork group.first.fail();
+        let second = fork group.second.fail();
+        let _ = await first;
+        let _ = await second;
+    }
+    let _ = await_restart group.first;
+    println(group.first.get().expect("recovered first"));
+    println(group.second.get().expect("recovered second"));
+    close(group);
+}
+"#;
+    for seed in [0, 1, 7, 42] {
+        let options =
+            serde_json::json!({"schedulerPolicy": "chaos", "replay": {"seed": seed}}).to_string();
+        let trace = execute_options(source, "ok", &options);
+        assert_eq!(stdout(&trace), "7\n7\n");
+        assert_eq!(trace["final_state"]["exit_code"], 0, "{trace:#}");
+        let replay = serde_json::json!({"replay": trace["replay"]}).to_string();
+        assert_eq!(execute_options(source, "ok", &replay), trace);
+    }
+}
+
+#[test]
+fn nested_display_resumes_peer_calls_and_drains_actor_close_cancellation() {
+    let trace = execute(include_str!(
+        "../../tests/core-acceptance/cases/structural-rendering-actor-lifecycle.hew"
+    ));
+    assert_eq!(stdout(&trace), "start [1, 2]\nfinished ONE\n{west: [ONE]}\nfinished ONE\nfault returned\nstart [1, 2]\nfinished CANCELLED\ncancelled formatter closed\n");
+    assert_eq!(trace["final_state"]["exit_code"], 1);
+    assert_eq!(trace["final_state"]["virtual_clock"]["current_ms"], 0);
 }

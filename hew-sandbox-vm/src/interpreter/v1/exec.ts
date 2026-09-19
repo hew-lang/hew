@@ -36,6 +36,11 @@ import type {
   VariantShape,
 } from "./package.js";
 import { StructuralRenderer } from "./structural.js";
+import {
+  selectedValue,
+  collectionOperation,
+  type ValueProgram,
+} from "./value-operations.js";
 import { Pipes } from "./pipes.js";
 import { FrameScheduler } from "./scheduler.js";
 import { DeterministicIds } from "../../scheduler/ids.js";
@@ -1187,6 +1192,24 @@ class ExecutorV1 {
         return;
       case "runtime.call": {
         const entry = this.pkg.runtime_families[term.family];
+        if (
+          entry &&
+          (entry.family === "Map" ||
+            entry.family === "Set" ||
+            (entry.family === "Vector" && entry.detail === "Contains"))
+        ) {
+          const args = term.args.map((operand) => this.boundary(act, operand));
+          const iterator = collectionOperation(
+            this.pkg,
+            entry.family,
+            String(entry.detail),
+            args,
+            term.callbacks ?? [],
+            term.result_member_shapes?.[1] ?? term.result_shape,
+          );
+          this.runValueProgram(act, term, args, iterator);
+          return;
+        }
         if (entry?.family === "SupervisorPool") {
           this.supervisorPool(act, term, String(entry.detail));
           return;
@@ -1226,28 +1249,13 @@ class ExecutorV1 {
         return;
       }
       case "value.call": {
-        const plan = this.pkg.value_capabilities[term.plan];
-        if (!plan) {
-          throw new Error(`value.call names no capability plan ${term.plan}`);
-        }
         const args = term.args.map((operand) => this.boundary(act, operand));
-        if (plan.callable !== undefined) {
-          // A user implementation the checker selected: call it.
-          this.current = this.activate(
-            this.functionAt(plan.callable),
-            args,
-            act,
-            term.result,
-            term.normal,
-            term.unwind,
-          );
-          return;
-        }
-        const derived: VmValue =
-          plan.capability === "Eq"
-            ? { kind: "bool", value: equals(args[0] ?? UNIT, args[1] ?? UNIT) }
-            : { kind: "i64", value: structuralHash(args[0] ?? UNIT) };
-        this.completeShim(act, term, derived);
+        this.runValueProgram(
+          act,
+          term,
+          args,
+          selectedValue(this.pkg, term.plan, args),
+        );
         return;
       }
 
@@ -1379,6 +1387,72 @@ class ExecutorV1 {
       throw error;
     }
     this.completeShim(act, term, value);
+  }
+
+  private runValueProgram(
+    act: Activation,
+    term: Extract<TermV1, { op: "runtime.call" | "value.call" }>,
+    args: VmValue[],
+    iterator: ValueProgram,
+  ): void {
+    this.running = false;
+    let initial = true;
+    const resume = () => {
+      act.context.cancel = undefined;
+      if (initial) this.running = true;
+      else this.scheduler.enqueue(act.context.id, () => this.runFrame(act));
+    };
+    const fail = (fault: Fault, extra: VmValue = UNIT) => {
+      const owned = args.filter((_arg, index) =>
+        ["move", "copy", "snapshot"].includes(term.args[index]!.decision),
+      );
+      this.closeValueAsync(
+        { kind: "vector", elementType: "", items: [...owned, extra] },
+        this.faultText(fault),
+        (closeFault) => {
+          if (fault.kind === "panic" && fault.cancelled && closeFault)
+            fault = closeFault;
+          this.raiseFault(act, fault, term.unwind);
+          resume();
+        },
+      );
+    };
+    const next = (value: VmValue = UNIT) => {
+      let step: IteratorResult<
+        import("./value-operations.js").ValueRequest,
+        VmValue
+      >;
+      try {
+        step = iterator.next(value);
+      } catch (error) {
+        if (error instanceof ShimFault) {
+          fail({ kind: "trap", trap: error.trap, message: error.message });
+          return;
+        }
+        throw error;
+      }
+      if (step.done) {
+        this.completeShim(act, term, step.value);
+        resume();
+      } else if (step.value.kind === "release") {
+        const request = step.value;
+        this.closeValueAsync(request.value, this.pipeFault(act), (fault) =>
+          fault ? fail(fault, request.onFault) : next(),
+        );
+      } else {
+        const request = step.value;
+        const child = this.invokeFrame(
+          act.context.actor,
+          request.callee,
+          request.args,
+          next,
+          fail,
+        );
+        act.context.cancel = (fault) => child.cancel?.(fault);
+      }
+    };
+    next();
+    initial = false;
   }
 
   private supervisorPool(
@@ -3496,19 +3570,6 @@ function equals(lhs: VmValue, rhs: VmValue): boolean {
     );
   }
   return canonical(lhs) === canonical(rhs);
-}
-
-/// The derived structural hash. FNV-1a over the canonical rendering keeps equal
-/// values hashing equally and the result stable across runs.
-function structuralHash(value: VmValue): bigint {
-  let hash = 0xcbf29ce484222325n;
-  for (const unit of canonical(value)) {
-    hash = BigInt.asUintN(
-      64,
-      (hash ^ BigInt(unit.codePointAt(0) ?? 0)) * 0x100000001b3n,
-    );
-  }
-  return BigInt.asIntN(64, hash);
 }
 
 function ordered(op: string, lhs: VmValue, rhs: VmValue): boolean {

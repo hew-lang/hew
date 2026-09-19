@@ -902,3 +902,27 @@ fn main_return_drains_accepted_work_before_closing_actor_resources() {
         "held 1 scope\nclosed 1\nworked task\nclosed 2\nkept actor\ndone\nclosed 3\n"
     );
 }
+
+#[test]
+fn collection_hash_and_equality_callbacks_resume_actor_calls() {
+    let trace = execute(include_str!(
+        "../../tests/core-acceptance/cases/collection-callback-actor.hew"
+    ));
+    assert_eq!(stdout(&trace), "collection callbacks complete\n");
+    assert_eq!(trace["final_state"]["exit_code"], 0);
+}
+
+#[test]
+fn a_missing_map_index_takes_the_checked_fault_cleanup_edge() {
+    let trace = execute_expected(
+        r#"
+fn main() {
+    defer { println("map lookup cleaned"); }
+    let values: HashMap<string, i64> = HashMap.new();
+    println(values["missing"]);
+}
+"#,
+        "trap",
+    );
+    assert_eq!(stdout(&trace), "map lookup cleaned\n");
+}

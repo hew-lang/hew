@@ -198,6 +198,7 @@
                 "value": 7
               }
             ],
+            "callbacks": [],
             "family": 0,
             "normal": {
               "args": [],
@@ -205,6 +206,7 @@
             },
             "op": "runtime.call",
             "result": null,
+            "result_member_shapes": [],
             "result_shape": null,
             "span": {
               "end": 87,
@@ -241,6 +243,7 @@
                 "value": 8
               }
             ],
+            "callbacks": [],
             "family": 0,
             "normal": {
               "args": [],
@@ -248,6 +251,7 @@
             },
             "op": "runtime.call",
             "result": null,
+            "result_member_shapes": [],
             "result_shape": null,
             "span": {
               "end": 133,
@@ -579,6 +583,7 @@
                 "value": 10
               }
             ],
+            "callbacks": [],
             "family": 1,
             "normal": {
               "args": [
@@ -591,6 +596,7 @@
               "own": "owned",
               "value": 11
             },
+            "result_member_shapes": [],
             "result_shape": 3,
             "span": null,
             "structural": null,
@@ -893,6 +899,7 @@
           ],
           "term": {
             "args": [],
+            "callbacks": [],
             "family": 2,
             "normal": {
               "args": [
@@ -905,6 +912,7 @@
               "own": "none",
               "value": 3
             },
+            "result_member_shapes": [],
             "result_shape": null,
             "span": null,
             "structural": null,
@@ -976,6 +984,7 @@
           ],
           "term": {
             "args": [],
+            "callbacks": [],
             "family": 3,
             "normal": {
               "args": [
@@ -988,6 +997,7 @@
               "own": "none",
               "value": 6
             },
+            "result_member_shapes": [],
             "result_shape": null,
             "span": null,
             "structural": null,
@@ -1042,6 +1052,7 @@
           "params": [],
           "term": {
             "args": [],
+            "callbacks": [],
             "family": 4,
             "normal": {
               "args": [
@@ -1054,6 +1065,7 @@
               "own": "owned",
               "value": 10
             },
+            "result_member_shapes": [],
             "result_shape": null,
             "span": null,
             "structural": null,

@@ -113,6 +113,8 @@ export interface ValueCapability {
   capability: "Eq" | "Hash";
   ty: string;
   callable?: number;
+  components?: number[];
+  variants?: number[][];
 }
 
 export interface ClosureShape {
@@ -389,6 +391,8 @@ export type TermV1 =
         op: "runtime.call";
         family: number;
         structural?: number | null;
+        callbacks?: number[];
+        result_member_shapes?: Array<number | null>;
         result_shape: number | null;
       })
   | (TermBase &

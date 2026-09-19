@@ -78,9 +78,37 @@ export function resolveRuntimeShim(
     case "Print":
       return printShim(entry.detail);
     case "Vector":
-      return VECTOR_SHIMS[detailName(entry.detail)];
+      return entry.detail === "Contains"
+        ? () => {
+            throw new Error(
+              "vector Contains requires its selected Eq executor",
+            );
+          }
+        : VECTOR_SHIMS[detailName(entry.detail)];
     case "Map":
-      return MAP_SHIMS[detailName(entry.detail)];
+    case "Set":
+      return [
+        "New",
+        "Len",
+        "Index",
+        "Get",
+        "GetBorrow",
+        "ContainsKey",
+        "Contains",
+        "Insert",
+        "Remove",
+        "Clear",
+        "Keys",
+        "Values",
+        "Entries",
+        "Elements",
+      ].includes(detailName(entry.detail))
+        ? () => {
+            throw new Error(
+              "collection operation requires its resumable executor",
+            );
+          }
+        : undefined;
     case "MathIntrinsic":
       return MATH_SHIMS[detailName(entry.detail)];
     default:
@@ -215,10 +243,6 @@ const VECTOR_SHIMS: Record<string, RuntimeShim | undefined> = {
     return cloneValue(items[at]!);
   },
   Len: (_host, args) => int(BigInt(vec(args, 0).items.length)),
-  Contains: (_host, args) => {
-    const needle = comparable(arg(args, 1));
-    return bool(vec(args, 0).items.some((item) => comparable(item) === needle));
-  },
   Slice: (_host, args) => {
     const items = vec(args, 0).items;
     const start = Math.min(Math.max(index(args, 1), 0), items.length);
@@ -370,30 +394,6 @@ function bigMax(left: bigint, right: bigint): bigint {
   return right > left ? right : left;
 }
 
-const MAP_SHIMS: Record<string, RuntimeShim | undefined> = {
-  New: () => ({ kind: "map", entries: new Map() }),
-  Len: (_host, args) => int(BigInt(map(args, 0).entries.size)),
-  Insert: (_host, args) => {
-    const target = map(args, 0);
-    const key = arg(args, 1);
-    target.entries.set(comparable(key), { key, value: arg(args, 2) });
-    return target;
-  },
-  Get: (host, args, shape) => {
-    if (!shape) {
-      throw new TypeError(
-        "Map::Get names no result shape to build its Option against",
-      );
-    }
-    const entry = map(args, 0).entries.get(comparable(arg(args, 1)));
-    return entry
-      ? host.enumValue(shape, "Some", [cloneValue(entry.value)])
-      : host.enumValue(shape, "None", []);
-  },
-  ContainsKey: (_host, args) =>
-    bool(map(args, 0).entries.has(comparable(arg(args, 1)))),
-};
-
 // ── externs ─────────────────────────────────────────────────────────────────
 
 const EXTERN_SHIMS: Record<string, RuntimeShim | undefined> = {
@@ -516,16 +516,6 @@ function vec(
   if (value.kind !== "vector") {
     throw new TypeError(
       `runtime call expected a vector operand, got ${value.kind}`,
-    );
-  }
-  return value;
-}
-
-function map(args: VmValue[], at: number): Extract<VmValue, { kind: "map" }> {
-  const value = arg(args, at);
-  if (value.kind !== "map") {
-    throw new TypeError(
-      `runtime call expected a map operand, got ${value.kind}`,
     );
   }
   return value;

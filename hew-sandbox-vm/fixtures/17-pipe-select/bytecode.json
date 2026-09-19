@@ -242,6 +242,7 @@
                 "value": 8
               }
             ],
+            "callbacks": [],
             "family": 0,
             "normal": {
               "args": [],
@@ -249,6 +250,7 @@
             },
             "op": "runtime.call",
             "result": null,
+            "result_member_shapes": [],
             "result_shape": null,
             "span": {
               "end": 178,
@@ -943,6 +945,7 @@
                 "value": 34
               }
             ],
+            "callbacks": [],
             "family": 1,
             "normal": {
               "args": [
@@ -955,6 +958,7 @@
               "own": "owned",
               "value": 35
             },
+            "result_member_shapes": [],
             "result_shape": null,
             "span": {
               "end": 254,
@@ -1345,6 +1349,7 @@
                 "value": 50
               }
             ],
+            "callbacks": [],
             "family": 0,
             "normal": {
               "args": [],
@@ -1352,6 +1357,7 @@
             },
             "op": "runtime.call",
             "result": null,
+            "result_member_shapes": [],
             "result_shape": null,
             "span": {
               "end": 450,
@@ -1524,6 +1530,7 @@
                 "value": 46
               }
             ],
+            "callbacks": [],
             "family": 2,
             "normal": {
               "args": [
@@ -1536,6 +1543,7 @@
               "own": "owned",
               "value": 47
             },
+            "result_member_shapes": [],
             "result_shape": null,
             "span": {
               "end": 360,
@@ -1567,6 +1575,7 @@
                 "value": 49
               }
             ],
+            "callbacks": [],
             "family": 0,
             "normal": {
               "args": [],
@@ -1574,6 +1583,7 @@
             },
             "op": "runtime.call",
             "result": null,
+            "result_member_shapes": [],
             "result_shape": null,
             "span": {
               "end": 398,
@@ -1599,6 +1609,7 @@
                 "value": 48
               }
             ],
+            "callbacks": [],
             "family": 0,
             "normal": {
               "args": [],
@@ -1606,6 +1617,7 @@
             },
             "op": "runtime.call",
             "result": null,
+            "result_member_shapes": [],
             "result_shape": null,
             "span": {
               "end": 360,
@@ -1732,6 +1744,7 @@
                 "value": 52
               }
             ],
+            "callbacks": [],
             "family": 3,
             "normal": {
               "args": [],
@@ -1739,6 +1752,7 @@
             },
             "op": "runtime.call",
             "result": null,
+            "result_member_shapes": [],
             "result_shape": null,
             "span": {
               "end": 472,
@@ -1780,6 +1794,7 @@
                 "value": 54
               }
             ],
+            "callbacks": [],
             "family": 4,
             "normal": {
               "args": [],
@@ -1787,6 +1802,7 @@
             },
             "op": "runtime.call",
             "result": null,
+            "result_member_shapes": [],
             "result_shape": null,
             "span": {
               "end": 488,
@@ -1920,6 +1936,7 @@
                 "value": 0
               }
             ],
+            "callbacks": [],
             "family": 2,
             "normal": {
               "args": [
@@ -1932,6 +1949,7 @@
               "own": "owned",
               "value": 4
             },
+            "result_member_shapes": [],
             "result_shape": null,
             "span": null,
             "structural": null,
@@ -1996,6 +2014,7 @@
                 "value": 5
               }
             ],
+            "callbacks": [],
             "family": 1,
             "normal": {
               "args": [
@@ -2008,6 +2027,7 @@
               "own": "owned",
               "value": 6
             },
+            "result_member_shapes": [],
             "result_shape": null,
             "span": null,
             "structural": null,
@@ -2054,6 +2074,7 @@
                 "value": 8
               }
             ],
+            "callbacks": [],
             "family": 1,
             "normal": {
               "args": [
@@ -2066,6 +2087,7 @@
               "own": "owned",
               "value": 9
             },
+            "result_member_shapes": [],
             "result_shape": null,
             "span": null,
             "structural": null,
@@ -2226,6 +2248,7 @@
           "params": [],
           "term": {
             "args": [],
+            "callbacks": [],
             "family": 5,
             "normal": {
               "args": [
@@ -2238,6 +2261,7 @@
               "own": "owned",
               "value": 19
             },
+            "result_member_shapes": [],
             "result_shape": null,
             "span": null,
             "structural": null,
@@ -2263,6 +2287,7 @@
                 "value": 29
               }
             ],
+            "callbacks": [],
             "family": 6,
             "normal": {
               "args": [
@@ -2275,6 +2300,7 @@
               "own": "owned",
               "value": 30
             },
+            "result_member_shapes": [],
             "result_shape": null,
             "span": null,
             "structural": null,
@@ -2329,6 +2355,7 @@
                 "value": 22
               }
             ],
+            "callbacks": [],
             "family": 7,
             "normal": {
               "args": [
@@ -2341,6 +2368,7 @@
               "own": "none",
               "value": 23
             },
+            "result_member_shapes": [],
             "result_shape": null,
             "span": null,
             "structural": null,
@@ -2542,6 +2570,7 @@
                 "value": 32
               }
             ],
+            "callbacks": [],
             "family": 8,
             "normal": {
               "args": [
@@ -2554,6 +2583,7 @@
               "own": "owned",
               "value": 33
             },
+            "result_member_shapes": [],
             "result_shape": null,
             "span": null,
             "structural": null,

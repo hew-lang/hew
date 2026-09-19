@@ -640,6 +640,7 @@
                 "value": 16
               }
             ],
+            "callbacks": [],
             "family": 0,
             "normal": {
               "args": [],
@@ -647,6 +648,7 @@
             },
             "op": "runtime.call",
             "result": null,
+            "result_member_shapes": [],
             "result_shape": null,
             "span": {
               "end": 405,

@@ -20,9 +20,14 @@ export type VmValue =
   | { kind: "record"; typeId: string; fields: VmValue[] }
   | { kind: "enum"; typeId: string; tag: number; payload: VmValue[] }
   | { kind: "vector"; elementType: string; items: VmValue[] }
-  /** A hash map. Keys are canonical renderings of the key value, so lookup is
-   *  structural; `entries` keeps insertion order so iteration is stable. */
-  | { kind: "map"; entries: Map<string, { key: VmValue; value: VmValue }> }
+  /** A map or set owns its occupied slots. Selected Hash/Eq operations probe
+   *  the table; tombstones preserve collision chains across removal. */
+  | {
+      kind: "map";
+      entries: Map<string, { key: VmValue; value: VmValue }>;
+      capacity?: number;
+      tombstones?: Set<number>;
+    }
   /** A trait object: the vtable the checker selected, and the value it wraps.
    *  A `dyn.call` resolves its method through `vtable`, never through the
    *  wrapped value's shape. */
@@ -101,6 +106,8 @@ export function cloneValue(value: VmValue): VmValue {
     case "map":
       return {
         kind: "map",
+        capacity: value.capacity,
+        tombstones: value.tombstones ? new Set(value.tombstones) : undefined,
         entries: new Map(
           [...value.entries].map(([key, entry]) => [
             key,

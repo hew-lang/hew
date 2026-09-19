@@ -260,3 +260,20 @@ trivial value. Owned transfers still invalidate their source.
 Actor calls and suspensions carry `result_shape` and `error_shape` for the
 checked completion envelope. Runtime-produced `Ok`, `Err`, `Trapped` and `Dead`
 values use those descriptors' declaration-order tags.
+
+### Selected value operations and resources
+
+`runtime.call.callbacks` lists the selected value-capability plan IDs demanded
+by the canonical runtime family. A map or set operation uses its checked
+`Hash` and `Eq` plans; vector membership uses its checked `Eq` plan.
+`value_capabilities.components` and `variants` project the selected plans for
+derived fields and enum payloads. User implementations execute in ordinary
+resumable frames, including during table growth.
+
+`result_member_shapes` carries variant descriptors for tuple result members,
+so operations such as map removal construct their checked `Option` result.
+
+The `resources` table projects SIR release obligations. Authored record close
+names its callable; built-in resource kinds use their VM lifecycle protocol.
+Close can run while a frame is suspended in cleanup, and its failure follows
+the original SIR fault edge after the remaining owners drain.

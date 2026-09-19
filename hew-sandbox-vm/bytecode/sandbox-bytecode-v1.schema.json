@@ -42,9 +42,16 @@
               "sink"
             ]
           },
-          "ty": { "type": "string" },
-          "close": { "type": "integer", "minimum": 0 },
-          "release": { "type": "string" }
+          "ty": {
+            "type": "string"
+          },
+          "close": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "release": {
+            "type": "string"
+          }
         },
         "additionalProperties": false
       }
@@ -245,6 +252,21 @@
           },
           "callable": {
             "$ref": "#/$defs/id"
+          },
+          "components": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/id"
+            }
+          },
+          "variants": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/id"
+              }
+            }
           }
         }
       }

@@ -86,6 +86,7 @@
                 "value": 3
               }
             ],
+            "callbacks": [],
             "family": 0,
             "normal": {
               "args": [],
@@ -93,6 +94,7 @@
             },
             "op": "runtime.call",
             "result": null,
+            "result_member_shapes": [],
             "result_shape": null,
             "span": {
               "end": 70,
@@ -215,6 +217,7 @@
                 "value": 6
               }
             ],
+            "callbacks": [],
             "family": 1,
             "normal": {
               "args": [],
@@ -222,6 +225,7 @@
             },
             "op": "runtime.call",
             "result": null,
+            "result_member_shapes": [],
             "result_shape": null,
             "span": {
               "end": 129,

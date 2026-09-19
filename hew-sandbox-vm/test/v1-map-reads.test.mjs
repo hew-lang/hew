@@ -45,7 +45,7 @@ function mapPackage(cases = [{ name: "Some", fields: ["0"] }, { name: "None", fi
     runtime_families: FAMILIES,
     externs: [],
     suspend_kinds: [],
-    value_capabilities: [],
+    value_capabilities: [{ id: 0, capability: "Hash", ty: "string", components: [] }, { id: 1, capability: "Eq", ty: "string", components: [] }],
     closures: [],
     vtables: [],
     functions: [
@@ -163,6 +163,7 @@ function call(family, args, result, to, resultShape = null) {
   return {
     op: "runtime.call",
     family,
+    callbacks: [1, 2, 3].includes(family) ? [0, 1] : [],
     args,
     result,
     result_shape: resultShape,

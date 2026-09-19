@@ -106,6 +106,7 @@
                 "value": 3
               }
             ],
+            "callbacks": [],
             "family": 0,
             "normal": {
               "args": [],
@@ -113,6 +114,7 @@
             },
             "op": "runtime.call",
             "result": null,
+            "result_member_shapes": [],
             "result_shape": null,
             "span": {
               "end": 243,
@@ -353,6 +355,7 @@
                 "value": 12
               }
             ],
+            "callbacks": [],
             "family": 0,
             "normal": {
               "args": [],
@@ -360,6 +363,7 @@
             },
             "op": "runtime.call",
             "result": null,
+            "result_member_shapes": [],
             "result_shape": null,
             "span": {
               "end": 307,
@@ -659,6 +663,7 @@
           "params": [],
           "term": {
             "args": [],
+            "callbacks": [],
             "family": 1,
             "normal": {
               "args": [
@@ -671,6 +676,7 @@
               "own": "owned",
               "value": 2
             },
+            "result_member_shapes": [],
             "result_shape": null,
             "span": {
               "end": 37041,

@@ -223,6 +223,9 @@ pub struct ValueCapabilityPlan {
     pub ty: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub callable: Option<u32>,
+    pub components: Vec<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub variants: Option<Vec<Vec<u32>>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -313,7 +316,7 @@ struct Walker<'m> {
     strings: BTreeMap<hew_sir::StringLiteralId, u32>,
     bytes: BTreeMap<hew_sir::BytesLiteralId, u32>,
     functions: BTreeMap<CallableId, u32>,
-    capabilities: BTreeMap<(String, &'static str), u32>,
+    capabilities: BTreeMap<(hew_types::ResolvedTy, hew_types::ValueCapability), u32>,
     families: Vec<RuntimeFamily>,
     family_index: BTreeMap<String, u32>,
     externs: Vec<Extern>,
@@ -351,12 +354,7 @@ impl<'m> Walker<'m> {
             .value_capabilities
             .keys()
             .enumerate()
-            .map(|(index, (ty, capability))| {
-                (
-                    (ty.user_facing().to_string(), capability_name(*capability)),
-                    table_index(index),
-                )
-            })
+            .map(|(index, (ty, capability))| ((ty.clone(), *capability), table_index(index)))
             .collect();
         Self {
             module,
@@ -526,6 +524,58 @@ impl<'m> Walker<'m> {
         }
     }
 
+    fn value_capabilities(&self) -> Result<Vec<ValueCapabilityPlan>, EmitError> {
+        self.module
+            .value_capabilities
+            .iter()
+            .enumerate()
+            .map(|(index, ((ty, capability), plan))| {
+                Ok(ValueCapabilityPlan {
+                    id: table_index(index),
+                    capability: capability_name(*capability).to_string(),
+                    ty: ty.user_facing().to_string(),
+                    components: if plan.callable.is_none() {
+                        hew_sir::derived_capability_components(
+                            ty,
+                            &self.module.aggregate_shapes,
+                            &self.module.variant_shapes,
+                        )
+                        .map_err(EmitError::new)?
+                        .iter()
+                        .map(|component| self.capability_id(component, *capability))
+                        .collect::<Result<Vec<_>, _>>()?
+                    } else {
+                        Vec::new()
+                    },
+                    variants: if plan.callable.is_none() {
+                        self.module
+                            .variant_shape_for_type(ty)
+                            .map(|shape| {
+                                shape
+                                    .variants
+                                    .iter()
+                                    .map(|variant| {
+                                        variant
+                                            .fields
+                                            .iter()
+                                            .map(|field| self.capability_id(&field.ty, *capability))
+                                            .collect::<Result<Vec<_>, _>>()
+                                    })
+                                    .collect::<Result<Vec<_>, _>>()
+                            })
+                            .transpose()?
+                    } else {
+                        None
+                    },
+                    callable: plan
+                        .callable
+                        .map(|callable| self.function_id(callable))
+                        .transpose()?,
+                })
+            })
+            .collect::<Result<Vec<_>, EmitError>>()
+    }
+
     fn resources(&self) -> Result<Vec<serde_json::Value>, EmitError> {
         self.module.resources.iter().map(|(ty, release)| {
                 use hew_sir::ResourceRelease;
@@ -621,23 +671,7 @@ impl<'m> Walker<'m> {
                     })
                 })
                 .collect::<Result<Vec<_>, EmitError>>()?,
-            value_capabilities: self
-                .module
-                .value_capabilities
-                .iter()
-                .enumerate()
-                .map(|(index, ((ty, capability), plan))| {
-                    Ok(ValueCapabilityPlan {
-                        id: table_index(index),
-                        capability: capability_name(*capability).to_string(),
-                        ty: ty.user_facing().to_string(),
-                        callable: plan
-                            .callable
-                            .map(|callable| self.function_id(callable))
-                            .transpose()?,
-                    })
-                })
-                .collect::<Result<Vec<_>, EmitError>>()?,
+            value_capabilities: self.value_capabilities()?,
             runtime_families: self.families,
             externs: self.externs,
             suspend_kinds: self.suspend_kinds,
@@ -880,7 +914,7 @@ impl<'m> Walker<'m> {
         capability: hew_types::ValueCapability,
     ) -> Result<u32, EmitError> {
         self.capabilities
-            .get(&(ty.user_facing().to_string(), capability_name(capability)))
+            .get(&(ty.clone(), capability))
             .copied()
             .ok_or_else(|| {
                 EmitError::new(format!(
@@ -888,6 +922,44 @@ impl<'m> Walker<'m> {
                     ty.user_facing()
                 ))
             })
+    }
+
+    fn collection_callbacks(
+        &self,
+        family: hew_types::RuntimeCallFamily,
+        args: &[BoundaryOperand],
+    ) -> Result<Vec<u32>, EmitError> {
+        let demands = family.value_callback_capabilities();
+        if demands.is_empty() {
+            return Ok(Vec::new());
+        }
+        let receiver = args
+            .first()
+            .and_then(|arg| self.value_types.get(&arg.operand.value))
+            .ok_or_else(|| EmitError::new("collection receiver has no checked type"))?;
+        let (_, arguments) = hew_types::runtime_call::collection_type_arguments(receiver)
+            .ok_or_else(|| EmitError::new("collection operation has no type arguments"))?;
+        demands
+            .iter()
+            .map(|capability| self.capability_id(&arguments[0], *capability))
+            .collect()
+    }
+
+    fn result_member_shapes(&self, result: &CallResult) -> Vec<Option<u32>> {
+        let CallResult::Value(def) = result else {
+            return Vec::new();
+        };
+        let hew_types::ResolvedTy::Tuple(fields) = &def.ty else {
+            return Vec::new();
+        };
+        fields
+            .iter()
+            .map(|ty| {
+                self.module
+                    .variant_shape_for_type(ty)
+                    .map(|shape| shape.id.0)
+            })
+            .collect()
     }
 
     /// Intern a runtime-call family by its own identity.
@@ -1425,6 +1497,8 @@ impl<'m> Walker<'m> {
             } => serde_json::json!({
                 "op": "runtime.call",
                 "family": self.family_id(*family)?,
+                "callbacks": self.collection_callbacks(*family, args)?,
+                "result_member_shapes": self.result_member_shapes(result),
                 "structural": if *family == hew_types::RuntimeCallFamily::StructuralFormat {
                     Some(self.structural_id(&hew_sir::StructuralType::canonical(self.value_types.get(&args[0].operand.value).ok_or_else(|| EmitError::new("format operand has no type"))?))?)
                 } else { None },

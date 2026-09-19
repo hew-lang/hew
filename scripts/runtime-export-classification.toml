@@ -1991,7 +1991,7 @@ actor context and resolves the target through the runtime's local handle table.
 The raw-pointer caller hew_actor_monitor remains non-declarable. Neither source
 monitor form supplies a system tag, payload, watcher identity or terminal reason."""
 
-"finish_native_terminal -> notify_monitors_on_death" = """
+"finish_actor_terminal -> notify_monitors_on_death" = """
 The private native completion owner publishes normal DOWN only after claiming
 terminal cleanup, observing no checked invocation and releasing typed state.
 Its actor identity and Stopped reason come from that owned incarnation, not
@@ -2005,8 +2005,11 @@ direct child token. The receiving parent validates that exact incarnation before
 applying normal-stop policy. Source close can request teardown but cannot supply
 the parent, slot, child event payload or system-message kind."""
 
-"hew_actor_trap_inner -> hew_supervisor_notify_child_actor_event" = """
-Authenticated producer. hew_actor_trap_inner is NOT user-declarable (private, \
+"publish_terminal_notification -> hew_supervisor_notify_child_actor_event" = """
+Authenticated producer. The private publisher consumes the terminal notice
+recorded by hew_actor_trap_inner before any observer is woken. The delayed
+notice preserves that exact actor, supervisor, reason and fault record through
+consuming cleanup. hew_actor_trap_inner is NOT user-declarable (private, \
 and reached through hew_actor_trap, whose internal tier is \
 asserted by extern_rt_system_lane_symbols_rejected), which is what makes the \
 rest of this reason true: it was demoted precisely because its `actor` and \
@@ -2019,7 +2022,7 @@ hew_actor_close / hew_actor_group_stop_all via call_terminate_fn -> \
 handle_crash_recovery when a terminate hook panics — those callers name the \
 actor they already own and supply no code at all."""
 
-"hew_actor_trap_inner -> propagate_exit_to_links" = """
+"publish_terminal_notification -> propagate_exit_to_links" = """
 Authenticated producer, and see the edge above for why hew_actor_trap_inner \
 is no longer user-declarable. The trapping actor has died; \
 propagate_exit_to_links fans the EXIT out to the link set the runtime recorded \
@@ -2027,7 +2030,7 @@ for it. No remaining caller supplies the recipients (they are whoever linked \
 to this actor) or the reason (it is the crash record). Refusing this edge \
 would mean links cannot fire, which is the whole contract of link()."""
 
-"hew_actor_trap_inner -> notify_monitors_on_death" = """
+"publish_terminal_notification -> notify_monitors_on_death" = """
 The third and last of hew_actor_trap_inner's death fan-outs (links, monitors, \
 parent supervisor). Same authentication: the actor is already dead, the \
 watcher set is runtime state, and the reason is the recorded crash. Listed as \

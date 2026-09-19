@@ -189,7 +189,7 @@ pub unsafe extern "C" fn hew_actor_reply_native(
     // SAFETY: this activation owns the sender reference and the live result slot.
     unsafe {
         if !channel.is_null() {
-            crate::scheduler::mark_current_reply_channel_consumed(channel.cast());
+            crate::execution_context::mark_current_reply_channel_consumed(channel.cast());
             let mut guard = (*channel).native_waker.lock_or_recover();
             if !(*channel).cancelled.load(Ordering::Acquire) {
                 let copied = if size == 0 {

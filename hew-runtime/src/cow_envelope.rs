@@ -128,7 +128,6 @@ pub unsafe fn release(env: *mut HewMsgEnvelope) {
         debug_assert!(prev >= 1, "release on a zero-count envelope");
         if prev == 1 {
             header_validate((*env).header_bits.load(Ordering::Acquire));
-            #[cfg(not(target_arch = "wasm32"))]
             if let Some(start) = (*env).release_start {
                 let cursor = crate::release_walker::HewReleaseCursor::payload(
                     (*env).payload,
@@ -191,7 +190,6 @@ pub unsafe fn release(env: *mut HewMsgEnvelope) {
 /// Detach an unadmitted native payload for its caller's consuming cleanup.
 /// # Safety
 /// The caller transfers its envelope reference; no admitted receiver owns it.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) unsafe fn release_cursor(
     env: *mut HewMsgEnvelope,
 ) -> *mut crate::release_walker::HewReleaseCursor {
@@ -229,7 +227,6 @@ pub(crate) unsafe fn release_cursor(
 /// Consume an unadmitted sealed request through its selected release recipe.
 /// # Safety
 /// The caller transfers one envelope reference and retains no payload loan.
-#[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub unsafe extern "C" fn hew_msg_envelope_release_begin(
     env: *mut HewMsgEnvelope,
@@ -241,7 +238,6 @@ pub unsafe extern "C" fn hew_msg_envelope_release_begin(
 /// Attach receiver lifetime accounting before publishing a native payload.
 /// # Safety
 /// The envelope is unpublished and the actor is pinned through admission.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) unsafe fn bind_receiver(
     env: *mut HewMsgEnvelope,
     actor: &crate::actor::HewActor,
@@ -267,7 +263,6 @@ pub(crate) unsafe fn bind_receiver(
 /// Failed admission leaves the caller's payload independent of receiver close.
 /// # Safety
 /// Admission still owns the unpublished envelope and pins the same actor.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) unsafe fn unbind_receiver(env: *mut HewMsgEnvelope, actor: &crate::actor::HewActor) {
     // SAFETY: failed admission has not published this envelope.
     unsafe {

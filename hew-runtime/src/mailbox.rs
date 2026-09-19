@@ -1102,7 +1102,6 @@ pub unsafe extern "C" fn hew_msg_node_free(node: *mut HewMsgNode) {
     unsafe {
         // A queued native ask keeps its sender reference until typed payload
         // cleanup completes, so its caller cannot pass that cleanup barrier.
-        #[cfg(not(target_arch = "wasm32"))]
         if !(*node).envelope.is_null() && (*(*node).envelope).release_start.is_some() {
             (*(*node).envelope).release_reply =
                 std::mem::replace(&mut (*node).reply_channel, ptr::null_mut());

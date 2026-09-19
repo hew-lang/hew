@@ -3523,6 +3523,7 @@ unsafe fn submit_native_request(
 ) -> crate::mailbox::SendOutcome {
     // Attachment termination is completion of work already admitted by its
     // owner. Ordinary root/external sends must finish publication before drain.
+    #[cfg(not(target_arch = "wasm32"))]
     let _ingress = if terminal {
         None
     } else {
@@ -6392,7 +6393,6 @@ fn publish_crash_fault_record(
 }
 
 /// Retained terminal observation, published only after native state cleanup.
-#[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug)]
 pub(crate) struct TerminalNotification {
     actor_id: u64,

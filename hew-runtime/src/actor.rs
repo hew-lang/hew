@@ -3358,6 +3358,7 @@ pub unsafe extern "C" fn hew_actor_spawn_native(
 ) -> crate::lifetime::local_handles::HewLocalPidId {
     // SAFETY: generated code supplies an empty cursor output.
     if !rejected_state_release.is_null() {
+        // SAFETY: generated code supplies a writable optional cursor output.
         unsafe { rejected_state_release.write(ptr::null_mut()) };
     }
     let Ok(_ingress) = crate::shutdown::admit_external_work() else {
@@ -6508,10 +6509,6 @@ impl TerminalNotification {
 ///
 /// Same contract as [`hew_actor_trap`].
 #[cfg(not(target_arch = "wasm32"))]
-#[expect(
-    clippy::too_many_lines,
-    reason = "terminal publication keeps its ordering proof beside every notification edge"
-)]
 unsafe fn hew_actor_trap_inner(
     actor: *mut HewActor,
     error_code: i32,

@@ -183,6 +183,7 @@ pub unsafe extern "C" fn hew_actor_call_new(
             }
         }
         if !envelope.is_null() {
+            // SAFETY: this unpublished envelope belongs to the operation.
             unsafe { (*envelope).release_start = payload_release };
         }
         envelope
@@ -314,13 +315,12 @@ pub unsafe extern "C" fn hew_actor_call_cleanup_poll(
     let Some(operation) = (unsafe { operation.as_mut() }) else {
         return 1;
     };
+    // SAFETY: the operation exclusively owns its abandoned request and reply.
     unsafe { operation.prepare_cleanup() };
-    i32::from(
-        operation
-            .cleanup
-            .as_mut()
-            .is_none_or(|driver| unsafe { driver.poll(parent) }),
-    )
+    i32::from(operation.cleanup.as_mut().is_none_or(|driver| {
+        // SAFETY: the parent and boxed driver remain live through cleanup.
+        unsafe { driver.poll(parent) }
+    }))
 }
 
 /// Transfer the completed cleanup diagnostic, if any.

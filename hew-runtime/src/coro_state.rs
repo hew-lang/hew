@@ -159,6 +159,7 @@ pub unsafe extern "C" fn hew_coro_state_set_cleanup_fault(
 ) {
     // SAFETY: the caller retains the optional invocation and diagnostic.
     if let Some(state) = unsafe { state.as_ref() } {
+        // SAFETY: the caller retains this optional diagnostic for this call.
         let failed = unsafe { fault.as_ref() }.is_some_and(|fault| {
             !matches!(
                 fault.code(),

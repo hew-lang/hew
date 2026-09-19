@@ -1751,6 +1751,7 @@ pub unsafe extern "C" fn hew_sink_release_begin(
         // SAFETY: the cursor owns this handle after discarded values finish.
         unsafe { hew_sink_close(owner.cast()) };
     }
+    // SAFETY: the consuming callback retains its invocation through this call.
     let owner = unsafe { crate::coro_state::cleanup_fault_owner(state) }
         .or_else(crate::fault::crashing_owner);
     let (layout, discarded) = if let Some(actor) = owner {

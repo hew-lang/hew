@@ -431,6 +431,10 @@ pub(crate) struct ReleaseDriver {
 }
 
 impl ReleaseDriver {
+    #[expect(
+        clippy::unnecessary_box_returns,
+        reason = "generated child frames retain fault output addresses in this allocation"
+    )]
     pub(crate) fn new(cursor: *mut HewReleaseCursor) -> Box<Self> {
         Box::new(Self {
             cursor,
@@ -446,7 +450,10 @@ impl ReleaseDriver {
     /// The driver remains boxed and uniquely driven through completion. The
     /// invocation is live through this poll and supplies its retained waker.
     pub(crate) unsafe fn poll(&mut self, parent: *mut crate::coro_state::HewCoroState) -> bool {
-        use crate::coro_state::*;
+        use crate::coro_state::{
+            hew_coro_state_cleanup_child, hew_coro_state_free, hew_coro_state_set_cleanup_fault,
+            hew_coro_state_status, CoroStatus,
+        };
         // SAFETY: this owner serializes every callback and retains each slot
         // until its child frame has completed and been destroyed.
         unsafe {
@@ -484,7 +491,9 @@ impl ReleaseDriver {
                 }
                 let layout = *hew_release_layout(self.cursor);
                 if let Some(start) = layout.release_start {
-                    hew_coro_state_set_cleanup_fault(parent, self.fault);
+                    if !self.fault.is_null() {
+                        hew_coro_state_set_cleanup_fault(parent, self.fault);
+                    }
                     self.state = hew_coro_state_cleanup_child(parent);
                     if self.state.is_null() {
                         std::process::abort();

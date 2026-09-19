@@ -241,6 +241,8 @@ pub unsafe extern "C-unwind" fn hew_rc_drop(ptr: *mut u8) {
 /// # Safety
 /// `value` is null or one live strong owner. `layout` is its exact immutable
 /// payload descriptor and remains valid through the consuming traversal.
+/// # Panics
+/// Panics if the supplied strong reference was already released.
 #[no_mangle]
 pub unsafe extern "C" fn hew_rc_release_begin(
     value: *mut u8,

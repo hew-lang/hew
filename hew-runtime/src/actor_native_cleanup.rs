@@ -120,6 +120,10 @@ pub(crate) fn wake(actor: &HewActor) {
 /// Returns true when this activation was used by cleanup.
 /// # Safety
 /// The scheduler owns this actor's Running activation and no handler is live.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one scheduler activation serializes payload and state cleanup through terminal publication"
+)]
 pub(crate) unsafe fn drive(actor: &HewActor) -> bool {
     let Some(completion) = &actor.native_completion else {
         return false;
@@ -246,6 +250,7 @@ pub(crate) unsafe fn drive(actor: &HewActor) -> bool {
     if !work.fault.is_null() {
         // SAFETY: this driver owns the completed diagnostic while reporting it.
         let code = super::report_checked_failure(unsafe { &*work.fault });
+        // SAFETY: all child callbacks have finished using this owned diagnostic.
         unsafe { crate::fault::hew_fault_drop(work.fault) };
         if actor.error_code.load(Ordering::Acquire) == 0 {
             actor.error_code.store(code, Ordering::Release);
@@ -253,7 +258,7 @@ pub(crate) unsafe fn drive(actor: &HewActor) -> bool {
         if terminal == 0 {
             // SAFETY: a nonterminal discarded-payload failure faults its receiver.
             unsafe {
-                crate::actor::hew_actor_trap_from_activation(ptr::from_ref(actor).cast_mut(), code)
+                crate::actor::hew_actor_trap_from_activation(ptr::from_ref(actor).cast_mut(), code);
             };
             return true;
         }

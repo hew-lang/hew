@@ -267,10 +267,13 @@ fn layout_hashmap_staged_callbacks_preserve_contents_across_abandonment() {
 
             let probe = hew_hashmap_probe_begin(map, (&raw const key).cast(), 1);
             finish(probe);
+            let mut release = std::ptr::null_mut();
             assert!(hew_hashmap_probe_insert_take(
                 probe,
-                (&raw const value).cast()
+                (&raw const value).cast(),
+                &raw mut release
             ));
+            hew_runtime::release_walker::hew_release_sync(release);
         }
         for key in 0_i64..40 {
             let probe = hew_hashmap_probe_begin(map, (&raw const key).cast(), 0);
@@ -283,10 +286,13 @@ fn layout_hashmap_staged_callbacks_preserve_contents_across_abandonment() {
         let probe = hew_hashmap_probe_begin(map, (&raw const key).cast(), 0);
         finish(probe);
         let mut value = -1_i64;
+        let mut release = std::ptr::null_mut();
         assert!(hew_hashmap_probe_remove_take(
             probe,
-            (&raw mut value).cast()
+            (&raw mut value).cast(),
+            &raw mut release
         ));
+        hew_runtime::release_walker::hew_release_sync(release);
         assert_eq!(value, 35);
         assert_eq!(hew_hashmap_len_layout(map), 39);
         hew_hashmap_free_layout(map);

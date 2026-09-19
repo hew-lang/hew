@@ -528,6 +528,20 @@ pub unsafe extern "C" fn hew_hashset_clear_layout(set: *mut HewLayoutHashSet) {
 // Len
 // ---------------------------------------------------------------------------
 
+/// Empty the set and transfer removed owners to checked release.
+/// # Safety
+/// `set` is a live exclusively borrowed set. The returned cursor is owned.
+#[no_mangle]
+pub unsafe extern "C" fn hew_hashset_clear_release(
+    set: *mut HewLayoutHashSet,
+) -> *mut crate::release_walker::HewReleaseCursor {
+    // SAFETY: set validation proves the wrapped map is live.
+    unsafe {
+        validate_set_op(set.cast_const());
+        crate::hashmap::hew_hashmap_clear_release((*set).map)
+    }
+}
+
 /// Return the number of elements in the set.
 ///
 /// `set` must be non-null.

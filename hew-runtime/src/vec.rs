@@ -31,7 +31,7 @@ pub use hew_cabi::vec::{
 };
 
 use crate::internal::types::HEW_TRAP_INDEX_OUT_OF_BOUNDS;
-use crate::release_walker::{self, ReleaseItem};
+use crate::release_walker::{self, HewReleaseCursor, ReleaseItem};
 use crate::trap_code::{fmt_decimal_usize, runtime_bounds_trap};
 use core::ffi::c_void;
 use core::ptr;
@@ -1568,37 +1568,22 @@ unsafe fn release_vector(v: *mut HewVec, deferred: bool) {
     }
 }
 
-/// Release the live elements in `[start, end)` before returning.
-///
+/// Remove every element while retaining capacity, returning detached owners.
 /// # Safety
-///
-/// `v` must be valid with `start <= end <= (*v).len`.
-unsafe fn release_element_range(v: *mut HewVec, start: usize, end: usize) {
-    // SAFETY: caller guarantees `v` and the range are valid.
-    unsafe {
-        if start >= end || (*v).data.is_null() || !element_needs_drop(v) {
-            return;
-        }
-        release_walker::release_now(ReleaseItem::VectorElements {
-            vec: v,
-            next: start,
-            end,
-        });
-    }
+/// `v` is a live, exclusively borrowed vector. The returned cursor is owned.
+#[no_mangle]
+pub unsafe extern "C" fn hew_vec_clear_release(v: *mut HewVec) -> *mut HewReleaseCursor {
+    // SAFETY: clear shares truncate's storage and ownership contract.
+    unsafe { hew_vec_truncate_release(v, 0) }
 }
 
-/// Clear the vec (set len to 0), releasing every live element.
-///
+/// Clear a vector whose selected element release cannot suspend.
 /// # Safety
-///
-/// `v` must be a valid `HewVec` pointer.
+/// `v` must be a live, exclusively borrowed vector.
 #[no_mangle]
 pub unsafe extern "C-unwind" fn hew_vec_clear(v: *mut HewVec) {
-    // SAFETY: caller guarantees `v` is valid.
-    unsafe {
-        release_element_range(v, 0, (*v).len);
-        (*v).len = 0;
-    }
+    // SAFETY: the synchronous ABI consumes the same detached owner traversal.
+    unsafe { release_walker::hew_release_sync(hew_vec_clear_release(v)) };
 }
 
 /// Free the Vec through the release walker.
@@ -2327,16 +2312,45 @@ pub unsafe extern "C-unwind" fn hew_vec_swap(v: *mut HewVec, i: i64, j: i64) {
 /// `v` must be a valid `HewVec` pointer (or null).
 #[no_mangle]
 pub unsafe extern "C-unwind" fn hew_vec_truncate(v: *mut HewVec, new_len: i64) {
-    cabi_guard!(v.is_null());
-    // SAFETY: caller guarantees `v` is valid.
+    // SAFETY: the synchronous ABI consumes the same detached owner traversal.
+    unsafe { release_walker::hew_release_sync(hew_vec_truncate_release(v, new_len)) };
+}
+
+/// Truncate before exposing displaced owners for cooperative release.
+/// # Safety
+/// `v` is null or an exclusively borrowed vector. The returned cursor is owned.
+#[no_mangle]
+pub unsafe extern "C" fn hew_vec_truncate_release(
+    v: *mut HewVec,
+    new_len: i64,
+) -> *mut HewReleaseCursor {
+    cabi_guard!(v.is_null(), ptr::null_mut());
+    // SAFETY: no callback runs while slots move out and the live range changes.
     unsafe {
         let new_len = new_len as usize;
         let old_len = (*v).len;
         if new_len >= old_len {
-            return;
+            return ptr::null_mut();
         }
-        release_element_range(v, new_len, old_len);
+        let mut cursors = Vec::new();
+        if let Some(layout) = (*v).layout.as_ref() {
+            for index in new_len..old_len {
+                cursors.push(HewReleaseCursor::detached(
+                    (*v).data.add(index * layout.size).cast(),
+                    *layout,
+                ));
+            }
+        } else if (*v).elem_kind == ElemKind::String {
+            let mut pending = Vec::new();
+            for index in (new_len..old_len).rev() {
+                pending.push(ReleaseItem::String {
+                    value: (*v).data.cast::<*mut HewString>().add(index).read(),
+                });
+            }
+            cursors.push(HewReleaseCursor::new(pending));
+        }
         (*v).len = new_len;
+        HewReleaseCursor::join(cursors)
     }
 }
 
@@ -2652,16 +2666,6 @@ unsafe fn owned_clone_fn(layout: &HewValueLayout) -> Option<hew_cabi::value::Hew
         None if layout.ownership_kind == HewTypeOwnershipKind::Plain => None,
         // SAFETY: abort path.
         None => unsafe { abort_owned_thunk_missing("clone") },
-    }
-}
-
-/// Resolve the descriptor's cleanup action; only plain values need no thunk.
-unsafe fn owned_drop_fn(layout: &HewValueLayout) -> Option<hew_cabi::value::HewValueDropThunk> {
-    match layout.drop_fn {
-        Some(f) => Some(f),
-        None if layout.ownership_kind == HewTypeOwnershipKind::Plain => None,
-        // SAFETY: abort path.
-        None => unsafe { abort_owned_thunk_missing("drop") },
     }
 }
 
@@ -2990,85 +2994,83 @@ pub unsafe extern "C" fn hew_vec_take_owned(
     }
 }
 
-/// Overwrite an owned element: drop the old element (descriptor `drop_fn`),
-/// then deep-copy the new one in (`clone_fn`). Aborts on out-of-bounds.
-///
+/// Copy a replacement into a vector and synchronously consume its old owner.
 /// # Safety
-///
-/// `v` must be an owned-element `HewVec`. `data` must point to at least
-/// `descriptor.size` readable bytes.
+/// `v` has an owned descriptor, `data` matches it, and release cannot suspend.
 #[no_mangle]
-pub unsafe extern "C-unwind" fn hew_vec_set_owned(
-    v: *mut HewVec,
-    index: i64,
-    data: *const core::ffi::c_void,
-) {
-    cabi_guard!(v.is_null() || data.is_null());
-    // SAFETY: guards reject null pointers; descriptor presence is validated.
-    unsafe {
-        let layout = owned_descriptor(v);
-        let elem_size = layout.size;
-        let clone_fn = owned_clone_fn(layout);
-        let drop_fn = owned_drop_fn(layout);
-        let index = index as usize;
-        if index >= (*v).len {
-            abort_oob("Vec.set()", index, (*v).len);
-        }
-        let slot = (*v).data.add(index * elem_size);
-        // Drop the replaced element exactly once, then deep-copy the new one in.
-        if let Some(drop_fn) = drop_fn {
-            drop_fn(slot.cast::<core::ffi::c_void>());
-        }
-        core::ptr::copy_nonoverlapping(data.cast::<u8>(), slot, elem_size);
-        let status = clone_fn.map_or(0, |clone_fn| {
-            clone_fn(data, slot.cast::<core::ffi::c_void>())
-        });
-        if status != 0 {
-            let msg = b"PANIC: Vec owned element clone failed\n\0";
-            write_stderr(&msg[..msg.len() - 1]);
-            libc::abort();
-        }
-    }
+pub unsafe extern "C-unwind" fn hew_vec_set_owned(v: *mut HewVec, index: i64, data: *const c_void) {
+    // SAFETY: forwarded vector and source contracts.
+    unsafe { release_walker::hew_release_sync(hew_vec_set_owned_release(v, index, data)) };
 }
 
-/// Overwrite an owned element by MOVE: drop the replaced element (descriptor
-/// `drop_fn`), then byte-copy the new one into the slot and transfer ownership
-/// of its heap to the Vec WITHOUT running the descriptor `clone_fn`.
-///
-/// On success, the caller has transferred its source ownership and must not
-/// destroy that source. The replaced element is released exactly once. Use
-/// [`hew_vec_set_owned`] when the caller retains the replacement value.
-///
+/// Move a replacement into a vector and synchronously consume its old owner.
 /// # Safety
-///
-/// `v` must be an owned-element `HewVec` (created by
-/// [`hew_vec_new_with_elem_layout`]). `data` must point to at least
-/// `descriptor.size` readable bytes whose ownership is transferred to the Vec.
+/// `data` transfers one independent initialized owner matching `v`'s descriptor.
 #[no_mangle]
 pub unsafe extern "C-unwind" fn hew_vec_set_owned_move(
     v: *mut HewVec,
     index: i64,
-    data: *const core::ffi::c_void,
+    data: *const c_void,
 ) {
-    cabi_guard!(v.is_null() || data.is_null());
-    // SAFETY: guards reject null pointers; descriptor presence is validated.
+    // SAFETY: forwarded vector and source ownership contracts.
+    unsafe { release_walker::hew_release_sync(hew_vec_set_owned_move_release(v, index, data)) };
+}
+
+/// Copy a replacement before detaching the displaced owner for release.
+/// # Safety
+/// `v` is exclusively borrowed; `data` lends an initialized matching value.
+#[no_mangle]
+pub unsafe extern "C-unwind" fn hew_vec_set_owned_release(
+    v: *mut HewVec,
+    index: i64,
+    data: *const c_void,
+) -> *mut HewReleaseCursor {
+    // SAFETY: the copying variant retains ownership of the borrowed input.
+    unsafe { set_owned_release(v, index, data, true) }
+}
+
+/// Install a moved replacement before detaching the displaced owner for release.
+/// # Safety
+/// `v` is exclusively borrowed; `data` transfers an independent matching owner.
+#[no_mangle]
+pub unsafe extern "C-unwind" fn hew_vec_set_owned_move_release(
+    v: *mut HewVec,
+    index: i64,
+    data: *const c_void,
+) -> *mut HewReleaseCursor {
+    // SAFETY: the moving variant transfers the independent input owner.
+    unsafe { set_owned_release(v, index, data, false) }
+}
+
+unsafe fn set_owned_release(
+    v: *mut HewVec,
+    index: i64,
+    data: *const c_void,
+    copy: bool,
+) -> *mut HewReleaseCursor {
+    cabi_guard!(v.is_null() || data.is_null(), ptr::null_mut());
+    // SAFETY: the caller supplies initialized, correctly laid out slots.
     unsafe {
-        let layout = owned_descriptor(v);
-        let elem_size = layout.size;
-        let drop_fn = owned_drop_fn(layout);
+        let layout = *owned_descriptor(v);
         let index = index as usize;
         if index >= (*v).len {
             abort_oob("Vec.set()", index, (*v).len);
         }
-        let slot = (*v).data.add(index * elem_size);
-        // Drop the replaced element exactly once (identical to the copy-in set),
-        // then MOVE the new element in: byte-copy transfers BitCopy fields, enum
-        // tag bytes, AND owned-heap pointers into the slot. No `clone_fn` — the
-        // source's heap is now owned by the Vec; the source temp is dead.
-        if let Some(drop_fn) = drop_fn {
-            drop_fn(slot.cast::<core::ffi::c_void>());
+        let scratch_size = layout.size.max(1);
+        let scratch = crate::mem::hew_alloc(scratch_size as u64, layout.align as u64);
+        ptr::copy_nonoverlapping(data.cast::<u8>(), scratch, layout.size);
+        if copy {
+            let status = owned_clone_fn(&layout).map_or(0, |clone| clone(data, scratch.cast()));
+            if status != 0 {
+                write_stderr(b"PANIC: Vec owned element clone failed\n");
+                libc::abort();
+            }
         }
-        core::ptr::copy_nonoverlapping(data.cast::<u8>(), slot, elem_size);
+        let slot = (*v).data.add(index * layout.size);
+        let displaced = HewReleaseCursor::detached(slot.cast(), layout);
+        ptr::copy_nonoverlapping(scratch, slot, layout.size);
+        crate::mem::hew_dealloc(scratch, scratch_size as u64, layout.align as u64);
+        displaced
     }
 }
 

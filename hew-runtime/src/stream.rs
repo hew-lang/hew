@@ -2101,6 +2101,50 @@ pub unsafe extern "C" fn hew_stream_try_send_layout(
     }
 }
 
+/// Try one send while transferring its input on every outcome. Rejected
+/// element owners return to the caller as a consuming release cursor.
+/// # Safety
+/// `sink` is null or a live exclusive loan, `data` transfers one value matching
+/// `layout`, and `release_out` is a disjoint writable cursor output.
+#[no_mangle]
+pub unsafe extern "C" fn hew_stream_try_send_move_release(
+    sink: *mut HewSink,
+    data: *mut c_void,
+    layout: *const crate::vec::HewValueLayout,
+    release_out: *mut *mut crate::release_walker::HewReleaseCursor,
+) -> i32 {
+    use crate::channel_common::{move_elem_envelope, move_elem_layout_witness};
+    use crate::release_walker::HewReleaseCursor;
+    // SAFETY: the caller supplies a checked descriptor and one transferred owner.
+    unsafe {
+        *release_out = std::ptr::null_mut();
+        let layout = move_elem_layout_witness(layout, "Sink.try_send");
+        let envelope = move_elem_envelope(data, layout, "Sink.try_send");
+        let (status, rejected) = if sink.is_null() || (*sink).is_closed() {
+            (TrySendResult::Closed, Some(envelope))
+        } else if let Some(core) = sink_channel_core(sink) {
+            if layout.ownership_kind == crate::vec::HewTypeOwnershipKind::LayoutManaged {
+                core.stamp_elem_layout(layout);
+            }
+            core.try_send_owned(envelope)
+        } else {
+            if layout.ownership_kind == crate::vec::HewTypeOwnershipKind::LayoutManaged {
+                crate::channel_common::abort_elem_witness(
+                    "Sink.try_send",
+                    "layout-managed elements require an in-memory channel sink",
+                );
+            }
+            ((*sink).try_write_item(&envelope), None)
+        };
+        if let Some(envelope) = rejected {
+            if layout.ownership_kind == crate::vec::HewTypeOwnershipKind::LayoutManaged {
+                *release_out = HewReleaseCursor::detached(envelope.as_ptr().cast(), *layout);
+            }
+        }
+        status.into_abi_code()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

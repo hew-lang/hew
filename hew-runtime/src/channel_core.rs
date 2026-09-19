@@ -802,19 +802,25 @@ impl ChannelCore {
 
     /// Non-blocking producer send (`try_send`).
     pub fn try_send(&self, item: Vec<u8>) -> TrySendResult {
+        let (result, rejected) = self.try_send_owned(item);
+        if let Some(item) = rejected {
+            let layout = self.locked().elem_layout;
+            Self::drop_envelope(layout.as_ref(), item);
+        }
+        result
+    }
+
+    /// Try admission without executing release callbacks. The caller owns any
+    /// rejected envelope and must consume it using the stamped descriptor.
+    pub(crate) fn try_send_owned(&self, item: Vec<u8>) -> (TrySendResult, Option<Vec<u8>>) {
         let consumer_wake;
         {
             let mut inner = self.locked();
             if inner.stream_closed || inner.sink_closed || inner.sink_fault {
-                // Release an owned envelope via the stamped witness outside the
-                // lock, and report the terminal channel cannot accept the item.
-                let layout = inner.elem_layout;
-                drop(inner);
-                Self::drop_envelope(layout.as_ref(), item);
-                return TrySendResult::Closed;
+                return (TrySendResult::Closed, Some(item));
             }
             if inner.queue.len() >= inner.capacity {
-                return TrySendResult::Full;
+                return (TrySendResult::Full, Some(item));
             }
             inner.queue.push_back(item);
             consumer_wake = inner.consumer.take();
@@ -824,7 +830,7 @@ impl ChannelCore {
             unsafe { Self::wake(w) };
         }
         self.cv.notify_all();
-        TrySendResult::Accepted
+        (TrySendResult::Accepted, None)
     }
 
     /// Detach an abandoned producer registration (the codegen abandon edge).
@@ -1693,6 +1699,27 @@ mod tests {
             crate::mem::buf_free(heap.cast());
             env
         }
+    }
+
+    #[test]
+    fn refused_try_send_releases_owned_envelopes_once() {
+        let _g = OWNED_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let before = OWNED_DROPS.load(Ordering::SeqCst);
+        let core = ChannelCore::new(1);
+        core.stamp_elem_layout(&owned_elem_layout());
+        assert_eq!(core.try_send(owned_envelope(1)), TrySendResult::Accepted);
+        assert_eq!(core.try_send(owned_envelope(2)), TrySendResult::Full);
+        assert_eq!(OWNED_DROPS.load(Ordering::SeqCst) - before, 1);
+        let (result, rejected) = core.try_send_owned(owned_envelope(3));
+        assert_eq!(result, TrySendResult::Full);
+        assert_eq!(OWNED_DROPS.load(Ordering::SeqCst) - before, 1);
+        ChannelCore::drop_envelope(Some(&owned_elem_layout()), rejected.unwrap());
+        core.close_stream();
+        assert_eq!(core.try_send(owned_envelope(4)), TrySendResult::Closed);
+        drop(core);
+        assert_eq!(OWNED_DROPS.load(Ordering::SeqCst) - before, 4);
     }
 
     #[test]

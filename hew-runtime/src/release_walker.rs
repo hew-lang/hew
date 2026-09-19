@@ -320,6 +320,34 @@ pub struct HewReleaseCursor {
 }
 
 impl HewReleaseCursor {
+    /// Move an owner into independent storage before its receiver is mutated.
+    /// # Safety
+    /// `slot` is initialized with this exact layout. The caller must cease
+    /// owning its old bits after this call; no semantic clone occurs.
+    pub(crate) unsafe fn detached(slot: *const c_void, layout: HewValueLayout) -> *mut Self {
+        if layout.drop_fn.is_none() && layout.release_start.is_none() {
+            return ptr::null_mut();
+        }
+        // SAFETY: the exact descriptor supplies valid allocation geometry;
+        // even zero-sized owners need a non-null cursor slot.
+        unsafe {
+            let size = layout.size.max(1);
+            let storage = crate::mem::hew_alloc(size as u64, layout.align as u64);
+            ptr::copy_nonoverlapping(slot.cast::<u8>(), storage, layout.size);
+            Self::new(vec![
+                ReleaseItem::Allocation {
+                    pointer: storage.cast(),
+                    size,
+                    align: layout.align,
+                },
+                ReleaseItem::Value {
+                    slot: storage.cast(),
+                    layout,
+                },
+            ])
+        }
+    }
+
     pub(crate) fn new(pending: Vec<ReleaseItem>) -> *mut Self {
         Box::into_raw(Box::new(Self {
             pending,
@@ -632,6 +660,29 @@ pub unsafe extern "C" fn hew_release_finish(cursor: *mut HewReleaseCursor) {
     let cursor = unsafe { Box::from_raw(cursor) };
     if !cursor.pending.is_empty() || cursor.current_layout.is_some() {
         std::process::abort();
+    }
+}
+
+/// Consume a traversal whose selected value recipes cannot suspend.
+/// # Safety
+/// The caller transfers the fresh cursor and retains any outer release fault
+/// sink. Every descriptor must have no consuming continuation.
+#[no_mangle]
+pub unsafe extern "C-unwind" fn hew_release_sync(cursor: *mut HewReleaseCursor) {
+    if cursor.is_null() {
+        return;
+    }
+    // SAFETY: the caller transfers exclusive ownership of all pending items.
+    let cursor = unsafe { Box::from_raw(cursor) };
+    assert!(cursor.current_layout.is_none());
+    arm_release_sink();
+    for item in cursor.pending.into_iter().rev() {
+        // SAFETY: each detached item and its storage remain owned by this walk.
+        unsafe { release_now(item) };
+    }
+    if let Some((code, fault)) = disarm_release_sink() {
+        // SAFETY: all owners are consumed before transferring the retained fault.
+        unsafe { crate::fault::hew_fault_trap(code, fault) };
     }
 }
 

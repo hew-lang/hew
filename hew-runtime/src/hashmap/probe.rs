@@ -7,6 +7,7 @@ use super::{
     key_hash, require_clone, slot_key, slot_state, slot_val, validate_op_inputs, HewLayoutHashMap,
     EMPTY, LOAD_PCTG, OCCUPIED, TOMBSTONE,
 };
+use crate::release_walker::{hew_release_sync, HewReleaseCursor};
 use core::{ffi::c_void, ptr};
 use hew_cabi::map::HewMapProbeStatus;
 
@@ -401,12 +402,19 @@ pub unsafe extern "C" fn hew_hashmap_probe_get_borrow(
 pub unsafe extern "C-unwind" fn hew_hashmap_probe_remove_take(
     probe: *mut HewLayoutMapProbe,
     out: *mut c_void,
+    release_out: *mut *mut HewReleaseCursor,
 ) -> bool {
     // SAFETY: forwarded ready probe, live receiver and disjoint output contract.
-    unsafe { remove(&ready(probe), Some(out)) }
+    unsafe { remove(&ready(probe), Some(out), release_out) }
 }
 
-unsafe fn remove(probe: &HewLayoutMapProbe, output: Option<*mut c_void>) -> bool {
+unsafe fn remove(
+    probe: &HewLayoutMapProbe,
+    output: Option<*mut c_void>,
+    release_out: *mut *mut HewReleaseCursor,
+) -> bool {
+    // SAFETY: the caller provides a disjoint writable cursor output.
+    unsafe { *release_out = ptr::null_mut() };
     if !probe.found {
         return false;
     }
@@ -416,18 +424,17 @@ unsafe fn remove(probe: &HewLayoutMapProbe, output: Option<*mut c_void>) -> bool
         let map = &mut *probe.map;
         let key = slot_key(map.entries, probe.index, map.stride, map.key_offset);
         let value = slot_val(map.entries, probe.index, map.stride, map.val_offset);
-        if let Some(drop_key) = map.key_layout.value.drop_fn {
-            drop_key(key.cast());
-        }
+        let mut displaced = vec![HewReleaseCursor::detached(key.cast(), map.key_layout.value)];
         if let Some(output) = output {
             if map.val_layout.size > 0 {
                 ptr::copy_nonoverlapping(value, output.cast(), map.val_layout.size);
             }
-        } else if let Some(drop_value) = map.val_layout.drop_fn {
-            drop_value(value.cast());
+        } else {
+            displaced.push(HewReleaseCursor::detached(value.cast(), map.val_layout));
         }
         *slot_state(map.entries, probe.index, map.stride) = TOMBSTONE;
         map.len -= 1;
+        *release_out = HewReleaseCursor::join(displaced);
     }
     true
 }
@@ -440,7 +447,12 @@ enum InsertMode {
     RawTransfer,
 }
 
-unsafe fn insert(mut probe: HewLayoutMapProbe, value: *const c_void, mode: InsertMode) -> bool {
+unsafe fn insert(
+    mut probe: HewLayoutMapProbe,
+    value: *const c_void,
+    mode: InsertMode,
+    release_out: *mut *mut HewReleaseCursor,
+) -> bool {
     // SAFETY: snapshot geometry before allocating or changing the map.
     let (key_layout, value_layout, stride, key_offset, val_offset) = unsafe {
         (
@@ -481,10 +493,12 @@ unsafe fn insert(mut probe: HewLayoutMapProbe, value: *const c_void, mode: Inser
         let map = &mut *probe.map;
         let destination_key = slot_key(map.entries, probe.index, stride, key_offset);
         let destination_value = slot_val(map.entries, probe.index, stride, val_offset);
+        let mut displaced = Vec::new();
         if probe.found {
-            if let Some(drop_value) = value_layout.drop_fn {
-                drop_value(destination_value.cast());
-            }
+            displaced.push(HewReleaseCursor::detached(
+                destination_value.cast(),
+                value_layout,
+            ));
         } else {
             ptr::copy_nonoverlapping(key, destination_key, key_layout.size);
             *slot_state(map.entries, probe.index, stride) = OCCUPIED;
@@ -494,11 +508,10 @@ unsafe fn insert(mut probe: HewLayoutMapProbe, value: *const c_void, mode: Inser
             ptr::copy_nonoverlapping(val, destination_value, value_layout.size);
         }
         if probe.found && mode != InsertMode::RawTransfer {
-            if let Some(drop_key) = key_layout.drop_fn {
-                drop_key(key.cast());
-            }
+            displaced.push(HewReleaseCursor::detached(key.cast(), key_layout));
         }
         dealloc_layout_entries(scratch, 1, stride, alignment);
+        *release_out = HewReleaseCursor::join(displaced);
     }
     !probe.found
 }
@@ -510,9 +523,10 @@ unsafe fn insert(mut probe: HewLayoutMapProbe, value: *const c_void, mode: Inser
 pub unsafe extern "C-unwind" fn hew_hashmap_probe_insert_clone(
     probe: *mut HewLayoutMapProbe,
     value: *const c_void,
+    release_out: *mut *mut HewReleaseCursor,
 ) -> bool {
     // SAFETY: forwarded live insertion operands and ready probe ownership.
-    unsafe { insert(ready(probe), value, InsertMode::Clone) }
+    unsafe { insert(ready(probe), value, InsertMode::Clone, release_out) }
 }
 
 /// # Safety
@@ -522,9 +536,10 @@ pub unsafe extern "C-unwind" fn hew_hashmap_probe_insert_clone(
 pub unsafe extern "C-unwind" fn hew_hashmap_probe_insert_take(
     probe: *mut HewLayoutMapProbe,
     value: *const c_void,
+    release_out: *mut *mut HewReleaseCursor,
 ) -> bool {
     // SAFETY: forwarded key loan, value transfer and ready probe ownership.
-    unsafe { insert(ready(probe), value, InsertMode::TakeValue) }
+    unsafe { insert(ready(probe), value, InsertMode::TakeValue, release_out) }
 }
 
 /// # Safety
@@ -533,9 +548,10 @@ pub unsafe extern "C-unwind" fn hew_hashmap_probe_insert_take(
 #[no_mangle]
 pub unsafe extern "C-unwind" fn hew_hashset_probe_insert_clone(
     probe: *mut HewLayoutMapProbe,
+    release_out: *mut *mut HewReleaseCursor,
 ) -> bool {
     // SAFETY: a set probe's value descriptor is the plain zero-sized marker.
-    unsafe { insert(ready(probe), ptr::null(), InsertMode::Clone) }
+    unsafe { insert(ready(probe), ptr::null(), InsertMode::Clone, release_out) }
 }
 
 /// # Safety
@@ -544,18 +560,29 @@ pub unsafe extern "C-unwind" fn hew_hashset_probe_insert_clone(
 #[no_mangle]
 pub unsafe extern "C-unwind" fn hew_hashset_probe_insert_take(
     probe: *mut HewLayoutMapProbe,
+    release_out: *mut *mut HewReleaseCursor,
 ) -> bool {
     // SAFETY: the caller transfers the query owner; a set's value is plain ZST.
-    unsafe { insert(ready(probe), ptr::null(), InsertMode::TakeElement) }
+    unsafe {
+        insert(
+            ready(probe),
+            ptr::null(),
+            InsertMode::TakeElement,
+            release_out,
+        )
+    }
 }
 
 /// # Safety
 /// Consume a ready set removal probe, releasing a found element. The query is
 /// still borrowed and caller-owned; capture any element release fault.
 #[no_mangle]
-pub unsafe extern "C-unwind" fn hew_hashset_probe_remove(probe: *mut HewLayoutMapProbe) -> bool {
+pub unsafe extern "C-unwind" fn hew_hashset_probe_remove(
+    probe: *mut HewLayoutMapProbe,
+    release_out: *mut *mut HewReleaseCursor,
+) -> bool {
     // SAFETY: the set probe borrows its wrapped map, whose value is plain ZST.
-    unsafe { remove(&ready(probe), None) }
+    unsafe { remove(&ready(probe), None, release_out) }
 }
 
 /// The synchronous C ABI uses the same state machine. Generated Hew code
@@ -620,11 +647,26 @@ pub(super) unsafe fn get_pointer(probe: *mut HewLayoutMapProbe) -> *const c_void
 
 pub(super) unsafe fn remove_drop(probe: *mut HewLayoutMapProbe) -> bool {
     // SAFETY: the caller transfers a ready removal probe and captures releases.
-    unsafe { remove(&ready(probe), None) }
+    unsafe {
+        let mut cursor = ptr::null_mut();
+        let found = remove(&ready(probe), None, &raw mut cursor);
+        hew_release_sync(cursor);
+        found
+    }
 }
 
 pub(super) unsafe fn insert_transfer(probe: *mut HewLayoutMapProbe, value: *const c_void) -> bool {
     // SAFETY: the C transfer-in contract lends independent owners, taking the
     // value on both paths and the key only for a new entry.
-    unsafe { insert(ready(probe), value, InsertMode::RawTransfer) }
+    unsafe {
+        let mut cursor = ptr::null_mut();
+        let inserted = insert(
+            ready(probe),
+            value,
+            InsertMode::RawTransfer,
+            &raw mut cursor,
+        );
+        hew_release_sync(cursor);
+        inserted
+    }
 }

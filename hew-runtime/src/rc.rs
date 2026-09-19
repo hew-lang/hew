@@ -349,6 +349,40 @@ pub unsafe extern "C" fn hew_rc_get(ptr: *mut u8) -> *mut u8 {
 /// - The payload and replacement ranges must not overlap.
 #[no_mangle]
 pub unsafe extern "C-unwind" fn hew_rc_set(ptr: *mut u8, replacement: *mut u8) {
+    // SAFETY: the swap validates both slots before transferring their owners.
+    if let Some(drop_fn) = unsafe { swap_payload(ptr, replacement) } {
+        // SAFETY: replacement now owns the displaced payload, independently of Rc.
+        unsafe { drop_fn(replacement) };
+    }
+}
+
+/// Replace the shared payload and return its displaced owner for checked release.
+/// # Safety
+/// `ptr` and `replacement` satisfy `hew_rc_set`; `layout` exactly describes them.
+/// The replacement slot remains live until the returned cursor is consumed.
+/// # Panics
+/// Panics when either slot or its supplied layout violates that contract.
+#[no_mangle]
+pub unsafe extern "C-unwind" fn hew_rc_set_release(
+    ptr: *mut u8,
+    replacement: *mut u8,
+    layout: *const hew_cabi::value::HewValueLayout,
+) -> *mut crate::release_walker::HewReleaseCursor {
+    assert!(!ptr.is_null() && !layout.is_null());
+    // SAFETY: the caller supplies a live Rc header and exact immutable descriptor.
+    unsafe {
+        let inner = &*header_from_data(ptr);
+        assert_eq!(inner.data_size, (*layout).size);
+        assert_eq!(inner.data_align, (*layout).align);
+        swap_payload(ptr, replacement);
+        crate::release_walker::HewReleaseCursor::values([(replacement.cast(), *layout)])
+    }
+}
+
+unsafe fn swap_payload(
+    ptr: *mut u8,
+    replacement: *mut u8,
+) -> Option<unsafe extern "C" fn(*mut u8)> {
     assert!(!ptr.is_null(), "Rc.set requires a non-null Rc data pointer");
     assert!(
         !replacement.is_null(),
@@ -390,11 +424,7 @@ pub unsafe extern "C-unwind" fn hew_rc_set(ptr: *mut u8, replacement: *mut u8) {
     // the caller slot receives the displaced payload.
     unsafe { ptr::swap_nonoverlapping(ptr, replacement, data_size) };
 
-    if let Some(drop_fn) = drop_fn {
-        // SAFETY: replacement now contains the initialized displaced payload.
-        // Nothing in this function touches the Rc allocation after this call.
-        unsafe { drop_fn(replacement) };
-    }
+    drop_fn
 }
 
 /// Returns 1 if this `Rc` is the only strong reference (refcount == 1),

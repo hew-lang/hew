@@ -729,6 +729,7 @@ fn selected_vector_and_variant_equality_walks_live_elements_and_active_fields() 
         let layout = hew_runtime::vec::HewValueLayout {
             release_start: None,
             visit_close: None,
+            release_start: None,
             size: std::mem::size_of::<i64>(),
             align: std::mem::align_of::<i64>(),
             ownership_kind: HewTypeOwnershipKind::Plain,

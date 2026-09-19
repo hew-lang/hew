@@ -276,6 +276,10 @@ pub unsafe extern "C" fn hew_actor_submit_native_terminal(
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "complete compiler-private payload admission and cleanup contract"
+)]
 unsafe fn submit_native(
     token: crate::lifetime::local_handles::HewLocalPidId,
     message: i32,
@@ -289,6 +293,7 @@ unsafe fn submit_native(
 ) -> i32 {
     // SAFETY: the generated caller supplies its writable cursor output.
     if !discarded_release_out.is_null() {
+        // SAFETY: generated code supplies a writable optional cursor output.
         unsafe { discarded_release_out.write(ptr::null_mut()) };
     }
     if payload.is_null() {

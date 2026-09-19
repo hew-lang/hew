@@ -1817,6 +1817,10 @@ pub(crate) unsafe fn settle_native_cleanup(actor: *mut HewActor) {
     settle_after_activation(actor, 0);
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "mailbox and consuming cleanup share one atomic idle recheck protocol"
+)]
 fn settle_after_activation(actor: *mut HewActor, msgs_processed: u32) {
     // SAFETY: caller owns `actor` via the Running CAS.
     let a = unsafe { &*actor };

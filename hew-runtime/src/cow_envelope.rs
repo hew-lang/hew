@@ -45,7 +45,7 @@ impl std::fmt::Debug for HewMsgEnvelope {
             .field("payload", &self.payload)
             .field("payload_size", &self.payload_size)
             .field("drop_glue_set", &self.drop_glue.is_some())
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -116,6 +116,8 @@ pub unsafe fn clone_alias(env: *mut HewMsgEnvelope) -> *mut HewMsgEnvelope {
 /// # Safety
 ///
 /// `env` must be null or a live envelope for which the caller owns a reference.
+/// # Panics
+/// Panics if a native payload no longer has its registered receiver cleanup owner.
 pub unsafe fn release(env: *mut HewMsgEnvelope) {
     if env.is_null() {
         return;
@@ -140,7 +142,7 @@ pub unsafe fn release(env: *mut HewMsgEnvelope) {
                         unsafe {
                             crate::reply_channel::hew_reply_channel_retire_orphaned_ask_sender_ref(
                                 reply.cast(),
-                            )
+                            );
                         };
                     }
                     crate::release_walker::HewReleaseCursor::after(

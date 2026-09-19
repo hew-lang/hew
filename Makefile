@@ -48,7 +48,7 @@
 #   make sandbox-fixtures-record   — regenerate fixture bytecode and golden traces
 #   make sandbox-vm-deps           — install hew-sandbox-vm npm deps (hash-stamped, idempotent)
 #   make sandbox-parity            — native hew run ↔ sandbox VM parity harness
-#   make playground-check          — manifest freshness + full hew-wasm test suite + build hew-wasm
+#   make playground-check          — browser analysis/execution tests + build hew-wasm
 #   make playground-wasi-check     — focused curated manifest WASI runtime preflight
 #   make playground-verify         — native run of every runnable playground example vs. its .expected
 #   make release-checks            — validate release dependencies, notices and installer
@@ -656,12 +656,13 @@ sandbox-vm-test: sandbox-vm-deps
 sandbox-parity: wasm-runtime hew-native sandbox-vm-test
 	$(TEST_RUN_ENV) cargo test -p hew-wasm
 
-# Repo-local browser/tooling smoke:
-# manifest freshness + full hew-wasm test suite (lib + integration) + analysis-only WASM build.
-# Running full `cargo test -p hew-wasm` subsumes the --lib curated-manifest smoke and compiles
-# and runs tests/v05_wasm_coverage.rs (the fixture-coverage integration suite).
-playground-check: playground-manifest-check ## Build: test and build the playground package
-	$(TEST_RUN_ENV) cargo test -p hew-wasm
+# Browser analysis and source-to-VM execution need Node and the built VM, but
+# not LLVM. Native comparisons run with the complete package in sandbox-parity.
+playground-check: playground-manifest-check sandbox-vm-deps ## Build: test and build the playground package
+	npm --prefix hew-sandbox-vm run build
+	$(TEST_RUN_ENV) cargo test -p hew-wasm --lib \
+		--test v05_wasm_coverage --test sandbox_actor_package \
+		--test sandbox_embedded_std --test sandbox_spread_profile
 	$(MAKE) wasm
 
 # Focused curated playground WASI runtime preflight.

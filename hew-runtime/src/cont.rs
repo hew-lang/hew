@@ -2539,6 +2539,7 @@ mod tests {
         drop_in_place: noop_dyn_drop,
         size_of: size_of::<u64>(),
         align_of: align_of::<u64>(),
+        value_layout: std::ptr::null(),
     };
 
     fn take_crash_cleanup_test_drops() -> Vec<u64> {

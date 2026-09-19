@@ -54,13 +54,13 @@ fn hew_trait_object_is_two_pointer_words() {
 }
 
 #[test]
-fn hew_vtable_prefix_is_three_pointer_words() {
+fn hew_vtable_prefix_is_four_pointer_words() {
     // Codegen indexes past the prefix to reach the method slots.
     // Drift here renumbers every emitted method slot in lockstep.
     assert_eq!(
         mem::size_of::<HewVtable>(),
-        3 * mem::size_of::<*const c_void>(),
-        "HewVtable prefix triple must be three pointer-widths."
+        4 * mem::size_of::<*const c_void>(),
+        "HewVtable prefix must be four pointer-widths."
     );
 }
 
@@ -92,6 +92,7 @@ fn vtable_drop_slot_runs_when_invoked() {
         drop_in_place: synthetic_drop,
         size_of: mem::size_of::<u32>(),
         align_of: mem::align_of::<u32>(),
+        value_layout: std::ptr::null(),
     };
     let mut payload: u32 = 0xDEAD_BEEF;
     let obj = HewTraitObject {
@@ -132,7 +133,8 @@ struct WidenedVtable {
     drop_in_place: unsafe extern "C" fn(*mut u8),
     size_of: usize,
     align_of: usize,
-    /// Slot 3 — the first trait method.
+    value_layout: *const hew_cabi::value::HewValueLayout,
+    /// Slot 4 — the first trait method.
     method0: unsafe extern "C" fn(*mut u8) -> i64,
 }
 
@@ -142,6 +144,7 @@ fn vtable_method_slot_dispatches_through_pointer() {
         drop_in_place: never_called_drop,
         size_of: mem::size_of::<u32>(),
         align_of: mem::align_of::<u32>(),
+        value_layout: std::ptr::null(),
         method0: method_return_value,
     };
     let mut payload: u32 = 12_345;
@@ -156,7 +159,7 @@ fn vtable_method_slot_dispatches_through_pointer() {
 
     // The dispatch sequence codegen will emit:
     //   1. extractvalue the vtable pointer from the trait object.
-    //   2. GEP past the prefix to slot 3 (here: `method0`).
+    //   2. GEP past the prefix to slot 4 (here: `method0`).
     //   3. load the function pointer.
     //   4. indirect-call with the receiver pointer.
     //
@@ -387,6 +390,7 @@ fn heap_boxed_dyn_trait_drop_ritual_round_trip() {
         drop_in_place: heap_box_drop,
         size_of: mem::size_of::<u32>(),
         align_of: mem::align_of::<u32>(),
+        value_layout: std::ptr::null(),
     };
 
     let size = vt.size_of;

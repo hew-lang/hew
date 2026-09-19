@@ -4049,8 +4049,8 @@ pub unsafe extern "C" fn hew_actor_close(actor: *mut HewActor) {
 /// continuation — is latched and then WOKEN, so a scheduler activation reaches
 /// the resume path's latch check and cancels the park; otherwise a stop of an
 /// actor whose awaited operation never completes would never be observed at
-/// all. Runnable actors already have a queued activation, so closing their
-/// mailbox is enough to let that activation drain naturally to `Stopped`.
+/// all. A queued continuation is also latched; a fresh queued dispatch can
+/// instead drain the closed mailbox naturally to `Stopped`.
 ///
 /// The stop is a FLAG, not a queued message: latching it allocates nothing and
 /// cannot fail, so the request can never be lost under memory pressure.
@@ -4076,7 +4076,15 @@ pub unsafe extern "C" fn hew_actor_stop(actor: *mut HewActor) {
     }
 
     let state = a.actor_state.load(Ordering::Acquire);
-    if state != HewActorState::Running as i32 && state != HewActorState::Suspended as i32 {
+    // A readiness wake may already have queued a parked continuation. Its
+    // activation resumes the existing turn rather than draining the closed
+    // mailbox, so it needs the same stop latch as a still-suspended turn.
+    let queued_continuation = state == HewActorState::Runnable as i32
+        && !a.suspended_cont.load(Ordering::Acquire).is_null();
+    if state != HewActorState::Running as i32
+        && state != HewActorState::Suspended as i32
+        && !queued_continuation
+    {
         return;
     }
 
@@ -12615,6 +12623,30 @@ mod tests {
                 0,
                 "the stop is out of band — nothing is ever enqueued"
             );
+            mailbox::hew_mailbox_free(mailbox);
+            drop(Box::from_raw(actor));
+        }
+    }
+
+    #[test]
+    fn stop_queued_continuation_latches_cancellation() {
+        let (actor, mailbox) = make_stop_test_actor(HewActorState::Runnable);
+        // SAFETY: this fixture owns both allocations. The parked pointer is
+        // only a presence marker; no scheduler runs or dereferences it.
+        unsafe {
+            (*actor)
+                .suspended_cont
+                .store(ptr::dangling_mut(), Ordering::Release);
+            hew_actor_stop(actor);
+            assert!(mailbox::mailbox_stop_requested(mailbox));
+            assert_eq!(
+                (*actor).actor_state.load(Ordering::Acquire),
+                HewActorState::Runnable as i32
+            );
+            assert_eq!(mailbox::hew_mailbox_sys_len(mailbox), 0);
+            (*actor)
+                .suspended_cont
+                .store(ptr::null_mut(), Ordering::Release);
             mailbox::hew_mailbox_free(mailbox);
             drop(Box::from_raw(actor));
         }

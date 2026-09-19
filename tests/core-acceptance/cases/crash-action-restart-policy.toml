@@ -1,0 +1,11 @@
+[[case]]
+id = "crash-action-restart-policy"
+intent = "Restart respects a temporary child policy, while Kill and root Escalate prevent otherwise eligible restarts and leave each role spent."
+source = "cases/crash-action-restart-policy.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "action 0\ntemporary stopped\naction 2\nkill stopped\naction 1\nroot escalation stopped\n"
+stderr = "hew: failure: UserPanic (212): policy failure\nhew: actor crash in Worker.fail (actor 1): UserPanic\nhew: failure: UserPanic (212): policy failure\nhew: actor crash in Worker.fail (actor 2): UserPanic\nhew: failure: UserPanic (212): policy failure\nhew: actor crash in Worker.fail (actor 3): UserPanic\n"
+exit = 1

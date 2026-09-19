@@ -5894,18 +5894,21 @@ Unknown hook kinds (e.g. `#[on(restart)]`, `#[on(upgrade)]`) are rejected with a
 that state's cleanup. Completed changes from earlier turns and valid changes
 made before the current turn's failure remain visible to the hook. A subsequent
 restart constructs fresh state from the supervisor's configuration; the hook
-does not run on that restart state.
+does not run on that restart state. Stop hooks do not run on a crash.
 
-`#[on(crash)]` is a defined hook. The handler ABI is `(CrashInfo) -> CrashAction`;
-the returned `CrashAction` is currently side-effects-only — supervisors honour each
-child's `restart_policy` instead. `CrashAction` as a supervisor control surface is
-reserved (HEW-FUTURE).
+The crash hook returns a `CrashAction`. `Restart` requests the supervisor's
+ordinary restart handling, including the child's restart policy, restart
+budget and circuit breaker; it does not restart a `temporary` child. `Kill`
+permanently spends the child's role and leaves its failure unrecovered.
+`Escalate` transfers the failure to the parent supervisor instead of restarting
+locally; at the root, where no parent can recover it, the failure remains
+unrecovered and the child's role is spent.
 
 **Signature rules (normative):**
 
 1. A hook is a plain `fn` declaration inside an actor body carrying exactly one `#[on(...)]` annotation whose kind is `start`, `stop`, `crash`, `exit`, or `down`.
 2. `#[on(start)]` and `#[on(stop)]` hooks take **no parameters**. Actor fields are in scope by bare name (the same convention as `init { }` and ordinary actor methods).
-3. `#[on(crash)]` hooks take exactly one `CrashInfo` parameter and declare `CrashAction` as the return type. The return value is currently side-effects-only; `CrashAction` as a supervisor control surface is reserved (HEW-FUTURE).
+3. `#[on(crash)]` hooks take exactly one `CrashInfo` parameter and declare `CrashAction` as the return type. The supervisor applies the returned action as described above.
 4. `#[on(start)]` and `#[on(stop)]` hooks return `()`.
 5. A hook is **not** generic and has no `where` clause.
 6. Hook functions are not invocable from message handlers; the runtime is the sole caller.
@@ -5915,7 +5918,7 @@ reserved (HEW-FUTURE).
 **Cancellation and resource ordering (normative):**
 
 8. Task-scope cancellation does not itself make an independent actor a child task. Actor terminal cleanup follows its own stop or supervision protocol.
-9. The runtime sequence at terminal transition is:
+9. The runtime sequence for cooperative stop is:
    - (a) the actor reaches cooperative termination;
    - (b) the `#[on(stop)]` hook runs with field access live, if present;
    - (c) cleanup follows the ownership plan, whose linear obligations were checked at compile time;
@@ -5930,8 +5933,8 @@ reserved (HEW-FUTURE).
 **Compilation:** `#[on(start)]` bodies are appended to the synthesized `_init`
 function after any `init { ... }` block. `#[on(stop)]` lowers to the actor's
 C-ABI `_terminate` function pointer. `#[on(crash)]` lowers to the crash hook
-slot used by supervisor crash routing; its `CrashAction` result is currently
-side-effects-only.
+slot used by supervisor crash routing; its `CrashAction` result selects the
+supervisor's recovery path after the crashing incarnation's cleanup.
 
 Cleanup logic is expressed as `#[on(stop)]` declarations; no free-standing
 `terminate { }` block exists.

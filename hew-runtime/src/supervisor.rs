@@ -484,10 +484,10 @@ pub const RESTART_TEMPORARY: c_int = 2;
 // (mirroring the codegen `%CrashAction = { i8, [1 x i8] }`); the supervisor reads
 // field 0 (the `tag`) via `tag_i32()` and decodes it against these constants, in
 // `std/failure.hew::CrashAction` declaration order. The supervisor HONOURS this
-// return: it takes precedence over the static `restart_policy` when a hook is
-// present (the at-crash-time decision overrides the static default). A tag outside
-// `0..=2` is treated fail-closed as `Restart` (the conservative default that
-// preserves the pre-M-4 restart-policy behaviour).
+// return: Kill spends the role and Escalate transfers the failure to its parent.
+// Restart continues through the child's static policy, budget and circuit
+// breaker; it cannot override a temporary policy. A tag outside `0..=2` also
+// follows that ordinary policy path.
 pub const CRASH_ACTION_RESTART: i32 = 0;
 pub const CRASH_ACTION_ESCALATE: i32 = 1;
 pub const CRASH_ACTION_KILL: i32 = 2;

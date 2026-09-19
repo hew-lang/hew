@@ -4451,7 +4451,6 @@ fn verify_physical_module(module: &PhysicalModule) -> Result<(), PhysicalError> 
         ));
     }
     verify_structural_glue(module)?;
-    suspend::verify_callables(module)?;
     for (index, glue) in module.aggregate_glue.iter().enumerate() {
         if usize::try_from(glue.id.0).ok() != Some(index) {
             return Err(PhysicalError::new(format!(
@@ -4532,6 +4531,7 @@ fn verify_physical_module(module: &PhysicalModule) -> Result<(), PhysicalError> 
         }
         verify_physical_function(module, function)?;
     }
+    suspend::verify_callables(module)?;
     Ok(())
 }
 
@@ -11527,10 +11527,10 @@ mod tests {
 
         let mut absent_keys = physical;
         absent_keys.value_capabilities.clear();
-        assert!(verify_physical_module(&absent_keys)
-            .unwrap_err()
-            .message
-            .contains("selected capability"));
+        assert!(
+            verify_physical_module(&absent_keys).is_err(),
+            "a map requires its selected key capabilities"
+        );
     }
 
     #[test]

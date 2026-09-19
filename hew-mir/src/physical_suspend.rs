@@ -261,9 +261,14 @@ pub(super) fn semantic_callables(checked: &hew_sir::CheckedModule<'_>) -> BTreeS
                 let ty = match &operation.kind {
                     hew_sir::SemOpKind::DestroyValue { value } => Some(&types[&value.value]),
                     hew_sir::SemOpKind::StoreAssign { place, .. }
-                    | hew_sir::SemOpKind::EndLifetime { place } => {
-                        Some(&function.places[place.0 as usize].ty)
-                    }
+                    | hew_sir::SemOpKind::EndLifetime { place } => Some(
+                        &function
+                            .places
+                            .iter()
+                            .find(|candidate| candidate.id == *place)
+                            .expect("verified place identity")
+                            .ty,
+                    ),
                     _ => None,
                 };
                 if let Some(ty) = ty {

@@ -53,7 +53,7 @@ impl Builder<'_, '_> {
         }
         self.finish_recovery_scopes(0, &preserved)?;
         self.finish_task_scopes(0, false)?;
-        self.end_call_loans(&self.argument_receiver_loans.clone())?;
+        self.end_loans_since(0)?;
         self.destroy_live_since(&preserved)?;
         self.drain_scopes(0, true)?;
         if let Some(result) = &value {
@@ -159,8 +159,7 @@ impl Builder<'_, '_> {
             .cloned();
         self.finish_task_scopes(boundary.as_ref().map_or(0, |body| body.floor), true)?;
         let loan_floor = boundary.as_ref().map_or(0, |body| body.loan_depth);
-        let ending_loans = self.argument_receiver_loans[loan_floor..].to_vec();
-        self.end_call_loans(&ending_loans)?;
+        self.end_loans_since(loan_floor)?;
         let preserved = boundary
             .as_ref()
             .map(|b| b.preserved.clone())

@@ -262,7 +262,26 @@ fn generated_environment_clone_separates_vectors_and_honours_partial_masks_at_o0
 }
 
 fn environment_llvm<'ctx>(ctx: &'ctx Context, physical: &PhysicalModule) -> Module<'ctx> {
-    let llvm = llvm(ctx, physical);
+    let machine = crate::llvm::target_machine_for_triple_with_opt_level(
+        &physical.target.triple,
+        OptLevel::O0,
+    )
+    .unwrap();
+    let llvm = ctx.create_module("environment_cleanup");
+    llvm.set_triple(&machine.get_triple());
+    llvm.set_data_layout(&machine.get_target_data().get_data_layout());
+    let emitter = ModuleEmitter {
+        ctx,
+        module: physical,
+        llvm,
+        functions: BTreeMap::new(),
+        ramps: BTreeMap::new(),
+        value_callbacks: BTreeMap::new(),
+        debug: None,
+    };
+    emitter.emit_collection_value_descriptors().unwrap();
+    emitter.emit_environment_descriptors().unwrap();
+    let llvm = emitter.llvm;
     let getter = llvm.add_function(
         "environment_layout",
         ctx.ptr_type(AddressSpace::default()).fn_type(&[], false),
@@ -276,7 +295,60 @@ fn environment_llvm<'ctx>(ctx: &'ctx Context, physical: &PhysicalModule) -> Modu
     builder
         .build_return(Some(&descriptor.as_pointer_value()))
         .unwrap();
+    // Anchor the synthetic descriptor before coroutine lowering removes unused
+    // internal globals. Both pure and resumable capture recipes use this getter.
+    llvm.verify().unwrap();
+    if llvm.get_function("llvm.coro.id").is_some() {
+        coro::lower(&llvm, &machine).unwrap();
+    }
     llvm
+}
+
+unsafe fn release_environment(value: *mut hew_runtime::callable::HewCallableValue) {
+    use hew_runtime::release_walker::{hew_release_finish, hew_release_layout, hew_release_next};
+    unsafe extern "C" fn invoke(
+        input: *mut c_void,
+        _: *const *mut c_void,
+        _: *mut c_void,
+        fault: *mut *mut c_void,
+        state: *mut c_void,
+    ) -> *mut c_void {
+        // SAFETY: the root driver borrows this slot/descriptor pair to completion.
+        unsafe {
+            let (slot, layout) = &*input.cast::<(*mut c_void, hew_runtime::vec::HewValueLayout)>();
+            layout.release_start.unwrap()(*slot, fault, state)
+        }
+    }
+    // SAFETY: this test transfers the carrier, drives every selected callback
+    // to completion and only then advances/frees its owning storage traversal.
+    unsafe {
+        let cursor = hew_runtime::callable::hew_callable_release_begin(value);
+        loop {
+            let slot = hew_release_next(cursor);
+            if slot.is_null() {
+                break;
+            }
+            let layout = *hew_release_layout(cursor);
+            if layout.release_start.is_some() {
+                let mut input = (slot, layout);
+                let mut fault = std::ptr::null_mut();
+                assert_eq!(
+                    hew_runtime::coro_root::hew_coro_run_callable(
+                        invoke,
+                        (&raw mut input).cast(),
+                        std::ptr::null(),
+                        std::ptr::null_mut(),
+                        &raw mut fault
+                    ),
+                    0
+                );
+                assert!(fault.is_null());
+            } else if let Some(drop) = layout.drop_fn {
+                drop(slot);
+            }
+        }
+        hew_release_finish(cursor);
+    }
 }
 
 thread_local! {
@@ -307,8 +379,7 @@ struct NestedEnvironment {
 #[test]
 fn failed_nested_callable_clone_rolls_back_completed_fields_and_preserves_output_at_o0_o2() {
     use hew_runtime::callable::{
-        hew_callable_clone, hew_callable_drop, hew_callable_env_alloc, HewCallableDescriptor,
-        HewCallableValue,
+        hew_callable_clone, hew_callable_env_alloc, HewCallableDescriptor, HewCallableValue,
     };
     use hew_runtime::vec::{hew_vec_len, hew_vec_new_i64, hew_vec_push_i64, HewValueLayout};
 
@@ -421,7 +492,7 @@ fn failed_nested_callable_clone_rolls_back_completed_fields_and_preserves_output
             );
             assert_eq!(fields.mask, 3);
             assert_eq!(hew_vec_len(fields.vector), 1);
-            hew_callable_drop(&raw mut source);
+            release_environment(&raw mut source);
             assert_eq!(VECTOR_DROPS.get(), 2);
             assert_eq!(NESTED_DROPS.get(), 1);
         }

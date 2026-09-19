@@ -766,15 +766,12 @@ fn op_inputs_null_key_aborts() {
     let kl = key_layout_i64();
     let vl = val_layout(8, 8);
     let m = unsafe { hew_hashmap_new_with_layout(&raw const kl, &raw const vl) };
-    // Use catch_unwind-incompatible approach: just call and let should_panic
-    // observe the unwind under the test profile. We deliberately do NOT free
-    // the map (the unwind aborts the test fn before reaching cleanup; the
-    // process exits and the leak is harmless for a should_panic test).
-    unsafe {
+    // Preserve the original rejection after releasing the otherwise valid map.
+    let rejection = std::panic::catch_unwind(|| unsafe {
         validate_op_inputs(m.cast_const(), ptr::null(), None);
-    }
-    // Unreachable; satisfy the type system.
+    });
     unsafe { hew_hashmap_free_layout(m) };
+    std::panic::resume_unwind(rejection.expect_err("null key must be rejected"));
 }
 
 #[test]
@@ -786,14 +783,15 @@ fn op_inputs_null_val_with_nonzero_size_aborts() {
     let vl = val_layout(8, 8);
     let m = unsafe { hew_hashmap_new_with_layout(&raw const kl, &raw const vl) };
     let key: i64 = 0;
-    unsafe {
+    let rejection = std::panic::catch_unwind(|| unsafe {
         validate_op_inputs(
             m.cast_const(),
             (&raw const key).cast::<c_void>(),
             Some(ptr::null()),
         );
-    }
+    });
     unsafe { hew_hashmap_free_layout(m) };
+    std::panic::resume_unwind(rejection.expect_err("null nonzero value must be rejected"));
 }
 
 #[test]

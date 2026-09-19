@@ -1,0 +1,38 @@
+#[resource]
+type Connection {
+    id: i64,
+    name: string,
+}
+
+impl Connection {
+    fn close(consume self) {
+        println(self.name);
+        panic(f"{self.name} failed");
+    }
+}
+
+fn connection(id: i64) -> Connection {
+    Connection { id: id, name: f"close {id}" }
+}
+
+type Key {
+    id: i64,
+    fails_hash: bool,
+}
+
+impl Hash for Key {
+    fn hash(self) -> i64 {
+        if self.fails_hash {
+            panic("hash failed");
+        }
+        self.id
+    }
+}
+
+fn main() {
+    let _outer = connection(99);
+    var values: HashMap<Key, Connection> = HashMap.new();
+    values.insert(Key { id: 1, fails_hash: false }, connection(1));
+    values.insert(Key { id: 1, fails_hash: true }, connection(2));
+    println("unreached");
+}

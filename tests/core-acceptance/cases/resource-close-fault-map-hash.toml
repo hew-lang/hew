@@ -1,0 +1,11 @@
+[[case]]
+id = "resource-close-fault-map-hash"
+intent = "A hash callback fault stays primary while a failed map insertion releases the receiver, untransferred replacement and outer owner, even when every close fails."
+source = "cases/resource-close-fault-map-hash.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "close 1\nclose 2\nclose 99\n"
+stderr = "hew: failure: UserPanic (212): hash failed\nhew: secondary failure: UserPanic (212): close 1 failed\nhew: secondary failure: UserPanic (212): close 2 failed\nhew: secondary failure: UserPanic (212): close 99 failed\n"
+exit = 1

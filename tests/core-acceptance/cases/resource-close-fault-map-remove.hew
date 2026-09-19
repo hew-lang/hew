@@ -1,0 +1,48 @@
+#[resource]
+type Connection {
+    id: i64,
+    name: string,
+}
+
+impl Connection {
+    fn close(consume self) {
+        println(self.name);
+        panic(f"{self.name} failed");
+    }
+}
+
+fn connection(id: i64) -> Connection {
+    Connection { id: id, name: f"close {id}" }
+}
+
+type Key {
+    id: i64,
+    owner: Rc<Connection>,
+}
+
+impl Hash for Key {
+    fn hash(self) -> i64 {
+        self.id
+    }
+}
+
+impl Eq for Key {
+    fn eq(self, other: Key) -> bool {
+        self.id == other.id
+    }
+}
+
+fn key(id: i64, owner: i64) -> Key {
+    Key { id: id, owner: Rc.new(connection(owner)) }
+}
+
+fn main() {
+    let _outer = connection(99);
+    var values: HashMap<Key, Connection> = HashMap.new();
+    values.insert(key(7, 1), connection(2));
+    let query = key(7, 3);
+    // The query's last use retires its temporary after the call. The returned
+    // value must already be owned when that temporary's close also fails.
+    let _removed = values.remove(query);
+    println("unreached");
+}

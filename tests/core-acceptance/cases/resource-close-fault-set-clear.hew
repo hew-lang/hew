@@ -1,0 +1,36 @@
+#[resource]
+type Connection {
+    id: i64,
+    name: string,
+}
+
+impl Connection {
+    fn close(consume self) {
+        println(self.name);
+        panic(f"{self.name} failed");
+    }
+}
+
+fn connection(id: i64) -> Connection {
+    Connection { id: id, name: f"close {id}" }
+}
+
+impl Hash for Connection {
+    fn hash(self) -> i64 {
+        self.id / 10
+    }
+}
+
+impl Eq for Connection {
+    fn eq(self, other: Connection) -> bool {
+        self.id / 10 == other.id / 10
+    }
+}
+
+fn main() {
+    let _outer = connection(99);
+    var values: HashSet<Connection> = HashSet.new();
+    values.insert(connection(1));
+    values.clear();
+    println("unreached");
+}

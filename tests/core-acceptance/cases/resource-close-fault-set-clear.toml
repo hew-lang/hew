@@ -1,0 +1,11 @@
+[[case]]
+id = "resource-close-fault-set-clear"
+intent = "A set clear completes its internal release, then propagates the close fault through caller cleanup without resuming source execution."
+source = "cases/resource-close-fault-set-clear.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "close 1\nclose 99\n"
+stderr = "hew: failure: UserPanic (212): close 1 failed\nhew: secondary failure: UserPanic (212): close 99 failed\n"
+exit = 1

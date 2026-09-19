@@ -1,0 +1,11 @@
+[[case]]
+id = "resource-close-fault-set-remove"
+intent = "Removing a set element captures its close fault before caller cleanup releases the borrowed query and surrounding owner."
+source = "cases/resource-close-fault-set-remove.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "close 11\nclose 15\nclose 99\n"
+stderr = "hew: failure: UserPanic (212): close 11 failed\nhew: secondary failure: UserPanic (212): close 15 failed\nhew: secondary failure: UserPanic (212): close 99 failed\n"
+exit = 1

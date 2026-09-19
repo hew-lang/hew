@@ -1,0 +1,10 @@
+[[case]]
+id = "structural-rendering-shapes"
+intent = "Structural rendering reaches a self-recursive enum behind indirection, every scalar carrier the runtime builder appends, collections whose elements are themselves composite, and a generic body that renders each monomorphization through its own recipe."
+source = "cases/structural-rendering-shapes.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "Branch([Leaf(1), Branch([Leaf(2)])])\nCarriers { flag: true, letter: q, ratio: 0.5, narrow: 255, wide: 18446744073709551615, signed: -32768 }\n[(1, one), (2, two)]\n{odd: [3]}\nWrap { value: 4 }\nWrap { value: hi }\n"
+exit = 0

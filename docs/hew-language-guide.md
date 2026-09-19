@@ -132,7 +132,28 @@ fn main() {
 
 Prefix interpolated strings with `f`. Expressions inside braces use Display;
 use an explicit Display implementation to choose the user-facing text.
-Structural inspection is not a promised alternative formatting API.
+
+### Structural rendering with `:?`
+
+```hew
+type Point { x: i64, label: string }
+
+fn main() {
+    let point = Point { x: 7, label: "west" };
+    var scores: Vec<i64> = Vec.new();
+    scores.push(5);
+    println(f"{point:?} {scores:?} {Some(3):?}");
+    // Point { x: 7, label: west } [5] Some(3)
+}
+```
+
+`{value:?}` renders a value from its own parts: scalars, strings, tuples,
+records, enums, `Vec` and `HashMap`, nested to any depth. A type with an
+`impl Display` renders through that instead, so a type chooses its own
+spelling. An `#[opaque]` handle renders as its identity, `<Name@address>`,
+without disclosing its contents. Anything else -- a callable, an actor
+handle, a task -- has no parts to spell, and `:?` on one is an error that
+names the type.
 
 ### Numeric conversion via `as`
 

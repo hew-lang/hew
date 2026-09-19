@@ -286,6 +286,72 @@ impl Checker {
         None
     }
 
+    /// Whether `ty` has a structural rendering: a value `f"{v:?}"` can spell
+    /// from its own parts.
+    ///
+    /// A pending inference variable defers - the surrounding inference
+    /// reports its own error, and a resolved type reaches physical MIR, which
+    /// verifies the recipe it builds. A user declaration renders through its
+    /// declared fields; a compiler carrier renders only when its builtin
+    /// identity says it has structure.
+    fn renders_structurally(&mut self, ty: &Ty) -> bool {
+        match self.subst.resolve(ty).materialize_literal_defaults() {
+            Ty::Var(_)
+            | Ty::Error
+            | Ty::I8
+            | Ty::I16
+            | Ty::I32
+            | Ty::I64
+            | Ty::U8
+            | Ty::U16
+            | Ty::U32
+            | Ty::U64
+            | Ty::Isize
+            | Ty::Usize
+            | Ty::F32
+            | Ty::F64
+            | Ty::IntLiteral
+            | Ty::FloatLiteral
+            | Ty::Bool
+            | Ty::Char
+            | Ty::String
+            | Ty::Unit => true,
+            Ty::Tuple(members) => members
+                .iter()
+                .all(|member| self.renders_structurally(member)),
+            Ty::Named { args, builtin, .. } => {
+                builtin.is_none_or(BuiltinType::renders_structurally)
+                    && args.iter().all(|arg| self.renders_structurally(arg))
+            }
+            _ => false,
+        }
+    }
+
+    /// Verify that `ty` renders under `:?`.
+    ///
+    /// `f"{v:?}"` reaches here only when `v` has no `Display` impl to defer
+    /// to, so this is the structural half of the same admission.
+    pub(super) fn require_structural_render(&mut self, ty: &Ty, span: &Span) {
+        if self.renders_structurally(ty) {
+            return;
+        }
+        let rendered = self
+            .subst
+            .resolve(ty)
+            .materialize_literal_defaults()
+            .user_facing()
+            .to_string();
+        self.report_error(
+            TypeErrorKind::BoundsNotSatisfied,
+            span,
+            format!(
+                "type `{rendered}` has no structural rendering (`:?` renders \
+scalars, strings, tuples, records, enums, `Vec` and `HashMap`; anything \
+else needs `impl Display for {rendered}`)"
+            ),
+        );
+    }
+
     /// Verify that `ty` has a `Display` impl reachable by f-string
     /// interpolation lowering.
     pub(super) fn require_display_impl(&mut self, ty: &Ty, span: &Span) {
@@ -364,6 +430,8 @@ impl Checker {
                                     SpanKey::in_module(expr_span, self.current_module_idx),
                                     display_ty,
                                 );
+                            } else {
+                                self.require_structural_render(&part_ty, expr_span);
                             }
                         }
                     }

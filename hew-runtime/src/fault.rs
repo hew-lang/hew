@@ -60,6 +60,39 @@ thread_local! {
     /// The crashed actor whose owned state this thread is releasing right
     /// now (`free_actor_resources` runs the state drop synchronously).
     static CRASH_RELEASING: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+
+    /// The actor that owns the task running on this thread, if any.
+    ///
+    /// A forked task is not its owning actor - `hew_actor_self()` stays null
+    /// on the task's thread, and the spawn path keeps it that way on purpose -
+    /// but a resource the task releases still belongs to that actor. Without
+    /// this, a sink cancelled out of a forked task closed cleanly while its
+    /// owner was unwinding a crash.
+    static OWNING_ACTOR: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// The actor that owns the work being spawned from this thread: the actor
+/// whose turn this is, or the actor that owns the task running here.
+///
+/// Called at the spawn site, on the spawning thread, and carried into the new
+/// task's thread with [`with_owning_actor`].
+#[must_use]
+pub(crate) fn owning_actor_at_spawn() -> u64 {
+    let actor = crate::actor::hew_actor_self();
+    if actor.is_null() {
+        return OWNING_ACTOR.with(std::cell::Cell::get);
+    }
+    // SAFETY: the current context's actor is live for the current turn.
+    unsafe { (*actor).id }
+}
+
+/// Run `body` as work owned by actor `id`, so a release inside it discloses
+/// that actor's crash. Restores the previous owner, for nested task threads.
+pub(crate) fn with_owning_actor<T>(id: u64, body: impl FnOnce() -> T) -> T {
+    let previous = OWNING_ACTOR.with(|cell| cell.replace(id));
+    let result = body();
+    OWNING_ACTOR.with(|cell| cell.set(previous));
+    result
 }
 
 fn is_crash_code(code: i32) -> bool {
@@ -118,11 +151,18 @@ pub(crate) fn crashing_owner() -> Option<u64> {
         return Some(releasing);
     }
     let actor = crate::actor::hew_actor_self();
-    if actor.is_null() {
+    let id = if actor.is_null() {
+        // Not an actor turn. A task forked by an actor still releases that
+        // actor's resources, and its scope is joined inside the crashing
+        // turn, so the owner is still recorded as unwinding here.
+        OWNING_ACTOR.with(std::cell::Cell::get)
+    } else {
+        // SAFETY: the current context's actor is live for the current turn.
+        unsafe { (*actor).id }
+    };
+    if id == 0 {
         return None;
     }
-    // SAFETY: the current context's actor is live for the current turn.
-    let id = unsafe { (*actor).id };
     UNWINDING_ACTORS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)

@@ -60,15 +60,12 @@ macos	failure	hew-cli::param_record_field_loop_drop_leak_oracle	iterated_field_i
 macos	failure	hew-cli::param_record_field_loop_drop_leak_oracle	iterated_field_push_and_clear_run_as_live_view	#3446 decides whether an iterated record field is a snapshot or a live view
 macos	failure	hew-cli::pipeline_stdlib_ownership_oracle	pipeline_owned_payload_cancellation_has_flat_leak_slope	#3455 lets the pipeline cancellation probe finish
 macos	failure	hew-cli::pipeline_stdlib_ownership_oracle	pipeline_owned_payload_lifecycle_edges_do_not_double_free	#3455 lets the pipeline cancellation probe finish
-macos	failure	hew-cli::projected_tuple_owner_active_leak_oracle	loop_backedge_rereads_the_cloned_field_every_iteration	#3447 keeps a cloned tuple field an independent owner
-macos	failure	hew-cli::projected_tuple_owner_active_leak_oracle	whole_tuple_escape_after_projection_transfer_runs_clean	#3447 keeps a cloned tuple field an independent owner
 macos	failure	hew-cli::quic_string_result_retention_leak_oracle	shipped_quic_observation_strings_are_exact_under_malloc_scribble	#3451 makes the shipped-transport probes complete their work
 macos	failure	hew-cli::quic_string_result_retention_leak_oracle	shipped_quic_observation_strings_have_no_per_call_leak	#3451 makes the shipped-transport probes complete their work
 linux,freebsd,macos	failure	hew-cli::rc_aggregate_ingress_ownership_oracle	machine_state_payload_does_not_over_release	#3379 evaluates const parameters and generic fallbacks in a pure machine
 macos	failure	hew-cli::recv_loop_leak_oracle	parked_for_await_receiver_handoff_has_flat_leak_slope_and_no_double_free	#3451 makes the shipped-transport probes complete their work
 linux,macos,windows,freebsd	failure	hew-cli::run_e2e	check_actor_state_closure_field_fails_closed	#3366 carries capture metadata for a match-arm binding into HIR
 linux,macos,freebsd	failure	hew-cli::shutdown_drain_e2e	tcp_handler_finishing_inside_budget_delivers_response_and_exits_zero	#3397 delivers an in-budget handler's response before the drained socket closes
-macos	failure	hew-cli::structural_rendering_ownership_oracle	structural_rendering_has_zero_ownership_effect	#3441 gives StructuralFormat an ownership-SIR contract
 linux,macos,windows,freebsd	failure	hew-cli::supervisor_init_args_e2e	supervisor_missing_field_diagnostic_points_at_child_declaration	#3393 makes hew check and hew compile agree on a supervisor child
 macos	failure	hew-cli::vec_index_assign_temp_leak_oracle	vec_index_assign_borrowed_capture_stays_copy_in	#3448 selects the copy-in vector store for a borrowed capture
 macos	failure	hew-cli::vec_iter_closure_unwind_leak_oracle	temporary_vec_iter_closure_trap_invokes_guarded_cleanup_without_leak	#3449 emits a closure call in a guarded region as an invoke

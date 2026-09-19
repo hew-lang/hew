@@ -1,0 +1,11 @@
+[[case]]
+id = "actor-fork-sink-crash-disclosed"
+intent = "A sink handle released by a task the crashed actor forked discloses the owner's crash to the consumer instead of closing cleanly."
+source = "cases/actor-fork-sink-crash-disclosed.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "handler crashed\nfirst=1\n"
+stderr = "hew: failure: UserPanic (212): producer crash\nhew: secondary failure: Cancelled (-1)\nhew: actor crash in Producer.go (actor 1): UserPanic\nhew: failure: UserPanic (212)\n"
+exit = 1

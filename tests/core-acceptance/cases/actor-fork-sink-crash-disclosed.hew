@@ -1,0 +1,42 @@
+import std.stream;
+
+// A second sink handle is owned by a task the actor forked. The actor crashes
+// while that task is live, so the task is cancelled and its handle released
+// off the actor's thread. The release still belongs to the crashed actor, so
+// the consumer must trap on the crash rather than read a clean end.
+fn hold(consume out: stream.Sink<i64>) -> i64 {
+    sleep(1s);
+    out.close();
+    0
+}
+
+actor Producer {
+    var out: stream.Sink<i64>,
+
+    receive fn go() {
+        out.send(1).expect("send");
+        scope {
+            let _writer = fork hold(out.clone());
+            panic("producer crash");
+        }
+    }
+}
+
+fn main() -> i64 {
+    let (sink, data) = stream.pipe(4).expect("pipe");
+    let p = spawn Producer(out: sink);
+    match p.go() {
+        .Ok(_v) => println("handler returned"),
+        .Err(_e) => println("handler crashed"),
+    }
+    match data.recv() {
+        .Some(v) => println(f"first={v}"),
+        .None => println("clean-none-1"),
+    }
+    // The owner crashed, so this read discloses the crash and never returns.
+    match data.recv() {
+        .Some(v) => println(f"second={v}"),
+        .None => println("clean-none-2"),
+    }
+    0
+}

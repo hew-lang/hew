@@ -57,9 +57,8 @@ fn main() {
 
 // Lost coverage: `structural_rendering_reads_without_clone_move_or_consume`
 // used `--dump-mir raw` (retired) to pin that each `{holder:?}` render site
-// lowers to exactly one `hew_structural_format` call and introduces no
-// `clone`/`consume`/`Move` ownership operation. Physical MIR's structured
-// (Debug) dump has no equivalent single-line text to grep, so this
+// introduces no `clone`/`consume`/`Move` ownership operation. Physical MIR's
+// structured (Debug) dump has no equivalent single-line text to grep, so this
 // MIR-emission coverage has no direct replacement. The externally observable
 // half of the same invariant -- rendering twice adds neither a clone leak nor
 // a lost resource owner -- is still proven end to end below by the exact

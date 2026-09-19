@@ -100,7 +100,11 @@ interface ActorMessage {
   handler: ActorShape["handlers"][number];
   payload: VmValue[];
   reply: boolean;
-  complete(value: VmValue | null, error: string | null): void;
+  complete(
+    value: VmValue | null,
+    error: string | null,
+    drained?: (fault: Fault | null) => void,
+  ): void;
 }
 
 interface ActorInstance {
@@ -155,6 +159,9 @@ interface TaskEntry {
   fault: Fault | null;
   actorError: string | null;
   cancel(): void;
+  // Actor-call handles own admission and reply storage. Scoped task handles
+  // leave their execution and any unclaimed result with the enclosing scope.
+  close?: (done: (fault: Fault | null) => void) => void;
   completedAt: number;
   changed: Array<() => void>;
 }
@@ -1906,10 +1913,10 @@ class ExecutorV1 {
         const protocol = term.detail as ActorProtocol;
         const inputs = term.inputs.map((input) => this.boundary(act, input));
         const wake = this.park(act, term);
-        this.ask(
+        const cancelRequest = this.ask(
           protocol,
           inputs,
-          (value, error) => {
+          (value, error, closeFault) =>
             wake(
               this.completion(
                 term.result_shape,
@@ -1917,10 +1924,13 @@ class ExecutorV1 {
                 value,
                 error,
               ),
-            );
-          },
+              closeFault,
+            ),
           term.request_shapes,
         );
+        const cancel = act.context.cancel!;
+        act.context.cancel = (fault) =>
+          cancelRequest((closeFault) => cancel(closeFault ?? fault));
         return;
       }
       case "Sleep": {
@@ -1944,12 +1954,12 @@ class ExecutorV1 {
     act: Activation,
     term: Extract<TermV1, { op: "suspend" }>,
     cleanup: () => void = () => {},
-  ): (value: VmValue, fault?: Fault | null, edgeIndex?: number) => void {
+  ): (value: VmValue, fault?: Fault | null, edgeIndex?: number) => boolean {
     this.running = false;
     let pending: { value: VmValue; fault: Fault | null; edge: number } | null =
       null;
     const resume = (value: VmValue, fault: Fault | null = null, edge = 0) => {
-      if (pending) return;
+      if (pending) return false;
       pending = { value, fault, edge };
       cleanup();
       this.scheduler.enqueue(act.context.id, () => {
@@ -1982,9 +1992,11 @@ class ExecutorV1 {
             outcome.value,
             this.faultText(outcome.fault),
             finish,
+            act.context.actor,
           );
         else finish();
       });
+      return true;
     };
     act.context.cancel = (
       fault = { kind: "panic", message: "task cancelled", cancelled: true },
@@ -2115,7 +2127,16 @@ class ExecutorV1 {
             if (task?.done) {
               const result = task.value;
               task.value = UNIT;
-              this.closeValueAsync(result, currentFault, next, actor);
+              this.closeValueAsync(
+                result,
+                currentFault,
+                (fault) => next(fault ?? (task.close ? task.fault : null)),
+                actor,
+              );
+              return;
+            }
+            if (task?.close) {
+              task.close(next);
               return;
             }
             break;
@@ -2419,8 +2440,9 @@ class ExecutorV1 {
               handler,
               payload: fields,
               reply: false,
-              complete: (_value, error) => {
+              complete: (_value, error, drained) => {
                 if (error) this.closeValue(payload!, error);
+                drained?.(null);
               },
             });
             this.dispatchActor(actor);
@@ -2433,10 +2455,20 @@ class ExecutorV1 {
       }
       case "call_start": {
         const task = this.newTask();
-        this.ask(operation.protocol, args, (value, error) => {
-          task.actorError = error;
-          this.settleTask(task, value ?? UNIT, null);
-        });
+        const cancelRequest = this.ask(
+          operation.protocol,
+          args,
+          (value, error, closeFault) => {
+            task.actorError = error;
+            this.settleTask(task, value ?? UNIT, closeFault ?? null);
+            return true;
+          },
+        );
+        task.close = (done) =>
+          cancelRequest((fault) => {
+            this.settleTask(task, UNIT, fault);
+            done(fault);
+          });
         this.completeShim(act, term, { kind: "task", id: task.id });
         return;
       }
@@ -2444,6 +2476,10 @@ class ExecutorV1 {
         const task = this.taskFor(args[0]!);
         if (!task.done)
           throw new Error("actor completion taken before readiness");
+        if (task.fault) {
+          this.raiseFault(act, task.fault, term.unwind);
+          return;
+        }
         const value = task.value;
         task.value = UNIT;
         this.completeShim(
@@ -2534,7 +2570,7 @@ class ExecutorV1 {
             handler,
             payload: payload.fields,
             reply: false,
-            complete: () => {},
+            complete: (_value, _error, drained) => drained?.(null),
           });
           this.trace.snapshot("actor.send", {
             actor_id: actor.id,
@@ -2711,25 +2747,78 @@ class ExecutorV1 {
   private ask(
     protocol: ActorProtocol,
     inputs: VmValue[],
-    complete: ActorMessage["complete"],
+    complete: (
+      value: VmValue | null,
+      error: string | null,
+      closeFault?: Fault | null,
+    ) => boolean,
     shapes?: RequestShapes,
-  ): void {
+  ): (done: (fault: Fault | null) => void) => void {
     let settled = false;
+    let admitted = false;
+    let closing = false;
+    const owner = this.current.context.actor;
+    let receiver: ActorInstance | null = null;
     let cancelTimer = () => {};
-    const finish: ActorMessage["complete"] = (value, error) => {
-      if (settled) return;
+    const finish: ActorMessage["complete"] = (value, error, drained) => {
+      const alreadySettled = settled;
       settled = true;
       cancelTimer();
-      complete(value, error);
+      if (alreadySettled || complete(value, error) === false) {
+        // The finishing receiver still owns a reply that its caller no
+        // longer accepts. Its next turn must wait for this release.
+        this.closeValueAsync(
+          value ?? UNIT,
+          null,
+          (fault) => {
+            if (drained) drained(fault);
+            else if (fault && owner) this.crashActor(owner, fault);
+            else if (fault) this.rootFault ??= fault;
+          },
+          admitted ? receiver : owner,
+        );
+      } else drained?.(null);
     };
-    if (protocol.deadline_ns != null)
-      cancelTimer = this.scheduler.after(BigInt(protocol.deadline_ns), () =>
-        finish(null, "Timeout"),
-      );
     const target = inputs[0]!;
     const payload = protocol.sealed ? fieldsOf(inputs[1]!) : inputs.slice(1);
+    let closed = false;
+    let closeFault: Fault | null = null;
+    const closeWaiters: Array<(fault: Fault | null) => void> = [];
+    const closeRequest = (done: (fault: Fault | null) => void) => {
+      if (closed) {
+        done(closeFault);
+        return;
+      }
+      closeWaiters.push(done);
+      if (closing) return;
+      closing = true;
+      cancelTimer();
+      this.closeValueAsync(
+        { kind: "record", typeId: "", fields: payload },
+        null,
+        (fault) => {
+          closed = true;
+          closeFault = fault;
+          for (const waiter of closeWaiters.splice(0)) waiter(fault);
+        },
+        owner,
+      );
+    };
+    const reject = (reason: string) => {
+      if (settled || closing) return;
+      closeRequest((fault) => {
+        if (settled) return;
+        settled = true;
+        complete(null, reason, fault);
+      });
+    };
+    if (protocol.deadline_ns != null)
+      cancelTimer = this.scheduler.after(BigInt(protocol.deadline_ns), () => {
+        if (admitted) finish(null, "Timeout");
+        else reject("Timeout");
+      });
     const attempt = () => {
-      if (settled) return;
+      if (settled || closing) return;
       const role = "id" in target ? this.roles.get(target.id) : undefined;
       if (role && this.rolePending(role)) {
         role.waiting.push(attempt);
@@ -2737,7 +2826,7 @@ class ExecutorV1 {
       }
       const actor = this.actorFor(target);
       if (!actor.alive || actor.closing) {
-        finish(null, "Dead");
+        reject("Dead");
         return;
       }
       const handler = actor.layout.handlers.find(
@@ -2786,6 +2875,8 @@ class ExecutorV1 {
         }
         return;
       }
+      admitted = true;
+      receiver = actor;
       actor.mailbox.push({ handler, payload, complete: finish, reply: true });
       this.trace.snapshot("actor.ask", {
         actor_id: actor.id,
@@ -2794,6 +2885,13 @@ class ExecutorV1 {
       this.dispatchActor(actor);
     };
     attempt();
+    return (done) => {
+      const wasSettled = settled;
+      settled = true;
+      cancelTimer();
+      if (admitted || (wasSettled && !closing)) done(null);
+      else closeRequest(done);
+    };
   }
 
   private dispatchActor(actor: ActorInstance): void {
@@ -2830,7 +2928,11 @@ class ExecutorV1 {
           actor,
           returned: (value) => {
             actor.active = null;
-            actor.busy = false;
+            const drained = (fault: Fault | null) => {
+              actor.busy = false;
+              if (fault) this.crashActor(actor, fault);
+              else this.dispatchActor(actor);
+            };
             this.trace.snapshot("actor.reply", {
               actor_id: actor.id,
               value: toJsonValue(value),
@@ -2839,7 +2941,7 @@ class ExecutorV1 {
               const shape = this.pkg.variants[message.handler.result_shape!];
               if (shape?.cases[value.tag]?.name === "Err") {
                 if (message.reply)
-                  message.complete(value.payload[0] ?? UNIT, "Failed");
+                  message.complete(value.payload[0] ?? UNIT, "Failed", drained);
                 else {
                   this.crashActor(actor, {
                     kind: "panic",
@@ -2848,12 +2950,11 @@ class ExecutorV1 {
                   return;
                 }
               } else {
-                message.complete(value.payload[0] ?? UNIT, null);
+                message.complete(value.payload[0] ?? UNIT, null, drained);
               }
             } else {
-              message.complete(value, null);
+              message.complete(value, null, drained);
             }
-            this.dispatchActor(actor);
           },
           failed: (fault) => {
             actor.active = null;

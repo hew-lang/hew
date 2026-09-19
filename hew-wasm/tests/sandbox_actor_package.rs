@@ -848,6 +848,61 @@ fn cancellation_preserves_a_resource_close_failure() {
 }
 
 #[test]
+fn dead_actor_calls_drain_their_consumed_message_before_returning() {
+    let source = include_str!("../../tests/core-acceptance/cases/resource-close-dead-ask.hew");
+    let trace = execute(source);
+    assert_eq!(stdout(&trace), "closed 9\ndead\n");
+    assert_eq!(trace["final_state"]["exit_code"], 0);
+
+    let failure = source.replace(
+        "expect(\"audit\");",
+        "expect(\"audit\"); panic(\"close failed\");",
+    );
+    let trace = execute_expected(&failure, "panic");
+    assert_eq!(stdout(&trace), "closed 9\n");
+}
+
+#[test]
+fn a_cancelled_unadmitted_call_closes_its_payload_before_recovery() {
+    let trace = execute(include_str!(
+        "../../tests/core-acceptance/cases/resource-close-pending-ask.hew"
+    ));
+    assert_eq!(
+        stdout(&trace),
+        "closed 2\ndeadline\nclosed 1\ngate closed\n"
+    );
+    assert_eq!(trace["final_state"]["exit_code"], 0);
+}
+
+#[test]
+fn a_late_owned_reply_drains_before_the_next_actor_turn() {
+    let source = include_str!("../../tests/core-acceptance/cases/resource-close-late-reply.hew");
+    let trace = execute(source);
+    assert_eq!(stdout(&trace), "deadline\nclosed 9\nready\n");
+    assert_eq!(trace["final_state"]["exit_code"], 0);
+
+    let definitions = &source[..source.find("fn main()").unwrap()];
+    let selection = format!(
+        r#"{definitions}
+fn main() {{
+    let audit = spawn Audit;
+    let worker = spawn Worker;
+    select {{
+        value from worker.create(audit) => println(value.expect("created").id),
+        after 1ms => println("timeout"),
+    }}
+    worker.ready().expect("ready");
+    close(worker);
+    close(audit);
+}}
+"#
+    );
+    let trace = execute(&selection);
+    assert_eq!(stdout(&trace), "timeout\nclosed 9\nready\n");
+    assert_eq!(trace["final_state"]["exit_code"], 0);
+}
+
+#[test]
 fn trait_object_release_waits_for_its_resources_peer_call() {
     let trace = execute(
         r#"

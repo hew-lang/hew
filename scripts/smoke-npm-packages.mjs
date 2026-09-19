@@ -20,7 +20,7 @@ async function loadPackage(name, wasm = false) {
     const bytes = await readFile(join(root, entry.replace(/\.js$/, "_bg.wasm")));
     await module.default({ module_or_path: bytes });
   }
-  return { module, version: metadata.version };
+  return { module, version: metadata.version, source: metadata.hewSource };
 }
 
 const hello = 'fn main() { println("Hello, npm!"); }';
@@ -46,6 +46,9 @@ const compiler = analysis;
 const vm = await loadPackage("sandbox-vm");
 assert.equal(analysis.version, compiler.version, "analysis and compiler package versions differ");
 assert.equal(compiler.version, vm.version, "compiler and VM package versions differ");
+assert.deepEqual(compiler.source, vm.source, "compiler and VM source revisions differ");
+assert.match(compiler.source?.commit ?? "", /^[a-f0-9]{40}$/, "package source revision is missing");
+assert.equal(typeof compiler.source.dirty, "boolean", "package source state is missing");
 
 const analyzed = JSON.parse(analysis.module.analyze(hello));
 assert.deepEqual(analyzed.diagnostics, [], "staged browser analysis rejected hello");

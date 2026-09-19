@@ -1,0 +1,14 @@
+[[case]]
+id = "collection-callback-actor"
+intent = "Hash and Eq ask a peer actor on one worker through collision-heavy map and set resize, lookup, replacement and removal, and through vector membership and derived equality."
+source = "cases/collection-callback-actor.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 20
+
+[case.env]
+HEW_WORKERS = "1"
+
+[case.expected]
+stdout = "collection callbacks complete\n"
+stderr = ""
+exit = 0

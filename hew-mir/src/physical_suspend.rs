@@ -227,6 +227,16 @@ pub(super) fn semantic_callables(checked: &hew_sir::CheckedModule<'_>) -> BTreeS
                         .or_default()
                         .extend(semantic_value_callees(module, ty, *capability));
                 }
+                hew_sir::SemTerminator::WireCodec {
+                    direction, plan, ..
+                } if !direction.is_serialize() => {
+                    plan.visit_decode_capabilities(&mut |ty, capability| {
+                        calls
+                            .entry(function.callable)
+                            .or_default()
+                            .extend(semantic_value_callees(module, ty, capability));
+                    });
+                }
                 hew_sir::SemTerminator::RtCall { family, args, .. } => {
                     for capability in family.value_callback_capabilities() {
                         let receiver = &types[&args[0].operand.value];
@@ -321,6 +331,20 @@ pub(super) fn verify_callables(module: &PhysicalModule) -> Result<(), PhysicalEr
                         .entry(function.callable)
                         .or_default()
                         .extend(super::capability::callees(module, ty, *capability)?);
+                }
+                PhysicalTerminator::WireCodec {
+                    direction, plan, ..
+                } if !direction.is_serialize() => {
+                    let mut dependencies = Vec::new();
+                    plan.visit_decode_capabilities(&mut |ty, capability| {
+                        dependencies.push(super::capability::callees(module, ty, capability));
+                    });
+                    for dependency in dependencies {
+                        calls
+                            .entry(function.callable)
+                            .or_default()
+                            .extend(dependency?);
+                    }
                 }
                 PhysicalTerminator::Call { callee, .. } => {
                     calls.entry(function.callable).or_default().push(*callee);

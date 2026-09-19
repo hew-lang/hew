@@ -899,7 +899,7 @@ struct ValueEmitter<'a, 'ctx> {
     value: FunctionValue<'ctx>,
     /// The enclosing frame's fault record: its optional owner and the status
     /// that owner was raised with. A release emitted into a frame reports a
-    /// failing `close` here and keeps releasing (D516). Release glue has no
+    /// failing `close` here and keeps releasing. Release glue has no
     /// frame, so it carries `None` and raises through the trap path instead.
     fault_sink: Option<(PointerValue<'ctx>, PointerValue<'ctx>)>,
 }

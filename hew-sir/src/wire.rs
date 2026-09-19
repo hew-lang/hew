@@ -215,6 +215,28 @@ impl SemWirePlan {
 }
 
 impl SemWirePlan {
+    /// Decoding a map or set invokes its selected key capabilities to build
+    /// the collection and reject duplicate semantic keys.
+    pub fn visit_decode_capabilities(
+        &self,
+        visit: &mut impl FnMut(&ResolvedTy, hew_types::ValueCapability),
+    ) {
+        self.visit_types(&mut |ty| {
+            if let Some((
+                hew_types::BuiltinType::HashMap | hew_types::BuiltinType::HashSet,
+                [key, ..],
+            )) = hew_types::runtime_call::collection_type_arguments(ty)
+            {
+                for capability in [
+                    hew_types::ValueCapability::Hash,
+                    hew_types::ValueCapability::Eq,
+                ] {
+                    visit(key, capability);
+                }
+            }
+        });
+    }
+
     /// Visit every exact type needed by the codec, including nested payloads.
     pub fn visit_types(&self, visit: &mut impl FnMut(&ResolvedTy)) {
         visit(&self.ty);

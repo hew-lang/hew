@@ -2,6 +2,7 @@
 //! an actor worker. Borrowed operands stay in the caller's verified storage.
 
 use super::*;
+use hew_cabi::map::HewMapProbeStatus;
 
 pub(super) struct CollectionProbe<'a, 'ctx> {
     pub key: &'a ResolvedTy,
@@ -128,8 +129,14 @@ impl<'ctx> CollectionCallbacks<'_, 'ctx> {
                 status,
                 ready,
                 &[
-                    (i32_ty.const_int(1, false), hash),
-                    (i32_ty.const_int(2, false), eq),
+                    (
+                        i32_ty.const_int(HewMapProbeStatus::NeedHash as u64, false),
+                        hash,
+                    ),
+                    (
+                        i32_ty.const_int(HewMapProbeStatus::NeedEq as u64, false),
+                        eq,
+                    ),
                 ],
             )
             .llvm_ctx("select requested collection capability")?;

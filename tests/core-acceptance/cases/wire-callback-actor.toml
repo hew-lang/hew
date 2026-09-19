@@ -1,0 +1,14 @@
+[[case]]
+id = "wire-callback-actor"
+intent = "Nested CBOR, JSON and YAML decoders suspend custom Hash and Eq while rebuilding collections on one actor worker and still reject duplicate semantic keys."
+source = "cases/wire-callback-actor.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 20
+
+[case.env]
+HEW_WORKERS = "1"
+
+[case.expected]
+stdout = "wire callbacks complete\n"
+stderr = ""
+exit = 0

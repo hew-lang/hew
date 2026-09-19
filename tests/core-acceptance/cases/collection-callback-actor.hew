@@ -1,0 +1,57 @@
+actor Oracle {
+    receive fn hash() -> i64 { 7 }
+    receive fn equal(left: i64, right: i64) -> bool { left == right }
+}
+
+type Key { oracle: Oracle, id: i64 }
+
+impl Hash for Key {
+    fn hash(self) -> i64 { self.oracle.hash().expect("hash reply") }
+}
+
+impl Eq for Key {
+    fn eq(self, other: Key) -> bool {
+        self.oracle.equal(self.id, other.id).expect("equality reply")
+    }
+}
+
+actor Store {
+    receive fn exercise(oracle: Oracle) -> string {
+        var values: HashMap<Key, string> = HashMap.new();
+        var keys: HashSet<Key> = HashSet.new();
+        for id in 0..24 {
+            let key = Key { oracle: oracle, id: id };
+            values.insert(key, f"item {id}");
+            keys.insert(key);
+        }
+        let key = Key { oracle: oracle, id: 13 };
+        values.insert(key, "replacement");
+        assert(!keys.insert(key));
+        assert(values.contains_key(key));
+        assert(keys.contains(key));
+        assert(values[key] == "replacement");
+        assert(values.get(key).expect("present key") == "replacement");
+        assert(values.remove(key).expect("removed key") == "replacement");
+        assert(keys.remove(key));
+        assert(!values.contains_key(key));
+        assert(!keys.contains(key));
+        assert(values.len() == 23);
+        assert(keys.len() == 23);
+        let samples = [Key { oracle: oracle, id: 1 }, Key { oracle: oracle, id: 2 }];
+        assert(samples.contains(Key { oracle: oracle, id: 2 }));
+        assert(!samples.contains(key));
+        assert(samples == [Key { oracle: oracle, id: 1 }, Key { oracle: oracle, id: 2 }]);
+        assert(samples != [Key { oracle: oracle, id: 1 }, key]);
+        let empty: Vec<Key> = [];
+        assert(!empty.contains(key));
+        "collection callbacks complete"
+    }
+}
+
+fn main() {
+    let oracle = spawn Oracle;
+    let store = spawn Store;
+    println(store.exercise(oracle).expect("collection exercise"));
+    close(store);
+    close(oracle);
+}

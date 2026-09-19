@@ -1,0 +1,27 @@
+import std.encoding.wire;
+
+#[wire]
+type Key { id: i64 @1 }
+
+impl Hash for Key {
+    fn hash(self) -> i64 {
+        if self.id == 99 {
+            let label = "wire callback local closed".to_upper();
+            defer println(label);
+            sleep(1h);
+        }
+        7
+    }
+}
+
+fn decode() -> i64 {
+    let decoded = wire.from_json<HashMap<Key, Vec<string>>>("[[{\"id\":0},[\"kept\"]],[{\"id\":99},[\"pending\"]]]").expect("decode");
+    decoded.len()
+}
+
+fn winner() -> i64 { 42 }
+
+fn main() {
+    let value = race { decode(), winner() };
+    println(value);
+}

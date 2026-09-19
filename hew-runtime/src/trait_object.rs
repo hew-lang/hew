@@ -128,7 +128,14 @@ pub struct HewVtable {
     pub size_of: usize,
     /// `align_of::<ImplType>()` — companion to `size_of`.
     pub align_of: usize,
+    /// Exact concrete value descriptor used for consuming release. Null is
+    /// reserved for foreign synchronous tables that provide only a drop slot.
+    pub value_layout: *const hew_cabi::value::HewValueLayout,
 }
+
+// SAFETY: a vtable and its optional value descriptor are immutable and live
+// for every object that references them, including objects on other workers.
+unsafe impl Sync for HewVtable {}
 
 // SAFETY checks: the fat pointer must be exactly two pointer-widths.
 // Codegen depends on this for the construction (`insertvalue` pair)
@@ -150,9 +157,9 @@ const _: () = assert!(
 // widths. Codegen indexes past this prefix when computing method
 // slots, so any drift here renumbers every method slot.
 const _: () = assert!(
-    std::mem::size_of::<HewVtable>() == 3 * std::mem::size_of::<*const c_void>(),
-    "HewVtable prefix must be exactly three pointer-widths \
-     (drop_in_place, size_of, align_of)."
+    std::mem::size_of::<HewVtable>() == 4 * std::mem::size_of::<*const c_void>(),
+    "HewVtable prefix must be exactly four pointer-widths \
+     (drop_in_place, size_of, align_of, value_layout)."
 );
 
 /// Build the panic message that [`hew_vtable_dispatch_panic_on_oob`]

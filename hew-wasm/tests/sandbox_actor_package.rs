@@ -831,11 +831,11 @@ fn resource_close_faults_drain_remaining_handler_and_actor_owners() {
     ));
     assert_eq!(stdout(&frame), "close 2\nclose 1\nrestarted\n");
     assert_eq!(frame["final_state"]["exit_code"], 0);
-    let state = execute(include_str!(
-        "../../tests/core-acceptance/cases/resource-close-fault-actor-state.hew"
-    ));
+    let state = execute_expected(
+        include_str!("../../tests/core-acceptance/cases/resource-close-fault-actor-state.hew"),
+        "panic",
+    );
     assert_eq!(stdout(&state), "close 2\nclose 1\n");
-    assert_eq!(state["final_state"]["exit_code"], 1);
 }
 
 #[test]
@@ -1033,13 +1033,18 @@ fn main() {
 }
 "#;
     for fails in [false, true] {
-        let trace = execute(&source.replace("FAIL_CLOSE", if fails { "true" } else { "false" }));
+        let trace = execute_expected(
+            &source.replace("FAIL_CLOSE", if fails { "true" } else { "false" }),
+            if fails { "panic" } else { "ok" },
+        );
         let output = stdout(&trace);
         let mut lines: Vec<_> = output.lines().collect();
-        assert_eq!(lines.pop(), Some("barrier"));
+        if !fails {
+            assert_eq!(lines.pop(), Some("barrier"));
+            assert_eq!(trace["final_state"]["exit_code"], 0);
+        }
         lines.sort_unstable();
         assert_eq!(lines, ["closed 1", "closed 2"]);
-        assert_eq!(trace["final_state"]["exit_code"], i32::from(fails));
         assert!(
             trace["final_state"]["virtual_clock"]["current_ms"]
                 .as_f64()
@@ -1066,7 +1071,12 @@ fn main() {
     let (output, input): (Sink<i64>, Stream<i64>) = stream.pipe(1).expect("pipe");
     let owner = spawn Owner(output: output, ticket: Ticket { id: 7 });
     owner.ready().expect("ready");
-    close(owner);
+    scope { close(owner); println("incorrect clean close"); } handle failure {
+        match failure {
+            .Fault { message } => println("close fault"),
+            .Deadline { message } => println("incorrect deadline"),
+        }
+    };
     println(input.recv().expect("buffered item"));
     let _end = input.recv();
     println("incorrect clean end");
@@ -1074,7 +1084,7 @@ fn main() {
 "#,
         "panic",
     );
-    assert_eq!(stdout(&trace), "7\n42\n");
+    assert_eq!(stdout(&trace), "7\nclose fault\n42\n");
     assert!(trace["final_state"]["runtime_failures"]
         .to_string()
         .contains("state close failed"));

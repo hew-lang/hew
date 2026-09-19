@@ -2684,13 +2684,18 @@ class ExecutorV1 {
       }
       case "await_closed": {
         const actor = this.actorFor(args[0]!);
+        const complete = () => {
+          const fault = actor.crashing ?? actor.closingFault;
+          if (fault) this.raiseFault(act, fault, term.unwind);
+          else this.completeShim(act, term, UNIT);
+        };
         if (actor.completed) {
-          this.completeShim(act, term, UNIT);
+          complete();
           return;
         }
         this.running = false;
         actor.closed.push(() => {
-          this.completeShim(act, term, UNIT);
+          complete();
           this.scheduler.enqueue(act.context.id, () => this.runFrame(act));
         });
         return;

@@ -1979,24 +1979,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "hew-sandbox-wasm"
-version = "0.6.0-rc4"
-dependencies = [
- "assert_cmd",
- "hew-compile",
- "hew-parser",
- "hew-sir",
- "hew-testutil",
- "hew-types",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "tempfile",
- "walkdir",
- "wasm-bindgen",
-]
-
-[[package]]
 name = "hew-sir"
 version = "0.6.0-rc4"
 dependencies = [
@@ -2078,15 +2060,20 @@ dependencies = [
 name = "hew-wasm"
 version = "0.6.0-rc4"
 dependencies = [
+ "assert_cmd",
  "hew-analysis",
  "hew-compile",
  "hew-hir",
  "hew-lexer",
  "hew-mir",
  "hew-parser",
+ "hew-sir",
+ "hew-testutil",
  "hew-types",
  "serde",
  "serde_json",
+ "tempfile",
+ "walkdir",
  "wasm-bindgen",
 ]
 
@@ -6036,8 +6023,8 @@ dependencies = [
 name = "xtask"
 version = "0.6.0-rc4"
 dependencies = [
- "hew-sandbox-wasm",
  "hew-types",
+ "hew-wasm",
  "quick-xml",
  "serde",
  "serde_json",

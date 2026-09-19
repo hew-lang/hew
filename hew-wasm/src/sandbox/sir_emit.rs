@@ -291,47 +291,6 @@ pub struct Block {
     pub term: serde_json::Value,
 }
 
-/// Does this module need the concurrency path?
-///
-/// WHY: the AST emitter still owns actors, supervisors, tasks, select and
-/// pipes for one more change, so a module that reaches them is routed there by
-/// this structural SIR fact rather than by trying the walker and catching an
-/// error. WHEN OBSOLETE: the actor change lands these constructs in the
-/// walker. REAL FIX: that change deletes this predicate and its caller's
-/// branch, and the following change deletes the AST emitter.
-#[must_use]
-pub fn uses_concurrency(module: &SemModule) -> bool {
-    if !module.actors.is_empty() || !module.supervisors.is_empty() {
-        return true;
-    }
-    module.functions.iter().any(|function| {
-        function.blocks.iter().any(|block| {
-            block.ops.iter().any(|op| {
-                matches!(
-                    op.kind,
-                    SemOpKind::GeneratorMake { .. }
-                        | SemOpKind::StreamPipe { .. }
-                        | SemOpKind::TaskScopeEnter { .. }
-                        | SemOpKind::TaskScopeClose { .. }
-                        | SemOpKind::TaskSpawn { .. }
-                        | SemOpKind::ActorIngressAdapter(_)
-                )
-            }) || matches!(block.terminator, SemTerminator::ActorCall { .. })
-                || matches!(
-                    &block.terminator,
-                    SemTerminator::Suspend { kind, .. } if suspend_needs_scheduler(kind)
-                )
-        })
-    })
-}
-
-/// `Sleep` and `NativeIo` resume on the running activation:
-/// a virtual-clock advance and a rejected capability. Every other
-/// kind parks a frame the scheduler must wake.
-fn suspend_needs_scheduler(kind: &SuspendKind) -> bool {
-    !matches!(kind, SuspendKind::Sleep | SuspendKind::NativeIo { .. })
-}
-
 /// Project a verified semantic module into a sandbox bytecode package.
 ///
 /// # Errors

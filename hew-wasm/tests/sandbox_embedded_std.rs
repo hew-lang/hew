@@ -43,7 +43,7 @@ fn shipped_sources() -> BTreeSet<String> {
 
 #[test]
 fn every_shipped_standard_library_module_travels_in_the_package() {
-    let embedded: BTreeSet<String> = hew_sandbox_wasm::embedded_standard_library_paths()
+    let embedded: BTreeSet<String> = hew_wasm::sandbox::embedded_standard_library_paths()
         .iter()
         .map(|path| (*path).to_string())
         .collect();
@@ -68,7 +68,7 @@ fn every_shipped_standard_library_module_travels_in_the_package() {
 #[test]
 fn an_embedded_module_is_its_source_on_disk() {
     let root = repo_root();
-    for (path, source) in hew_sandbox_wasm::embedded_standard_library() {
+    for (path, source) in hew_wasm::sandbox::embedded_standard_library() {
         let on_disk = root.join(path.trim_start_matches("./"));
         let expected = std::fs::read_to_string(&on_disk)
             .unwrap_or_else(|error| panic!("read {}: {error}", on_disk.display()));
@@ -84,7 +84,7 @@ fn a_standard_library_import_compiles_without_reading_the_filesystem() {
     // The browser reaches the same standard library the native compiler does.
     // Running here proves the sources are wired into resolution; the browser's
     // own build is proved by compiling this import through the wasm bridge.
-    let output = hew_sandbox_wasm::compile_to_sandbox_bytecode(
+    let output = hew_wasm::sandbox::compile_to_sandbox_bytecode(
         "import std.random;\n\nfn main() {\n    random.seed(1);\n    println(random.randint(0, 99));\n}\n",
         Some("sandbox-vm-export"),
     )

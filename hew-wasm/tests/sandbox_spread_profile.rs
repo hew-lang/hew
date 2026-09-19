@@ -6,7 +6,7 @@
 //! carries that walk into the package, rather than admitting the literal and
 //! silently dropping the spliced elements.
 
-use hew_sandbox_wasm::{compile_to_sandbox_bytecode, SandboxBytecodePackageV1, SandboxPackage};
+use hew_wasm::sandbox::{compile_to_sandbox_bytecode, SandboxBytecodePackageV1};
 
 const PROFILE: &str = "sandbox-vm-export";
 
@@ -36,10 +36,7 @@ fn compile(source: &str) -> SandboxBytecodePackageV1 {
         .filter(|diagnostic| diagnostic.severity == "error")
         .collect();
     assert!(errors.is_empty(), "unexpected sandbox errors: {errors:#?}");
-    match output.bytecode.expect("admitted source emits bytecode") {
-        SandboxPackage::V1(package) => *package,
-        SandboxPackage::V0(_) => panic!("a sequential program lowers from verified semantics"),
-    }
+    output.bytecode.expect("the source emits bytecode")
 }
 
 /// How many times the package calls one vector operation.

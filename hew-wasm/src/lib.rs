@@ -1,8 +1,7 @@
-//! WASM bindings for Hew analysis-only diagnostics and editor tooling.
+//! WASM bindings for Hew source analysis and verified sandbox compilation.
 //!
 //! This crate exposes the frontend analysis surfaces used by browser/editor
-//! integrations. It intentionally does not provide native codegen, linking,
-//! runtime execution, or a full in-browser Hew VM.
+//! integrations, plus verified SIR packages for the sandbox VM.
 //!
 //! Available source-code analysis capabilities:
 //!
@@ -27,6 +26,8 @@
 //! Exports never return an empty string `""` to indicate "no result"; that
 //! ambiguous encoding has been replaced with `"null"` / `"[]"` per the
 //! convention above.
+
+pub mod sandbox;
 
 use std::fmt;
 

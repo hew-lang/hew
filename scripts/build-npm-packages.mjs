@@ -1,10 +1,9 @@
 #!/usr/bin/env node
 /**
- * Build all three Hew npm packages and stage them under target/npm/<pkg>.
+ * Build both Hew npm packages and stage them under target/npm/<pkg>.
  *
  * Packages produced:
  *   target/npm/@hew-lang/wasm          ← hew-wasm crate (wasm-pack --target web)
- *   target/npm/@hew-lang/sandbox-wasm  ← hew-sandbox-wasm crate (wasm-pack --target web)
  *   target/npm/@hew-lang/sandbox-vm    ← hew-sandbox-vm (tsc)
  *
  * Environment:
@@ -170,12 +169,10 @@ async function main() {
   mkdirSync(join(REPO_ROOT, "target", "npm"), { recursive: true });
 
   buildWasmCrate({ crate: "hew-wasm", outName: "wasm", version });
-  buildWasmCrate({ crate: "hew-sandbox-wasm", outName: "sandbox-wasm", version });
   buildSandboxVm({ version });
 
   console.log(`\nAll packages staged under target/npm/@hew-lang/`);
   console.log(`  @hew-lang/wasm@${version}`);
-  console.log(`  @hew-lang/sandbox-wasm@${version}`);
   console.log(`  @hew-lang/sandbox-vm@${version}`);
   console.log(`\nTo verify: npm pack --dry-run  in each staged directory.`);
 }

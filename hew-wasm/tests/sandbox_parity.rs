@@ -4,7 +4,7 @@ use std::process::Output;
 use std::sync::OnceLock;
 
 use assert_cmd::Command;
-use hew_sandbox_wasm::{compile_to_sandbox_bytecode, Diagnostic, REQUIRED_PARITY_TEST_NAMES};
+use hew_wasm::sandbox::{compile_to_sandbox_bytecode, Diagnostic, REQUIRED_PARITY_TEST_NAMES};
 
 const SANDBOX_PROFILE: &str = "sandbox-vm-export";
 const HEW_SEED: &str = "42";
@@ -826,7 +826,7 @@ fn repo_root() -> &'static Path {
         .get_or_init(|| {
             Path::new(env!("CARGO_MANIFEST_DIR"))
                 .parent()
-                .expect("hew-sandbox-wasm crate should have a workspace parent")
+                .expect("hew-wasm crate should have a workspace parent")
                 .to_path_buf()
         })
         .as_path()

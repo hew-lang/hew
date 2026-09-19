@@ -41,7 +41,7 @@ supervision-lifecycle-accounting = { max-threads = 1 }
 [profile.default]
 # Browser WASM tests require wasmtime. Sandbox tests require the Node VM and
 # run as a complete package under the provisioned `make sandbox-parity` gate.
-default-filter = "not package(hew-wasm) - package(hew-sandbox-wasm)"
+default-filter = "not package(hew-wasm)"
 # Global concurrency cap: defaults to all available cores (num-cpus), which is
 # fine for pure in-process tests.  The subprocess-intensive group above provides
 # the finer-grained cap for tests that spawn child processes.
@@ -92,7 +92,7 @@ leak-timeout = { period = "200ms", result = "fail" }
 # The binary now runs in CI, throttled into the subprocess-intensive group by
 # the override below because each of its tests spawns the full hew binary.
 # Sandbox tests run as one provisioned package under `make sandbox-parity`.
-default-filter = "not package(hew-wasm) - package(hew-sandbox-wasm)"
+default-filter = "not package(hew-wasm)"
 # Defense-in-depth for tests that bypass the bounded exec helper: nextest kills
 # tests after 3 × 100 s = 300 s without status updates/output.
 slow-timeout = { period = "100s", terminate-after = 3 }

@@ -4,7 +4,7 @@
 //! walker directly: the tables and operations are what the VM will be fed, and
 //! a gap here would otherwise only surface when the dispatch flips.
 
-use hew_sandbox_wasm::sir_emit;
+use hew_wasm::sandbox::sir_emit;
 
 fn semantics(source: &str) -> hew_sir::LoweredModule {
     let state = hew_compile::run_source_frontend(
@@ -41,10 +41,6 @@ fn main() {
 #[test]
 fn an_actor_declaration_reaches_the_package_with_its_handlers() {
     let module = semantics(COUNTER);
-    assert!(
-        sir_emit::uses_concurrency(&module.module),
-        "an actor program is routed to the concurrency path"
-    );
     let package = sir_emit::emit_package(&module.module, "sandbox-vm-export", "0", "test")
         .expect("an actor module projects into a package");
 
@@ -97,9 +93,19 @@ fn execute(source: &str) -> serde_json::Value {
 }
 
 fn execute_expected(source: &str, status: &str) -> serde_json::Value {
-    let module = semantics(source);
-    let package = sir_emit::emit_package(&module.module, "sandbox-vm-export", "0", "test")
-        .expect("verified actor semantics emit");
+    let compiled =
+        hew_wasm::sandbox::compile_to_sandbox_bytecode(source, Some("sandbox-vm-export"))
+            .expect("compile through the public browser entry point");
+    assert!(
+        compiled
+            .diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.severity != "error"),
+        "{:?}",
+        compiled.diagnostics
+    );
+    let package = compiled.bytecode.expect("verified source emits bytecode");
+    assert_eq!(package.schema_version, "hew.sandbox.bytecode.v1");
     let file = tempfile::NamedTempFile::new().expect("package file");
     serde_json::to_writer(file.as_file(), &package).expect("serialize package");
     let output = std::process::Command::new("node")

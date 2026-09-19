@@ -139,6 +139,73 @@ fn semantic_value_callees(
     callees
 }
 
+/// Release reaches the selected consuming close, or the concrete fields of a
+/// structural value. Erased callables and dynamic objects retain their runtime
+/// release descriptor, so their callers must allow a continuation.
+fn semantic_release_dependencies(
+    module: &hew_sir::SemModule,
+    ty: &hew_types::ResolvedTy,
+) -> (bool, BTreeSet<CallableId>) {
+    use hew_types::{BuiltinType, ResolvedTy};
+    let mut pending = vec![ty.clone()];
+    let mut seen = BTreeSet::new();
+    let mut callees = BTreeSet::new();
+    let mut intrinsic = false;
+    while let Some(ty) = pending.pop() {
+        if !seen.insert(ty.clone()) {
+            continue;
+        }
+        if let Some(release) = module.resources.get(&ty) {
+            match release {
+                hew_sir::ResourceRelease::RecordClose { close, .. }
+                | hew_sir::ResourceRelease::OpaqueClose { close, .. } => {
+                    callees.insert(*close);
+                }
+                hew_sir::ResourceRelease::Generator
+                | hew_sir::ResourceRelease::Stream
+                | hew_sir::ResourceRelease::Sink => intrinsic = true,
+                _ => {}
+            }
+            continue;
+        }
+        match &ty {
+            ResolvedTy::Function { .. }
+            | ResolvedTy::Closure { .. }
+            | ResolvedTy::TraitObject { .. } => intrinsic = true,
+            ResolvedTy::Tuple(fields) => pending.extend(fields.iter().cloned()),
+            ResolvedTy::Array(element, size) if *size != 0 => pending.push((**element).clone()),
+            ResolvedTy::Named {
+                builtin:
+                    Some(
+                        BuiltinType::Vec
+                        | BuiltinType::HashMap
+                        | BuiltinType::HashSet
+                        | BuiltinType::Rc,
+                    ),
+                args,
+                ..
+            } => pending.extend(args.iter().cloned()),
+            _ => {
+                if let Some(shape) = module.aggregate_shape_for_type(&ty) {
+                    pending.extend(shape.fields.iter().map(|field| field.ty.clone()));
+                }
+                if let Some(shape) = module
+                    .variant_shapes
+                    .iter()
+                    .find(|shape| shape.enum_ty == ty)
+                {
+                    pending.extend(
+                        shape.variants.iter().flat_map(|variant| {
+                            variant.fields.iter().map(|field| field.ty.clone())
+                        }),
+                    );
+                }
+            }
+        }
+    }
+    (intrinsic, callees)
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "one terminator dispatch closes direct and selected callback dependencies"
@@ -174,6 +241,26 @@ pub(super) fn semantic_callables(checked: &hew_sir::CheckedModule<'_>) -> BTreeS
             .iter()
             .filter(|block| lifetimes.is_reachable(block.id))
         {
+            for operation in &block.ops {
+                let ty = match &operation.kind {
+                    hew_sir::SemOpKind::DestroyValue { value } => Some(&types[&value.value]),
+                    hew_sir::SemOpKind::StoreAssign { place, .. }
+                    | hew_sir::SemOpKind::EndLifetime { place } => {
+                        Some(&function.places[place.0 as usize].ty)
+                    }
+                    _ => None,
+                };
+                if let Some(ty) = ty {
+                    let (intrinsic, dependencies) = semantic_release_dependencies(module, ty);
+                    if intrinsic {
+                        resumable.insert(function.callable);
+                    }
+                    calls
+                        .entry(function.callable)
+                        .or_default()
+                        .extend(dependencies);
+                }
+            }
             match &block.terminator {
                 hew_sir::SemTerminator::Suspend {
                     kind:
@@ -270,8 +357,20 @@ pub(super) fn semantic_callables(checked: &hew_sir::CheckedModule<'_>) -> BTreeS
 pub(super) fn verify_callables(module: &PhysicalModule) -> Result<(), PhysicalError> {
     let mut resumable = BTreeSet::new();
     let mut calls = BTreeMap::<_, Vec<_>>::new();
+    let releases = super::release::ReleaseEffects::compute(module);
     for function in &module.functions {
         for block in &function.blocks {
+            for operation in &block.ops {
+                let action = match operation {
+                    super::PhysicalOp::Destroy { action, .. } => Some(*action),
+                    super::PhysicalOp::Assign { destroy_old, .. } => *destroy_old,
+                    super::PhysicalOp::StorageDead { destroy, .. } => *destroy,
+                    _ => None,
+                };
+                if action.is_some_and(|action| releases.suspends(action)) {
+                    resumable.insert(function.callable);
+                }
+            }
             match &block.terminator {
                 PhysicalTerminator::RecoverFault { .. }
                 | PhysicalTerminator::NativeIo { .. }

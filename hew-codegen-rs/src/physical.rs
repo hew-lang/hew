@@ -51,6 +51,8 @@ mod close;
 mod dyn_object;
 #[path = "physical_host.rs"]
 mod host;
+#[path = "physical_release.rs"]
+mod release;
 #[path = "physical_shared.rs"]
 mod shared;
 #[path = "physical_structural.rs"]
@@ -2156,6 +2158,7 @@ fn value_descriptor_type<'ctx>(
             pointer.into(),
             pointer.into(),
             pointer.into(),
+            pointer.into(),
         ],
         false,
     )
@@ -2279,6 +2282,10 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             self.emit_value_descriptor(&map_value_descriptor_symbol(glue.id), &glue.value)?;
         }
         for glue in &self.module.shared_glue {
+            self.emit_value_descriptor(
+                &format!("__hew_shared_payload_{}_layout", glue.id.0),
+                &glue.payload,
+            )?;
             let Some(action) = glue.payload.destroy else {
                 continue;
             };
@@ -2402,7 +2409,10 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
 
     fn emit_value_descriptor(&self, name: &str, recipe: &PhysicalValueRecipe) -> CodegenResult<()> {
         let value = self.value_descriptor(name, recipe)?;
-        let global = self.llvm.add_global(value.get_type(), None, name);
+        let global = self
+            .llvm
+            .get_global(name)
+            .unwrap_or_else(|| self.llvm.add_global(value.get_type(), None, name));
         global.set_linkage(Linkage::Internal);
         global.set_constant(true);
         global.set_initializer(&value);
@@ -2452,6 +2462,15 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             drop.into(),
             self.emit_value_close_callback(&format!("{name}_close"), layout, recipe.destroy)?
                 .into(),
+            match recipe.destroy {
+                Some(action) if self.module.releases.suspends(action) => {
+                    release::callback(self.ctx, &self.llvm, self.module, layout, action)?
+                        .as_global_value()
+                        .as_pointer_value()
+                }
+                _ => pointer.const_null(),
+            }
+            .into(),
         ]))
     }
 
@@ -3463,11 +3482,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 ) {
                     if let Some(action) = destroy {
                         let value = self.load(*storage, "seat.release")?;
-                        self.value_emitter().destroy_loaded_value(
-                            value,
-                            &self.storage(*storage)?.layout,
-                            *action,
-                        )?;
+                        self.release_loaded(value, &self.storage(*storage)?.layout, *action)?;
                     }
                     return Ok(());
                 }
@@ -3844,8 +3859,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         }
         let value = self.load(source, "destroy.source")?;
         self.clear_owned(source)?;
-        self.value_emitter()
-            .destroy_loaded_value(value, &self.storage(source)?.layout, action)
+        self.release_loaded(value, &self.storage(source)?.layout, action)
     }
 
     /// Release an operand this emitter still owns on an operation's own
@@ -3861,8 +3875,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         }
         let value = self.load(source, "destroy.source")?;
         self.clear_owned(source)?;
-        self.value_emitter()
-            .destroy_loaded_value(value, &self.storage(source)?.layout, action)
+        self.release_loaded(value, &self.storage(source)?.layout, action)
     }
 
     fn emit_terminator(&self, block: &PhysicalBlock) -> CodegenResult<()> {

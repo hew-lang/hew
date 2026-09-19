@@ -44,6 +44,7 @@ struct Tables {
 pub struct ReleaseEffects {
     user_code: Tables,
     faults: Tables,
+    suspends: Tables,
 }
 
 impl ReleaseEffects {
@@ -55,6 +56,23 @@ impl ReleaseEffects {
             // declared release endpoint, so all of them are user-visible.
             user_code: Tables::compute(module, &vec![true; module.resources.len()]),
             faults: Tables::compute(module, &authored_closes(module)),
+            suspends: Tables::compute(
+                module,
+                &module
+                    .resources
+                    .iter()
+                    .map(|resource| match &resource.release {
+                        hew_sir::ResourceRelease::RecordClose { close, .. }
+                        | hew_sir::ResourceRelease::OpaqueClose { close, .. } => {
+                            module.callables[close.0 as usize].is_resumable
+                        }
+                        hew_sir::ResourceRelease::Generator
+                        | hew_sir::ResourceRelease::Stream
+                        | hew_sir::ResourceRelease::Sink => true,
+                        _ => false,
+                    })
+                    .collect::<Vec<_>>(),
+            ),
         }
     }
 
@@ -70,6 +88,13 @@ impl ReleaseEffects {
     #[must_use]
     pub fn raises_fault(&self, action: DestroyAction) -> bool {
         self.faults.holds(action)
+    }
+
+    /// Whether consuming this value requires a continuation, including erased
+    /// owners whose stored descriptor supplies the concrete release effect.
+    #[must_use]
+    pub fn suspends(&self, action: DestroyAction) -> bool {
+        self.suspends.holds(action)
     }
 }
 

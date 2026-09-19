@@ -204,6 +204,37 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
     }
 
     pub(super) fn free_handle(&self, name: &str, handle: PointerValue<'ctx>) -> CodegenResult<()> {
+        if name == "hew_stream_operation_free_native" {
+            let frame = self.frame.as_ref().ok_or_else(|| {
+                CodegenError::FailClosed("stream operation release lacks continuation".into())
+            })?;
+            let pointer = self.ctx.ptr_type(AddressSpace::default());
+            let begin = coro::external(
+                self.llvm,
+                "hew_stream_operation_release_begin",
+                pointer.fn_type(&[pointer.into()], false),
+            )?;
+            let cursor = call_value(
+                &self.builder,
+                begin,
+                &[handle.into()],
+                "stream.release.cursor",
+            )?
+            .into_pointer_value();
+            return release::drain_cursor(&self.value_emitter(), frame, cursor);
+        }
+        if name == "hew_actor_call_free" {
+            let frame = self.frame.as_ref().ok_or_else(|| {
+                CodegenError::FailClosed("actor-call cleanup lacks continuation".into())
+            })?;
+            release::drain_operation(
+                &self.value_emitter(),
+                frame,
+                handle,
+                "hew_actor_call_cleanup_poll",
+                "hew_actor_call_cleanup_fault",
+            )?;
+        }
         let pointer = self.ctx.ptr_type(AddressSpace::default());
         let free = coro::external(
             self.llvm,

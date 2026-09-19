@@ -42,8 +42,50 @@ fn message_symbol(actor: ActorId, message: u32) -> String {
     symbol(actor, &format!("message_{message}_drop"))
 }
 
+fn message_release_symbol(actor: ActorId, message: u32) -> String {
+    symbol(actor, &format!("message_{message}_release"))
+}
+
+fn message_release<'ctx>(
+    module: &Module<'ctx>,
+    ctx: &'ctx Context,
+    actor: ActorId,
+    message: u32,
+) -> PointerValue<'ctx> {
+    module
+        .get_function(&message_release_symbol(actor, message))
+        .map_or_else(
+            || ctx.ptr_type(AddressSpace::default()).const_null(),
+            |function| function.as_global_value().as_pointer_value(),
+        )
+}
+
 fn reply_symbol(actor: ActorId, message: u32) -> String {
     symbol(actor, &format!("reply_{message}_drop"))
+}
+
+fn actor_value_release<'ctx>(
+    ctx: &'ctx Context,
+    llvm: &Module<'ctx>,
+    module: &PhysicalModule,
+    ty: &ResolvedTy,
+) -> CodegenResult<PointerValue<'ctx>> {
+    let pointer = ctx.ptr_type(AddressSpace::default());
+    let action = module
+        .actor_recipes
+        .get(ty)
+        .and_then(|recipe| recipe.destroy);
+    match action {
+        Some(action) if module.releases.suspends(action) => {
+            let layout = module.target.layout(ty).ok_or_else(|| {
+                CodegenError::FailClosed("actor value release lacks layout".into())
+            })?;
+            Ok(release::callback(ctx, llvm, module, layout, action)?
+                .as_global_value()
+                .as_pointer_value())
+        }
+        _ => Ok(pointer.const_null()),
+    }
 }
 
 impl<'ctx> ModuleEmitter<'ctx, '_> {
@@ -55,6 +97,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         handler: &SemActorHandler,
         output: Option<PointerValue<'ctx>>,
         fault_slot: PointerValue<'ctx>,
+        frame: Option<&coro::Frame<'ctx>>,
     ) -> CodegenResult<()> {
         // A void handler replies too: its completion is the unit reply a
         // completion call waits for. `hew_actor_reply_native` discards the
@@ -104,21 +147,44 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         let reply = coro::external(
             &self.llvm,
             "hew_actor_reply_native",
-            self.ctx
-                .void_type()
-                .fn_type(&[ptr.into(), size_ty.into(), ptr.into()], false),
+            ptr.fn_type(&[ptr.into(), size_ty.into(), ptr.into(), ptr.into()], false),
         )?;
-        builder
+        let cleanup = builder
             .build_call(
                 reply,
                 &[
                     output.unwrap_or(ptr.const_null()).into(),
                     size_ty.const_int(size, false).into(),
                     drop_reply.into(),
+                    actor_value_release(self.ctx, &self.llvm, self.module, &handler.return_ty)?
+                        .into(),
                 ],
                 "",
             )
-            .llvm_ctx("transfer typed reply under current activation")?;
+            .llvm_ctx("transfer typed reply under current activation")?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| {
+                CodegenError::FailClosed("reply transfer returned no cleanup cursor".into())
+            })?
+            .into_pointer_value();
+        if let Some(frame) = frame {
+            let status = builder
+                .build_alloca(self.ctx.i32_type(), "reply.cleanup.status")
+                .llvm_ctx("allocate reply cleanup status")?;
+            builder
+                .build_store(status, self.ctx.i32_type().const_zero())
+                .llvm_ctx("initialize reply cleanup status")?;
+            let values = ValueEmitter {
+                module: self.module,
+                ctx: self.ctx,
+                llvm: &self.llvm,
+                builder,
+                value: function,
+                fault_sink: Some((fault_slot, status)),
+            };
+            release::drain_cursor(&values, frame, cleanup)?;
+        }
         builder
             .build_unconditional_branch(complete)
             .llvm_ctx("complete typed reply")?;
@@ -710,6 +776,68 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
     ) -> CodegenResult<()> {
         let ptr = self.ctx.ptr_type(AddressSpace::default());
         let message_ty = message_type(self.module, self.ctx, handler)?;
+        if handler.params.iter().any(|ty| {
+            self.module.actor_recipes[ty]
+                .destroy
+                .is_some_and(|action| self.module.releases.suspends(action))
+        }) {
+            release::custom(
+                self.ctx,
+                &self.llvm,
+                self.module,
+                &message_release_symbol(actor.id, handler.message_id),
+                |values, frame, payload| {
+                    let builder = values.builder;
+                    let function = values.value;
+                    let active = builder
+                        .build_load(self.ctx.i8_type(), payload, "message.active")
+                        .llvm_ctx("read queued payload ownership")?
+                        .into_int_value();
+                    let live = builder
+                        .build_int_compare(
+                            IntPredicate::NE,
+                            active,
+                            self.ctx.i8_type().const_zero(),
+                            "message.live",
+                        )
+                        .llvm_ctx("test queued payload ownership")?;
+                    let owned = self
+                        .ctx
+                        .append_basic_block(function, "message.release.owned");
+                    let done = self
+                        .ctx
+                        .append_basic_block(function, "message.release.done");
+                    builder
+                        .build_conditional_branch(live, owned, done)
+                        .llvm_ctx("release only retained payload fields")?;
+                    builder.position_at_end(owned);
+                    builder
+                        .build_store(payload, self.ctx.i8_type().const_zero())
+                        .llvm_ctx("consume queued payload ownership")?;
+                    for (index, ty) in handler.params.iter().enumerate().rev() {
+                        if let Some(action) = self.module.actor_recipes[ty].destroy {
+                            let field = builder
+                                .build_struct_gep(
+                                    message_ty,
+                                    payload,
+                                    (index + 1) as u32,
+                                    "message.field",
+                                )
+                                .llvm_ctx("address queued payload owner")?;
+                            let layout = self.module.target.layout(ty).ok_or_else(|| {
+                                CodegenError::FailClosed("queued payload owner lacks layout".into())
+                            })?;
+                            release::slot(values, frame, field, layout, action)?;
+                        }
+                    }
+                    builder
+                        .build_unconditional_branch(done)
+                        .llvm_ctx("complete queued payload release")?;
+                    builder.position_at_end(done);
+                    Ok(())
+                },
+            )?;
+        }
         let function = self.llvm.add_function(
             &message_symbol(actor.id, handler.message_id),
             self.ctx.void_type().fn_type(&[ptr.into()], false),
@@ -974,7 +1102,14 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         for (handler, block) in handlers {
             builder.position_at_end(block);
             let callable = callable(self.module, handler.callable)?;
-            if callable.is_resumable {
+            if callable.is_resumable
+                || self
+                    .module
+                    .actor_recipes
+                    .get(&handler.return_ty)
+                    .and_then(|recipe| recipe.destroy)
+                    .is_some_and(|action| self.module.releases.suspends(action))
+            {
                 let ramp = self.emit_actor_handler_ramp(actor, handler)?;
                 let handle = call_value(
                     &builder,
@@ -1064,7 +1199,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             builder
                 .build_call(self.functions[&handler.callable], &args, "handler.status")
                 .llvm_ctx("call checked actor body")?;
-            self.emit_actor_reply(&builder, dispatch, actor, handler, output, fault)?;
+            self.emit_actor_reply(&builder, dispatch, actor, handler, output, fault, None)?;
             builder
                 .build_unconditional_branch(done)
                 .llvm_ctx("complete actor handler")?;
@@ -1155,24 +1290,33 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             args.push(output.into());
         }
         args.push(fault.into());
-        args.push(child.into());
-        let child_frame = call_value(
-            &builder,
-            self.ramps[&handler.callable],
-            &args,
-            "handler.body.frame",
-        )?
-        .into_pointer_value();
-        suspend::await_child(
-            self.ctx,
+        if callable.is_resumable {
+            suspend::invoke_child(
+                self.ctx,
+                &self.llvm,
+                &builder,
+                ramp,
+                &frame,
+                self.ramps[&handler.callable],
+                &args,
+            )?;
+        } else {
+            call_value(
+                &builder,
+                self.functions[&handler.callable],
+                &args,
+                "handler.body.status",
+            )?;
+        }
+        self.emit_actor_reply(&builder, ramp, actor, handler, output, fault, Some(&frame))?;
+        let free_state = coro::external(
             &self.llvm,
-            &builder,
-            ramp,
-            &frame,
-            child,
-            child_frame,
+            "hew_coro_state_free",
+            self.ctx.void_type().fn_type(&[ptr.into()], false),
         )?;
-        self.emit_actor_reply(&builder, ramp, actor, handler, output, fault)?;
+        builder
+            .build_call(free_state, &[child.into()], "")
+            .llvm_ctx("release completed handler invocation state")?;
         let returned_fault = builder
             .build_load(ptr, fault, "handler.returned.fault")
             .llvm_ctx("read completed handler fault")?;
@@ -1400,7 +1544,14 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     result,
                     unwind,
                 )?;
-                self.ctx.i32_type().const_zero()
+                self.builder
+                    .build_load(
+                        self.ctx.i32_type(),
+                        self.active_status,
+                        "submission.cleanup.status",
+                    )
+                    .llvm_ctx("retain discarded payload fault")?
+                    .into_int_value()
             }
         };
         for source in sources {
@@ -1652,14 +1803,17 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     }
                 }
                 arguments.push(self.active_fault.into());
-                let status = self
-                    .builder
-                    .build_call(self.functions[&body], &arguments, "actor.init.status")
-                    .llvm_ctx("initialize actor before publication")?
-                    .try_as_basic_value()
-                    .basic()
-                    .unwrap()
-                    .into_int_value();
+                let status = if callable.is_resumable {
+                    self.emit_resumable_call(body, &arguments, &[])?
+                } else {
+                    self.builder
+                        .build_call(self.functions[&body], &arguments, "actor.init.status")
+                        .llvm_ctx("initialize actor before publication")?
+                        .try_as_basic_value()
+                        .basic()
+                        .unwrap()
+                        .into_int_value()
+                };
                 let initialized = self.ctx.append_basic_block(self.value, "actor.initialized");
                 let failed = self.ctx.append_basic_block(
                     self.value,
@@ -1700,8 +1854,11 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             } in cleanups
             {
                 self.builder.position_at_end(failed);
+                self.builder
+                    .build_store(self.active_status, status)
+                    .llvm_ctx("retain actor initialization fault status")?;
                 if is_init {
-                    for (index, field) in &spawn_fields {
+                    for (index, field) in spawn_fields.iter().rev() {
                         let Some(action) = self
                             .module
                             .actor_recipes
@@ -1726,21 +1883,16 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                                 "spawn.field.value",
                             )
                             .llvm_ctx("load spawn-supplied actor field")?;
-                        self.value_emitter()
-                            .destroy_loaded_value(loaded, field_layout, action)?;
+                        self.release_loaded(loaded, field_layout, action)?;
                     }
                 } else {
-                    let drop = self
-                        .llvm
-                        .get_function(&symbol(actor.id, "state_drop"))
-                        .ok_or_else(|| {
-                            CodegenError::FailClosed(
-                                "actor start cleanup lacks state destructor".into(),
-                            )
-                        })?;
-                    self.builder
-                        .build_call(drop, &[state.into()], "")
-                        .llvm_ctx("destroy unpublished actor state")?;
+                    if let Some(action) = self.module.actor_recipes[&actor.state_ty].destroy {
+                        let loaded = self
+                            .builder
+                            .build_load(state_repr, state, "spawn.failed.state")
+                            .llvm_ctx("take unpublished actor state")?;
+                        self.release_loaded(loaded, layout, action)?;
+                    }
                 }
                 self.builder
                     .build_call(free, &[state.into()], "")
@@ -1816,6 +1968,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     ptr.into(),
                     ptr.into(),
                     self.ctx.i32_type().into(),
+                    ptr.into(),
                 ],
                 false,
             ),
@@ -1848,6 +2001,14 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     SemCoalesceFallback::Fail => 3,
                 },
             ),
+        };
+        let state_release = match self.module.actor_recipes[&actor.state_ty].destroy {
+            Some(action) if self.module.releases.suspends(action) => {
+                release::callback(self.ctx, self.llvm, self.module, layout, action)?
+                    .as_global_value()
+                    .as_pointer_value()
+            }
+            _ => ptr.const_null(),
         };
         let token = self
             .builder
@@ -1883,6 +2044,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                         .i32_type()
                         .const_int(coalesce_fallback, false)
                         .into(),
+                    state_release.into(),
                 ],
                 "spawn.token",
             )
@@ -2023,7 +2185,12 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             size_ty.const_int(size, false).into(),
             drop.as_global_value().as_pointer_value().into(),
         ];
-        let status = self.emit_actor_send_wait(&request, *payload, unwind)?;
+        let status = self.emit_actor_send_wait(
+            &request,
+            message_release(self.llvm, self.ctx, actor.id, message),
+            *payload,
+            unwind,
+        )?;
         let taken = self
             .ctx
             .append_basic_block(self.value, "stream.start.taken");
@@ -2262,6 +2429,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     size_ty.into(),
                     ptr.into(),
                     self.ctx.i32_type().into(),
+                    ptr.into(),
+                    ptr.into(),
                 ],
                 false,
             ),
@@ -2280,9 +2449,21 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             drop.as_global_value().as_pointer_value().into(),
         ];
         let status = if policy == SendPolicy::Wait {
-            self.emit_actor_send_wait(&request, source, unwind)?
+            self.emit_actor_send_wait(
+                &request,
+                message_release(self.llvm, self.ctx, actor.id, handler.message_id),
+                source,
+                unwind,
+            )?
         } else {
             let mut args = request.to_vec();
+            let discarded = self
+                .builder
+                .build_alloca(ptr, "submission.discarded")
+                .llvm_ctx("allocate discarded payload cursor")?;
+            self.builder
+                .build_store(discarded, ptr.const_null())
+                .llvm_ctx("initialize discarded payload cursor")?;
             args.push(
                 self.ctx
                     .i32_type()
@@ -2296,7 +2477,19 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     )
                     .into(),
             );
-            call_value(&self.builder, submit, &args, "submission.status")?.into_int_value()
+            args.push(message_release(self.llvm, self.ctx, actor.id, handler.message_id).into());
+            args.push(discarded.into());
+            let status =
+                call_value(&self.builder, submit, &args, "submission.status")?.into_int_value();
+            if let Some(frame) = &self.frame {
+                let cursor = self
+                    .builder
+                    .build_load(ptr, discarded, "submission.discarded.cursor")
+                    .llvm_ctx("take discarded payload cursor")?
+                    .into_pointer_value();
+                release::drain_cursor(&self.value_emitter(), frame, cursor)?;
+            }
+            status
         };
         let admission_block = self.builder.get_insert_block().unwrap();
         self.builder

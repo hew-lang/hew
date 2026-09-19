@@ -382,13 +382,13 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         self.builder.position_at_end(cancelled);
         self.free_handle("hew_stream_cancel_native", request)?;
         self.drain_stream(request, waker)?;
-        self.free_handle("hew_stream_operation_free_native", request)?;
         self.initialize_cancellation_fault()?;
+        self.free_handle("hew_stream_operation_free_native", request)?;
         self.emit_edge(cancel)?;
         self.builder.position_at_end(failed);
         self.finish_stream(request, waker, cancelled)?;
-        self.free_handle("hew_stream_operation_free_native", request)?;
         self.initialize_active_fault(HEW_TRAP_USER_PANIC)?;
+        self.free_handle("hew_stream_operation_free_native", request)?;
         self.emit_edge(unwind)
     }
 
@@ -555,17 +555,26 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         self.builder.position_at_end(peer_closed);
         self.finish_stream(request, waker, cancelled)?;
         self.free_handle("hew_stream_operation_free_native", request)?;
-        self.emit_edge(closed)?;
+        let status = self
+            .builder
+            .build_load(
+                self.ctx.i32_type(),
+                self.active_status,
+                "stream.close.status",
+            )
+            .llvm_ctx("read rejected element release outcome")?
+            .into_int_value();
+        self.emit_call_outcome(status, None, Some(closed), Some(unwind))?;
         self.builder.position_at_end(cancelled);
         self.free_handle("hew_stream_cancel_native", request)?;
         self.drain_stream(request, waker)?;
-        self.free_handle("hew_stream_operation_free_native", request)?;
         self.initialize_cancellation_fault()?;
+        self.free_handle("hew_stream_operation_free_native", request)?;
         self.emit_edge(cancel)?;
         self.builder.position_at_end(failed);
         self.finish_stream(request, waker, cancelled)?;
-        self.free_handle("hew_stream_operation_free_native", request)?;
         self.initialize_active_fault(HEW_TRAP_USER_PANIC)?;
+        self.free_handle("hew_stream_operation_free_native", request)?;
         self.emit_edge(unwind)
     }
 }

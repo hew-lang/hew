@@ -252,6 +252,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
     pub(super) fn emit_actor_send_wait(
         &self,
         request: &[BasicMetadataValueEnum<'ctx>],
+        release: PointerValue<'ctx>,
         source: StorageId,
         unwind: Option<&PhysicalEdge>,
     ) -> CodegenResult<IntValue<'ctx>> {
@@ -278,6 +279,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     size_ty.into(),
                     ptr.into(),
                     ptr.into(),
+                    ptr.into(),
                 ],
                 false,
             ),
@@ -286,6 +288,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let cycle = self.ctx.append_basic_block(self.value, "send.cycle.fault");
         let mut args = request.to_vec();
         args.push(waker.into());
+        args.push(release.into());
         let wait = call_value(&self.builder, new, &args, "send.wait")?.into_pointer_value();
         let poll = self.ctx.append_basic_block(self.value, "send.poll");
         let inspect = self.ctx.append_basic_block(self.value, "send.inspect");

@@ -324,6 +324,12 @@ pub(crate) fn release_may_fault(
             ResolvedTy::Function { .. }
             | ResolvedTy::Closure { .. }
             | ResolvedTy::TraitObject { .. } => true,
+            _ if ty.is_builtin(hew_types::BuiltinType::Stream)
+                || ty.is_builtin(hew_types::BuiltinType::Sink)
+                || ty.is_builtin(hew_types::BuiltinType::ActorCall) =>
+            {
+                true
+            }
             // A weak handle owns no payload; dropping one only decrements.
             _ if ty.is_builtin(hew_types::BuiltinType::Weak) => false,
             ResolvedTy::Array(element, length) => {

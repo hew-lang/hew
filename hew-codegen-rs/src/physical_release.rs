@@ -31,6 +31,22 @@ pub(super) fn callback<'ctx>(
     action: DestroyAction,
 ) -> CodegenResult<FunctionValue<'ctx>> {
     let name = symbol(action);
+    custom(ctx, llvm, module, &name, |values, frame, source| {
+        body(values, frame, source, layout, action)
+    })
+}
+
+pub(super) fn custom<'ctx>(
+    ctx: &'ctx Context,
+    llvm: &Module<'ctx>,
+    module: &PhysicalModule,
+    name: &str,
+    emit: impl FnOnce(
+        &ValueEmitter<'_, 'ctx>,
+        &coro::Frame<'ctx>,
+        PointerValue<'ctx>,
+    ) -> CodegenResult<()>,
+) -> CodegenResult<FunctionValue<'ctx>> {
     if let Some(function) = llvm.get_function(&name) {
         return Ok(function);
     }
@@ -63,7 +79,7 @@ pub(super) fn callback<'ctx>(
         value: function,
         fault_sink: Some((fault, status)),
     };
-    body(&values, &frame, source, layout, action)?;
+    emit(&values, &frame, source)?;
     let status = builder
         .build_load(ctx.i32_type(), status, "release.outcome")
         .llvm_ctx("read release outcome")?;
@@ -261,8 +277,8 @@ fn body<'ctx>(
     let pointer = values.ctx.ptr_type(AddressSpace::default());
     match action {
         DestroyAction::Resource(id) => match &values.module.resources[id.0 as usize].release {
-            hew_sir::ResourceRelease::RecordClose { close, .. }
-            | hew_sir::ResourceRelease::OpaqueClose { close, .. } => {
+            hew_mir::physical::ResourceRelease::RecordClose { close, .. }
+            | hew_mir::physical::ResourceRelease::OpaqueClose { close, .. } => {
                 let signature = callable(values.module, *close)?;
                 let callee = values
                     .llvm
@@ -301,8 +317,28 @@ fn body<'ctx>(
                 )?;
                 combine(values, fault, status)
             }
-            hew_sir::ResourceRelease::Generator => generator(values, frame, source),
-            hew_sir::ResourceRelease::Stream => cursor(
+            hew_mir::physical::ResourceRelease::Generator => generator(values, frame, source),
+            hew_mir::physical::ResourceRelease::ActorCall => {
+                let owner = values
+                    .builder
+                    .build_load(pointer, source, "release.call")
+                    .llvm_ctx("consume actor call")?
+                    .into_pointer_value();
+                drain_operation(
+                    values,
+                    frame,
+                    owner,
+                    "hew_actor_call_cleanup_poll",
+                    "hew_actor_call_cleanup_fault",
+                )?;
+                let free = external_drop(values.ctx, values.llvm, "hew_actor_call_free")?;
+                values
+                    .builder
+                    .build_call(free, &[owner.into()], "")
+                    .llvm_ctx("free drained actor call")?;
+                Ok(())
+            }
+            hew_mir::physical::ResourceRelease::Stream => cursor(
                 values,
                 frame,
                 source,
@@ -310,7 +346,7 @@ fn body<'ctx>(
                 false,
                 None,
             ),
-            hew_sir::ResourceRelease::Sink => {
+            hew_mir::physical::ResourceRelease::Sink => {
                 cursor(values, frame, source, "hew_sink_release_begin", false, None)
             }
             _ => Err(CodegenError::FailClosed(
@@ -443,6 +479,98 @@ fn body<'ctx>(
     }
 }
 
+pub(super) fn drain_operation<'ctx>(
+    values: &ValueEmitter<'_, 'ctx>,
+    frame: &coro::Frame<'ctx>,
+    owner: PointerValue<'ctx>,
+    poll_name: &str,
+    fault_name: &str,
+) -> CodegenResult<()> {
+    let pointer = values.ctx.ptr_type(AddressSpace::default());
+    let poll = values
+        .ctx
+        .append_basic_block(values.value, "release.operation.poll");
+    let wait = values
+        .ctx
+        .append_basic_block(values.value, "release.operation.wait");
+    let done = values
+        .ctx
+        .append_basic_block(values.value, "release.operation.done");
+    let invalid = values
+        .ctx
+        .append_basic_block(values.value, "release.operation.invalid");
+    values
+        .builder
+        .build_unconditional_branch(poll)
+        .llvm_ctx("drain operation owners")?;
+    values.builder.position_at_end(poll);
+    let poll_fn = coro::external(
+        values.llvm,
+        poll_name,
+        values.ctx.i32_type().fn_type(&[pointer.into(); 2], false),
+    )?;
+    let status = suspend::call_value(
+        values.builder,
+        poll_fn,
+        &[owner.into(), frame.state.into()],
+        "release.operation.status",
+    )?
+    .into_int_value();
+    values
+        .builder
+        .build_switch(status, done, &[(values.ctx.i32_type().const_zero(), wait)])
+        .llvm_ctx("wait for operation cleanup")?;
+    values.builder.position_at_end(wait);
+    frame.suspend(
+        values.ctx,
+        values.llvm,
+        values.builder,
+        poll,
+        invalid,
+        false,
+    )?;
+    values.builder.position_at_end(invalid);
+    values
+        .builder
+        .build_unreachable()
+        .llvm_ctx("refuse unfinished operation destruction")?;
+    values.builder.position_at_end(done);
+    let take_fault = coro::external(
+        values.llvm,
+        fault_name,
+        pointer.fn_type(&[pointer.into()], false),
+    )?;
+    let raised = suspend::call_value(
+        values.builder,
+        take_fault,
+        &[owner.into()],
+        "release.operation.fault",
+    )?;
+    let fault = scratch(
+        values,
+        frame,
+        pointer.into(),
+        "release.operation.fault.slot",
+    )?;
+    values
+        .builder
+        .build_store(fault, raised)
+        .llvm_ctx("own operation cleanup fault")?;
+    let code_fn = coro::external(
+        values.llvm,
+        "hew_fault_code",
+        values.ctx.i32_type().fn_type(&[pointer.into()], false),
+    )?;
+    let code = suspend::call_value(
+        values.builder,
+        code_fn,
+        &[raised.into()],
+        "release.operation.code",
+    )?
+    .into_int_value();
+    combine(values, fault, code)
+}
+
 fn cursor<'ctx>(
     values: &ValueEmitter<'_, 'ctx>,
     frame: &coro::Frame<'ctx>,
@@ -471,7 +599,17 @@ fn cursor<'ctx>(
         args.push(extra);
     }
     let begin = coro::external(values.llvm, begin_name, pointer.fn_type(&types, false))?;
-    let cursor = suspend::call_value(values.builder, begin, &args, "release.cursor")?;
+    let cursor =
+        suspend::call_value(values.builder, begin, &args, "release.cursor")?.into_pointer_value();
+    drain_cursor(values, frame, cursor)
+}
+
+pub(super) fn drain_cursor<'ctx>(
+    values: &ValueEmitter<'_, 'ctx>,
+    frame: &coro::Frame<'ctx>,
+    cursor: PointerValue<'ctx>,
+) -> CodegenResult<()> {
+    let pointer = values.ctx.ptr_type(AddressSpace::default());
     let next = values
         .ctx
         .append_basic_block(values.value, "release.cursor.next");
@@ -481,9 +619,13 @@ fn cursor<'ctx>(
     let done = values
         .ctx
         .append_basic_block(values.value, "release.cursor.done");
+    let present = values
+        .builder
+        .build_is_not_null(cursor, "release.cursor.present")
+        .llvm_ctx("test optional release cursor")?;
     values
         .builder
-        .build_unconditional_branch(next)
+        .build_conditional_branch(present, next, done)
         .llvm_ctx("start consuming container")?;
     values.builder.position_at_end(next);
     let advance = coro::external(

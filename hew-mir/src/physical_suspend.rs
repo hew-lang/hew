@@ -162,6 +162,7 @@ fn semantic_release_dependencies(
                     callees.insert(*close);
                 }
                 hew_sir::ResourceRelease::Generator
+                | hew_sir::ResourceRelease::ActorCall
                 | hew_sir::ResourceRelease::Stream
                 | hew_sir::ResourceRelease::Sink => intrinsic = true,
                 _ => {}
@@ -204,6 +205,17 @@ fn semantic_release_dependencies(
         }
     }
     (intrinsic, callees)
+}
+
+fn actor_release_types<'a>(
+    actors: &'a [hew_sir::SemActor],
+    operation: &'a hew_sir::ActorOperation,
+) -> Vec<&'a hew_types::ResolvedTy> {
+    match operation {
+        hew_sir::ActorOperation::Spawn(id) => vec![&actors[id.0 as usize].state_ty],
+        hew_sir::ActorOperation::Submit { message_ty, .. } => vec![message_ty],
+        _ => Vec::new(),
+    }
 }
 
 #[expect(
@@ -251,6 +263,18 @@ pub(super) fn semantic_callables(checked: &hew_sir::CheckedModule<'_>) -> BTreeS
                     _ => None,
                 };
                 if let Some(ty) = ty {
+                    let (intrinsic, dependencies) = semantic_release_dependencies(module, ty);
+                    if intrinsic {
+                        resumable.insert(function.callable);
+                    }
+                    calls
+                        .entry(function.callable)
+                        .or_default()
+                        .extend(dependencies);
+                }
+            }
+            if let hew_sir::SemTerminator::ActorCall { operation, .. } = &block.terminator {
+                for ty in actor_release_types(&module.actors, operation) {
                     let (intrinsic, dependencies) = semantic_release_dependencies(module, ty);
                     if intrinsic {
                         resumable.insert(function.callable);
@@ -329,6 +353,17 @@ pub(super) fn semantic_callables(checked: &hew_sir::CheckedModule<'_>) -> BTreeS
                     });
                 }
                 hew_sir::SemTerminator::RtCall { family, args, .. } => {
+                    if family.releases_receiver_contents() {
+                        let (intrinsic, dependencies) =
+                            semantic_release_dependencies(module, &types[&args[0].operand.value]);
+                        if intrinsic {
+                            resumable.insert(function.callable);
+                        }
+                        calls
+                            .entry(function.callable)
+                            .or_default()
+                            .extend(dependencies);
+                    }
                     for capability in family.value_callback_capabilities() {
                         let receiver = &types[&args[0].operand.value];
                         let (_, arguments) =
@@ -371,6 +406,18 @@ pub(super) fn verify_callables(module: &PhysicalModule) -> Result<(), PhysicalEr
                     resumable.insert(function.callable);
                 }
             }
+            if let PhysicalTerminator::ActorCall { operation, .. } = &block.terminator {
+                for ty in actor_release_types(&module.actors, operation) {
+                    if module
+                        .actor_recipes
+                        .get(ty)
+                        .and_then(|recipe| recipe.destroy)
+                        .is_some_and(|action| releases.suspends(action))
+                    {
+                        resumable.insert(function.callable);
+                    }
+                }
+            }
             match &block.terminator {
                 PhysicalTerminator::RecoverFault { .. }
                 | PhysicalTerminator::NativeIo { .. }
@@ -404,6 +451,11 @@ pub(super) fn verify_callables(module: &PhysicalModule) -> Result<(), PhysicalEr
                     resumable.insert(function.callable);
                 }
                 PhysicalTerminator::RuntimeCall { action, args, .. } => {
+                    if super::runtime_receiver_release(module, action)?
+                        .is_some_and(|action| releases.suspends(action))
+                    {
+                        resumable.insert(function.callable);
+                    }
                     for capability in action.family.value_callback_capabilities() {
                         let argument = args.first().ok_or_else(|| {
                             PhysicalError::new("collection callback has no receiver operand")

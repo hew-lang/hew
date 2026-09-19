@@ -67,6 +67,7 @@ impl ReleaseEffects {
                             module.callables[close.0 as usize].is_resumable
                         }
                         hew_sir::ResourceRelease::Generator
+                        | hew_sir::ResourceRelease::ActorCall
                         | hew_sir::ResourceRelease::Stream
                         | hew_sir::ResourceRelease::Sink => true,
                         _ => false,
@@ -110,6 +111,9 @@ fn authored_closes(module: &PhysicalModule) -> Vec<bool> {
                 resource.release,
                 hew_sir::ResourceRelease::RecordClose { .. }
                     | hew_sir::ResourceRelease::OpaqueClose { .. }
+                    | hew_sir::ResourceRelease::Stream
+                    | hew_sir::ResourceRelease::Sink
+                    | hew_sir::ResourceRelease::ActorCall
             )
         })
         .collect()

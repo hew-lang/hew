@@ -9140,12 +9140,9 @@ fn actor_value_recipes(
             .iter()
             .filter_map(|block| match &block.terminator {
                 SemTerminator::ActorCall {
-                    operation:
-                        ActorOperation::Submit {
-                            policy, message_ty, ..
-                        },
+                    operation: ActorOperation::Submit { message_ty, .. },
                     ..
-                } if policy.may_suspend() => Some(message_ty.clone()),
+                } => Some(message_ty.clone()),
                 SemTerminator::ActorCall {
                     operation: ActorOperation::StreamStart { actor, message, .. },
                     ..

@@ -8510,6 +8510,27 @@ impl<'hir, 'service> Builder<'hir, 'service> {
     ) -> Result<Option<ValueId>, String> {
         use hew_types::{RuntimeArgumentEffect, RuntimeResultEffect};
 
+        if matches!(
+            family,
+            hew_types::RuntimeCallFamily::StreamClose
+                | hew_types::RuntimeCallFamily::SinkClose
+                | hew_types::RuntimeCallFamily::ActorCallFree
+        ) {
+            let [owner] = args else {
+                return Err("consuming release requires exactly one owner".into());
+            };
+            if value_required {
+                return Err("unit-valued release cannot produce an SSA value".into());
+            }
+            let value = if let Some((_, value)) = prelowered.iter().find(|(index, _)| *index == 0) {
+                *value
+            } else {
+                self.lower_consuming_value(owner)?
+            };
+            self.emit_destroy(value)?;
+            return Ok(None);
+        }
+
         let observation = match family {
             hew_types::RuntimeCallFamily::ActorLink => Some(crate::LocalObservationKind::Link),
             hew_types::RuntimeCallFamily::ActorMonitor => {

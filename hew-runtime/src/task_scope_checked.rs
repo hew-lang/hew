@@ -11,12 +11,10 @@ use super::{
 };
 use crate::callable::{hew_callable_drop, HewCallableValue};
 use crate::coro_root::hew_coro_run_callable;
-use crate::coro_state::{hew_coro_state_free, hew_coro_state_new, CoroStatus, HewCoroState};
+use crate::coro_state::{hew_coro_state_free, hew_coro_state_new, HewCoroState};
 use crate::fault::{hew_fault_combine, hew_fault_drop, HewFault, HEW_FAULT_CANCELLED};
+use crate::release_walker::{HewReleaseCursor, ReleaseDriver};
 use crate::util::MutexExt;
-use crate::value_close::{
-    hew_value_close_collect, hew_value_close_finish, hew_value_close_poll, HewValueClose,
-};
 use crate::wake::{HewWaker, OwnedWaker};
 use hew_cabi::value::HewValueLayout;
 use std::alloc::{alloc, dealloc, handle_alloc_error, Layout};
@@ -86,11 +84,10 @@ impl Drop for CheckedTaskState {
             if let Some(mut callable) = self.callable.take() {
                 hew_callable_drop(&raw mut callable);
             }
-            if self.initialized {
-                if let Some(drop_fn) = (*self.layout).drop_fn {
-                    drop_fn(self.result);
-                }
-            }
+            assert!(
+                !self.initialized,
+                "task result must be consumed before its final storage owner"
+            );
             if let Some(allocation) = self.allocation {
                 dealloc(self.result.cast(), allocation);
             }
@@ -138,7 +135,7 @@ enum ScopeCancellation {
 #[derive(Debug)]
 struct ScopeResultClose {
     state: *mut HewCoroState,
-    collector: *mut HewValueClose,
+    driver: Option<Box<ReleaseDriver>>,
     collected: bool,
     complete: bool,
     fault: *mut HewFault,
@@ -411,7 +408,12 @@ pub unsafe extern "C" fn hew_checked_task_wait_take(
     wait: *const HewCheckedTaskWait,
     output: *mut c_void,
     fault: *mut *mut HewFault,
+    release_out: *mut *mut HewReleaseCursor,
 ) -> i32 {
+    if !release_out.is_null() {
+        // SAFETY: generated code supplies an empty writable cursor output.
+        unsafe { release_out.write(ptr::null_mut()) };
+    }
     // SAFETY: the wait retains task storage until this operation returns.
     let mut state = unsafe { checked((*wait).task) }.lock_or_recover();
     let outcome = state.outcome();
@@ -422,7 +424,17 @@ pub unsafe extern "C" fn hew_checked_task_wait_take(
     unsafe {
         if state.initialized {
             let size = (*state.layout).size;
-            if size != 0 {
+            if output.is_null() {
+                let cursor = HewReleaseCursor::values([(state.result, *state.layout)]);
+                if release_out.is_null() {
+                    assert!(
+                        cursor.is_null(),
+                        "discarded owned result needs a cleanup cursor"
+                    );
+                } else {
+                    release_out.write(cursor);
+                }
+            } else if size != 0 {
                 ptr::copy_nonoverlapping(state.result.cast::<u8>(), output.cast(), size);
             }
             state.initialized = false;
@@ -453,6 +465,7 @@ pub unsafe extern "C" fn hew_checked_task_wait_free(wait: *mut HewCheckedTaskWai
 pub unsafe extern "C" fn hew_checked_scope_wait_new(
     scope: *mut HewTaskScope,
     waker: *const HewWaker,
+    parent: *const HewCoroState,
 ) -> *mut HewCheckedScopeWait {
     let mut tasks = Vec::new();
     // SAFETY: the exclusively accessed scope retains every listed task.
@@ -466,14 +479,20 @@ pub unsafe extern "C" fn hew_checked_scope_wait_new(
     }
     // SAFETY: scope retains the cancellation ancestry and registration retains
     // the caller's readiness target independently of its suspended frame.
-    let state = unsafe { hew_coro_state_new(waker, (*scope).cancel_token) };
+    let state = unsafe {
+        if parent.is_null() {
+            hew_coro_state_new(waker, ptr::null_mut())
+        } else {
+            crate::coro_state::hew_coro_state_cleanup_child(parent)
+        }
+    };
     Box::into_raw(Box::new(HewCheckedScopeWait {
         scope,
         tasks,
         cancellation: ScopeCancellation::Ordinary,
         close: Mutex::new(ScopeResultClose {
             state,
-            collector: ptr::null_mut(),
+            driver: None,
             collected: false,
             complete: false,
             fault: ptr::null_mut(),
@@ -558,39 +577,24 @@ pub unsafe extern "C-unwind" fn hew_checked_scope_wait_status(
     // allocation and claims initialized results before borrowing their children.
     unsafe {
         if !close.collected {
+            let mut values = Vec::new();
             for task in &wait.tasks {
                 let mut state = checked(task.task).lock_or_recover();
                 if state.initialized && !state.taken {
                     state.taken = true;
-                    hew_value_close_collect(
-                        state.result,
-                        state.layout,
-                        (&raw mut close.collector).cast(),
-                    );
+                    state.initialized = false;
+                    values.push((state.result, *state.layout));
                 }
             }
+            close.driver = Some(ReleaseDriver::new(HewReleaseCursor::values(values)));
             close.collected = true;
         }
-        if hew_value_close_poll(close.collector, close.state.cast()) == CoroStatus::Pending as i32 {
+        let parent = close.state;
+        let driver = close.driver.as_mut().expect("collected scope results");
+        if !driver.poll(parent) {
             return PENDING;
         }
-        let collector = std::mem::replace(&mut close.collector, ptr::null_mut());
-        hew_value_close_finish(collector, &raw mut close.fault);
-        for task in &wait.tasks {
-            let release = {
-                let mut state = checked(task.task).lock_or_recover();
-                if std::mem::take(&mut state.initialized) {
-                    (*state.layout)
-                        .drop_fn
-                        .map(|drop_fn| (drop_fn, state.result))
-                } else {
-                    None
-                }
-            };
-            if let Some((drop_fn, result)) = release {
-                drop_fn(result);
-            }
-        }
+        close.fault = driver.take_fault();
     }
     close.complete = true;
     READY

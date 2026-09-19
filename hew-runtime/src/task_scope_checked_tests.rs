@@ -128,41 +128,69 @@ struct CloseResult {
     fail: bool,
 }
 
-unsafe extern "C" fn visit_result(slot: *mut c_void, context: *mut c_void) {
-    // SAFETY: the layout selects a live Box<CloseResult> retained by the task.
-    unsafe { crate::value_close::hew_value_close_push(context, *slot.cast(), poll_result) };
+#[repr(C)]
+struct CloseFrame {
+    resume: Option<unsafe extern "C-unwind" fn(*mut c_void)>,
+    destroy: Option<unsafe extern "C-unwind" fn(*mut c_void)>,
+    owner: *mut CloseResult,
+    state: *mut HewCoroState,
+    fault: *mut *mut c_void,
 }
 
-unsafe extern "C" fn poll_result(
-    owner: *mut c_void,
-    parent: *mut c_void,
-    fault: *mut *mut c_void,
-) -> i32 {
-    // SAFETY: the collector borrows this owner and the scope retains its state.
+unsafe extern "C-unwind" fn resume_close_result(frame: *mut c_void) {
+    // SAFETY: the consuming callback allocated this exact continuation prefix.
     unsafe {
-        let owner = &mut *owner.cast::<CloseResult>();
-        owner.polls += 1;
-        if owner.polls == 1 {
-            let waker = crate::coro_state::hew_coro_state_waker(parent.cast());
-            ((*waker).wake)((*waker).context);
-            return CoroStatus::Pending as i32;
-        }
-        assert_eq!(owner.polls, 2);
-        owner.drops.fetch_add(100, Ordering::SeqCst);
-        if owner.fail {
-            fault.write(crate::fault::hew_fault_new(213).cast());
-            CoroStatus::Fault as i32
+        let frame = &mut *frame.cast::<CloseFrame>();
+        assert_eq!(
+            hew_coro_state_is_cancelled(frame.state),
+            0,
+            "result cleanup is shielded"
+        );
+        let mut owner = Box::from_raw(frame.owner);
+        assert_eq!(owner.polls, 1);
+        owner.polls = 2;
+        owner.drops.fetch_add(1100, Ordering::SeqCst);
+        let status = if owner.fail {
+            frame.fault.write(crate::fault::hew_fault_new(213).cast());
+            213
         } else {
-            CoroStatus::Complete as i32
-        }
+            0
+        };
+        hew_coro_state_finish(frame.state, status);
+        frame.resume = None;
     }
 }
 
-unsafe extern "C-unwind" fn drop_closed_result(slot: *mut c_void) {
-    // SAFETY: the matching layout transfers one box only after close completes.
-    let owner = unsafe { Box::from_raw(*slot.cast::<*mut CloseResult>()) };
-    assert_eq!(owner.polls, 2, "result dropped before cooperative close");
-    owner.drops.fetch_add(1000, Ordering::SeqCst);
+unsafe extern "C-unwind" fn destroy_close_result(frame: *mut c_void) {
+    // SAFETY: completion consumed the semantic owner; this frees only the frame.
+    unsafe {
+        assert!((*frame.cast::<CloseFrame>()).resume.is_none());
+        crate::cont::hew_cont_frame_free(frame);
+    }
+}
+
+unsafe extern "C" fn release_result(
+    slot: *mut c_void,
+    fault: *mut *mut c_void,
+    state: *mut c_void,
+) -> *mut c_void {
+    // SAFETY: the task transfers one CloseResult owner and retains callback outputs.
+    unsafe {
+        let owner = ptr::replace(slot.cast::<*mut CloseResult>(), ptr::null_mut());
+        (*owner).polls = 1;
+        let frame =
+            crate::cont::hew_cont_frame_alloc(size_of::<CloseFrame>() as u64).cast::<CloseFrame>();
+        frame.write(CloseFrame {
+            resume: Some(resume_close_result),
+            destroy: Some(destroy_close_result),
+            owner,
+            state: state.cast(),
+            fault,
+        });
+        let waker = crate::coro_state::hew_coro_state_waker(state.cast());
+        ((*waker).wake)((*waker).context);
+        frame.cast()
+    }
 }
 
 static CLOSE_RESULT: HewValueLayout = HewValueLayout {
@@ -170,9 +198,9 @@ static CLOSE_RESULT: HewValueLayout = HewValueLayout {
     align: align_of::<*mut c_void>(),
     ownership_kind: HewTypeOwnershipKind::LayoutManaged,
     clone_fn: None,
-    drop_fn: Some(drop_closed_result),
-    visit_close: Some(visit_result),
-    release_start: None,
+    drop_fn: None,
+    visit_close: None,
+    release_start: Some(release_result),
 };
 
 #[test]
@@ -197,7 +225,7 @@ fn scope_retains_pending_result_cleanup_and_transfers_its_fault_once() {
         while hew_checked_task_wait_status(observation) == PENDING {
             readiness.wait();
         }
-        let drain = hew_checked_scope_wait_new(scope, waker.descriptor());
+        let drain = hew_checked_scope_wait_new(scope, waker.descriptor(), ptr::null());
         let mut fault = ptr::null_mut();
         assert_eq!(
             hew_checked_scope_wait_take_fault(drain, &raw mut fault),
@@ -220,6 +248,53 @@ fn scope_retains_pending_result_cleanup_and_transfers_its_fault_once() {
         hew_checked_scope_wait_free(drain);
         hew_checked_scope_close(scope);
         hew_checked_task_wait_free(observation);
+        assert_eq!(drops.load(Ordering::SeqCst), 1101);
+    }
+}
+
+#[test]
+fn discarded_await_result_closes_before_observer_release() {
+    let (readiness, waker) = Readiness::new();
+    let (started, receive) = mpsc::channel();
+    let gate = Arc::new((Mutex::new(false), Condvar::new()));
+    let drops = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    // SAFETY: each scope, task, cursor and invocation has exactly one cleanup owner.
+    unsafe {
+        let scope = hew_checked_scope_new(ptr::null_mut());
+        let task = spawn(
+            scope,
+            started,
+            Arc::clone(&gate),
+            Arc::clone(&drops),
+            ResultValue::Closing(false),
+        );
+        let wait = hew_checked_task_wait_new(task, waker.descriptor());
+        receive.recv_timeout(Duration::from_secs(2)).unwrap();
+        release(&gate);
+        while hew_checked_task_wait_status(wait) == PENDING {
+            readiness.wait();
+        }
+        let mut fault = ptr::null_mut();
+        let mut cursor = ptr::null_mut();
+        assert_eq!(
+            hew_checked_task_wait_take(wait, ptr::null_mut(), &raw mut fault, &raw mut cursor),
+            READY
+        );
+        assert!(!cursor.is_null());
+        let parent = hew_coro_state_new(waker.descriptor(), ptr::null_mut());
+        let mut driver = ReleaseDriver::new(cursor);
+        assert!(!driver.poll(parent));
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+        crate::coro_state::hew_coro_state_cancel(parent);
+        assert!(driver.poll(parent));
+        assert!(driver.take_fault().is_null());
+        assert_eq!(drops.load(Ordering::SeqCst), 1101);
+        hew_coro_state_free(parent);
+        hew_checked_task_wait_free(wait);
+        let drain = hew_checked_scope_wait_new(scope, waker.descriptor(), ptr::null());
+        assert_eq!(hew_checked_scope_wait_status(drain), READY);
+        hew_checked_scope_wait_free(drain);
+        hew_checked_scope_close(scope);
         assert_eq!(drops.load(Ordering::SeqCst), 1101);
     }
 }
@@ -249,33 +324,27 @@ fn transferred_result_is_closed_only_by_its_new_owner() {
         let mut result: *mut CloseResult = ptr::null_mut();
         let mut fault = ptr::null_mut();
         assert_eq!(
-            hew_checked_task_wait_take(observation, (&raw mut result).cast(), &raw mut fault),
+            hew_checked_task_wait_take(
+                observation,
+                (&raw mut result).cast(),
+                &raw mut fault,
+                ptr::null_mut()
+            ),
             READY
         );
         hew_checked_task_wait_free(observation);
-        let drain = hew_checked_scope_wait_new(scope, waker.descriptor());
+        let drain = hew_checked_scope_wait_new(scope, waker.descriptor(), ptr::null());
         assert_eq!(hew_checked_scope_wait_status(drain), READY);
         hew_checked_scope_wait_free(drain);
         hew_checked_scope_close(scope);
         assert_eq!(drops.load(Ordering::SeqCst), 1);
         assert_eq!((*result).polls, 0);
         let state = hew_coro_state_new(waker.descriptor(), ptr::null_mut());
-        let mut collector: *mut HewValueClose = ptr::null_mut();
-        hew_value_close_collect(
-            (&raw mut result).cast(),
-            &raw const CLOSE_RESULT,
-            (&raw mut collector).cast(),
-        );
-        assert_eq!(
-            hew_value_close_poll(collector, state.cast()),
-            CoroStatus::Pending as i32
-        );
-        assert_eq!(
-            hew_value_close_poll(collector, state.cast()),
-            CoroStatus::Complete as i32
-        );
-        assert_eq!(hew_value_close_finish(collector, &raw mut fault), 0);
-        drop_closed_result((&raw mut result).cast());
+        let cursor = HewReleaseCursor::values([((&raw mut result).cast(), CLOSE_RESULT)]);
+        let mut driver = ReleaseDriver::new(cursor);
+        assert!(!driver.poll(state));
+        assert!(driver.poll(state));
+        assert!(driver.take_fault().is_null());
         hew_coro_state_free(state);
         assert_eq!(drops.load(Ordering::SeqCst), 1101);
     }
@@ -315,7 +384,7 @@ fn child_fault_remains_primary_while_result_cleanup_is_pending() {
                 readiness.wait();
             }
         }
-        let drain = hew_checked_scope_wait_new(scope, waker.descriptor());
+        let drain = hew_checked_scope_wait_new(scope, waker.descriptor(), ptr::null());
         let mut fault = ptr::null_mut();
         assert_eq!(
             hew_checked_scope_wait_take_fault(drain, &raw mut fault),
@@ -404,7 +473,7 @@ fn pending_scope_drain_preserves_completed_child_faults() {
         receive.recv_timeout(Duration::from_secs(2)).unwrap();
         receive.recv_timeout(Duration::from_secs(2)).unwrap();
         let observation = hew_checked_task_wait_new(completed, waker.descriptor());
-        let drain = hew_checked_scope_wait_new(scope, waker.descriptor());
+        let drain = hew_checked_scope_wait_new(scope, waker.descriptor(), ptr::null());
         hew_checked_scope_cancel(scope);
         release(&completed_gate);
         while hew_checked_task_wait_status(observation) == PENDING {
@@ -453,7 +522,7 @@ fn cancellation_does_not_release_captures_before_the_child_stops() {
             ResultValue::Scalar(42),
         );
         receive.recv_timeout(Duration::from_secs(2)).unwrap();
-        let wait = hew_checked_scope_wait_new(scope, waker.descriptor());
+        let wait = hew_checked_scope_wait_new(scope, waker.descriptor(), ptr::null());
         hew_task_free(task); // unawaited handle does not end scope-owned execution
         hew_checked_scope_cancel(scope);
         assert_eq!(hew_checked_scope_wait_status(wait), 0);
@@ -510,20 +579,30 @@ fn children_start_concurrently_and_each_result_transfers_once() {
             let mut output = -1_i64;
             let mut fault = ptr::null_mut();
             assert_eq!(
-                hew_checked_task_wait_take(wait, (&raw mut output).cast(), &raw mut fault),
+                hew_checked_task_wait_take(
+                    wait,
+                    (&raw mut output).cast(),
+                    &raw mut fault,
+                    ptr::null_mut()
+                ),
                 READY
             );
             assert_eq!(output, expected);
             assert!(fault.is_null());
             output = -7;
             assert_eq!(
-                hew_checked_task_wait_take(wait, (&raw mut output).cast(), &raw mut fault),
+                hew_checked_task_wait_take(
+                    wait,
+                    (&raw mut output).cast(),
+                    &raw mut fault,
+                    ptr::null_mut()
+                ),
                 TAKEN
             );
             assert_eq!(output, -7);
             hew_checked_task_wait_free(wait);
         }
-        let drain = hew_checked_scope_wait_new(scope, waker.descriptor());
+        let drain = hew_checked_scope_wait_new(scope, waker.descriptor(), ptr::null());
         assert_eq!(hew_checked_scope_wait_status(drain), 1);
         hew_checked_scope_wait_free(drain);
         hew_checked_scope_close(scope);
@@ -549,7 +628,7 @@ fn closing_scope_releases_unobserved_result_before_remaining_handle() {
             ResultValue::Owned,
         );
         receive.recv_timeout(Duration::from_secs(2)).unwrap();
-        let drain = hew_checked_scope_wait_new(scope, waker.descriptor());
+        let drain = hew_checked_scope_wait_new(scope, waker.descriptor(), ptr::null());
         release(&gate);
         while hew_checked_scope_wait_status(drain) == 0 {
             readiness.wait();
@@ -624,14 +703,19 @@ fn select_observation_retains_both_results_after_a_task_or_timer_wins() {
                 let mut output = 0_i64;
                 let mut fault = ptr::null_mut();
                 assert_eq!(
-                    hew_checked_task_wait_take(wait, (&raw mut output).cast(), &raw mut fault),
+                    hew_checked_task_wait_take(
+                        wait,
+                        (&raw mut output).cast(),
+                        &raw mut fault,
+                        ptr::null_mut()
+                    ),
                     READY
                 );
                 assert_eq!(output, expected);
                 assert!(fault.is_null());
                 hew_checked_task_wait_free(wait);
             }
-            let drain = hew_checked_scope_wait_new(scope, waker.descriptor());
+            let drain = hew_checked_scope_wait_new(scope, waker.descriptor(), ptr::null());
             assert_eq!(hew_checked_scope_wait_status(drain), 1);
             hew_checked_scope_wait_free(drain);
             hew_checked_scope_close(scope);
@@ -695,7 +779,7 @@ fn race_selection_uses_completion_order_and_drain_suppresses_only_its_cancellati
             assert_eq!(hew_checked_task_select_poll(select), 0);
             assert_eq!(hew_checked_task_select_poll_first(select), 1);
             hew_checked_task_select_free(select);
-            let drain = hew_checked_scope_wait_new(scope, waker.descriptor());
+            let drain = hew_checked_scope_wait_new(scope, waker.descriptor(), ptr::null());
             hew_checked_scope_wait_cancel_losers(drain);
             assert_eq!(
                 crate::cancel_token::cancel_token_reason((*scope).cancel_token),

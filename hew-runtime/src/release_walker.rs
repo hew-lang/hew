@@ -327,6 +327,25 @@ impl HewReleaseCursor {
         }))
     }
 
+    /// Transfer initialized value obligations while their enclosing owner pins storage.
+    pub(crate) fn values(
+        values: impl IntoIterator<Item = (*mut c_void, HewValueLayout)>,
+    ) -> *mut Self {
+        let mut pending: Vec<_> = values
+            .into_iter()
+            .filter_map(|(slot, layout)| {
+                (layout.drop_fn.is_some() || layout.release_start.is_some())
+                    .then_some(ReleaseItem::Value { slot, layout })
+            })
+            .collect();
+        pending.reverse();
+        if pending.is_empty() {
+            ptr::null_mut()
+        } else {
+            Self::new(pending)
+        }
+    }
+
     pub(crate) unsafe fn payload(
         slot: *mut c_void,
         size: usize,

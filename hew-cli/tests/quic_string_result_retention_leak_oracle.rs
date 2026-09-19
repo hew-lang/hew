@@ -11,11 +11,13 @@
 
 mod support;
 
+use std::process::Command;
+
 use support::leak_slope::{
     assert_frame_slope_below_tolerance_exact_lines, compile_to_native, run_under_malloc_scribble,
     HIGH_FRAMES,
 };
-use support::{describe_output, require_codegen};
+use support::{describe_output, require_codegen, run_bounded_command};
 
 #[expect(
     clippy::too_many_lines,
@@ -62,6 +64,13 @@ actor Client {{
     }}
 }}
 
+fn drive_client(client: Client) -> i64 {{
+    match client.run(0) {{
+        .Ok(_) => 0,
+        .Err(_) => panic("QUIC retention client failed"),
+    }}
+}}
+
 fn main() {{
     let endpoint = quic.new_server("127.0.0.1:0");
 
@@ -79,75 +88,80 @@ fn main() {{
 
     let address = endpoint.observe().local_addr;
     let client = spawn Client(address: address, complete: 0);
-    let _ = client.run(0);
+    // The client's turn drives the whole peer side and blocks on this side's
+    // reply, so it runs concurrently with the server work below. Calling it
+    // inline would leave nobody to accept the connection it is waiting on.
+    scope {{
+        let _driver = fork drive_client(client);
 
-    let connection = endpoint.accept();
-    let endpoint_after_accept = endpoint.observe();
-    if endpoint_after_accept.last_error.len() != 0 {{
-        panic("successful QUIC accept did not clear endpoint error");
-    }}
-    let stream = connection.accept_stream();
-    let opened = connection.on_event();
-    if opened.kind() != 2 {{
-        panic("QUIC stream-open event missing");
-    }}
-    opened.close();
-    let client_probe = stream.recv_string().expect("utf8 decode");
-    if client_probe != "client-probe" {{
-        panic("QUIC retention client probe mismatch");
-    }}
-
-    match stream.stop(-7) {{
-        .Ok(_) => panic("invalid QUIC application code unexpectedly succeeded"),
-        .Err(_) => {{}},
-    }}
-    let errored = connection.on_event();
-    if errored.kind() != -1 {{
-        panic("QUIC stream-error event missing");
-    }}
-    errored.close();
-    for _ in 0..{frames} {{
-        let observation = stream.observe();
-        if observation.last_error
-            != "invalid QUIC application error code -7: expected 0..=2^62-1" {{
-            panic("QUIC stream observation lost error state");
+        let connection = endpoint.accept();
+        let endpoint_after_accept = endpoint.observe();
+        if endpoint_after_accept.last_error.len() != 0 {{
+            panic("successful QUIC accept did not clear endpoint error");
         }}
-        println(202);
-    }}
-
-    require_ok(stream.send_string("retention-probe"));
-    let stream_after_send = stream.observe();
-    if stream_after_send.last_error.len() != 0 {{
-        panic("successful QUIC send did not clear stream error");
-    }}
-    require_ok(stream.finish());
-    stream.close();
-
-    // The peer closes its stream then disconnects. Both events must be drained
-    // before inducing the connection-scoped error.
-    let event1 = connection.on_event();
-    let kind1 = event1.kind();
-    event1.close();
-    let event2 = connection.on_event();
-    let kind2 = event2.kind();
-    event2.close();
-    if !((kind1 == 3 || kind2 == 3) && (kind1 == 1 || kind2 == 1)) {{
-        panic("QUIC close/disconnect events missing");
-    }}
-
-    let _failed_stream = connection.open_stream();
-    for _ in 0..{frames} {{
-        let observation = connection.observe();
-        if !observation.local_addr.contains(":")
-            || !observation.peer_addr.contains(":")
-            || observation.last_error.len() == 0 {{
-            panic("QUIC connection observation lost state");
+        let stream = connection.accept_stream();
+        let opened = connection.on_event();
+        if opened.kind() != 2 {{
+            panic("QUIC stream-open event missing");
         }}
-        println(303);
-    }}
+        opened.close();
+        let client_probe = stream.recv_string().expect("utf8 decode");
+        if client_probe != "client-probe" {{
+            panic("QUIC retention client probe mismatch");
+        }}
 
-    require_ok(connection.disconnect());
-    endpoint.close();
+        match stream.stop(-7) {{
+            .Ok(_) => panic("invalid QUIC application code unexpectedly succeeded"),
+            .Err(_) => {{}},
+        }}
+        let errored = connection.on_event();
+        if errored.kind() != -1 {{
+            panic("QUIC stream-error event missing");
+        }}
+        errored.close();
+        for _ in 0..{frames} {{
+            let observation = stream.observe();
+            if observation.last_error
+                != "invalid QUIC application error code -7: expected 0..=2^62-1" {{
+                panic("QUIC stream observation lost error state");
+            }}
+            println(202);
+        }}
+
+        require_ok(stream.send_string("retention-probe"));
+        let stream_after_send = stream.observe();
+        if stream_after_send.last_error.len() != 0 {{
+            panic("successful QUIC send did not clear stream error");
+        }}
+        require_ok(stream.finish());
+        stream.close();
+
+        // The peer closes its stream then disconnects. Both events must be drained
+        // before inducing the connection-scoped error.
+        let event1 = connection.on_event();
+        let kind1 = event1.kind();
+        event1.close();
+        let event2 = connection.on_event();
+        let kind2 = event2.kind();
+        event2.close();
+        if !((kind1 == 3 || kind2 == 3) && (kind1 == 1 || kind2 == 1)) {{
+            panic("QUIC close/disconnect events missing");
+        }}
+
+        let _failed_stream = connection.open_stream();
+        for _ in 0..{frames} {{
+            let observation = connection.observe();
+            if !observation.local_addr.contains(":")
+                || !observation.peer_addr.contains(":")
+                || observation.last_error.len() == 0 {{
+                panic("QUIC connection observation lost state");
+            }}
+            println(303);
+        }}
+
+        require_ok(connection.disconnect());
+        endpoint.close();
+    }}
     match client.finished() {{
         .Ok(done) => {{
             if done != 1 {{
@@ -168,6 +182,16 @@ fn expected_output(frames: usize) -> String {
         "303\n".repeat(frames),
     ]
     .concat()
+}
+
+#[test]
+fn quic_observations_complete_across_actor_round_trip() {
+    require_codegen();
+    let dir = tempfile::tempdir().expect("round-trip directory");
+    let bin = compile_to_native(&source(3), dir.path(), "quic_round_trip");
+    let output = run_bounded_command(Command::new(&bin), "QUIC actor round trip");
+    assert!(output.status.success(), "{}", describe_output(&output));
+    assert_eq!(String::from_utf8_lossy(&output.stdout), expected_output(3));
 }
 
 #[cfg_attr(

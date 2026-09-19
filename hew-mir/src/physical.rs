@@ -1550,7 +1550,12 @@ pub fn lower_physical_module(
             Ok(lowered)
         })
         .collect::<Result<Vec<_>, PhysicalError>>()?;
-    let structural_glue = structural.into_inner().finish()?;
+    let mut structural_glue = structural.into_inner().finish()?;
+    for index in 0..structural_glue.len() {
+        let callees = structural::display_callees(&structural_glue, structural_glue[index].id)?;
+        structural_glue[index].is_resumable =
+            callees.iter().any(|callee| resumable.contains(callee));
+    }
 
     let vtables = module
         .vtables
@@ -4429,7 +4434,6 @@ fn verify_structural_glue(module: &PhysicalModule) -> Result<(), PhysicalError> 
 }
 
 fn verify_physical_module(module: &PhysicalModule) -> Result<(), PhysicalError> {
-    suspend::verify_callables(module)?;
     capability::verify(module)?;
     verify_resources(module)?;
     if module.target.triple.is_empty() || module.target.data_layout.is_empty() {
@@ -4438,6 +4442,7 @@ fn verify_physical_module(module: &PhysicalModule) -> Result<(), PhysicalError> 
         ));
     }
     verify_structural_glue(module)?;
+    suspend::verify_callables(module)?;
     for (index, glue) in module.aggregate_glue.iter().enumerate() {
         if usize::try_from(glue.id.0).ok() != Some(index) {
             return Err(PhysicalError::new(format!(

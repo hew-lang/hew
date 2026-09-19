@@ -1429,45 +1429,6 @@ pub unsafe extern "C" fn hew_vec_len(v: *mut HewVec) -> i64 {
     }
 }
 
-/// Borrow each element in storage order and append its structural rendering.
-///
-/// # Safety
-///
-/// `builder` must be a live structural string builder, `v` must be null or a
-/// live Vec, and `format` must borrow each element pointer only for the callback.
-/// `fault` must be writable for a formatter's owned fault on a nonzero return.
-#[no_mangle]
-#[expect(
-    clippy::undocumented_unsafe_blocks,
-    reason = "the Vec stays live for the complete borrowed callback traversal"
-)]
-pub unsafe extern "C" fn hew_structural_format_vec(
-    builder: *mut c_void,
-    v: *const HewVec,
-    format: Option<crate::string::HewStructuralFormatFn>,
-    fault: *mut *mut c_void,
-) -> i32 {
-    let Some(format) = format else {
-        unsafe { libc::abort() };
-    };
-    unsafe { crate::string::structural_builder_append(builder, b"[") };
-    if !v.is_null() {
-        let vec = unsafe { &*v };
-        for index in 0..vec.len {
-            if index != 0 {
-                unsafe { crate::string::structural_builder_append(builder, b", ") };
-            }
-            let elem = unsafe { vec.data.add(index * vec.elem_size) }.cast::<c_void>();
-            let status = unsafe { format(builder, elem.cast_const(), fault) };
-            if status != 0 {
-                return status;
-            }
-        }
-    }
-    unsafe { crate::string::structural_builder_append(builder, b"]") };
-    0
-}
-
 /// Return whether the vec is empty.
 ///
 /// # Safety

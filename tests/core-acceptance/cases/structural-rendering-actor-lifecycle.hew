@@ -1,0 +1,76 @@
+import std.stream;
+
+actor Source {
+    receive fn read(label: string) -> string {
+        label.to_upper()
+    }
+}
+
+type Reading {
+    source: Source,
+    label: string,
+    mode: i64,
+}
+
+impl Display for Reading {
+    fn fmt(self) -> string {
+        let label = self.source.read(self.label).expect("peer read");
+        defer println("finished " + label);
+        if self.mode == 1 {
+            panic("formatter failed");
+        }
+        label
+    }
+}
+
+type Waiting {
+    source: Source,
+    entered: stream.Sink<i64>,
+}
+
+impl Display for Waiting {
+    fn fmt(self) -> string {
+        let text = self.source.read("cancelled").expect("peer read");
+        defer println("finished " + text);
+        self.entered.send(1).expect("signal formatter entry");
+        sleep(1h);
+        "unreachable"
+    }
+}
+
+actor Renderer {
+    receive fn render(source: Source, mode: i64) -> string {
+        var values: HashMap<string, Vec<Reading>> = HashMap.new();
+        values.insert("west", [Reading { source: source, label: "one", mode: mode }]);
+        f"{values:?}"
+    }
+
+    receive fn waiting(source: Source, consume entered: stream.Sink<i64>) {
+        let values = [Waiting { source: source, entered: entered }];
+        println(f"{values:?}");
+    }
+
+    #[on(start)]
+    fn starting() {
+        let values = [1, 2];
+        println(f"start {values:?}");
+    }
+}
+
+fn main() {
+    let source = spawn Source;
+    let renderer = spawn Renderer;
+    println(renderer.render(source, 0).expect("render"));
+    match renderer.render(source, 1) {
+        .Err(_) => println("fault returned"),
+        .Ok(_) => panic("formatter fault lost"),
+    }
+    let waiting = spawn Renderer;
+    let (entered, signal): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("pipe");
+    mailbox(waiting).waiting(source, entered).expect("submit waiting formatter");
+    signal.recv().expect("formatter started");
+    signal.close();
+    close(waiting);
+    println("cancelled formatter closed");
+    close(source);
+}

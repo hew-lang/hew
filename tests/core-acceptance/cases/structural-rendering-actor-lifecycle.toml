@@ -1,0 +1,14 @@
+[[case]]
+id = "structural-rendering-actor-lifecycle"
+intent = "A nested Display can ask a peer actor with one scheduler worker; formatter fault and actor close release suspended locals and partial traversal, while pure formatting remains usable in start hooks."
+source = "cases/structural-rendering-actor-lifecycle.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.env]
+HEW_WORKERS = "1"
+
+[case.expected]
+stdout = "start [1, 2]\nfinished ONE\n{west: [ONE]}\nfinished ONE\nfault returned\nstart [1, 2]\nfinished CANCELLED\ncancelled formatter closed\n"
+stderr = "hew: failure: UserPanic (212): formatter failed\nhew: actor crash in Renderer.render (actor 2): UserPanic\n"
+exit = 1

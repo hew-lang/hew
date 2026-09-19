@@ -22,7 +22,7 @@ unsafe extern "C" fn wake_actor(context: *mut std::ffi::c_void) {
     // SAFETY: each descriptor retains the immutable incarnation allocation.
     let target = unsafe { *context.cast::<ActorIncarnation>() };
     wait_graph::ready(target);
-    crate::scheduler::enqueue_resume_by_incarnation(target);
+    crate::resume::enqueue_resume_by_incarnation(target);
 }
 
 unsafe extern "C" fn retain_actor_wake(context: *mut std::ffi::c_void) {
@@ -120,9 +120,7 @@ pub(crate) unsafe fn cancel_checked_turn(actor: &crate::actor::HewActor) -> bool
 /// Queued actor work and supervisor decisions use the existing shutdown path.
 #[no_mangle]
 pub extern "C" fn hew_native_runtime_finish(source_status: i32) -> i32 {
-    crate::shutdown::hew_shutdown_initiate_implicit(0);
-    let shutdown_status = crate::shutdown::hew_shutdown_wait();
-    crate::scheduler::hew_runtime_cleanup_after_main();
+    let shutdown_status = drain_to_quiescence();
     if source_status != 0 {
         // A native `main` return is the process exit code directly (unlike
         // the `exit()` builtin, it never passes through `hew_exit`), so it
@@ -139,6 +137,26 @@ pub extern "C" fn hew_native_runtime_finish(source_status: i32) -> i32 {
         1
     } else {
         crate::exit_status::hew_runtime_exit_status()
+    }
+}
+
+/// Run every actor to a stop and reclaim the runtime, returning a non-zero
+/// status when shutdown itself failed.
+///
+/// Natively this is the shutdown phase machine waiting on the worker threads.
+/// wasm32 has no worker to wait for: the process drains its own run queue and
+/// timer wheel until nothing is left to run.
+fn drain_to_quiescence() -> i32 {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        crate::shutdown::hew_shutdown_initiate_implicit(0);
+        let status = crate::shutdown::hew_shutdown_wait();
+        crate::scheduler::hew_runtime_cleanup_after_main();
+        status
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        crate::wasm_driver::drain_to_quiescence()
     }
 }
 

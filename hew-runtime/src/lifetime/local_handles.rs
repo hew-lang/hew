@@ -13,10 +13,8 @@ use std::collections::HashMap;
 #[cfg_attr(all(target_arch = "wasm32", not(test)), allow(unused_imports))]
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::{AtomicUsize, Ordering};
-#[cfg(not(target_arch = "wasm32"))]
 use std::sync::Arc;
 use std::sync::{Condvar, Mutex, PoisonError};
-#[cfg(not(target_arch = "wasm32"))]
 use std::time::{Duration, Instant};
 
 use crate::lifetime::PoisonSafe;
@@ -1005,7 +1003,6 @@ pub(crate) fn begin_current_actor_publication(
 }
 
 /// Start one actor publication in an explicitly selected runtime authority.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn begin_actor_publication_in(
     handles: &LocalHandles,
 ) -> Result<LocalHandlePublication<'_>, LocalHandleError> {
@@ -1136,6 +1133,8 @@ pub(crate) fn current_supervisor_role_owner(owner: HewLocalPidId, slot: u32) -> 
 }
 
 /// Observe the stable control even after close has retired the direct route.
+/// Local PID handles are a native surface: `hew_local_pid_*` is gated off
+/// wasm32, so nothing there mints a token to look up.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn current_supervisor_completion(
     token: HewLocalPidId,

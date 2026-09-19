@@ -9,19 +9,6 @@ use std::ffi::c_void;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Arc;
 
-/// The process-wide wheel this target's driver ticks: a background ticker
-/// thread natively, the parked root itself on wasm32.
-fn process_timer_wheel() -> *mut HewTimerWheel {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        crate::timer_periodic::global_wheel()
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        crate::wasm_driver::global_wheel()
-    }
-}
-
 #[derive(Debug)]
 struct SleepReady {
     status: AtomicI32,
@@ -141,7 +128,7 @@ pub unsafe extern "C" fn hew_coro_sleep_new(
         return std::ptr::null_mut();
     }
     let wheel = if duration_ns > 0 {
-        process_timer_wheel()
+        crate::timer_periodic::global_wheel()
     } else {
         std::ptr::null_mut()
     };
@@ -171,7 +158,7 @@ pub unsafe extern "C" fn hew_coro_sleep_until_new(
     let now_ns = unsafe { crate::clock::hew_instant_now() };
     let remaining_ns = deadline_ns.saturating_sub(now_ns);
     let wheel = if remaining_ns > 0 {
-        process_timer_wheel()
+        crate::timer_periodic::global_wheel()
     } else {
         std::ptr::null_mut()
     };

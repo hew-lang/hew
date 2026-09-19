@@ -1,0 +1,28 @@
+// Accept + run: the other direction of backpressure. `main` fills a one-slot
+// ring and waits; the consuming actor drains it. The sibling fixture suspends
+// the actor's coroutine and drains from the root, so between them each half of
+// a pipe owns the suspension once.
+import std.stream;
+
+actor Consumer {
+    receive fn drain(rx: stream.Stream<i64>) {
+        var total = 0;
+        for item in rx {
+            total = total + item;
+        }
+        println(f"total {total}");
+    }
+}
+
+fn main() {
+    let (tx, rx): (stream.Sink<i64>, stream.Stream<i64>) = match stream.pipe(1) {
+        .Ok(pair) => pair,
+        .Err(error) => panic(f"stream.pipe failed: {error}"),
+    };
+    let consumer = spawn Consumer;
+    let _ = mailbox(consumer, on_full: .Reject).drain(rx);
+    for i in 1..6 {
+        tx.send(i).expect("send");
+    }
+    tx.finish();
+}

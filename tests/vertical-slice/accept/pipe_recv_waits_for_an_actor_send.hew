@@ -1,0 +1,24 @@
+// Accept + run: `main` reads an empty pipe while an actor still holds the
+// live sink, so the read waits for a send that has not happened yet.
+import std.stream;
+
+actor Producer {
+    receive fn go(tx: stream.Sink<string>) {
+        tx.send("from actor").expect("send");
+        tx.close();
+    }
+}
+
+fn main() {
+    let (tx, rx): (stream.Sink<string>, stream.Stream<string>) = match stream.pipe(4) {
+        .Ok(pair) => pair,
+        .Err(error) => panic(f"stream.pipe failed: {error}"),
+    };
+    let producer = spawn Producer;
+    let _ = producer.go(tx);
+    match rx.recv() {
+        .Some(item) => println(item),
+        .None => println("closed"),
+    }
+    rx.close();
+}

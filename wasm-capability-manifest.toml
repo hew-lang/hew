@@ -86,18 +86,24 @@ runnable = true
 id = "basic-actors"
 label = "Basic actors (`spawn`, `send`, `receive`, `ask/await`)"
 checker = "pass"
-runtime = "unavailable"
-runtime_status = "The checker admits actor programs, but the wasm32 process driver does not yet export the actor core, so an actor program fails closed at link on an unresolved `hew_actor_*` import"
+runtime = "implemented"
+runtime_status = "Implemented on the wasm32 process driver: the same actor core the native target runs, with the parked root draining the run queue in place of worker threads"
 categories = ["runtime", "actors"]
-tracking = "WASM-TODO"
-tracking_label = "WASM-TODO(basic-actors):"
+
+[[feature]]
+id = "exit-status-range"
+label = "Process exit statuses above 125"
+checker = "pass"
+runtime = "host-dependent"
+runtime_status = "WASI `proc_exit` refuses a status above 125, so `exit(n)` for n greater than 125 reaches the host as 1 rather than n. Every other status matches native, including the exit-1 rule an unrecovered fault follows (HEW-SPEC-2026 5.8), whose trap code is a diagnostic tag and never the status"
+categories = ["runtime", "failure"]
 
 [[feature]]
 id = "actor-crash-containment"
 label = "Actor-local panic/trap containment and restart"
 checker = "todo"
 runtime = "unavailable"
-runtime_status = "Unsupported on the production wasm32-wasip1 panic=abort artifact; a handler panic or canonical trap terminates the module instead of restarting one actor"
+runtime_status = "A handler panic is contained: the physical path delivers it as a typed fault on the ask's failure edge, so the caller sees `Err` and the run continues. An `#[on(start)]` panic is still module-fatal, because it runs on the spawning stack with no fault edge and the production artifact is panic=abort. Supervisor restart is the separate `supervision-trees` capability"
 categories = ["runtime", "actors", "failure"]
 tracking = "WASM-TODO"
 tracking_label = "WASM-TODO(actor-crash-containment):"
@@ -166,11 +172,16 @@ it pass.\
 
 [[feature]]
 id = "select"
-label = "`select {}` (any timeout expression, any arm count)"
-checker = "pass"
-runtime = "implemented"
-runtime_status = "Implemented"
+enum_variant = "Select"
+label = "`select {}` operations"
+prose_label = "`select {}` (any arm kind, any timeout expression)"
+reason = "a select builds its readiness waitset through the task-scope runtime (`hew_checked_task_select_*`), which is not compiled for wasm32"
+checker = "reject"
+runtime = "unavailable"
+runtime_status = "Module not compiled"
 categories = ["runtime", "actors"]
+tracking = "WASM-TODO"
+tracking_label = "WASM-TODO(suspending-select):"
 
 [[feature]]
 id = "supervision-trees"
@@ -251,7 +262,7 @@ id = "timers-sleep"
 enum_variant = "Timers"
 label = "Timer operations"
 prose_label = "`sleep_ms`, `sleep`"
-reason = "timers are cooperative on wasm32: sleep parks at the message boundary, and #[every(duration)] handlers fire only when the host drives the timer queue"
+reason = "timers are cooperative on wasm32: a sleep parks the coroutine and an #[every(duration)] handler fires when the process driver next ticks the shared timer wheel, so granularity follows the driver steps rather than a dedicated ticker"
 checker = "warn"
 runtime = "cooperative"
 runtime_status = "Cooperative park at message boundary"
@@ -263,7 +274,7 @@ id = "timers-every"
 enum_variant = "PeriodicTimers"
 label = "Timer operations"
 prose_label = "`#[every(duration)]` periodic handlers"
-reason = "timers are cooperative on wasm32: sleep parks at the message boundary, and #[every(duration)] handlers fire only when the host drives the timer queue"
+reason = "timers are cooperative on wasm32: a sleep parks the coroutine and an #[every(duration)] handler fires when the process driver next ticks the shared timer wheel, so granularity follows the driver steps rather than a dedicated ticker"
 checker = "warn"
 runtime = "cooperative"
 runtime_status = "Cooperative periodic dispatch via host-driven timer queue"
@@ -272,31 +283,25 @@ tracking_label = "Implemented"
 
 [[feature]]
 id = "streams"
-enum_variant = "Streams"
-label = "Stream operations"
-prose_label = "`stream.pipe`/`stream.open`, `Stream<T>.*` and `Sink<T>.*` methods"
-reason = "the pipe runtime (suspending queue core, file and socket backings) is not compiled for wasm32; the one pipe family is native-only until the queue core is ported"
-checker = "reject"
-runtime = "unavailable"
-runtime_status = "Module not compiled"
+label = "Pipe operations (`stream.pipe`, `Stream<T>.*`, `Sink<T>.*`)"
+checker = "pass"
+runtime = "implemented"
+runtime_status = "Implemented on the wasm32 process driver: the same suspending queue core the native target runs, with a parked producer or consumer resumed from the driver's run queue instead of a worker thread. The file and socket backings of the same handle types are separately classified"
 categories = ["runtime", "streams"]
-tracking = "WASM-TODO"
-tracking_label = "WASM-TODO(streams):"
-native_only_modules = ["stream"]
 
 [[feature]]
 id = "filesystem-streams"
 enum_variant = "FilesystemStreams"
 label = "File-backed stream operations"
-prose_label = "`std.fs.read` (file-stream ownership path)"
-reason = "the FileReadStream runtime and stream collector are not compiled for wasm32; reject before code generation rather than leaving unresolved native symbols"
+prose_label = "`std.fs.read` and `std.stream.open` (file-stream ownership path)"
+reason = "a file-backed stream reads its chunks through the native I/O reactor, which is not compiled for wasm32; the in-memory pipe half of the same handle types is implemented"
 checker = "reject"
 runtime = "unavailable"
 runtime_status = "File-backed stream runtime is native-only; path-independent fs helpers remain separately classified"
 categories = ["stdlib", "filesystem"]
 tracking = "WASM-TODO"
 tracking_label = "WASM-TODO(filesystem-streams):"
-native_only_functions = ["std.fs.read"]
+native_only_functions = ["std.fs.read", "std.stream.open"]
 
 [[feature]]
 id = "http-client"
@@ -715,12 +720,6 @@ blocker = "A wasm32 transport bridge for the native-only SMTP wrapper"
 tracking_label = "WASM-TODO(smtp):"
 
 [[backlog]]
-id = "suspending-receive"
-gap = "Shared suspending receive carrier parity"
-blocker = "WASM continuation routing for `for` over a stream and the pipe receive/send suspensions"
-tracking_label = "WASM-TODO(suspending-receive):"
-
-[[backlog]]
 id = "suspending-select"
 gap = "Execution-context select suspension parity"
 blocker = "A WASM readiness waitset and non-recursive resume path for suspending select"
@@ -753,32 +752,7 @@ tracking_label = "WASM-TODO(wasi-errno):"
 # ---------------------------------------------------------------------------
 
 [[playground_wasi]]
-id = "concurrency/actor_pipeline"
-status = "unsupported"
-reason = "Actor/coroutine runtime ABI unavailable on the current WASI path (#1821)"
-
-[[playground_wasi]]
-id = "concurrency/async_await"
-status = "unsupported"
-reason = "Actor/coroutine runtime ABI unavailable on the current WASI path (#1821)"
-
-[[playground_wasi]]
-id = "concurrency/counter_actor"
-status = "unsupported"
-reason = "Actor/coroutine runtime ABI unavailable on the current WASI path (#1821)"
-
-[[playground_wasi]]
 id = "concurrency/supervisor"
 status = "unsupported"
 capability = "supervision-trees"
 reason = "Uses the manifest-owned supervision-trees reject capability"
-
-[[playground_wasi]]
-id = "machines/traffic_light"
-status = "unsupported"
-reason = "Machine runtime is not yet wired into the WASI/LLVM path"
-
-[[playground_wasi]]
-id = "language/string_slicing"
-status = "unsupported"
-reason = "hew_string_slice currently has a wasm32-wasi linker signature mismatch"

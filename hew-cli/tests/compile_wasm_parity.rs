@@ -1,4 +1,4 @@
-//! WASM emission gating and native-only substrate classification.
+//! WASM emission and native-vs-WASI parity for the shapes this file pins.
 //!
 //! Behaviours under test:
 //!
@@ -8,14 +8,9 @@
 //! 2. A bare compile of that same program skips WASM emission and produces
 //!    only the native binary.
 //!
-//! 3. `CodegenError::WasmUnsupportedSubstrate` diagnostics keep the category
-//!    selected by the codegen display path: lambda-actor surfaces `lambda_actor`
-//!    + `WASM-TODO(lambda-actors):`.
-//!      (Generators are now fully supported on wasm32 — see `wasm_generator_exec.rs`.
-//!      The one pipe family, `std.stream`'s `Sink`/`Stream`, is native-only on
-//!      wasm32 too, classified under `WASM-TODO(streams):` — see
-//!      `wasm-capability-manifest.toml`, id `streams` — but has no representative
-//!      fixture in this file.)
+//! 3. A lambda actor runs identically on both targets: `actor(M) -> R` lowers
+//!    through the same `_native` family a declared actor does, so there is no
+//!    lambda-actor substrate category to classify.
 mod support;
 
 use std::process::Command;
@@ -142,77 +137,70 @@ fn bare_compile_skips_wasm() {
     );
 }
 
+/// A lambda actor runs identically on both targets.
+///
+/// The oracle this replaces asserted a `CodegenError::WasmUnsupportedSubstrate`
+/// diagnostic with the `lambda_actor` category. The retired backend produced
+/// that from a MIR symbol scan; the physical backend has no such scan and no
+/// lambda-actor symbol - `actor(M) -> R` lowers through the same `_native`
+/// family a declared actor does - so the category has no producer and the
+/// fixture is a parity case instead.
 #[test]
-fn wasm_unsupported_substrate_diagnostics_preserve_symbol_category() {
+fn lambda_actor_runs_identically_on_native_and_wasi() {
     require_codegen();
+    if !wasi_runner_available() {
+        eprintln!("skip: wasmtime not available");
+        return;
+    }
 
-    // `gen_block_outside_receive.hew` was previously asserted to fail on wasm32
-    // by the former generator fence. Generators are now supported on
-    // wasm32 via the in-module `hew_gen_coro_destroy` override emitted by
-    // `emit_wasm_coro_runtime_overrides`; that fixture compiles and produces a
-    // `.wasm` artefact on this target.  The generator-parity classification path
-    // in `CodegenError::WasmUnsupportedSubstrate` is no longer reachable from a
-    // `gen {}` expression, so the representative below is lambda-actor.
+    let fixture = repo_root().join("tests/vertical-slice/accept/lambda_method_send.hew");
+    assert!(fixture.exists(), "fixture not found: {}", fixture.display());
 
-    assert_wasm_unsupported_category(
-        "tests/vertical-slice/accept/lambda_method_send.hew",
-        // Spawn-side wiring (Terminator::MakeLambdaActor → hew_lambda_actor_new)
-        // surfaces the lambda-actor substrate symbol before any other native-only
-        // symbol the fixture happens to reach, because the spawn fail-closes
-        // first. The test's intent is to assert the diagnostic preserves the
-        // symbol category in the first surface, and "lambda_actor" satisfies
-        // that for this fixture.
-        &["lambda_actor", "WASM-TODO(lambda-actors):"],
-        &[],
+    let run = |target: Option<&str>| {
+        let mut args = vec!["run"];
+        if let Some(target) = target {
+            args.extend_from_slice(&["--target", target]);
+        }
+        let fixture = fixture.to_str().expect("fixture path is valid UTF-8");
+        args.push(fixture);
+        Command::new(hew_binary())
+            .args(&args)
+            .current_dir(repo_root())
+            .output()
+            .expect("invoke hew run")
+    };
+
+    let native = run(None);
+    let wasi = run(Some("wasm32-wasi"));
+
+    assert!(
+        native.status.success(),
+        "native lambda-actor run failed:\n{}",
+        describe_output(&native)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&wasi.stdout),
+        String::from_utf8_lossy(&native.stdout),
+        "WASI stdout must match native:\n{}",
+        describe_output(&wasi)
+    );
+    assert_eq!(
+        wasi.status.code(),
+        native.status.code(),
+        "WASI exit status must match native:\n{}",
+        describe_output(&wasi)
     );
 }
 
-fn assert_wasm_unsupported_category(fixture: &str, expected: &[&str], forbidden: &[&str]) {
-    let fixture = repo_root().join(fixture);
-    assert!(fixture.exists(), "fixture not found: {}", fixture.display());
-
-    let emit_dir = tempfile::Builder::new()
-        .prefix("compile-wasm-unsupported-category-")
-        .tempdir()
-        .expect("create temp dir");
-
-    let fixture_str = fixture.to_str().expect("fixture path is valid UTF-8");
-    let emit_dir_str = emit_dir.path().to_str().expect("emit dir is valid UTF-8");
-
-    let output = Command::new(hew_binary())
-        .args([
-            "compile",
-            "--target",
-            "wasm32-unknown-unknown",
-            "--emit-dir",
-            emit_dir_str,
-            fixture_str,
-        ])
-        .current_dir(repo_root())
+/// Whether a WASI runner is on this host, using the same lookup `hew run` does.
+fn wasi_runner_available() -> bool {
+    Command::new("wasmtime")
+        .arg("--version")
         .output()
-        .expect("invoke hew compile");
-
-    assert!(
-        !output.status.success(),
-        "expected non-zero exit for wasm-unsupported fixture `{}`:\n{}",
-        fixture.display(),
-        describe_output(&output)
-    );
-
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    for needle in expected {
-        assert!(
-            stderr.contains(needle),
-            "expected diagnostic for `{}` to contain `{needle}`; got:\n{stderr}",
-            fixture.display()
-        );
-    }
-    let stderr_lower = stderr.to_lowercase();
-    for needle in forbidden {
-        assert!(
-            !stderr_lower.contains(&needle.to_lowercase()),
-            "expected diagnostic for `{}` not to contain `{needle}`; got:\n{stderr}",
-            fixture.display()
-        );
-    }
+        .is_ok_and(|output| output.status.success())
+        || std::env::var_os("HOME").is_some_and(|home| {
+            std::path::Path::new(&home)
+                .join(".wasmtime/bin/wasmtime")
+                .exists()
+        })
 }

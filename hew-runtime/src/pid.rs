@@ -118,8 +118,24 @@ pub extern "C" fn hew_pid_serial(pid: u64) -> u64 {
 #[no_mangle]
 pub extern "C" fn hew_pid_is_local(pid: u64) -> c_int {
     let pid_node = hew_pid_node(pid);
-    let local = crate::runtime::rt_current_opt().map_or(0, |rt| rt.node.local_route_slot());
+    let local = local_route_slot();
     c_int::from(pid_node == local || pid_node == 0)
+}
+
+/// This process's route slot, or `0` where there is no distributed node.
+///
+/// wasm32 has one node by construction: the distributed runtime is native-only
+/// and the checker refuses its surface before codegen, so every PID this target
+/// mints is node-local.
+fn local_route_slot() -> u16 {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        crate::runtime::rt_current_opt().map_or(0, |rt| rt.node.local_route_slot())
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        0
+    }
 }
 
 /// Set this process's node ID.
@@ -127,6 +143,7 @@ pub extern "C" fn hew_pid_is_local(pid: u64) -> c_int {
 /// Should be called once at startup before any actors are spawned.
 /// Node ID 0 means "local/standalone" (the default).
 #[no_mangle]
+#[cfg(not(target_arch = "wasm32"))]
 pub extern "C" fn hew_pid_set_local_node(node_id: u16) {
     crate::runtime::rt_current()
         .node
@@ -142,7 +159,7 @@ pub extern "C" fn hew_pid_set_local_node(node_id: u16) {
 /// The mutate path (`hew_pid_set_local_node`) stays fail-closed.
 #[no_mangle]
 pub extern "C" fn hew_pid_local_node() -> u16 {
-    crate::runtime::rt_current_opt().map_or(0, |rt| rt.node.local_route_slot())
+    local_route_slot()
 }
 
 /// Compose the actor ID for `serial` on the local node, or `None` when `serial`
@@ -156,8 +173,7 @@ pub(crate) fn next_actor_id(serial: u64) -> Option<u64> {
     if !actor_slot_fits_internal_alias(serial) {
         return None;
     }
-    let node = crate::runtime::rt_current().node.local_route_slot();
-    Some(hew_pid_make(node, serial))
+    Some(hew_pid_make(local_route_slot(), serial))
 }
 
 /// The largest serial the packed alias can carry — the exhaustion boundary the

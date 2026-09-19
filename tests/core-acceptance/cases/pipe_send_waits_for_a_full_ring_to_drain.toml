@@ -1,0 +1,13 @@
+[[case]]
+id = "pipe_send_waits_for_a_full_ring_to_drain"
+intent = "A producing actor blocked on a one-slot ring resumes as the root drains it, delivering every item once."
+source = "../vertical-slice/accept/pipe_send_waits_for_a_full_ring_to_drain.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "total 15\n"
+exit = 0

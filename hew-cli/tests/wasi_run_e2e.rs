@@ -175,12 +175,20 @@ fn supervisor_stays_on_the_unsupported_diagnostic_path_under_wasi() {
     );
 }
 
+/// A handler `panic` is contained on both targets.
+///
+/// The physical path delivers it as a typed fault on the ask's failure edge,
+/// so the awaiting caller sees `Err` and the program carries on; nothing
+/// depends on unwinding, which the production `panic=abort` artefact does not
+/// have. The oracle this replaces asserted the opposite, because the runtime
+/// twin had no fault edge and let the panic reach the module boundary.
 #[test]
-fn actor_panic_is_module_fatal_on_production_wasi() {
+fn actor_handler_panic_is_contained_on_native_and_wasi() {
     require_wasi_runner();
+    support::require_codegen();
 
     let dir = support::tempdir();
-    let source = dir.path().join("actor_panic_module_fatal.hew");
+    let source = dir.path().join("actor_handler_panic.hew");
     fs::write(
         &source,
         r#"actor Crasher {
@@ -199,23 +207,241 @@ fn main() {
 }
 "#,
     )
-    .expect("write actor-panic WASI probe");
+    .expect("write actor-panic parity probe");
+
+    let native = support::run_bounded_hew_run(&source, dir.path());
+    let wasi = run_wasi_example(&source);
+
+    let native_stdout = String::from_utf8_lossy(&native.stdout);
+    let wasi_stdout = String::from_utf8_lossy(&wasi.stdout);
+    let wasi_stderr = String::from_utf8_lossy(&wasi.stderr);
+
+    assert!(
+        native_stdout.contains("contained") && native_stdout.contains("survived"),
+        "native must contain the handler panic\nstdout:\n{native_stdout}"
+    );
+    assert_eq!(
+        wasi_stdout, native_stdout,
+        "WASI stdout must match native\nWASI stderr:\n{wasi_stderr}"
+    );
+    assert_eq!(
+        wasi.status.code(),
+        native.status.code(),
+        "WASI exit status must match native\nWASI stderr:\n{wasi_stderr}"
+    );
+}
+
+/// An actor's `default`/`init`/`#[on(start)]`/`receive`/`#[on(stop)]` state
+/// writes produce the same stdout and the same exit status on both targets.
+#[test]
+fn actor_lifecycle_state_writes_match_on_native_and_wasi() {
+    require_wasi_runner();
+    support::require_codegen();
+
+    let source = repo_root()
+        .join("tests")
+        .join("vertical-slice")
+        .join("accept")
+        .join("actor_lifecycle_state_writes.hew");
+    let native = support::run_bounded_hew_run(&source, repo_root());
+    let wasi = run_wasi_example(&source);
+
+    let native_stdout = String::from_utf8_lossy(&native.stdout);
+    let wasi_stdout = String::from_utf8_lossy(&wasi.stdout);
+    let wasi_stderr = String::from_utf8_lossy(&wasi.stderr);
+
+    assert_eq!(
+        wasi_stdout, native_stdout,
+        "WASI lifecycle stdout must match native\nWASI stderr:\n{wasi_stderr}"
+    );
+    assert_eq!(
+        wasi.status.code(),
+        native.status.code(),
+        "WASI lifecycle exit status must match native\nWASI stderr:\n{wasi_stderr}"
+    );
+}
+
+/// Run one `tests/vertical-slice/accept` program on both targets and require
+/// identical stdout and exit status.
+fn assert_accept_fixture_parity(name: &str) {
+    require_wasi_runner();
+    support::require_codegen();
+
+    let source = repo_root()
+        .join("tests")
+        .join("vertical-slice")
+        .join("accept")
+        .join(format!("{name}.hew"));
+    let native = support::run_bounded_hew_run(&source, repo_root());
+    let wasi = run_wasi_example(&source);
+
+    let native_stdout = String::from_utf8_lossy(&native.stdout);
+    let wasi_stdout = String::from_utf8_lossy(&wasi.stdout);
+    let wasi_stderr = String::from_utf8_lossy(&wasi.stderr);
+
+    assert_eq!(
+        wasi_stdout, native_stdout,
+        "{name}: WASI stdout must match native\nWASI stderr:\n{wasi_stderr}"
+    );
+    assert_eq!(
+        wasi.status.code(),
+        native.status.code(),
+        "{name}: WASI exit status must match native\nWASI stderr:\n{wasi_stderr}"
+    );
+}
+
+/// The read half waits on an empty pipe while an actor still holds the live
+/// sink. On wasm32 the waiting stack is the process driver, so this is the case
+/// that proves the driver runs the producer instead of parking forever.
+#[test]
+fn pipe_recv_waits_for_an_actor_send_on_native_and_wasi() {
+    assert_accept_fixture_parity("pipe_recv_waits_for_an_actor_send");
+}
+
+/// Backpressure with the actor producing: its coroutine suspends on the full
+/// ring and the root drains.
+#[test]
+fn pipe_backpressure_from_an_actor_matches_on_native_and_wasi() {
+    assert_accept_fixture_parity("pipe_send_waits_for_a_full_ring_to_drain");
+}
+
+/// Backpressure the other way round: the root suspends on the full ring and the
+/// actor drains. The two fixtures cover both owners of the suspension, which is
+/// what the wasm32 driver has to resume from its run queue.
+#[test]
+fn pipe_backpressure_from_the_root_matches_on_native_and_wasi() {
+    assert_accept_fixture_parity("pipe_root_send_waits_for_an_actor_to_drain");
+}
+
+/// A cloned sink adds a producer; end of data waits for the last finish.
+#[test]
+fn pipe_clone_and_finish_match_on_native_and_wasi() {
+    assert_accept_fixture_parity("pipe_ends_when_the_last_sink_finishes");
+}
+
+/// `for item in stream` over a pipe drains and releases the read half.
+#[test]
+fn pipe_for_loop_matches_on_native_and_wasi() {
+    assert_accept_fixture_parity("channel_for_loop_drains_receiver");
+}
+
+/// A sink released by a crashing handler faults the pipe, so the consumer
+/// traps on its next read instead of reading a clean end. The handler panic is
+/// contained on both targets (`actor-crash-containment`); the fault the
+/// released sink publishes is what ends the process.
+#[test]
+fn pipe_faulted_by_a_crashed_producer_traps_the_consumer_on_native_and_wasi() {
+    require_wasi_runner();
+    support::require_codegen();
+
+    let dir = tempdir();
+    let source = dir.path().join("pipe_fault.hew");
+    fs::write(
+        &source,
+        r#"import std.stream;
+
+actor Producer {
+    receive fn go(tx: stream.Sink<i64>) {
+        tx.send(1).expect("send");
+        panic("producer down");
+    }
+}
+
+fn main() {
+    let (tx, rx): (stream.Sink<i64>, stream.Stream<i64>) = match stream.pipe(4) {
+        .Ok(pair) => pair,
+        .Err(error) => panic(f"stream.pipe failed: {error}"),
+    };
+    let producer = spawn Producer;
+    let _ = producer.go(tx);
+    match rx.recv() {
+        .Some(item) => println(f"first {item}"),
+        .None => println("first closed"),
+    }
+    match rx.recv() {
+        .Some(item) => println(f"second {item}"),
+        .None => println("second closed"),
+    }
+    rx.close();
+}
+"#,
+    )
+    .expect("write pipe fault source");
+
+    let native = support::run_bounded_hew_run(&source, repo_root());
+    let wasi = run_wasi_example(&source);
+
+    let native_stdout = String::from_utf8_lossy(&native.stdout);
+    let wasi_stdout = String::from_utf8_lossy(&wasi.stdout);
+    let wasi_stderr = String::from_utf8_lossy(&wasi.stderr);
+
+    assert_eq!(
+        wasi_stdout, native_stdout,
+        "faulted pipe stdout must match native\nWASI stderr:\n{wasi_stderr}"
+    );
+    assert_eq!(
+        wasi.status.code(),
+        native.status.code(),
+        "faulted pipe exit status must match native\nWASI stderr:\n{wasi_stderr}"
+    );
+    assert_eq!(
+        wasi.status.code(),
+        Some(1),
+        "a faulted pipe must end the process\nWASI stderr:\n{wasi_stderr}"
+    );
+    assert!(
+        native_stdout.contains("first 1"),
+        "the item queued before the crash is still delivered; stdout:\n{native_stdout}"
+    );
+}
+
+/// `select {}` builds its readiness waitset in the task-scope runtime, which
+/// wasm32 does not compile. The manifest rejects it before code generation, so
+/// a select never reaches the linker with an unresolved carrier.
+#[test]
+fn select_stays_on_the_unsupported_diagnostic_path_under_wasi() {
+    let dir = tempdir();
+    let source = dir.path().join("select_pipe.hew");
+    fs::write(
+        &source,
+        r#"import std.stream;
+
+fn main() {
+    let (tx, rx): (stream.Sink<i64>, stream.Stream<i64>) = match stream.pipe(4) {
+        .Ok(pair) => pair,
+        .Err(error) => panic(f"stream.pipe failed: {error}"),
+    };
+    tx.send(7).expect("send");
+    select {
+        item from rx.recv() => {
+            match item {
+                .Some(value) => println(f"got {value}"),
+                .None => println("closed"),
+            }
+        },
+        after 1s => println("timeout"),
+    };
+    tx.close();
+    rx.close();
+}
+"#,
+    )
+    .expect("write select source");
 
     let output = run_wasi_example(&source);
-    let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     assert!(
         !output.status.success(),
-        "production panic=abort must terminate the WASI module, not contain one actor\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        "select must not compile for wasm32; stderr:\n{stderr}"
     );
     assert!(
-        !stdout.contains("contained") && !stdout.contains("survived"),
-        "control must not return to the awaiting actor after module-fatal panic; stdout:\n{stdout}"
+        stderr.contains("`select {}` operations are not supported on WASM32"),
+        "the manifest row, not the linker, must refuse select; stderr:\n{stderr}"
     );
     assert!(
-        stderr.contains("intentional actor panic") || stderr.contains("unreachable"),
-        "WASI failure should expose the panic/trap rather than a clean actor restart; stderr:\n{stderr}"
+        !stderr.contains("undefined symbol"),
+        "no select carrier may reach the linker unresolved; stderr:\n{stderr}"
     );
 }
 
@@ -777,58 +1003,86 @@ fn main() {
 }
 "#;
 
+/// The shape a periodic run must have on either target: the spawn line first,
+/// a contiguous run of ticks from 1, and the main activation's own line.
+///
+/// How many ticks a 120ms sleep sees, and whether the last one lands before or
+/// after `done`, is wall-clock: a loaded runner delivers a different number.
+/// Byte equality between the two targets would pin that race, so this reads the
+/// properties that do hold.
+fn periodic_run_shape(stdout: &str) -> (usize, bool) {
+    let mut ticks = 0usize;
+    let mut saw_done = false;
+    let mut lines = stdout.lines();
+    assert_eq!(
+        lines.next(),
+        Some("spawned"),
+        "the spawn line comes first\nstdout:\n{stdout}"
+    );
+    for line in lines {
+        if let Some(number) = line.strip_prefix("tick ") {
+            ticks += 1;
+            assert_eq!(
+                number.parse::<usize>().ok(),
+                Some(ticks),
+                "periodic ticks must be contiguous from 1\nstdout:\n{stdout}"
+            );
+        } else if line == "done" {
+            saw_done = true;
+        } else {
+            panic!("unexpected line {line:?}\nstdout:\n{stdout}");
+        }
+    }
+    (ticks, saw_done)
+}
+
+/// An `#[every]` handler fires and the program becomes quiescent on both
+/// targets.
+///
+/// The wasm32 process driver ticks the shared timer wheel between readiness
+/// steps and drains the run queue, so a periodic actor ends the run the same
+/// way it does natively. The oracle this replaces asserted that the wasm run
+/// had to be killed by `--timeout`, which was the runtime twin's host-driven
+/// timer queue, not the language.
 #[test]
-fn wasm_actor_periodic_timer_fires_but_never_reaches_quiescence() {
+fn actor_periodic_timer_reaches_quiescence_on_native_and_wasi() {
     require_wasi_runner();
+    support::require_codegen();
 
     let dir = support::tempdir();
-    let source = dir.path().join("cooperative_periodic_wasi.hew");
-    fs::write(&source, COOPERATIVE_PERIODIC_SOURCE)
-        .expect("write cooperative periodic WASI source");
+    let source = dir.path().join("cooperative_periodic_parity.hew");
+    fs::write(&source, COOPERATIVE_PERIODIC_SOURCE).expect("write periodic parity source");
 
-    // `--timeout` bounds the run: without it this program does not terminate
-    // under wasm, so an unbounded assertion would hang the suite.
-    let output = Command::new(hew_binary())
-        .args(["run", "--timeout", "5"])
-        .arg(&source)
-        .arg("--target")
-        .arg("wasm32-wasi")
-        .current_dir(dir.path())
-        .output()
-        .expect("run hew --target wasm32-wasi --timeout for the periodic timer probe");
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let native = support::run_bounded_hew_run(&source, dir.path());
+    let wasi = run_wasi_example(&source);
 
-    // The timer really does fire: the cooperative periodic queue is drained by
-    // the scheduler's own clock reads. If this stops holding, the periodic
-    // handler has been gated or silently dropped on wasm.
+    let native_stdout = String::from_utf8_lossy(&native.stdout);
+    let wasi_stdout = String::from_utf8_lossy(&wasi.stdout);
+    let wasi_stderr = String::from_utf8_lossy(&wasi.stderr);
+
+    let (native_ticks, native_done) = periodic_run_shape(&native_stdout);
+    let (wasi_ticks, wasi_done) = periodic_run_shape(&wasi_stdout);
+
     assert!(
-        stdout.contains("tick 1"),
-        "the wasm periodic handler never fired; #[every] is not being delivered on wasm32\n\
-         stdout:\n{stdout}\nstderr:\n{stderr}",
+        native_ticks >= 1 && native_done,
+        "the native periodic handler must fire and the run must finish\nstdout:\n{native_stdout}"
     );
-
-    // ...but the program never becomes quiescent, so `hew run` has to kill it.
-    // Native (below) exits on its own. This asymmetry is the divergence.
+    assert!(
+        wasi_ticks >= 1 && wasi_done,
+        "the WASI periodic handler must fire and the run must reach quiescence\nstdout:\n{wasi_stdout}\nstderr:\n{wasi_stderr}"
+    );
     assert_eq!(
-        output.status.code(),
-        Some(1),
-        "expected the wasm periodic-timer program to be killed by --timeout (exit 1). If it now \
-         terminates on its own, the cooperative-timer quiescence divergence is FIXED — promote \
-         this probe to a native↔wasm stdout parity case in the same commit.\n\
-         stdout:\n{stdout}\nstderr:\n{stderr}",
+        wasi.status.code(),
+        native.status.code(),
+        "WASI periodic exit status must match native\nWASI stderr:\n{wasi_stderr}"
     );
-    assert!(
-        stderr.contains("Error: program timed out after 5s"),
-        "expected the explicit timeout diagnostic for the non-quiescent periodic actor\n\
-         stderr:\n{stderr}",
+    assert_eq!(
+        wasi.status.code(),
+        Some(0),
+        "a periodic actor must not need a timeout to end\nWASI stderr:\n{wasi_stderr}"
     );
 }
 
-// The native half uses the same periodic handler and interval, plus a channel
-// handshake that makes first delivery a precondition for main returning. Native
-// blocking receive is unavailable on WASM, so the WASM half keeps its cooperative
-// sleep probe while this half avoids racing wall-clock sleep against shutdown.
 #[test]
 fn native_actor_periodic_timer_reaches_quiescence() {
     support::require_codegen();

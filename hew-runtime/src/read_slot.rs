@@ -411,6 +411,7 @@ pub unsafe extern "C" fn hew_read_slot_cancel_cleanup(source: *mut std::ffi::c_v
     // SAFETY: await-cancel source contract supplies a live slot reference.
     unsafe {
         let _ = read_slot_cancel_with_status(slot, read_status);
+        #[cfg(not(target_arch = "wasm32"))]
         crate::reactor::reactor_detach_read_slot(slot);
     }
 }

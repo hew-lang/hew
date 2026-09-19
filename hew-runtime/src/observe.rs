@@ -9,14 +9,11 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 use std::fmt::Write as _;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-#[cfg(not(target_arch = "wasm32"))]
 use std::sync::{Condvar, Mutex};
-#[cfg(not(target_arch = "wasm32"))]
 use std::time::{Duration, Instant};
 
 use crate::actor::HEW_MAX_WORKERS;
 use crate::lifetime::PoisonSafe;
-#[cfg(not(target_arch = "wasm32"))]
 use crate::util::{CondvarExt, MutexExt};
 use hew_cabi::string::{string_as_str, string_from_str, HewString};
 
@@ -69,33 +66,25 @@ static THREADS_BLOCKING_COUNT: AtomicU64 = AtomicU64::new(0);
 static ATTRIBUTED_TURNS: PoisonSafe<Option<HashMap<(usize, i32), AttributedTurn>>> =
     PoisonSafe::new(None);
 
-#[cfg(not(target_arch = "wasm32"))]
 static NEXT_DISPATCH_TICKET: AtomicU64 = AtomicU64::new(0);
-#[cfg(not(target_arch = "wasm32"))]
 static PUBLISHED_DISPATCH_TICKET: AtomicU64 = AtomicU64::new(0);
-#[cfg(not(target_arch = "wasm32"))]
 static DISPATCH_COMPLETION_WATERMARK: AtomicU64 = AtomicU64::new(0);
-#[cfg(not(target_arch = "wasm32"))]
 static DISPATCH_BARRIER_WAITERS: AtomicU64 = AtomicU64::new(0);
-#[cfg(not(target_arch = "wasm32"))]
 static DISPATCH_ACTIVE_TICKETS: [AtomicU64; SHARD_COUNT] =
     [const { AtomicU64::new(0) }; SHARD_COUNT];
 #[cfg(all(test, not(target_arch = "wasm32")))]
 static DISPATCH_BARRIER_MUTEX_ACQUISITIONS: AtomicU64 = AtomicU64::new(0);
 
-#[cfg(not(target_arch = "wasm32"))]
 static DISPATCH_BARRIER: DispatchBarrier = DispatchBarrier {
     lock: Mutex::new(()),
     cond: Condvar::new(),
 };
 
-#[cfg(not(target_arch = "wasm32"))]
 struct DispatchBarrier {
     lock: Mutex<()>,
     cond: Condvar,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ObserveDispatchTicket(u64);
 
@@ -246,14 +235,12 @@ pub(crate) fn record_actor_turn(duration_ns: u64) {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn dispatch_barrier_lock() -> std::sync::MutexGuard<'static, ()> {
     #[cfg(test)]
     DISPATCH_BARRIER_MUTEX_ACQUISITIONS.fetch_add(1, Ordering::Relaxed);
     DISPATCH_BARRIER.lock.lock_or_recover()
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn publish_dispatch_begin(ticket: u64) {
     while PUBLISHED_DISPATCH_TICKET
         .compare_exchange(
@@ -268,7 +255,6 @@ fn publish_dispatch_begin(ticket: u64) {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn computed_dispatch_watermark() -> u64 {
     let published_ticket = PUBLISHED_DISPATCH_TICKET.load(Ordering::Acquire);
     DISPATCH_ACTIVE_TICKETS
@@ -281,7 +267,6 @@ fn computed_dispatch_watermark() -> u64 {
         .map_or(published_ticket, |ticket| ticket.saturating_sub(1))
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn publish_dispatch_watermark() -> u64 {
     let watermark = computed_dispatch_watermark();
     let mut current = DISPATCH_COMPLETION_WATERMARK.load(Ordering::Acquire);
@@ -299,7 +284,6 @@ fn publish_dispatch_watermark() -> u64 {
     current
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn observe_dispatch_begin() -> ObserveDispatchTicket {
     let ticket = NEXT_DISPATCH_TICKET
         .fetch_add(1, Ordering::Relaxed)
@@ -309,7 +293,6 @@ pub(crate) fn observe_dispatch_begin() -> ObserveDispatchTicket {
     ObserveDispatchTicket(ticket)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn clear_active_dispatch_ticket(ticket: ObserveDispatchTicket) {
     let shard = current_shard();
     if DISPATCH_ACTIVE_TICKETS[shard]
@@ -334,7 +317,6 @@ fn clear_active_dispatch_ticket(ticket: ObserveDispatchTicket) {
     );
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn observe_dispatch_close(ticket: ObserveDispatchTicket) {
     clear_active_dispatch_ticket(ticket);
     publish_dispatch_watermark();
@@ -345,12 +327,10 @@ fn observe_dispatch_close(ticket: ObserveDispatchTicket) {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn observe_dispatch_attributed(ticket: ObserveDispatchTicket) {
     observe_dispatch_close(ticket);
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn observe_dispatch_abandon(ticket: ObserveDispatchTicket) {
     observe_dispatch_close(ticket);
 }

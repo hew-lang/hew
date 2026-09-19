@@ -279,7 +279,7 @@ which mechanism applies and the order of the per-handle migration PRs.
 | `std/net/quic` | `QUICEvent` | `close()` | 1 — per-event allocation | C + H | **B-1 safe set — landed** | Event accessors borrow; release is a single `Box::from_raw`. |
 | `std/net/websocket` | `Message` | `close()` | 1 — per-recv allocation | C + H, scoped to the read-loop iteration | **B-1 safe set — landed** | Independent per-recv allocation; affine drop fires per loop iteration. |
 | Runtime actor / scheduler | implicit | `hew_runtime_cleanup` (`hew-runtime/src/scheduler.rs:459-490`) | 4 — runtime scope | I (session-reset registry) only; not affine | runtime-scope cleanup milestone | Process-scoped; the session-reset hook registry is the canonical teardown (LESSONS `cleanup-all-exits`). No user-facing release call; no per-binding affinity. Tracked under issue #1228. |
-| WASM mirror | parity | `hew-runtime/src/scheduler_wasm.rs` | 4 — runtime scope | I, parity-required | runtime-scope cleanup milestone | LESSONS `native-wasm-parity` mandates symmetric session_reset from `hew_sched_shutdown` paths in both targets. See §10. |
+| wasm32 | same runtime | `hew-runtime/src/wasm_driver.rs` drives `scheduler.rs` | 4 — runtime scope | I, same registry | runtime-scope cleanup milestone | One runtime, one session-reset registry: wasm32 reaches it through the same `hew_sched_shutdown` path. See §10. |
 
 Tiers explained:
 
@@ -342,7 +342,7 @@ mechanism:
 | Async cancel / future drop | Cancel runs the scope-exit drop sequence | Cancel runs the scope-exit drop sequence | Cancel-during-handler releases the in-flight handle; the long-lived server is unaffected | n/a |
 | Actor shutdown / mailbox drain | n/a (per-call resources do not outlive a single `receive fn` body) | Per-handler scope drops fire as each in-flight message is finished or aborted; session-reset hook releases anything left | Session-reset hook releases the server | Session-reset hook releases all subsystems |
 | Runtime cleanup / session reset | n/a | Session-reset hook (I) catches anything actor shutdown missed | Session-reset hook (I) | Session-reset hook (I) — the canonical teardown |
-| WASM parity | Same drop emission in the WASM codegen path | Same actor cleanup in `scheduler_wasm.rs` | Same session-reset entries from `hew_sched_shutdown` in WASM | LESSONS `native-wasm-parity` — symmetric session_reset from both `hew_sched_shutdown` paths, or named `WASM-TODO` (§10) |
+| wasm32 | Same drop emission from the same physical MIR | Same actor cleanup, on the single-thread driver | Same session-reset entries from the same `hew_sched_shutdown` | One runtime; a wasm32 gap is a named `WASM-TODO` in the capability manifest (§10) |
 
 No row in the table is "the user types `close()` here." That is the prime
 invariant restated as a property of the table.
@@ -351,9 +351,11 @@ invariant restated as a property of the table.
 
 ## 10. WASM parity
 
-Per LESSONS `native-wasm-parity`: any handle-lifecycle behaviour that lands in
-`hew-runtime/src/scheduler.rs` must land symmetrically in
-`hew-runtime/src/scheduler_wasm.rs` or carry a named `WASM-TODO`.
+wasm32 runs the same runtime the native target does, driven by
+`hew-runtime/src/wasm_driver.rs` in place of worker threads. Handle-lifecycle
+behaviour that lands in `hew-runtime/src/scheduler.rs` is therefore wasm32
+behaviour too; a wasm32 gap is a capability the manifest rejects, not a second
+implementation to keep in step.
 
 For this work specifically:
 
@@ -361,11 +363,10 @@ For this work specifically:
   before native/WASM target emission in the Rust HIR/MIR/codegen-rs path. WASM
   parity is automatic for tier 1 once the shared MIR facts are accepted.
 - The **actor cleanup hook** (I) is duplicated across the two scheduler files.
-  The runtime-scope cleanup milestone explicitly touches both. A per-handle
-  migration PR that introduces a new hook entry must update both schedulers
-  in the same diff.
-- The **session-reset registry** must be invoked from `hew_sched_shutdown` in
-  both `scheduler.rs` and `scheduler_wasm.rs`. PR #1271 fixed the analogous
+  The runtime-scope cleanup milestone touches the one scheduler, so a
+  per-handle migration PR that introduces a new hook entry updates it once.
+- The **session-reset registry** is invoked from the one `hew_sched_shutdown`
+  in `scheduler.rs`, which both targets reach. PR #1271 fixed the analogous
   gap for `hew_trace_reset` and `clear_dispatch_registry`; this spec inherits
   that discipline.
 - **Explicit WASM-TODO carve-outs allowed in this work:** none at spec time.
@@ -480,7 +481,7 @@ as a record of the discipline the v0.4.x → v0.5 migration followed:
   migration), #1399 (move-checker substrate), #1500 (`http.Request` /
   `json.Value` manual-release migration).
 - Substrate paths cited in this spec: `hew-mir/`, `hew-codegen-rs/`,
-  `hew-runtime/src/scheduler.rs`, `hew-runtime/src/scheduler_wasm.rs`,
+  `hew-runtime/src/scheduler.rs`, `hew-runtime/src/wasm_driver.rs`,
   `hew-runtime/src/session.rs`, `hew-cabi/tests/`.
 - LESSONS rows: `ffi-ownership-contracts`, `raii-null-after-move`,
   `field-alias-fail-closed`, `cleanup-all-exits`, `checker-output-boundary`,

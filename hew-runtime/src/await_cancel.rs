@@ -226,7 +226,7 @@ unsafe fn await_cancel_finish(
             unsafe { cleanup(r.source, status as i32) };
         }
         if wake_actor {
-            crate::scheduler::enqueue_resume_by_incarnation(r.actor);
+            crate::resume::enqueue_resume_by_incarnation(r.actor);
         }
     }
 

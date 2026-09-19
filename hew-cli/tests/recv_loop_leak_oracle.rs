@@ -242,7 +242,7 @@ fn parked_for_await_receiver_handoff_source(frames: usize) -> String {
     let starts = (0..frames).fold(String::new(), |mut acc, index| {
         let _ = writeln!(
             acc,
-            "    let receiver{index} = app.receiver{index};\n    let _ = receiver{index}.run({index});"
+            "    let receiver{index} = app.receiver{index};\n    mailbox(receiver{index}, on_full: .Wait).run({index}).expect(\"start receiver\");"
         );
         acc
     });
@@ -596,6 +596,18 @@ fn for_await_recv_string_loop_no_per_frame_leak_slope() {
         for_await_source,
         one_line_per_frame,
     );
+}
+
+#[test]
+fn parked_receivers_finish_when_the_supervisor_stops() {
+    require_codegen();
+    let dir = tempfile::tempdir().expect("parked receiver directory");
+    let bin = compile_to_native(
+        &parked_for_await_receiver_handoff_source(3),
+        dir.path(),
+        "parked_receiver_teardown",
+    );
+    assert_parked_for_await_receiver_work(&bin, 3, "supervisor stop");
 }
 
 /// Direct `Receiver<string>` ownership handoff under the hard lifecycle edge:

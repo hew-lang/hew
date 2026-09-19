@@ -2301,8 +2301,7 @@ order:
 1. deferred actions, innermost block first and LIFO within a block, before
    that scope's owned releases;
 2. locals, innermost scope first and in reverse binding order within a scope;
-3. a collection's elements before its own storage - a vector's in index
-   order, a fixed array's in reverse index order;
+3. a collection's elements in index order, then the collection's own storage;
 4. a record's or an enum payload's fields in reverse declaration order.
 
 An actor's terminal sequence is §9 item 9. This order is observable, because a

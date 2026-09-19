@@ -1,6 +1,6 @@
 // A fixed array's indexed assignment releases the element it displaced. The
 // failing `close` is the frame's failure and the array's remaining elements
-// are still released, in reverse index order.
+// are still released, in index order.
 #[resource]
 type Conn { fd: i64, }
 

@@ -1,0 +1,10 @@
+[[case]]
+id = "resource-close-collection-order"
+intent = "Arrays and vectors release elements in index order inside a record whose fields release in reverse declaration order, with each collection completed before the next field and surrounding local."
+source = "cases/resource-close-collection-order.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "connected\nclose 5\nclose 1\nclose 2\nclose 3\nclose 4\nclose 0\n"
+exit = 0

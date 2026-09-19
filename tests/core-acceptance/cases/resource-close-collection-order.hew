@@ -1,0 +1,27 @@
+// Record fields close in reverse declaration order, while arrays and vectors
+// both close in index order. Each nested collection finishes before its sibling.
+#[resource]
+type Connection {
+    id: i64,
+}
+
+impl Connection {
+    fn close(consume self) {
+        println(f"close {self.id}");
+    }
+}
+
+type Connections {
+    outgoing: Vec<Connection>,
+    incoming: [Connection; 2],
+}
+
+fn main() {
+    let _before = Connection { id: 0 };
+    var outgoing: Vec<Connection> = [];
+    outgoing.push(Connection { id: 3 });
+    outgoing.push(Connection { id: 4 });
+    let _connections = Connections { outgoing: outgoing, incoming: [Connection { id: 1 }, Connection { id: 2 }] };
+    let _after = Connection { id: 5 };
+    println("connected");
+}

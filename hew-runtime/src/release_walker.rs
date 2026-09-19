@@ -46,13 +46,12 @@ use crate::hashmap::HewLayoutHashMap;
 #[derive(Clone, Copy)]
 pub(crate) enum ReleaseItem {
     /// Expand a vector into its elements and then its own storage.
-    Vector { vec: *mut HewVec, reverse: bool },
+    Vector { vec: *mut HewVec },
     /// Release elements `[next, end)` of `vec`, one per step.
     VectorElements {
         vec: *mut HewVec,
         next: usize,
         end: usize,
-        reverse: bool,
     },
     /// Release the vector's element buffer and header.
     VectorStorage { vec: *mut HewVec },
@@ -270,13 +269,10 @@ unsafe fn run(item: ReleaseItem) {
     // SAFETY: forwarded ownership contract; each helper documents its own.
     unsafe {
         match item {
-            ReleaseItem::Vector { vec, reverse } => crate::vec::expand_vector(vec, reverse),
-            ReleaseItem::VectorElements {
-                vec,
-                next,
-                end,
-                reverse,
-            } => crate::vec::release_element_chunk(vec, next, end, reverse),
+            ReleaseItem::Vector { vec } => crate::vec::expand_vector(vec),
+            ReleaseItem::VectorElements { vec, next, end } => {
+                crate::vec::release_element_chunk(vec, next, end);
+            }
             ReleaseItem::VectorStorage { vec } => crate::vec::free_vector_storage(vec),
             ReleaseItem::Map { map } => crate::hashmap::expand_map(map),
             ReleaseItem::MapSlots { map, next } => crate::hashmap::release_slot_chunk(map, next),

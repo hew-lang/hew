@@ -434,7 +434,7 @@ pub enum CloneAction {
     Aggregate(PhysicalAggregateId),
     Variant(PhysicalVariantId),
     Vector(PhysicalVectorId),
-    /// Fixed-array element storage with reverse-order cleanup.
+    /// Fixed-array element storage with index-order cleanup.
     Array(PhysicalVectorId),
     Map(PhysicalMapId),
     Set(PhysicalSetId),
@@ -462,7 +462,7 @@ pub enum DestroyAction {
     Aggregate(PhysicalAggregateId),
     Variant(PhysicalVariantId),
     Vector(PhysicalVectorId),
-    /// Fixed-array element storage with reverse-order cleanup.
+    /// Fixed-array element storage with index-order cleanup.
     Array(PhysicalVectorId),
     Map(PhysicalMapId),
     Set(PhysicalSetId),
@@ -10757,6 +10757,56 @@ mod tests {
         });
         let error = verify_physical_module(&physical).expect_err("fault cannot expose result");
         assert!(error.message.contains("reads uninitialized storage 0"));
+    }
+
+    #[test]
+    fn displaced_release_cannot_bypass_its_fault_dispatch() {
+        let semantic = lower_source(
+            r#"
+            #[resource]
+            type Connection { id: i64 }
+            impl Connection {
+                fn close(consume self) { panic("close failed"); }
+            }
+            fn main() {
+                var values: Vec<Connection> = [];
+                values.push(Connection { id: 1 });
+                values.set(0, Connection { id: 2 });
+                println("unreached");
+            }
+            "#,
+        );
+        let mut physical = lower_physical_module(&semantic, target_for_inventory(&semantic))
+            .expect("displaced release lowers with fault cleanup")
+            .into_unverified();
+        let function = physical
+            .functions
+            .iter_mut()
+            .find(|function| {
+                function.blocks.iter().any(|block| {
+                    matches!(
+                        block.terminator,
+                        PhysicalTerminator::RuntimeCall {
+                            action: PhysicalRuntimeAction {
+                                family: RuntimeCallFamily::Vector(hew_types::VecValueOp::Set),
+                                ..
+                            },
+                            ..
+                        }
+                    )
+                })
+            })
+            .expect("vector set caller");
+        // Removing the dispatch must not let a failing close resume source
+        // execution on the runtime call's normal successor.
+        for block in &mut function.blocks {
+            if let PhysicalTerminator::CleanupDispatch { normal, .. } = &block.terminator {
+                block.terminator = PhysicalTerminator::Goto(normal.clone());
+            }
+        }
+        let error = verify_physical_module(&physical)
+            .expect_err("the caller owns a possible displaced-release fault");
+        assert!(error.message.contains("fault"), "{}", error.message);
     }
 
     #[test]

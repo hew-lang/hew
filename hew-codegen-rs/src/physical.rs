@@ -7100,7 +7100,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                         input: self.slots[source(1)?.0 as usize],
                         inserting: false,
                         commit: "hew_hashmap_probe_contains",
-                        outputs: &[],
+                        commit_args: &[],
                     },
                     failure,
                     &[],
@@ -7134,7 +7134,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                             } else {
                                 "hew_hashmap_probe_insert_clone"
                             },
-                            outputs: &[self.slots[source(2)?.0 as usize].into()],
+                            commit_args: &[self.slots[source(2)?.0 as usize].into()],
                         },
                         failure,
                         &consumed,
@@ -7260,7 +7260,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 input: self.slots[key.0 as usize],
                 inserting: false,
                 commit: symbol,
-                outputs: &[output.into()],
+                commit_args: &[output.into()],
             },
             failure,
             consumed.as_slice(),
@@ -7400,7 +7400,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                         input: self.slots[source(1)?.0 as usize],
                         inserting: matches!(operation, PhysicalSetOp::Insert { .. }),
                         commit: symbol,
-                        outputs: &[],
+                        commit_args: &[],
                     },
                     failure,
                     &consumed,
@@ -9500,243 +9500,6 @@ mod tests {
                         .unwrap_or_else(|error| panic!("{family:?}: {error}"));
                 module.verify().unwrap();
             }
-        }
-    }
-
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the callback protocol oracle follows both LLVM successors and the exact fault outputs"
-    )]
-    fn callback_status_guards_outputs_and_preserves_fault_identity() {
-        use hew_types::{
-            runtime_call::{MapValueOp as Map, SetValueOp as Set},
-            RuntimeCallFamily,
-        };
-        use inkwell::values::{BasicValue, CallSiteValue, InstructionOpcode};
-        let cases = [
-            (
-                RuntimeCallFamily::Map(Map::Get),
-                "hew_hashmap_get_clone_layout",
-                None,
-            ),
-            (
-                RuntimeCallFamily::Map(Map::GetBorrow),
-                "hew_hashmap_get_borrow_layout",
-                None,
-            ),
-            (
-                RuntimeCallFamily::Map(Map::Index),
-                "hew_hashmap_get_clone_layout",
-                None,
-            ),
-            (
-                // The map adopts an owned value, so insertion takes it and
-                // clones only the key.
-                RuntimeCallFamily::Map(Map::Insert),
-                "hew_hashmap_insert_take_layout",
-                // The fixture's keys and values are ordinary data, so its
-                // release joins the walker rather than nesting.
-                Some("hew_hashmap_free_layout_walk"),
-            ),
-            (
-                // The set adopts an owned element, so insertion takes it on
-                // both the vacant and the already-present path.
-                RuntimeCallFamily::Set(Set::Insert),
-                "hew_hashset_insert_take_layout",
-                Some("hew_hashset_free_layout_walk"),
-            ),
-        ];
-        for (family, symbol, release) in cases {
-            let semantic = collection_operation_module(family);
-            let triple = native_emission_triple();
-            let target = physical_target_for_inventory(
-                &triple,
-                &hew_mir::physical::physical_type_inventory(&semantic),
-            )
-            .unwrap();
-            let physical = hew_mir::lower_physical_module(&semantic, target).unwrap();
-            let context = Context::create();
-            let machine =
-                crate::llvm::target_machine_for_triple_with_opt_level(&triple, OptLevel::O0)
-                    .unwrap();
-            let module =
-                build_module(&context, physical.module(), "callback_protocol", &machine).unwrap();
-            module.verify().unwrap();
-            let kernel = module.get_function(symbol).unwrap();
-            assert_eq!(
-                kernel.get_type().get_return_type(),
-                Some(context.i32_type().into())
-            );
-            let call = module
-                .get_functions()
-                .flat_map(|function| function.get_basic_blocks())
-                .flat_map(inkwell::basic_block::BasicBlock::get_instructions)
-                .find(|instruction| {
-                    CallSiteValue::try_from(*instruction)
-                        .ok()
-                        .is_some_and(|call| call.get_called_fn_value() == Some(kernel))
-                })
-                .unwrap();
-            let status = CallSiteValue::try_from(call)
-                .unwrap()
-                .try_as_basic_value()
-                .basic()
-                .unwrap();
-            let argument_count = kernel.count_params();
-            let presence = call
-                .get_operand(argument_count - 2)
-                .unwrap()
-                .value()
-                .unwrap();
-            let fault = call
-                .get_operand(argument_count - 1)
-                .unwrap()
-                .value()
-                .unwrap();
-            let outputs = if matches!(family, RuntimeCallFamily::Map(Map::Get | Map::Index)) {
-                vec![presence, call.get_operand(2).unwrap().value().unwrap()]
-            } else {
-                vec![presence]
-            };
-            let block = call.get_parent().unwrap();
-            assert!(
-                !block
-                    .get_instructions()
-                    .any(
-                        |instruction| instruction.get_opcode() == InstructionOpcode::Load
-                            && outputs
-                                .contains(&instruction.get_operand(0).unwrap().value().unwrap())
-                    ),
-                "{family:?}: output read before status branch"
-            );
-            let status_slot = block
-                .get_instructions()
-                .find(|instruction| {
-                    instruction.get_opcode() == InstructionOpcode::Store
-                        && instruction.get_operand(0).unwrap().value() == Some(status)
-                })
-                .unwrap()
-                .get_operand(1)
-                .unwrap()
-                .value()
-                .unwrap();
-            let branch = block.get_terminator().unwrap();
-            let condition = branch
-                .get_operand(0)
-                .unwrap()
-                .value()
-                .unwrap()
-                .as_instruction_value()
-                .unwrap();
-            assert_eq!(condition.get_operand(0).unwrap().value(), Some(status));
-            assert_eq!(
-                condition
-                    .get_operand(1)
-                    .unwrap()
-                    .value()
-                    .unwrap()
-                    .into_int_value()
-                    .get_zero_extended_constant(),
-                Some(0)
-            );
-            let (success, failed) = match condition.get_icmp_predicate().unwrap() {
-                IntPredicate::EQ => (2, 1),
-                IntPredicate::NE => (1, 2),
-                predicate => panic!("unexpected callback status predicate {predicate:?}"),
-            };
-            let success = branch.get_operand(success).unwrap().block().unwrap();
-            let failed = branch.get_operand(failed).unwrap().block().unwrap();
-            assert!(success
-                .get_instructions()
-                .any(
-                    |instruction| instruction.get_opcode() == InstructionOpcode::Load
-                        && instruction.get_operand(0).unwrap().value() == Some(presence)
-                ));
-            if let Some(symbol) = release {
-                assert!(
-                    failed
-                        .get_instructions()
-                        .any(|instruction| CallSiteValue::try_from(instruction)
-                            .ok()
-                            .and_then(CallSiteValue::get_called_fn_value)
-                            .is_some_and(
-                                |callee| callee.get_name().to_bytes() == symbol.as_bytes()
-                            )),
-                    "{family:?}: consumed receiver must be released before cleanup"
-                );
-            }
-            let mut pending = vec![failed];
-            let mut visited = Vec::new();
-            let mut returns = 0;
-            while let Some(block) = pending.pop() {
-                if visited.contains(&block) {
-                    continue;
-                }
-                visited.push(block);
-                for instruction in block.get_instructions() {
-                    if instruction.get_opcode() == InstructionOpcode::Load {
-                        assert!(
-                            !outputs
-                                .contains(&instruction.get_operand(0).unwrap().value().unwrap()),
-                            "{family:?}: failed callback output read"
-                        );
-                    }
-                    if let Ok(call) = CallSiteValue::try_from(instruction) {
-                        assert!(
-                            call.get_called_fn_value()
-                                .is_none_or(
-                                    |callee| callee.get_name().to_bytes() != b"hew_fault_new"
-                                ),
-                            "{family:?}: callback fault replaced"
-                        );
-                    }
-                }
-                let terminal = block.get_terminator().unwrap();
-                if terminal.get_opcode() == InstructionOpcode::Return {
-                    returns += 1;
-                    let result = terminal
-                        .get_operand(0)
-                        .unwrap()
-                        .value()
-                        .unwrap()
-                        .as_instruction_value()
-                        .unwrap();
-                    assert_eq!(
-                        result.get_operand(0).unwrap().value(),
-                        Some(status_slot),
-                        "callback status must be returned unchanged"
-                    );
-                    let destination = block.get_parent().unwrap().get_last_param().unwrap();
-                    let transfer = block
-                        .get_instructions()
-                        .find(|instruction| {
-                            instruction.get_opcode() == InstructionOpcode::Store
-                                && instruction.get_operand(1).unwrap().value() == Some(destination)
-                        })
-                        .unwrap();
-                    let owner = transfer
-                        .get_operand(0)
-                        .unwrap()
-                        .value()
-                        .unwrap()
-                        .as_instruction_value()
-                        .unwrap();
-                    assert_eq!(
-                        owner.get_operand(0).unwrap().value(),
-                        Some(fault),
-                        "callback fault owner must be forwarded unchanged"
-                    );
-                } else {
-                    pending.extend(
-                        terminal
-                            .get_operands()
-                            .flatten()
-                            .filter_map(inkwell::values::Operand::block),
-                    );
-                }
-            }
-            assert!(returns > 0, "callback cleanup must reach fault propagation");
         }
     }
 

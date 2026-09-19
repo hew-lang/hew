@@ -1234,7 +1234,7 @@ impl<'ctx> DecodeEmitter<'_, 'ctx> {
                 } else {
                     "hew_hashset_probe_insert_clone"
                 },
-                outputs: &outputs,
+                commit_args: &outputs,
             },
             false,
         )?;

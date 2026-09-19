@@ -139,6 +139,10 @@ fn semantic_value_callees(
     callees
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one terminator dispatch closes direct and selected callback dependencies"
+)]
 pub(super) fn semantic_callables(checked: &hew_sir::CheckedModule<'_>) -> BTreeSet<CallableId> {
     let module = checked.module();
     let mut resumable = BTreeSet::new();
@@ -259,6 +263,10 @@ pub(super) fn semantic_callables(checked: &hew_sir::CheckedModule<'_>) -> BTreeS
     close_callers(resumable, &calls)
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "verify physical suspension against every direct and selected callback edge"
+)]
 pub(super) fn verify_callables(module: &PhysicalModule) -> Result<(), PhysicalError> {
     let mut resumable = BTreeSet::new();
     let mut calls = BTreeMap::<_, Vec<_>>::new();

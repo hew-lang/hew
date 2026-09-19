@@ -11,7 +11,7 @@ pub(super) struct CollectionProbe<'a, 'ctx> {
     pub input: PointerValue<'ctx>,
     pub inserting: bool,
     pub commit: &'static str,
-    pub outputs: &'a [BasicMetadataValueEnum<'ctx>],
+    pub commit_args: &'a [BasicMetadataValueEnum<'ctx>],
 }
 
 pub(super) struct CollectionCallbacks<'a, 'ctx> {
@@ -247,7 +247,7 @@ impl<'ctx> CollectionCallbacks<'_, 'ctx> {
             .llvm_ctx("enter collection callback cleanup")?;
         self.values.builder.position_at_end(ready);
         let mut arguments = vec![probe.into()];
-        arguments.extend_from_slice(operation.outputs);
+        arguments.extend_from_slice(operation.commit_args);
         let parameters = vec![pointer.into(); arguments.len()];
         let commit = get_or_declare_external(
             self.values.llvm,

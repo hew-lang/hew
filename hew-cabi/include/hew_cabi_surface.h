@@ -3029,14 +3029,14 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1618] = {
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_hashset_probe_insert_clone",
      "{\"native\": \"fn hew_hashset_probe_insert_clone( *mut "
-     "HewLayoutMapProbe) -> bool\", \"wasm32-wasip1\": \"fn "
-     "hew_hashset_probe_insert_clone( *mut HewLayoutMapProbe) -> bool\"}",
+     "HewLayoutMapProbe, ) -> bool\", \"wasm32-wasip1\": \"fn "
+     "hew_hashset_probe_insert_clone( *mut HewLayoutMapProbe, ) -> bool\"}",
      "native,wasm32-wasip1", "non-declarable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_hashset_probe_insert_take",
-     "{\"native\": \"fn hew_hashset_probe_insert_take( *mut HewLayoutMapProbe) "
-     "-> bool\", \"wasm32-wasip1\": \"fn hew_hashset_probe_insert_take( *mut "
-     "HewLayoutMapProbe) -> bool\"}",
+     "{\"native\": \"fn hew_hashset_probe_insert_take( *mut HewLayoutMapProbe, "
+     ") -> bool\", \"wasm32-wasip1\": \"fn hew_hashset_probe_insert_take( *mut "
+     "HewLayoutMapProbe, ) -> bool\"}",
      "native,wasm32-wasip1", "non-declarable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_hashset_probe_remove",

@@ -482,19 +482,23 @@ unsafe fn resume_suspended_activation(actor: *mut HewActor) {
     // refused resume, which ran nothing at all) leaves the slot holding the only
     // reference to a caller still parked in `hew_reply_wait`. Clear the stash
     // either way so a re-armed multi-await actor does not reuse a freed channel.
-    // On Pending the handler re-parked, so the stash stays for the next resume.
+    // A reply may also be consumed before a Pending result: disposing of an
+    // undelivered reply can suspend. That continuation no longer owns a sender
+    // reference, so never reinstall the channel on its next resume.
     let resume_reply_consumed = current_reply_channel_consumed_on(&raw mut resume_context);
     let restored = crate::execution_context::set_current_context(prev_context);
     debug_assert_eq!(restored, &raw mut resume_context);
+    if resume_reply_consumed {
+        a.suspended_reply_channel
+            .store(std::ptr::null_mut(), Ordering::Release);
+        release_parked_ask_channel(a);
+    }
     if matches!(poll, Some(crate::cont::ResumePoll::Ready) | None) {
         // The parked ask is over either way; drop the drain gate's reference
         // (a no-op inside `retire_suspended_reply_channel` on the else arm —
         // the swap keeps it exactly once).
         release_parked_ask_channel(a);
-        if resume_reply_consumed {
-            a.suspended_reply_channel
-                .store(std::ptr::null_mut(), Ordering::Release);
-        } else {
+        if !resume_reply_consumed {
             retire_suspended_reply_channel(a);
         }
         clear_suspended_cancel_token(a);

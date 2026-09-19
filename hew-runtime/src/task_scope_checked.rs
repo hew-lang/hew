@@ -9,7 +9,7 @@ use super::{
     hew_task_complete_threaded, hew_task_free, hew_task_new, hew_task_scope_spawn,
     hew_task_spawn_thread, HewCancellationToken, HewTask, HewTaskScope,
 };
-use crate::callable::{hew_callable_drop, HewCallableValue};
+use crate::callable::HewCallableValue;
 use crate::coro_root::hew_coro_run_callable;
 use crate::coro_state::{hew_coro_state_free, hew_coro_state_new, HewCoroState};
 use crate::fault::{hew_fault_combine, hew_fault_drop, HewFault, HEW_FAULT_CANCELLED};
@@ -78,12 +78,14 @@ impl CheckedTaskState {
 
 impl Drop for CheckedTaskState {
     fn drop(&mut self) {
-        // SAFETY: the final task owner has exclusive access; each remaining
-        // capture, result and fault represents one untransferred obligation.
+        // The scope barrier owns every consuming callback. Final handle drop
+        // reclaims only raw result storage and an unobserved fault diagnostic.
+        assert!(
+            self.callable.is_none(),
+            "task invocation must consume its captures"
+        );
+        // SAFETY: the final task owner has exclusive access to raw storage.
         unsafe {
-            if let Some(mut callable) = self.callable.take() {
-                hew_callable_drop(&raw mut callable);
-            }
             assert!(
                 !self.initialized,
                 "task result must be consumed before its final storage owner"

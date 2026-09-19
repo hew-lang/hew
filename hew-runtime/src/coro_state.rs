@@ -116,7 +116,10 @@ pub unsafe extern "C" fn hew_coro_state_child(parent: *const HewCoroState) -> *m
     // SAFETY: parent retains both inputs for child construction.
     let child = unsafe { hew_coro_state_new(parent.waker.descriptor(), parent.token) };
     // SAFETY: the new child is exclusively owned and its parent remains live.
-    unsafe { (*child).actor_turn = parent.actor_turn };
+    unsafe {
+        (*child).actor_turn = parent.actor_turn;
+        (*child).actor_message_type = parent.actor_message_type;
+    }
     child
 }
 

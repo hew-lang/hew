@@ -142,7 +142,7 @@ pub(crate) unsafe fn move_elem_envelope(
 #[allow(dead_code, reason = "used by the wasm32 channel backing")]
 pub(crate) fn drop_elem_envelope(
     layout: Option<&HewValueLayout>,
-    mut envelope: Vec<u8>,
+    envelope: Vec<u8>,
     context: &str,
 ) {
     let Some(layout) = layout else {
@@ -157,10 +157,12 @@ pub(crate) fn drop_elem_envelope(
             "owned envelope size does not match the stamped witness",
         );
     }
-    if let Some(drop_fn) = layout.drop_fn {
-        // SAFETY: a layout-managed envelope contains one live deep-cloned
-        // element. This path owns the envelope and is its only disposer.
-        unsafe { drop_fn(envelope.as_mut_ptr().cast()) };
+    // SAFETY: the envelope transfers its initialized owner into aligned storage.
+    // Synchronous foreign callers must supply a non-suspending release recipe.
+    unsafe {
+        let cursor =
+            crate::release_walker::HewReleaseCursor::detached(envelope.as_ptr().cast(), *layout);
+        crate::release_walker::hew_release_sync(cursor);
     }
 }
 

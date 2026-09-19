@@ -40,7 +40,9 @@ use std::sync::{Condvar, Mutex};
 use std::time::Duration;
 
 use hew_cabi::sink::TrySendResult;
-use hew_cabi::vec::{HewTypeOwnershipKind, HewValueLayout};
+#[cfg(test)]
+use hew_cabi::vec::HewTypeOwnershipKind;
+use hew_cabi::vec::HewValueLayout;
 
 use crate::actor::HewActor;
 use crate::lifetime::live_actors::ActorIncarnation;
@@ -272,25 +274,8 @@ impl ChannelCore {
     /// the envelope's owned heap is dropped via `drop_fn` exactly once; for
     /// every other element kind the `Vec<u8>` drop is sufficient. Runs OUTSIDE
     /// the core lock (the thunk may free arbitrary owned heap).
-    fn drop_envelope(layout: Option<&HewValueLayout>, mut env: Vec<u8>) {
-        let Some(l) = layout else {
-            return;
-        };
-        if l.ownership_kind != HewTypeOwnershipKind::LayoutManaged {
-            return;
-        }
-        if env.len() != l.size {
-            crate::channel_common::abort_elem_witness(
-                "ChannelCore::drop_envelope",
-                "owned envelope size does not match the stamped witness",
-            );
-        }
-        if let Some(drop_fn) = l.drop_fn {
-            // SAFETY: the envelope holds one live owned element (deep-copied in
-            // by the send edge and never consumed); the thunk releases its
-            // owned heap exactly once. The envelope bytes are dead afterwards.
-            unsafe { drop_fn(env.as_mut_ptr().cast()) };
-        }
+    fn drop_envelope(layout: Option<&HewValueLayout>, env: Vec<u8>) {
+        crate::channel_common::drop_elem_envelope(layout, env, "ChannelCore::drop_envelope");
     }
 
     /// Deposit a Data readiness signal and wake the parked peer. Runs OUTSIDE

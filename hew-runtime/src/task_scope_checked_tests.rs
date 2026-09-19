@@ -1,5 +1,5 @@
 use super::*;
-use crate::callable::{hew_callable_env_alloc, HewCallableDescriptor};
+use crate::callable::{hew_callable_drop, hew_callable_env_alloc, HewCallableDescriptor};
 use crate::coro_state::{hew_coro_state_finish, hew_coro_state_is_cancelled};
 use crate::wake::blocking::Readiness;
 use hew_cabi::value::HewTypeOwnershipKind;

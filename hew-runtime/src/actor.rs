@@ -4079,8 +4079,8 @@ pub unsafe extern "C" fn hew_actor_stop(actor: *mut HewActor) {
     // A readiness wake may already have queued a parked continuation. Its
     // activation resumes the existing turn rather than draining the closed
     // mailbox, so it needs the same stop latch as a still-suspended turn.
-    let queued_continuation = state == HewActorState::Runnable as i32
-        && !a.suspended_cont.load(Ordering::Acquire).is_null();
+    let queued_continuation =
+        state == HewActorState::Runnable as i32 && crate::coro_exec::has_live_parked_cont(a);
     if state != HewActorState::Running as i32
         && state != HewActorState::Suspended as i32
         && !queued_continuation
@@ -6631,6 +6631,10 @@ unsafe fn hew_actor_trap_inner(
             a.pending_external_trap_code.store(0, Ordering::Release);
             break;
         }
+    }
+
+    if terminal == HewActorState::Crashed as i32 {
+        crate::fault::note_actor_crash(actor_id);
     }
 
     let fault_record = publish_crash_fault_record(terminal, supervisor, supervisor_child_index);
@@ -12629,6 +12633,31 @@ mod tests {
     }
 
     #[test]
+    fn logical_fault_allocation_does_not_publish_an_actor_crash() {
+        let (actor, mailbox) = make_stop_test_actor_with_id(91_003, HewActorState::Running);
+        let mut context = crate::execution_context::HewExecutionContext {
+            actor,
+            actor_id: 91_003,
+            ..crate::execution_context::HewExecutionContext::default()
+        };
+        let previous = crate::execution_context::set_current_context(&raw mut context);
+        let fault = crate::fault::hew_fault_new(crate::internal::types::HEW_TRAP_USER_PANIC);
+        assert_eq!(crate::fault::crashing_owner(), None);
+        // SAFETY: the fault and both fixture allocations remain uniquely owned.
+        unsafe {
+            let message = crate::fault::hew_fault_take_message(fault);
+            hew_cabi::string::string_release(message);
+            assert_eq!(crate::fault::crashing_owner(), None);
+            crate::fault::note_actor_crash(91_003);
+            assert_eq!(crate::fault::crashing_owner(), Some(91_003));
+            crate::fault::release_actor_state(91_003, false, || {});
+            let _ = crate::execution_context::set_current_context(previous);
+            mailbox::hew_mailbox_free(mailbox);
+            drop(Box::from_raw(actor));
+        }
+    }
+
+    #[test]
     fn stop_queued_continuation_latches_cancellation() {
         let (actor, mailbox) = make_stop_test_actor(HewActorState::Runnable);
         // SAFETY: this fixture owns both allocations. The parked pointer is
@@ -12637,6 +12666,10 @@ mod tests {
             (*actor)
                 .suspended_cont
                 .store(ptr::dangling_mut(), Ordering::Release);
+            (*actor).cont_tag.store(
+                crate::internal::types::ContTag::Parked as i32,
+                Ordering::Release,
+            );
             hew_actor_stop(actor);
             assert!(mailbox::mailbox_stop_requested(mailbox));
             assert_eq!(

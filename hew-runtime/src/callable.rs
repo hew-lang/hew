@@ -156,40 +156,9 @@ pub unsafe extern "C" fn hew_callable_clone(
 /// valid until cleanup completes, and callbacks cannot unwind across C.
 #[no_mangle]
 pub unsafe extern "C" fn hew_callable_drop(value: *mut HewCallableValue) {
-    if value.is_null() {
-        return;
-    }
-    // SAFETY: The carrier slot is writable. Clearing before callbacks detaches
-    // the owner and makes subsequent drops of that slot inert.
-    let carrier = unsafe {
-        value.replace(HewCallableValue {
-            environment: ptr::null_mut(),
-            descriptor: ptr::null(),
-        })
-    };
-    if carrier.descriptor.is_null() && carrier.environment.is_null() {
-        return;
-    }
-    // SAFETY: A live carrier's descriptor and layout must remain valid.
-    let Some(layout) = (unsafe { environment_layout(carrier.descriptor) }) else {
-        std::process::abort();
-    };
-    if (layout.size == 0) != carrier.environment.is_null() {
-        std::process::abort();
-    }
-    if let Some(drop) = layout.drop_fn {
-        // SAFETY: The compiler callback reads its mask and releases only live
-        // captures in this exact environment. It does not free outer storage.
-        unsafe { drop(carrier.environment) };
-    }
-    // SAFETY: The detached allocation is released once with its original layout.
-    unsafe {
-        crate::mem::hew_dealloc(
-            carrier.environment.cast(),
-            layout.size as u64,
-            layout.align as u64,
-        );
-    }
+    // SAFETY: foreign synchronous callers transfer the same carrier ownership
+    // as checked callers; the shared driver rejects suspending descriptors.
+    unsafe { crate::release_walker::hew_release_sync(hew_callable_release_begin(value)) };
 }
 
 /// Transfer a callable environment to its exact consuming release traversal.

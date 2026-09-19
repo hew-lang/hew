@@ -211,6 +211,13 @@ pub unsafe extern "C" fn hew_checked_generator_poll(
         generator.state =
             unsafe { hew_coro_state_new(&raw const descriptor, hew_coro_state_token(parent)) };
     }
+    // The generator executes in its current consumer's actor turn, including
+    // after ownership moves to another actor between yields.
+    // SAFETY: both invocation states remain live throughout this poll.
+    unsafe {
+        (*generator.state).actor_turn = (*parent).actor_turn;
+        (*generator.state).actor_message_type = (*parent).actor_message_type;
+    }
     if closing {
         // SAFETY: this owner retains the child invocation state.
         unsafe { hew_coro_state_cancel(generator.state) };
@@ -240,6 +247,18 @@ pub unsafe extern "C" fn hew_checked_generator_poll(
             prev_context: previous,
             ..HewExecutionContext::default()
         };
+        // Preserve actor admission, supervisor and tracing identity while the
+        // generator supplies its own cancellation and reply boundaries.
+        // SAFETY: the previous context is installed for the duration of this poll.
+        if let Some(parent_context) = unsafe { previous.as_ref() } {
+            context.actor = parent_context.actor;
+            context.actor_id = parent_context.actor_id;
+            context.parent_supervisor = parent_context.parent_supervisor;
+            context.supervisor_child_index = parent_context.supervisor_child_index;
+            context.arena = parent_context.arena;
+            context.trace = parent_context.trace;
+            context.partition_policy = parent_context.partition_policy;
+        }
         let _previous = set_current_context(&raw mut context);
         if let Some(callable) = generator.callable.take() {
             // SAFETY: the compiler's once adapter owns environment cleanup on

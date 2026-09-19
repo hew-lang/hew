@@ -46,15 +46,10 @@ impl HewFault {
     }
 }
 
-/// Actors whose current turn is unwinding a crash. A pipe sink released
-/// while its owner is here marks the pipe faulted instead of publishing a
-/// clean EOF, so the consumer never mistakes a crash for the end of the data.
-///
-/// An entry is added when generated code raises a crash fault inside an
-/// actor turn (before its cleanup edges run) and removed by the actor's
-/// terminal teardown. Cancellation, deadline and race-loss codes are not
-/// crashes and never enter.
-static UNWINDING_ACTORS: std::sync::Mutex<Vec<u64>> = std::sync::Mutex::new(Vec::new());
+/// Actor incarnations whose terminal crash has been published. This supports
+/// resource disclosure from their legacy task threads; checked local cleanup
+/// carries its fault in the invocation state and never changes this registry.
+static CRASHED_ACTORS: std::sync::Mutex<Vec<u64>> = std::sync::Mutex::new(Vec::new());
 
 thread_local! {
     /// The crashed actor whose owned state this thread is releasing right
@@ -95,40 +90,23 @@ pub(crate) fn with_owning_actor<T>(id: u64, body: impl FnOnce() -> T) -> T {
     result
 }
 
-fn is_crash_code(code: i32) -> bool {
-    !matches!(
-        code,
-        HEW_FAULT_CANCELLED | HEW_FAULT_DEADLINE | HEW_FAULT_RACE_LOST
-    )
-}
-
-/// Record that the current actor turn, if any, is unwinding a crash.
-fn note_unwinding(code: i32) {
-    if !is_crash_code(code) {
-        return;
-    }
-    let actor = crate::actor::hew_actor_self();
-    if actor.is_null() {
-        return;
-    }
-    // SAFETY: the current context's actor is live for the turn that raised
-    // the fault.
-    let id = unsafe { (*actor).id };
-    let mut unwinding = UNWINDING_ACTORS
+/// Register an actual terminal crash before cancelling owned task work.
+pub(crate) fn note_actor_crash(id: u64) {
+    let mut crashed = CRASHED_ACTORS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if !unwinding.contains(&id) {
-        unwinding.push(id);
+    if !crashed.contains(&id) {
+        crashed.push(id);
     }
 }
 
 /// Release the owned state of actor `id` on its terminal teardown. While
 /// `release` runs, a pipe sink it drops learns whether the owner crashed.
 ///
-/// One call site: the actor's terminal free. Also retires the unwinding
-/// entry the crash raised, so the set only ever holds live crashed actors.
+/// One call site: the actor's terminal free. Also retires its terminal crash
+/// entry, so the registry only ever holds live crashed actors.
 pub(crate) fn release_actor_state(id: u64, crashed: bool, release: impl FnOnce()) {
-    UNWINDING_ACTORS
+    CRASHED_ACTORS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .retain(|unwinding| *unwinding != id);
@@ -143,7 +121,7 @@ pub(crate) fn release_actor_state(id: u64, crashed: bool, release: impl FnOnce()
 
 /// The crashed actor releasing a resource on the current thread, if the
 /// release belongs to a crash: either this thread is dropping a crashed
-/// actor's state, or the current actor turn is unwinding its own crash.
+/// actor's state, or its owning actor has published a terminal crash.
 #[must_use]
 pub(crate) fn crashing_owner() -> Option<u64> {
     let releasing = CRASH_RELEASING.with(std::cell::Cell::get);
@@ -154,7 +132,7 @@ pub(crate) fn crashing_owner() -> Option<u64> {
     let id = if actor.is_null() {
         // Not an actor turn. A task forked by an actor still releases that
         // actor's resources, and its scope is joined inside the crashing
-        // turn, so the owner is still recorded as unwinding here.
+        // turn, so the owner is still recorded as crashed here.
         OWNING_ACTOR.with(std::cell::Cell::get)
     } else {
         // SAFETY: the current context's actor is live for the current turn.
@@ -163,7 +141,7 @@ pub(crate) fn crashing_owner() -> Option<u64> {
     if id == 0 {
         return None;
     }
-    UNWINDING_ACTORS
+    CRASHED_ACTORS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .contains(&id)
@@ -177,7 +155,6 @@ pub(crate) fn crashing_owner() -> Option<u64> {
 #[no_mangle]
 #[must_use]
 pub extern "C" fn hew_fault_new(code: i32) -> *mut HewFault {
-    note_unwinding(code);
     Box::into_raw(Box::new(HewFault {
         code,
         message: None,
@@ -196,7 +173,6 @@ pub extern "C" fn hew_fault_new(code: i32) -> *mut HewFault {
 pub unsafe extern "C" fn hew_fault_new_panic(message: *const HewString) -> *mut HewFault {
     // SAFETY: the caller supplies a live length-carrying UTF-8 string borrow.
     let message = unsafe { string_as_str(message) }.into();
-    note_unwinding(HEW_TRAP_USER_PANIC);
     Box::into_raw(Box::new(HewFault {
         code: HEW_TRAP_USER_PANIC,
         message: Some(message),
@@ -220,7 +196,6 @@ pub unsafe extern "C" fn hew_fault_new_unhandled_failure(
 ) -> *mut HewFault {
     // SAFETY: the caller supplies a live length-carrying UTF-8 string borrow.
     let message = unsafe { string_as_str(message) }.into();
-    note_unwinding(crate::internal::types::HEW_TRAP_ACTOR_UNHANDLED_FAILURE);
     Box::into_raw(Box::new(HewFault {
         code: crate::internal::types::HEW_TRAP_ACTOR_UNHANDLED_FAILURE,
         message: Some(message),

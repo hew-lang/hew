@@ -11463,8 +11463,10 @@ impl RuntimeCallFamily {
     /// their calls also run a user `hash`/`eq` callback and leave on an
     /// explicit failure edge when one faults. A release sink armed around the
     /// whole call would not be disarmed on that edge, so those two keep the
-    /// trap path until the runtime arms a sink around the displaced drop
-    /// itself.
+    /// trap path until the callback emission ends its sink on both
+    /// continuations - folding the collected fault into the frame's record on
+    /// the normal edge and discarding it on the callback-fault edge, where the
+    /// frame already owns a fault.
     #[must_use]
     pub const fn displaced_argument(self) -> Option<usize> {
         match self {

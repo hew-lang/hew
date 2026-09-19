@@ -6690,14 +6690,6 @@ fn apply_operation(
     Ok(())
 }
 
-/// Arm the frame's fault slot for a release that can run an authored `close`.
-///
-/// The release is the frame's fault edge (D516): a failing close fills the
-/// frame's fault record, the frame keeps releasing what it still owns, and the
-/// outcome leaves through a cleanup dispatch. Marking the fault possible here
-/// is what makes every other rule in this verifier - no call, no suspension
-/// and no normal return while a fault is owned - hold SIR to emitting that
-/// dispatch.
 /// The release a runtime operation performs on the value it displaces.
 ///
 /// An operation whose family names a displaced argument replaces something its
@@ -6706,21 +6698,27 @@ fn apply_operation(
 fn displaced_release(
     module: &PhysicalModule,
     action: &PhysicalRuntimeAction,
-) -> Option<DestroyAction> {
-    action.family.displaced_argument()?;
-    match action.carrier {
-        PhysicalRuntimeCarrier::SharedHandle(glue) => {
-            shared_glue(module, glue).ok()?.payload.destroy
-        }
-        PhysicalRuntimeCarrier::Vector { glue, .. } => {
-            vector_glue(module, glue).ok()?.element.destroy
-        }
-        PhysicalRuntimeCarrier::Map { glue, .. } => map_glue(module, glue).ok()?.value.destroy,
-        PhysicalRuntimeCarrier::Set { glue, .. } => set_glue(module, glue).ok()?.element.destroy,
-        _ => None,
+) -> Result<Option<DestroyAction>, PhysicalError> {
+    if action.family.displaced_argument().is_none() {
+        return Ok(None);
     }
+    Ok(match action.carrier {
+        PhysicalRuntimeCarrier::SharedHandle(glue) => shared_glue(module, glue)?.payload.destroy,
+        PhysicalRuntimeCarrier::Vector { glue, .. } => vector_glue(module, glue)?.element.destroy,
+        PhysicalRuntimeCarrier::Map { glue, .. } => map_glue(module, glue)?.value.destroy,
+        PhysicalRuntimeCarrier::Set { glue, .. } => set_glue(module, glue)?.element.destroy,
+        _ => None,
+    })
 }
 
+/// Arm the frame's fault slot for a release that can run an authored `close`.
+///
+/// The release is the frame's fault edge (D516): a failing close fills the
+/// frame's fault record, the frame keeps releasing what it still owns, and the
+/// outcome leaves through a cleanup dispatch. Marking the fault possible here
+/// is what makes every other rule in this verifier - no call, no suspension
+/// and no normal return while a fault is owned - hold SIR to emitting that
+/// dispatch.
 fn arm_release_fault(
     module: &PhysicalModule,
     function: &PhysicalFunction,
@@ -7535,7 +7533,7 @@ fn terminator_successors(
             }
             // The call released what it displaced, so from its normal edge the
             // frame may own a fault and SIR owes the cleanup dispatch.
-            if displaced_release(module, action)
+            if displaced_release(module, action)?
                 .is_some_and(|release| module.releases.raises_fault(release))
             {
                 normal_state.fault = FaultState::MaybeActive;

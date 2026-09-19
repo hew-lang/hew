@@ -149,7 +149,7 @@ pub(crate) fn finish_actor_terminal(actor: &HewActor, state: i32) {
     completion.phase.store(3, Ordering::Release);
     if let Some(notice) = notice {
         // SAFETY: terminal ownership retains the supervisor across publication.
-        unsafe { notice.publish() };
+        unsafe { notice.publish_terminal_notification() };
     } else if state == HewActorState::Stopped as i32 {
         crate::monitor::notify_monitors_on_death(actor_id, state, 0);
     }

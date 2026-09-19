@@ -6409,7 +6409,7 @@ unsafe impl Send for TerminalNotification {}
 #[cfg(not(target_arch = "wasm32"))]
 impl TerminalNotification {
     /// Publish after cleanup while the actor still retains its supervisor.
-    pub(crate) unsafe fn publish(self) {
+    pub(crate) unsafe fn publish_terminal_notification(self) {
         let Self {
             actor_id,
             terminal,
@@ -6701,7 +6701,7 @@ unsafe fn hew_actor_trap_inner(
     if let Some(notice) = notice {
         // SAFETY: legacy terminal publication retains the same supervisor
         // lifetime through this tail as the original trap activation.
-        unsafe { notice.publish() };
+        unsafe { notice.publish_terminal_notification() };
     }
 }
 

@@ -124,7 +124,7 @@ pub(crate) fn wake(actor: &HewActor) {
     clippy::too_many_lines,
     reason = "one scheduler activation serializes payload and state cleanup through terminal publication"
 )]
-pub(crate) unsafe fn drive(actor: &HewActor) -> bool {
+pub(crate) unsafe fn drive_actor_cleanup(actor: &HewActor) -> bool {
     let Some(completion) = &actor.native_completion else {
         return false;
     };

@@ -3246,7 +3246,7 @@ fn activate_queued_actor(actor: *mut HewActor) {
     {
         // SAFETY: this worker owns the Running activation. Cleanup resumes
         // through the same incarnation wake protocol before another handler.
-        if unsafe { crate::actor_native::cleanup::drive(a) } {
+        if unsafe { crate::actor_native::cleanup::drive_actor_cleanup(a) } {
             return;
         }
     }

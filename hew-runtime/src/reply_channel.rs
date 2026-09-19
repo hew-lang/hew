@@ -78,6 +78,8 @@ pub struct HewReplyChannel {
     /// of a [`HewReplyDropFn`]; set once by the ask caller before submit (no
     /// race with any reply), read once at final free (after `refs` hits 0).
     reply_drop_fn: AtomicPtr<c_void>,
+    #[cfg(not(target_arch = "wasm32"))]
+    native_reply_release: Option<hew_cabi::value::HewValueReleaseStart>,
     /// Distinguishes allocator failure from a legitimate null reply.
     allocation_failed: AtomicBool,
     /// Reply-failure classification (`HEW_REPLY_FAIL_*`), first-write-wins.
@@ -153,6 +155,8 @@ pub extern "C" fn hew_reply_channel_new() -> *mut HewReplyChannel {
         value: ptr::null_mut(),
         value_size: 0,
         reply_drop_fn: AtomicPtr::new(ptr::null_mut()),
+        #[cfg(not(target_arch = "wasm32"))]
+        native_reply_release: None,
         allocation_failed: AtomicBool::new(false),
         fail_reason: AtomicI32::new(crate::internal::types::HEW_REPLY_FAIL_NONE),
         caller_actor_id: AtomicU64::new(0),

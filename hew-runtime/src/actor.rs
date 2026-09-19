@@ -2079,7 +2079,11 @@ enum FinalizeDecision {
 ///   free paths and routes `Suspended` to the same fail-closed leak — closing a
 ///   latent finalize-over-a-parked-frame on the cleanup path.
 fn decide_finalize_by_latch(a: &HewActor) -> FinalizeDecision {
-    if !a.checked_invocation.load(Ordering::Acquire).is_null() {
+    if !a.checked_invocation.load(Ordering::Acquire).is_null()
+        || a.native_completion
+            .as_ref()
+            .is_some_and(|c| c.cleanup_in_progress())
+    {
         return FinalizeDecision::Skip;
     }
     match a.actor_state.compare_exchange(
@@ -2713,6 +2717,10 @@ pub type HewNativeCrashFn =
 struct ActorSpawnConfig {
     #[cfg(not(target_arch = "wasm32"))]
     native_crash: Option<HewNativeCrashFn>,
+    #[cfg(not(target_arch = "wasm32"))]
+    native_state_release: Option<hew_cabi::value::HewValueReleaseStart>,
+    #[cfg(not(target_arch = "wasm32"))]
+    rejected_state_release: *mut *mut crate::release_walker::HewReleaseCursor,
     dispatch_ownership: HewDispatchOwnership,
     /// The generated `#[on(stop)]` sequence, installed before publication so
     /// no stop request can observe an actor without its hooks.
@@ -2766,12 +2774,24 @@ unsafe fn free_spawn_mailbox(mailbox: *mut c_void) {
 unsafe fn cleanup_failed_spawn(config: &ActorSpawnConfig, init_state: *mut c_void) {
     // SAFETY: caller guarantees these pointers are owned by the in-progress spawn.
     unsafe {
-        if !config.state.is_null() {
-            if let Some(drop) = config.state_drop_fn {
-                drop(config.state);
+        if let Some(start) = config.native_state_release {
+            assert!(!config.rejected_state_release.is_null());
+            config
+                .rejected_state_release
+                .write(crate::release_walker::HewReleaseCursor::payload(
+                    config.state,
+                    config.state_size,
+                    start,
+                    true,
+                ));
+        } else {
+            if !config.state.is_null() {
+                if let Some(drop) = config.state_drop_fn {
+                    drop(config.state);
+                }
             }
+            crate::mem::buf_free(config.state);
         }
-        crate::mem::buf_free(config.state);
         if !init_state.is_null() {
             crate::mem::buf_free(init_state);
         }
@@ -2893,9 +2913,12 @@ fn build_spawned_actor(
         #[cfg(not(target_arch = "wasm32"))]
         native_completion: (config.dispatch_ownership == HewDispatchOwnership::UniqueEnvelope)
             .then(|| {
-                std::sync::Arc::new(crate::actor_native::NativeActorCompletion::with_crash(
-                    config.native_crash,
-                ))
+                let completion =
+                    crate::actor_native::NativeActorCompletion::with_crash(config.native_crash);
+                completion
+                    .cleanup
+                    .set_state_release(config.native_state_release);
+                std::sync::Arc::new(completion)
             }),
     })
 }
@@ -3021,6 +3044,8 @@ unsafe fn spawn_actor_internal(config: ActorSpawnConfig) -> *mut HewActor {
         unsafe { cleanup_failed_spawn(&config, init_state) };
         return ptr::null_mut();
     };
+    let rejected_state_release = config.rejected_state_release;
+    let state_release = config.native_state_release;
     let actor = build_spawned_actor(config, identity, init_state, arena);
     let raw = Box::into_raw(actor);
     // The single site that mints an actor box. Counted here, at the allocation
@@ -3033,7 +3058,19 @@ unsafe fn spawn_actor_internal(config: ActorSpawnConfig) -> *mut HewActor {
     if !unsafe { finalize_spawned_actor(raw, identity.id) } {
         // SAFETY: registration failed after liveness was rolled back; no caller
         // or scheduler can observe `raw`.
-        unsafe { free_actor_resources(raw) };
+        unsafe {
+            if let Some(start) = state_release {
+                rejected_state_release.write(crate::release_walker::HewReleaseCursor::payload(
+                    (*raw).state,
+                    (*raw).state_size,
+                    start,
+                    true,
+                ));
+                (*raw).state = ptr::null_mut();
+                (*raw).state_drop_consumed.store(true, Ordering::Release);
+            }
+            free_actor_resources(raw);
+        };
         return ptr::null_mut();
     }
     raw
@@ -3076,6 +3113,9 @@ pub unsafe extern "C" fn hew_actor_spawn(
         spawn_actor_internal(ActorSpawnConfig {
             #[cfg(not(target_arch = "wasm32"))]
             native_crash: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            native_state_release: None,
+            rejected_state_release: ptr::null_mut(),
             dispatch_ownership: HewDispatchOwnership::CopiedPayload,
             terminate_fn: None,
             state_drop_fn: None,
@@ -3144,6 +3184,9 @@ pub unsafe extern "C" fn hew_actor_spawn_opts(opts: *const HewActorOpts) -> *mut
         spawn_actor_internal(ActorSpawnConfig {
             #[cfg(not(target_arch = "wasm32"))]
             native_crash: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            native_state_release: None,
+            rejected_state_release: ptr::null_mut(),
             dispatch_ownership: HewDispatchOwnership::CopiedPayload,
             terminate_fn: None,
             state_drop_fn: None,
@@ -3248,6 +3291,9 @@ pub unsafe extern "C" fn hew_actor_spawn_opts_adopt(
         spawn_actor_internal(ActorSpawnConfig {
             #[cfg(not(target_arch = "wasm32"))]
             native_crash: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            native_state_release: None,
+            rejected_state_release: ptr::null_mut(),
             dispatch_ownership: HewDispatchOwnership::CopiedPayload,
             terminate_fn: None,
             state_drop_fn: None,
@@ -3307,7 +3353,29 @@ pub unsafe extern "C" fn hew_actor_spawn_native(
     fault: *mut *mut crate::fault::HewFault,
     coalesce_key: Option<mailbox::HewCoalesceKeyFn>,
     coalesce_fallback: i32,
+    state_release: Option<hew_cabi::value::HewValueReleaseStart>,
+    rejected_state_release: *mut *mut crate::release_walker::HewReleaseCursor,
 ) -> crate::lifetime::local_handles::HewLocalPidId {
+    // SAFETY: generated code supplies an empty cursor output.
+    if !rejected_state_release.is_null() {
+        unsafe { rejected_state_release.write(ptr::null_mut()) };
+    }
+    let Ok(_ingress) = crate::shutdown::admit_external_work() else {
+        // SAFETY: publication was refused; the caller drains transferred state.
+        unsafe {
+            if let Some(start) = state_release {
+                rejected_state_release.write(crate::release_walker::HewReleaseCursor::payload(
+                    state, size, start, true,
+                ));
+            } else {
+                state_drop(state);
+                crate::mem::buf_free(state);
+            }
+            *fault =
+                crate::fault::hew_fault_new(crate::internal::types::HEW_TRAP_ACTOR_SEND_FAILED);
+        }
+        return crate::lifetime::local_handles::HewLocalPidId::INVALID;
+    };
     // SAFETY: constructors return an owned native mailbox.
     let mailbox = unsafe {
         if capacity > 0 {
@@ -3335,6 +3403,8 @@ pub unsafe extern "C" fn hew_actor_spawn_native(
     let actor = unsafe {
         spawn_actor_internal(ActorSpawnConfig {
             native_crash,
+            native_state_release: state_release,
+            rejected_state_release,
             dispatch_ownership: HewDispatchOwnership::UniqueEnvelope,
             terminate_fn: terminate,
             state_drop_fn: Some(state_drop),
@@ -3481,6 +3551,11 @@ unsafe fn submit_native_request(
         if actor_send_is_terminal(a) {
             return mailbox::SendOutcome::Closed;
         }
+        // Reserve receiver cleanup before queue publication or policy disposal.
+        // SAFETY: the send pin retains this receiver and the envelope is unpublished.
+        if !unsafe { crate::cow_envelope::bind_receiver(envelope, a) } {
+            return mailbox::SendOutcome::Closed;
+        }
         // EXIT(drop-fault-injection): the deterministic harness asks us to lose
         // this message. The receiver never consumes it, so this path releases
         // the envelope itself, and the loss reports as a loss rather than as
@@ -3500,6 +3575,13 @@ unsafe fn submit_native_request(
                 mailbox::try_admit_native_request(&*a.mailbox.cast(), message, envelope, reply)
             }
         };
+        if matches!(
+            outcome,
+            mailbox::SendOutcome::Failed | mailbox::SendOutcome::Closed | mailbox::SendOutcome::Oom
+        ) {
+            // SAFETY: refusal preserved the unpublished envelope with its caller.
+            unsafe { crate::cow_envelope::unbind_receiver(envelope, a) };
+        }
         if matches!(outcome, mailbox::SendOutcome::Enqueued) {
             // SAFETY: a message reached the live, pinned actor's mailbox.
             unsafe { schedule_actor_after_enqueue(actor, a, message) };
@@ -3540,6 +3622,9 @@ pub unsafe extern "C" fn hew_actor_spawn_bounded(
         spawn_actor_internal(ActorSpawnConfig {
             #[cfg(not(target_arch = "wasm32"))]
             native_crash: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            native_state_release: None,
+            rejected_state_release: ptr::null_mut(),
             dispatch_ownership: HewDispatchOwnership::CopiedPayload,
             terminate_fn: None,
             state_drop_fn: None,
@@ -6303,6 +6388,116 @@ fn publish_crash_fault_record(
     record
 }
 
+/// Retained terminal observation, published only after native state cleanup.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Debug)]
+pub(crate) struct TerminalNotification {
+    actor_id: u64,
+    terminal: i32,
+    error_code: i32,
+    supervisor: *mut c_void,
+    supervisor_child_index: i32,
+    fault_record: crate::exit_status::FaultRecord,
+}
+
+// SAFETY: the terminal actor retains its supervisor until cleanup completes;
+// only the unique terminal owner transfers this notice to its scheduler turn.
+#[cfg(not(target_arch = "wasm32"))]
+unsafe impl Send for TerminalNotification {}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl TerminalNotification {
+    /// Publish after cleanup while the actor still retains its supervisor.
+    pub(crate) unsafe fn publish(self) {
+        let Self {
+            actor_id,
+            terminal,
+            error_code,
+            supervisor,
+            supervisor_child_index,
+            fault_record,
+        } = self;
+        let lifecycle_event = if terminal == HewActorState::Crashed as i32 {
+            crate::tracing::SPAN_CRASH
+        } else {
+            crate::tracing::SPAN_STOP
+        };
+        crate::tracing::hew_trace_lifecycle(actor_id, lifecycle_event);
+
+        // Test-only crash ledger (cross-node link probe): record the TERMINAL STATE so a
+        // two-process link fixture can confirm a LOCAL linked actor actually crashed
+        // (terminal Crashed == 5) after a cross-node link-down, surviving the actor's
+        // free. Gated by HEW_LINK_PROBE so production pays nothing.
+        crate::link::record_link_probe_terminal(actor_id, terminal);
+
+        // Propagate exit to linked actors and notify monitors.
+        // Do this BEFORE notifying supervisor to ensure proper ordering.
+        run_crash_teardown_order_hook(HEW_ACTOR_CRASH_TEARDOWN_BEFORE_EXIT_PROPAGATION);
+        crate::link::propagate_exit_to_links(actor_id, error_code);
+        run_crash_teardown_order_hook(HEW_ACTOR_CRASH_TEARDOWN_AFTER_EXIT_PROPAGATION);
+        let crash_kind = if terminal == HewActorState::Crashed as i32 {
+            crate::internal::types::CrashKind::tag_from_error_code(error_code).cast_unsigned()
+        } else {
+            0
+        };
+        crate::monitor::notify_monitors_on_death(actor_id, terminal, crash_kind);
+
+        // Wake any actor group condvars waiting on this actor.
+        crate::actor_group::notify_actor_death(actor_id);
+
+        // Notify supervisor if one exists. An actor whose supervisor index was
+        // never assigned (the `-1` initial value) is not a supervised child, so
+        // there is nothing to notify — the `u32` parameter makes that case a
+        // conversion failure here rather than a negative index the supervisor has
+        // to reinterpret.
+        if !supervisor.is_null() {
+            if let Ok(child_index) = u32::try_from(supervisor_child_index) {
+                // Hand the record opened at the terminal CAS to the supervisor on
+                // the event. It was opened before the first wake rather than here
+                // so no thread can observe this crash while it is unaccounted for;
+                // by the time the notification is queued the fault already counts
+                // as failing. Until the ruling arrives it stays that way: a
+                // supervisor that is already stopping, a closed mailbox, or an
+                // immediate `hew_sched_shutdown` joining the workers before the
+                // queued decision runs all leave it open rather than silently
+                // successful.
+                let record = fault_record;
+                // SAFETY: supervisor back-pointer was set by hew_supervisor_add_child.
+                let notified = unsafe {
+                    crate::supervisor::hew_supervisor_notify_child_actor_event(
+                        supervisor.cast(),
+                        child_index,
+                        actor_id,
+                        terminal,
+                        error_code,
+                        record.as_raw(),
+                    )
+                };
+                if !notified {
+                    // The supervisor never received the event — a null supervisor
+                    // actor, or a mailbox that refused it. The record reached no
+                    // authority, so it is settled here rather than left to time out
+                    // in the shutdown quiesce.
+                    crate::exit_status::settle_supervised_fault(
+                        record,
+                        crate::exit_status::FaultRuling::Unrecovered,
+                    );
+                }
+            } else if terminal == HewActorState::Crashed as i32 {
+                // A supervisor back-pointer with no usable child index names no
+                // roster entry, so no supervisor can ever rule on this crash. That
+                // is the same "no recovery authority" case as an unsupervised
+                // crash: settle the record opened above rather than leave it open
+                // forever for a supervisor that can never be reached.
+                crate::exit_status::settle_supervised_fault(
+                    fault_record,
+                    crate::exit_status::FaultRuling::Unrecovered,
+                );
+            }
+        }
+    }
+}
+
 /// Implementation seam for [`hew_actor_trap`].
 ///
 /// Tests use `OmitForTest` to execute the precise pre-fix counterfactual: all
@@ -6430,6 +6625,20 @@ unsafe fn hew_actor_trap_inner(
     }
 
     let fault_record = publish_crash_fault_record(terminal, supervisor, supervisor_child_index);
+    let notice = TerminalNotification {
+        actor_id,
+        terminal,
+        error_code,
+        supervisor,
+        supervisor_child_index,
+        fault_record,
+    };
+    let notice = if let Some(completion) = &a.native_completion {
+        completion.defer_terminal_notification(notice);
+        None
+    } else {
+        Some(notice)
+    };
     run_crash_teardown_order_hook(HEW_ACTOR_CRASH_TEARDOWN_BEFORE_FIRST_WAKE);
 
     // This actor just became terminal — the crash/trap path. Any
@@ -6477,6 +6686,13 @@ unsafe fn hew_actor_trap_inner(
         TrapMailboxReclaim::OmitForTest => {}
     }
 
+    if terminal == HewActorState::Crashed as i32 {
+        let scope = crate::task_scope::current_task_scope();
+        if !scope.is_null() {
+            // SAFETY: the task-scope lane is installed only while the scope is live.
+            unsafe { crate::task_scope::hew_task_scope_cancel(scope) };
+        }
+    }
     if matches!(mailbox_reclaim, TrapMailboxReclaim::OwnedActivation)
         || !a.dispatch_active.load(Ordering::Acquire)
     {
@@ -6485,90 +6701,10 @@ unsafe fn hew_actor_trap_inner(
         unsafe { crate::actor_native::finish_native_terminal(a) };
     }
 
-    if terminal == HewActorState::Crashed as i32 {
-        let scope = crate::task_scope::current_task_scope();
-        if !scope.is_null() {
-            // SAFETY: the task-scope lane is installed only while the scope is live.
-            unsafe { crate::task_scope::hew_task_scope_cancel(scope) };
-        }
-    }
-    let lifecycle_event = if terminal == HewActorState::Crashed as i32 {
-        crate::tracing::SPAN_CRASH
-    } else {
-        crate::tracing::SPAN_STOP
-    };
-    crate::tracing::hew_trace_lifecycle(actor_id, lifecycle_event);
-
-    // Test-only crash ledger (cross-node link probe): record the TERMINAL STATE so a
-    // two-process link fixture can confirm a LOCAL linked actor actually crashed
-    // (terminal Crashed == 5) after a cross-node link-down, surviving the actor's
-    // free. Gated by HEW_LINK_PROBE so production pays nothing.
-    crate::link::record_link_probe_terminal(actor_id, terminal);
-
-    // Propagate exit to linked actors and notify monitors.
-    // Do this BEFORE notifying supervisor to ensure proper ordering.
-    run_crash_teardown_order_hook(HEW_ACTOR_CRASH_TEARDOWN_BEFORE_EXIT_PROPAGATION);
-    crate::link::propagate_exit_to_links(actor_id, error_code);
-    run_crash_teardown_order_hook(HEW_ACTOR_CRASH_TEARDOWN_AFTER_EXIT_PROPAGATION);
-    let crash_kind = if terminal == HewActorState::Crashed as i32 {
-        crate::internal::types::CrashKind::tag_from_error_code(error_code).cast_unsigned()
-    } else {
-        0
-    };
-    crate::monitor::notify_monitors_on_death(actor_id, terminal, crash_kind);
-
-    // Wake any actor group condvars waiting on this actor.
-    crate::actor_group::notify_actor_death(actor_id);
-
-    // Notify supervisor if one exists. An actor whose supervisor index was
-    // never assigned (the `-1` initial value) is not a supervised child, so
-    // there is nothing to notify — the `u32` parameter makes that case a
-    // conversion failure here rather than a negative index the supervisor has
-    // to reinterpret.
-    if !supervisor.is_null() {
-        if let Ok(child_index) = u32::try_from(supervisor_child_index) {
-            // Hand the record opened at the terminal CAS to the supervisor on
-            // the event. It was opened before the first wake rather than here
-            // so no thread can observe this crash while it is unaccounted for;
-            // by the time the notification is queued the fault already counts
-            // as failing. Until the ruling arrives it stays that way: a
-            // supervisor that is already stopping, a closed mailbox, or an
-            // immediate `hew_sched_shutdown` joining the workers before the
-            // queued decision runs all leave it open rather than silently
-            // successful.
-            let record = fault_record;
-            // SAFETY: supervisor back-pointer was set by hew_supervisor_add_child.
-            let notified = unsafe {
-                crate::supervisor::hew_supervisor_notify_child_actor_event(
-                    supervisor.cast(),
-                    child_index,
-                    actor_id,
-                    terminal,
-                    error_code,
-                    record.as_raw(),
-                )
-            };
-            if !notified {
-                // The supervisor never received the event — a null supervisor
-                // actor, or a mailbox that refused it. The record reached no
-                // authority, so it is settled here rather than left to time out
-                // in the shutdown quiesce.
-                crate::exit_status::settle_supervised_fault(
-                    record,
-                    crate::exit_status::FaultRuling::Unrecovered,
-                );
-            }
-        } else if terminal == HewActorState::Crashed as i32 {
-            // A supervisor back-pointer with no usable child index names no
-            // roster entry, so no supervisor can ever rule on this crash. That
-            // is the same "no recovery authority" case as an unsupervised
-            // crash: settle the record opened above rather than leave it open
-            // forever for a supervisor that can never be reached.
-            crate::exit_status::settle_supervised_fault(
-                fault_record,
-                crate::exit_status::FaultRuling::Unrecovered,
-            );
-        }
+    if let Some(notice) = notice {
+        // SAFETY: legacy terminal publication retains the same supervisor
+        // lifetime through this tail as the original trap activation.
+        unsafe { notice.publish() };
     }
 }
 

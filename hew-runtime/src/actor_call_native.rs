@@ -12,6 +12,7 @@ use crate::mailbox::native::{
     hew_actor_ask_wait_take_request, HewNativeAsk,
 };
 use crate::mailbox::{hew_msg_envelope_new, HewMsgEnvelope, HewMsgEnvelopeDropFn};
+use crate::release_walker::{HewReleaseCursor, ReleaseDriver};
 use crate::reply_channel::native::{
     hew_reply_channel_new_native, hew_reply_channel_poll_native, hew_reply_channel_status_native,
 };
@@ -19,6 +20,7 @@ use crate::reply_channel::{
     hew_reply_channel_cancel, hew_reply_channel_free, HewReplyChannel, HewReplyDropFn,
 };
 use crate::wake::HewWaker;
+use hew_cabi::value::HewValueReleaseStart;
 use std::{ffi::c_void, ptr};
 
 #[derive(Debug)]
@@ -40,9 +42,31 @@ pub struct HewActorCall {
     reject: bool,
     state: CallState,
     pub(crate) target: Option<ActorIncarnation>,
+    cleanup_started: bool,
+    cleanup: Option<Box<ReleaseDriver>>,
+    rejected_payload: *mut HewReleaseCursor,
 }
 
 impl HewActorCall {
+    unsafe fn prepare_cleanup(&mut self) {
+        if self.cleanup_started {
+            return;
+        }
+        self.cleanup_started = true;
+        // SAFETY: this operation owns both receiving and unpublished request slots.
+        unsafe {
+            crate::reply_channel::withdraw_native_request(self.channel);
+            let reply = crate::reply_channel::native::cancel_take_release(self.channel);
+            let request = hew_actor_ask_wait_take_request(self.admission);
+            let request = crate::cow_envelope::release_cursor(request);
+            let cursor = HewReleaseCursor::join(vec![self.rejected_payload, request, reply]);
+            self.rejected_payload = ptr::null_mut();
+            if !cursor.is_null() {
+                self.cleanup = Some(ReleaseDriver::new(cursor));
+            }
+        }
+    }
+
     pub(crate) fn has_deadline(&self) -> bool {
         !self.timer.is_null()
     }
@@ -105,7 +129,7 @@ impl Drop for HewActorCall {
         // SAFETY: all three operations belong to this call. Cancellation wins
         // against dispatch before any sender reference can be released.
         unsafe {
-            crate::reply_channel::withdraw_native_request(self.channel);
+            self.prepare_cleanup();
             hew_reply_channel_cancel(self.channel);
             hew_actor_ask_wait_free(self.admission);
             hew_coro_sleep_free(self.timer);
@@ -138,7 +162,10 @@ pub unsafe extern "C" fn hew_actor_call_new(
     duration_ns: i64,
     has_deadline: i32,
     policy: i32,
+    payload_release: Option<HewValueReleaseStart>,
+    reply_release: Option<HewValueReleaseStart>,
 ) -> *mut HewActorCall {
+    let mut rejected_payload = ptr::null_mut();
     let envelope = if payload.is_null() {
         ptr::null_mut()
     } else {
@@ -147,15 +174,22 @@ pub unsafe extern "C" fn hew_actor_call_new(
         if envelope.is_null() {
             // SAFETY: no envelope accepted the transferred fields.
             unsafe {
-                drop_payload(payload);
-                crate::mem::buf_free(payload);
+                if let Some(start) = payload_release {
+                    rejected_payload = HewReleaseCursor::payload(payload, size, start, true);
+                } else {
+                    drop_payload(payload);
+                    crate::mem::buf_free(payload);
+                }
             }
+        }
+        if !envelope.is_null() {
+            unsafe { (*envelope).release_start = payload_release };
         }
         envelope
     };
     // SAFETY: the sealed constructor takes this envelope and the same protocol.
     unsafe {
-        hew_actor_call_resume(
+        let operation = hew_actor_call_resume(
             token,
             message,
             envelope,
@@ -165,7 +199,10 @@ pub unsafe extern "C" fn hew_actor_call_new(
             duration_ns,
             has_deadline,
             policy,
-        )
+            reply_release,
+        );
+        (*operation).rejected_payload = rejected_payload;
+        operation
     }
 }
 
@@ -189,9 +226,10 @@ pub unsafe extern "C" fn hew_actor_call_resume(
     duration_ns: i64,
     has_deadline: i32,
     policy: i32,
+    reply_release: Option<HewValueReleaseStart>,
 ) -> *mut HewActorCall {
     // SAFETY: registration precedes any request publication.
-    let channel = unsafe { hew_reply_channel_new_native(waker, drop_reply) };
+    let channel = unsafe { hew_reply_channel_new_native(waker, drop_reply, reply_release) };
     let timer = if has_deadline != 0 {
         // SAFETY: the descriptor remains live for construction and is retained.
         unsafe { hew_coro_sleep_new(duration_ns, waker) }
@@ -211,6 +249,9 @@ pub unsafe extern "C" fn hew_actor_call_resume(
         reject: policy != 0,
         state: CallState::Admitting,
         target: crate::actor_native::wait_graph::resolve_target(token),
+        cleanup_started: false,
+        cleanup: None,
+        rejected_payload: ptr::null_mut(),
     });
     // SAFETY: the first attempt establishes admission in source evaluation order.
     unsafe { operation.poll() };
@@ -259,6 +300,40 @@ pub unsafe extern "C" fn hew_actor_call_take(
         operation.state = CallState::Taken;
         status
     }
+}
+
+/// Drain owners abandoned by a completed or cancelled call before freeing it.
+/// # Safety
+/// The operation and parent invocation remain live until this returns complete.
+#[no_mangle]
+pub unsafe extern "C" fn hew_actor_call_cleanup_poll(
+    operation: *mut HewActorCall,
+    parent: *mut crate::coro_state::HewCoroState,
+) -> i32 {
+    // SAFETY: generated cleanup exclusively owns this optional operation.
+    let Some(operation) = (unsafe { operation.as_mut() }) else {
+        return 1;
+    };
+    unsafe { operation.prepare_cleanup() };
+    i32::from(
+        operation
+            .cleanup
+            .as_mut()
+            .is_none_or(|driver| unsafe { driver.poll(parent) }),
+    )
+}
+
+/// Transfer the completed cleanup diagnostic, if any.
+/// # Safety
+/// The operation's cleanup has completed and this fault is taken at most once.
+#[no_mangle]
+pub unsafe extern "C" fn hew_actor_call_cleanup_fault(
+    operation: *mut HewActorCall,
+) -> *mut crate::fault::HewFault {
+    // SAFETY: generated cleanup uniquely owns the completed operation.
+    unsafe { operation.as_mut() }
+        .and_then(|operation| operation.cleanup.as_mut())
+        .map_or(ptr::null_mut(), |driver| driver.take_fault())
 }
 
 /// Release an owned call, withdrawing a queued loser or tombstoning a late reply.
@@ -315,6 +390,7 @@ mod tests {
                 (&raw mut reply).cast(),
                 size_of_val(&reply),
                 Some(drop_counted),
+                None,
             );
         }
         ptr::null_mut()
@@ -331,7 +407,8 @@ mod tests {
             // SAFETY: the fixture owns the actor/mailbox, request envelope and
             // receiver; successful admission transfers one retained sender debt.
             unsafe {
-                let channel = hew_reply_channel_new_native(waker.descriptor(), Some(drop_counted));
+                let channel =
+                    hew_reply_channel_new_native(waker.descriptor(), Some(drop_counted), None);
                 crate::reply_channel::enable_native_withdrawal(channel);
                 let operation = Box::into_raw(Box::new(HewActorCall {
                     admission: ptr::null_mut(),
@@ -341,6 +418,9 @@ mod tests {
                     reject: false,
                     state: CallState::Waiting,
                     target: None,
+                    cleanup_started: false,
+                    cleanup: None,
+                    rejected_payload: ptr::null_mut(),
                 }));
                 let payload = crate::mem::buf_try_alloc(size_of::<*const AtomicUsize>())
                     .cast::<*const AtomicUsize>();
@@ -397,7 +477,8 @@ mod tests {
         // SAFETY: the call has one receiver and one sender; the typed Arc is
         // transferred to the reply and then to the selected output exactly once.
         unsafe {
-            let channel = hew_reply_channel_new_native(waker.descriptor(), Some(drop_counted));
+            let channel =
+                hew_reply_channel_new_native(waker.descriptor(), Some(drop_counted), None);
             let operation = Box::into_raw(Box::new(HewActorCall {
                 admission: ptr::null_mut(),
                 channel,
@@ -406,6 +487,9 @@ mod tests {
                 reject: false,
                 state: CallState::Waiting,
                 target: None,
+                cleanup_started: false,
+                cleanup: None,
+                rejected_payload: ptr::null_mut(),
             }));
             hew_reply_channel_retain(channel);
             let mut reply = Arc::into_raw(drops.clone());

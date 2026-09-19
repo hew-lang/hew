@@ -15,7 +15,9 @@ use crate::lifetime::live_actors::ActorIncarnation;
 pub(crate) mod cleanup;
 #[path = "actor_native_close.rs"]
 mod close;
-pub(crate) use close::{finish_native_terminal, hew_actor_close_native, hew_actor_wait_new};
+pub(crate) use close::{
+    finish_actor_terminal, finish_native_terminal, hew_actor_close_native, hew_actor_wait_new,
+};
 pub use close::{HewNativeActorWait, NativeActorCompletion};
 #[path = "actor_native_wait_graph.rs"]
 pub(crate) mod wait_graph;
@@ -207,9 +209,23 @@ pub unsafe extern "C" fn hew_actor_submit_native(
     size: usize,
     drop_payload: crate::mailbox::HewMsgEnvelopeDropFn,
     policy: i32,
+    payload_release: Option<hew_cabi::value::HewValueReleaseStart>,
+    discarded_release_out: *mut *mut crate::release_walker::HewReleaseCursor,
 ) -> i32 {
     // SAFETY: forwards the unpublished wrapper and typed ownership contract.
-    unsafe { submit_native(token, message, payload, size, drop_payload, policy, false) }
+    unsafe {
+        submit_native(
+            token,
+            message,
+            payload,
+            size,
+            drop_payload,
+            policy,
+            false,
+            payload_release,
+            discarded_release_out,
+        )
+    }
 }
 
 /// Submit an attachment close event after queued data without capacity refusal.
@@ -223,9 +239,23 @@ pub unsafe extern "C" fn hew_actor_submit_native_terminal(
     payload: *mut std::ffi::c_void,
     size: usize,
     drop_payload: crate::mailbox::HewMsgEnvelopeDropFn,
+    payload_release: Option<hew_cabi::value::HewValueReleaseStart>,
+    discarded_release_out: *mut *mut crate::release_walker::HewReleaseCursor,
 ) -> i32 {
     // SAFETY: forwards the unpublished wrapper and typed ownership contract.
-    unsafe { submit_native(token, message, payload, size, drop_payload, 0, true) }
+    unsafe {
+        submit_native(
+            token,
+            message,
+            payload,
+            size,
+            drop_payload,
+            0,
+            true,
+            payload_release,
+            discarded_release_out,
+        )
+    }
 }
 
 unsafe fn submit_native(
@@ -236,7 +266,13 @@ unsafe fn submit_native(
     drop_payload: crate::mailbox::HewMsgEnvelopeDropFn,
     policy: i32,
     terminal: bool,
+    payload_release: Option<hew_cabi::value::HewValueReleaseStart>,
+    discarded_release_out: *mut *mut crate::release_walker::HewReleaseCursor,
 ) -> i32 {
+    // SAFETY: the generated caller supplies its writable cursor output.
+    if !discarded_release_out.is_null() {
+        unsafe { discarded_release_out.write(ptr::null_mut()) };
+    }
     if payload.is_null() {
         return 3;
     }
@@ -250,6 +286,8 @@ unsafe fn submit_native(
         }
         return 3;
     }
+    // SAFETY: attach the selected consuming callback before publication.
+    unsafe { (*envelope).release_start = payload_release };
     // SAFETY: the envelope is unpublished and transfers only on admission.
     let outcome = unsafe {
         if terminal {
@@ -269,7 +307,12 @@ unsafe fn submit_native(
         crate::mailbox::SendOutcome::Failed if policy == 2 => {
             // SAFETY: explicit DropNewest transfers the typed payload for destruction.
             unsafe {
-                crate::mailbox::hew_msg_envelope_release(envelope);
+                let cursor = crate::cow_envelope::release_cursor(envelope);
+                if discarded_release_out.is_null() {
+                    assert!(cursor.is_null());
+                } else {
+                    discarded_release_out.write(cursor);
+                }
             }
             return 4;
         }

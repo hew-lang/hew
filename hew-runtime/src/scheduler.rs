@@ -1116,6 +1116,12 @@ pub extern "C" fn hew_sched_shutdown() {
     // Both waits are bounded: an actor that never yields cannot hold exit open.
     quiesce_before_worker_teardown(SHUTDOWN_QUIESCE_TIMEOUT);
 
+    if !sched.shutdown.load(Ordering::Acquire)
+        && !crate::shutdown::drain_native_actor_cleanup(Duration::from_secs(5))
+    {
+        return;
+    }
+
     if teardown_workers(sched as *const Scheduler, None, false).all_joined {
         finalize_scheduler_shutdown(sched);
     }
@@ -1190,6 +1196,12 @@ pub extern "C" fn hew_runtime_cleanup() {
     let Some(sched) = get_scheduler() else {
         return;
     };
+    if !sched.shutdown.load(Ordering::Acquire) {
+        hew_sched_shutdown();
+        if !sched.shutdown.load(Ordering::Acquire) {
+            return;
+        }
+    }
     if !teardown_workers(sched as *const Scheduler, None, false).all_joined {
         set_last_error("runtime cleanup: scheduler workers remain joinable");
         return;

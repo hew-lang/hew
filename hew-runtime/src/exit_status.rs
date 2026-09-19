@@ -317,6 +317,12 @@ pub(crate) fn record_unrecovered_actor_fault() {
 /// closed mailbox, workers joined by an immediate shutdown — leaves the status
 /// non-zero rather than silently successful.
 pub(crate) fn open_supervised_fault() -> FaultRecord {
+    open_pending_fault()
+}
+
+/// Open an owned fault that a supervisor or an explicit close observer must
+/// resolve. An unobserved terminal cleanup fault remains a failing record.
+pub(crate) fn open_pending_fault() -> FaultRecord {
     AUTHORITY.open_record()
 }
 

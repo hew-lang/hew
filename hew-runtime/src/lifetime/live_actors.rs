@@ -738,6 +738,18 @@ pub(crate) fn snapshot_live_actor_ptrs() -> Vec<*mut HewActor> {
     .unwrap_or_default()
 }
 
+/// Copy identities while workers are live. Resolve each through a fresh pin
+/// before accessing its allocation; an actor may retire after this snapshot.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn snapshot_live_actor_ids() -> Vec<u64> {
+    with_live_actors_opt(|map| {
+        map.as_ref()
+            .map(|actors| actors.keys().copied().collect())
+            .unwrap_or_default()
+    })
+    .unwrap_or_default()
+}
+
 /// Take all currently tracked actors out of the live map.
 ///
 /// Returns the drained map so the caller can free each actor.

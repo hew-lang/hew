@@ -568,6 +568,82 @@ fn drain_until_idle(timeout: Duration) -> bool {
     scheduler::drain_is_idle() && reactor::drain_is_idle() && scheduler::drain_is_idle()
 }
 
+/// Finish native payload and state ownership while cleanup can still suspend
+/// on scheduler, timer and reactor work. Completion observers outlive actor
+/// allocations, so no raw allocation pin is held across the wait.
+pub(crate) fn drain_native_actor_cleanup(timeout: Duration) -> bool {
+    let Some(runtime) = rt_default() else {
+        return true;
+    };
+    runtime.shutdown_ingress.close();
+    crate::timer_periodic::quiesce_periodic_timers();
+    reactor::close_listener_admission();
+    let deadline = Instant::now() + timeout;
+    let mut requested = std::collections::HashSet::new();
+    let mut completions = Vec::new();
+    let mut idle_polls = 0;
+    let mut request_wave = true;
+    let mut drained_wave = false;
+    loop {
+        if request_wave {
+            completions.clear();
+            // A completed cleanup may leave newly created peers alive. Stop
+            // that next wave only after the previous cleanup and its accepted
+            // descendant calls settle; never cancel a peer they still await.
+            for id in crate::lifetime::live_actors::snapshot_live_actor_ids() {
+                if requested.contains(&id) {
+                    continue;
+                }
+                let Some(pin) = crate::lifetime::live_actors::pin_actor_by_id(id) else {
+                    continue;
+                };
+                let Some(completion) = pin.actor().native_completion.clone() else {
+                    continue;
+                };
+                requested.insert(id);
+                if !completion.is_finished() {
+                    // SAFETY: the identity pin retains this exact allocation
+                    // for the request. Workers own its cleanup continuation.
+                    unsafe { crate::actor::hew_actor_stop(pin.as_ptr()) };
+                }
+                completions.push(completion);
+            }
+            request_wave = false;
+        }
+        let settled = completions
+            .iter()
+            .all(|completion| completion.is_finished())
+            && scheduler::drain_is_idle()
+            && reactor::drain_is_idle()
+            && scheduler::drain_is_idle();
+        if settled {
+            if drained_wave && completions.is_empty() {
+                return true;
+            }
+            idle_polls += 1;
+            if idle_polls >= 2 {
+                // Confirm the registry after quiescence, including when the
+                // first snapshot was empty but a spawn was still publishing.
+                drained_wave = true;
+                request_wave = true;
+                idle_polls = 0;
+                continue;
+            }
+        } else {
+            idle_polls = 0;
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            eprintln!("hew: actor cleanup timed out after {timeout:?}; retaining live runtime");
+            crate::set_last_error("actor cleanup did not complete before scheduler shutdown");
+            crate::exit_status::record_unrecovered_actor_fault();
+            shutdown_phase_store(PHASE_FAILED, Ordering::Release);
+            return false;
+        }
+        std::thread::sleep(DRAIN_POLL_INTERVAL.min(remaining));
+    }
+}
+
 /// Orchestrate the 3-phase shutdown.
 #[cfg(test)]
 fn shutdown_orchestrate(drain_timeout: Duration) {
@@ -661,10 +737,18 @@ fn shutdown_orchestrate_mode(drain_timeout: Duration, cancel_parked_waits: bool)
         }
     }
 
-    // Shut down the scheduler (joins worker threads — instant since drain converged).
+    // State and queued-payload destructors may suspend. They must finish before
+    // the worker join; the later allocation sweep cannot execute user code.
+    if !drain_native_actor_cleanup(drain_timeout.max(SHUTDOWN_CANCEL_REDRAIN_TIMEOUT)) {
+        return;
+    }
+
+    // Shut down the scheduler after both accepted work and owned cleanup settle.
     scheduler::hew_sched_shutdown();
 
-    shutdown_phase_store(PHASE_DONE, Ordering::Release);
+    if shutdown_phase_load(Ordering::Acquire) != PHASE_FAILED {
+        shutdown_phase_store(PHASE_DONE, Ordering::Release);
+    }
 }
 
 // ---------------------------------------------------------------------------

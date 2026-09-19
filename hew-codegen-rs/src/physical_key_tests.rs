@@ -727,7 +727,6 @@ fn selected_vector_and_variant_equality_walks_live_elements_and_active_fields() 
         // SAFETY: the wrapper consumes the exact Option slot representation.
         let variant_eq = unsafe { engine.get_function::<EqCallback>("variant_eq").unwrap() };
         let layout = hew_runtime::vec::HewValueLayout {
-            release_start: None,
             visit_close: None,
             release_start: None,
             size: std::mem::size_of::<i64>(),

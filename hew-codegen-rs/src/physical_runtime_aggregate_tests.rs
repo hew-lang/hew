@@ -81,20 +81,12 @@ unsafe extern "C" fn vector_index(vector: *const c_void, index: i64, out: *mut c
     found
 }
 
-unsafe extern "C" fn map_index(
-    map: *const c_void,
-    key: *const c_void,
-    out: *mut c_void,
-    present: *mut bool,
-    fault: *mut *mut c_void,
-) -> i32 {
+unsafe extern "C" fn map_index(probe: *mut c_void, out: *mut c_void) -> bool {
     INDEX_ACTIVE.set(true);
-    // SAFETY: preserve the generated map lookup ABI and its output slots.
-    let status = unsafe {
-        hew_runtime::hashmap::hew_hashmap_get_clone_layout(map.cast(), key, out, present, fault)
-    };
+    // SAFETY: preserve the generated probe commit and writable output ABI.
+    let found = unsafe { hew_runtime::hashmap::hew_hashmap_probe_get_clone(probe.cast(), out) };
     INDEX_ACTIVE.set(false);
-    status
+    found
 }
 
 fn collection_module(map: bool) -> PhysicalModule {
@@ -173,7 +165,7 @@ fn run_index(map: bool, failed: bool) {
             }
             let (name, address) = if map {
                 (
-                    "hew_hashmap_get_clone_layout",
+                    "hew_hashmap_probe_get_clone",
                     map_index as *const () as usize,
                 )
             } else {

@@ -1661,7 +1661,7 @@ pub fn lower_physical_module(
         physical
             .value_capabilities
             .get_mut(&key)
-            .unwrap()
+            .ok_or_else(|| PhysicalError::new("selected callback disappeared during lowering"))?
             .is_resumable = is_resumable;
     }
     physical.releases = ReleaseEffects::compute(&physical);

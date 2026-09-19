@@ -8432,7 +8432,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         let parameter_types = &instantiated.arguments;
         // An operation that replaces a value its receiver owns releases what it
         // displaced inside the call, so that release runs an authored `close`
-        // and can fail like any other (D516). The dispatch on its outcome goes
+        // and can fail like any other. The dispatch on its outcome goes
         // on the normal edge once the receiver is republished and the frame
         // owns what it did before the call.
         let displaced_release = family

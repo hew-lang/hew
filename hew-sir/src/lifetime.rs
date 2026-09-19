@@ -1136,7 +1136,7 @@ impl<'a> Flow<'a> {
                 ) {
                     // A call that released a value it displaced may own a
                     // fault from here; its cleanup dispatch decides whether
-                    // source execution resumes (D516).
+                    // source execution resumes.
                     if let SemTerminator::RtCall { id: call, .. } = &block.terminator {
                         if self.fault_releases.contains(call) {
                             returned.fault |= LIVE;
@@ -2313,7 +2313,7 @@ mod tests {
 
     /// An operation that replaces a value its receiver owns releases what it
     /// displaced inside the call, so its normal edge carries the same possible
-    /// fault an ordinary release does and owes the same dispatch (D516).
+    /// fault an ordinary release does and owes the same dispatch.
     #[test]
     fn a_runtime_call_that_releases_what_it_displaced_cannot_resume_a_normal_return() {
         let blocks = || {

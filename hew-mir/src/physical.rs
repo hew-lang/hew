@@ -6694,7 +6694,7 @@ fn apply_operation(
 ///
 /// An operation whose family names a displaced argument replaces something its
 /// receiver already owns and releases it inside the call, so that recipe's
-/// destroy action is the release that can fail (D516).
+/// destroy action is the release that can fill the caller's fault record.
 fn displaced_release(
     module: &PhysicalModule,
     action: &PhysicalRuntimeAction,

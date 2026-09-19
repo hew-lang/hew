@@ -6632,7 +6632,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                         .fn_type(&[pointer.into(), i64_ty.into(), pointer.into()], false),
                 )?;
                 // The set releases the element it displaces, so a `close` that
-                // fails inside it reaches this frame's fault record (D516).
+                // fails inside it reaches this frame's fault record.
                 let replacement = self.slots[source(2)?.0 as usize];
                 self.value_emitter().emit_release_in_sink(|| {
                     self.runtime_call_void(

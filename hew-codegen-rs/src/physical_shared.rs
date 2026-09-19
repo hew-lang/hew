@@ -130,7 +130,7 @@ impl FunctionEmitter<'_, '_> {
                 )?;
                 self.clear_moved(transfers)?;
                 // The swap releases the payload it displaces, so a `close` that
-                // fails inside it reaches this frame's fault record (D516).
+                // fails inside it reaches this frame's fault record.
                 self.value_emitter().emit_release_in_sink(|| {
                     self.runtime_call_void(function, &[handle.into(), staged.into()], "rc.set")
                 })?;

@@ -93,6 +93,10 @@ fn an_actor_call_names_its_operation_rather_than_a_symbol() {
 }
 
 fn execute(source: &str) -> serde_json::Value {
+    execute_expected(source, "ok")
+}
+
+fn execute_expected(source: &str, status: &str) -> serde_json::Value {
     let module = semantics(source);
     let package = sir_emit::emit_package(&module.module, "sandbox-vm-export", "0", "test")
         .expect("verified actor semantics emit");
@@ -119,7 +123,7 @@ fn execute(source: &str) -> serde_json::Value {
         String::from_utf8_lossy(&output.stderr)
     );
     let trace: serde_json::Value = serde_json::from_slice(&output.stdout).expect("VM trace");
-    assert_eq!(trace["result"], "ok", "{trace:#}");
+    assert_eq!(trace["result"], status, "{trace:#}");
     trace
 }
 
@@ -511,4 +515,83 @@ fn main() {
 "#,
     );
     assert_eq!(stdout(&trace), "1\nsubmitted\n2\n");
+}
+
+#[test]
+fn a_clean_actor_close_releases_every_forked_pipe_producer() {
+    let trace = execute(include_str!(
+        "../../tests/core-acceptance/cases/actor-fork-sink-clean-close.hew"
+    ));
+    assert_eq!(
+        stdout(&trace),
+        "handler returned\nfirst=1\nsecond=2\nclean-none-3\n"
+    );
+}
+
+#[test]
+fn a_crashed_actor_discloses_its_fault_after_buffered_pipe_values() {
+    let trace = execute_expected(
+        include_str!("../../tests/core-acceptance/cases/actor-fork-sink-crash-disclosed.hew"),
+        "panic",
+    );
+    assert_eq!(stdout(&trace), "handler crashed\nfirst=1\n");
+    assert_eq!(
+        trace["final_state"]["runtime_failures"][0]["message"],
+        "producer crash"
+    );
+}
+
+#[test]
+fn a_failed_child_cancels_other_work_before_scope_recovery() {
+    let trace = execute(
+        r#"
+fn fail() { sleep(1ms); panic("child failed"); }
+fn slow() {
+    defer println("slow cleaned");
+    sleep(10s);
+    println("unreachable");
+}
+fn main() {
+    scope {
+        fork fail();
+        fork slow();
+    } handle failure {
+        match failure {
+            .Fault { message } => println(message),
+            .Deadline { message } => println("wrong failure"),
+        }
+    };
+}
+"#,
+    );
+    assert_eq!(stdout(&trace), "slow cleaned\nchild failed\n");
+    assert_eq!(trace["final_state"]["virtual_clock"]["current_ms"], 1);
+}
+
+#[test]
+fn rejected_completion_requests_keep_owned_payloads_for_retry_and_redirection() {
+    let trace = execute(include_str!(
+        "../../tests/core-acceptance/cases/actor-policy-reject.hew"
+    ));
+    assert_eq!(stdout(&trace), "submitted: accepted\nrejected: the destination mailbox is full\ntrue\n2\n2\ntrue\ntrue\nclosed\n");
+}
+
+#[test]
+fn a_crash_hook_observes_the_last_valid_state_before_restart() {
+    let trace = execute(include_str!(
+        "../../tests/core-acceptance/cases/actor-crash-last-valid-state.hew"
+    ));
+    assert_eq!(
+        stdout(&trace),
+        "CHANGED!\nlast valid crash state, fresh restart\n"
+    );
+}
+
+#[test]
+fn crash_info_uses_the_native_fault_code_and_class() {
+    let trace = execute(include_str!(
+        "../../tests/core-acceptance/cases/crash-info-hook-fields.hew"
+    ));
+    assert_eq!(stdout(&trace), "212\nUserPanic\n");
+    assert_eq!(trace["final_state"]["exit_code"], 42);
 }

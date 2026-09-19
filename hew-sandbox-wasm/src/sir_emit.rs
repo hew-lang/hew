@@ -121,6 +121,10 @@ pub struct Actor {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub crash: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub crash_info: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub crash_action: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub exit: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub down: Option<u32>,
@@ -504,6 +508,40 @@ impl<'m> Walker<'m> {
             .map_or(serde_json::Value::Null, |shape| shape.id.0.into())
     }
 
+    fn request_shapes(&self, result: &CallResult) -> serde_json::Value {
+        let CallResult::Value(def) = result else {
+            return serde_json::Value::Null;
+        };
+        let hew_types::ResolvedTy::Named { args, .. } = &def.ty else {
+            return serde_json::Value::Null;
+        };
+        let error = args
+            .get(1)
+            .and_then(|ty| self.module.variant_shape_for_type(ty));
+        let failure_ty = error
+            .and_then(|shape| {
+                shape
+                    .variants
+                    .iter()
+                    .find(|variant| variant.name == "Rejected")
+            })
+            .and_then(|variant| variant.fields.first())
+            .map(|field| &field.ty);
+        let failure = failure_ty.and_then(|ty| self.module.aggregate_shape_for_type(ty));
+        let message = failure
+            .and_then(|shape| shape.fields.get(1))
+            .and_then(|field| self.module.aggregate_shape_for_type(&field.ty));
+        let request = message
+            .and_then(|shape| shape.fields.get(2))
+            .and_then(|field| self.module.aggregate_shape_for_type(&field.ty));
+        serde_json::json!({
+            "failure": failure.map(|shape| shape.id.0),
+            "reason": failure.and_then(|shape| shape.fields.first()).and_then(|field| self.module.variant_shape_for_type(&field.ty)).map(|shape| shape.id.0),
+            "message": message.map(|shape| shape.id.0),
+            "request": request.map(|shape| shape.id.0),
+        })
+    }
+
     fn submission_shapes(&self, result: &CallResult) -> serde_json::Value {
         let CallResult::Value(def) = result else {
             return serde_json::Value::Null;
@@ -656,6 +694,20 @@ impl<'m> Walker<'m> {
                         .map(|id| self.function_id(*id))
                         .collect::<Result<Vec<_>, _>>()?,
                     crash: actor.crash.map(|id| self.function_id(id)).transpose()?,
+                    crash_info: actor
+                        .crash
+                        .and_then(|id| self.module.callable(id))
+                        .and_then(|callable| callable.signature.params.get(1))
+                        .and_then(|parameter| self.module.aggregate_shape_for_type(&parameter.ty))
+                        .map(|shape| shape.id.0),
+                    crash_action: actor
+                        .crash
+                        .and_then(|id| self.module.callable(id))
+                        .and_then(|callable| {
+                            self.module
+                                .variant_shape_for_type(&callable.signature.return_ty)
+                        })
+                        .map(|shape| shape.id.0),
                     exit: actor.exit.map(|id| self.function_id(id)).transpose()?,
                     down: actor.down.map(|id| self.function_id(id)).transpose()?,
                     handlers: actor
@@ -1426,6 +1478,7 @@ impl<'m> Walker<'m> {
                     "detail": detail,
                     "result_shape": self.result_shape(result),
                     "error_shape": self.error_shape(result),
+                    "request_shapes": self.request_shapes(result),
                     "inputs": boundaries(inputs),
                     "result": call_result(result),
                     "resumes": resumes.iter().map(encode_edge).collect::<Vec<_>>(),
@@ -1446,6 +1499,7 @@ impl<'m> Walker<'m> {
                 "operation": actor_operation(operation),
                 "submission_shapes": self.submission_shapes(result),
                 "error_shape": self.error_shape(result),
+                    "request_shapes": self.request_shapes(result),
                 "args": boundaries(args),
                 "result": call_result(result),
                 "result_shape": self.result_shape(result),

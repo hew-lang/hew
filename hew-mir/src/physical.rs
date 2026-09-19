@@ -9,7 +9,7 @@ pub use hew_sir::{
     ActorId, ActorIngressAdapter, ActorOperation, LocalObservationKind, SemActor, SemActorCoalesce,
     SemActorField, SemActorHandler, SemActorOverflow, SemCoalesceFallback, SemCoalesceKey,
     SemCoalesceKeyKind, SemFailureDisplay, SemRestartPolicy, SemRestartStrategy, SemSupervisedRole,
-    SemSupervisor, SupervisorId, TaskScopeJoinMode, TaskSelectionOrder,
+    SemSupervisor, SemVariantKind, SupervisorId, TaskScopeJoinMode, TaskSelectionOrder,
 };
 use hew_types::runtime_call::{sequence_element_type, ArrayValueOp};
 
@@ -1550,7 +1550,12 @@ pub fn lower_physical_module(
             Ok(lowered)
         })
         .collect::<Result<Vec<_>, PhysicalError>>()?;
-    let structural_glue = structural.into_inner().finish()?;
+    let mut structural_glue = structural.into_inner().finish()?;
+    for index in 0..structural_glue.len() {
+        let callees = structural::display_callees(&structural_glue, structural_glue[index].id)?;
+        structural_glue[index].is_resumable =
+            callees.iter().any(|callee| resumable.contains(callee));
+    }
 
     let vtables = module
         .vtables
@@ -4381,8 +4386,30 @@ fn verify_structural_glue(module: &PhysicalModule) -> Result<(), PhysicalError> 
             }
             PhysicalStructuralShape::Enum { cases } => cases
                 .iter()
-                .flat_map(|case| case.fields.iter().copied())
+                .flat_map(|case| case.fields.iter().map(|field| field.recipe))
                 .collect(),
+            PhysicalStructuralShape::Display { callable } => {
+                let callee = module
+                    .callables
+                    .get(callable.0 as usize)
+                    .filter(|callee| callee.id == *callable)
+                    .ok_or_else(|| {
+                        PhysicalError::new("structural Display names an absent callable")
+                    })?;
+                if callee.params.len() != 1
+                    || callee.params[0].ty != glue.ty
+                    || !matches!(
+                        callee.params[0].passing,
+                        SemParamPassing::Borrow | SemParamPassing::ReadOnly
+                    )
+                    || callee.return_ty != ResolvedTy::String
+                {
+                    return Err(PhysicalError::new(
+                        "structural Display has an incompatible borrowed formatter signature",
+                    ));
+                }
+                Vec::new()
+            }
             PhysicalStructuralShape::Vector { element } => vec![*element],
             PhysicalStructuralShape::Map { key, value } => vec![*key, *value],
             PhysicalStructuralShape::SignedInt
@@ -4407,7 +4434,6 @@ fn verify_structural_glue(module: &PhysicalModule) -> Result<(), PhysicalError> 
 }
 
 fn verify_physical_module(module: &PhysicalModule) -> Result<(), PhysicalError> {
-    suspend::verify_callables(module)?;
     capability::verify(module)?;
     verify_resources(module)?;
     if module.target.triple.is_empty() || module.target.data_layout.is_empty() {
@@ -4416,6 +4442,7 @@ fn verify_physical_module(module: &PhysicalModule) -> Result<(), PhysicalError> 
         ));
     }
     verify_structural_glue(module)?;
+    suspend::verify_callables(module)?;
     for (index, glue) in module.aggregate_glue.iter().enumerate() {
         if usize::try_from(glue.id.0).ok() != Some(index) {
             return Err(PhysicalError::new(format!(
@@ -9661,6 +9688,7 @@ mod tests {
             },
         );
         SemModule {
+            structural_display: BTreeMap::new(),
             debug: hew_sir::SemDebugFacts::default(),
             regex_patterns: Vec::new(),
             actors: Vec::new(),

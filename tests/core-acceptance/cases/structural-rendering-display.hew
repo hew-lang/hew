@@ -1,0 +1,52 @@
+type Reading {
+    station: string,
+    temperature: i64,
+}
+
+impl Display for Reading {
+    fn fmt(value: Reading) -> string {
+        sleep(1ms);
+        f"{value.station}={value.temperature}C"
+    }
+}
+
+type Tagged<T> {
+    label: string,
+    value: T,
+}
+
+impl<T: Display> Display for Tagged<T> {
+    fn fmt(value: Tagged<T>) -> string {
+        f"{value.label}:{value.value}"
+    }
+}
+
+enum Observation {
+    Circle { radius: i64 },
+    Square(i64),
+    Sample { reading: Reading },
+    Missing,
+}
+
+type Report {
+    current: Reading,
+    history: Vec<Option<Reading>>,
+    tagged: Tagged<i64>,
+}
+
+fn show<T>(value: T) -> string {
+    f"{value:?}"
+}
+
+fn main() {
+    let reading = Reading { station: "west", temperature: 3 };
+    let report = Report { current: reading, history: [Some(reading), None], tagged: Tagged { label: "reviewed", value: 9 } };
+    println(show(report));
+    println(show((reading, Tagged { label: "archived", value: "kept" })));
+    println(show([Observation.Circle { radius: 3 }, Observation.Square(1), Observation.Sample { reading: reading }, Observation.Missing]));
+    var map: HashMap<string, Reading> = HashMap.new();
+    map.insert("latest", reading);
+    println(show(map));
+    println(f"{reading:?}");
+    println(reading.station);
+}

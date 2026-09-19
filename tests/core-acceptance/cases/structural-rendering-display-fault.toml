@@ -1,0 +1,11 @@
+[[case]]
+id = "structural-rendering-display-fault"
+intent = "A Display failure reached through a record, map and vector releases the partial rendering, formatter locals and borrowed owner's siblings without reading a failed result."
+source = "cases/structural-rendering-display-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: DivideByZero (202)\n"
+exit = 1

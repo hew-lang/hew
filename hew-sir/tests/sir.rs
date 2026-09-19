@@ -6,9 +6,9 @@ use hew_sir::{
     CallableId, CallableInstance, Edge, EffectSet, FunctionSourceOrigin, GenericTemplateId, OpId,
     Operand, OperandSlot, OwnKind, Provenance, RewriteError, SemAbiParam, SemBlock, SemCallConv,
     SemCallable, SemCallableKind, SemFunction, SemModule, SemOp, SemOpKind, SemParamPassing,
-    SemSignature, SemTerminator, SemVariant, SemVariantArm, SemVariantField, SemVariantShape,
-    SirDiagnosticKind, SirInstanceKey, SuspendKind, TrapKind, UseSite, ValueDef, ValueId,
-    VariantShapeId,
+    SemSignature, SemTerminator, SemVariant, SemVariantArm, SemVariantField, SemVariantKind,
+    SemVariantShape, SirDiagnosticKind, SirInstanceKey, SuspendKind, TrapKind, UseSite, ValueDef,
+    ValueId, VariantShapeId,
 };
 use hew_types::{
     CloneKind, DefId, ResolvedTy, SendFact, TypeFactContext, TypeFactService, TypeFacts,
@@ -125,6 +125,7 @@ fn module(functions: Vec<SemFunction>) -> SemModule {
         closures: Vec::new(),
         vtables: Vec::new(),
         value_capabilities: BTreeMap::new(),
+        structural_display: BTreeMap::new(),
         callables,
         generic_templates: Vec::new(),
         root_unit_callables: Vec::new(),
@@ -226,6 +227,7 @@ fn choice_variant_shape(choice: &ResolvedTy) -> SemVariantShape {
         variants: vec![
             SemVariant {
                 name: "Payload".to_string(),
+                kind: SemVariantKind::Tuple,
                 fields: vec![SemVariantField {
                     name: "0".to_string(),
                     ty: ResolvedTy::String,
@@ -233,6 +235,7 @@ fn choice_variant_shape(choice: &ResolvedTy) -> SemVariantShape {
             },
             SemVariant {
                 name: "Empty".to_string(),
+                kind: SemVariantKind::Unit,
                 fields: Vec::new(),
             },
         ],
@@ -465,6 +468,18 @@ fn verifier_refuses_variant_construction_with_the_wrong_payload_shape() {
         &diagnostic.kind,
         SirDiagnosticKind::InvalidOperation { reason, .. }
             if reason.contains("has 0 field(s), expected 1")
+    )));
+}
+
+#[test]
+fn verifier_refuses_a_unit_variant_with_payload_fields() {
+    let mut module = exhaustive_choice_switch();
+    module.variant_shapes[0].variants[0].kind = SemVariantKind::Unit;
+    let diagnostics = verify_module(&module);
+    assert!(diagnostics.iter().any(|diagnostic| matches!(
+        &diagnostic.kind,
+        SirDiagnosticKind::InvalidVariantShape { reason, .. }
+            if reason.contains("unit variant `Payload` carries payload fields")
     )));
 }
 

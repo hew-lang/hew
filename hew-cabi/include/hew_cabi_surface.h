@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1603u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1601u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 24u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1603] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1601] = {
     {"hew_actor_ask",
      "{\"native\": \"fn hew_actor_ask( *mut HewActor, i32, *mut c_void, usize, "
      ") -> *mut c_void\"}",
@@ -5994,21 +5994,6 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1603] = {
      "{\"native\": \"fn hew_string_trim( *const HewString) -> *mut "
      "HewString\", \"wasm32-wasip1\": \"fn hew_string_trim( *const HewString) "
      "-> *mut HewString\"}",
-     "native,wasm32-wasip1", "stable", "not-applicable",
-     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_structural_format_hashmap",
-     "{\"native\": \"fn hew_structural_format_hashmap( *mut c_void, *const "
-     "HewLayoutHashMap, Option<HewStructuralFormatFn>, "
-     "Option<HewStructuralFormatFn>, )\", \"wasm32-wasip1\": \"fn "
-     "hew_structural_format_hashmap( *mut c_void, *const HewLayoutHashMap, "
-     "Option<HewStructuralFormatFn>, Option<HewStructuralFormatFn>, )\"}",
-     "native,wasm32-wasip1", "stable", "not-applicable",
-     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_structural_format_vec",
-     "{\"native\": \"fn hew_structural_format_vec( *mut c_void, *const HewVec, "
-     "Option<HewStructuralFormatFn>, )\", \"wasm32-wasip1\": \"fn "
-     "hew_structural_format_vec( *mut c_void, *const HewVec, "
-     "Option<HewStructuralFormatFn>, )\"}",
      "native,wasm32-wasip1", "stable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_supervisor_add_child_dynamic",

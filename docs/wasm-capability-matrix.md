@@ -1,12 +1,5 @@
 # Hew WASM Capability Matrix
 
-> Native cutover note: this is a target-capability reference, not current
-> native/sandbox parity evidence. The native actor-call and ownership changes
-> still need sandbox integration. Source syntax follows the
-> [language guide](hew-language-guide.md); older runtime dispositions below
-> do not authorize retired source forms.
-
-
 `wasm-capability-manifest.toml` is the **sole authority** for WASM feature
 identity and policy. This document is its human-readable projection: the
 feature-policy and current WASI summary tables below are generated and checked byte-for-byte by
@@ -23,43 +16,21 @@ that disposition at compile time before any code reaches LLVM/WASM codegen.
 
 | Tier | Crate / Target | Use case |
 |------|----------------|----------|
-| **Tier 1** | `hew-wasm` compiled to `wasm32-unknown-unknown` via `wasm-bindgen` | Browser playground, editor analysis, in-browser type checking |
-| **sandbox-vm-export** | `hew-sandbox-wasm` compiled to `wasm32-unknown-unknown` via `wasm-bindgen` | Browser sandbox bytecode export for the educational VM |
-| **sandbox-vm** | `hew-sandbox-vm` TypeScript worker | Browser educational sandbox execution for deterministic sequential bytecode |
+| **Tier 1** | `hew-wasm` compiled to `wasm32-unknown-unknown` via `wasm-bindgen` | Browser source analysis and verified SIR package compilation |
+| **sandbox-vm** | `hew-sandbox-vm` TypeScript worker | Deterministic execution of verified SIR packages |
 | **Tier 2** | `hew-runtime` compiled to `wasm32-wasip1` (formerly `wasm32-wasi`) | WASI execution — `hew build --target=wasm32-wasi` |
 
-**Tier 1** is analysis-only: lexer, parser, and type checker only.  It never
-executes Hew programs; it only provides diagnostics.
+**Tier 1** exposes editor APIs and `compileToSandboxBytecode` in the canonical
+`@hew-lang/wasm` package. It runs the shared frontend through verified ownership
+SIR and projects the result into the VM package. There is no AST emitter or
+separate source profile authority.
 
-**sandbox-vm-export** sits alongside Tier 1 rather than replacing it.  The
-`hew-sandbox-wasm` crate runs parse, type-check, explicit sandbox profile
-admission, and deterministic bytecode package emission for browser callers.  It
-does not execute Hew programs.
-
-**sandbox-vm** executes admitted sandbox bytecode in a Web Worker.  The current
-interpreter covers deterministic sequential code, checked arithmetic, records,
-enums, lowered match dispatch, direct monomorphized calls, strings, vectors, an
-educational JavaScript `RegExp` subset for curated regex fixtures, the M4
-single-threaded actor scheduler (`spawn`, `send`, `receive`, root `ask/reply`,
-actor crash hooks, bounded mailboxes, seeded chaos scheduling, and replay via
-trace inputs), and the M5 educational coordination subset: async task
-spawn/await, structured scopes with cancellation observation at await
-boundaries, deterministic `select`, virtual-time timer arms, and
-the M6 educational failure-philosophy subset: declarative supervisor specs,
-visible child slots, deterministic one-for-one / one-for-all / rest-for-one
-restart decisions, virtual-time restart windows, linked exit messages, monitor
-notifications, and `#[on(crash)]` observation before supervisor decisions.
-M7 adds a machine-readable sandbox stdlib profile, conservative pure/page-I/O
-shims, virtual-clock `time.now` / `time.sleep` / `time.deadline` shims, typed
-fail-closed diagnostics for unsupported stdlib symbols, and a DOM-free
-playground JSON contract for diagnostics, trace views, controls, share links,
-lesson virtual files, and trace export.
-This is intentionally reduced sandbox semantics rather than production runtime
-parity: link-to-dead traps fail closed, monitor-to-dead fires immediately, and
-supervisor restart budget exhaustion escalates through typed runtime failures.
-Machine runtime parity, file-backed streams, network-backed streams, and broader
-host I/O remain fail-closed with structured `unsupported_instruction` runtime
-failures for the post-M7/native-runtime milestones.
+**sandbox-vm** loads that package and checks its declared operations against
+implemented runtime shims before executing any instruction. Actors, tasks,
+selection and pipes resume through explicit SIR edges on a deterministic
+scheduler. Native host I/O is rejected with `native_only`; missing VM operations
+use `not_implemented`; malformed packages use `invalid_package`. Native/VM
+parity is established by source execution tests, not matching refusals.
 
 **Tier 2** is a genuine execution runtime on top of the WASI ABI.  It uses a
 single-threaded cooperative actor scheduler and provides a meaningful subset of

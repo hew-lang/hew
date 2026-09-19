@@ -15,7 +15,6 @@
 #
 # Packages:
 #   @hew-lang/wasm          ← hew-wasm crate
-#   @hew-lang/sandbox-wasm  ← hew-sandbox-wasm crate
 #   @hew-lang/sandbox-vm    ← hew-sandbox-vm TypeScript interpreter
 
 name: Publish npm packages
@@ -134,7 +133,7 @@ jobs:
 
       - name: Dry-run pack (verify staging)
         run: |
-          for pkg in wasm sandbox-wasm sandbox-vm; do
+          for pkg in wasm sandbox-vm; do
             echo "=== @hew-lang/${pkg} ==="
             npm pack --dry-run "target/npm/@hew-lang/${pkg}"
             echo ""
@@ -148,19 +147,6 @@ jobs:
           PKG_VERSION="$(node -p "require('./target/npm/@hew-lang/wasm/package.json').version")"
           if npm view "@hew-lang/wasm@${PKG_VERSION}" --registry https://npm.pkg.github.com > /dev/null 2>&1; then
             echo "::notice::@hew-lang/wasm@${PKG_VERSION} already published — skipping"
-          else
-            npm publish "${PKG_DIR}" --ignore-scripts --tag "${NPM_DIST_TAG}" --registry https://npm.pkg.github.com
-          fi
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Publish @hew-lang/sandbox-wasm
-        if: ${{ !inputs.dry_run }}
-        run: |
-          PKG_DIR="target/npm/@hew-lang/sandbox-wasm"
-          PKG_VERSION="$(node -p "require('./target/npm/@hew-lang/sandbox-wasm/package.json').version")"
-          if npm view "@hew-lang/sandbox-wasm@${PKG_VERSION}" --registry https://npm.pkg.github.com > /dev/null 2>&1; then
-            echo "::notice::@hew-lang/sandbox-wasm@${PKG_VERSION} already published — skipping"
           else
             npm publish "${PKG_DIR}" --ignore-scripts --tag "${NPM_DIST_TAG}" --registry https://npm.pkg.github.com
           fi

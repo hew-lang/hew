@@ -571,7 +571,7 @@ wasm: ## Build: build the browser WebAssembly package
 	wasm-pack build hew-wasm --target web --release
 
 .PHONY: npm-packages
-npm-packages: ## Release: build, stage and execute the three npm packages together
+npm-packages: ## Release: build, stage and execute the two npm packages together
 	node "$(MAKEFILE_ROOT)/scripts/build-npm-packages.mjs"
 	node "$(MAKEFILE_ROOT)/scripts/smoke-npm-packages.mjs"
 
@@ -652,7 +652,7 @@ sandbox-vm-deps:
 # is excluded from generic nextest runs and owned here with Node provisioned.
 sandbox-parity: wasm-runtime hew-native sandbox-vm-deps
 	npm --prefix hew-sandbox-vm test
-	$(TEST_RUN_ENV) cargo test -p hew-sandbox-wasm
+	$(TEST_RUN_ENV) cargo test -p hew-wasm
 
 # Repo-local browser/tooling smoke:
 # manifest freshness + full hew-wasm test suite (lib + integration) + analysis-only WASM build.

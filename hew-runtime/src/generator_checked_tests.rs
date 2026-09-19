@@ -1,5 +1,5 @@
 use super::*;
-use crate::callable::{hew_callable_env_alloc, HewCallableDescriptor};
+use crate::callable::{hew_callable_drop, hew_callable_env_alloc, HewCallableDescriptor};
 use hew_cabi::value::HewTypeOwnershipKind;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -137,29 +137,70 @@ fn repeated_completion_keeps_one_return_owner_until_close() {
     assert_eq!(counts.returns.load(Ordering::SeqCst), 1);
 }
 
-unsafe extern "C" fn close_count(
-    owner: *mut c_void,
-    _parent: *mut c_void,
-    _fault: *mut *mut c_void,
-) -> i32 {
-    // SAFETY: both descriptors retain the test counters until final release.
-    let counts = unsafe { &*owner.cast::<Counts>() };
-    (if counts.closes.fetch_add(1, Ordering::SeqCst) == 0 {
-        CoroStatus::Pending
-    } else {
-        CoroStatus::Complete
-    }) as i32
+#[repr(C)]
+struct CloseFrame {
+    resume: Option<unsafe extern "C-unwind" fn(*mut c_void)>,
+    destroy: Option<unsafe extern "C-unwind" fn(*mut c_void)>,
+    slot: *mut c_void,
+    state: *mut HewCoroState,
+    drop: hew_cabi::value::HewValueDropThunk,
 }
 
-unsafe extern "C" fn visit_count(slot: *mut c_void, context: *mut c_void) {
-    // SAFETY: the initialized output/capture contains the retained counter pointer.
+unsafe extern "C-unwind" fn resume_close(frame: *mut c_void) {
+    // SAFETY: the fixture supplied this continuation prefix and retained value slot.
     unsafe {
-        crate::value_close::hew_value_close_push(
-            context,
-            (*slot.cast::<*mut Counts>()).cast(),
-            close_count,
-        );
+        let frame = &mut *frame.cast::<CloseFrame>();
+        let counts = &**frame.slot.cast::<*const Counts>();
+        counts.closes.fetch_add(1, Ordering::SeqCst);
+        (frame.drop)(frame.slot);
+        crate::coro_state::hew_coro_state_finish(frame.state, 0);
+        frame.resume = None;
     }
+}
+
+unsafe extern "C-unwind" fn destroy_close(frame: *mut c_void) {
+    // SAFETY: semantic cleanup completed; the driver transfers the unique frame.
+    unsafe { crate::cont::hew_cont_frame_free(frame) };
+}
+
+unsafe fn release_count(
+    slot: *mut c_void,
+    state: *mut c_void,
+    drop: hew_cabi::value::HewValueDropThunk,
+) -> *mut c_void {
+    // SAFETY: the test retains this exact slot and state through completion.
+    unsafe {
+        let counts = &**slot.cast::<*const Counts>();
+        counts.closes.fetch_add(1, Ordering::SeqCst);
+        let frame =
+            crate::cont::hew_cont_frame_alloc(size_of::<CloseFrame>() as u64).cast::<CloseFrame>();
+        frame.write(CloseFrame {
+            resume: Some(resume_close),
+            destroy: Some(destroy_close),
+            slot,
+            state: state.cast(),
+            drop,
+        });
+        frame.cast()
+    }
+}
+
+unsafe extern "C" fn release_capture(
+    slot: *mut c_void,
+    _: *mut *mut c_void,
+    state: *mut c_void,
+) -> *mut c_void {
+    // SAFETY: the descriptor selects the capture slot and its consuming callback.
+    unsafe { release_count(slot, state, drop_capture) }
+}
+
+unsafe extern "C" fn release_return(
+    slot: *mut c_void,
+    _: *mut *mut c_void,
+    state: *mut c_void,
+) -> *mut c_void {
+    // SAFETY: the descriptor selects the return slot and its consuming callback.
+    unsafe { release_count(slot, state, drop_return) }
 }
 
 #[test]
@@ -167,13 +208,11 @@ fn pending_nested_close_retains_lazy_captures_and_terminal_outputs() {
     for lazy in [true, false] {
         let counts = Counts::default();
         let capture = HewValueLayout {
-            visit_close: lazy.then_some(visit_count),
-            release_start: None,
+            release_start: lazy.then_some(release_capture),
             ..CAPTURE
         };
         let returned = HewValueLayout {
-            visit_close: (!lazy).then_some(visit_count),
-            release_start: None,
+            release_start: (!lazy).then_some(release_return),
             ..RETURN
         };
         let descriptor = HewCallableDescriptor {

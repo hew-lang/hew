@@ -3456,6 +3456,7 @@ unsafe fn submit_native_request(
 ) -> crate::mailbox::SendOutcome {
     // Attachment termination is completion of work already admitted by its
     // owner. Ordinary root/external sends must finish publication before drain.
+    #[cfg(not(target_arch = "wasm32"))]
     let _ingress = if terminal {
         None
     } else {
@@ -3747,6 +3748,7 @@ pub(crate) unsafe fn actor_await_send_pinned(
     if !actor_runtime_matches(target) {
         return (HewError::ErrForeignRuntime as i32, 0);
     }
+    #[cfg(not(target_arch = "wasm32"))]
     let Ok(_ingress) = crate::shutdown::admit_external_work() else {
         return (HewError::ErrActorStopped as i32, 0);
     };
@@ -3853,6 +3855,7 @@ pub unsafe extern "C" fn hew_actor_try_send(
     if !actor_runtime_matches(a) {
         return HewError::ErrForeignRuntime as i32;
     }
+    #[cfg(not(target_arch = "wasm32"))]
     let Ok(_ingress) = crate::shutdown::admit_external_work() else {
         return HewError::ErrClosed as i32;
     };
@@ -5308,6 +5311,7 @@ unsafe fn actor_send_result_internal_reply(
         return HewError::ErrForeignRuntime as i32;
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     let Ok(_ingress) = crate::shutdown::admit_external_work() else {
         return HewError::ErrActorStopped as i32;
     };

@@ -532,11 +532,6 @@ pub enum SuspendKind {
     Yield,
     GeneratorNext,
     /// Drain owned children through the existing place leaf mask or SSA owner.
-    /// Preserve initialization and combine cleanup faults before ordinary release.
-    ValueClose {
-        place: Option<crate::PlaceId>,
-        selection: ValueCloseSelection,
-    },
     Sleep,
     SleepUntil,
 }
@@ -560,14 +555,6 @@ impl TaskScopeJoinMode {
     pub const fn cancels_losers(self) -> bool {
         matches!(self, Self::CancelLosers | Self::CancelLosersAfterFault)
     }
-}
-
-/// Which children of an owner must finish cleanup before execution continues.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum ValueCloseSelection {
-    Whole,
-    /// The second suspension operand is the copied vector index.
-    VectorElement,
 }
 
 /// How an owning value crosses an actor or task boundary (§2 rule 5).

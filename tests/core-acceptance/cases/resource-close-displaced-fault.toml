@@ -1,0 +1,14 @@
+[[case]]
+id = "resource-close-displaced-fault"
+intent = "A replacement becomes owned before the displaced value's suspending close fails, so cleanup releases the replacement once before recovery."
+source = "cases/resource-close-displaced-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 20
+
+[case.env]
+HEW_WORKERS = "1"
+
+[case.expected]
+stdout = "closed 1\nclosed 2\nrecovered\nworker ready\n"
+stderr = ""
+exit = 0

@@ -125,16 +125,20 @@ impl FunctionEmitter<'_, '_> {
                     .llvm_ctx("stage a shared payload replacement")?;
                 let function = get_or_declare_external(
                     self.llvm,
-                    symbol,
-                    self.ctx.void_type().fn_type(&[ptr.into(); 2], false),
+                    "hew_rc_set_release",
+                    ptr.fn_type(&[ptr.into(); 3], false),
                 )?;
                 self.clear_moved(transfers)?;
-                // The swap releases the payload it displaces, so a `close` that
-                // fails inside it reaches this frame's fault record.
-                self.value_emitter().emit_release_in_sink(|| {
-                    self.runtime_call_void(function, &[handle.into(), staged.into()], "rc.set")
-                })?;
-                Ok(())
+                let descriptor =
+                    self.descriptor_pointer(&format!("__hew_shared_payload_{}_layout", glue_id.0))?;
+                let cursor = self
+                    .runtime_call_value(
+                        function,
+                        &[handle.into(), staged.into(), descriptor.into()],
+                        "rc.set",
+                    )?
+                    .into_pointer_value();
+                release::drain(&self.value_emitter(), self.frame.as_ref(), cursor)
             }
             other => Err(CodegenError::FailClosed(format!(
                 "runtime operation `{other:?}` has no shared-allocation emission"

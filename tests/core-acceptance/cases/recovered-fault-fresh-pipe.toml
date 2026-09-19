@@ -1,0 +1,14 @@
+[[case]]
+id = "recovered-fault-fresh-pipe"
+intent = "An actor's recovered local fault does not poison a fresh pipe's clean close."
+source = "cases/recovered-fault-fresh-pipe.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 20
+
+[case.env]
+HEW_WORKERS = "1"
+
+[case.expected]
+stdout = "recovered\n42\nclean end\n"
+stderr = ""
+exit = 0

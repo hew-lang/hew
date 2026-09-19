@@ -1,0 +1,40 @@
+actor Audit {
+    receive fn record(id: i64) {
+        sleep(1ms);
+        println(f"closed {id}");
+    }
+}
+
+#[resource]
+type Ticket { audit: Audit, id: i64, }
+impl Ticket {
+    fn close(consume self) { self.audit.record(self.id).expect("generator close"); }
+}
+
+gen fn numbers(consume held: Ticket) -> i64 {
+    yield held.id;
+    sleep(1h);
+}
+
+actor Worker {
+    receive fn run(audit: Audit) {
+        { let _unused = numbers(Ticket { audit: audit, id: 1 }); }
+        {
+            let started = numbers(Ticket { audit: audit, id: 2 });
+            println(started.next().expect("first yield"));
+        }
+        for value in numbers(Ticket { audit: audit, id: 3 }) {
+            println(value);
+            break;
+        }
+        println("generators closed");
+    }
+}
+
+fn main() {
+    let audit = spawn Audit;
+    let worker = spawn Worker;
+    worker.run(audit).expect("generator cleanup");
+    close(worker);
+    close(audit);
+}

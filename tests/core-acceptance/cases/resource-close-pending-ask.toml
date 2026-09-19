@@ -1,0 +1,14 @@
+[[case]]
+id = "resource-close-pending-ask"
+intent = "Cancelling a call awaiting mailbox admission closes its owned request before deadline recovery, while accepted queued payloads remain inside the receiver close barrier."
+source = "cases/resource-close-pending-ask.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 20
+
+[case.env]
+HEW_WORKERS = "1"
+
+[case.expected]
+stdout = "closed 2\ndeadline\nclosed 1\ngate closed\n"
+stderr = ""
+exit = 0

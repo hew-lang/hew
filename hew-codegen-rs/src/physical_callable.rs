@@ -58,8 +58,6 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             self.ctx.i8_type().const_int(ownership as u64, false).into(),
             clone.into(),
             drop.into(),
-            self.emit_environment_close(&format!("{name}_close"), glue, layout)?
-                .into(),
             if glue.fields.iter().any(|field| {
                 field
                     .destroy
@@ -127,67 +125,6 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         global.set_constant(true);
         global.set_initializer(&descriptor);
         Ok(())
-    }
-
-    fn emit_environment_close(
-        &self,
-        name: &str,
-        glue: &PhysicalEnvironmentGlue,
-        layout: &PhysicalLayout,
-    ) -> CodegenResult<PointerValue<'ctx>> {
-        let pointer = self.ctx.ptr_type(AddressSpace::default());
-        if glue.fields.is_empty() {
-            return Ok(pointer.const_null());
-        }
-        let function = self.llvm.add_function(
-            name,
-            self.ctx.void_type().fn_type(&[pointer.into(); 2], false),
-            Some(Linkage::Internal),
-        );
-        let environment = function.get_nth_param(0).unwrap().into_pointer_value();
-        let context = function.get_nth_param(1).unwrap().into_pointer_value();
-        let builder = self.ctx.create_builder();
-        builder.position_at_end(self.ctx.append_basic_block(function, "entry"));
-        // A captured `#[resource]` whose `close` fails records here, so the
-        // remaining captures are still released before the fault leaves.
-        let record = crate::physical::glue_fault_record(self.ctx, &builder)?;
-        let emitter = ValueEmitter {
-            module: self.module,
-            ctx: self.ctx,
-            llvm: &self.llvm,
-            builder: &builder,
-            value: function,
-            fault_sink: Some(record),
-        };
-        for (index, field) in glue.fields.iter().enumerate().rev() {
-            let Some(action) = field.destroy else {
-                continue;
-            };
-            let index = u32::try_from(index)
-                .map_err(|_| CodegenError::FailClosed("capture index exceeds u32".into()))?;
-            let live = environment_mask_bit(self.ctx, &builder, environment, index)?;
-            let visit = self.ctx.append_basic_block(function, "capture.close");
-            let next = self.ctx.append_basic_block(function, "capture.next");
-            builder
-                .build_conditional_branch(live, visit, next)
-                .llvm_ctx("select initialized capture")?;
-            builder.position_at_end(visit);
-            let slot = environment_field(self.ctx, &builder, layout, environment, index)?;
-            let field_layout =
-                self.module.target.layout(&field.ty).ok_or_else(|| {
-                    CodegenError::FailClosed("capture cleanup lacks layout".into())
-                })?;
-            emitter.visit_close(slot, field_layout, action, context)?;
-            builder
-                .build_unconditional_branch(next)
-                .llvm_ctx("finish capture selection")?;
-            builder.position_at_end(next);
-        }
-        crate::physical::raise_glue_fault_record(self.ctx, &self.llvm, &builder, function, record)?;
-        builder
-            .build_return(None)
-            .llvm_ctx("finish environment child selection")?;
-        Ok(function.as_global_value().as_pointer_value())
     }
 
     fn emit_environment_drop(

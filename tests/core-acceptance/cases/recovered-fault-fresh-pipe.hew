@@ -1,0 +1,27 @@
+import std.stream;
+
+actor Worker {
+    receive fn make_pipe() -> Stream<i64> {
+        scope { panic("handled before pipe"); } handle failure {
+            match failure {
+                .Fault { message } => println("recovered"),
+                .Deadline { message } => panic("unexpected deadline"),
+            }
+        };
+        let (output, input): (Sink<i64>, Stream<i64>) = stream.pipe(1).expect("pipe");
+        output.send(42).expect("buffer value");
+        output.close();
+        input
+    }
+}
+
+fn main() {
+    let worker = spawn Worker;
+    let input = worker.make_pipe().expect("fresh pipe");
+    println(input.recv().expect("buffered value"));
+    match input.recv() {
+        .None => println("clean end"),
+        .Some(_) => panic("unexpected second value"),
+    }
+    close(worker);
+}

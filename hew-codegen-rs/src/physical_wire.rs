@@ -97,10 +97,19 @@ fn constant_text<'ctx>(
     global.as_pointer_value()
 }
 
-fn decode_is_resumable(module: &PhysicalModule, plan: &SemWirePlan) -> bool {
+fn decode_is_resumable(
+    module: &PhysicalModule,
+    plan: &SemWirePlan,
+    recipes: &BTreeMap<ResolvedTy, PhysicalValueRecipe>,
+) -> bool {
     let mut resumable = false;
     plan.visit_decode_capabilities(&mut |ty, capability| {
         resumable |= module.value_capabilities[&(ty.clone(), capability)].is_resumable;
+    });
+    plan.visit_types(&mut |ty| {
+        resumable |= recipes[ty]
+            .destroy
+            .is_some_and(|action| module.releases.suspends(action));
     });
     resumable
 }
@@ -119,7 +128,7 @@ fn emit_callback<'ctx>(
         return Ok(function);
     }
     let pointer = ctx.ptr_type(AddressSpace::default());
-    let resumable = decode && decode_is_resumable(module, plan);
+    let resumable = decode && decode_is_resumable(module, plan, recipes);
     let signature = if resumable {
         pointer.fn_type(&[pointer.into(); 4], false)
     } else if decode {
@@ -176,8 +185,12 @@ fn emit_callback<'ctx>(
             .build_alloca(ctx.i32_type(), "wire.status")
             .llvm_ctx("allocate wire callback status")?;
         builder
-            .build_store(status, ctx.i32_type().const_int(1, false))
+            .build_store(status, ctx.i32_type().const_zero())
             .llvm_ctx("initialize decode failure status")?;
+        let values = ValueEmitter {
+            fault_sink: Some((fault, status)),
+            ..values
+        };
         let mut emitter = DecodeEmitter {
             values,
             recipes,
@@ -775,6 +788,10 @@ impl<'ctx> DecodeEmitter<'_, 'ctx> {
         self.mark(temporary, false)
     }
     fn destroy(&self, owner: &DecodeOwner<'ctx>) -> CodegenResult<()> {
+        self.values
+            .builder
+            .build_store(owner.initialized, self.values.ctx.bool_type().const_zero())
+            .llvm_ctx("consume wire cleanup owner")?;
         let layout = self
             .values
             .module
@@ -783,6 +800,13 @@ impl<'ctx> DecodeEmitter<'_, 'ctx> {
             .ok_or_else(|| {
                 CodegenError::FailClosed("wire cleanup has no physical layout".into())
             })?;
+        let action = owner
+            .recipe
+            .destroy
+            .expect("owned temporary has destruction");
+        if let Some(frame) = &self.frame {
+            return release::slot(&self.values, frame, owner.slot, layout, action);
+        }
         let value = self
             .values
             .builder
@@ -792,14 +816,7 @@ impl<'ctx> DecodeEmitter<'_, 'ctx> {
                 "wire.partial.owner",
             )
             .llvm_ctx("read initialized wire owner")?;
-        self.values.destroy_loaded_value(
-            value,
-            layout,
-            owner
-                .recipe
-                .destroy
-                .expect("owned temporary has destruction"),
-        )
+        self.values.destroy_loaded_value(value, layout, action)
     }
     fn rollback(&self) -> CodegenResult<()> {
         self.values.builder.position_at_end(self.fail);
@@ -936,7 +953,7 @@ impl<'ctx> DecodeEmitter<'_, 'ctx> {
             true,
         )?;
         let arguments = [self.cursor.into(), temporary.slot.into(), self.fault.into()];
-        let status = if decode_is_resumable(self.values.module, plan) {
+        let status = if decode_is_resumable(self.values.module, plan, self.recipes) {
             suspend::invoke_child(
                 self.values.ctx,
                 self.values.llvm,
@@ -1207,7 +1224,7 @@ impl<'ctx> DecodeEmitter<'_, 'ctx> {
         collection: BasicValueEnum<'ctx>,
         input: PointerValue<'ctx>,
         value: Option<PointerValue<'ctx>>,
-    ) -> CodegenResult<IntValue<'ctx>> {
+    ) -> CodegenResult<(IntValue<'ctx>, PointerValue<'ctx>)> {
         let callbacks = CollectionCallbacks {
             values: &self.values,
             frame: self.frame.as_ref(),
@@ -1218,27 +1235,26 @@ impl<'ctx> DecodeEmitter<'_, 'ctx> {
             allocations: Some(self.allocations),
         };
         let outputs = value.into_iter().map(Into::into).collect::<Vec<_>>();
-        let unique = callbacks.probe(
-            CollectionProbe {
-                key,
-                begin: if value.is_some() {
-                    "hew_hashmap_probe_begin"
-                } else {
-                    "hew_hashset_probe_begin"
-                },
-                receiver: collection,
-                input,
-                inserting: true,
-                commit: if value.is_some() {
-                    "hew_hashmap_probe_insert_take"
-                } else {
-                    "hew_hashset_probe_insert_clone"
-                },
-                commit_args: &outputs,
+        let (unique, cursor) = callbacks.probe(CollectionProbe {
+            key,
+            begin: if value.is_some() {
+                "hew_hashmap_probe_begin"
+            } else {
+                "hew_hashset_probe_begin"
             },
-            false,
-        )?;
-        self.values
+            receiver: collection,
+            input,
+            inserting: true,
+            commit: if value.is_some() {
+                "hew_hashmap_probe_insert_take"
+            } else {
+                "hew_hashset_probe_insert_clone"
+            },
+            commit_args: &outputs,
+            releases: true,
+        })?;
+        let unique = self
+            .values
             .builder
             .build_int_compare(
                 IntPredicate::NE,
@@ -1246,7 +1262,11 @@ impl<'ctx> DecodeEmitter<'_, 'ctx> {
                 unique.get_type().const_zero(),
                 "wire.key.unique",
             )
-            .llvm_ctx("check decoded key uniqueness")
+            .llvm_ctx("check decoded key uniqueness")?;
+        Ok((
+            unique,
+            cursor.expect("wire insertion detaches displaced owners"),
+        ))
     }
     fn collection(
         &mut self,
@@ -1358,10 +1378,16 @@ impl<'ctx> DecodeEmitter<'_, 'ctx> {
         if let (Some(value), Some(value_slot)) = (value, value_slot) {
             self.void("hew_cbor_de_map_value", &[])?;
             self.child_into(value, value_slot)?;
-            let unique =
+            let (unique, cursor) =
                 self.probe_insert(&key.ty, collection, key_slot.slot, Some(value_slot.slot))?;
             self.mark(value_slot, false)?;
             self.release(key_slot)?;
+            release::drain(&self.values, self.frame.as_ref(), cursor)?;
+            let status = builder
+                .build_load(ctx.i32_type(), self.status, "wire.cleanup.status")
+                .llvm_ctx("read decoded owner cleanup status")?
+                .into_int_value();
+            self.check_status(status)?;
             let accepted = ctx.append_basic_block(self.values.value, "wire.key.accepted");
             let duplicate = ctx.append_basic_block(self.values.value, "wire.key.duplicate");
             builder
@@ -1379,8 +1405,14 @@ impl<'ctx> DecodeEmitter<'_, 'ctx> {
             )?;
             self.mark(key_slot, false)?;
         } else {
-            let unique = self.probe_insert(&key.ty, collection, key_slot.slot, None)?;
+            let (unique, cursor) = self.probe_insert(&key.ty, collection, key_slot.slot, None)?;
             self.release(key_slot)?;
+            release::drain(&self.values, self.frame.as_ref(), cursor)?;
+            let status = builder
+                .build_load(ctx.i32_type(), self.status, "wire.cleanup.status")
+                .llvm_ctx("read decoded owner cleanup status")?
+                .into_int_value();
+            self.check_status(status)?;
             let accepted = ctx.append_basic_block(self.values.value, "wire.element.accepted");
             let duplicate = ctx.append_basic_block(self.values.value, "wire.element.duplicate");
             builder
@@ -1530,7 +1562,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 .build_load(pointer, reader_out, "wire.reader")
                 .llvm_ctx("load owned wire reader")?;
             let arguments = [reader.into(), decoded.into(), fault_out.into()];
-            let status = if decode_is_resumable(self.module, plan) {
+            let status = if decode_is_resumable(self.module, plan, recipes) {
                 suspend::invoke_child(
                     self.ctx,
                     self.llvm,

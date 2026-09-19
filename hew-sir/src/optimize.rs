@@ -438,22 +438,6 @@ fn transferable_roots(
             _ => {}
         }
     }
-    // A suspension drain names its own place; it is not part of the operation
-    // place traversal, so those roots keep their copies.
-    let mut suspended = BTreeSet::new();
-    for block in &function.blocks {
-        if let SemTerminator::Suspend {
-            kind:
-                crate::SuspendKind::ValueClose {
-                    place: Some(place), ..
-                },
-            ..
-        } = &block.terminator
-        {
-            suspended.insert(*place);
-        }
-    }
-
     function
         .places
         .iter()
@@ -467,7 +451,6 @@ fn transferable_roots(
             // liveness sees nothing; leave those roots to their copies.
             !open_borrows.contains(&place.id) || closed.contains(&place.id)
         })
-        .filter(|place| !suspended.contains(&place.id))
         .filter(|place| {
             matches!(
                 facts

@@ -295,9 +295,25 @@ pub(super) fn semantic_callables(checked: &hew_sir::CheckedModule<'_>) -> BTreeS
             }
             match &block.terminator {
                 hew_sir::SemTerminator::Suspend {
-                    kind:
-                        hew_sir::SuspendKind::StreamNext { park: false }
-                        | hew_sir::SuspendKind::StreamSend { park: false },
+                    kind: hew_sir::SuspendKind::StreamSend { park: false },
+                    inputs,
+                    ..
+                } => {
+                    let (intrinsic, dependencies) = semantic_release_dependencies(
+                        module,
+                        &types[&inputs[1].operand.value],
+                        None,
+                    );
+                    if intrinsic {
+                        resumable.insert(function.callable);
+                    }
+                    calls
+                        .entry(function.callable)
+                        .or_default()
+                        .extend(dependencies);
+                }
+                hew_sir::SemTerminator::Suspend {
+                    kind: hew_sir::SuspendKind::StreamNext { park: false },
                     ..
                 } => {}
                 hew_sir::SemTerminator::RecoverFault { .. }
@@ -353,6 +369,17 @@ pub(super) fn semantic_callables(checked: &hew_sir::CheckedModule<'_>) -> BTreeS
                 hew_sir::SemTerminator::WireCodec {
                     direction, plan, ..
                 } if !direction.is_serialize() => {
+                    plan.visit_types(&mut |ty| {
+                        let (intrinsic, dependencies) =
+                            semantic_release_dependencies(module, ty, None);
+                        if intrinsic {
+                            resumable.insert(function.callable);
+                        }
+                        calls
+                            .entry(function.callable)
+                            .or_default()
+                            .extend(dependencies);
+                    });
                     plan.visit_decode_capabilities(&mut |ty, capability| {
                         calls
                             .entry(function.callable)
@@ -432,6 +459,18 @@ pub(super) fn verify_callables(module: &PhysicalModule) -> Result<(), PhysicalEr
                 }
             }
             match &block.terminator {
+                PhysicalTerminator::StreamSend {
+                    park: false,
+                    element,
+                    ..
+                } => {
+                    if element
+                        .destroy
+                        .is_some_and(|action| releases.suspends(action))
+                    {
+                        resumable.insert(function.callable);
+                    }
+                }
                 PhysicalTerminator::RecoverFault { .. }
                 | PhysicalTerminator::NativeIo { .. }
                 | PhysicalTerminator::Sleep { .. }
@@ -441,7 +480,6 @@ pub(super) fn verify_callables(module: &PhysicalModule) -> Result<(), PhysicalEr
                 | PhysicalTerminator::GeneratorNext { .. }
                 | PhysicalTerminator::StreamNext { park: true, .. }
                 | PhysicalTerminator::StreamSend { park: true, .. }
-                | PhysicalTerminator::ValueClose { .. }
                 | PhysicalTerminator::IndirectCall { .. }
                 | PhysicalTerminator::TaskAwait { .. }
                 | PhysicalTerminator::ActorAsk { .. }
@@ -505,8 +543,18 @@ pub(super) fn verify_callables(module: &PhysicalModule) -> Result<(), PhysicalEr
                         .extend(super::capability::callees(module, ty, *capability)?);
                 }
                 PhysicalTerminator::WireCodec {
-                    direction, plan, ..
+                    direction,
+                    plan,
+                    recipes,
+                    ..
                 } if !direction.is_serialize() => {
+                    if recipes.values().any(|recipe| {
+                        recipe
+                            .destroy
+                            .is_some_and(|action| releases.suspends(action))
+                    }) {
+                        resumable.insert(function.callable);
+                    }
                     let mut dependencies = Vec::new();
                     plan.visit_decode_capabilities(&mut |ty, capability| {
                         dependencies.push(super::capability::callees(module, ty, capability));

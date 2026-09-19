@@ -3,8 +3,8 @@
 
 use super::{
     lower_initial_value_transfer, BlockArg, BlockId, Builder, CallResult, CallableInstance, Edge,
-    HirExpr, HirExprKind, IntentKind, Operand, OwnKind, OwnedBindingUse, PlaceId, Provenance,
-    ResolvedTy, SemOpKind, SemTerminator, ValueDef, ValueId,
+    HirExpr, HirExprKind, IntentKind, Operand, OwnKind, OwnedBindingUse, Provenance, ResolvedTy,
+    SemOpKind, SemTerminator, ValueDef, ValueId,
 };
 use crate::{BoundaryDecision, BoundaryOperand, SuspendKind};
 
@@ -421,110 +421,4 @@ impl Builder<'_, '_> {
         }
         Ok(value)
     }
-
-    pub(super) fn value_needs_close(&self, ty: &ResolvedTy) -> bool {
-        value_needs_close(self.service, ty)
-    }
-
-    pub(super) fn close_selected_value(
-        &mut self,
-        place: Option<PlaceId>,
-        value: Option<ValueId>,
-        index: Option<ValueId>,
-    ) -> Result<(), String> {
-        let next = self.new_block(Vec::new());
-        self.set_terminator(SemTerminator::Suspend {
-            kind: SuspendKind::ValueClose {
-                place,
-                selection: if index.is_some() {
-                    crate::ValueCloseSelection::VectorElement
-                } else {
-                    crate::ValueCloseSelection::Whole
-                },
-            },
-            inputs: value
-                .into_iter()
-                .map(|value| BoundaryOperand {
-                    operand: Operand { value },
-                    decision: BoundaryDecision::Borrow,
-                })
-                .chain(index.map(|value| BoundaryOperand {
-                    operand: Operand { value },
-                    decision: BoundaryDecision::Copy,
-                }))
-                .collect(),
-            result: CallResult::Unit,
-            resumes: vec![edge(next)],
-            cancel: edge(next),
-            unwind: edge(next),
-        })?;
-        self.current = next;
-        self.cleanup_may_fail = true;
-        Ok(())
-    }
-}
-
-/// Generators and call-once callables drain cooperatively before their storage
-/// is released; a synchronous destructor cannot finish them.
-pub(super) fn value_needs_close(service: &super::InstanceService<'_>, ty: &ResolvedTy) -> bool {
-    fn visit(
-        ty: &ResolvedTy,
-        service: &super::InstanceService<'_>,
-        seen: &mut Vec<ResolvedTy>,
-    ) -> bool {
-        if seen.contains(ty) {
-            return false;
-        }
-        seen.push(ty.clone());
-        let result = match ty {
-            ResolvedTy::Function { capabilities, .. } => !capabilities.clone,
-            ResolvedTy::Closure { captures, .. } | ResolvedTy::Tuple(captures) => {
-                captures.iter().any(|ty| visit(ty, service, seen))
-            }
-            ResolvedTy::Array(element, length) => *length != 0 && visit(element, service, seen),
-            ResolvedTy::Named {
-                builtin: Some(hew_types::BuiltinType::Generator),
-                ..
-            } => true,
-            ResolvedTy::Named {
-                builtin:
-                    Some(
-                        hew_types::BuiltinType::Vec
-                        | hew_types::BuiltinType::HashMap
-                        | hew_types::BuiltinType::HashSet
-                        | hew_types::BuiltinType::Option
-                        | hew_types::BuiltinType::Result,
-                    ),
-                args,
-                ..
-            } => args.iter().any(|ty| visit(ty, service, seen)),
-            _ => {
-                service
-                    .aggregate_shapes
-                    .iter()
-                    .find(|shape| shape.aggregate_ty == *ty)
-                    .is_some_and(|shape| {
-                        shape
-                            .fields
-                            .iter()
-                            .any(|field| visit(&field.ty, service, seen))
-                    })
-                    || service
-                        .variant_shapes
-                        .iter()
-                        .find(|shape| shape.enum_ty == *ty)
-                        .is_some_and(|shape| {
-                            shape.variants.iter().any(|variant| {
-                                variant
-                                    .fields
-                                    .iter()
-                                    .any(|field| visit(&field.ty, service, seen))
-                            })
-                        })
-            }
-        };
-        seen.pop();
-        result
-    }
-    visit(ty, service, &mut Vec::new())
 }

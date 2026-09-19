@@ -234,14 +234,11 @@ pub fn uses_concurrency(module: &SemModule) -> bool {
     })
 }
 
-/// `ValueClose`, `Sleep` and `NativeIo` resume on the running activation:
-/// a release, a virtual-clock advance and a rejected capability. Every other
+/// `Sleep` and `NativeIo` resume on the running activation:
+/// a virtual-clock advance and a rejected capability. Every other
 /// kind parks a frame the scheduler must wake.
 fn suspend_needs_scheduler(kind: &SuspendKind) -> bool {
-    !matches!(
-        kind,
-        SuspendKind::ValueClose { .. } | SuspendKind::Sleep | SuspendKind::NativeIo { .. }
-    )
+    !matches!(kind, SuspendKind::Sleep | SuspendKind::NativeIo { .. })
 }
 
 /// Project a verified semantic module into a sandbox bytecode package.
@@ -1375,16 +1372,6 @@ const fn trap_name(kind: TrapKind) -> &'static str {
 
 fn suspend_shape(kind: &SuspendKind) -> Result<(&'static str, serde_json::Value), EmitError> {
     match kind {
-        SuspendKind::ValueClose { place, selection } => Ok((
-            "ValueClose",
-            serde_json::json!({
-                "place": place.map(|place| place.0),
-                "selection": match selection {
-                    hew_sir::ValueCloseSelection::Whole => "whole",
-                    hew_sir::ValueCloseSelection::VectorElement => "vector_element",
-                },
-            }),
-        )),
         SuspendKind::Sleep => Ok(("Sleep", serde_json::Value::Null)),
         SuspendKind::NativeIo { operation } => Ok((
             "NativeIo",

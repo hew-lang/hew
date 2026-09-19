@@ -1,11 +1,10 @@
 //! Realize the checked generator contracts without inventing ownership or frames.
 
 use super::{
-    apply_edge, call_successors, defer, initialized, physical_value_recipe,
-    require_no_live_borrows, storage, verify_value_recipe, ArgumentTransfer, BlockId, BuiltinType,
-    CallResult, ClosureId, FaultState, FlowState, FunctionLowerer, OwnKind, PhysicalError,
+    call_successors, defer, physical_value_recipe, storage, verify_value_recipe, ArgumentTransfer,
+    BlockId, BuiltinType, CallResult, ClosureId, FlowState, FunctionLowerer, PhysicalError,
     PhysicalFunction, PhysicalModule, PhysicalOp, PhysicalTerminator, ResolvedTy, SemOp,
-    SemTerminator, StorageOrigin,
+    SemTerminator,
 };
 
 impl FunctionLowerer<'_> {
@@ -62,27 +61,6 @@ impl FunctionLowerer<'_> {
                     normal,
                     cancel: self.lower_edge(cancel)?,
                     unwind: self.lower_edge(unwind)?,
-                }
-            }
-            hew_sir::SuspendKind::ValueClose { place, selection } => {
-                PhysicalTerminator::ValueClose {
-                    index: if *selection == hew_sir::ValueCloseSelection::VectorElement {
-                        Some(self.value(inputs[1].operand.value)?)
-                    } else {
-                        None
-                    },
-                    generator: if let Some(place) = place {
-                        self.place(*place)?
-                    } else {
-                        self.value(inputs[0].operand.value)?
-                    },
-                    destroy: self.optional_destroy(if let Some(place) = place {
-                        self.place(*place)?
-                    } else {
-                        self.value(inputs[0].operand.value)?
-                    })?,
-                    conditional: place.is_some(),
-                    next: normal,
                 }
             }
             _ => unreachable!(),
@@ -165,40 +143,6 @@ pub(super) fn verify_suspend(
                 return Err(PhysicalError::new("generator next changes its output type"));
             }
         }
-        PhysicalTerminator::ValueClose {
-            index,
-            destroy,
-            generator,
-            conditional,
-            ..
-        } => {
-            let slot = storage(function, *generator)?;
-            if let Some(index) = index {
-                if *conditional
-                    || storage(function, *index)?.ty != ResolvedTy::I64
-                    || hew_types::runtime_call::sequence_element_type(&slot.ty).is_none()
-                {
-                    return Err(PhysicalError::new(
-                        "selected value close requires a vector owner and copied i64 index",
-                    ));
-                }
-            }
-            let action = destroy.ok_or_else(|| {
-                PhysicalError::new("value close lacks its owning destruction recipe")
-            })?;
-            super::verify_destroy_action(module, &slot.ty, slot.own, action)?;
-            if slot.own != OwnKind::Owned
-                || (*conditional
-                    && !matches!(
-                        slot.origin,
-                        StorageOrigin::Local(_) | StorageOrigin::Aggregate(_)
-                    ))
-            {
-                return Err(PhysicalError::new(
-                    "value close lacks its initialized owner contract",
-                ));
-            }
-        }
         _ => unreachable!(),
     }
     Ok(())
@@ -208,7 +152,7 @@ pub(super) fn successors(
     function: &PhysicalFunction,
     borrows: &super::BorrowDependents,
     terminator: &PhysicalTerminator,
-    mut state: FlowState,
+    state: FlowState,
     block: BlockId,
 ) -> Result<Vec<(BlockId, FlowState)>, PhysicalError> {
     let (input, result, normal, cancel, unwind) = match terminator {
@@ -225,28 +169,6 @@ pub(super) fn successors(
             cancel,
             unwind,
         } => (*generator, Some(*result), normal, cancel, unwind),
-        PhysicalTerminator::ValueClose {
-            index,
-            generator,
-            conditional,
-            next,
-            ..
-        } => {
-            if let Some(index) = index {
-                initialized(function, &state, *index, block, "value close index")?;
-            }
-            if *conditional {
-                super::partial::require_root(function, &state, *generator, block, "value close")?;
-            } else {
-                initialized(function, &state, *generator, block, "generator close")?;
-            }
-            require_no_live_borrows(function, borrows, &state, *generator)?;
-            if state.fault != FaultState::Active {
-                state.fault = FaultState::MaybeActive;
-            }
-            state.exit |= defer::TRAP;
-            return Ok(vec![apply_edge(function, borrows, next, state, block)?]);
-        }
         _ => unreachable!(),
     };
     let mut successors = call_successors(

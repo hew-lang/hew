@@ -654,6 +654,25 @@ fn cursor<'ctx>(
     drain_cursor(values, frame, cursor)
 }
 
+/// Drain detached owners using the caller's checked suspension capability.
+pub(super) fn drain<'ctx>(
+    values: &ValueEmitter<'_, 'ctx>,
+    frame: Option<&coro::Frame<'ctx>>,
+    cursor: PointerValue<'ctx>,
+) -> CodegenResult<()> {
+    if let Some(frame) = frame {
+        return drain_cursor(values, frame, cursor);
+    }
+    let run = external_drop(values.ctx, values.llvm, "hew_release_sync")?;
+    values.emit_release_in_sink(|| {
+        values
+            .builder
+            .build_call(run, &[cursor.into()], "")
+            .llvm_ctx("release synchronous displaced owners")?;
+        Ok(())
+    })
+}
+
 pub(super) fn drain_cursor<'ctx>(
     values: &ValueEmitter<'_, 'ctx>,
     frame: &coro::Frame<'ctx>,
@@ -735,7 +754,7 @@ fn descriptor_slot<'ctx>(
     let layout = value_descriptor_type(values.ctx, &target);
     let address = values
         .builder
-        .build_struct_gep(layout, descriptor, 6, "release.start.slot")
+        .build_struct_gep(layout, descriptor, 5, "release.start.slot")
         .llvm_ctx("address descriptor continuation")?;
     let start = values
         .builder

@@ -8904,29 +8904,6 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     SemOpKind::LoadTake { place: projected },
                 )?
             };
-            if matches!(
-                family,
-                hew_types::RuntimeCallFamily::Array(hew_types::runtime_call::ArrayValueOp::Set)
-                    | hew_types::RuntimeCallFamily::Vector(
-                        hew_types::runtime_call::VecValueOp::Clear
-                            | hew_types::runtime_call::VecValueOp::Set
-                    )
-            ) && self.value_needs_close(&receiver_ty)
-            {
-                let index = matches!(
-                    family,
-                    hew_types::RuntimeCallFamily::Vector(hew_types::runtime_call::VecValueOp::Set)
-                        | hew_types::RuntimeCallFamily::Array(
-                            hew_types::runtime_call::ArrayValueOp::Set
-                        )
-                )
-                .then(|| lowered_args[0].operand.value);
-                let loan_depth = self.argument_receiver_loans.len();
-                self.argument_receiver_loans.extend(loans.iter().copied());
-                self.close_selected_value(None, Some(source), index)?;
-                self.dispatch_value_cleanup()?;
-                self.argument_receiver_loans.truncate(loan_depth);
-            }
             self.owned_live.remove(&source);
             let moved = self.emit_typed(
                 provenance,

@@ -1072,13 +1072,6 @@ pub enum PhysicalTerminator {
         cancel: PhysicalEdge,
         unwind: PhysicalEdge,
     },
-    ValueClose {
-        index: Option<StorageId>,
-        destroy: Option<DestroyAction>,
-        generator: StorageId,
-        conditional: bool,
-        next: PhysicalEdge,
-    },
     TaskAwait {
         task: ArgumentTransfer,
         result: Option<StorageId>,
@@ -3504,10 +3497,7 @@ impl FunctionLowerer<'_> {
             SemTerminator::ResumeUnwind => Ok(PhysicalTerminator::PropagateFault),
             SemTerminator::Unreachable => Ok(PhysicalTerminator::Unreachable),
             term @ SemTerminator::Suspend {
-                kind:
-                    hew_sir::SuspendKind::Yield
-                    | hew_sir::SuspendKind::GeneratorNext
-                    | hew_sir::SuspendKind::ValueClose { .. },
+                kind: hew_sir::SuspendKind::Yield | hew_sir::SuspendKind::GeneratorNext,
                 ..
             } => self.lower_generator_suspend(term),
             SemTerminator::Suspend {
@@ -7077,9 +7067,7 @@ fn terminator_successors(
             successors.push(apply_edge(function, borrows, unwind, state, block)?);
             Ok(successors)
         }
-        PhysicalTerminator::GeneratorYield { .. }
-        | PhysicalTerminator::GeneratorNext { .. }
-        | PhysicalTerminator::ValueClose { .. } => {
+        PhysicalTerminator::GeneratorYield { .. } | PhysicalTerminator::GeneratorNext { .. } => {
             generators::successors(function, borrows, terminator, state, block)
         }
         PhysicalTerminator::StreamNext {
@@ -7875,9 +7863,7 @@ fn verify_terminator(
             edge(cancel)?;
             edge(unwind)
         }
-        PhysicalTerminator::GeneratorYield { .. }
-        | PhysicalTerminator::GeneratorNext { .. }
-        | PhysicalTerminator::ValueClose { .. } => {
+        PhysicalTerminator::GeneratorYield { .. } | PhysicalTerminator::GeneratorNext { .. } => {
             generators::verify_suspend(module, function, terminator)?;
             for successor in defer::edges(terminator) {
                 edge(successor)?;
@@ -11603,29 +11589,6 @@ mod tests {
             DestroyAction::Set(original.set_glue[0].id),
         )
         .expect_err("set drop cannot consume a map");
-    }
-
-    #[test]
-    fn verifier_rejects_selected_close_with_a_non_integer_index() {
-        let mut module = vector_fixture();
-        module.callables[0].is_resumable = true;
-        let descriptor = module.vector_glue[0].id;
-        let block = vector_block(&mut module.functions[0], VecValueOp::Set);
-        let PhysicalTerminator::RuntimeCall { args, normal, .. } = &block.terminator else {
-            unreachable!()
-        };
-        let ArgumentTransfer::Move(owner) = args[0] else {
-            panic!("set must own its receiver");
-        };
-        block.terminator = PhysicalTerminator::ValueClose {
-            index: Some(owner),
-            generator: owner,
-            destroy: Some(DestroyAction::Vector(descriptor)),
-            conditional: false,
-            next: normal.clone(),
-        };
-        let error = verify_physical_module(&module).expect_err("vector pointer cannot be an index");
-        assert!(error.message.contains("copied i64 index"), "{error}");
     }
 
     fn vector_fixture() -> PhysicalModule {

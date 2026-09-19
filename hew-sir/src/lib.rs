@@ -70,7 +70,6 @@ pub use ownership::{
     variant_field_types, AggregateFieldRecipe, Binding, BindingId, BindingTarget, BoundaryDecision,
     BytesLiteralId, OwnKind, OwnerRoot, PlaceBase, PlaceDecl, PlaceId, PlaceOrigin,
     SnapshotDecision, StringLiteralId, SuspendKind, TaskScopeId, TaskScopeJoinMode, TrapKind,
-    ValueCloseSelection,
 };
 pub use projection::{place_plan, AggregateProjection, AggregateProjectionStep, PlacePlan};
 pub use resource::{

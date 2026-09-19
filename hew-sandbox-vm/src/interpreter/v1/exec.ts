@@ -34,6 +34,7 @@ import type {
   ValueDef,
   VariantShape,
 } from "./package.js";
+import { Pipes } from "./pipes.js";
 import { FrameScheduler } from "./scheduler.js";
 import { DeterministicIds } from "../../scheduler/ids.js";
 import { Mt19937 } from "./mt19937.js";
@@ -87,6 +88,7 @@ interface ActorInstance {
   layout: ActorShape;
   state: VmValue;
   mailbox: ActorMessage[];
+  admission: Array<() => void>;
   busy: boolean;
   alive: boolean;
   closing: boolean;
@@ -262,6 +264,7 @@ class ExecutorV1 {
   private readonly actors = new Map<string, ActorInstance>();
   private readonly supervisors = new Map<string, SupervisorInstance>();
   private readonly roles = new Map<string, RoleSlot>();
+  private readonly pipes = new Pipes();
   private readonly tasks = new Map<string, TaskEntry>();
   private completedTasks = 0;
   private running = false;
@@ -276,6 +279,10 @@ class ExecutorV1 {
     this.scheduler = new FrameScheduler(trace, policy);
     this.ids = new DeterministicIds(trace.replay.seed);
     this.host = {
+      pipes: this.pipes,
+      newPipe: (capacity) => this.newPipe(capacity),
+      closePipe: (value) =>
+        this.pipes.close(value, this.pipeFault(this.current)),
       writeStdout: (text) => this.trace.writeStdout(text, null),
       readLine: () => {
         const line = stdin.readLine();
@@ -764,6 +771,21 @@ class ExecutorV1 {
       case "register_defer":
         return;
 
+      case "stream.pipe": {
+        const pair = this.newPipe(op.capacity);
+        this.define(
+          act,
+          op.results[0]!.value,
+          this.pipes.extract(pair, "stream"),
+        );
+        this.define(
+          act,
+          op.results[1]!.value,
+          this.pipes.extract(pair, "sink"),
+        );
+        this.pipes.freePair(pair);
+        return;
+      }
       case "task_scope.enter": {
         const group: TaskGroup = { tasks: [], changed: [], deadline: null };
         act.scopes.set(op.scope, group);
@@ -1284,9 +1306,51 @@ class ExecutorV1 {
         // nothing and the activation resumes immediately.
         const place = valueCloseePlace(term.detail);
         if (place !== null) {
-          invalidateRef(this.placeRef(act, place));
+          const ref = this.placeRef(act, place);
+          this.closeValue(readRef(ref), this.pipeFault(act));
+          invalidateRef(ref);
+        } else if (term.inputs[0]) {
+          this.closeValue(
+            this.boundary(act, term.inputs[0]),
+            this.pipeFault(act),
+          );
         }
         break;
+      }
+      case "StreamSend": {
+        const [sink, value] = term.inputs.map((input) =>
+          this.boundary(act, input),
+        );
+        let cancelWait = () => {};
+        const wake = this.park(act, term, () => cancelWait());
+        cancelWait = this.pipes.send(
+          sink!,
+          value!,
+          term.detail.park,
+          (status) => wake(UNIT, null, status),
+        );
+        return;
+      }
+      case "StreamNext": {
+        const stream = this.boundary(act, term.inputs[0]!);
+        let cancelWait = () => {};
+        const wake = this.park(act, term, () => cancelWait());
+        cancelWait = this.pipes.receive(
+          stream,
+          term.detail.park,
+          (value, fault) => {
+            if (fault !== null) wake(UNIT, { kind: "panic", message: fault });
+            else
+              wake(
+                this.variant(
+                  term.result_shape,
+                  value === null ? "None" : "Some",
+                  value === null ? [] : [value],
+                ),
+              );
+          },
+        );
+        return;
       }
       case "Await": {
         const task = this.taskFor(this.boundary(act, term.inputs[0]!));
@@ -1330,17 +1394,21 @@ class ExecutorV1 {
       case "Select": {
         const values = term.inputs.map((input) => this.boundary(act, input));
         const hasTimeout = term.detail.has_timeout;
-        const selected = (hasTimeout ? values.slice(0, -1) : values).map(
-          (value) => this.taskFor(value),
+        const sources = hasTimeout ? values.slice(0, -1) : values;
+        const unwatch: Array<() => void> = [];
+        const wake = this.park(act, term, () =>
+          unwatch.forEach((remove) => remove()),
         );
-        const wake = this.park(act, term);
         let cancelTimer: (() => void) | undefined;
         const choose = () => {
-          const ready = selected
-            .map((task, index) => ({ task, index }))
-            .filter(({ task }) => task.done);
+          const ready = sources.flatMap((value, index) => {
+            if (value.kind === "stream")
+              return this.pipes.readable(value) ? [{ index, order: 0 }] : [];
+            const task = this.taskFor(value);
+            return task.done ? [{ index, order: task.completedAt }] : [];
+          });
           if (term.detail.order === "completion")
-            ready.sort((a, b) => a.task.completedAt - b.task.completedAt);
+            ready.sort((a, b) => a.order - b.order);
           if (ready[0]) {
             cancelTimer?.();
             wake({ kind: "i64", value: BigInt(ready[0].index) });
@@ -1351,10 +1419,21 @@ class ExecutorV1 {
           if (duration?.kind !== "i64")
             throw new Error("selection timeout is not a duration");
           cancelTimer = this.scheduler.after(duration.value, () =>
-            wake({ kind: "i64", value: BigInt(selected.length) }),
+            wake({ kind: "i64", value: BigInt(sources.length) }),
           );
         }
-        selected.forEach((task) => task.changed.push(choose));
+        sources.forEach((value) => {
+          if (value.kind === "stream")
+            unwatch.push(this.pipes.observe(value, choose));
+          else {
+            const task = this.taskFor(value);
+            task.changed.push(choose);
+            unwatch.push(() => {
+              const index = task.changed.indexOf(choose);
+              if (index >= 0) task.changed.splice(index, 1);
+            });
+          }
+        });
         choose();
         return;
       }
@@ -1380,8 +1459,9 @@ class ExecutorV1 {
           this.tasks.size > 0 ||
           act.scopes.size > 0
         ) {
-          const wake = this.park(act, term);
-          this.scheduler.after(nanos, () => wake(UNIT));
+          let cancelTimer = () => {};
+          const wake = this.park(act, term, () => cancelTimer());
+          cancelTimer = this.scheduler.after(nanos, () => wake(UNIT));
           return;
         }
         this.trace.advanceVirtualClock(Number(nanos / NANOS_PER_MS), null);
@@ -1405,12 +1485,18 @@ class ExecutorV1 {
   private park(
     act: Activation,
     term: Extract<TermV1, { op: "suspend" }>,
-  ): (value: VmValue, fault?: Fault | null) => void {
+    cleanup: () => void = () => {},
+  ): (value: VmValue, fault?: Fault | null, edgeIndex?: number) => void {
     this.running = false;
     let resumed = false;
-    const resume = (value: VmValue, fault: Fault | null = null) => {
+    const resume = (
+      value: VmValue,
+      fault: Fault | null = null,
+      edgeIndex = 0,
+    ) => {
       if (resumed) return;
       resumed = true;
+      cleanup();
       act.context.cancel = undefined;
       if (fault) {
         act.fault = fault;
@@ -1425,7 +1511,7 @@ class ExecutorV1 {
       }
       if (term.result && term.result !== "never")
         this.define(act, term.result.value, value);
-      const edge = term.resumes[0];
+      const edge = term.resumes[edgeIndex];
       if (!edge) throw new Error(`${term.kind} has no resume edge`);
       this.takeEdge(act, edge);
       this.scheduler.enqueue(act.context.id, () => this.runFrame(act));
@@ -1436,6 +1522,37 @@ class ExecutorV1 {
         fault ?? { kind: "panic", message: "task cancelled", cancelled: true },
       );
     return resume;
+  }
+
+  private newPipe(capacity: number): VmValue {
+    const id = this.ids.channel();
+    this.trace.allocateId(
+      "channel",
+      id,
+      this.current?.context.id ?? "actor:root",
+    );
+    return this.pipes.create(id, capacity);
+  }
+
+  private pipeFault(act: Activation): string | null {
+    const fault = act.fault;
+    return !fault ||
+      (fault.kind === "panic" && (fault.cancelled || fault.deadline))
+      ? null
+      : fault.kind === "panic"
+        ? fault.message
+        : (fault.message ?? trapMessage(fault.trap));
+  }
+
+  private closeValue(value: VmValue, fault: string | null): void {
+    if (value.kind === "sink" || value.kind === "stream")
+      this.pipes.close(value, fault);
+    else if (value.kind === "record")
+      for (const field of value.fields) this.closeValue(field, fault);
+    else if (value.kind === "enum")
+      for (const field of value.payload) this.closeValue(field, fault);
+    else if (value.kind === "vector")
+      for (const item of value.items) this.closeValue(item, fault);
   }
 
   private newTask(): TaskEntry {
@@ -1567,6 +1684,7 @@ class ExecutorV1 {
             ),
           },
           mailbox: [],
+          admission: [],
           busy: true,
           alive: true,
           closing: false,
@@ -1651,24 +1769,74 @@ class ExecutorV1 {
           (handler) => handler.message_id === Number(member.value),
         );
         if (!handler) throw new Error("submission names no actor handler");
-        if (!actor.alive || actor.closing)
-          throw new Error("submission rejection is not implemented");
-        actor.mailbox.push({
-          handler,
-          payload: payload.fields,
-          reply: false,
-          complete: () => {},
-        });
-        this.trace.snapshot("actor.send", {
-          actor_id: actor.id,
-          handler: handler.name,
-        });
-        this.dispatchActor(actor);
-        this.completeShim(
-          act,
-          term,
-          this.variant(term.result_shape, "Ok", [UNIT]),
-        );
+        const shapes = term.submission_shapes;
+        if (!shapes) throw new Error("submission lacks its result shapes");
+        const accepted = (discarded: boolean) =>
+          this.variant(term.result_shape, "Ok", [
+            this.variant(shapes.success, discarded ? "Discarded" : "Accepted"),
+          ]);
+        const rejected = (reason: string) =>
+          this.variant(term.result_shape, "Err", [
+            {
+              kind: "record",
+              typeId: this.aggregateName(shapes.failure!),
+              fields: [this.variant(shapes.reason, reason), request],
+            },
+          ]);
+        let parked = false;
+        const finish = (value: VmValue) => {
+          this.completeShim(act, term, value);
+          if (parked)
+            this.scheduler.enqueue(act.context.id, () => this.runFrame(act));
+        };
+        const submit = () => {
+          if (!actor.alive || actor.closing) {
+            finish(rejected("Closed"));
+            return;
+          }
+          const full =
+            actor.layout.mailbox_capacity !== undefined &&
+            actor.mailbox.length >= actor.layout.mailbox_capacity;
+          if (full) {
+            if (
+              actor.layout.overflow === "drop_new" ||
+              operation.policy === "drop_newest"
+            ) {
+              finish(accepted(true));
+              return;
+            }
+            if (
+              actor.layout.overflow === "drop_old" ||
+              operation.policy === "replace_latest"
+            ) {
+              actor.mailbox.shift()?.complete(null, "Dead");
+            } else if (
+              actor.layout.overflow === "fail" ||
+              operation.policy === "reject"
+            ) {
+              finish(rejected("Full"));
+              return;
+            } else {
+              parked = true;
+              this.running = false;
+              actor.admission.push(submit);
+              return;
+            }
+          }
+          actor.mailbox.push({
+            handler,
+            payload: payload.fields,
+            reply: false,
+            complete: () => {},
+          });
+          this.trace.snapshot("actor.send", {
+            actor_id: actor.id,
+            handler: handler.name,
+          });
+          this.dispatchActor(actor);
+          finish(accepted(false));
+        };
+        submit();
         return;
       }
       case "supervisor_spawn": {
@@ -1808,51 +1976,66 @@ class ExecutorV1 {
 
   private dispatchActor(actor: ActorInstance): void {
     if (actor.busy || !actor.alive) return;
-    const message = actor.mailbox.shift();
-    if (!message) {
+    if (actor.mailbox.length === 0) {
       if (actor.closing) this.stopActor(actor);
       return;
     }
     actor.busy = true;
-    this.trace.snapshot("actor.receive", {
-      actor_id: actor.id,
-      handler: message.handler.name,
-    });
-    this.invokeFrame(
-      actor,
-      message.handler.callable,
-      [actor.state, ...message.payload],
-      (value) => {
+    this.scheduler.enqueue(actor.id, () => {
+      const message = actor.mailbox.shift();
+      if (!message || !actor.alive) {
         actor.busy = false;
-        this.trace.snapshot("actor.reply", {
-          actor_id: actor.id,
-          value: toJsonValue(value),
-        });
-        if (message.handler.fallible && value.kind === "enum") {
-          const shape = this.pkg.variants[message.handler.result_shape!];
-          if (shape?.cases[value.tag]?.name === "Err") {
-            if (message.reply)
-              message.complete(value.payload[0] ?? UNIT, "Failed");
-            else {
-              this.crashActor(actor, {
-                kind: "panic",
-                message: "unhandled declared handler failure",
-              });
-              return;
+        return;
+      }
+      for (const admit of actor.admission.splice(0)) admit();
+      this.trace.snapshot("actor.receive", {
+        actor_id: actor.id,
+        handler: message.handler.name,
+      });
+      const frame = this.activate(
+        this.functionAt(message.handler.callable),
+        [actor.state, ...message.payload],
+        null,
+        null,
+        undefined,
+        null,
+        {
+          id: actor.id,
+          actor,
+          returned: (value) => {
+            actor.busy = false;
+            this.trace.snapshot("actor.reply", {
+              actor_id: actor.id,
+              value: toJsonValue(value),
+            });
+            if (message.handler.fallible && value.kind === "enum") {
+              const shape = this.pkg.variants[message.handler.result_shape!];
+              if (shape?.cases[value.tag]?.name === "Err") {
+                if (message.reply)
+                  message.complete(value.payload[0] ?? UNIT, "Failed");
+                else {
+                  this.crashActor(actor, {
+                    kind: "panic",
+                    message: "unhandled declared handler failure",
+                  });
+                  return;
+                }
+              } else {
+                message.complete(value.payload[0] ?? UNIT, null);
+              }
+            } else {
+              message.complete(value, null);
             }
-          } else {
-            message.complete(value.payload[0] ?? UNIT, null);
-          }
-        } else {
-          message.complete(value, null);
-        }
-        this.dispatchActor(actor);
-      },
-      (fault) => {
-        this.crashActor(actor, fault);
-        message.complete(null, "Trapped");
-      },
-    );
+            this.dispatchActor(actor);
+          },
+          failed: (fault) => {
+            this.crashActor(actor, fault);
+            message.complete(null, "Trapped");
+          },
+        },
+      );
+      this.runFrame(frame);
+    });
   }
 
   private crashActor(actor: ActorInstance, fault: Fault): void {
@@ -1865,6 +2048,7 @@ class ExecutorV1 {
     for (const message of actor.mailbox.splice(0))
       message.complete(null, "Dead");
     for (const wake of actor.closed.splice(0)) wake();
+    for (const admit of actor.admission.splice(0)) admit();
     if (actor.supervisor)
       this.restartChild(actor.supervisor.owner, actor.supervisor.child);
   }

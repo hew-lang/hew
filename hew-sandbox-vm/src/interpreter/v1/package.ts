@@ -303,8 +303,9 @@ export type OpV1 =
       dependencies: Operand[];
     })
   | (OpBase & {
-      op: "generator.make" | "stream.pipe" | "actor.ingress_adapter";
+      op: "generator.make" | "actor.ingress_adapter";
     })
+  | (OpBase & { op: "stream.pipe"; capacity: number; results: ValueDef[] })
   | (OpBase & {
       op: "task_scope.enter";
       scope: number;
@@ -387,6 +388,11 @@ export type TermV1 =
       CallShape & {
         op: "actor.call";
         operation: ActorOperation;
+        submission_shapes?: {
+          success: number | null;
+          failure: number | null;
+          reason: number | null;
+        };
         result_shape: number | null;
         error_shape: number | null;
       })

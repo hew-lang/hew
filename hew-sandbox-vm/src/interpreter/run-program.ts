@@ -4,7 +4,9 @@ import type { PackageV1 } from "./v1/package.js";
 import type {
   Instruction,
   JsonValue,
+  RuntimeStatus,
   SandboxBytecodePackage,
+  SandboxRejection,
   SandboxTrace,
   TrapKind,
 } from "./types.js";
@@ -22,6 +24,10 @@ export interface Diagnostic {
 }
 
 export interface RunProgramResult {
+  status: RuntimeStatus;
+  compiler_version: string | null;
+  hew_version: string | null;
+  sandbox_rejections: SandboxRejection[];
   stdout: string;
   exit_code: number;
   diagnostics: Diagnostic[];
@@ -49,6 +55,10 @@ export function runProgram(source: string, stdin: string): RunProgramResult {
     compileOutput.bytecode === null
   ) {
     return {
+      status: "compile_error",
+      compiler_version: compileOutput.bytecode?.compiler_version ?? null,
+      hew_version: compileOutput.bytecode?.hew_version ?? null,
+      sandbox_rejections: [],
       stdout: "",
       exit_code: SandboxExitCode.CompileError,
       diagnostics: compileOutput.diagnostics,
@@ -71,6 +81,10 @@ export function runProgram(source: string, stdin: string): RunProgramResult {
   });
 
   return {
+    status: trace.result,
+    compiler_version: bytecode.compiler_version,
+    hew_version: bytecode.hew_version,
+    sandbox_rejections: trace.final_state.sandbox_rejections,
     stdout: trace.final_state.stdout.join(""),
     exit_code: exitCodeForTrace(trace),
     diagnostics: [...compileOutput.diagnostics, ...runtimeDiagnostics(trace)],
@@ -269,6 +283,7 @@ function runtimeDiagnostics(trace: SandboxTrace): Diagnostic[] {
       phase: "profile",
       message: rejection.message,
       kind: rejection.code,
+      category: rejection.category,
       ...(rejection.capability ? { capability: rejection.capability } : {}),
     })),
     ...trace.final_state.runtime_failures.map((failure) => ({

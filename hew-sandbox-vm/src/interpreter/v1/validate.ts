@@ -1,4 +1,4 @@
-/// Load-time admission for a v1 package (D517 Q415).
+/// Load-time admission for a verified SIR package.
 ///
 /// The package declares what it needs: `runtime_families` names every runtime
 /// call family the instruction stream reaches, and `externs` names every
@@ -193,6 +193,15 @@ export function admitPackage(pkg: PackageV1): SandboxRejection | null {
           span: null,
         };
     }
+  }
+
+  for (const resource of pkg.resources ?? []) {
+    if (resource.kind === "opaque") return unavailable("resource.opaque_close");
+    if (
+      resource.kind === "nominal" &&
+      !resolveExternShim(resource.release ?? "")
+    )
+      return unavailable("resource.external_close");
   }
 
   for (const actor of pkg.actors ?? []) {

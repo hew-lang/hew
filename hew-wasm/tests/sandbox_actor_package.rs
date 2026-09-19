@@ -1,8 +1,5 @@
-//! The package carries what an actor program needs before the VM runs one.
-//!
-//! Actors still reach the AST emitter through the dispatch, so these pin the
-//! walker directly: the tables and operations are what the VM will be fed, and
-//! a gap here would otherwise only surface when the dispatch flips.
+//! Verified SIR packages execute concurrency, recovery and owned cleanup through
+//! the public browser compiler and the sandbox VM.
 
 use hew_wasm::sandbox::sir_emit;
 
@@ -804,4 +801,104 @@ fn nested_display_resumes_peer_calls_and_drains_actor_close_cancellation() {
     assert_eq!(stdout(&trace), "start [1, 2]\nfinished ONE\n{west: [ONE]}\nfinished ONE\nfault returned\nstart [1, 2]\nfinished CANCELLED\ncancelled formatter closed\n");
     assert_eq!(trace["final_state"]["exit_code"], 1);
     assert_eq!(trace["final_state"]["virtual_clock"]["current_ms"], 0);
+}
+
+#[test]
+fn authored_resource_close_runs_once_for_explicit_and_implicit_release() {
+    let trace = execute(include_str!(
+        "../../tests/core-acceptance/cases/resource-close-consumes.hew"
+    ));
+    assert_eq!(
+        stdout(&trace),
+        "close e1\nreleased early\nlate live 2\nclose l2\n"
+    );
+}
+
+#[test]
+fn an_owned_return_transfers_its_close_fault_to_the_caller() {
+    let trace = execute_expected(
+        include_str!("../../tests/core-acceptance/cases/resource-close-fault-returned-owner.hew"),
+        "panic",
+    );
+    assert_eq!(stdout(&trace), "working\nclose 7\n");
+}
+
+#[test]
+fn resource_close_faults_drain_remaining_handler_and_actor_owners() {
+    let frame = execute(include_str!(
+        "../../tests/core-acceptance/cases/resource-close-fault-frame-owners.hew"
+    ));
+    assert_eq!(stdout(&frame), "close 2\nclose 1\nrestarted\n");
+    assert_eq!(frame["final_state"]["exit_code"], 0);
+    let state = execute(include_str!(
+        "../../tests/core-acceptance/cases/resource-close-fault-actor-state.hew"
+    ));
+    assert_eq!(stdout(&state), "close 2\nclose 1\n");
+    assert_eq!(state["final_state"]["exit_code"], 1);
+}
+
+#[test]
+fn cancellation_preserves_a_resource_close_failure() {
+    let trace = execute_expected(
+        include_str!("../../tests/core-acceptance/cases/resource-close-fault-cancel-edge.hew"),
+        "panic",
+    );
+    assert_eq!(stdout(&trace), "close 9\n");
+}
+
+#[test]
+fn task_results_transfer_or_close_their_owned_resources() {
+    let trace = execute(
+        r#"
+#[resource]
+type Ticket { id: i64, }
+impl Ticket { fn close(consume self) { println(f"closed {self.id}"); } }
+fn ticket(id: i64) -> Ticket { Ticket { id: id } }
+fn main() {
+    scope {
+        let taken = fork ticket(1);
+        let value = await taken;
+        println(f"taken {value.id}");
+        value.close();
+        let _unused = fork ticket(2);
+        sleep(1ms);
+    }
+    println("drained");
+}
+"#,
+    );
+    assert_eq!(stdout(&trace), "taken 1\nclosed 1\nclosed 2\ndrained\n");
+}
+
+#[test]
+fn closing_a_pipe_releases_buffered_and_rejected_owned_items() {
+    let trace = execute(
+        r#"
+import std.stream;
+#[resource]
+type Ticket { id: i64, }
+impl Ticket { fn close(consume self) { println(f"closed {self.id}"); } }
+fn main() {
+    let (output, input): (Sink<Ticket>, Stream<Ticket>) = stream.pipe(2).expect("pipe");
+    let _ = output.send(Ticket { id: 1 });
+    let _ = output.send(Ticket { id: 2 });
+    input.close();
+    let _ = output.send(Ticket { id: 3 });
+    output.close();
+    println("drained");
+}
+"#,
+    );
+    assert_eq!(stdout(&trace), "closed 1\nclosed 2\nclosed 3\ndrained\n");
+}
+
+#[test]
+fn main_return_drains_accepted_work_before_closing_actor_resources() {
+    let trace = execute(include_str!(
+        "../../tests/core-acceptance/cases/resource-field-record-drop.hew"
+    ));
+    assert_eq!(
+        stdout(&trace),
+        "held 1 scope\nclosed 1\nworked task\nclosed 2\nkept actor\ndone\nclosed 3\n"
+    );
 }

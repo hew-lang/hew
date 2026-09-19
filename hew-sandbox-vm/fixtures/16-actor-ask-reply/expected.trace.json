@@ -131,9 +131,17 @@
       "type": "io.stdout"
     },
     {
-      "message": "ok",
+      "message": "actor.stop",
       "phase": "run",
       "seq": 13,
+      "span": null,
+      "text": "{\"actor_id\":\"actor:a1\"}",
+      "type": "state.snapshot"
+    },
+    {
+      "message": "ok",
+      "phase": "run",
+      "seq": 14,
       "span": null,
       "type": "trace.ended"
     }

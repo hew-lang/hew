@@ -2736,6 +2736,19 @@
   "hew_version": "0.6.0-rc4",
   "profile": "sandbox.sandbox-vm-export.v0",
   "regex_patterns": [],
+  "resources": [
+    {
+      "kind": "sink"
+    },
+    {
+      "kind": "stream"
+    },
+    {
+      "kind": "nominal",
+      "release": "hew_stream_pair_free",
+      "ty": "std.stream.StreamPair"
+    }
+  ],
   "runtime_families": [
     {
       "detail": {

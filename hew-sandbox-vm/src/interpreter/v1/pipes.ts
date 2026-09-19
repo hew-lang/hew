@@ -80,18 +80,20 @@ export class Pipes {
     return this.half(half.pipe, "sink");
   }
 
-  close(value: VmValue, fault: string | null = null): void {
+  close(value: VmValue, fault: string | null = null): VmValue[] {
     const half = this.get(value);
-    if (!half.open) return;
+    if (!half.open) return [];
+    const discarded: VmValue[] = [];
     half.open = false;
     if (half.kind === "sink") {
       half.pipe.sinks -= 1;
       half.pipe.fault ??= fault;
     } else {
       half.pipe.readerOpen = false;
-      half.pipe.queue.length = 0;
+      discarded.push(...half.pipe.queue.splice(0));
     }
     this.flush(half.pipe);
+    return discarded;
   }
 
   peerClosed(value: VmValue): boolean {

@@ -1,7 +1,7 @@
 import type { Pipes } from "./pipes.js";
 /// The VM's runtime-family and extern shim table.
 ///
-/// This table is the admission authority (D517 Q415): a package may name a
+/// This table is the runtime-family admission authority: a package may name a
 /// runtime family or an extern symbol exactly when there is a shim here for it.
 /// A family or symbol with no entry is rejected at load, so there is no second
 /// reject list to keep in step with this one. `FileRead` and the `NativeIo`

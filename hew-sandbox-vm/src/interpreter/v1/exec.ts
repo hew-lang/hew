@@ -141,6 +141,7 @@ interface RoleSlot {
 interface TaskEntry {
   id: string;
   done: boolean;
+  finishing: boolean;
   value: VmValue;
   fault: Fault | null;
   actorError: string | null;
@@ -161,6 +162,7 @@ interface Activation {
   context: FrameContext;
   fn: FunctionV1;
   block: BlockV1;
+  opIndex: number;
   env: Map<number, Ref>;
   trivial: Set<number>;
   scopes: Map<number, TaskGroup>;
@@ -297,6 +299,8 @@ class ExecutorV1 {
   private completedTasks = 0;
   private readonly faultDebts = new Set<number>();
   private nextFaultDebt = 0;
+  private readonly closingResources = new WeakSet<object>();
+  private readonly consumedResources = new WeakSet<object>();
   private running = false;
   private rootComplete = false;
 
@@ -362,6 +366,12 @@ class ExecutorV1 {
     if (!this.rootComplete) {
       throw new Error("the root frame is waiting with no runnable work");
     }
+    // Native main return drains accepted work before closing idle actors.
+    for (const owner of this.supervisors.values())
+      if (!owner.supervisor) this.stopSupervisor(owner);
+    for (const actor of this.actors.values())
+      if (!actor.supervisor && actor.alive) this.requestActorClose(actor);
+    this.scheduler.run();
     if (this.trace.exitCode === 0 && this.faultDebts.size)
       this.trace.exitCode = 1;
   }
@@ -371,7 +381,8 @@ class ExecutorV1 {
     this.running = true;
     while (this.running) {
       const act = this.current;
-      for (const op of act.block.ops) {
+      while (act.opIndex < act.block.ops.length) {
+        const op = act.block.ops[act.opIndex++]!;
         this.commitStep();
         try {
           this.execute(act, op);
@@ -381,7 +392,9 @@ class ExecutorV1 {
             `${act.fn.name} block ${act.block.id} ${op.op}: ${String(error)}`,
           );
         }
+        if (!this.running) return;
       }
+      if (!this.running) return;
       this.commitStep();
       try {
         this.terminate(act, act.block.term);
@@ -405,6 +418,11 @@ class ExecutorV1 {
     unwind: Edge | null,
     context?: FrameContext,
   ): Activation {
+    if (
+      (this.pkg.resources ?? []).some((resource) => resource.close === fn.id) &&
+      args[0]
+    )
+      this.closingResources.add(args[0]);
     const env = new Map<number, Ref>();
     for (const [at, param] of fn.params.entries()) {
       env.set(param.value, ownedRef(args[at] ?? UNIT));
@@ -430,6 +448,7 @@ class ExecutorV1 {
       context: caller?.context ?? context!,
       fn,
       block: this.blockAt(fn, fn.entry),
+      opIndex: 0,
       env,
       trivial,
       scopes: new Map(),
@@ -624,10 +643,12 @@ class ExecutorV1 {
         this.define(act, op.dst, this.read(act, op.source));
         this.invalidate(act, op.source);
         return;
-      case "destroy_value":
-        this.closeValue(this.read(act, op.value), this.pipeFault(act));
+      case "destroy_value": {
+        const value = this.read(act, op.value);
         this.invalidate(act, op.value);
+        this.releaseOperation(act, value);
         return;
+      }
       case "begin_borrow":
         act.env.set(op.dst, this.refOf(act, op.owner));
         return;
@@ -660,8 +681,9 @@ class ExecutorV1 {
         return;
       case "end_lifetime": {
         const ref = this.placeRef(act, op.place);
-        if (liveRef(ref)) this.closeValue(readRef(ref), this.pipeFault(act));
+        const value = liveRef(ref) ? readRef(ref) : UNIT;
         invalidateRef(ref);
+        this.releaseOperation(act, value);
         return;
       }
 
@@ -866,8 +888,21 @@ class ExecutorV1 {
       case "task_scope.close": {
         const group = act.scopes.get(op.scope);
         group?.cancelTimer?.();
-        for (const task of group?.tasks ?? []) this.tasks.delete(task.id);
-        act.scopes.delete(op.scope);
+        this.releaseOperation(
+          act,
+          {
+            kind: "vector",
+            elementType: "task",
+            items: (group?.tasks ?? []).map((task) => ({
+              kind: "task",
+              id: task.id,
+            })),
+          },
+          () => {
+            for (const task of group?.tasks ?? []) this.tasks.delete(task.id);
+            act.scopes.delete(op.scope);
+          },
+        );
         return;
       }
       case "generator.make": {
@@ -913,26 +948,31 @@ class ExecutorV1 {
         const task = this.newTask();
         group.tasks.push(task);
         const settle = (value: VmValue, fault: Fault | null) => {
-          if (task.done) return;
+          if (task.done || task.finishing) return;
+          task.finishing = true;
           if (
             fault &&
             !(fault.kind === "panic" && (fault.cancelled || fault.deadline)) &&
             act.context.actor
           )
             act.context.actor.crashing ??= fault;
-          this.closeValue(
+          this.closeValueAsync(
             callable,
             act.context.actor
               ? this.faultText(act.context.actor.crashing)
               : null,
+            (closeFault) => {
+              if (!fault || (fault.kind === "panic" && fault.cancelled))
+                fault = closeFault ?? fault;
+              this.settleTask(task, value, fault);
+              if (fault && !(fault.kind === "panic" && fault.cancelled)) {
+                for (const sibling of group.tasks)
+                  if (!sibling.done) sibling.cancel();
+                if (!group.joining) act.context.cancel?.(fault);
+              }
+              for (const changed of [...group.changed]) changed();
+            },
           );
-          this.settleTask(task, value, fault);
-          if (fault && !(fault.kind === "panic" && fault.cancelled)) {
-            for (const sibling of group.tasks)
-              if (!sibling.done) sibling.cancel();
-            if (!group.joining) act.context.cancel?.(fault);
-          }
-          for (const changed of [...group.changed]) changed();
         };
         const context: FrameContext = {
           id: task.id,
@@ -951,7 +991,7 @@ class ExecutorV1 {
         );
         let started = false;
         task.cancel = () => {
-          if (task.done) return;
+          if (task.done || task.finishing) return;
           if (started) context.cancel?.();
           else
             settle(UNIT, {
@@ -961,7 +1001,7 @@ class ExecutorV1 {
             });
         };
         this.scheduler.enqueue(task.id, () => {
-          if (task.done) return;
+          if (task.done || task.finishing) return;
           started = true;
           this.runFrame(frame);
         });
@@ -1151,6 +1191,16 @@ class ExecutorV1 {
           this.supervisorPool(act, term, String(entry.detail));
           return;
         }
+        if (entry && ["SinkClose", "StreamClose"].includes(entry.family)) {
+          const value = this.boundary(act, term.args[0]!);
+          this.running = false;
+          this.closeValueAsync(value, this.pipeFault(act), (fault) => {
+            if (fault) this.raiseFault(act, fault, term.unwind);
+            else this.completeShim(act, term, UNIT);
+            this.scheduler.enqueue(act.context.id, () => this.runFrame(act));
+          });
+          return;
+        }
         if (entry?.family === "StructuralFormat") {
           this.structuralFormat(act, term);
           return;
@@ -1295,6 +1345,7 @@ class ExecutorV1 {
       act.env.set(param.value, args[at] ?? ownedRef(UNIT));
     }
     act.block = target;
+    act.opIndex = 0;
   }
 
   /// Run a runtime or extern shim. A fault it raises takes the call's `unwind`
@@ -1590,12 +1641,38 @@ class ExecutorV1 {
           this.boundary(act, input),
         );
         let cancelWait = () => {};
+        let owned = true;
+        let closing = false;
+        let cancelled: Fault | null = null;
         const wake = this.park(act, term, () => cancelWait());
+        const cancel = act.context.cancel!;
+        act.context.cancel = (
+          fault = { kind: "panic", message: "task cancelled", cancelled: true },
+        ) => {
+          cancelled ??= fault;
+          cancelWait();
+          if (owned) {
+            owned = false;
+            closing = true;
+            this.closeValueAsync(value!, this.faultText(fault), (closeFault) =>
+              cancel(closeFault ?? fault),
+            );
+          } else if (!closing) cancel(fault);
+        };
         cancelWait = this.pipes.send(
           sink!,
           value!,
           term.detail.park,
-          (status) => wake(UNIT, null, status),
+          (status) => {
+            owned = false;
+            if (status === 0) wake(UNIT);
+            else {
+              closing = true;
+              this.closeValueAsync(value!, this.pipeFault(act), (fault) =>
+                wake(UNIT, fault ?? cancelled, status),
+              );
+            }
+          },
         );
         return;
       }
@@ -1626,7 +1703,11 @@ class ExecutorV1 {
         const ready = () => {
           if (!task.done) return;
           if (task.fault) wake(UNIT, task.fault);
-          else wake(task.value);
+          else {
+            const value = task.value;
+            task.value = UNIT;
+            wake(value);
+          }
         };
         task.changed.push(ready);
         ready();
@@ -1822,6 +1903,28 @@ class ExecutorV1 {
     return this.faultText(act.context.actor?.crashing ?? act.fault);
   }
 
+  private releaseOperation(
+    act: Activation,
+    value: VmValue,
+    finish?: () => void,
+  ): void {
+    let synchronous = true;
+    let completed = false;
+    this.closeValueAsync(value, this.pipeFault(act), (fault) => {
+      completed = true;
+      finish?.();
+      if (
+        fault &&
+        (!act.fault || (act.fault.kind === "panic" && act.fault.cancelled))
+      )
+        act.fault = fault;
+      if (!synchronous)
+        this.scheduler.enqueue(act.context.id, () => this.runFrame(act));
+    });
+    synchronous = false;
+    if (!completed) this.running = false;
+  }
+
   private generatorFor(value: VmValue): GeneratorEntry {
     if (value.kind !== "generator")
       throw new Error("generator operand has no generator identity");
@@ -1876,15 +1979,50 @@ class ExecutorV1 {
       while (pending.length) {
         const value = pending.pop()!;
         switch (value.kind) {
+          case "task": {
+            // Dropping a handle does not cancel scoped work. Join drains the
+            // task, and scope close releases any result that was never taken.
+            const task = this.tasks.get(value.id);
+            if (task?.done) {
+              const result = task.value;
+              task.value = UNIT;
+              this.closeValueAsync(result, fault, next);
+              return;
+            }
+            break;
+          }
+          case "map":
+            for (const entry of [...value.entries.values()].reverse())
+              pending.push(entry.value, entry.key);
+            break;
           case "generator":
             this.closeGenerator(this.generatorFor(value), next);
             return;
           case "closure":
             pending.push(value.environment);
             break;
-          case "record":
-            pending.push(...[...value.fields].reverse());
+          case "record": {
+            const resource = (this.pkg.resources ?? []).find(
+              (resource) =>
+                resource.kind === "record" && resource.ty === value.typeId,
+            );
+            if (resource?.close !== undefined) {
+              if (this.consumedResources.has(value)) break;
+              if (!this.closingResources.has(value)) {
+                this.invokeFrame(
+                  this.current.context.actor,
+                  resource.close,
+                  [value],
+                  () => next(),
+                  next,
+                );
+                return;
+              }
+              this.consumedResources.add(value);
+            }
+            pending.push(...value.fields);
             break;
+          }
           case "enum":
             pending.push(...[...value.payload].reverse());
             break;
@@ -1893,7 +2031,7 @@ class ExecutorV1 {
             break;
           case "sink":
           case "stream":
-            this.pipes.close(value, fault);
+            pending.push(...this.pipes.close(value, fault).reverse());
             break;
         }
       }
@@ -1918,6 +2056,7 @@ class ExecutorV1 {
     const task: TaskEntry = {
       id: this.ids.task(),
       done: false,
+      finishing: false,
       value: UNIT,
       fault: null,
       actorError: null,
@@ -2170,13 +2309,15 @@ class ExecutorV1 {
         const task = this.taskFor(args[0]!);
         if (!task.done)
           throw new Error("actor completion taken before readiness");
+        const value = task.value;
+        task.value = UNIT;
         this.completeShim(
           act,
           term,
           this.completion(
             term.result_shape,
             term.error_shape,
-            task.value,
+            value,
             task.actorError,
           ),
         );

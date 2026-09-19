@@ -15,40 +15,34 @@ const PARITY_CASES: &[ParityCase] = &[
         // there through the same indirect path both engines use.
         test_name: "closure_values",
         source_rel: "examples/sandbox-graduation/closure_values.hew",
-        accepted_divergences: &[],
     },
     ParityCase {
         // Deferred work runs as the scope ends, in reverse registration order.
         test_name: "defer_order",
         source_rel: "examples/sandbox-graduation/defer_order.hew",
-        accepted_divergences: &[],
     },
     ParityCase {
         // Result is the prelude's own enum: constructing and matching one is a
         // variant, not a host call.
         test_name: "result_constructors",
         source_rel: "examples/sandbox-graduation/result_constructors.hew",
-        accepted_divergences: &[],
     },
     ParityCase {
         // A present key, a missing key and a membership test.
         test_name: "map_reads",
         source_rel: "examples/sandbox-graduation/map_reads.hew",
-        accepted_divergences: &[],
     },
     ParityCase {
         // A map literal's storage and lookup, which the VM now models with a
         // value kind of its own rather than approximating with a record.
         test_name: "map_literal",
         source_rel: "examples/sandbox-graduation/map_literal.hew",
-        accepted_divergences: &[],
     },
     ParityCase {
         // The pure `std.math` intrinsics. Native emits the LLVM intrinsic, so
         // a shim that rounds differently shows up here rather than in a lesson.
         test_name: "math_intrinsics",
         source_rel: "examples/sandbox-graduation/math_intrinsics.hew",
-        accepted_divergences: &[],
     },
     ParityCase {
         // Dynamic dispatch through a trait object: the checker picks the slot
@@ -56,50 +50,42 @@ const PARITY_CASES: &[ParityCase] = &[
         // method by name.
         test_name: "trait_objects",
         source_rel: "examples/sandbox-graduation/trait_objects.hew",
-        accepted_divergences: &[],
     },
     ParityCase {
         // A sleep advances the virtual clock and the program continues, so the
         // sandbox observes what native observes without waiting for it.
         test_name: "virtual_sleep",
         source_rel: "examples/sandbox-graduation/virtual_sleep.hew",
-        accepted_divergences: &[],
     },
     ParityCase {
         // A seeded generator: the VM runs the runtime's own MT19937, so the
         // same seed yields the same sequence on both engines.
         test_name: "seeded_random",
         source_rel: "examples/sandbox-graduation/seeded_random.hew",
-        accepted_divergences: &[],
     },
     ParityCase {
         test_name: "hello_world",
         source_rel: "examples/playground/basics/hello_world.hew",
-        accepted_divergences: &[],
     },
     ParityCase {
         test_name: "fibonacci",
         source_rel: "examples/playground/basics/fibonacci.hew",
-        accepted_divergences: &[],
     },
     ParityCase {
         // Float add/sub/mul/neg through the type-directed f64.* opcode family.
         test_name: "float_arithmetic",
         source_rel: "examples/playground/basics/float_arithmetic.hew",
-        accepted_divergences: &[],
     },
     ParityCase {
         // Each f32 operation rounds immediately. Carrying the chain as f64 and
         // rounding only at the final cast would incorrectly print 16777218.
         test_name: "f32_arithmetic_precision",
         source_rel: "examples/sandbox-graduation/f32_arithmetic_precision.hew",
-        accepted_divergences: &[],
     },
     ParityCase {
         // Float division and remainder (IEEE-754, never trap-on-zero).
         test_name: "float_division",
         source_rel: "examples/playground/basics/float_division.hew",
-        accepted_divergences: &[],
     },
     ParityCase {
         // Non-finite f64 equality: NaN never equal, ±Infinity compare by sign,
@@ -108,79 +94,65 @@ const PARITY_CASES: &[ParityCase] = &[
         // collapses NaN/±Infinity through the canonical-JSON path.
         test_name: "float_nonfinite_compare",
         source_rel: "examples/playground/basics/float_nonfinite_compare.hew",
-        accepted_divergences: &[],
     },
     ParityCase {
         // Integer (checked i64.*) and float (f64.*) arithmetic in one program,
         // proving the emitter dispatches the opcode family per operand type.
         test_name: "mixed_numeric",
         source_rel: "examples/playground/basics/mixed_numeric.hew",
-        accepted_divergences: &[],
     },
     ParityCase {
         test_name: "function_composition",
         source_rel: "examples/playground/basics/higher_order_functions.hew",
-        accepted_divergences: &[],
     },
     ParityCase {
         test_name: "pattern_matching",
         source_rel: "examples/playground/types/pattern_matching.hew",
-        accepted_divergences: &[],
     },
     ParityCase {
         test_name: "collections",
         source_rel: "examples/playground/types/collections.hew",
-        accepted_divergences: &[],
     },
     ParityCase {
         test_name: "record_types",
         source_rel: "examples/playground/types/record_types.hew",
-        accepted_divergences: &[],
     },
     ParityCase {
         test_name: "structural_records",
         source_rel: "examples/playground/types/structural_bounds.hew",
-        accepted_divergences: &[],
     },
     ParityCase {
         test_name: "counter_actor",
         source_rel: "examples/playground/concurrency/counter_actor.hew",
         // Actor/supervisor/machine support now emits bytecode; no profile divergence.
-        accepted_divergences: &[],
     },
     ParityCase {
         test_name: "actor_pipeline",
         source_rel: "examples/playground/concurrency/actor_pipeline.hew",
         // Actor support now emits bytecode; no profile divergence.
-        accepted_divergences: &[],
     },
     ParityCase {
         test_name: "supervisor",
         source_rel: "examples/playground/concurrency/supervisor.hew",
         // Supervisor source rewritten to not use supervisor_stop (native-only);
         // the supervisor decl, spawn, and child method calls are all sandbox-admitted.
-        accepted_divergences: &[],
     },
     ParityCase {
         test_name: "traffic_light",
         source_rel: "examples/playground/machines/traffic_light.hew",
         // Machine support now emits bytecode; no profile divergence.
-        accepted_divergences: &[],
     },
     ParityCase {
         test_name: "stmt_if",
         source_rel: "examples/playground/basics/stmt_if.hew",
-        accepted_divergences: &[],
     },
     ParityCase {
         test_name: "stmt_match",
         source_rel: "examples/playground/basics/stmt_match.hew",
-        accepted_divergences: &[],
     },
     ParityCase {
         test_name: "stmt_if_let",
         source_rel: "examples/playground/basics/stmt_if_let.hew",
-        accepted_divergences: &[],
     },
     ParityCase {
         // Value-position if-let (`let v = if let Value(n) = w { n } else { d }`):
@@ -188,47 +160,39 @@ const PARITY_CASES: &[ParityCase] = &[
         // yields the matched value, not unit. Proves the value-position lowering.
         test_name: "if_let_value",
         source_rel: "examples/playground/basics/if_let_value.hew",
-        accepted_divergences: &[],
     },
     ParityCase {
         test_name: "arithmetic_operators",
         source_rel: "examples/playground/language/arithmetic_operators.hew",
         // Integer +,-,*,/,%, unary negate, and all six comparisons.
-        accepted_divergences: &[],
     },
     ParityCase {
         test_name: "array_indexing",
         source_rel: "examples/playground/language/array_indexing.hew",
         // Array literal, index read, `.len()`, and range-for over the length.
-        accepted_divergences: &[],
     },
     ParityCase {
         test_name: "string_slicing",
         source_rel: "examples/playground/language/string_slicing.hew",
         // String `.len()` and `.slice(start, end)`.
-        accepted_divergences: &[],
     },
     ParityCase {
         test_name: "while_loop",
         source_rel: "examples/playground/language/while_loop.hew",
         // `while` loop with a mutable accumulator.
-        accepted_divergences: &[],
     },
     ParityCase {
         test_name: "wildcard_match",
         source_rel: "examples/playground/language/wildcard_match.hew",
         // Enum dispatch with a catch-all `_` arm.
-        accepted_divergences: &[],
     },
     ParityCase {
         test_name: "match_guard_parity",
         source_rel: "examples/playground/language/match_guard.hew",
-        accepted_divergences: &[],
     },
     ParityCase {
         test_name: "match_guard_catch_all_fallthrough",
         source_rel: "examples/enums/match_guard_catch_all_fallthrough.hew",
-        accepted_divergences: &[],
     },
     ParityCase {
         // Fieldless-enum `==`/`!=`: `BinaryOp::Equal`/`NotEqual` on a fieldless
@@ -239,7 +203,6 @@ const PARITY_CASES: &[ParityCase] = &[
         // playground set so the playground manifest is not affected.
         test_name: "fieldless_enum_eq",
         source_rel: "examples/enums/run_colour_eq.hew",
-        accepted_divergences: &[],
     },
     ParityCase {
         // Structural `==`/`!=` on records (user-defined struct types) and
@@ -250,7 +213,6 @@ const PARITY_CASES: &[ParityCase] = &[
         // structural field-by-field equality that mirrors native Hew semantics.
         test_name: "record_equality",
         source_rel: "examples/playground/types/record_equality.hew",
-        accepted_divergences: &[],
     },
     ParityCase {
         // `clone expr` produces an independent deep copy. The emitter lowers
@@ -260,7 +222,6 @@ const PARITY_CASES: &[ParityCase] = &[
         // does not affect the clone.
         test_name: "clone_value",
         source_rel: "examples/playground/basics/clone_value.hew",
-        accepted_divergences: &[],
     },
     ParityCase {
         // Compound assignment (`+=`, `-=`, `*=`, `/=`, `%=`) for both i64 and
@@ -268,7 +229,6 @@ const PARITY_CASES: &[ParityCase] = &[
         // opcode family (i64.checked_* or f64.*), and writes the result back.
         test_name: "compound_assign",
         source_rel: "examples/playground/language/compound_assign.hew",
-        accepted_divergences: &[],
     },
     ParityCase {
         // Non-finite f64 values (inf, -inf, nan) render identically to native.
@@ -277,7 +237,6 @@ const PARITY_CASES: &[ParityCase] = &[
         // `String(Infinity)` which produces `Infinity` / `NaN` (capitalised).
         test_name: "f64_nonfinite_render",
         source_rel: "examples/playground/language/f64_nonfinite_render.hew",
-        accepted_divergences: &[],
     },
     ParityCase {
         // Finite f64 values render identically to native printf("%g"): negative
@@ -289,14 +248,12 @@ const PARITY_CASES: &[ParityCase] = &[
         // delegating to `String()` for finite values.
         test_name: "f64_finite_render",
         source_rel: "examples/playground/language/f64_finite_render.hew",
-        accepted_divergences: &[],
     },
     ParityCase {
         // Tuples lowered as anonymous records with positional fields _0, _1, …
         // so record.new / record.get handle construction and let-destructure.
         test_name: "tuple_values",
         source_rel: "examples/playground/types/tuple_values.hew",
-        accepted_divergences: &[],
     },
     ParityCase {
         // `==` on generic records and aggregates containing Vec<T>: the checker
@@ -306,7 +263,6 @@ const PARITY_CASES: &[ParityCase] = &[
         // handles records, enums, and vectors recursively.
         test_name: "generic_aggregate_eq",
         source_rel: "examples/playground/types/generic_aggregate_eq.hew",
-        accepted_divergences: &[],
     },
     ParityCase {
         // Option/Result marker methods: `is_some`, `is_none`, `is_ok`, `is_err`,
@@ -316,7 +272,6 @@ const PARITY_CASES: &[ParityCase] = &[
         // Option/Result receiver types.
         test_name: "option_result_methods",
         source_rel: "examples/playground/types/option_result_methods.hew",
-        accepted_divergences: &[],
     },
     ParityCase {
         // f-string interpolation (`{x}`) for integer and char types that gained
@@ -325,14 +280,12 @@ const PARITY_CASES: &[ParityCase] = &[
         // renderStdout, so the interpolated output matches native printf output.
         test_name: "display_scalars",
         source_rel: "examples/playground/basics/display_scalars.hew",
-        accepted_divergences: &[],
     },
     ParityCase {
         // This suite compares against host-native `hew run`, whose supported
         // targets are 64-bit. A wasm32 build would truncate both values to zero.
         test_name: "pointer_width_native64",
         source_rel: "examples/sandbox-graduation/pointer_width_native64.hew",
-        accepted_divergences: &[],
     },
     ParityCase {
         // `#[wire]` is now the sole canonical declaration surface for wire types
@@ -343,7 +296,6 @@ const PARITY_CASES: &[ParityCase] = &[
         // optional-field tag annotation.
         test_name: "wire_types_declaration",
         source_rel: "examples/playground/types/wire_types.hew",
-        accepted_divergences: &[],
     },
     ParityCase {
         // Vec<T>::contains (linear equality scan via canonical comparison) and
@@ -351,7 +303,6 @@ const PARITY_CASES: &[ParityCase] = &[
         // `vector.contains` / `vector.range_slice` added in this parity sweep.
         test_name: "vec_operations",
         source_rel: "examples/playground/types/vec_operations.hew",
-        accepted_divergences: &[],
     },
     ParityCase {
         // v[start..=end] inclusive range slice. The emitter computes the
@@ -360,7 +311,6 @@ const PARITY_CASES: &[ParityCase] = &[
         // semantics against native `hew run`.
         test_name: "vec_inclusive_slice",
         source_rel: "examples/playground/types/vec_inclusive_slice.hew",
-        accepted_divergences: &[],
     },
     ParityCase {
         // `rec.clone()` method on a user-defined record type. The emitter lowers
@@ -369,7 +319,6 @@ const PARITY_CASES: &[ParityCase] = &[
         // objects with no aliased fields, matching native structural copy semantics.
         test_name: "record_clone",
         source_rel: "examples/playground/types/record_clone.hew",
-        accepted_divergences: &[],
     },
     ParityCase {
         // `(rec.f)(args)` fn-field call. The emitter materialises the function
@@ -378,7 +327,6 @@ const PARITY_CASES: &[ParityCase] = &[
         // against direct `call.direct` results for the same function.
         test_name: "fn_field_call",
         source_rel: "examples/playground/types/fn_field_call.hew",
-        accepted_divergences: &[],
     },
     ParityCase {
         // Vec<f64>::contains with NaN and +-Infinity: the sandbox VM now routes
@@ -388,89 +336,72 @@ const PARITY_CASES: &[ParityCase] = &[
         // of false -- a silent wrong-result divergence.
         test_name: "vec_f64_nonfinite_contains",
         source_rel: "examples/playground/types/vec_f64_nonfinite_contains.hew",
-        accepted_divergences: &[],
     },
     ParityCase {
         test_name: "bool_not",
         source_rel: "examples/sandbox-graduation/bool_not.hew",
-        accepted_divergences: &[],
     },
     ParityCase {
         test_name: "scalar_match_int",
         source_rel: "examples/sandbox-graduation/scalar_match_int.hew",
-        accepted_divergences: &[],
     },
     ParityCase {
         test_name: "scalar_match_string",
         source_rel: "examples/sandbox-graduation/scalar_match_string.hew",
-        accepted_divergences: &[],
     },
     ParityCase {
         test_name: "bool_match",
         source_rel: "examples/sandbox-graduation/bool_match.hew",
-        accepted_divergences: &[],
     },
     ParityCase {
         test_name: "struct_functional_update",
         source_rel: "examples/sandbox-graduation/struct_functional_update.hew",
-        accepted_divergences: &[],
     },
     ParityCase {
         test_name: "struct_pattern_match",
         source_rel: "examples/sandbox-graduation/struct_pattern_match.hew",
-        accepted_divergences: &[],
     },
     ParityCase {
         test_name: "option_some_none",
         source_rel: "examples/sandbox-graduation/option_some_none.hew",
-        accepted_divergences: &[],
     },
     ParityCase {
         test_name: "const_reference",
         source_rel: "examples/sandbox-graduation/const_reference.hew",
-        accepted_divergences: &[],
     },
     ParityCase {
         test_name: "logical_binary_operators",
         source_rel: "examples/sandbox-graduation/logical_binary_operators.hew",
-        accepted_divergences: &[],
     },
     ParityCase {
         test_name: "bitwise_binary_operators",
         source_rel: "examples/sandbox-graduation/bitwise_binary_operators.hew",
-        accepted_divergences: &[],
     },
     ParityCase {
         test_name: "compound_bitwise_assign",
         source_rel: "examples/sandbox-graduation/compound_bitwise_assign.hew",
-        accepted_divergences: &[],
     },
     ParityCase {
         test_name: "shift_out_of_range",
         source_rel: "examples/sandbox-graduation/shift_out_of_range.hew",
-        accepted_divergences: &[],
     },
     ParityCase {
         test_name: "struct_destructure_let",
         source_rel: "examples/sandbox-graduation/struct_destructure_let.hew",
-        accepted_divergences: &[],
     },
     ParityCase {
         test_name: "record_shorthand_destructure_let",
         source_rel: "examples/sandbox-graduation/record_shorthand_destructure_let.hew",
-        accepted_divergences: &[],
     },
     ParityCase {
         test_name: "nested_tuple_destructure_let",
         source_rel: "examples/sandbox-graduation/nested_tuple_destructure_let.hew",
-        accepted_divergences: &[],
     },
     ParityCase {
         // Wrapping ops at the overflow boundary: the VM truncates `&+`/`&-`/`&*`
         // to two's-complement 64 bits to match native (#2341).
         test_name: "wrapping_binary_operators",
         source_rel: "examples/sandbox-graduation/wrapping_binary_operators.hew",
-        accepted_divergences: &[],
     },
     ParityCase {
         // `.clone()` method-call syntax on Vec/String/Array/Slice. The
@@ -480,7 +411,6 @@ const PARITY_CASES: &[ParityCase] = &[
         // copy unaffected, for every newly-admitted receiver type.
         test_name: "method_clone",
         source_rel: "examples/playground/types/method_clone.hew",
-        accepted_divergences: &[],
     },
     ParityCase {
         // `regex.Pattern::clone()` — same profile-allowlist gap as
@@ -491,7 +421,6 @@ const PARITY_CASES: &[ParityCase] = &[
         // `examples/playground/` without failing the analyzer smoke test.
         test_name: "regex_clone",
         source_rel: "examples/sandbox-graduation/regex_clone.hew",
-        accepted_divergences: &[],
     },
     ParityCase {
         // Array repeat evaluates value then count exactly once and clones the
@@ -499,7 +428,6 @@ const PARITY_CASES: &[ParityCase] = &[
         // postfix-try covers Result and Option success plus early propagation.
         test_name: "trap_residual",
         source_rel: "examples/sandbox-graduation/trap_residual.hew",
-        accepted_divergences: &[],
     },
 ];
 
@@ -507,34 +435,6 @@ const PARITY_CASES: &[ParityCase] = &[
 struct ParityCase {
     test_name: &'static str,
     source_rel: &'static str,
-    accepted_divergences: &'static [AcceptedDivergence],
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-#[expect(
-    dead_code,
-    reason = "catalog variant reserved for future sandbox-vm divergences; \
-              all current playground examples have reached full parity"
-)]
-enum AcceptedDivergence {
-    #[doc = "Catalog: docs/sandbox-vm-divergences.md#unknown-profile-symbol"]
-    UnknownProfileSymbol,
-}
-
-impl AcceptedDivergence {
-    fn diagnostic_kind(self) -> &'static str {
-        match self {
-            Self::UnknownProfileSymbol => "unknown_symbol",
-        }
-    }
-
-    fn reason(self) -> &'static str {
-        match self {
-            Self::UnknownProfileSymbol => {
-                "playground source calls helpers or builtins that are not in the current sandbox profile allowlist"
-            }
-        }
-    }
 }
 
 #[test]
@@ -584,7 +484,7 @@ fn sandbox_graduation_corpus_is_fully_covered() {
 // native toolchain and WASI target separately; Linux owns this VM contract.
 #[cfg_attr(windows, ignore)]
 #[test]
-fn playground_sources_match_native_or_catalogued_divergence() {
+fn playground_sources_match_native() {
     set_test_hewpath();
     ensure_native_toolchain();
     ensure_parity_runner_built();
@@ -607,16 +507,6 @@ fn assert_case(case: &ParityCase) {
     });
     let sandbox_compile = compile_to_sandbox_bytecode(&source, Some(SANDBOX_PROFILE))
         .unwrap_or_else(|err| panic!("sandbox compile threw for {}: {err}", case.test_name));
-
-    if !case.accepted_divergences.is_empty() {
-        assert_accepted_divergences(case, &sandbox_compile.diagnostics);
-        assert!(
-            sandbox_compile.bytecode.is_none(),
-            "{} declares accepted profile divergences, but sandbox bytecode was emitted; remove the divergence catalog entry and enable parity comparison",
-            case.test_name
-        );
-        return;
-    }
 
     assert_no_error_diagnostics(case, &sandbox_compile.diagnostics);
     let bytecode = sandbox_compile.bytecode.unwrap_or_else(|| {
@@ -655,40 +545,6 @@ fn assert_exact_stdout(case: &ParityCase, native: &Output) {
             expected,
             "{} native stdout changed from its exact-value contract",
             case.test_name
-        );
-    }
-}
-
-fn assert_accepted_divergences(case: &ParityCase, diagnostics: &[Diagnostic]) {
-    let actual_error_kinds: BTreeSet<&str> = diagnostics
-        .iter()
-        .filter(|diagnostic| diagnostic.severity == "error")
-        .map(|diagnostic| diagnostic.kind.as_str())
-        .collect();
-    let accepted_kinds: BTreeSet<&str> = case
-        .accepted_divergences
-        .iter()
-        .map(|divergence| divergence.diagnostic_kind())
-        .collect();
-
-    for divergence in case.accepted_divergences {
-        let kind = divergence.diagnostic_kind();
-        assert!(
-            actual_error_kinds.contains(kind),
-            "{} declared accepted divergence {:?} ({kind}: {}) but that diagnostic did not trigger; remove or update the catalog entry.\nActual diagnostics:\n{}",
-            case.test_name,
-            divergence,
-            divergence.reason(),
-            diagnostics_dump(diagnostics)
-        );
-    }
-
-    for kind in &actual_error_kinds {
-        assert!(
-            accepted_kinds.contains(kind),
-            "{} produced uncatalogued sandbox diagnostic kind {kind:?}; add an AcceptedDivergence with reason and diagnostic linkage or fix the parity gap.\nDiagnostics:\n{}",
-            case.test_name,
-            diagnostics_dump(diagnostics)
         );
     }
 }

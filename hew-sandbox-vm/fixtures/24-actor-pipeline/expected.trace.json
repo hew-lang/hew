@@ -247,9 +247,25 @@
       "type": "replay.input"
     },
     {
-      "message": "ok",
+      "message": "actor.stop",
       "phase": "run",
       "seq": 24,
+      "span": null,
+      "text": "{\"actor_id\":\"actor:a1\"}",
+      "type": "state.snapshot"
+    },
+    {
+      "message": "actor.stop",
+      "phase": "run",
+      "seq": 25,
+      "span": null,
+      "text": "{\"actor_id\":\"actor:a2\"}",
+      "type": "state.snapshot"
+    },
+    {
+      "message": "ok",
+      "phase": "run",
+      "seq": 26,
       "span": null,
       "type": "trace.ended"
     }

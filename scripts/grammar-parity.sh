@@ -3,8 +3,8 @@
 # tree-sitter-hew grammar and fail on any ERROR node.
 #
 # The tree-sitter grammar (tree-sitter-hew, a sibling repo) is a syntax
-# highlighting/editor-tooling mirror of the real authority, hew-parser
-# (D19). This gate is the leash that keeps the mirror honest: it never
+# highlighting/editor-tooling mirror of the real authority, hew-parser.
+# This gate checks that mirror: it never
 # type-checks or runs anything, it only asks whether the pinned grammar
 # commit can produce a parse tree with zero ERROR nodes for every file the
 # compiler itself accepts. A red run here means the mirror has drifted,
@@ -50,7 +50,7 @@ fi
 # ── Resolve the tree-sitter-hew checkout ────────────────────────────────
 if [[ -n "${HEW_SYNC_TREE_SITTER:-}" ]]; then
     TS_DIR="$HEW_SYNC_TREE_SITTER"
-    if [[ ! -d "$TS_DIR/.git" ]]; then
+    if ! git -C "$TS_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
         echo "grammar-parity: HEW_SYNC_TREE_SITTER=$TS_DIR is not a git checkout" >&2
         exit 1
     fi
@@ -71,22 +71,45 @@ else
     fi
 fi
 
+# Report the checkout actually parsed, including an uncommitted grammar edit.
+TS_REVISION="$(git -C "$TS_DIR" rev-parse HEAD)"
+if ! git -C "$TS_DIR" diff --quiet -- grammar.js src/grammar.json src/parser.c; then
+    TS_REVISION="${TS_REVISION}.dirty"
+fi
+
 # ── Ensure the tree-sitter CLI is available in that checkout ───────────
 if [[ ! -x "$TS_DIR/node_modules/.bin/tree-sitter" ]]; then
     (cd "$TS_DIR" && npm install --no-audit --no-fund >/dev/null)
 fi
 
 # ── Enumerate the accepted corpus: vertical-slice accept fixtures, all of
-# std/, all of examples/. `find` (not `git ls-files`) so an untracked
+# positive core-acceptance cases, std/, and examples/. `find` (not `git ls-files`) so an untracked
 # scratch file placed under one of these roots is still parsed — the
 # negative control this gate names relies on that.
 FILE_LIST="$(mktemp)"
 trap 'rm -f "$FILE_LIST"' EXIT
 {
     find "$REPO_ROOT/tests/vertical-slice/accept" -name '*.hew' -type f
+    python3 - "$REPO_ROOT/tests/core-acceptance" <<'PY'
+import pathlib
+import sys
+import tomllib
+
+root = pathlib.Path(sys.argv[1])
+for manifest in sorted((root / "cases").glob("*.toml")):
+    for case in tomllib.loads(manifest.read_text())["case"]:
+        kind = case.get("kind", "run")
+        diagnostics = case.get("expected", {}).get("diagnostics", [])
+        accepted_check = kind == "check" and all(
+            diagnostic.get("severity") in {"warning", "note", "info"}
+            for diagnostic in diagnostics
+        )
+        if kind == "run" or accepted_check:
+            print((root / case["source"]).resolve())
+PY
     find "$REPO_ROOT/std" -name '*.hew' -type f
     find "$REPO_ROOT/examples" -name '*.hew' -type f
-} | LC_ALL=C sort >"$FILE_LIST"
+} | LC_ALL=C sort -u >"$FILE_LIST"
 
 TOTAL=$(wc -l <"$FILE_LIST")
 corpus_nonempty_assert "grammar-parity-files" "$TOTAL" || exit 1
@@ -138,9 +161,9 @@ PYEOF
 
 if [[ -n "$FAILURES" ]]; then
     FAIL_COUNT=$(printf '%s\n' "$FAILURES" | wc -l)
-    echo "grammar-parity: $FAIL_COUNT of $TOTAL file(s) parsed with an ERROR node (tree-sitter-hew @ $LOCK_COMMIT):" >&2
+    echo "grammar-parity: $FAIL_COUNT of $TOTAL file(s) parsed with an ERROR node (tree-sitter-hew @ $TS_REVISION):" >&2
     printf '%s\n' "$FAILURES" | sed 's/^/  /' >&2
     exit 1
 fi
 
-echo "grammar-parity: $TOTAL files parsed cleanly with tree-sitter-hew @ $LOCK_COMMIT"
+echo "grammar-parity: $TOTAL files parsed cleanly with tree-sitter-hew @ $TS_REVISION"

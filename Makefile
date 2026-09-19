@@ -1666,14 +1666,21 @@ hew-check-all: hew-native
 	@echo "==> hew-check-all: compiling full .hew corpus"
 	HEW_BIN="$(DEBUG_HEW)" scripts/corpus-ratchet.sh hew-corpus
 
-# Parse the vertical-slice accept fixtures, std/, and examples/ with the
+# Parse accepted vertical-slice and core-acceptance sources, std/, and examples/ with the
 # tree-sitter-hew grammar pinned in tools/downstream/tree-sitter.lock and
-# fail on any ERROR node (D19). The parser (hew-lexer/hew-parser) stays the
+# fail on any ERROR node. The parser (hew-lexer/hew-parser) stays the
 # grammar authority; this only checks that the tree-sitter mirror used by
 # editor tooling has not drifted from it. See scripts/grammar-parity.sh.
 grammar-parity:
 	@echo "==> grammar-parity: parsing the accepted corpus with tree-sitter-hew"
 	scripts/grammar-parity.sh
+
+# A documentation view of the editor grammar, without a separate grammar source.
+GRAMMAR_VIEW_SOURCE ?= $(if $(HEW_SYNC_TREE_SITTER),$(HEW_SYNC_TREE_SITTER),../tree-sitter-hew)/src/grammar.json
+GRAMMAR_VIEW_OUTPUT ?= dist/hew.ebnf
+.PHONY: grammar-view
+grammar-view: ## Develop: generate a readable EBNF view of the editor grammar
+	node tools/downstream/generate-ebnf.mjs "$(GRAMMAR_VIEW_SOURCE)" "$(GRAMMAR_VIEW_OUTPUT)"
 
 # Report drift between docs/syntax-data.json and every downstream sibling
 # repo checkout found next to this one (vscode-hew, hew.sh, hew.run,

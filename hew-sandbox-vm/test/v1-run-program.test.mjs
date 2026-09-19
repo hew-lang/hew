@@ -70,6 +70,9 @@ test("runProgram runs a v1 package without the v0 exit patching", () => {
 
   assert.equal(result.stdout, "hello from the page\n");
   assert.equal(result.exit_code, 0);
+  assert.equal(result.status, "ok");
+  assert.equal(result.compiler_version, "v1-run-program-test");
+  assert.equal(result.hew_version, "0.6.0-rc4");
   assert.deepEqual(result.diagnostics, []);
 });
 
@@ -110,10 +113,22 @@ test("runProgram reports a load-time refusal rather than an empty run", () => {
   const result = withCompiler(rejected, () => runProgram("fn main() {}", ""));
 
   assert.equal(result.stdout, "");
+  assert.equal(result.status, "sandbox_rejected");
+  assert.equal(result.sandbox_rejections[0].category, "native_only");
+  assert.equal(result.sandbox_rejections[0].capability, "FileRead::Open");
   assert.ok(
     result.diagnostics.some(
       (diagnostic) => diagnostic.severity === "error" && diagnostic.message.includes("FileRead")
     ),
     `a refused capability must reach the page: ${JSON.stringify(result.diagnostics)}`
   );
+});
+
+test("an unknown opcode is an invalid package and executes no output", () => {
+  const bytecode = v1Package();
+  bytecode.functions[0].blocks[1].ops.push({ op: "unrecognized.opcode" });
+  const result = withCompiler(bytecode, () => runProgram("", ""));
+  assert.equal(result.status, "sandbox_rejected");
+  assert.equal(result.stdout, "");
+  assert.equal(result.sandbox_rejections[0].category, "invalid_package");
 });

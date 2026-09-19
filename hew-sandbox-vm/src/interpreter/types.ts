@@ -195,6 +195,7 @@ export interface RuntimeFailure {
 /// A load-time admission refusal. `capability` names the runtime family or
 /// extern symbol the VM has no shim for.
 export interface SandboxRejection {
+  category: "native_only" | "not_implemented" | "invalid_package";
   code: string;
   capability: string | null;
   message: string;

@@ -345,3 +345,170 @@ fn an_actor_handler_joins_parallel_requests_without_reentering_its_state() {
     ));
     assert_eq!(stdout(&trace), "18\n");
 }
+
+#[test]
+fn pipe_send_and_receive_resume_through_backpressure() {
+    let trace = execute(
+        r#"
+import std.stream;
+fn main() {
+    let (sink, input): (stream.Sink<string>, stream.Stream<string>) =
+        stream.pipe(1).expect("pipe");
+    scope {
+        fork {
+            sink.send("first").expect("send");
+            sink.send("second").expect("send");
+            sink.close();
+        };
+        println(input.recv().expect("first"));
+        println(input.recv().expect("second"));
+        println(match input.recv() { .None => "EOF", .Some(_) => "extra" });
+        input.close();
+    }
+}
+"#,
+    );
+    assert_eq!(stdout(&trace), "first\nsecond\nEOF\n");
+}
+
+#[test]
+fn selection_timeout_leaves_the_pipe_read_half_usable() {
+    let trace = execute(include_str!(
+        "../../tests/core-acceptance/cases/select-timer-arm.hew"
+    ));
+    assert_eq!(stdout(&trace), "timeout\nreceived late\nclosed\n");
+}
+
+#[test]
+fn actor_task_and_pipe_selection_compose_without_consuming_losers() {
+    let trace = execute(include_str!(
+        "../../tests/core-acceptance/cases/select-actor-call-arm.hew"
+    ));
+    assert_eq!(stdout(&trace), "OWNED ACTOR REPLY\ntask still joinable\nreceiver still usable\nreceiver evaluated once\nprepared receiver\n");
+}
+
+#[test]
+fn a_scope_deadline_runs_cleanup_before_recovery() {
+    let trace = execute(
+        r#"
+fn main() {
+    let result = scope within 2ms {
+        defer println("cleaned");
+        sleep(10s);
+        "unreachable"
+    } handle failure {
+        match failure {
+            .Deadline { message } => "deadline",
+            .Fault { message } => "wrong failure",
+        }
+    };
+    println(result);
+}
+"#,
+    );
+    assert_eq!(stdout(&trace), "cleaned\ndeadline\n");
+    assert_eq!(trace["final_state"]["virtual_clock"]["current_ms"], 2);
+}
+
+#[test]
+fn race_cancels_and_drains_the_loser_before_returning() {
+    let trace = execute(
+        r#"
+fn delayed(value: i64, delay: duration) -> i64 {
+    defer println(value);
+    sleep(delay);
+    value
+}
+fn main() {
+    println(race { delayed(1, 1ms), delayed(2, 10s) });
+}
+"#,
+    );
+    assert_eq!(stdout(&trace), "1\n2\n1\n");
+    assert_eq!(trace["final_state"]["virtual_clock"]["current_ms"], 1);
+}
+
+#[test]
+fn a_task_fault_reaches_scope_recovery_after_deferred_cleanup() {
+    let trace = execute(
+        r#"
+fn fail() -> i64 {
+    defer println("child cleaned");
+    panic("child failed");
+}
+fn main() {
+    scope {
+        defer println("parent cleaned");
+        let task = fork fail();
+        println(await task);
+    } handle failure {
+        match failure {
+            .Fault { message } => println(message),
+            .Deadline { message } => println("unexpected deadline"),
+        }
+    };
+}
+"#,
+    );
+    assert_eq!(
+        stdout(&trace),
+        "child cleaned\nparent cleaned\nchild failed\n"
+    );
+}
+
+#[test]
+fn mailbox_submission_reports_acceptance_and_full_rejection() {
+    let trace = execute(
+        r#"
+actor Worker {
+    mailbox 1 overflow block,
+    receive fn work(value: i64) { println(value); }
+}
+actor Driver {
+    receive fn run(worker: Worker) {
+        let inbox = mailbox(worker, on_full: .Reject);
+        println(match inbox.work(1) {
+            .Ok(.Accepted) => "accepted",
+            _ => "wrong first outcome",
+        });
+        println(match inbox.work(2) {
+            .Err(failure) => match failure.reason { .Full => "full", _ => "wrong reason" },
+            _ => "wrong second outcome",
+        });
+    }
+}
+fn main() {
+    let worker = spawn Worker;
+    let driver = spawn Driver;
+    let _ = driver.run(worker);
+}
+"#,
+    );
+    assert_eq!(stdout(&trace), "accepted\nfull\n1\n");
+}
+
+#[test]
+fn waiting_submission_resumes_when_a_mailbox_slot_opens() {
+    let trace = execute(
+        r#"
+actor Worker {
+    mailbox 1 overflow block,
+    receive fn work(value: i64) { println(value); }
+}
+actor Driver {
+    receive fn run(worker: Worker) {
+        let inbox = mailbox(worker, on_full: .Wait);
+        let _ = inbox.work(1);
+        let _ = inbox.work(2);
+        println("submitted");
+    }
+}
+fn main() {
+    let worker = spawn Worker;
+    let driver = spawn Driver;
+    let _ = driver.run(worker);
+}
+"#,
+    );
+    assert_eq!(stdout(&trace), "1\nsubmitted\n2\n");
+}

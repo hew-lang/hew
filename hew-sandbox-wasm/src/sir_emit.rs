@@ -501,6 +501,26 @@ impl<'m> Walker<'m> {
             .map_or(serde_json::Value::Null, |shape| shape.id.0.into())
     }
 
+    fn submission_shapes(&self, result: &CallResult) -> serde_json::Value {
+        let CallResult::Value(def) = result else {
+            return serde_json::Value::Null;
+        };
+        let hew_types::ResolvedTy::Named { args, .. } = &def.ty else {
+            return serde_json::Value::Null;
+        };
+        let success = args
+            .first()
+            .and_then(|ty| self.module.variant_shape_for_type(ty));
+        let failure = args
+            .get(1)
+            .and_then(|ty| self.module.aggregate_shape_for_type(ty));
+        serde_json::json!({
+            "success": success.map(|shape| shape.id.0),
+            "failure": failure.map(|shape| shape.id.0),
+            "reason": failure.and_then(|shape| shape.fields.first()).and_then(|field| self.module.variant_shape_for_type(&field.ty)).map(|shape| shape.id.0),
+        })
+    }
+
     fn suspend_kind_id(&mut self, name: &str) {
         if !self.suspend_kinds.iter().any(|kind| kind == name) {
             self.suspend_kinds.push(name.to_string());
@@ -875,7 +895,9 @@ impl<'m> Walker<'m> {
         // An operation that defines several values carries them all in
         // `results`; every other operation has the one `dst`.
         let dst = match op.kind {
-            SemOpKind::Destructure { .. } | SemOpKind::VariantDestructure { .. } => None,
+            SemOpKind::Destructure { .. }
+            | SemOpKind::VariantDestructure { .. }
+            | SemOpKind::StreamPipe { .. } => None,
             _ => op.results.first().map(|result| result.id.0),
         };
         let span = self.span(&op.provenance);
@@ -1144,7 +1166,7 @@ impl<'m> Walker<'m> {
                 "callable": operand(callable),
             }),
             SemOpKind::StreamPipe { capacity } => {
-                serde_json::json!({ "op": "stream.pipe", "capacity": capacity })
+                serde_json::json!({ "op": "stream.pipe", "capacity": capacity, "results": op.results.iter().map(value_def).collect::<Vec<_>>() })
             }
             SemOpKind::TaskScopeEnter {
                 scope,
@@ -1423,6 +1445,7 @@ impl<'m> Walker<'m> {
             } => serde_json::json!({
                 "op": "actor.call",
                 "operation": actor_operation(operation),
+                "submission_shapes": self.submission_shapes(result),
                 "error_shape": self.error_shape(result),
                 "args": boundaries(args),
                 "result": call_result(result),

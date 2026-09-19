@@ -1,3 +1,4 @@
+import type { Pipes } from "./pipes.js";
 /// The VM's runtime-family and extern shim table.
 ///
 /// This table is the admission authority (D517 Q415): a package may name a
@@ -25,6 +26,9 @@ export class ShimFault extends Error {
 /// What a shim may reach for. The executor owns faults and traces; a shim
 /// never touches the frame stack or the value environment.
 export interface ShimHost {
+  pipes?: Pipes;
+  newPipe?(capacity: number): VmValue;
+  closePipe?(value: VmValue): void;
   /// Write to the program's standard output.
   writeStdout(text: string): void;
   /// The next line of replay stdin, and the replay record for it.
@@ -54,6 +58,10 @@ export function resolveRuntimeShim(
   entry: RuntimeFamilyEntry,
 ): RuntimeShim | undefined {
   switch (entry.family) {
+    case "FileRead":
+      return entry.detail === "LastError"
+        ? () => ({ kind: "string", value: "" })
+        : undefined;
     case "Print":
       return printShim(entry.detail);
     case "Vector":
@@ -80,6 +88,8 @@ export const SUPPORTED_SUSPEND_KINDS: ReadonlySet<string> = new Set([
   "Await",
   "Join",
   "Select",
+  "StreamSend",
+  "StreamNext",
 ]);
 
 // ── families ────────────────────────────────────────────────────────────────
@@ -101,6 +111,29 @@ function printShim(detail: unknown): RuntimeShim | undefined {
 }
 
 const UNIT_FAMILY_SHIMS: Record<string, RuntimeShim | undefined> = {
+  StringToUppercase: (_host, args) => ({
+    kind: "string",
+    value: text(args, 0).toUpperCase(),
+  }),
+  StringToLowercase: (_host, args) => ({
+    kind: "string",
+    value: text(args, 0).toLowerCase(),
+  }),
+  StreamPairSink: (host, args) => host.pipes!.extract(arg(args, 0), "sink"),
+  StreamPairStream: (host, args) => host.pipes!.extract(arg(args, 0), "stream"),
+  SinkClone: (host, args) => host.pipes!.cloneSink(arg(args, 0)),
+  SinkClose: (host, args) => {
+    host.closePipe!(arg(args, 0));
+    return UNIT;
+  },
+  SinkFinish: (host, args) => {
+    host.pipes!.close(arg(args, 0));
+    return UNIT;
+  },
+  StreamClose: (host, args) => {
+    host.closePipe!(arg(args, 0));
+    return UNIT;
+  },
   StringConcat: (_host, args) => str(`${text(args, 0)}${text(args, 1)}`),
   StringClone: (_host, args) => str(text(args, 0)),
   StringEquals: (_host, args) => bool(text(args, 0) === text(args, 1)),
@@ -342,6 +375,14 @@ const MAP_SHIMS: Record<string, RuntimeShim | undefined> = {
 // ── externs ─────────────────────────────────────────────────────────────────
 
 const EXTERN_SHIMS: Record<string, RuntimeShim | undefined> = {
+  hew_stream_channel: (host, args) => host.newPipe!(Number(integer(args, 0))),
+  hew_stream_pair_is_valid: () => ({ kind: "bool", value: true }),
+  hew_stream_pair_free: (host, args) => {
+    host.pipes!.freePair(arg(args, 0));
+    return UNIT;
+  },
+  hew_stream_last_error: () => ({ kind: "string", value: "" }),
+
   hew_regex_new: (host, args) => compileRegex(host, args),
   hew_regex_clone: (_host, args) => cloneValue(arg(args, 0)),
   // Releasing a handle the VM traces by reference is nothing to do.

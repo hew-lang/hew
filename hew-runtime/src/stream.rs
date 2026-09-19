@@ -1654,6 +1654,32 @@ pub unsafe extern "C" fn hew_stream_close(stream: *mut HewStream) {
     }
 }
 
+/// Close read admission and consume queued owners before releasing the handle.
+/// # Safety
+/// `stream` is null or uniquely owned; no operation may retain a loan to it.
+#[no_mangle]
+pub unsafe extern "C" fn hew_stream_release_begin(
+    stream: *mut HewStream,
+) -> *mut crate::release_walker::HewReleaseCursor {
+    use crate::release_walker::{HewReleaseCursor, ReleaseItem};
+    unsafe fn free_stream(owner: *mut c_void) {
+        // SAFETY: the cursor owns the handle and has drained all queued values.
+        unsafe { hew_stream_close(owner.cast()) };
+    }
+    // SAFETY: the caller supplies an exclusive live handle or null.
+    let (layout, discarded) = unsafe { stream.as_ref() }
+        .and_then(|stream| stream.channel.as_ref())
+        .map_or_else(|| (None, Vec::new()), |core| core.close_stream_take());
+    HewReleaseCursor::envelopes(
+        discarded,
+        layout,
+        ReleaseItem::Storage {
+            owner: stream.cast(),
+            free: free_stream,
+        },
+    )
+}
+
 /// Nominally typed file-read handle release used by `std.fs`.
 ///
 /// # Safety
@@ -1710,6 +1736,35 @@ pub unsafe extern "C" fn hew_sink_close(sink: *mut HewSink) {
         // Drop impl calls close() on the backing.
         unsafe { drop(Box::from_raw(sink)) }; // ALLOCATOR-PAIRING: GlobalAlloc
     }
+}
+
+/// Consume a sink and any unaccepted owners discarded by its producer fault.
+/// # Safety
+/// `sink` is null or uniquely owned; no operation may retain a loan to it.
+#[no_mangle]
+pub unsafe extern "C" fn hew_sink_release_begin(
+    sink: *mut HewSink,
+) -> *mut crate::release_walker::HewReleaseCursor {
+    use crate::release_walker::{HewReleaseCursor, ReleaseItem};
+    unsafe fn free_sink(owner: *mut c_void) {
+        // SAFETY: the cursor owns this handle after discarded values finish.
+        unsafe { hew_sink_close(owner.cast()) };
+    }
+    let (layout, discarded) = if let Some(actor) = crate::fault::crashing_owner() {
+        // SAFETY: a live channel sink retains its core through cursor completion.
+        unsafe { sink_channel_core(sink) }
+            .map_or_else(|| (None, Vec::new()), |core| core.fault_close_take(actor))
+    } else {
+        (None, Vec::new())
+    };
+    HewReleaseCursor::envelopes(
+        discarded,
+        layout,
+        ReleaseItem::Storage {
+            owner: sink.cast(),
+            free: free_sink,
+        },
+    )
 }
 
 /// `Sink.finish`: publish EOF to the reader and keep the handle.

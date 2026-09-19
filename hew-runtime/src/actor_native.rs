@@ -11,6 +11,8 @@ use crate::execution_context::HewExecutionContext;
 use crate::fault::HewFault;
 use crate::lifetime::live_actors::ActorIncarnation;
 
+#[path = "actor_native_cleanup.rs"]
+pub(crate) mod cleanup;
 #[path = "actor_native_close.rs"]
 mod close;
 pub(crate) use close::{finish_native_terminal, hew_actor_close_native, hew_actor_wait_new};
@@ -47,8 +49,16 @@ pub unsafe extern "C" fn hew_actor_coro_state_new() -> *mut crate::coro_state::H
     let context = crate::execution_context::current_context();
     // SAFETY: the generated dispatch adapter runs under its live context.
     let context = unsafe { &*context };
+    // SAFETY: the current dispatch pins both actor and cancellation ancestry.
+    unsafe { new_actor_state(context.actor, context.cancel_token) }
+}
+
+unsafe fn new_actor_state(
+    actor: *mut crate::actor::HewActor,
+    token: *mut crate::cancel_token::HewCancellationToken,
+) -> *mut crate::coro_state::HewCoroState {
     // SAFETY: activation ownership keeps the actor alive during capture.
-    let target = Arc::new(unsafe { ActorIncarnation::of(context.actor) });
+    let target = Arc::new(unsafe { ActorIncarnation::of(actor) });
     let waker = crate::wake::HewWaker {
         context: Arc::as_ptr(&target).cast_mut().cast(),
         wake: wake_actor,
@@ -56,17 +66,24 @@ pub unsafe extern "C" fn hew_actor_coro_state_new() -> *mut crate::coro_state::H
         release: release_actor_wake,
     };
     // SAFETY: the local Arc and current context retain both inputs for creation.
-    let state =
-        unsafe { crate::coro_state::hew_coro_state_new(&raw const waker, context.cancel_token) };
+    let state = unsafe { crate::coro_state::hew_coro_state_new(&raw const waker, token) };
     // SAFETY: the new invocation belongs exclusively to this strict actor turn.
     unsafe { (*state).actor_turn = *target };
     // SAFETY: this activation owns the actor and its one strict turn. The
     // adapter clears the borrowed slot after child completion under the same
     // activation ownership, before another turn can start.
-    unsafe { &*context.actor }
+    unsafe { &*actor }
         .checked_invocation
         .store(state.cast(), std::sync::atomic::Ordering::Release);
     state
+}
+
+pub(crate) unsafe fn new_cleanup_state(
+    actor: &crate::actor::HewActor,
+) -> *mut crate::coro_state::HewCoroState {
+    // SAFETY: the exclusive cleanup activation retains the actor; cleanup
+    // begins fresh cancellation ancestry while preserving readiness identity.
+    unsafe { new_actor_state(ptr::from_ref(actor).cast_mut(), ptr::null_mut()) }
 }
 
 /// Publish a completed handler fault through the current resume context.

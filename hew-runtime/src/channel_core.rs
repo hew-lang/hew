@@ -878,6 +878,15 @@ impl ChannelCore {
     /// so their `await_send` resumes (the writes become no-ops) and drops their
     /// pending items — owned envelopes are released via the stamped witness.
     pub fn close_stream(&self) {
+        let (layout, discarded) = self.close_stream_take();
+        for value in discarded {
+            Self::drop_envelope(layout.as_ref(), value);
+        }
+    }
+
+    /// Close reader admission and transfer every discarded value to its
+    /// consuming cleanup owner, without invoking authored code under the lock.
+    pub(crate) fn close_stream_take(&self) -> (Option<HewValueLayout>, Vec<Vec<u8>>) {
         let mut wakes: Vec<Waiter> = Vec::new();
         let mut discarded: Vec<Vec<u8>> = Vec::new();
         let layout;
@@ -886,6 +895,7 @@ impl ChannelCore {
             let mut inner = self.locked();
             inner.stream_closed = true;
             layout = inner.elem_layout;
+            discarded.extend(inner.queue.drain(..));
             native_producers = std::mem::take(&mut inner.native_producers);
             while let Some(mut w) = inner.producers.pop_front() {
                 if let Some(item) = w.item.take() {
@@ -905,10 +915,8 @@ impl ChannelCore {
             // it exactly once.
             unsafe { Self::wake(w) };
         }
-        for env in discarded {
-            Self::drop_envelope(layout.as_ref(), env);
-        }
         self.cv.notify_all();
+        (layout, discarded)
     }
 
     /// Mark this pipe permanently FAULTED: the registered producer (a
@@ -929,6 +937,15 @@ impl ChannelCore {
     /// that had not entered the queue are discarded; the fault applies once
     /// the pre-fault queue empties (see `pop`/`blocking_recv`).
     pub fn fault_close(&self, actor_id: u64) {
+        let (layout, discarded) = self.fault_close_take(actor_id);
+        for value in discarded {
+            Self::drop_envelope(layout.as_ref(), value);
+        }
+    }
+
+    /// Publish a producer fault while transferring unaccepted values for
+    /// cleanup. Already accepted items remain readable before the fault.
+    pub(crate) fn fault_close_take(&self, actor_id: u64) -> (Option<HewValueLayout>, Vec<Vec<u8>>) {
         let consumer_wake;
         let mut producer_wakes = Vec::new();
         let mut discarded = Vec::new();
@@ -980,9 +997,7 @@ impl ChannelCore {
             // send continuation instead of remaining parked forever.
             unsafe { Self::wake(producer) };
         }
-        for item in discarded {
-            Self::drop_envelope(layout.as_ref(), item);
-        }
+        (layout, discarded)
     }
 
     /// Fail closed on a send that the drain will never let complete: never a

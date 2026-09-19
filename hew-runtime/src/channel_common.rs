@@ -75,7 +75,7 @@ pub(crate) unsafe fn elem_layout_witness<'a>(
     // SAFETY: descriptor validity is the caller's contract.
     let l = unsafe { element_layout(layout, context) };
     if l.ownership_kind == HewTypeOwnershipKind::LayoutManaged
-        && (l.clone_fn.is_none() || l.drop_fn.is_none())
+        && (l.clone_fn.is_none() || (l.drop_fn.is_none() && l.release_start.is_none()))
     {
         abort_elem_witness(
             context,
@@ -96,7 +96,10 @@ pub(crate) unsafe fn move_elem_layout_witness<'a>(
 ) -> &'a HewValueLayout {
     // SAFETY: descriptor validity is the caller's contract.
     let layout = unsafe { element_layout(layout, context) };
-    if layout.ownership_kind != HewTypeOwnershipKind::Plain && layout.drop_fn.is_none() {
+    if layout.ownership_kind != HewTypeOwnershipKind::Plain
+        && layout.drop_fn.is_none()
+        && layout.release_start.is_none()
+    {
         abort_elem_witness(context, "owned element witness is missing its drop thunk");
     }
     layout

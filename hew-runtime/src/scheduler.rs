@@ -1067,12 +1067,13 @@ pub(crate) use crate::activation::{activate_actor_for_test, release_scheduler_qu
 #[cfg(test)]
 use crate::mailbox::{self, hew_mailbox_has_messages, hew_msg_node_free, HewMailbox};
 
+#[cfg(all(feature = "profiler", not(target_arch = "wasm32")))]
+pub(crate) use crate::activation::ACTIVATIONS_COMPLETED as TASKS_COMPLETED;
+#[cfg(any(test, all(feature = "profiler", not(target_arch = "wasm32"))))]
+pub(crate) use crate::activation::ACTIVE_ACTIVATIONS as ACTIVE_WORKERS;
 pub(crate) use crate::activation::{
     activate_queued_actor, enqueue_resume_by_incarnation, release_scheduler_queue_ref,
     SchedulerQueueEntry,
-};
-pub(crate) use crate::activation::{
-    ACTIVATIONS_COMPLETED as TASKS_COMPLETED, ACTIVE_ACTIVATIONS as ACTIVE_WORKERS,
 };
 /// Submit an actor to the global queue and wake a worker.
 ///

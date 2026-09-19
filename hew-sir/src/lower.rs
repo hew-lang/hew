@@ -8587,14 +8587,13 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             .resolve_types(&source_types, &self.ty(&expr.ty))
             .map_err(|error| format!("runtime operation {family:?}: {error}"))?;
         let parameter_types = &instantiated.arguments;
-        // An operation that replaces a value its receiver owns releases what it
-        // displaced inside the call, so that release runs an authored `close`
-        // and can fail like any other. The dispatch on its outcome goes
-        // on the normal edge once the receiver is republished and the frame
-        // owns what it did before the call.
-        let displaced_release = family
-            .displaced_argument()
-            .and_then(|index| parameter_types.get(index))
+        // Runtime mutations release receiver-typed contents inside the call.
+        // Dispatch their outcome after republishing the receiver and acquiring
+        // any result owners on the normal edge.
+        let receiver_release = family
+            .releases_receiver_contents()
+            .then_some(parameter_types)
+            .and_then(|types| types.first())
             .cloned();
         for (index, (source, target)) in source_types.iter().zip(parameter_types).enumerate() {
             if prelowered.iter().any(|(at, _)| *at == index)
@@ -9091,6 +9090,17 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         }
         self.current = normal_target;
         self.owned_live = live_at_call;
+        // The call result already owns its payload on this edge. Retire
+        // borrowed argument temporaries only after recording that owner: a
+        // temporary's close can fail and cleanup must also drain the result.
+        if let Some(continuation) = continuation {
+            let result_ty = self
+                .value_ty(continuation)
+                .expect("runtime continuation block argument was just created");
+            if self.value_own_kind(continuation) == Some(OwnKind::Owned) {
+                self.owned_live.insert(continuation, result_ty);
+            }
+        }
         if result_is_loan {
             // The result is a loan of argument zero: its owner must stay
             // borrowed for as long as the result is readable, and the loan the
@@ -9108,12 +9118,6 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             self.emit_destroy(value)?;
         }
         if let Some(continuation) = continuation {
-            let result_ty = self
-                .value_ty(continuation)
-                .expect("runtime continuation block argument was just created");
-            if self.value_own_kind(continuation) == Some(OwnKind::Owned) {
-                self.owned_live.insert(continuation, result_ty);
-            }
             if matches!(
                 contract.result,
                 RuntimeResultEffect::UpdatedReceiverAndValue(_)
@@ -9143,7 +9147,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                         &Provenance::Site(expr.site),
                     )?;
                 }
-                self.dispatch_displaced_release(displaced_release.as_ref())?;
+                self.dispatch_runtime_release(receiver_release.as_ref())?;
                 return Ok(Some(results[1].id));
             }
             if matches!(contract.result, RuntimeResultEffect::UpdatedReceiver(_)) {
@@ -9163,10 +9167,10 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     )?;
                 } else {
                     // A prelowered receiver belongs to an enclosing writable path.
-                    self.dispatch_displaced_release(displaced_release.as_ref())?;
+                    self.dispatch_runtime_release(receiver_release.as_ref())?;
                     return Ok(Some(continuation));
                 }
-                self.dispatch_displaced_release(displaced_release.as_ref())?;
+                self.dispatch_runtime_release(receiver_release.as_ref())?;
                 return Ok(None);
             }
         }
@@ -9175,15 +9179,14 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 "unit-valued runtime family `{family:?}` cannot produce an SSA value"
             ));
         }
-        self.dispatch_displaced_release(displaced_release.as_ref())?;
+        self.dispatch_runtime_release(receiver_release.as_ref())?;
         Ok(continuation)
     }
 
     /// Dispatch on the outcome of a release the call performed for this frame.
     ///
-    /// `ty` is the displaced value's type when the operation replaced one its
-    /// receiver owned, and `None` otherwise.
-    fn dispatch_displaced_release(
+    /// `ty` is the receiver type when the operation can release its contents.
+    fn dispatch_runtime_release(
         &mut self,
         ty: Option<&hew_types::ResolvedTy>,
     ) -> Result<(), String> {

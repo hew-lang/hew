@@ -1348,7 +1348,7 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
     /// no-fault case into the same combine rather than branching around it:
     /// `hew_fault_combine` already returns the primary for a null secondary,
     /// and the status slot starts at zero for a release that raised nothing.
-    fn emit_release_in_sink(&self, emit: impl FnOnce() -> CodegenResult<()>) -> CodegenResult<()> {
+    fn emit_release_in_sink<T>(&self, emit: impl FnOnce() -> CodegenResult<T>) -> CodegenResult<T> {
         let Some((active_fault, active_status)) = self.fault_sink else {
             return emit();
         };
@@ -1365,7 +1365,7 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
         self.builder
             .build_call(begin, &[], "")
             .llvm_ctx("arm a release fault sink")?;
-        emit()?;
+        let output = emit()?;
         let end = get_or_declare_external(
             self.llvm,
             "hew_release_fault_end",
@@ -1383,7 +1383,8 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
             .build_load(self.ctx.i32_type(), slot, "release.sink.status.value")
             .llvm_ctx("load the released fault's status")?
             .into_int_value();
-        self.record_release_fault(active_fault, active_status, raised, status)
+        self.record_release_fault(active_fault, active_status, raised, status)?;
+        Ok(output)
     }
 
     fn clone_loaded_value(
@@ -7108,7 +7109,9 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     }
                 } else {
                     let function = external_drop(self.ctx, self.llvm, "hew_hashmap_clear_layout")?;
-                    self.runtime_call_void(function, &[map.into()], "map.clear")?;
+                    self.value_emitter().emit_release_in_sink(|| {
+                        self.runtime_call_void(function, &[map.into()], "map.clear")
+                    })?;
                 }
                 self.clear_owned(receiver)?;
                 self.store(result, map)?;
@@ -7368,7 +7371,9 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             }
             PhysicalSetOp::Clear => {
                 let function = external_drop(self.ctx, self.llvm, "hew_hashset_clear_layout")?;
-                self.runtime_call_void(function, &[set.into()], "set.clear")?;
+                self.value_emitter().emit_release_in_sink(|| {
+                    self.runtime_call_void(function, &[set.into()], "set.clear")
+                })?;
                 self.clear_owned(receiver)?;
                 self.store(result, set)?;
             }
@@ -7411,12 +7416,26 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         self.builder
             .build_store(self.active_fault, pointer.const_null())
             .llvm_ctx("clear callback fault output")?;
-        let status = self
-            .runtime_call_value(function, &arguments, "collection.status")?
-            .into_int_value();
-        self.builder
-            .build_store(self.active_status, status)
-            .llvm_ctx("retain callback status")?;
+        let invoke = || {
+            let status = self
+                .runtime_call_value(function, &arguments, "collection.status")?
+                .into_int_value();
+            self.builder
+                .build_store(self.active_status, status)
+                .llvm_ctx("retain callback status")?;
+            Ok(status)
+        };
+        // End the sink before branching on callback status. A successful
+        // mutation may have collected a close fault, and a failed callback
+        // remains primary over any close faults from its scratch cleanup.
+        let status = if consumed
+            .iter()
+            .any(|(_, action)| self.module.releases.raises_fault(*action))
+        {
+            self.value_emitter().emit_release_in_sink(invoke)?
+        } else {
+            invoke()?
+        };
         let succeeded = self
             .builder
             .build_int_compare(

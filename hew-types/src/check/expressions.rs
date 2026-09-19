@@ -2995,7 +2995,12 @@ else needs `impl Display for {rendered}`)"
                 // The trapping read clones the value out of its slot; the
                 // write only moves one in.
                 if ctx == IndexContext::Read
-                    && !self.validate_hashmap_value_clone_type(&val_ty, "m[k]", span)
+                    && !self.validate_collection_value_clone_type(
+                        &val_ty,
+                        BuiltinType::HashMap,
+                        "m[k]",
+                        span,
+                    )
                 {
                     return Ty::Error;
                 }

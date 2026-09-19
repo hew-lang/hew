@@ -1,0 +1,11 @@
+[[case]]
+id = "resource-close-fault-set-eq"
+intent = "An equality callback fault stays primary while set insertion releases its stored and untransferred incoming owners through balanced release sinks."
+source = "cases/resource-close-fault-set-eq.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "close 11\nclose 12\nclose 99\n"
+stderr = "hew: failure: UserPanic (212): equality failed\nhew: secondary failure: UserPanic (212): close 11 failed\nhew: secondary failure: UserPanic (212): close 12 failed\nhew: secondary failure: UserPanic (212): close 99 failed\n"
+exit = 1

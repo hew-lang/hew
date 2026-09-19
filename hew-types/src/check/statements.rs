@@ -2037,8 +2037,9 @@ impl Checker {
                         // The desugar snapshots `values()`, so every value is
                         // copied out of the map.
                         if self.validate_hashmap_owned_element_types(&key_ty, &val_ty, &iterable.1)
-                            && self.validate_hashmap_value_clone_type(
+                            && self.validate_collection_value_clone_type(
                                 &val_ty,
+                                BuiltinType::HashMap,
                                 "for (k, v) in m",
                                 &iterable.1,
                             )
@@ -2076,7 +2077,12 @@ impl Checker {
                         // a zero-length Vec).
                         let elem_ty = args[0].clone();
                         let to_vec_span = Self::hashset_for_in_to_vec_span(&iterable.1);
-                        if self.record_vec_iter_element_mode(&elem_ty, &iterable.1)
+                        if self.validate_collection_value_clone_type(
+                            &elem_ty,
+                            BuiltinType::HashSet,
+                            "for value in set",
+                            &iterable.1,
+                        ) && self.record_vec_iter_element_mode(&elem_ty, &iterable.1)
                             && self.validate_hashset_element_type(&elem_ty, &to_vec_span)
                         {
                             let elem_vec = self.make_vec_type(elem_ty.clone(), &to_vec_span);

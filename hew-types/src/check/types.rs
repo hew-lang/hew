@@ -6,7 +6,7 @@ use crate::resolved_ty::ResolvedTy;
 use crate::traits::TraitRegistry;
 use crate::ty::{Substitution, Ty, TypeVar};
 use crate::type_facts::{TypeFactContext, TypeFacts, TypeInstanceKey};
-use crate::WasmUnsupportedFeature;
+use crate::{BuiltinType, WasmUnsupportedFeature};
 use hew_parser::ast::{
     ImportSpec, Literal, NamingCase, Span, Spanned, TraitBound, TraitMethod, TypeExpr, Visibility,
 };
@@ -2268,14 +2268,14 @@ pub(super) struct DeferredHashMapAdmission {
     pub(super) type_param_bounds: HashMap<String, Vec<String>>,
 }
 
-/// A `HashMap` value-copy obligation deferred until inference has settled.
-/// Recorded when a copying operation (`m[k]`, `values()`, `entries()`,
-/// `clone()`, `into_iter()`, `for (k, v) in m`) sees a value type that is still
-/// in flight; drained by `finalize_hashmap_admission`.
+/// A map value or set element copy obligation deferred until inference settles.
+/// Copying projections, cloning and snapshot iteration share this obligation.
+/// Drained with the collection admission checks.
 #[derive(Debug, Clone)]
-pub(super) struct DeferredHashMapValueCopy {
+pub(super) struct DeferredCollectionValueCopy {
     pub(super) span: Span,
     pub(super) val_ty: Ty,
+    pub(super) collection: BuiltinType,
     pub(super) operation: String,
     pub(super) source_module: Option<String>,
 }
@@ -2922,8 +2922,8 @@ pub struct Checker {
     /// completes.  Keyed by span to suppress duplicates from repeated
     /// traversals of the same site (annotation + method call on the same map).
     pub(super) deferred_hashmap_admission: HashMap<SpanKey, DeferredHashMapAdmission>,
-    /// See [`DeferredHashMapValueCopy`].
-    pub(super) deferred_hashmap_value_copy: HashMap<SpanKey, DeferredHashMapValueCopy>,
+    /// See [`DeferredCollectionValueCopy`].
+    pub(super) deferred_collection_value_copy: HashMap<SpanKey, DeferredCollectionValueCopy>,
     /// `HashSet` element admission checks deferred until after inference
     /// completes.  Keyed by span to suppress duplicates from repeated
     /// traversals of the same site (annotation + method call on the same set).
@@ -4010,7 +4010,7 @@ impl Checker {
             consume_receiver_methods: HashSet::new(),
             pending_lowering_facts: HashMap::new(),
             deferred_hashmap_admission: HashMap::new(),
-            deferred_hashmap_value_copy: HashMap::new(),
+            deferred_collection_value_copy: HashMap::new(),
             deferred_hashset_admission: HashMap::new(),
             deferred_vec_admission: HashMap::new(),
             deferred_builtin_clone_admission: HashMap::new(),

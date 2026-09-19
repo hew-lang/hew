@@ -1,6 +1,6 @@
 [[case]]
 id = "vec-element-refusals"
-intent = "The refusals a collection keeps come from the element's value class and name it: an affine resource and a trait object have no copy operation, so array repeat, range slice and the map value projections refuse them at the element site rather than through a shape allowlist."
+intent = "Collections admit affine elements, while array repeat, range slicing, map projections and set cloning or snapshot iteration reject elements without a copy operation."
 source = "cases/vec-element-refusals.hew"
 suites = ["acceptance"]
 timeout_seconds = 30
@@ -29,3 +29,21 @@ code = "InvalidOperation"
 line = 33
 column = 19
 message = "E_ELEMENT_NO_COPY: `HashMap.values()` copies each value out of the map, but the value type `Conn` (an affine resource) has no copy operation"
+
+[[case.expected.diagnostics]]
+code = "InvalidOperation"
+line = 51
+column = 17
+message = "type `HashSet<Conn>` contains `#[resource]` value `Conn` and cannot be cloned: member `element` contains `Conn`, which has an affine close contract and no semantic clone"
+
+[[case.expected.diagnostics]]
+code = "InvalidOperation"
+line = 55
+column = 17
+message = "E_ELEMENT_NO_COPY: `HashSet.to_vec()` copies each element out of the set, but the element type `Conn` (an affine resource) has no copy operation"
+
+[[case.expected.diagnostics]]
+code = "InvalidOperation"
+line = 59
+column = 17
+message = "E_ELEMENT_NO_COPY: `for value in set` copies each element out of the set, but the element type `Conn` (an affine resource) has no copy operation"

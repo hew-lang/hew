@@ -6717,24 +6717,36 @@ fn apply_operation(
     Ok(())
 }
 
-/// The release a runtime operation performs on the value it displaces.
-///
-/// An operation whose family names a displaced argument replaces something its
-/// receiver already owns and releases it inside the call, so that recipe's
-/// destroy action is the release that can fill the caller's fault record.
-fn displaced_release(
+/// The receiver recipe whose contents a runtime mutation can release.
+fn runtime_receiver_release(
     module: &PhysicalModule,
     action: &PhysicalRuntimeAction,
 ) -> Result<Option<DestroyAction>, PhysicalError> {
-    if action.family.displaced_argument().is_none() {
+    if !action.family.releases_receiver_contents() {
         return Ok(None);
     }
     Ok(match action.carrier {
-        PhysicalRuntimeCarrier::SharedHandle(glue) => shared_glue(module, glue)?.payload.destroy,
-        PhysicalRuntimeCarrier::Vector { glue, .. } => vector_glue(module, glue)?.element.destroy,
-        PhysicalRuntimeCarrier::Map { glue, .. } => map_glue(module, glue)?.value.destroy,
-        PhysicalRuntimeCarrier::Set { glue, .. } => set_glue(module, glue)?.element.destroy,
-        _ => None,
+        PhysicalRuntimeCarrier::SharedHandle(glue) => {
+            shared_glue(module, glue)?;
+            Some(DestroyAction::RcRelease(glue))
+        }
+        PhysicalRuntimeCarrier::Vector { glue, .. } => {
+            vector_glue(module, glue)?;
+            Some(DestroyAction::Vector(glue))
+        }
+        PhysicalRuntimeCarrier::Map { glue, .. } => {
+            map_glue(module, glue)?;
+            Some(DestroyAction::Map(glue))
+        }
+        PhysicalRuntimeCarrier::Set { glue, .. } => {
+            set_glue(module, glue)?;
+            Some(DestroyAction::Set(glue))
+        }
+        _ => {
+            return Err(PhysicalError::new(
+                "runtime release lacks its owning carrier",
+            ))
+        }
     })
 }
 
@@ -7558,9 +7570,9 @@ fn terminator_successors(
                     "runtime call result",
                 )?;
             }
-            // The call released what it displaced, so from its normal edge the
+            // The call can release contents, so from its normal edge the
             // frame may own a fault and SIR owes the cleanup dispatch.
-            if displaced_release(module, action)?
+            if runtime_receiver_release(module, action)?
                 .is_some_and(|release| module.releases.raises_fault(release))
             {
                 normal_state.fault = FaultState::MaybeActive;

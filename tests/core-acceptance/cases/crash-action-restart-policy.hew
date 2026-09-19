@@ -1,0 +1,56 @@
+import std.failure;
+
+actor Worker {
+    let action: i64,
+
+    receive fn fail() {
+        panic("policy failure");
+    }
+
+    receive fn ping() -> i64 {
+        7
+    }
+
+    #[on(crash)]
+    fn choose(info: CrashInfo) -> CrashAction {
+        println(f"action {action}");
+        match action {
+            0 => CrashAction.Restart,
+            1 => CrashAction.Escalate,
+            _ => CrashAction.Kill,
+        }
+    }
+}
+
+supervisor App {
+    strategy: one_for_one,
+    intensity: 5 within 60s,
+
+    child once: Worker(action: 0) restart: temporary,
+    child discarded: Worker(action: 2),
+    child escalated: Worker(action: 1),
+}
+
+fn expect_spent(child: ChildRef<Worker>) {
+    match child.ping() {
+        .Err(_) => {},
+        .Ok(_) => panic("child unexpectedly restarted"),
+    }
+}
+
+fn main() {
+    let app = spawn App;
+    let once = app.once;
+    assert(once.fail().is_err());
+    expect_spent(await_restart app.once);
+    println("temporary stopped");
+    let discarded = app.discarded;
+    assert(discarded.fail().is_err());
+    expect_spent(await_restart app.discarded);
+    println("kill stopped");
+    let escalated = app.escalated;
+    assert(escalated.fail().is_err());
+    expect_spent(await_restart app.escalated);
+    println("root escalation stopped");
+    supervisor_stop(app);
+}

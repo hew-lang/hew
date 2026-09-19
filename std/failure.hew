@@ -1,15 +1,9 @@
 //! Failure-philosophy stdlib types for lifecycle hooks.
 //!
-//! `#[on(crash)]` is live in v0.5 as of `373b95ea`.
-//! `#[on(upgrade)]` is reserved for v0.6; hot-upgrade invocation and state
-//! migration are explicitly deferred, so v0.5 programs must not treat it as
-//! an available hook.
-//!
 //! Import `std.failure` to name `CrashInfo` or `CrashAction` explicitly
-//! in a `#[on(crash)]` hook's signature.  Both types are also pre-bound
-//! in the inline-test checker (no `std` search path required) via
-//! `register_builtin_failure_surface` so isolated fixtures can pin the
-//! hook signature without importing.
+//! in a `#[on(crash)]` hook's signature. The hook observes the actor's last
+//! valid state after its handlers drain and chooses the supervisor's recovery
+//! action. Actor state is released after the hook returns.
 //!
 //! ## `CrashInfo` carries `code` + `message`
 //!
@@ -17,10 +11,6 @@
 //! class (arena exhaustion, link-cascade, explicit panic, …).  `message`
 //! is a heap-owned diagnostic string the runtime supplies (empty when no
 //! message is available); a crash hook can log or route on it.
-//!
-//! WHEN (further widening): a `Function` / `Closure` field and a
-//! stack-pointer-style cursor for trampoline diagnostics are a later
-//! spine-widening (S9), out of scope for the `message` field.
 
 /// Diagnostic payload passed to `#[on(crash)]` hooks.
 ///
@@ -35,20 +25,14 @@ pub type CrashInfo {
     message: string,
 }
 
-/// Advisory return value of a `#[on(crash)]` hook.
+/// Recovery action returned by a `#[on(crash)]` hook.
 ///
-/// v0.5 honours each child's `restart_policy`; the crash handler is
-/// side-effects-only in this edition and the returned variant is ignored.
-/// The variants remain in the public type so the hook ABI can be spelled as
-/// `(CrashInfo) -> CrashAction`; using this return value as a supervisor
-/// control surface is deferred to v0.6 with the Cluster 2 composite-return
-/// spine.
-///
-/// - `Restart`: v0.6 control intent to re-spawn the actor under the same
-///   supervisor.
-/// - `Escalate`: v0.6 control intent to propagate the failure to the
-///   supervisor's supervisor instead of restarting locally.
-/// - `Kill`: v0.6 control intent to terminate the actor permanently.
+/// - `Restart`: apply the child's ordinary restart policy, budget and circuit
+///   breaker. A `temporary` child is not restarted.
+/// - `Escalate`: transfer the failure to the parent supervisor instead of
+///   restarting locally. At the root the failure remains unrecovered.
+/// - `Kill`: permanently spend the child's role and leave the failure
+///   unrecovered.
 pub enum CrashAction {
     Restart,
     Escalate,

@@ -42,7 +42,12 @@ For a dotted package name such as `hew.db.sqlite`, the default binary is named
 file keeps the file-oriented behaviour and names its output from the file stem.
 
 When a manifest declares `[native]`, `hew build` and `hew run` build that crate
-first and link its library as a prerequisite of the package program.
+first and link its library as a prerequisite of the package program. Publishing
+materializes Cargo workspace settings and bundles local Rust path dependencies,
+including workspace patches, into the archive. The installed native crate keeps
+the workspace lockfile and builds without the publisher's checkout. The generated
+`hew-native-deps/` directory is reserved for those bundled dependencies; include
+rules must retain the native crate's `Cargo.toml`.
 
 ### Dependency Management
 

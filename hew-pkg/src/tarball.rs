@@ -114,6 +114,8 @@ pub fn pack(
         return Err(TarballError::MissingManifest);
     }
 
+    crate::native_archive::prepare(dir, &mut files)?;
+
     let mut tar_data = Vec::new();
     {
         let mut builder = tar::Builder::new(&mut tar_data);

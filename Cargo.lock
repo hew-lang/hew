@@ -1913,6 +1913,7 @@ dependencies = [
  "base64",
  "clap",
  "ed25519-dalek",
+ "hew-testutil",
  "libc",
  "rand 0.10.1",
  "semver",

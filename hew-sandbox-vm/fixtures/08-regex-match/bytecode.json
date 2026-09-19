@@ -1,4 +1,5 @@
 {
+  "actors": [],
   "aggregates": [
     {
       "fields": [
@@ -10,7 +11,7 @@
   ],
   "bytes": [],
   "closures": [],
-  "compiler_version": "hew-sandbox-wasm-0.6.0-rc4",
+  "compiler_version": "hew-wasm-0.6.0-rc4",
   "entry": {
     "exit": "unit",
     "function": 0
@@ -42,6 +43,7 @@
             {
               "dst": 0,
               "op": "const.str",
+              "own": "owned",
               "span": {
                 "end": 59,
                 "start": 59
@@ -104,6 +106,7 @@
             {
               "dst": 3,
               "op": "load.borrow",
+              "own": "guaranteed",
               "place": 0,
               "span": {
                 "end": 82,
@@ -113,6 +116,7 @@
             {
               "dst": 4,
               "op": "const.str",
+              "own": "owned",
               "span": {
                 "end": 90,
                 "start": 90
@@ -235,6 +239,7 @@
               "end": 90,
               "start": 90
             },
+            "structural": null,
             "unwind": null
           }
         },
@@ -318,6 +323,7 @@
             {
               "dst": 7,
               "op": "load.take",
+              "own": "owned",
               "place": 0,
               "span": {
                 "end": 106,
@@ -327,6 +333,7 @@
             {
               "dst": 8,
               "op": "move",
+              "own": "owned",
               "source": 7,
               "span": {
                 "end": 106,
@@ -533,6 +540,7 @@
                 2
               ],
               "op": "aggregate.make",
+              "own": "owned",
               "shape": 0,
               "span": null
             },
@@ -552,6 +560,7 @@
             {
               "dst": 4,
               "op": "load.borrow",
+              "own": "guaranteed",
               "place": 0,
               "span": null
             },
@@ -560,6 +569,7 @@
               "dst": 5,
               "field": 0,
               "op": "aggregate.project_copy",
+              "own": "none",
               "shape": 0,
               "span": null
             }
@@ -606,6 +616,7 @@
             {
               "dst": 8,
               "op": "unary",
+              "own": "none",
               "span": null,
               "ty": "bool",
               "unary_op": "Not",
@@ -638,6 +649,7 @@
             {
               "dst": 9,
               "op": "const.str",
+              "own": "owned",
               "span": null,
               "str": 2
             }
@@ -675,6 +687,7 @@
             {
               "dst": 14,
               "op": "load.take",
+              "own": "owned",
               "place": 0,
               "span": null
             },
@@ -733,6 +746,7 @@
             },
             "result_shape": null,
             "span": null,
+            "structural": null,
             "unwind": null
           }
         },
@@ -974,6 +988,7 @@
               "dst": 2,
               "field": 0,
               "op": "aggregate.project_copy",
+              "own": "none",
               "shape": 0,
               "span": null
             }
@@ -1075,6 +1090,7 @@
             {
               "dst": 1,
               "op": "load.borrow",
+              "own": "guaranteed",
               "place": 0,
               "span": null
             },
@@ -1083,6 +1099,7 @@
               "dst": 2,
               "field": 0,
               "op": "aggregate.project_copy",
+              "own": "none",
               "shape": 0,
               "span": null
             }
@@ -1195,6 +1212,7 @@
             {
               "dst": 1,
               "op": "copy_value",
+              "own": "owned",
               "source": 0,
               "span": null
             }
@@ -1258,6 +1276,8 @@
     "abc123",
     "regex.new: invalid pattern: "
   ],
+  "structural_render": [],
+  "supervisors": [],
   "suspend_kinds": [],
   "value_capabilities": [],
   "variants": [],

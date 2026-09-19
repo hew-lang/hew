@@ -118,6 +118,13 @@ function printShim(detail: unknown): RuntimeShim | undefined {
 }
 
 const UNIT_FAMILY_SHIMS: Record<string, RuntimeShim | undefined> = {
+  StringToBytes: (_host, args) => ({
+    kind: "vector",
+    elementType: "u8",
+    items: [...new TextEncoder().encode(text(args, 0))].map((byte) =>
+      int(BigInt(byte)),
+    ),
+  }),
   StringToUppercase: (_host, args) => ({
     kind: "string",
     value: text(args, 0).toUpperCase(),

@@ -1,2 +1,13 @@
-actor Boom { receive fn explode() { panic("boom"); } on(crash) { println("crashed"); stop } }
-fn main() { let boom = spawn Boom; boom.explode(); }
+actor Boom {
+    receive fn explode() { panic("boom"); }
+    #[on(crash)]
+    fn crashed(info: CrashInfo) -> CrashAction {
+        println("crashed");
+        CrashAction.Kill
+    }
+}
+fn main() {
+    let boom = spawn Boom;
+    let _ = boom.explode();
+    println(match boom.explode() { .Err(.Dead) => "dead", _ => "unexpected" });
+}

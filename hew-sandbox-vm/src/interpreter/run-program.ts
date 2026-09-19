@@ -1,19 +1,14 @@
 import { runBytecode } from "./interpreter.js";
-import { isPackageV1 } from "./v1/package.js";
 import type { PackageV1 } from "./v1/package.js";
 import type {
-  Instruction,
   JsonValue,
   RuntimeStatus,
-  SandboxBytecodePackage,
   SandboxRejection,
   SandboxTrace,
   TrapKind,
 } from "./types.js";
 
 const SANDBOX_PROFILE = "sandbox-vm-export";
-const PROCESS_EXIT_SYMBOL = "sym:core.exit";
-const PROCESS_EXIT_CAPABILITY = "core.exit";
 
 export interface Diagnostic {
   severity: string;
@@ -35,7 +30,7 @@ export interface RunProgramResult {
 
 interface CompileOutput {
   diagnostics: Diagnostic[];
-  bytecode: SandboxBytecodePackage | PackageV1 | null;
+  bytecode: PackageV1 | null;
 }
 
 type SandboxCompiler = (
@@ -65,15 +60,7 @@ export function runProgram(source: string, stdin: string): RunProgramResult {
     };
   }
 
-  // stdin travels as a replay input and is read line by line at run time by
-  // the `io.stdin.read_line` shim, so a loop sees successive lines.
-  //
-  // A v1 package carries its own `entry.exit` plan, so the process status is
-  // already the entry's; only a v0 package needs `main`'s return wired to an
-  // exit call.
-  const bytecode = isPackageV1(compileOutput.bytecode)
-    ? compileOutput.bytecode
-    : withPageExit(compileOutput.bytecode);
+  const bytecode = compileOutput.bytecode;
   const trace = runBytecode(bytecode, {
     fixtureId: "page-run",
     traceId: "trace:page-run",
@@ -107,130 +94,6 @@ function compileSource(source: string): CompileOutput {
     throw new Error("compile_to_sandbox_bytecode returned an invalid payload");
   }
   return parsed;
-}
-
-function withPageExit(
-  bytecode: SandboxBytecodePackage,
-): SandboxBytecodePackage {
-  const patched = {
-    ...bytecode,
-    capabilities: ensureCapability(bytecode.capabilities, {
-      id: PROCESS_EXIT_CAPABILITY,
-      disposition: "allowed",
-      reason: "main return value maps to the sandbox process exit code",
-      required_by: [PROCESS_EXIT_SYMBOL],
-    }),
-    stdlib_symbols: ensureStdlibSymbol(bytecode.stdlib_symbols, {
-      id: PROCESS_EXIT_SYMBOL,
-      module: "core",
-      name: "exit",
-      params: ["type:i64"],
-      result: "type:never",
-      capability: PROCESS_EXIT_CAPABILITY,
-      admission: "allowed",
-    }),
-    functions: bytecode.functions.map((fn) => ({
-      ...fn,
-      locals: fn.locals.map((local) => ({ ...local })),
-      blocks: fn.blocks.map((block) => ({
-        ...block,
-        params: [...block.params],
-        instructions: block.instructions.map((instruction) => ({
-          ...instruction,
-          args: instruction.args.map((arg) => ({ ...arg })),
-        })),
-        terminator: {
-          ...block.terminator,
-          args: block.terminator.args.map((arg) => ({ ...arg })),
-          ...(block.terminator.condition
-            ? { condition: { ...block.terminator.condition } }
-            : {}),
-        },
-      })),
-    })),
-  };
-  return withMainReturnExit(patched);
-}
-
-function withMainReturnExit(
-  bytecode: SandboxBytecodePackage,
-): SandboxBytecodePackage {
-  const entryModule = bytecode.module_graph.modules.find(
-    (module) => module.id === bytecode.module_graph.entry,
-  );
-  const mainId = entryModule?.functions.find(
-    (id) => bytecode.functions.find((fn) => fn.id === id)?.name === "main",
-  );
-  if (!mainId) {
-    return bytecode;
-  }
-  return {
-    ...bytecode,
-    functions: bytecode.functions.map((fn) => {
-      if (fn.id !== mainId || fn.result !== "type:i64") {
-        return fn;
-      }
-      return {
-        ...fn,
-        blocks: fn.blocks.map((block, index) => {
-          const lastInstruction = block.instructions.at(-1);
-          if (
-            index !== fn.blocks.length - 1 ||
-            block.terminator.op !== "trap" ||
-            block.terminator.trap_kind !== "internal_error" ||
-            !lastInstruction?.dst
-          ) {
-            return block;
-          }
-          return {
-            ...block,
-            instructions: [
-              ...block.instructions,
-              {
-                op: "call.stdlib",
-                dst: null,
-                args: [
-                  { kind: "symbol", value: PROCESS_EXIT_SYMBOL },
-                  { kind: "local", value: lastInstruction.dst },
-                ],
-                span: block.terminator.span,
-              } satisfies Instruction,
-            ],
-          };
-        }),
-      };
-    }),
-  };
-}
-
-function ensureCapability(
-  capabilities: SandboxBytecodePackage["capabilities"],
-  capability: SandboxBytecodePackage["capabilities"][number],
-): SandboxBytecodePackage["capabilities"] {
-  return capabilities.some((item) => item.id === capability.id)
-    ? capabilities.map((item) => ({
-        ...item,
-        required_by: [...item.required_by],
-      }))
-    : [
-        ...capabilities.map((item) => ({
-          ...item,
-          required_by: [...item.required_by],
-        })),
-        capability,
-      ];
-}
-
-function ensureStdlibSymbol(
-  symbols: SandboxBytecodePackage["stdlib_symbols"],
-  symbol: SandboxBytecodePackage["stdlib_symbols"][number],
-): SandboxBytecodePackage["stdlib_symbols"] {
-  return symbols.some((item) => item.id === symbol.id)
-    ? symbols.map((item) => ({ ...item, params: [...item.params] }))
-    : [
-        ...symbols.map((item) => ({ ...item, params: [...item.params] })),
-        symbol,
-      ];
 }
 
 enum SandboxExitCode {

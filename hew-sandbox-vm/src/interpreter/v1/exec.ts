@@ -610,6 +610,7 @@ class ExecutorV1 {
         this.invalidate(act, op.source);
         return;
       case "destroy_value":
+        this.closeValue(this.read(act, op.value), this.pipeFault(act));
         this.invalidate(act, op.value);
         return;
       case "begin_borrow":
@@ -642,9 +643,12 @@ class ExecutorV1 {
       case "load.borrow":
         act.env.set(op.dst, this.placeRef(act, op.place));
         return;
-      case "end_lifetime":
-        invalidateRef(this.placeRef(act, op.place));
+      case "end_lifetime": {
+        const ref = this.placeRef(act, op.place);
+        if (liveRef(ref)) this.closeValue(readRef(ref), this.pipeFault(act));
+        invalidateRef(ref);
         return;
+      }
 
       case "tuple.make":
         this.define(act, op.dst, {
@@ -2013,6 +2017,54 @@ class ExecutorV1 {
           start();
           this.completeShim(act, term, handle);
         }
+        return;
+      }
+      case "stream_start": {
+        const [target, payload] = args;
+        const fields = fieldsOf(payload!);
+        this.running = false;
+        const admit = () => {
+          const role = "id" in target! ? this.roles.get(target.id) : undefined;
+          if (role && role.owner.alive && !role.owner.children[role.child]) {
+            role.waiting.push(admit);
+            return;
+          }
+          const actor = this.actorFor(target!);
+          if (!actor.alive || actor.closing) {
+            this.closeValue(payload!, "stream producer is closed");
+            this.raiseFault(
+              act,
+              { kind: "panic", message: "stream producer is closed" },
+              term.unwind,
+            );
+          } else {
+            if (
+              actor.layout.mailbox_capacity !== undefined &&
+              actor.mailbox.length >= actor.layout.mailbox_capacity
+            ) {
+              actor.admission.push(admit);
+              return;
+            }
+            const handler = actor.layout.handlers.find(
+              (handler) =>
+                handler.message_id === operation.message && handler.streams,
+            );
+            if (!handler)
+              throw new Error("stream request has no producer handler");
+            actor.mailbox.push({
+              handler,
+              payload: fields,
+              reply: false,
+              complete: (_value, error) => {
+                if (error) this.closeValue(payload!, error);
+              },
+            });
+            this.dispatchActor(actor);
+            this.completeShim(act, term, UNIT);
+          }
+          this.scheduler.enqueue(act.context.id, () => this.runFrame(act));
+        };
+        admit();
         return;
       }
       case "call_start": {

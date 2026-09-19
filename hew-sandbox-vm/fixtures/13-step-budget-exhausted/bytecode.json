@@ -1,8 +1,9 @@
 {
+  "actors": [],
   "aggregates": [],
   "bytes": [],
   "closures": [],
-  "compiler_version": "hew-sandbox-wasm-0.6.0-rc4",
+  "compiler_version": "hew-wasm-0.6.0-rc4",
   "entry": {
     "exit": "unit",
     "function": 0
@@ -17,6 +18,7 @@
             {
               "dst": 0,
               "op": "const.int",
+              "own": "none",
               "span": {
                 "end": 24,
                 "start": 24
@@ -57,6 +59,7 @@
             {
               "dst": 1,
               "op": "const.bool",
+              "own": "none",
               "span": {
                 "end": 37,
                 "start": 37
@@ -104,6 +107,7 @@
             {
               "dst": 2,
               "op": "load.copy",
+              "own": "none",
               "place": 0,
               "span": {
                 "end": 56,
@@ -113,6 +117,7 @@
             {
               "dst": 3,
               "op": "const.int",
+              "own": "none",
               "span": {
                 "end": 60,
                 "start": 60
@@ -276,6 +281,8 @@
   "runtime_families": [],
   "schema_version": "hew.sandbox.bytecode.v1",
   "strings": [],
+  "structural_render": [],
+  "supervisors": [],
   "suspend_kinds": [],
   "value_capabilities": [],
   "variants": [],

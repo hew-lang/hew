@@ -1,0 +1,11 @@
+[[case]]
+id = "resource-set-lifecycle"
+intent = "A set owns affine resources, releases an incoming duplicate once, borrows membership/removal queries, and releases its remaining contents on clear."
+source = "cases/resource-set-lifecycle.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "close 12\nclose 11\nclose 22\nempty\nclose 15\n"
+stderr = ""
+exit = 0

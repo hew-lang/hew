@@ -1,0 +1,24 @@
+#[resource]
+type Connection {
+    id: i64,
+    name: string,
+}
+
+impl Connection {
+    fn close(consume self) {
+        println(self.name);
+        panic(f"{self.name} failed");
+    }
+}
+
+fn connection(id: i64) -> Connection {
+    Connection { id: id, name: f"close {id}" }
+}
+
+fn main() {
+    let _outer = connection(99);
+    var values: HashMap<string, Connection> = HashMap.new();
+    values.insert("connection", connection(1));
+    values.clear();
+    println("unreached");
+}

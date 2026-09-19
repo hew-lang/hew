@@ -954,7 +954,7 @@ pub fn collection_value_dependencies(
     variants: &[SemVariantShape],
     resources: &BTreeMap<ResolvedTy, crate::ResourceRelease>,
 ) -> Result<(), String> {
-    let (kind, arguments) = hew_types::runtime_call::collection_type_arguments(collection)
+    let (_, arguments) = hew_types::runtime_call::collection_type_arguments(collection)
         .ok_or_else(|| "collection value requires a canonical collection identity".to_string())?;
     let mut pending = arguments.to_vec();
     let mut seen = std::collections::BTreeSet::new();
@@ -962,7 +962,7 @@ pub fn collection_value_dependencies(
         if !seen.insert(ty.clone()) {
             continue;
         }
-        let row = facts
+        facts
             .get(&hew_types::TypeInstanceKey(ty.clone()))
             .ok_or_else(|| {
                 format!(
@@ -970,19 +970,9 @@ pub fn collection_value_dependencies(
                     ty.user_facing()
                 )
             })?;
-        // A Vec element and a HashMap value may have no clone: they are read
-        // by borrow and moved out by an owning removal. A key still needs one,
-        // which the checker's key capabilities already prove.
-        if !matches!(
-            kind,
-            hew_types::BuiltinType::Vec | hew_types::BuiltinType::HashMap
-        ) && row.clone == hew_types::CloneKind::None
-        {
-            return Err(format!(
-                "collection component `{}` has no semantic copy",
-                ty.user_facing()
-            ));
-        }
+        // Collections can own affine components. The selected operation's
+        // copy/borrow/move contract determines whether a copy is required;
+        // merely storing a component does not require one.
         if resources.contains_key(&ty) {
             // An opaque owner's exact release recipe replaces structural fields.
             continue;

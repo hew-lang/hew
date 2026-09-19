@@ -163,18 +163,18 @@ fn fault_releases(
                 releases.insert(op.id);
             }
         }
-        // A runtime operation that replaces a value its receiver owns releases
-        // what it displaced inside the call, so the fault is possible from its
-        // normal edge exactly as it is after an ordinary release.
+        // A runtime mutation can release receiver-typed contents inside the
+        // call, so its normal edge can own a fault just like an ordinary release.
         if let crate::SemTerminator::RtCall {
             id, family, args, ..
         } = &block.terminator
         {
-            let displaced = family
-                .displaced_argument()
-                .and_then(|index| args.get(index))
+            let receiver = family
+                .releases_receiver_contents()
+                .then_some(args)
+                .and_then(|args| args.first())
                 .and_then(|arg| types.get(&arg.operand.value));
-            if displaced.is_some_and(release_may_fault) {
+            if receiver.is_some_and(release_may_fault) {
                 releases.insert(*id);
             }
         }

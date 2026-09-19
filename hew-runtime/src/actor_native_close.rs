@@ -12,6 +12,7 @@ use std::sync::Arc;
 /// Phase 2 publishes the result after either owner finishes.
 #[derive(Debug, Default)]
 pub struct NativeActorCompletion {
+    pub(crate) cleanup: super::cleanup::Cleanup,
     crash: Option<crate::actor::HewNativeCrashFn>,
     crash_action: AtomicI32,
     phase: AtomicU8,
@@ -35,6 +36,10 @@ impl NativeActorCompletion {
 
     pub(crate) fn is_finished(&self) -> bool {
         self.phase.load(Ordering::Acquire) == 2
+    }
+
+    pub(crate) fn cleanup_in_progress(&self) -> bool {
+        self.phase.load(Ordering::Acquire) == 1
     }
 
     /// Publish after the unique terminal owner has released all target state.
@@ -70,6 +75,12 @@ pub(crate) unsafe fn finish_native_terminal(actor: &HewActor) {
         actor.dispatch_ownership,
         HewDispatchOwnership::UniqueEnvelope
     );
+    if completion.cleanup.needs_terminal_cleanup() {
+        // SAFETY: the terminal claim retains state until scheduler cleanup
+        // completes; raw actor reclamation must observe this pending claim.
+        unsafe { completion.cleanup.begin_terminal(actor, state) };
+        return;
+    }
     if state == HewActorState::Crashed as i32 {
         if let Some(hook) = completion.crash {
             let code = actor.error_code.load(Ordering::Acquire);

@@ -319,6 +319,33 @@ pub unsafe extern "C" fn hew_stream_operation_free_native(operation: *mut HewNat
     drop(unsafe { Box::from_raw(operation) });
 }
 
+/// Consume a quiescent operation, closing an untransferred element before its
+/// operation and producer references are released.
+/// # Safety
+/// `operation` is uniquely owned and its producer cleanup status is ready.
+#[no_mangle]
+pub unsafe extern "C" fn hew_stream_operation_release_begin(
+    operation: *mut HewNativeStream,
+) -> *mut crate::release_walker::HewReleaseCursor {
+    use crate::release_walker::{HewReleaseCursor, ReleaseItem};
+    unsafe fn free_operation(owner: *mut c_void) {
+        // SAFETY: the cursor has consumed the detached envelope and owns this box.
+        unsafe { hew_stream_operation_free_native(owner.cast()) };
+    }
+    // SAFETY: quiescence excludes producers borrowing the operation's storage.
+    let value = unsafe { (*operation).envelope.take() };
+    // SAFETY: the operation retains its exact descriptor through this transfer.
+    let layout = unsafe { (*operation).layout };
+    HewReleaseCursor::envelopes(
+        value.into_iter().collect(),
+        Some(layout),
+        ReleaseItem::Storage {
+            owner: operation.cast(),
+            free: free_operation,
+        },
+    )
+}
+
 /// A stream with no queue core is a file or a socket, and both are manifest
 /// rejects on wasm32. Reaching here means a lowering defect rather than a
 /// program outcome, so the module fails closed.

@@ -609,6 +609,18 @@ pub(crate) fn activate_queued_actor(actor: *mut HewActor) {
     // The CAS won: keep ownership for the rest of this frame.
     let _activation_ownership = activation_ownership;
 
+    if a.checked_invocation.load(Ordering::Acquire).is_null()
+        || a.native_completion
+            .as_ref()
+            .is_some_and(|completion| completion.cleanup.is_driving())
+    {
+        // SAFETY: this worker owns the Running activation. Cleanup resumes
+        // through the same incarnation wake protocol before another handler.
+        if unsafe { crate::actor_native::cleanup::drive(a) } {
+            return;
+        }
+    }
+
     // Test-only rendezvous at the exact CAS->marker-gap location: the actor is
     // now `Running` and trap-stealable. A regression test fires an external trap
     // HERE and asserts `dispatch_active` is already set (claimed before the CAS),
@@ -1359,12 +1371,17 @@ pub(crate) fn activate_queued_actor(actor: *mut HewActor) {
     run_activate_pre_reenqueue_hook(actor);
 
     // After processing: check for remaining messages.
-    let has_more = if mailbox.is_null() {
-        false
-    } else {
-        // SAFETY: mailbox pointer is valid.
-        unsafe { hew_mailbox_has_messages(mailbox) != 0 }
-    };
+    let cleanup_ready = a
+        .native_completion
+        .as_ref()
+        .is_some_and(|completion| completion.cleanup.has_work());
+    let has_more = cleanup_ready
+        || if mailbox.is_null() {
+            false
+        } else {
+            // SAFETY: mailbox pointer is valid.
+            unsafe { hew_mailbox_has_messages(mailbox) != 0 }
+        };
 
     if has_more {
         // Budget exhausted, more work pending → RUNNING → RUNNABLE, re-enqueue.
@@ -1397,7 +1414,8 @@ pub(crate) fn activate_queued_actor(actor: *mut HewActor) {
             // CAS IDLE→RUNNABLE would have failed, so we must re-check.
             if !mailbox.is_null()
                 // SAFETY: mailbox pointer is valid for the actor's lifetime.
-                && unsafe { hew_mailbox_has_messages(mailbox) != 0 }
+                && (unsafe { hew_mailbox_has_messages(mailbox) != 0 }
+                || a.native_completion.as_ref().is_some_and(|completion| completion.cleanup.has_work()))
             {
                 // Messages appeared → IDLE → RUNNABLE, re-enqueue.
                 if a.actor_state
@@ -1792,6 +1810,13 @@ unsafe fn finish_failed_resume(
 /// the mailbox still has work, else `Running → Idle` with the standard
 /// idle→runnable / idle→stopped rechecks. Factored out so the resume re-entry
 /// and the message loop share one settle path.
+/// Settle a completed runtime-owned cleanup turn through ordinary requeue rules.
+/// # Safety
+/// The scheduler owns the actor's Running activation.
+pub(crate) unsafe fn settle_native_cleanup(actor: *mut HewActor) {
+    settle_after_activation(actor, 0);
+}
+
 fn settle_after_activation(actor: *mut HewActor, msgs_processed: u32) {
     // SAFETY: caller owns `actor` via the Running CAS.
     let a = unsafe { &*actor };
@@ -1866,12 +1891,17 @@ fn settle_after_activation(actor: *mut HewActor, msgs_processed: u32) {
 
     actor::update_hibernation_state(a, msgs_processed);
 
-    let has_more = if mailbox.is_null() {
-        false
-    } else {
-        // SAFETY: mailbox pointer is valid for the actor's lifetime.
-        unsafe { hew_mailbox_has_messages(mailbox) != 0 }
-    };
+    let cleanup_ready = a
+        .native_completion
+        .as_ref()
+        .is_some_and(|completion| completion.cleanup.has_work());
+    let has_more = cleanup_ready
+        || if mailbox.is_null() {
+            false
+        } else {
+            // SAFETY: mailbox pointer is valid for the actor's lifetime.
+            unsafe { hew_mailbox_has_messages(mailbox) != 0 }
+        };
 
     if has_more {
         if a.actor_state
@@ -1897,7 +1927,8 @@ fn settle_after_activation(actor: *mut HewActor, msgs_processed: u32) {
     {
         if !mailbox.is_null()
             // SAFETY: mailbox pointer is valid for the actor's lifetime.
-            && unsafe { hew_mailbox_has_messages(mailbox) != 0 }
+            && (unsafe { hew_mailbox_has_messages(mailbox) != 0 }
+                || a.native_completion.as_ref().is_some_and(|completion| completion.cleanup.has_work()))
         {
             if a.actor_state
                 .compare_exchange(

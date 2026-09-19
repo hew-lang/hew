@@ -326,6 +326,177 @@ impl HewReleaseCursor {
             current_layout: None,
         }))
     }
+
+    pub(crate) unsafe fn payload(
+        slot: *mut c_void,
+        size: usize,
+        start: hew_cabi::value::HewValueReleaseStart,
+        free_storage: bool,
+    ) -> *mut Self {
+        unsafe fn free_payload(slot: *mut c_void) {
+            // SAFETY: the caller transferred a sized-block payload allocation.
+            unsafe { crate::mem::buf_free(slot) };
+        }
+        let mut pending = Vec::new();
+        if free_storage {
+            pending.push(ReleaseItem::Storage {
+                owner: slot,
+                free: free_payload,
+            });
+        }
+        if !slot.is_null() {
+            pending.push(ReleaseItem::Value {
+                slot,
+                layout: HewValueLayout {
+                    size,
+                    align: 1,
+                    ownership_kind: hew_cabi::value::HewTypeOwnershipKind::LayoutManaged,
+                    clone_fn: None,
+                    drop_fn: None,
+                    visit_close: None,
+                    release_start: Some(start),
+                },
+            });
+        }
+        Self::new(pending)
+    }
+
+    pub(crate) fn envelopes(
+        values: Vec<Vec<u8>>,
+        layout: Option<HewValueLayout>,
+        after: ReleaseItem,
+    ) -> *mut Self {
+        unsafe fn free_envelope(owner: *mut c_void) {
+            // SAFETY: each item transfers one Box<Vec<u8>> after its value closes.
+            drop(unsafe { Box::from_raw(owner.cast::<Vec<u8>>()) });
+        }
+        let mut pending = vec![after];
+        for value in values.into_iter().rev() {
+            let mut value = Box::new(value);
+            let slot = value.as_mut_ptr().cast();
+            if let Some(layout) = layout {
+                if layout.ownership_kind == hew_cabi::value::HewTypeOwnershipKind::LayoutManaged
+                    && value.len() != layout.size
+                {
+                    std::process::abort();
+                }
+            }
+            pending.push(ReleaseItem::Storage {
+                owner: Box::into_raw(value).cast(),
+                free: free_envelope,
+            });
+            if let Some(layout) = layout {
+                if layout.ownership_kind == hew_cabi::value::HewTypeOwnershipKind::LayoutManaged {
+                    pending.push(ReleaseItem::Value { slot, layout });
+                }
+            }
+        }
+        Self::new(pending)
+    }
+}
+
+/// A runtime operation's consuming callback driver. Kept boxed because a
+/// pending generated frame retains the address of its child fault output.
+#[derive(Debug)]
+pub(crate) struct ReleaseDriver {
+    cursor: *mut HewReleaseCursor,
+    state: *mut crate::coro_state::HewCoroState,
+    frame: *mut c_void,
+    child_fault: *mut crate::fault::HewFault,
+    fault: *mut crate::fault::HewFault,
+    done: bool,
+}
+
+impl ReleaseDriver {
+    pub(crate) fn new(cursor: *mut HewReleaseCursor) -> Box<Self> {
+        Box::new(Self {
+            cursor,
+            state: ptr::null_mut(),
+            frame: ptr::null_mut(),
+            child_fault: ptr::null_mut(),
+            fault: ptr::null_mut(),
+            done: cursor.is_null(),
+        })
+    }
+
+    /// # Safety
+    /// The driver remains boxed and uniquely driven through completion. The
+    /// invocation is live through this poll and supplies its retained waker.
+    pub(crate) unsafe fn poll(&mut self, parent: *mut crate::coro_state::HewCoroState) -> bool {
+        use crate::coro_state::*;
+        // SAFETY: this owner serializes every callback and retains each slot
+        // until its child frame has completed and been destroyed.
+        unsafe {
+            while !self.done {
+                if !self.state.is_null() {
+                    if hew_coro_state_status(self.state) == CoroStatus::Pending as i32 {
+                        if self.frame.is_null() {
+                            std::process::abort();
+                        }
+                        crate::cont::hew_cont_resume(self.frame);
+                    }
+                    if hew_coro_state_status(self.state) == CoroStatus::Pending as i32 {
+                        return false;
+                    }
+                    if !self.frame.is_null() {
+                        if !crate::cont::hew_cont_done(self.frame) {
+                            std::process::abort();
+                        }
+                        crate::cont::hew_cont_destroy(self.frame);
+                        self.frame = ptr::null_mut();
+                    }
+                    hew_coro_state_free(self.state);
+                    self.state = ptr::null_mut();
+                    self.fault = crate::fault::hew_fault_combine(
+                        self.fault,
+                        std::mem::take(&mut self.child_fault),
+                    );
+                }
+                let slot = hew_release_next(self.cursor);
+                if slot.is_null() {
+                    hew_release_finish(self.cursor);
+                    self.cursor = ptr::null_mut();
+                    self.done = true;
+                    break;
+                }
+                let layout = *hew_release_layout(self.cursor);
+                if let Some(start) = layout.release_start {
+                    self.state = hew_coro_state_cleanup_child(parent);
+                    if self.state.is_null() {
+                        std::process::abort();
+                    }
+                    self.frame = start(slot, (&raw mut self.child_fault).cast(), self.state.cast());
+                    if hew_coro_state_status(self.state) == CoroStatus::Pending as i32 {
+                        return false;
+                    }
+                } else if let Some(drop) = layout.drop_fn {
+                    arm_release_sink();
+                    drop(slot);
+                    if let Some((_, fault)) = disarm_release_sink() {
+                        self.fault = crate::fault::hew_fault_combine(self.fault, fault);
+                    }
+                }
+            }
+            true
+        }
+    }
+
+    pub(crate) fn take_fault(&mut self) -> *mut crate::fault::HewFault {
+        if !self.done {
+            std::process::abort();
+        }
+        std::mem::take(&mut self.fault)
+    }
+}
+
+impl Drop for ReleaseDriver {
+    fn drop(&mut self) {
+        if !self.done {
+            std::process::abort();
+        }
+        // SAFETY: a completed driver owns its untransferred diagnostic.
+        unsafe { crate::fault::hew_fault_drop(self.fault) };
+    }
 }
 
 /// Transfer a vector and its initialized values to a consuming traversal.

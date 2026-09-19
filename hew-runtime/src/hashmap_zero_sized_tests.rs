@@ -352,8 +352,9 @@ fn empty_key_pending_probe_abandonment_keeps_owner() {
     use hew_cabi::map::HewMapProbeStatus;
     let (key_layout, unit) = layouts(64, true);
     let key = AlignedUnit;
-    // Pending hash and equality callbacks only borrow the aligned empty key.
-    // Abandonment must not release the owner the map already holds.
+    // SAFETY: aligned input storage and the map outlive each borrowed probe;
+    // every callback is drained before the probe or map is freed. Abandonment
+    // must not release the owner the map already holds.
     unsafe {
         let map = hew_hashmap_new_with_layout(&raw const key_layout, &raw const unit);
         assert!(success(|out, fault| hew_hashmap_insert_clone_layout(

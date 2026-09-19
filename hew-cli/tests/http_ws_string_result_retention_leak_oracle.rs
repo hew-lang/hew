@@ -11,7 +11,10 @@
 
 mod support;
 
-use support::leak_slope::assert_frame_slope_below_tolerance_exact_lines;
+use std::process::Command;
+
+use support::leak_slope::{assert_frame_slope_below_tolerance_exact_lines, compile_to_native};
+use support::{describe_output, require_codegen, run_bounded_command};
 
 fn http_request_source(frames: usize) -> String {
     format!(
@@ -192,21 +195,21 @@ fn main() {{
             // Calling it inline would leave nobody to accept or drain.
             scope {{
                 let _driver = fork drive_client(client);
-            let connection = server.accept();
-            for _ in 0..{frames} {{
-                let message = connection.recv();
-                println(message.text().len());
-                message.close();
-            }}
-            match client.finished() {{
-                .Ok(done) => {{
-                    if done != 1 {{
-                        panic("WebSocket retention client stopped early");
-                    }}
-                }},
-                .Err(_) => panic("WebSocket retention client failed"),
-            }}
-            connection.close();
+                let connection = server.accept();
+                for _ in 0..{frames} {{
+                    let message = connection.recv();
+                    println(message.text().len());
+                    message.close();
+                }}
+                match client.finished() {{
+                    .Ok(done) => {{
+                        if done != 1 {{
+                            panic("WebSocket retention client stopped early");
+                        }}
+                    }},
+                    .Err(_) => panic("WebSocket retention client failed"),
+                }}
+                connection.close();
             }}
             server.close();
         }},
@@ -237,6 +240,20 @@ fn main() {{
 }}
 "#
     )
+}
+
+#[test]
+fn websocket_messages_complete_across_actor_round_trip() {
+    require_codegen();
+    let dir = tempfile::tempdir().expect("round-trip directory");
+    let bin = compile_to_native(
+        &websocket_message_source(50),
+        dir.path(),
+        "websocket_round_trip",
+    );
+    let output = run_bounded_command(Command::new(&bin), "WebSocket actor round trip");
+    assert!(output.status.success(), "{}", describe_output(&output));
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "13\n".repeat(50));
 }
 
 #[cfg_attr(

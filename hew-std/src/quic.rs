@@ -292,7 +292,7 @@ fn resolve_connect_addr(addr: &str) -> Result<SocketAddr, String> {
 /// network: the handle is absent, so the call never became a transport
 /// attempt and has no transport error to report. Kept distinct from `-1`,
 /// which is a real failure with a reason in the handle's `last_error`.
-pub const HEW_QUIC_ERR_ABSENT_HANDLE: c_int = -2;
+pub const HEW_QUIC_ERR_ABSENT_HANDLE: c_int = -3;
 
 fn build_runtime() -> Result<Arc<Runtime>, String> {
     tokio::runtime::Builder::new_multi_thread()
@@ -1245,6 +1245,7 @@ pub unsafe extern "C" fn hew_quic_stream_recv(stream: *mut HewQuicStream) -> Byt
 /// - -2 on deadline expiry. The future is dropped at the next `.await`,
 ///   releasing the `SendStream` guard; the stream's `last_error` reflects
 ///   the timeout for `observe()` consumers.
+/// - -3 when the stream was never opened
 ///
 /// # Safety
 ///
@@ -1257,7 +1258,7 @@ pub unsafe extern "C" fn hew_quic_stream_send_timeout(
     deadline_ms: i32,
 ) -> c_int {
     if stream.is_null() {
-        return -1;
+        return HEW_QUIC_ERR_ABSENT_HANDLE;
     }
     // SAFETY: `stream` is non-null and must come from this module per caller
     // contract.
@@ -1334,6 +1335,7 @@ pub unsafe extern "C" fn hew_quic_stream_send_timeout(
 /// - 0 on success (`*out` holds received bytes or an empty triple for EOF)
 /// - -1 on receive error; `*out` is unchanged
 /// - -2 on deadline expiry; `*out` is unchanged
+/// - -3 when the stream was never opened; `*out` is unchanged
 ///
 /// # Safety
 ///
@@ -1345,7 +1347,10 @@ pub unsafe extern "C" fn hew_quic_stream_recv_timeout(
     deadline_ms: i32,
     out: *mut BytesTriple,
 ) -> c_int {
-    if stream.is_null() || out.is_null() {
+    if stream.is_null() {
+        return HEW_QUIC_ERR_ABSENT_HANDLE;
+    }
+    if out.is_null() {
         return -1;
     }
     // SAFETY: `stream` is non-null and must come from this module per caller
@@ -1438,7 +1443,8 @@ fn set_last_recv_status(status: c_int) {
 #[no_mangle]
 /// Hew-friendly `recv_timeout`: returns a `BytesTriple` (empty on timeout or
 /// error). Hew callers query [`hew_quic_stream_last_recv_status`] to
-/// distinguish success/EOF (`0`), transport error (`-1`), and timeout (`-2`).
+/// distinguish success/EOF (`0`), transport error (`-1`), timeout (`-2`),
+/// and an absent stream (`-3`).
 ///
 /// # Safety
 ///
@@ -1451,17 +1457,8 @@ pub unsafe extern "C" fn hew_quic_stream_recv_timeout_hew(
     let mut out = empty_bytes_triple();
     // SAFETY: forwarded contract. `&raw mut out` is a valid writable slot.
     let status = unsafe { hew_quic_stream_recv_timeout(stream, deadline_ms, &raw mut out) };
-    match status {
-        0 => out,
-        -2 => {
-            set_last_recv_status(-2);
-            empty_bytes_triple()
-        }
-        _ => {
-            set_last_recv_status(-1);
-            empty_bytes_triple()
-        }
-    }
+    set_last_recv_status(status);
+    out
 }
 
 #[no_mangle]
@@ -1474,7 +1471,8 @@ pub extern "C" fn hew_quic_stream_last_recv_timed_out() -> i32 {
 
 /// Return the status from the last Hew-friendly timed receive on this thread.
 ///
-/// `0` means data or EOF, `-1` means transport failure, and `-2` means timeout.
+/// `0` means data or EOF, `-1` means transport failure, `-2` means timeout,
+/// and `-3` means the stream was never opened.
 #[no_mangle]
 pub extern "C" fn hew_quic_stream_last_recv_status() -> c_int {
     LAST_RECV_STATUS.with(std::cell::Cell::get)
@@ -1482,7 +1480,7 @@ pub extern "C" fn hew_quic_stream_last_recv_status() -> c_int {
 
 #[no_mangle]
 /// Hew-friendly `send_timeout`: returns 0 on success, -1 on error, -2 on
-/// timeout (same status convention as the cross-language ABI; the value is
+/// timeout, and -3 for an absent stream (same status convention as the ABI; the value is
 /// stable for Hew callers via INTERNAL-ABI).
 ///
 /// # Safety
@@ -1767,11 +1765,14 @@ mod tests {
     use hew_runtime::bytes::hew_bytes_drop;
 
     #[test]
-    fn timed_receive_transport_failure_has_distinct_status() {
+    fn timed_receive_absent_stream_is_distinct_from_timeout() {
         // SAFETY: null streams are explicitly rejected by the ABI.
         let payload = unsafe { hew_quic_stream_recv_timeout_hew(std::ptr::null_mut(), 10) };
         assert_eq!(payload.len, 0);
-        assert_eq!(hew_quic_stream_last_recv_status(), -1);
+        assert_eq!(
+            hew_quic_stream_last_recv_status(),
+            HEW_QUIC_ERR_ABSENT_HANDLE
+        );
         assert_eq!(hew_quic_stream_last_recv_timed_out(), 0);
     }
 
@@ -2480,7 +2481,7 @@ mod tests {
     fn conn_disconnect_null() {
         // SAFETY: null is explicitly handled.
         let rc = unsafe { hew_quic_conn_disconnect(std::ptr::null_mut()) };
-        assert_eq!(rc, -1);
+        assert_eq!(rc, HEW_QUIC_ERR_ABSENT_HANDLE);
     }
 
     #[test]
@@ -2501,7 +2502,7 @@ mod tests {
     fn stream_send_null() {
         // SAFETY: null is explicitly handled.
         let rc = unsafe { hew_quic_stream_send(std::ptr::null_mut(), std::ptr::null()) };
-        assert_eq!(rc, -1);
+        assert_eq!(rc, HEW_QUIC_ERR_ABSENT_HANDLE);
     }
 
     #[test]
@@ -2515,14 +2516,14 @@ mod tests {
     fn stream_finish_null() {
         // SAFETY: null is explicitly handled.
         let rc = unsafe { hew_quic_stream_finish(std::ptr::null_mut()) };
-        assert_eq!(rc, -1);
+        assert_eq!(rc, HEW_QUIC_ERR_ABSENT_HANDLE);
     }
 
     #[test]
     fn stream_stop_null() {
         // SAFETY: null is explicitly handled.
         let rc = unsafe { hew_quic_stream_stop(std::ptr::null_mut(), 0) };
-        assert_eq!(rc, -1);
+        assert_eq!(rc, HEW_QUIC_ERR_ABSENT_HANDLE);
     }
 
     #[test]

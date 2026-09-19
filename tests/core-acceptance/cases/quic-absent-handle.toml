@@ -1,0 +1,10 @@
+[[case]]
+id = "quic-absent-handle"
+intent = "Failed connection setup leaves absent handles whose send, receive, finish, stop and disconnect operations report InvalidArgument without inventing errno zero or a timeout."
+source = "cases/quic-absent-handle.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "absent QUIC handles rejected\n"
+exit = 0

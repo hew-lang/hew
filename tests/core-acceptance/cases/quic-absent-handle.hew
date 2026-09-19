@@ -1,0 +1,30 @@
+import std.net;
+
+import std.net.quic;
+
+fn require_absent(result: Result<(), net.NetError>, message: string) {
+    match result {
+        .Err(.InvalidArgument(reason)) => assert(reason == message),
+        _ => panic("an absent QUIC handle must report why it cannot be used"),
+    }
+}
+
+fn main() {
+    let endpoint = quic.new_client();
+    let connection = endpoint.connect("not-an-address", "localhost");
+    assert(endpoint.observe().last_error.contains("parse failure"));
+    let stream = connection.open_stream();
+    let absent = "this QUIC stream was never opened";
+    require_absent(stream.send_string("unreachable"), absent);
+    require_absent(stream.send_timeout(b"unreachable", 10), absent);
+    match stream.recv_timeout(10) {
+        .Err(.InvalidArgument(reason)) => assert(reason == absent),
+        _ => panic("an absent QUIC stream must not read as EOF or timeout"),
+    }
+    require_absent(stream.finish(), absent);
+    require_absent(stream.stop(0), absent);
+    stream.close();
+    require_absent(connection.disconnect(), "this QUIC connection was never established");
+    endpoint.close();
+    println("absent QUIC handles rejected");
+}

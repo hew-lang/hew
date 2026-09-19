@@ -434,7 +434,7 @@ pub enum CloneAction {
     Aggregate(PhysicalAggregateId),
     Variant(PhysicalVariantId),
     Vector(PhysicalVectorId),
-    /// Fixed-array element storage with reverse-order cleanup.
+    /// Fixed-array element storage with index-order cleanup.
     Array(PhysicalVectorId),
     Map(PhysicalMapId),
     Set(PhysicalSetId),
@@ -462,7 +462,7 @@ pub enum DestroyAction {
     Aggregate(PhysicalAggregateId),
     Variant(PhysicalVariantId),
     Vector(PhysicalVectorId),
-    /// Fixed-array element storage with reverse-order cleanup.
+    /// Fixed-array element storage with index-order cleanup.
     Array(PhysicalVectorId),
     Map(PhysicalMapId),
     Set(PhysicalSetId),
@@ -6161,6 +6161,7 @@ fn verify_initialization(
                 apply_operation(module, function, borrows, operation, &mut state, block_id)?;
             }
             for (target, successor) in terminator_successors(
+                module,
                 function,
                 borrows,
                 &block.terminator,
@@ -6689,6 +6690,27 @@ fn apply_operation(
     Ok(())
 }
 
+/// The release a runtime operation performs on the value it displaces.
+///
+/// An operation whose family names a displaced argument replaces something its
+/// receiver already owns and releases it inside the call, so that recipe's
+/// destroy action is the release that can fill the caller's fault record.
+fn displaced_release(
+    module: &PhysicalModule,
+    action: &PhysicalRuntimeAction,
+) -> Result<Option<DestroyAction>, PhysicalError> {
+    if action.family.displaced_argument().is_none() {
+        return Ok(None);
+    }
+    Ok(match action.carrier {
+        PhysicalRuntimeCarrier::SharedHandle(glue) => shared_glue(module, glue)?.payload.destroy,
+        PhysicalRuntimeCarrier::Vector { glue, .. } => vector_glue(module, glue)?.element.destroy,
+        PhysicalRuntimeCarrier::Map { glue, .. } => map_glue(module, glue)?.value.destroy,
+        PhysicalRuntimeCarrier::Set { glue, .. } => set_glue(module, glue)?.element.destroy,
+        _ => None,
+    })
+}
+
 /// Arm the frame's fault slot for a release that can run an authored `close`.
 ///
 /// The release is the frame's fault edge (D516): a failing close fills the
@@ -6854,6 +6876,7 @@ fn call_successors(
     reason = "the terminator transfer is the complete status/result/fault initialization contract"
 )]
 fn terminator_successors(
+    module: &PhysicalModule,
     function: &PhysicalFunction,
     borrows: &BorrowDependents,
     terminator: &PhysicalTerminator,
@@ -7507,6 +7530,13 @@ fn terminator_successors(
                     block,
                     "runtime call result",
                 )?;
+            }
+            // The call released what it displaced, so from its normal edge the
+            // frame may own a fault and SIR owes the cleanup dispatch.
+            if displaced_release(module, action)?
+                .is_some_and(|release| module.releases.raises_fault(release))
+            {
+                normal_state.fault = FaultState::MaybeActive;
             }
             // A never-returning action ends the path; its normal edge is only
             // the structural unreachable continuation.
@@ -10730,6 +10760,56 @@ mod tests {
     }
 
     #[test]
+    fn displaced_release_cannot_bypass_its_fault_dispatch() {
+        let semantic = lower_source(
+            r#"
+            #[resource]
+            type Connection { id: i64 }
+            impl Connection {
+                fn close(consume self) { panic("close failed"); }
+            }
+            fn main() {
+                var values: Vec<Connection> = [];
+                values.push(Connection { id: 1 });
+                values.set(0, Connection { id: 2 });
+                println("unreached");
+            }
+            "#,
+        );
+        let mut physical = lower_physical_module(&semantic, target_for_inventory(&semantic))
+            .expect("displaced release lowers with fault cleanup")
+            .into_unverified();
+        let function = physical
+            .functions
+            .iter_mut()
+            .find(|function| {
+                function.blocks.iter().any(|block| {
+                    matches!(
+                        block.terminator,
+                        PhysicalTerminator::RuntimeCall {
+                            action: PhysicalRuntimeAction {
+                                family: RuntimeCallFamily::Vector(hew_types::VecValueOp::Set),
+                                ..
+                            },
+                            ..
+                        }
+                    )
+                })
+            })
+            .expect("vector set caller");
+        // Removing the dispatch must not let a failing close resume source
+        // execution on the runtime call's normal successor.
+        for block in &mut function.blocks {
+            if let PhysicalTerminator::CleanupDispatch { normal, .. } = &block.terminator {
+                block.terminator = PhysicalTerminator::Goto(normal.clone());
+            }
+        }
+        let error = verify_physical_module(&physical)
+            .expect_err("the caller owns a possible displaced-release fault");
+        assert!(error.message.contains("fault"), "{}", error.message);
+    }
+
+    #[test]
     fn verifier_rejects_propagating_an_uninitialized_fault() {
         let verified = lower_physical_module(&module_with_return(), target()).expect("lower");
         let mut physical = verified.into_unverified();
@@ -12011,8 +12091,8 @@ mod tests {
         let mut physical = lower_physical_module(&module, target_for_inventory(&module))
             .unwrap()
             .into_unverified();
-        let function = &mut physical.functions[0];
-        let block = vector_block(function, VecValueOp::Index).clone();
+        let block = vector_block(&mut physical.functions[0], VecValueOp::Index).clone();
+        let function = &physical.functions[0];
         let PhysicalTerminator::RuntimeCall {
             result: Some(result),
             failure: Some(failure),
@@ -12033,6 +12113,7 @@ mod tests {
             defers: defer::State::default(),
         };
         let successors = terminator_successors(
+            &physical,
             function,
             &BorrowDependents::of(function),
             &block.terminator,
@@ -12149,6 +12230,7 @@ mod tests {
             };
             state.slots[result.0 as usize] = InitState::Uninitialized;
             let successors = terminator_successors(
+                &module,
                 function,
                 &BorrowDependents::of(function),
                 &block.terminator,

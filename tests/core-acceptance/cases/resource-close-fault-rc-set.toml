@@ -1,0 +1,11 @@
+[[case]]
+id = "resource-close-fault-rc-set"
+intent = "A failing close on the payload Rc.set displaces is the frame's failure, and the frame still releases the handle it holds."
+source = "cases/resource-close-fault-rc-set.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "working\nclose 1\nclose 2\n"
+stderr = "hew: failure: UserPanic (212): close 1 failed\nhew: secondary failure: UserPanic (212): close 2 failed\n"
+exit = 1

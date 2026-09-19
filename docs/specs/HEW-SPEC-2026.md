@@ -2308,6 +2308,11 @@ An actor's terminal sequence is §9 item 9. This order is observable, because a
 `close` body may run user code, and a failing `close` does not stop the
 releases behind it.
 
+An operation that replaces a value its receiver owns - `Rc.set`, a vector's
+`set`, a fixed array's indexed assignment - releases what it displaced inside
+the call, and that release follows the same rule: a `close` that fails there is
+the frame's fault and the frame goes on releasing what it still owns.
+
 ---
 
 ### 3.8 Generics and Monomorphization

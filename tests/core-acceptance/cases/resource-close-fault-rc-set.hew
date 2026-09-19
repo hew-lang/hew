@@ -1,0 +1,20 @@
+// `Rc.set` replaces the payload the handle owns and releases what it displaced
+// inside the call. A `close` that fails there is the frame's failure like any
+// other release: the frame still releases the handle it holds, and the later
+// failure joins as a secondary line.
+#[resource]
+type Conn { fd: i64, }
+
+impl Conn {
+    fn close(consume self) {
+        println(f"close {self.fd}");
+        panic(f"close {self.fd} failed");
+    }
+}
+
+fn main() {
+    let shared = Rc.new(Conn { fd: 1 });
+    println("working");
+    shared.set(Conn { fd: 2 });
+    println("unreached");
+}

@@ -163,6 +163,21 @@ fn fault_releases(
                 releases.insert(op.id);
             }
         }
+        // A runtime operation that replaces a value its receiver owns releases
+        // what it displaced inside the call, so the fault is possible from its
+        // normal edge exactly as it is after an ordinary release.
+        if let crate::SemTerminator::RtCall {
+            id, family, args, ..
+        } = &block.terminator
+        {
+            let displaced = family
+                .displaced_argument()
+                .and_then(|index| args.get(index))
+                .and_then(|arg| types.get(&arg.operand.value));
+            if displaced.is_some_and(release_may_fault) {
+                releases.insert(*id);
+            }
+        }
     }
     releases
 }
@@ -1119,6 +1134,14 @@ impl<'a> Flow<'a> {
                         ..
                     }
                 ) {
+                    // A call that released a value it displaced may own a
+                    // fault from here; its cleanup dispatch decides whether
+                    // source execution resumes.
+                    if let SemTerminator::RtCall { id: call, .. } = &block.terminator {
+                        if self.fault_releases.contains(call) {
+                            returned.fault |= LIVE;
+                        }
+                    }
                     successors.extend(self.edge(id, normal, returned, emit));
                 }
                 if let CallUnwind::Cleanup(edge) = unwind {
@@ -2278,6 +2301,43 @@ mod tests {
         let clean = cleanup_analysis_with_release(blocks(), &|_| false);
         assert!(clean.violations.is_empty(), "{:?}", clean.violations);
         let fallible = cleanup_analysis_with_release(blocks(), &|_| true);
+        assert!(
+            fallible
+                .violations
+                .iter()
+                .any(|violation| violation.reason.contains("fault")),
+            "{:?}",
+            fallible.violations
+        );
+    }
+
+    /// An operation that replaces a value its receiver owns releases what it
+    /// displaced inside the call, so its normal edge carries the same possible
+    /// fault an ordinary release does and owes the same dispatch.
+    #[test]
+    fn a_runtime_call_that_releases_what_it_displaced_cannot_resume_a_normal_return() {
+        let blocks = || {
+            vec![
+                block(
+                    0,
+                    vec![local_end()],
+                    SemTerminator::RtCall {
+                        id: OpId(30),
+                        family: hew_types::RuntimeCallFamily::RcSet,
+                        args: vec![boundary(99), boundary(99)],
+                        result: crate::CallResult::Unit,
+                        normal: edge(1, &[]),
+                        unwind: crate::CallUnwind::NotApplicable,
+                    },
+                ),
+                block(1, vec![], done()),
+            ]
+        };
+        let clean = cleanup_analysis_with_release(blocks(), &|_| false);
+        assert!(clean.violations.is_empty(), "{:?}", clean.violations);
+        // Only the displaced argument's type can fault here, so the violation
+        // is the call's own and not the local release beside it.
+        let fallible = cleanup_analysis_with_release(blocks(), &|ty| *ty == ResolvedTy::Bool);
         assert!(
             fallible
                 .violations

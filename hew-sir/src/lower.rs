@@ -8430,6 +8430,15 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             .resolve_types(&source_types, &self.ty(&expr.ty))
             .map_err(|error| format!("runtime operation {family:?}: {error}"))?;
         let parameter_types = &instantiated.arguments;
+        // An operation that replaces a value its receiver owns releases what it
+        // displaced inside the call, so that release runs an authored `close`
+        // and can fail like any other. The dispatch on its outcome goes
+        // on the normal edge once the receiver is republished and the frame
+        // owns what it did before the call.
+        let displaced_release = family
+            .displaced_argument()
+            .and_then(|index| parameter_types.get(index))
+            .cloned();
         for (index, (source, target)) in source_types.iter().zip(parameter_types).enumerate() {
             if prelowered.iter().any(|(at, _)| *at == index)
                 && *source == crate::ActorIngressAdapter::pointer_type()
@@ -8971,6 +8980,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                         &Provenance::Site(expr.site),
                     )?;
                 }
+                self.dispatch_displaced_release(displaced_release.as_ref())?;
                 return Ok(Some(results[1].id));
             }
             if matches!(contract.result, RuntimeResultEffect::UpdatedReceiver(_)) {
@@ -8990,8 +9000,10 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     )?;
                 } else {
                     // A prelowered receiver belongs to an enclosing writable path.
+                    self.dispatch_displaced_release(displaced_release.as_ref())?;
                     return Ok(Some(continuation));
                 }
+                self.dispatch_displaced_release(displaced_release.as_ref())?;
                 return Ok(None);
             }
         }
@@ -9000,7 +9012,26 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 "unit-valued runtime family `{family:?}` cannot produce an SSA value"
             ));
         }
+        self.dispatch_displaced_release(displaced_release.as_ref())?;
         Ok(continuation)
+    }
+
+    /// Dispatch on the outcome of a release the call performed for this frame.
+    ///
+    /// `ty` is the displaced value's type when the operation replaced one its
+    /// receiver owned, and `None` otherwise.
+    fn dispatch_displaced_release(
+        &mut self,
+        ty: Option<&hew_types::ResolvedTy>,
+    ) -> Result<(), String> {
+        let Some(ty) = ty else {
+            return Ok(());
+        };
+        self.note_release_may_fault(ty);
+        if self.cleanup_may_fail && !self.cleanup_draining {
+            self.dispatch_value_cleanup()?;
+        }
+        Ok(())
     }
 
     /// The exact `extern` declaration behind one call target.

@@ -470,7 +470,7 @@ pub unsafe fn validate_descriptor_ownership(
     match kl.value.ownership_kind {
         HewTypeOwnershipKind::Plain => {}
         HewTypeOwnershipKind::String => {
-            if kl.value.drop_fn.is_none() {
+            if kl.value.drop_fn.is_none() && kl.value.release_start.is_none() {
                 crate::set_last_error(
                     "HewLayoutHashMap: key_layout ownership_kind=String requires drop_fn",
                 );
@@ -478,7 +478,7 @@ pub unsafe fn validate_descriptor_ownership(
             }
         }
         HewTypeOwnershipKind::LayoutManaged => {
-            if kl.value.drop_fn.is_none() {
+            if kl.value.drop_fn.is_none() && kl.value.release_start.is_none() {
                 crate::set_last_error(
                     "HewLayoutHashMap: key_layout ownership_kind=LayoutManaged requires drop_fn",
                 );
@@ -488,7 +488,7 @@ pub unsafe fn validate_descriptor_ownership(
             }
         }
         HewTypeOwnershipKind::Bytes => {
-            if kl.value.drop_fn.is_none() {
+            if kl.value.drop_fn.is_none() && kl.value.release_start.is_none() {
                 crate::set_last_error(
                     "HewLayoutHashMap: key_layout ownership_kind=Bytes requires drop_fn",
                 );
@@ -499,7 +499,7 @@ pub unsafe fn validate_descriptor_ownership(
     match vl.ownership_kind {
         HewTypeOwnershipKind::Plain => {}
         HewTypeOwnershipKind::String => {
-            if vl.drop_fn.is_none() {
+            if vl.drop_fn.is_none() && vl.release_start.is_none() {
                 crate::set_last_error(
                     "HewLayoutHashMap: val_layout ownership_kind=String requires drop_fn",
                 );
@@ -507,7 +507,7 @@ pub unsafe fn validate_descriptor_ownership(
             }
         }
         HewTypeOwnershipKind::LayoutManaged => {
-            if vl.drop_fn.is_none() {
+            if vl.drop_fn.is_none() && vl.release_start.is_none() {
                 crate::set_last_error(
                     "HewLayoutHashMap: val_layout ownership_kind=LayoutManaged requires drop_fn",
                 );
@@ -517,7 +517,7 @@ pub unsafe fn validate_descriptor_ownership(
             }
         }
         HewTypeOwnershipKind::Bytes => {
-            if vl.drop_fn.is_none() {
+            if vl.drop_fn.is_none() && vl.release_start.is_none() {
                 crate::set_last_error(
                     "HewLayoutHashMap: val_layout ownership_kind=Bytes requires drop_fn",
                 );
@@ -1309,7 +1309,10 @@ unsafe fn map_needs_slot_drop(m: *mut HewLayoutHashMap) -> bool {
     let map_ref = unsafe { &*m };
     !map_ref.entries.is_null()
         && map_ref.cap != 0
-        && (map_ref.key_layout.value.drop_fn.is_some() || map_ref.val_layout.drop_fn.is_some())
+        && (map_ref.key_layout.value.drop_fn.is_some()
+            || map_ref.key_layout.value.release_start.is_some()
+            || map_ref.val_layout.drop_fn.is_some()
+            || map_ref.val_layout.release_start.is_some())
 }
 
 /// Release a whole map through the walker.
@@ -1345,11 +1348,11 @@ pub(crate) unsafe fn release_map(m: *mut HewLayoutHashMap, deferred: bool) {
 /// # Safety
 ///
 /// `m` must be a map allocation the walk in progress exclusively owns.
-pub(crate) unsafe fn expand_map(m: *mut HewLayoutHashMap) {
+pub(crate) unsafe fn expand_map(m: *mut HewLayoutHashMap, pending: &mut Vec<ReleaseItem>) {
     // The slots sit above the storage step, so the entry buffer outlives every
     // slot the cursor still addresses.
-    release_walker::queue(ReleaseItem::MapStorage { map: m });
-    release_walker::queue(ReleaseItem::MapSlots { map: m, next: 0 });
+    pending.push(ReleaseItem::MapStorage { map: m });
+    pending.push(ReleaseItem::MapSlots { map: m, next: 0 });
 }
 
 /// Walker step: release the next chunk of occupied slots at or after `next`,
@@ -1361,39 +1364,38 @@ pub(crate) unsafe fn expand_map(m: *mut HewLayoutHashMap) {
 /// # Safety
 ///
 /// `m` must be a map the walk owns whose entry buffer is still live.
-pub(crate) unsafe fn release_slot_chunk(m: *mut HewLayoutHashMap, next: usize) {
-    // SAFETY: caller guarantees the map and its entry buffer are live.
-    let map_ref = unsafe { &*m };
-    let entries = map_ref.entries;
-    let stride = map_ref.stride;
-    let key_drop_fn = map_ref.key_layout.value.drop_fn;
-    let val_drop_fn = map_ref.val_layout.drop_fn;
-    let mut released = 0;
-    let mut idx = next;
-    while idx < map_ref.cap {
-        // SAFETY: idx < cap; stride matches allocation.
-        if unsafe { *slot_state(entries, idx, stride) } != OCCUPIED {
-            idx += 1;
-            continue;
-        }
-        if released == release_walker::STEP_ELEMENTS {
-            // The remaining scan stays beneath whatever this chunk queued, so a
-            // value's whole subtree is released before the rest of the map.
-            release_walker::queue(ReleaseItem::MapSlots { map: m, next: idx });
+pub(crate) unsafe fn release_slot_chunk(
+    m: *mut HewLayoutHashMap,
+    next: usize,
+    pending: &mut Vec<ReleaseItem>,
+) {
+    // SAFETY: the walk retains the exact map and entry buffer through its slots.
+    let map = unsafe { &*m };
+    let mut index = next;
+    while index < map.cap {
+        // SAFETY: index is within the allocated entry buffer.
+        if unsafe { *slot_state(map.entries, index, map.stride) } == OCCUPIED {
+            pending.push(ReleaseItem::MapSlots {
+                map: m,
+                next: index + 1,
+            });
+            // Stack order preserves key, then value, then the next occupied slot.
+            for (layout, offset) in [
+                (map.val_layout, map.val_offset),
+                (map.key_layout.value, map.key_offset),
+            ] {
+                if layout.drop_fn.is_some() || layout.release_start.is_some() {
+                    // SAFETY: occupied slots initialize both exact descriptor blobs.
+                    let slot = unsafe { map.entries.add(index * map.stride + offset) };
+                    pending.push(ReleaseItem::Value {
+                        slot: slot.cast(),
+                        layout,
+                    });
+                }
+            }
             return;
         }
-        if let Some(key_drop) = key_drop_fn {
-            // SAFETY: occupied slot has a valid K blob at key_offset.
-            let slot_key_ptr = unsafe { slot_key(entries, idx, stride, map_ref.key_offset) };
-            key_drop(slot_key_ptr.cast::<c_void>());
-        }
-        if let Some(val_drop) = val_drop_fn {
-            // SAFETY: occupied slot has a valid V blob at val_offset.
-            let slot_val_ptr = unsafe { slot_val(entries, idx, stride, map_ref.val_offset) };
-            val_drop(slot_val_ptr.cast::<c_void>());
-        }
-        released += 1;
-        idx += 1;
+        index += 1;
     }
 }
 

@@ -131,6 +131,7 @@ fn make_descriptors() -> (HewMapKeyLayout, HewValueLayout) {
     let kl = HewMapKeyLayout {
         value: HewValueLayout {
             visit_close: None,
+            release_start: None,
             size: size_of::<*mut c_char>(),
             align: align_of::<*mut c_char>(),
             ownership_kind: HewTypeOwnershipKind::String,
@@ -142,6 +143,7 @@ fn make_descriptors() -> (HewMapKeyLayout, HewValueLayout) {
     };
     let vl = HewValueLayout {
         visit_close: None,
+        release_start: None,
         size: size_of::<i32>(),
         align: align_of::<i32>(),
         ownership_kind: HewTypeOwnershipKind::Plain,

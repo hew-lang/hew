@@ -25,6 +25,7 @@ unsafe extern "C-unwind" fn drop_return(slot: *mut c_void) {
 
 const CAPTURE: HewValueLayout = HewValueLayout {
     visit_close: None,
+    release_start: None,
     size: size_of::<*const Counts>(),
     align: align_of::<*const Counts>(),
     ownership_kind: HewTypeOwnershipKind::LayoutManaged,
@@ -34,6 +35,7 @@ const CAPTURE: HewValueLayout = HewValueLayout {
 
 const RETURN: HewValueLayout = HewValueLayout {
     visit_close: None,
+    release_start: None,
     drop_fn: Some(drop_return),
     ..CAPTURE
 };
@@ -166,10 +168,12 @@ fn pending_nested_close_retains_lazy_captures_and_terminal_outputs() {
         let counts = Counts::default();
         let capture = HewValueLayout {
             visit_close: lazy.then_some(visit_count),
+            release_start: None,
             ..CAPTURE
         };
         let returned = HewValueLayout {
             visit_close: (!lazy).then_some(visit_count),
+            release_start: None,
             ..RETURN
         };
         let descriptor = HewCallableDescriptor {

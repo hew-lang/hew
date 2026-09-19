@@ -1,40 +1,24 @@
-//! One iterative release walker for descriptor-backed collections.
+//! One storage traversal for synchronous and resumable value release.
 //!
-//! Releasing a nested structure used to recurse once per nesting level: a Vec's
-//! release dropped each element through the generated descriptor thunk, which
-//! for a nested collection re-entered the Vec release. A 30000-deep structure
-//! therefore overran the native stack while tearing down. Every
-//! descriptor-backed collection release now runs through this worklist instead,
-//! so work is proportional to the structure released and the native stack stays
-//! flat for ordinary data (D457).
+//! The worklist visits collection elements in forward order, map keys before
+//! values, and each complete subtree before its next sibling. The synchronous
+//! driver calls pure drop thunks; an owning cursor instead yields initialized
+//! slots to a caller that drives their consuming release continuations. Both
+//! drivers release raw storage only after all nested obligations complete.
 //!
-//! Two entries share the one loop:
+//! Ordinary-data destruction may join an active thread-local walk to keep deep
+//! values off the native call stack. Resumable cursors retain their own worklist
+//! across suspension and never carry a thread-local borrow into authored code.
 //!
-//! * [`release_deferred`] is emitted where the whole released subtree is
-//!   ordinary data — no resource close, no callable environment, no erased
-//!   vtable drop. It queues onto a walk already in progress instead of nesting,
-//!   which is what flattens a deep chain. Deferring such a release is
-//!   unobservable: it runs no user code and completes inside the same
-//!   synchronous release.
-//! * [`release_now`] always drains its own item to completion before returning.
-//!   Anything that can reach a resource is released this way, so a declared
-//!   `close` still runs in exactly the order it does today: reverse field
-//!   order, forward element order, whole subtree before the next sibling.
-//!
-//! The worklist is a resumable stack rather than a call chain: a wide
-//! collection carries a cursor and gives up one element per step, so a later
-//! runtime bulk-cleanup pass can drive the same items in quanta. This lane
-//! always drives it to empty.
-//!
-//! A release never suspends, so the worklist is thread-local: descriptor drop
-//! thunks have no coroutine lowering, and a resource `close` whose body
-//! suspends is driven to completion by `hew_coro_run_root` on the calling
-//! thread before the drop glue returns. A `close` that fails instead hands its
-//! fault to [`held_fault`], which records it against the innermost armed
-//! release sink so the release finishes before the fault leaves it.
+//! Synchronous fallible closes retain their faults in the innermost release sink
+//! until the release finishes. A continuation caller owns and combines its faults
+//! while draining every yielded owner, including after cancellation.
 
 use std::cell::{Cell, RefCell};
+use std::ffi::c_void;
+use std::ptr;
 
+use hew_cabi::value::HewValueLayout;
 use hew_cabi::vec::HewVec;
 
 use crate::hashmap::HewLayoutHashMap;
@@ -43,8 +27,28 @@ use crate::hashmap::HewLayoutHashMap;
 ///
 /// Each item borrows a structure the walker exclusively owns for the duration
 /// of the walk, and the thread that queued an item is the thread that runs it.
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub(crate) enum ReleaseItem {
+    /// One initialized value; the descriptor consumes its semantic owners.
+    Value {
+        slot: *mut c_void,
+        layout: HewValueLayout,
+    },
+    /// An ordinary string owner from the legacy scalar vector representation.
+    String {
+        value: *mut hew_cabi::string::HewString,
+    },
+    /// Raw storage or a reference-count obligation after its value has closed.
+    Storage {
+        owner: *mut c_void,
+        free: unsafe fn(*mut c_void),
+    },
+    /// An exactly laid out outer allocation, after its value has been consumed.
+    Allocation {
+        pointer: *mut c_void,
+        size: usize,
+        align: usize,
+    },
     /// Expand a vector into its elements and then its own storage.
     Vector { vec: *mut HewVec },
     /// Release elements `[next, end)` of `vec`, one per step.
@@ -85,11 +89,6 @@ thread_local! {
 /// bounded so a wide collection can be driven in quanta, while the chunk keeps
 /// the worklist traffic off the per-element path.
 pub(crate) const STEP_ELEMENTS: usize = 64;
-
-/// Queue one step for the walk in progress.
-pub(crate) fn queue(item: ReleaseItem) {
-    PENDING.with(|pending| pending.borrow_mut().push(item));
-}
 
 /// Take the next step above `base`, or `None` once this drain is finished.
 fn take_above(base: usize) -> Option<ReleaseItem> {
@@ -151,7 +150,7 @@ pub(crate) fn disarm_release_sink() -> Option<(i32, *mut crate::fault::HewFault)
 ///
 /// Generated code brackets a collection, shared-handle, callable or erased
 /// release with this pair so a `close` that fails inside it reaches the frame
-/// that asked for the release instead of the trap path (D516).
+/// that asked for the release instead of the trap path.
 #[no_mangle]
 pub extern "C" fn hew_release_fault_begin() {
     arm_release_sink();
@@ -253,7 +252,7 @@ pub(crate) unsafe fn release_now(item: ReleaseItem) {
 /// reachable subtree must be ordinary data.
 pub(crate) unsafe fn release_deferred(item: ReleaseItem) {
     if walking() {
-        queue(item);
+        PENDING.with(|pending| pending.borrow_mut().push(item));
         return;
     }
     // SAFETY: forwarded ownership contract.
@@ -266,17 +265,219 @@ pub(crate) unsafe fn release_deferred(item: ReleaseItem) {
 ///
 /// `item` must name storage the walk in progress owns.
 unsafe fn run(item: ReleaseItem) {
-    // SAFETY: forwarded ownership contract; each helper documents its own.
+    if let ReleaseItem::Value { slot, layout } = item {
+        if layout.release_start.is_some() {
+            // A synchronous caller cannot discharge a resumable obligation.
+            std::process::abort();
+        }
+        if let Some(drop) = layout.drop_fn {
+            // SAFETY: this walk owns the initialized slot and exact descriptor.
+            unsafe { drop(slot) };
+        }
+    } else {
+        PENDING.with(|pending| {
+            // SAFETY: expansion calls no authored code and cannot re-enter the walk.
+            unsafe { expand(item, &mut pending.borrow_mut()) };
+        });
+    }
+}
+
+/// Expand storage without executing any selected semantic value callback.
+unsafe fn expand(item: ReleaseItem, pending: &mut Vec<ReleaseItem>) {
+    // SAFETY: the caller owns the item and retains queued storage until release.
     unsafe {
         match item {
-            ReleaseItem::Vector { vec } => crate::vec::expand_vector(vec),
+            ReleaseItem::Value { .. } => pending.push(item),
+            ReleaseItem::String { value } => hew_cabi::string::string_release(value),
+            ReleaseItem::Storage { owner, free } => free(owner),
+            ReleaseItem::Allocation {
+                pointer,
+                size,
+                align,
+            } => {
+                crate::mem::hew_dealloc(pointer.cast(), size as u64, align as u64);
+            }
+            ReleaseItem::Vector { vec } => crate::vec::expand_vector(vec, pending),
             ReleaseItem::VectorElements { vec, next, end } => {
-                crate::vec::release_element_chunk(vec, next, end);
+                crate::vec::release_element_chunk(vec, next, end, pending);
             }
             ReleaseItem::VectorStorage { vec } => crate::vec::free_vector_storage(vec),
-            ReleaseItem::Map { map } => crate::hashmap::expand_map(map),
-            ReleaseItem::MapSlots { map, next } => crate::hashmap::release_slot_chunk(map, next),
+            ReleaseItem::Map { map } => crate::hashmap::expand_map(map, pending),
+            ReleaseItem::MapSlots { map, next } => {
+                crate::hashmap::release_slot_chunk(map, next, pending);
+            }
             ReleaseItem::MapStorage { map } => crate::hashmap::free_map_storage(map),
+        }
+    }
+}
+
+/// An owning release traversal. Each yielded slot remains live until the next
+/// call, which is permitted only after its consuming callback has completed.
+#[derive(Debug)]
+pub struct HewReleaseCursor {
+    pending: Vec<ReleaseItem>,
+    current_layout: Option<HewValueLayout>,
+}
+
+impl HewReleaseCursor {
+    pub(crate) fn new(pending: Vec<ReleaseItem>) -> *mut Self {
+        Box::into_raw(Box::new(Self {
+            pending,
+            current_layout: None,
+        }))
+    }
+}
+
+/// Transfer a vector and its initialized values to a consuming traversal.
+/// # Safety
+/// `value` is null or uniquely owned and may not be used after this call.
+#[no_mangle]
+pub unsafe extern "C" fn hew_vec_release_begin(value: *mut HewVec) -> *mut HewReleaseCursor {
+    HewReleaseCursor::new(if value.is_null() {
+        Vec::new()
+    } else {
+        vec![ReleaseItem::Vector { vec: value }]
+    })
+}
+
+/// Transfer a fixed array to the shared forward-index release traversal.
+/// # Safety
+/// Same allocation and ownership contract as `hew_vec_release_begin`.
+#[no_mangle]
+pub unsafe extern "C" fn hew_array_release_begin(value: *mut HewVec) -> *mut HewReleaseCursor {
+    // SAFETY: fixed arrays share the exact vector allocation representation.
+    unsafe { hew_vec_release_begin(value) }
+}
+
+/// Transfer a map and its occupied slots to a consuming traversal.
+/// # Safety
+/// `value` is null or uniquely owned and may not be used after this call.
+#[no_mangle]
+pub unsafe extern "C" fn hew_hashmap_release_begin(
+    value: *mut HewLayoutHashMap,
+) -> *mut HewReleaseCursor {
+    HewReleaseCursor::new(if value.is_null() {
+        Vec::new()
+    } else {
+        vec![ReleaseItem::Map { map: value }]
+    })
+}
+
+/// Yield the next initialized owner, or null once all storage is released.
+/// # Safety
+/// The cursor is uniquely owned. Its previous yielded callback has completed,
+/// including after failure or cancellation; the caller must drain all items.
+#[no_mangle]
+pub unsafe extern "C" fn hew_release_next(cursor: *mut HewReleaseCursor) -> *mut c_void {
+    // SAFETY: the caller owns this cursor through completion.
+    let cursor = unsafe { &mut *cursor };
+    cursor.current_layout = None;
+    while let Some(item) = cursor.pending.pop() {
+        if let ReleaseItem::Value { slot, layout } = item {
+            cursor.current_layout = Some(layout);
+            return slot;
+        }
+        // SAFETY: the cursor owns each item and all storage below its children.
+        unsafe { expand(item, &mut cursor.pending) };
+    }
+    ptr::null_mut()
+}
+
+/// Borrow the exact descriptor of the current yielded slot.
+/// # Safety
+/// `cursor` is live; the descriptor is borrowed until `hew_release_next`.
+#[no_mangle]
+pub unsafe extern "C" fn hew_release_layout(
+    cursor: *const HewReleaseCursor,
+) -> *const HewValueLayout {
+    // SAFETY: the caller retains the cursor while using its current descriptor.
+    unsafe { &*cursor }
+        .current_layout
+        .as_ref()
+        .map_or(ptr::null(), ptr::from_ref)
+}
+
+/// Release a fully drained traversal. This never abandons pending owners.
+/// # Safety
+/// The cursor is uniquely owned and its most recent `next` returned null.
+#[no_mangle]
+pub unsafe extern "C" fn hew_release_finish(cursor: *mut HewReleaseCursor) {
+    if cursor.is_null() {
+        return;
+    }
+    // SAFETY: the caller relinquishes the unique cursor allocation.
+    let cursor = unsafe { Box::from_raw(cursor) };
+    if !cursor.pending.is_empty() || cursor.current_layout.is_some() {
+        std::process::abort();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hew_cabi::value::HewTypeOwnershipKind;
+
+    unsafe extern "C" fn selected_release(
+        _slot: *mut c_void,
+        _fault: *mut *mut c_void,
+        _state: *mut c_void,
+    ) -> *mut c_void {
+        unreachable!("the cursor must leave authored callbacks to its caller")
+    }
+
+    const LAYOUT: HewValueLayout = HewValueLayout {
+        size: size_of::<i64>(),
+        align: align_of::<i64>(),
+        ownership_kind: HewTypeOwnershipKind::LayoutManaged,
+        clone_fn: None,
+        drop_fn: None,
+        visit_close: None,
+        release_start: Some(selected_release),
+    };
+
+    #[test]
+    fn consuming_cursor_retains_slots_between_forward_release_steps() {
+        // SAFETY: the test transfers each initialized owner once and completes
+        // every yielded semantic release before advancing the storage cursor.
+        unsafe {
+            let vector = crate::vec::hew_vec_new_with_elem_layout(&LAYOUT);
+            for value in [11_i64, 22, 33] {
+                crate::vec::hew_vec_push_owned_move(vector, (&raw const value).cast());
+            }
+            let cursor = hew_vec_release_begin(vector);
+            for expected in [11, 22, 33] {
+                let slot = hew_release_next(cursor).cast::<i64>();
+                assert!(!slot.is_null());
+                assert_eq!(slot.read(), expected);
+                let layout = &*hew_release_layout(cursor);
+                assert_eq!(layout.size, size_of::<i64>());
+                assert!(layout.release_start.is_some());
+                assert!(layout.drop_fn.is_none());
+                // Pending cleanup retains this exact slot; only its caller
+                // consumes it, and the next sibling is still initialized.
+                slot.write(0);
+            }
+            assert!(hew_release_next(cursor).is_null());
+            hew_release_finish(cursor);
+        }
+    }
+
+    #[test]
+    fn consuming_rc_cursor_pins_payload_after_last_external_weak_drops() {
+        // SAFETY: the cursor transfers the last strong owner, while a distinct
+        // weak owner is released during the simulated suspended destructor.
+        unsafe {
+            let value = 42_i64;
+            let rc =
+                crate::rc::hew_rc_new((&raw const value).cast(), LAYOUT.size, LAYOUT.align, None);
+            let weak = crate::rc::hew_rc_downgrade(rc);
+            let cursor = crate::rc::hew_rc_release_begin(rc, &LAYOUT);
+            let slot = hew_release_next(cursor).cast::<i64>();
+            crate::rc::hew_weak_drop_rc(weak);
+            assert_eq!(slot.read(), 42);
+            slot.write(0);
+            assert!(hew_release_next(cursor).is_null());
+            hew_release_finish(cursor);
         }
     }
 }

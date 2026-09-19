@@ -377,6 +377,15 @@ pub unsafe extern "C" fn hew_fault_drop(fault: *mut HewFault) {
     }
 }
 
+/// Read a logical failure code without reporting or consuming the diagnostic.
+/// # Safety
+/// `fault` is null or points to a live fault borrowed for this call.
+#[no_mangle]
+pub unsafe extern "C" fn hew_fault_code(fault: *const HewFault) -> i32 {
+    // SAFETY: the caller retains the immutable fault through this read.
+    unsafe { fault.as_ref() }.map_or(0, HewFault::code)
+}
+
 /// Borrow a fault to report it to stderr; return 0 on success, 1 on I/O failure
 /// or an absent fault. Reporting does not consume or replace the owner.
 ///

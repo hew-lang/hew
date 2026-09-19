@@ -118,6 +118,30 @@ pub unsafe extern "C" fn hew_coro_state_child(parent: *const HewCoroState) -> *m
     child
 }
 
+/// Create a cleanup invocation with the same readiness and actor identity,
+/// shielded from cancellation already being discharged by its parent.
+///
+/// # Safety
+/// `parent` is live through construction. Destroy the cleanup frame before
+/// freeing the returned state, exactly as for an ordinary child invocation.
+#[no_mangle]
+pub unsafe extern "C" fn hew_coro_state_cleanup_child(
+    parent: *const HewCoroState,
+) -> *mut HewCoroState {
+    // SAFETY: the caller retains the parent during construction.
+    let Some(parent) = (unsafe { parent.as_ref() }) else {
+        return std::ptr::null_mut();
+    };
+    // SAFETY: the parent retains the descriptor; null starts fresh ancestry.
+    let child = unsafe { hew_coro_state_new(parent.waker.descriptor(), std::ptr::null_mut()) };
+    // SAFETY: the new state is uniquely owned until returned.
+    unsafe {
+        (*child).actor_turn = parent.actor_turn;
+        (*child).actor_message_type = parent.actor_message_type;
+    }
+    child
+}
+
 /// Request cancellation of this invocation and its descendants.
 /// Siblings and the parent retain their independent cancellation state.
 ///

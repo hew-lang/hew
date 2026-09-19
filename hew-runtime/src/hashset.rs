@@ -81,6 +81,7 @@ use crate::vec::HewVec;
 /// heap allocation.
 static VALUE_LAYOUT: HewValueLayout = HewValueLayout {
     visit_close: None,
+    release_start: None,
     size: 0,
     align: 1,
     ownership_kind: HewTypeOwnershipKind::Plain,
@@ -681,6 +682,27 @@ unsafe fn release_set(set: *mut HewLayoutHashSet, deferred: bool) {
     unsafe { crate::mem::buf_free(set.cast()) };
     // SAFETY: the set uniquely owned its backing map.
     unsafe { release_map(map, deferred) };
+}
+
+/// Transfer a set into its backing map's consuming release traversal.
+/// # Safety
+/// `set` is null or uniquely owned and may not be used after this call.
+#[no_mangle]
+pub unsafe extern "C" fn hew_hashset_release_begin(
+    set: *mut HewLayoutHashSet,
+) -> *mut crate::release_walker::HewReleaseCursor {
+    let map = if set.is_null() {
+        ptr::null_mut()
+    } else {
+        // SAFETY: the caller transfers the header and its unique backing map.
+        unsafe {
+            let map = (*set).map;
+            crate::mem::buf_free(set.cast());
+            map
+        }
+    };
+    // SAFETY: the detached map owner transfers to the returned cursor.
+    unsafe { crate::release_walker::hew_hashmap_release_begin(map) }
 }
 
 /// Visit initialized set elements through their owning map descriptor.

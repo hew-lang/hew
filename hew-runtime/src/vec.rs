@@ -544,7 +544,6 @@ pub unsafe extern "C" fn hew_vec_new_with_layout(layout: *const HewTypeLayout) -
             }
         };
         (*v).layout_storage = HewValueLayout {
-            visit_close: None,
             release_start: None,
             size: descriptor.size,
             align: descriptor.align,
@@ -3468,68 +3467,6 @@ pub(crate) unsafe fn hwvec_to_u8(v: *mut HewVec) -> Vec<u8> {
 ///
 /// None — all memory is managed by the runtime allocator.
 // Used only by vec.rs round-trip tests; file_io.rs migrated to BytesTriple ABI.
-/// Visit initialized elements in ordinary destruction order.
-/// # Safety
-/// The vector and its elements remain exclusively borrowed until cleanup ends.
-#[no_mangle]
-pub unsafe extern "C" fn hew_vec_visit_close(v: *mut HewVec, context: *mut c_void) {
-    // SAFETY: the caller retains this initialized vector and exact descriptor.
-    unsafe {
-        let vec = &*v;
-        if let Some(layout) = vec.layout.as_ref() {
-            if let Some(visit) = layout.visit_close {
-                for index in 0..vec.len {
-                    visit(vec.data.add(index * layout.size).cast(), context);
-                }
-            }
-        }
-    }
-}
-
-/// Visit a fixed array's initialized elements in index order before release.
-///
-/// # Safety
-/// The array remains exclusively borrowed until collected cleanup completes.
-#[no_mangle]
-pub unsafe extern "C" fn hew_array_visit_close(value: *mut HewVec, context: *mut c_void) {
-    // SAFETY: the caller retains the array and its exact element descriptor.
-    unsafe {
-        let array = &*value;
-        if let Some(layout) = array.layout.as_ref() {
-            if let Some(visit) = layout.visit_close {
-                for index in 0..array.len {
-                    visit(array.data.add(index * layout.size).cast(), context);
-                }
-            }
-        }
-    }
-}
-
-/// Visit one initialized element before replacement. Invalid indices collect
-/// nothing; the subsequent mutation reports its ordinary bounds fault.
-/// # Safety
-/// The vector remains exclusively borrowed until collected cleanup completes.
-#[no_mangle]
-pub unsafe extern "C" fn hew_vec_visit_element_close(
-    v: *mut HewVec,
-    index: i64,
-    context: *mut c_void,
-) {
-    // SAFETY: the caller retains the vector and its exact element descriptor.
-    unsafe {
-        let vec = &*v;
-        if let Ok(index) = usize::try_from(index) {
-            if index < vec.len {
-                if let Some(layout) = vec.layout.as_ref() {
-                    if let Some(visit) = layout.visit_close {
-                        visit(vec.data.add(index * layout.size).cast(), context);
-                    }
-                }
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 pub(crate) unsafe fn u8_to_hwvec(data: &[u8]) -> *mut HewVec {
     // SAFETY: hew_vec_new allocates a valid HewVec.
@@ -5169,7 +5106,6 @@ mod vec_owned_tests {
     #[test]
     fn zero_sized_elements_preserve_length_without_reading_or_writing_payload() {
         let layout = HewValueLayout {
-            visit_close: None,
             release_start: None,
             size: 0,
             align: 1,
@@ -5212,7 +5148,6 @@ mod vec_owned_tests {
     #[test]
     fn plain_descriptor_uses_the_same_value_operations_without_thunks() {
         let layout = HewValueLayout {
-            visit_close: None,
             release_start: None,
             size: size_of::<(i64, i64)>(),
             align: align_of::<(i64, i64)>(),
@@ -5366,7 +5301,6 @@ mod vec_owned_tests {
 
     fn owned_layout() -> HewValueLayout {
         HewValueLayout {
-            visit_close: None,
             release_start: None,
             size: core::mem::size_of::<OwnedElem>(),
             align: core::mem::align_of::<OwnedElem>(),
@@ -5422,7 +5356,6 @@ mod vec_owned_tests {
         // freed separately afterwards.
         unsafe {
             let layout = HewValueLayout {
-                visit_close: None,
                 release_start: None,
                 size: core::mem::size_of::<OwnedElem>(),
                 align: core::mem::align_of::<OwnedElem>(),
@@ -5465,7 +5398,6 @@ mod vec_owned_tests {
         // declared layout. The output owns the payload after `take` returns.
         unsafe {
             let layout = HewValueLayout {
-                visit_close: None,
                 release_start: None,
                 size: core::mem::size_of::<OwnedElem>(),
                 align: core::mem::align_of::<OwnedElem>(),
@@ -5516,7 +5448,6 @@ mod vec_owned_tests {
         // pushed elements transfers to the taken vec wholesale.
         unsafe {
             let layout = HewValueLayout {
-                visit_close: None,
                 release_start: None,
                 size: core::mem::size_of::<OwnedElem>(),
                 align: core::mem::align_of::<OwnedElem>(),
@@ -5865,7 +5796,6 @@ mod vec_owned_tests {
             return;
         }
         let layout = HewValueLayout {
-            visit_close: None,
             release_start: None,
             size: core::mem::size_of::<OwnedElem>(),
             align: core::mem::align_of::<OwnedElem>(),

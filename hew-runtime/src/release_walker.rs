@@ -372,7 +372,7 @@ impl HewReleaseCursor {
                     ownership_kind: hew_cabi::value::HewTypeOwnershipKind::LayoutManaged,
                     clone_fn: None,
                     drop_fn: None,
-                    visit_close: None,
+
                     release_start: Some(start),
                 },
             });
@@ -654,7 +654,7 @@ mod tests {
         ownership_kind: HewTypeOwnershipKind::LayoutManaged,
         clone_fn: None,
         drop_fn: None,
-        visit_close: None,
+
         release_start: Some(selected_release),
     };
 

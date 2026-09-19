@@ -94,7 +94,6 @@ extern "C-unwind" fn snapshot_drop(_blob: *mut c_void) {
 
 fn plain_v_layout() -> HewValueLayout {
     HewValueLayout {
-        visit_close: None,
         release_start: None,
         size: 8,
         align: 8,
@@ -107,7 +106,6 @@ fn plain_v_layout() -> HewValueLayout {
 fn plain_k_layout() -> HewMapKeyLayout {
     HewMapKeyLayout {
         value: HewValueLayout {
-            visit_close: None,
             release_start: None,
             size: 8,
             align: 8,
@@ -129,7 +127,6 @@ fn plain_k_layout() -> HewMapKeyLayout {
 fn rejects_string_key_without_drop_fn() {
     let kl = HewMapKeyLayout {
         value: HewValueLayout {
-            visit_close: None,
             release_start: None,
             size: 8,
             align: 8,
@@ -151,7 +148,6 @@ fn rejects_string_key_without_drop_fn() {
 fn rejects_layout_managed_key_without_drop_fn() {
     let kl = HewMapKeyLayout {
         value: HewValueLayout {
-            visit_close: None,
             release_start: None,
             size: 8,
             align: 8,
@@ -173,7 +169,6 @@ fn rejects_layout_managed_key_without_drop_fn() {
 fn rejects_string_value_without_drop_fn() {
     let kl = plain_k_layout();
     let vl = HewValueLayout {
-        visit_close: None,
         release_start: None,
         size: 8,
         align: 8,
@@ -191,7 +186,6 @@ fn rejects_string_value_without_drop_fn() {
 fn rejects_layout_managed_value_without_drop_fn() {
     let kl = plain_k_layout();
     let vl = HewValueLayout {
-        visit_close: None,
         release_start: None,
         size: 8,
         align: 8,
@@ -224,7 +218,6 @@ fn accepts_plain_with_drop_fn_no_op() {
     // missing cleanup is the leak hazard the rejected cases above guard.
     let kl = HewMapKeyLayout {
         value: HewValueLayout {
-            visit_close: None,
             release_start: None,
             drop_fn: Some(snapshot_drop as HewValueDropThunk),
             ..plain_k_layout().value
@@ -232,7 +225,6 @@ fn accepts_plain_with_drop_fn_no_op() {
         ..plain_k_layout()
     };
     let vl = HewValueLayout {
-        visit_close: None,
         release_start: None,
         drop_fn: Some(snapshot_drop as HewValueDropThunk),
         ..plain_v_layout()
@@ -256,7 +248,6 @@ fn kernel_honours_snapshot_after_caller_mutates_descriptors() {
     // descriptors into the map — see plan rev6 §4 Blocker B2.
     let mut kl = HewMapKeyLayout {
         value: HewValueLayout {
-            visit_close: None,
             release_start: None,
             size: size_of::<i64>(),
             align: align_of::<i64>(),
@@ -268,7 +259,6 @@ fn kernel_honours_snapshot_after_caller_mutates_descriptors() {
         eq_fn: Some(eq_i64 as HewMapKeyEqThunk),
     };
     let mut vl = HewValueLayout {
-        visit_close: None,
         release_start: None,
         size: size_of::<i64>(),
         align: align_of::<i64>(),

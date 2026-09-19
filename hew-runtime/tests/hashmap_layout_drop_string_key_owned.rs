@@ -130,7 +130,6 @@ unsafe extern "C" fn eq_cstr_slot(
 fn make_descriptors() -> (HewMapKeyLayout, HewValueLayout) {
     let kl = HewMapKeyLayout {
         value: HewValueLayout {
-            visit_close: None,
             release_start: None,
             size: size_of::<*mut c_char>(),
             align: align_of::<*mut c_char>(),
@@ -142,7 +141,6 @@ fn make_descriptors() -> (HewMapKeyLayout, HewValueLayout) {
         eq_fn: Some(eq_cstr_slot as HewMapKeyEqThunk),
     };
     let vl = HewValueLayout {
-        visit_close: None,
         release_start: None,
         size: size_of::<i32>(),
         align: align_of::<i32>(),

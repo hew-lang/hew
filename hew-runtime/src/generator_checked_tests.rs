@@ -24,7 +24,6 @@ unsafe extern "C-unwind" fn drop_return(slot: *mut c_void) {
 }
 
 const CAPTURE: HewValueLayout = HewValueLayout {
-    visit_close: None,
     release_start: None,
     size: size_of::<*const Counts>(),
     align: align_of::<*const Counts>(),
@@ -34,7 +33,6 @@ const CAPTURE: HewValueLayout = HewValueLayout {
 };
 
 const RETURN: HewValueLayout = HewValueLayout {
-    visit_close: None,
     release_start: None,
     drop_fn: Some(drop_return),
     ..CAPTURE

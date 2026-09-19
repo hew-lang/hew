@@ -236,25 +236,6 @@ pub unsafe extern "C" fn hew_callable_release_begin(
     HewReleaseCursor::new(pending)
 }
 
-/// Visit live captures through the environment's existing layout and masks.
-/// # Safety
-/// The callable remains exclusively borrowed until the selected children drain.
-#[no_mangle]
-pub unsafe extern "C" fn hew_callable_visit_close(
-    slot: *mut HewCallableValue,
-    context: *mut c_void,
-) {
-    // SAFETY: the caller supplies an initialized carrier and retained descriptor.
-    unsafe {
-        let callable = &*slot;
-        if let Some(layout) = (*callable.descriptor).environment.as_ref() {
-            if let Some(visit) = layout.visit_close {
-                visit(callable.environment, context);
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -291,7 +272,6 @@ mod tests {
     }
 
     const ENVIRONMENT_LAYOUT: HewValueLayout = HewValueLayout {
-        visit_close: None,
         release_start: None,
         size: size_of::<Environment>(),
         align: align_of::<Environment>(),
@@ -554,7 +534,6 @@ mod tests {
         assert_eq!(counts.drops.load(Ordering::SeqCst), 2);
         // A captured ZST still has a mask byte, independently allocated/copied.
         let layout = HewValueLayout {
-            visit_close: None,
             release_start: None,
             size: 1,
             align: 1,
@@ -608,7 +587,6 @@ mod tests {
             ptr::null_mut()
         }
         let layout = HewValueLayout {
-            visit_close: None,
             release_start: None,
             size: 0,
             align: 1,

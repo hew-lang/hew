@@ -80,7 +80,6 @@ use crate::vec::HewVec;
 /// A `static` binding provides program-lifetime validity without any
 /// heap allocation.
 static VALUE_LAYOUT: HewValueLayout = HewValueLayout {
-    visit_close: None,
     release_start: None,
     size: 0,
     align: 1,
@@ -703,15 +702,4 @@ pub unsafe extern "C" fn hew_hashset_release_begin(
     };
     // SAFETY: the detached map owner transfers to the returned cursor.
     unsafe { crate::release_walker::hew_hashmap_release_begin(map) }
-}
-
-/// Visit initialized set elements through their owning map descriptor.
-/// # Safety
-/// The set remains exclusively borrowed until all selected children drain.
-#[no_mangle]
-pub unsafe extern "C" fn hew_hashset_visit_close(set: *mut HewLayoutHashSet, context: *mut c_void) {
-    // SAFETY: the set uniquely owns its backing map throughout cleanup.
-    unsafe {
-        crate::hashmap::hew_hashmap_visit_close((*set).map, context);
-    }
 }

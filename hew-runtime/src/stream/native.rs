@@ -490,7 +490,7 @@ mod tests {
             ownership_kind: HewTypeOwnershipKind::LayoutManaged,
             clone_fn: None,
             drop_fn: Some(drop_owned),
-            visit_close: None,
+
             release_start: None,
         }
     }

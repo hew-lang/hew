@@ -143,7 +143,6 @@ unsafe extern "C" fn eq_cstr_slot(
 fn string_descriptors() -> (HewMapKeyLayout, HewValueLayout) {
     let kl = HewMapKeyLayout {
         value: HewValueLayout {
-            visit_close: None,
             release_start: None,
             size: size_of::<*mut c_char>(),
             align: align_of::<*mut c_char>(),
@@ -155,7 +154,6 @@ fn string_descriptors() -> (HewMapKeyLayout, HewValueLayout) {
         eq_fn: Some(eq_cstr_slot as HewMapKeyEqThunk),
     };
     let vl = HewValueLayout {
-        visit_close: None,
         release_start: None,
         size: size_of::<*mut c_char>(),
         align: align_of::<*mut c_char>(),
@@ -221,7 +219,6 @@ unsafe extern "C" fn eq_i64(
 fn i64_plain_descriptors() -> (HewMapKeyLayout, HewValueLayout) {
     let kl = HewMapKeyLayout {
         value: HewValueLayout {
-            visit_close: None,
             release_start: None,
             size: size_of::<i64>(),
             align: align_of::<i64>(),
@@ -233,7 +230,6 @@ fn i64_plain_descriptors() -> (HewMapKeyLayout, HewValueLayout) {
         eq_fn: Some(eq_i64 as HewMapKeyEqThunk),
     };
     let vl = HewValueLayout {
-        visit_close: None,
         release_start: None,
         size: size_of::<i64>(),
         align: align_of::<i64>(),

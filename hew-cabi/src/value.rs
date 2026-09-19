@@ -72,21 +72,6 @@ pub type HewValueReleaseStart = unsafe extern "C" fn(
     invocation_state: *mut c_void,
 ) -> *mut c_void;
 
-/// Poll a uniquely borrowed owner through cooperative cleanup. The invocation
-/// state supplies cancellation and readiness; the result uses `CoroStatus`.
-/// Pending retains the borrow. A terminal fault transfers one fault owner.
-pub type HewValueClosePoll = unsafe extern "C" fn(
-    owner: *mut c_void,
-    invocation_state: *mut c_void,
-    fault_out: *mut *mut c_void,
-) -> i32;
-
-/// Visit initialized children whose release requires cooperative cleanup.
-/// Generated from the same field recipes as drop, including their masks and
-/// variant tags. `context` is the runtime's close collector. Visiting borrows
-/// children without changing their initialization or releasing storage.
-pub type HewValueCloseVisit = unsafe extern "C" fn(slot: *mut c_void, context: *mut c_void);
-
 // Rust guarantees fn pointers are non-null, so `Option<fn>` niche-optimises to
 // the underlying fn-pointer width — the null value is the `None` discriminant.
 // These asserts lock the invariant so a future Rust change breaks loudly here
@@ -116,8 +101,7 @@ const _: () = assert!(
 ///     HewTypeOwnershipKind    ownership_kind;
 ///     /* padding to pointer alignment */
 ///     HewValueCloneThunk       clone_fn;  /* NULL for plain or release-only values */
-///     HewValueDropThunk        drop_fn;   /* may be NULL only when ownership_kind == Plain */
-///     HewValueCloseVisit      visit_close; /* optional child walk before drop */
+///     HewValueDropThunk        drop_fn;   /* synchronous cleanup, or NULL with release_start */
 ///     HewValueReleaseStart    release_start; /* optional consuming continuation */
 /// } HewValueLayout;
 /// ```
@@ -134,11 +118,9 @@ pub struct HewValueLayout {
     /// is valid for Plain values and release-only descriptors; copy operations reject a
     /// missing thunk when semantic cloning is required.
     pub clone_fn: Option<HewValueCloneThunk>,
-    /// Cleanup thunk invoked when destroying an owned value. `None` is
-    /// valid only for `ownership_kind == Plain`.
+    /// Synchronous cleanup when `release_start` is absent. Owned values may
+    /// omit this thunk only when they supply consuming `release_start`.
     pub drop_fn: Option<HewValueDropThunk>,
-    /// Optional initialized-child walk performed before synchronous drop.
-    pub visit_close: Option<HewValueCloseVisit>,
     /// Consuming destruction continuation for values whose release can suspend.
     /// The synchronous drop slot is used only when this callback is absent.
     pub release_start: Option<HewValueReleaseStart>,
@@ -151,9 +133,8 @@ const _: () = {
     assert!(core::mem::offset_of!(HewValueLayout, ownership_kind) == 16);
     assert!(core::mem::offset_of!(HewValueLayout, clone_fn) == 24);
     assert!(core::mem::offset_of!(HewValueLayout, drop_fn) == 32);
-    assert!(core::mem::offset_of!(HewValueLayout, visit_close) == 40);
-    assert!(core::mem::offset_of!(HewValueLayout, release_start) == 48);
-    assert!(core::mem::size_of::<HewValueLayout>() == 56);
+    assert!(core::mem::offset_of!(HewValueLayout, release_start) == 40);
+    assert!(core::mem::size_of::<HewValueLayout>() == 48);
 };
 
 #[cfg(target_pointer_width = "32")]
@@ -163,7 +144,6 @@ const _: () = {
     assert!(core::mem::offset_of!(HewValueLayout, ownership_kind) == 8);
     assert!(core::mem::offset_of!(HewValueLayout, clone_fn) == 12);
     assert!(core::mem::offset_of!(HewValueLayout, drop_fn) == 16);
-    assert!(core::mem::offset_of!(HewValueLayout, visit_close) == 20);
-    assert!(core::mem::offset_of!(HewValueLayout, release_start) == 24);
-    assert!(core::mem::size_of::<HewValueLayout>() == 28);
+    assert!(core::mem::offset_of!(HewValueLayout, release_start) == 20);
+    assert!(core::mem::size_of::<HewValueLayout>() == 24);
 };

@@ -346,7 +346,7 @@ fn process_fixture(
     let source_path = fixture.path.join("main.hew");
     let source = fs::read_to_string(&source_path)
         .map_err(|err| format!("read {}: {err}", source_path.display()))?;
-    let output = hew_sandbox_wasm::compile_to_sandbox_bytecode(&source, Some(SANDBOX_PROFILE))
+    let output = hew_wasm::sandbox::compile_to_sandbox_bytecode(&source, Some(SANDBOX_PROFILE))
         .map_err(|err| format!("compile threw: {err}"))?;
 
     if output

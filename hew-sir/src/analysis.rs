@@ -579,6 +579,7 @@ mod tests {
             closures: Vec::new(),
             vtables: Vec::new(),
             value_capabilities: BTreeMap::new(),
+            structural_display: BTreeMap::new(),
             callables: vec![SemCallable {
                 id: function.callable,
                 function: function.id,

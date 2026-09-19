@@ -1,386 +1,874 @@
 {
-  "capabilities": [
+  "actors": [
     {
-      "disposition": "allowed",
-      "id": "core.stdout",
-      "reason": "page stdout shim",
-      "required_by": [
-        "sym:core.stdout.println"
-      ]
+      "handlers": [
+        {
+          "callable": 1,
+          "fallible": false,
+          "message_id": 4150717511,
+          "name": "collect",
+          "params": 1,
+          "result_shape": null,
+          "streams": false
+        }
+      ],
+      "id": 0,
+      "overflow": "block",
+      "state_fields": [],
+      "stop": []
+    },
+    {
+      "handlers": [
+        {
+          "callable": 2,
+          "fallible": false,
+          "message_id": 518159035,
+          "name": "process",
+          "params": 2,
+          "result_shape": null,
+          "streams": false
+        }
+      ],
+      "id": 1,
+      "overflow": "block",
+      "state_fields": [],
+      "stop": []
     }
   ],
-  "compiler_version": "handcrafted-pending-actor-message-emitter",
+  "aggregates": [
+    {
+      "fields": [
+        "reason",
+        "message"
+      ],
+      "id": 0,
+      "name": "SendFailure<Never>"
+    }
+  ],
+  "bytes": [],
+  "closures": [],
+  "compiler_version": "hew-wasm-0.6.0-rc4",
+  "entry": {
+    "exit": "unit",
+    "function": 0
+  },
+  "externs": [],
   "functions": [
     {
       "blocks": [
         {
-          "id": "block:sink.collect.entry",
-          "instructions": [
-            {
+          "id": 0,
+          "ops": [],
+          "params": [],
+          "term": {
+            "args": [],
+            "error_shape": null,
+            "normal": {
               "args": [
-                {
-                  "kind": "symbol",
-                  "value": "sym:core.stdout.println"
-                },
-                {
-                  "kind": "local",
-                  "value": "local:sink.value"
-                }
+                0
               ],
-              "dst": null,
-              "op": "call.stdlib",
-              "span": null
+              "to": 1
+            },
+            "op": "actor.call",
+            "operation": {
+              "actor": 0,
+              "op": "spawn"
+            },
+            "request_shapes": {
+              "failure": null,
+              "message": null,
+              "reason": null,
+              "request": null
+            },
+            "result": {
+              "own": "none",
+              "value": 0
+            },
+            "result_shape": null,
+            "span": {
+              "end": 187,
+              "start": 187
+            },
+            "submission_shapes": {
+              "failure": null,
+              "reason": null,
+              "success": null
+            },
+            "unwind": {
+              "args": [],
+              "to": 2
+            }
+          }
+        },
+        {
+          "id": 1,
+          "ops": [],
+          "params": [
+            {
+              "own": "none",
+              "value": 1
             }
           ],
-          "params": [],
-          "span": null,
-          "terminator": {
+          "term": {
             "args": [],
+            "error_shape": null,
+            "normal": {
+              "args": [
+                2
+              ],
+              "to": 4
+            },
+            "op": "actor.call",
+            "operation": {
+              "actor": 1,
+              "op": "spawn"
+            },
+            "request_shapes": {
+              "failure": null,
+              "message": null,
+              "reason": null,
+              "request": null
+            },
+            "result": {
+              "own": "none",
+              "value": 2
+            },
+            "result_shape": null,
+            "span": {
+              "end": 213,
+              "start": 213
+            },
+            "submission_shapes": {
+              "failure": null,
+              "reason": null,
+              "success": null
+            },
+            "unwind": {
+              "args": [],
+              "to": 5
+            }
+          }
+        },
+        {
+          "id": 2,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 3
+            },
+            "op": "goto",
+            "span": {
+              "end": 187,
+              "start": 187
+            }
+          }
+        },
+        {
+          "id": 3,
+          "ops": [],
+          "params": [],
+          "term": {
+            "op": "resume_unwind",
+            "span": {
+              "end": 187,
+              "start": 187
+            }
+          }
+        },
+        {
+          "id": 4,
+          "ops": [
+            {
+              "dst": 4,
+              "op": "const.int",
+              "own": "none",
+              "span": {
+                "end": 258,
+                "start": 258
+              },
+              "ty": "i64",
+              "value": "21"
+            }
+          ],
+          "params": [
+            {
+              "own": "none",
+              "value": 3
+            }
+          ],
+          "term": {
+            "cancel": {
+              "args": [],
+              "to": 8
+            },
+            "detail": {
+              "actor": 1,
+              "deadline_ns": null,
+              "message": 518159035,
+              "policy": "wait",
+              "sealed": false
+            },
+            "error_shape": 1,
+            "inputs": [
+              {
+                "decision": "borrow",
+                "value": 3
+              },
+              {
+                "decision": "move",
+                "value": 1
+              },
+              {
+                "decision": "move",
+                "value": 4
+              }
+            ],
+            "kind": "Ask",
+            "op": "suspend",
+            "request_shapes": {
+              "failure": 0,
+              "message": null,
+              "reason": 3,
+              "request": null
+            },
+            "result": {
+              "own": "none",
+              "value": 5
+            },
+            "result_shape": 0,
+            "resumes": [
+              {
+                "args": [
+                  5
+                ],
+                "to": 7
+              }
+            ],
+            "span": {
+              "end": 258,
+              "start": 258
+            },
+            "unwind": {
+              "args": [],
+              "to": 9
+            }
+          }
+        },
+        {
+          "id": 5,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 6
+            },
+            "op": "goto",
+            "span": {
+              "end": 213,
+              "start": 213
+            }
+          }
+        },
+        {
+          "id": 6,
+          "ops": [],
+          "params": [],
+          "term": {
+            "op": "resume_unwind",
+            "span": {
+              "end": 213,
+              "start": 213
+            }
+          }
+        },
+        {
+          "id": 7,
+          "ops": [],
+          "params": [
+            {
+              "own": "none",
+              "value": 6
+            }
+          ],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 12
+            },
+            "op": "goto",
+            "span": {
+              "end": 258,
+              "start": 258
+            }
+          }
+        },
+        {
+          "id": 8,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 10
+            },
+            "op": "goto",
+            "span": {
+              "end": 258,
+              "start": 258
+            }
+          }
+        },
+        {
+          "id": 9,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 11
+            },
+            "op": "goto",
+            "span": {
+              "end": 258,
+              "start": 258
+            }
+          }
+        },
+        {
+          "id": 10,
+          "ops": [],
+          "params": [],
+          "term": {
+            "op": "resume_unwind",
+            "span": {
+              "end": 258,
+              "start": 258
+            }
+          }
+        },
+        {
+          "id": 11,
+          "ops": [],
+          "params": [],
+          "term": {
+            "op": "resume_unwind",
+            "span": {
+              "end": 258,
+              "start": 258
+            }
+          }
+        },
+        {
+          "id": 12,
+          "ops": [],
+          "params": [],
+          "term": {
             "op": "return",
-            "span": null
+            "span": {
+              "end": 258,
+              "start": 258
+            },
+            "value": null
           }
         }
       ],
-      "id": "fn:sink.collect",
-      "locals": [
-        {
-          "id": "local:sink.reply",
-          "mutable": false,
-          "name": "reply",
-          "span": null,
-          "type": "type:reply"
-        },
-        {
-          "id": "local:sink.value",
-          "mutable": false,
-          "name": "value",
-          "span": null,
-          "type": "type:i64"
-        }
-      ],
-      "module": "mod:main",
-      "name": "Sink.collect",
-      "params": [
-        "local:sink.reply",
-        "local:sink.value"
-      ],
-      "result": "type:unit",
-      "span": null
-    },
-    {
-      "blocks": [
-        {
-          "id": "block:doubler.process.entry",
-          "instructions": [
-            {
-              "args": [
-                {
-                  "kind": "literal",
-                  "value": 2
-                }
-              ],
-              "dst": "local:doubler.two",
-              "op": "const.i64",
-              "span": null
-            },
-            {
-              "args": [
-                {
-                  "kind": "local",
-                  "value": "local:doubler.value"
-                },
-                {
-                  "kind": "local",
-                  "value": "local:doubler.two"
-                }
-              ],
-              "dst": "local:doubler.out",
-              "op": "i64.mul",
-              "span": null
-            },
-            {
-              "args": [
-                {
-                  "kind": "local",
-                  "value": "local:doubler.next"
-                },
-                {
-                  "kind": "symbol",
-                  "value": "collect"
-                },
-                {
-                  "kind": "local",
-                  "value": "local:doubler.out"
-                }
-              ],
-              "dst": null,
-              "op": "actor.send",
-              "span": null
-            }
-          ],
-          "params": [],
-          "span": null,
-          "terminator": {
-            "args": [],
-            "op": "return",
-            "span": null
-          }
-        }
-      ],
-      "id": "fn:doubler.process",
-      "locals": [
-        {
-          "id": "local:doubler.reply",
-          "mutable": false,
-          "name": "reply",
-          "span": null,
-          "type": "type:reply"
-        },
-        {
-          "id": "local:doubler.next",
-          "mutable": false,
-          "name": "next",
-          "span": null,
-          "type": "type:Sink"
-        },
-        {
-          "id": "local:doubler.value",
-          "mutable": false,
-          "name": "value",
-          "span": null,
-          "type": "type:i64"
-        },
-        {
-          "id": "local:doubler.two",
-          "mutable": false,
-          "name": null,
-          "span": null,
-          "type": "type:i64"
-        },
-        {
-          "id": "local:doubler.out",
-          "mutable": false,
-          "name": null,
-          "span": null,
-          "type": "type:i64"
-        }
-      ],
-      "module": "mod:main",
-      "name": "Doubler.process",
-      "params": [
-        "local:doubler.reply",
-        "local:doubler.next",
-        "local:doubler.value"
-      ],
-      "result": "type:unit",
-      "span": null
-    },
-    {
-      "blocks": [
-        {
-          "id": "block:main.entry",
-          "instructions": [
-            {
-              "args": [
-                {
-                  "kind": "type",
-                  "value": "type:Sink"
-                }
-              ],
-              "dst": "local:main.sink",
-              "op": "actor.spawn",
-              "span": null
-            },
-            {
-              "args": [
-                {
-                  "kind": "type",
-                  "value": "type:Doubler"
-                }
-              ],
-              "dst": "local:main.doubler",
-              "op": "actor.spawn",
-              "span": null
-            },
-            {
-              "args": [
-                {
-                  "kind": "literal",
-                  "value": 21
-                }
-              ],
-              "dst": "local:main.value",
-              "op": "const.i64",
-              "span": null
-            },
-            {
-              "args": [
-                {
-                  "kind": "local",
-                  "value": "local:main.doubler"
-                },
-                {
-                  "kind": "symbol",
-                  "value": "process"
-                },
-                {
-                  "kind": "local",
-                  "value": "local:main.sink"
-                },
-                {
-                  "kind": "local",
-                  "value": "local:main.value"
-                }
-              ],
-              "dst": null,
-              "op": "actor.send",
-              "span": null
-            }
-          ],
-          "params": [],
-          "span": null,
-          "terminator": {
-            "args": [],
-            "op": "return",
-            "span": null
-          }
-        }
-      ],
-      "id": "fn:main",
-      "locals": [
-        {
-          "id": "local:main.sink",
-          "mutable": false,
-          "name": "sink",
-          "span": null,
-          "type": "type:Sink"
-        },
-        {
-          "id": "local:main.doubler",
-          "mutable": false,
-          "name": "doubler",
-          "span": null,
-          "type": "type:Doubler"
-        },
-        {
-          "id": "local:main.value",
-          "mutable": false,
-          "name": null,
-          "span": null,
-          "type": "type:i64"
-        }
-      ],
-      "module": "mod:main",
-      "name": "main",
+      "entry": 0,
+      "id": 0,
+      "name": "__hew_fn_main",
       "params": [],
-      "result": "type:unit",
-      "span": null
+      "places": []
+    },
+    {
+      "blocks": [
+        {
+          "id": 0,
+          "ops": [],
+          "params": [],
+          "term": {
+            "args": [
+              {
+                "decision": "copy",
+                "value": 1
+              }
+            ],
+            "family": 0,
+            "normal": {
+              "args": [],
+              "to": 1
+            },
+            "op": "runtime.call",
+            "result": null,
+            "result_shape": null,
+            "span": {
+              "end": 46,
+              "start": 46
+            },
+            "structural": null,
+            "unwind": null
+          }
+        },
+        {
+          "id": 1,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 2
+            },
+            "op": "goto",
+            "span": {
+              "end": 46,
+              "start": 46
+            }
+          }
+        },
+        {
+          "id": 2,
+          "ops": [],
+          "params": [],
+          "term": {
+            "op": "return",
+            "span": {
+              "end": 46,
+              "start": 46
+            },
+            "value": null
+          }
+        }
+      ],
+      "entry": 0,
+      "id": 1,
+      "name": "__hew_actor_0_Sink__collect",
+      "params": [
+        {
+          "own": "guaranteed",
+          "value": 0
+        },
+        {
+          "own": "none",
+          "value": 1
+        }
+      ],
+      "places": []
+    },
+    {
+      "blocks": [
+        {
+          "id": 0,
+          "ops": [
+            {
+              "dst": 3,
+              "op": "const.int",
+              "own": "none",
+              "span": {
+                "end": 156,
+                "start": 156
+              },
+              "ty": "i64",
+              "value": "2"
+            }
+          ],
+          "params": [],
+          "term": {
+            "binary_op": "Multiply",
+            "failures": [
+              {
+                "edge": {
+                  "args": [],
+                  "to": 2
+                },
+                "trap": "integer_overflow"
+              }
+            ],
+            "lhs": 2,
+            "normal": {
+              "args": [
+                4
+              ],
+              "to": 1
+            },
+            "op": "checked.binary",
+            "result": {
+              "own": "none",
+              "value": 4
+            },
+            "rhs": 3,
+            "span": {
+              "end": 156,
+              "start": 156
+            },
+            "ty": "i64"
+          }
+        },
+        {
+          "id": 1,
+          "ops": [],
+          "params": [
+            {
+              "own": "none",
+              "value": 5
+            }
+          ],
+          "term": {
+            "cancel": {
+              "args": [],
+              "to": 6
+            },
+            "detail": {
+              "actor": 0,
+              "deadline_ns": null,
+              "message": 4150717511,
+              "policy": "wait",
+              "sealed": false
+            },
+            "error_shape": 1,
+            "inputs": [
+              {
+                "decision": "borrow",
+                "value": 1
+              },
+              {
+                "decision": "move",
+                "value": 5
+              }
+            ],
+            "kind": "Ask",
+            "op": "suspend",
+            "request_shapes": {
+              "failure": 0,
+              "message": null,
+              "reason": 3,
+              "request": null
+            },
+            "result": {
+              "own": "none",
+              "value": 6
+            },
+            "result_shape": 0,
+            "resumes": [
+              {
+                "args": [
+                  6
+                ],
+                "to": 5
+              }
+            ],
+            "span": {
+              "end": 156,
+              "start": 156
+            },
+            "unwind": {
+              "args": [],
+              "to": 7
+            }
+          }
+        },
+        {
+          "id": 2,
+          "ops": [],
+          "params": [],
+          "term": {
+            "cleanup": {
+              "args": [],
+              "to": 3
+            },
+            "op": "checked_raise",
+            "span": {
+              "end": 156,
+              "start": 156
+            },
+            "trap": "integer_overflow"
+          }
+        },
+        {
+          "id": 3,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 4
+            },
+            "op": "goto",
+            "span": {
+              "end": 156,
+              "start": 156
+            }
+          }
+        },
+        {
+          "id": 4,
+          "ops": [],
+          "params": [],
+          "term": {
+            "op": "resume_unwind",
+            "span": {
+              "end": 156,
+              "start": 156
+            }
+          }
+        },
+        {
+          "id": 5,
+          "ops": [],
+          "params": [
+            {
+              "own": "none",
+              "value": 7
+            }
+          ],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 10
+            },
+            "op": "goto",
+            "span": {
+              "end": 156,
+              "start": 156
+            }
+          }
+        },
+        {
+          "id": 6,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 8
+            },
+            "op": "goto",
+            "span": {
+              "end": 156,
+              "start": 156
+            }
+          }
+        },
+        {
+          "id": 7,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 9
+            },
+            "op": "goto",
+            "span": {
+              "end": 156,
+              "start": 156
+            }
+          }
+        },
+        {
+          "id": 8,
+          "ops": [],
+          "params": [],
+          "term": {
+            "op": "resume_unwind",
+            "span": {
+              "end": 156,
+              "start": 156
+            }
+          }
+        },
+        {
+          "id": 9,
+          "ops": [],
+          "params": [],
+          "term": {
+            "op": "resume_unwind",
+            "span": {
+              "end": 156,
+              "start": 156
+            }
+          }
+        },
+        {
+          "id": 10,
+          "ops": [],
+          "params": [],
+          "term": {
+            "op": "return",
+            "span": {
+              "end": 156,
+              "start": 156
+            },
+            "value": null
+          }
+        }
+      ],
+      "entry": 0,
+      "id": 2,
+      "name": "__hew_actor_1_Doubler__process",
+      "params": [
+        {
+          "own": "guaranteed",
+          "value": 0
+        },
+        {
+          "own": "none",
+          "value": 1
+        },
+        {
+          "own": "none",
+          "value": 2
+        }
+      ],
+      "places": []
     }
   ],
   "hew_version": "0.6.0-rc4",
-  "layouts": {
-    "actors": [
-      {
-        "handlers": [
-          {
-            "function": "fn:sink.collect",
-            "name": "collect"
-          }
-        ],
-        "id": "type:Sink",
-        "max_mailbox": 4,
-        "name": "Sink",
-        "state_fields": []
-      },
-      {
-        "handlers": [
-          {
-            "function": "fn:doubler.process",
-            "name": "process"
-          }
-        ],
-        "id": "type:Doubler",
-        "max_mailbox": 4,
-        "name": "Doubler",
-        "state_fields": []
-      }
-    ],
-    "enums": [],
-    "machines": [],
-    "records": [],
-    "supervisors": [],
-    "types": [
-      {
-        "id": "type:unit",
-        "kind": "unit",
-        "name": "()"
-      },
-      {
-        "id": "type:i64",
-        "kind": "integer",
-        "name": "i64"
-      },
-      {
-        "id": "type:string",
-        "kind": "string",
-        "name": "String"
-      },
-      {
-        "id": "type:actor",
-        "kind": "actor",
-        "name": "Actor"
-      },
-      {
-        "id": "type:reply",
-        "kind": "opaque",
-        "name": "ReplyToken"
-      },
-      {
-        "id": "type:Sink",
-        "kind": "actor",
-        "name": "Sink"
-      },
-      {
-        "id": "type:Doubler",
-        "kind": "actor",
-        "name": "Doubler"
-      }
-    ]
-  },
-  "module_graph": {
-    "entry": "mod:main",
-    "modules": [
-      {
-        "functions": [
-          "fn:sink.collect",
-          "fn:doubler.process",
-          "fn:main"
-        ],
-        "id": "mod:main",
-        "imports": [],
-        "path": "main.hew",
-        "source_id": "src:main"
-      }
-    ]
-  },
-  "package_id": "pkg:actor-pipeline",
-  "profile": "sandbox.educational.v0",
-  "schema_version": "hew.sandbox.bytecode.v0",
-  "source_map": {
-    "sources": [],
-    "spans": []
-  },
-  "stdlib_symbols": [
+  "profile": "sandbox.sandbox-vm-export.v0",
+  "regex_patterns": [],
+  "resources": [],
+  "runtime_families": [
     {
-      "admission": "allowed",
-      "capability": "core.stdout",
-      "id": "sym:core.stdout.println",
-      "module": "core.stdout",
-      "name": "println",
-      "params": [
-        "type:any"
-      ],
-      "result": "type:unit"
+      "detail": {
+        "kind": "I64",
+        "newline": true
+      },
+      "family": "Print",
+      "id": 0
     }
-  ]
+  ],
+  "schema_version": "hew.sandbox.bytecode.v1",
+  "strings": [],
+  "structural_render": [],
+  "supervisors": [],
+  "suspend_kinds": [
+    "Ask"
+  ],
+  "value_capabilities": [],
+  "variants": [
+    {
+      "cases": [
+        {
+          "fields": [
+            "0"
+          ],
+          "name": "Ok"
+        },
+        {
+          "fields": [
+            "0"
+          ],
+          "name": "Err"
+        }
+      ],
+      "id": 0,
+      "name": "Result<(), ActorError<Never, Never>>"
+    },
+    {
+      "cases": [
+        {
+          "fields": [
+            "0"
+          ],
+          "name": "Rejected"
+        },
+        {
+          "fields": [
+            "0"
+          ],
+          "name": "Failed"
+        },
+        {
+          "fields": [],
+          "name": "Trapped"
+        },
+        {
+          "fields": [],
+          "name": "Dead"
+        },
+        {
+          "fields": [],
+          "name": "Timeout"
+        },
+        {
+          "fields": [],
+          "name": "NodeNotRunning"
+        },
+        {
+          "fields": [],
+          "name": "RoutingFailed"
+        },
+        {
+          "fields": [],
+          "name": "EncodeFailed"
+        },
+        {
+          "fields": [],
+          "name": "ConnectionDropped"
+        },
+        {
+          "fields": [],
+          "name": "Partition"
+        }
+      ],
+      "id": 1,
+      "name": "ActorError<Never, Never>"
+    },
+    {
+      "cases": [],
+      "id": 2,
+      "name": "Never"
+    },
+    {
+      "cases": [
+        {
+          "fields": [],
+          "name": "Full"
+        },
+        {
+          "fields": [],
+          "name": "Closed"
+        },
+        {
+          "fields": [],
+          "name": "NodeRoutingNotWired"
+        },
+        {
+          "fields": [],
+          "name": "Partition"
+        },
+        {
+          "fields": [],
+          "name": "StaleRef"
+        },
+        {
+          "fields": [],
+          "name": "LocalShutdown"
+        },
+        {
+          "fields": [],
+          "name": "Cancelled"
+        },
+        {
+          "fields": [],
+          "name": "VersionMismatch"
+        },
+        {
+          "fields": [],
+          "name": "Unauthorized"
+        },
+        {
+          "fields": [],
+          "name": "Backpressure"
+        },
+        {
+          "fields": [],
+          "name": "Dead"
+        }
+      ],
+      "id": 3,
+      "name": "SendError"
+    }
+  ],
+  "vtables": []
 }

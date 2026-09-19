@@ -68,12 +68,7 @@
     "event": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "seq",
-        "type",
-        "phase",
-        "span"
-      ],
+      "required": ["seq", "type", "phase", "span"],
       "properties": {
         "seq": {
           "type": "integer",
@@ -97,12 +92,7 @@
           ]
         },
         "phase": {
-          "enum": [
-            "compile",
-            "profile",
-            "run",
-            "replay"
-          ]
+          "enum": ["compile", "profile", "run", "replay"]
         },
         "span": {
           "$ref": "#/$defs/span_or_null"
@@ -164,12 +154,7 @@
     "replay": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "seed",
-        "step_budget",
-        "virtual_clock",
-        "inputs"
-      ],
+      "required": ["seed", "step_budget", "virtual_clock", "inputs"],
       "properties": {
         "seed": {
           "type": "integer",
@@ -194,10 +179,7 @@
     "replay_input": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "kind",
-        "data"
-      ],
+      "required": ["kind", "data"],
       "properties": {
         "kind": {
           "enum": [
@@ -218,11 +200,7 @@
     "virtual_clock": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "epoch_ms",
-        "tick_ms",
-        "current_ms"
-      ],
+      "required": ["epoch_ms", "tick_ms", "current_ms"],
       "properties": {
         "epoch_ms": {
           "type": "integer",
@@ -354,12 +332,7 @@
           ]
         },
         "severity": {
-          "enum": [
-            "error",
-            "warning",
-            "info",
-            "help"
-          ]
+          "enum": ["error", "warning", "info", "help"]
         },
         "code": {
           "type": "string",
@@ -389,20 +362,13 @@
     "suggestion": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "message",
-        "replacement",
-        "span"
-      ],
+      "required": ["message", "replacement", "span"],
       "properties": {
         "message": {
           "type": "string"
         },
         "replacement": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": ["string", "null"]
         },
         "span": {
           "$ref": "#/$defs/span_or_null"
@@ -412,22 +378,14 @@
     "sandbox_rejection": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "code",
-        "capability",
-        "message",
-        "span"
-      ],
+      "required": ["code", "capability", "message", "span"],
       "properties": {
         "code": {
           "type": "string",
           "pattern": "^[a-z0-9_.:-]+$"
         },
         "capability": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": ["string", "null"]
         },
         "message": {
           "type": "string",
@@ -435,18 +393,16 @@
         },
         "span": {
           "$ref": "#/$defs/span_or_null"
+        },
+        "category": {
+          "enum": ["native_only", "not_implemented", "invalid_package"]
         }
       }
     },
     "runtime_failure": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "kind",
-        "message",
-        "span",
-        "trap_kind"
-      ],
+      "required": ["kind", "message", "span", "trap_kind"],
       "properties": {
         "kind": {
           "enum": [
@@ -499,13 +455,7 @@
     "id_snapshot": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "actors",
-        "channels",
-        "tasks",
-        "supervisors",
-        "machines"
-      ],
+      "required": ["actors", "channels", "tasks", "supervisors", "machines"],
       "properties": {
         "actors": {
           "$ref": "#/$defs/id_array"
@@ -531,13 +481,7 @@
       }
     },
     "id_kind": {
-      "enum": [
-        "actor",
-        "channel",
-        "task",
-        "supervisor",
-        "machine"
-      ]
+      "enum": ["actor", "channel", "task", "supervisor", "machine"]
     },
     "sandbox_id": {
       "type": "string",
@@ -546,11 +490,7 @@
     "value_binding": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "name",
-        "type",
-        "value"
-      ],
+      "required": ["name", "type", "value"],
       "properties": {
         "name": {
           "type": "string",
@@ -578,12 +518,7 @@
     "span": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "source_id",
-        "path",
-        "start",
-        "end"
-      ],
+      "required": ["source_id", "path", "start", "end"],
       "properties": {
         "source_id": {
           "type": "string",
@@ -604,11 +539,7 @@
     "source_position": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "line",
-        "column",
-        "byte_offset"
-      ],
+      "required": ["line", "column", "byte_offset"],
       "properties": {
         "line": {
           "type": "integer",

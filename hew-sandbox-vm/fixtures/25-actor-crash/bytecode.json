@@ -1,316 +1,1002 @@
 {
-  "capabilities": [
+  "actors": [
     {
-      "disposition": "allowed",
-      "id": "core.stdout",
-      "reason": "page stdout shim",
-      "required_by": [
-        "sym:core.stdout.println"
-      ]
+      "crash": 1,
+      "crash_action": 0,
+      "crash_info": 0,
+      "handlers": [
+        {
+          "callable": 2,
+          "fallible": false,
+          "message_id": 1451298403,
+          "name": "explode",
+          "params": 0,
+          "result_shape": null,
+          "streams": false
+        }
+      ],
+      "id": 0,
+      "overflow": "block",
+      "state_fields": [],
+      "stop": []
     }
   ],
-  "compiler_version": "handcrafted-pending-actor-lifecycle-parser-emitter",
+  "aggregates": [
+    {
+      "fields": [
+        "code",
+        "message"
+      ],
+      "id": 0,
+      "name": "std.failure.CrashInfo"
+    },
+    {
+      "fields": [
+        "reason",
+        "message"
+      ],
+      "id": 1,
+      "name": "SendFailure<Never>"
+    }
+  ],
+  "bytes": [],
+  "closures": [],
+  "compiler_version": "hew-wasm-0.6.0-rc4",
+  "entry": {
+    "exit": "unit",
+    "function": 0
+  },
+  "externs": [],
   "functions": [
     {
       "blocks": [
         {
-          "id": "block:boom.explode.entry",
-          "instructions": [
-            {
-              "args": [
-                {
-                  "kind": "literal",
-                  "value": "boom"
-                }
-              ],
-              "dst": "local:boom.msg",
-              "op": "const.string",
-              "span": null
-            },
-            {
-              "args": [
-                {
-                  "kind": "local",
-                  "value": "local:boom.msg"
-                }
-              ],
-              "dst": null,
-              "op": "panic",
-              "span": null
-            }
-          ],
+          "id": 0,
+          "ops": [],
           "params": [],
-          "span": null,
-          "terminator": {
+          "term": {
             "args": [],
-            "op": "return",
-            "span": null
+            "error_shape": null,
+            "normal": {
+              "args": [
+                0
+              ],
+              "to": 1
+            },
+            "op": "actor.call",
+            "operation": {
+              "actor": 0,
+              "op": "spawn"
+            },
+            "request_shapes": {
+              "failure": null,
+              "message": null,
+              "reason": null,
+              "request": null
+            },
+            "result": {
+              "own": "none",
+              "value": 0
+            },
+            "result_shape": null,
+            "span": {
+              "end": 211,
+              "start": 211
+            },
+            "submission_shapes": {
+              "failure": null,
+              "reason": null,
+              "success": null
+            },
+            "unwind": {
+              "args": [],
+              "to": 2
+            }
           }
-        }
-      ],
-      "id": "fn:boom.explode",
-      "locals": [
-        {
-          "id": "local:boom.reply",
-          "mutable": false,
-          "name": "reply",
-          "span": null,
-          "type": "type:reply"
         },
         {
-          "id": "local:boom.msg",
-          "mutable": false,
-          "name": null,
-          "span": null,
-          "type": "type:string"
-        }
-      ],
-      "module": "mod:main",
-      "name": "Boom.explode",
-      "params": [
-        "local:boom.reply"
-      ],
-      "result": "type:unit",
-      "span": null
-    },
-    {
-      "blocks": [
-        {
-          "id": "block:boom.crash.entry",
-          "instructions": [
+          "id": 1,
+          "ops": [],
+          "params": [
             {
-              "args": [
-                {
-                  "kind": "literal",
-                  "value": "crashed"
-                }
-              ],
-              "dst": "local:boom.text",
-              "op": "const.string",
-              "span": null
-            },
-            {
-              "args": [
-                {
-                  "kind": "symbol",
-                  "value": "sym:core.stdout.println"
-                },
-                {
-                  "kind": "local",
-                  "value": "local:boom.text"
-                }
-              ],
-              "dst": null,
-              "op": "call.stdlib",
-              "span": null
-            },
-            {
-              "args": [
-                {
-                  "kind": "literal",
-                  "value": "stop"
-                }
-              ],
-              "dst": "local:boom.decision",
-              "op": "const.string",
-              "span": null
+              "own": "none",
+              "value": 1
             }
           ],
-          "params": [],
-          "span": null,
-          "terminator": {
-            "args": [
+          "term": {
+            "cancel": {
+              "args": [],
+              "to": 5
+            },
+            "detail": {
+              "actor": 0,
+              "deadline_ns": null,
+              "message": 1451298403,
+              "policy": "wait",
+              "sealed": false
+            },
+            "error_shape": 2,
+            "inputs": [
               {
-                "kind": "local",
-                "value": "local:boom.decision"
+                "decision": "borrow",
+                "value": 1
               }
             ],
+            "kind": "Ask",
+            "op": "suspend",
+            "request_shapes": {
+              "failure": 1,
+              "message": null,
+              "reason": 4,
+              "request": null
+            },
+            "result": {
+              "own": "none",
+              "value": 2
+            },
+            "result_shape": 1,
+            "resumes": [
+              {
+                "args": [
+                  2
+                ],
+                "to": 4
+              }
+            ],
+            "span": {
+              "end": 235,
+              "start": 235
+            },
+            "unwind": {
+              "args": [],
+              "to": 6
+            }
+          }
+        },
+        {
+          "id": 2,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 3
+            },
+            "op": "goto",
+            "span": {
+              "end": 211,
+              "start": 211
+            }
+          }
+        },
+        {
+          "id": 3,
+          "ops": [],
+          "params": [],
+          "term": {
+            "op": "resume_unwind",
+            "span": {
+              "end": 211,
+              "start": 211
+            }
+          }
+        },
+        {
+          "id": 4,
+          "ops": [],
+          "params": [
+            {
+              "own": "none",
+              "value": 3
+            }
+          ],
+          "term": {
+            "cancel": {
+              "args": [],
+              "to": 10
+            },
+            "detail": {
+              "actor": 0,
+              "deadline_ns": null,
+              "message": 1451298403,
+              "policy": "wait",
+              "sealed": false
+            },
+            "error_shape": 2,
+            "inputs": [
+              {
+                "decision": "borrow",
+                "value": 1
+              }
+            ],
+            "kind": "Ask",
+            "op": "suspend",
+            "request_shapes": {
+              "failure": 1,
+              "message": null,
+              "reason": 4,
+              "request": null
+            },
+            "result": {
+              "own": "none",
+              "value": 4
+            },
+            "result_shape": 1,
+            "resumes": [
+              {
+                "args": [
+                  4
+                ],
+                "to": 9
+              }
+            ],
+            "span": {
+              "end": 269,
+              "start": 269
+            },
+            "unwind": {
+              "args": [],
+              "to": 11
+            }
+          }
+        },
+        {
+          "id": 5,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 7
+            },
+            "op": "goto",
+            "span": {
+              "end": 235,
+              "start": 235
+            }
+          }
+        },
+        {
+          "id": 6,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 8
+            },
+            "op": "goto",
+            "span": {
+              "end": 235,
+              "start": 235
+            }
+          }
+        },
+        {
+          "id": 7,
+          "ops": [],
+          "params": [],
+          "term": {
+            "op": "resume_unwind",
+            "span": {
+              "end": 235,
+              "start": 235
+            }
+          }
+        },
+        {
+          "id": 8,
+          "ops": [],
+          "params": [],
+          "term": {
+            "op": "resume_unwind",
+            "span": {
+              "end": 235,
+              "start": 235
+            }
+          }
+        },
+        {
+          "id": 9,
+          "ops": [],
+          "params": [
+            {
+              "own": "none",
+              "value": 5
+            }
+          ],
+          "term": {
+            "arms": [
+              {
+                "edge": {
+                  "args": [
+                    6
+                  ],
+                  "to": 14
+                },
+                "fields": [
+                  {
+                    "own": "none",
+                    "value": 6
+                  }
+                ],
+                "variant": 0
+              },
+              {
+                "edge": {
+                  "args": [
+                    8
+                  ],
+                  "to": 15
+                },
+                "fields": [
+                  {
+                    "own": "none",
+                    "value": 8
+                  }
+                ],
+                "variant": 1
+              }
+            ],
+            "op": "switch.variant",
+            "scrutinee": 5,
+            "shape": 1,
+            "span": {
+              "end": 269,
+              "start": 269
+            }
+          }
+        },
+        {
+          "id": 10,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 12
+            },
+            "op": "goto",
+            "span": {
+              "end": 269,
+              "start": 269
+            }
+          }
+        },
+        {
+          "id": 11,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 13
+            },
+            "op": "goto",
+            "span": {
+              "end": 269,
+              "start": 269
+            }
+          }
+        },
+        {
+          "id": 12,
+          "ops": [],
+          "params": [],
+          "term": {
+            "op": "resume_unwind",
+            "span": {
+              "end": 269,
+              "start": 269
+            }
+          }
+        },
+        {
+          "id": 13,
+          "ops": [],
+          "params": [],
+          "term": {
+            "op": "resume_unwind",
+            "span": {
+              "end": 269,
+              "start": 269
+            }
+          }
+        },
+        {
+          "id": 14,
+          "ops": [
+            {
+              "dst": 10,
+              "op": "const.str",
+              "own": "owned",
+              "span": {
+                "end": 314,
+                "start": 314
+              },
+              "str": 0
+            }
+          ],
+          "params": [
+            {
+              "own": "none",
+              "value": 7
+            }
+          ],
+          "term": {
+            "edge": {
+              "args": [
+                10
+              ],
+              "to": 18
+            },
+            "op": "goto",
+            "span": {
+              "end": 314,
+              "start": 314
+            }
+          }
+        },
+        {
+          "id": 15,
+          "ops": [
+            {
+              "dst": 11,
+              "op": "variant.is",
+              "own": "none",
+              "shape": 2,
+              "source": 9,
+              "span": null,
+              "variant": 3
+            }
+          ],
+          "params": [
+            {
+              "own": "none",
+              "value": 9
+            }
+          ],
+          "term": {
+            "condition": 11,
+            "else": {
+              "args": [],
+              "to": 17
+            },
+            "op": "branch",
+            "span": {
+              "end": 314,
+              "start": 314
+            },
+            "then": {
+              "args": [],
+              "to": 16
+            }
+          }
+        },
+        {
+          "id": 16,
+          "ops": [
+            {
+              "dst": null,
+              "op": "variant.destructure",
+              "results": [],
+              "shape": 2,
+              "source": 9,
+              "span": null,
+              "variant": 3
+            },
+            {
+              "dst": 12,
+              "op": "const.str",
+              "own": "owned",
+              "span": {
+                "end": 301,
+                "start": 301
+              },
+              "str": 1
+            }
+          ],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [
+                12
+              ],
+              "to": 18
+            },
+            "op": "goto",
+            "span": {
+              "end": 314,
+              "start": 314
+            }
+          }
+        },
+        {
+          "id": 17,
+          "ops": [
+            {
+              "dst": 13,
+              "op": "const.str",
+              "own": "owned",
+              "span": {
+                "end": 314,
+                "start": 314
+              },
+              "str": 0
+            }
+          ],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [
+                13
+              ],
+              "to": 18
+            },
+            "op": "goto",
+            "span": {
+              "end": 314,
+              "start": 314
+            }
+          }
+        },
+        {
+          "id": 18,
+          "ops": [],
+          "params": [
+            {
+              "own": "owned",
+              "value": 14
+            }
+          ],
+          "term": {
+            "args": [
+              {
+                "decision": "borrow",
+                "value": 14
+              }
+            ],
+            "family": 0,
+            "normal": {
+              "args": [],
+              "to": 19
+            },
+            "op": "runtime.call",
+            "result": null,
+            "result_shape": null,
+            "span": {
+              "end": 314,
+              "start": 314
+            },
+            "structural": null,
+            "unwind": null
+          }
+        },
+        {
+          "id": 19,
+          "ops": [
+            {
+              "dst": null,
+              "op": "destroy_value",
+              "span": null,
+              "value": 14
+            }
+          ],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 20
+            },
+            "op": "goto",
+            "span": {
+              "end": 314,
+              "start": 314
+            }
+          }
+        },
+        {
+          "id": 20,
+          "ops": [],
+          "params": [],
+          "term": {
             "op": "return",
-            "span": null
+            "span": {
+              "end": 314,
+              "start": 314
+            },
+            "value": null
           }
         }
       ],
-      "id": "fn:boom.crash",
-      "locals": [
-        {
-          "id": "local:boom.failure",
-          "mutable": false,
-          "name": "failure",
-          "span": null,
-          "type": "type:string"
-        },
-        {
-          "id": "local:boom.text",
-          "mutable": false,
-          "name": null,
-          "span": null,
-          "type": "type:string"
-        },
-        {
-          "id": "local:boom.decision",
-          "mutable": false,
-          "name": null,
-          "span": null,
-          "type": "type:string"
-        }
-      ],
-      "module": "mod:main",
-      "name": "Boom.on_crash",
-      "params": [
-        "local:boom.failure"
-      ],
-      "result": "type:string",
-      "span": null
+      "entry": 0,
+      "id": 0,
+      "name": "__hew_fn_main",
+      "params": [],
+      "places": []
     },
     {
       "blocks": [
         {
-          "id": "block:main.entry",
-          "instructions": [
+          "id": 0,
+          "ops": [
             {
-              "args": [
-                {
-                  "kind": "type",
-                  "value": "type:Boom"
-                }
-              ],
-              "dst": "local:main.boom",
-              "op": "actor.spawn",
+              "dst": null,
+              "op": "alloc_place",
+              "place": 0,
               "span": null
             },
             {
-              "args": [
-                {
-                  "kind": "local",
-                  "value": "local:main.boom"
-                },
-                {
-                  "kind": "symbol",
-                  "value": "explode"
-                }
-              ],
               "dst": null,
-              "op": "actor.send",
+              "op": "store.init",
+              "place": 0,
+              "span": null,
+              "value": 1
+            },
+            {
+              "dst": 2,
+              "op": "const.str",
+              "own": "owned",
+              "span": {
+                "end": 139,
+                "start": 139
+              },
+              "str": 2
+            }
+          ],
+          "params": [],
+          "term": {
+            "args": [
+              {
+                "decision": "borrow",
+                "value": 2
+              }
+            ],
+            "family": 0,
+            "normal": {
+              "args": [],
+              "to": 1
+            },
+            "op": "runtime.call",
+            "result": null,
+            "result_shape": null,
+            "span": {
+              "end": 139,
+              "start": 139
+            },
+            "structural": null,
+            "unwind": null
+          }
+        },
+        {
+          "id": 1,
+          "ops": [
+            {
+              "dst": null,
+              "op": "destroy_value",
+              "span": null,
+              "value": 2
+            },
+            {
+              "dst": 3,
+              "fields": [],
+              "op": "variant.make",
+              "own": "none",
+              "shape": 0,
+              "span": {
+                "end": 159,
+                "start": 159
+              },
+              "variant": 2
+            }
+          ],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 2
+            },
+            "op": "goto",
+            "span": {
+              "end": 159,
+              "start": 159
+            }
+          }
+        },
+        {
+          "id": 2,
+          "ops": [
+            {
+              "dst": null,
+              "op": "end_lifetime",
+              "place": 0,
               "span": null
             }
           ],
           "params": [],
-          "span": null,
-          "terminator": {
-            "args": [],
+          "term": {
             "op": "return",
-            "span": null
+            "span": {
+              "end": 159,
+              "start": 159
+            },
+            "value": {
+              "decision": "move",
+              "value": 3
+            }
           }
         }
       ],
-      "id": "fn:main",
-      "locals": [
+      "entry": 0,
+      "id": 1,
+      "name": "__hew_actor_0_hook_crashed",
+      "params": [
         {
-          "id": "local:main.boom",
-          "mutable": false,
-          "name": "boom",
-          "span": null,
-          "type": "type:Boom"
+          "own": "guaranteed",
+          "value": 0
+        },
+        {
+          "own": "owned",
+          "value": 1
         }
       ],
-      "module": "mod:main",
-      "name": "main",
-      "params": [],
-      "result": "type:unit",
-      "span": null
+      "places": [
+        {
+          "id": 0,
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "blocks": [
+        {
+          "id": 0,
+          "ops": [
+            {
+              "dst": 1,
+              "op": "const.str",
+              "own": "owned",
+              "span": {
+                "end": 46,
+                "start": 46
+              },
+              "str": 3
+            }
+          ],
+          "params": [],
+          "term": {
+            "cleanup": {
+              "args": [],
+              "to": 1
+            },
+            "message": {
+              "decision": "borrow",
+              "value": 1
+            },
+            "op": "panic",
+            "span": {
+              "end": 46,
+              "start": 46
+            }
+          }
+        },
+        {
+          "id": 1,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 2
+            },
+            "op": "goto",
+            "span": {
+              "end": 46,
+              "start": 46
+            }
+          }
+        },
+        {
+          "id": 2,
+          "ops": [
+            {
+              "dst": null,
+              "op": "destroy_value",
+              "span": null,
+              "value": 1
+            }
+          ],
+          "params": [],
+          "term": {
+            "op": "resume_unwind",
+            "span": {
+              "end": 46,
+              "start": 46
+            }
+          }
+        }
+      ],
+      "entry": 0,
+      "id": 2,
+      "name": "__hew_actor_0_Boom__explode",
+      "params": [
+        {
+          "own": "guaranteed",
+          "value": 0
+        }
+      ],
+      "places": []
     }
   ],
   "hew_version": "0.6.0-rc4",
-  "layouts": {
-    "actors": [
-      {
-        "handlers": [
-          {
-            "function": "fn:boom.explode",
-            "name": "explode"
-          },
-          {
-            "function": "fn:boom.crash",
-            "name": "on(crash)"
-          }
-        ],
-        "id": "type:Boom",
-        "max_mailbox": 4,
-        "name": "Boom",
-        "state_fields": []
-      }
-    ],
-    "enums": [],
-    "machines": [],
-    "records": [],
-    "supervisors": [],
-    "types": [
-      {
-        "id": "type:unit",
-        "kind": "unit",
-        "name": "()"
-      },
-      {
-        "id": "type:i64",
-        "kind": "integer",
-        "name": "i64"
-      },
-      {
-        "id": "type:string",
-        "kind": "string",
-        "name": "String"
-      },
-      {
-        "id": "type:actor",
-        "kind": "actor",
-        "name": "Actor"
-      },
-      {
-        "id": "type:reply",
-        "kind": "opaque",
-        "name": "ReplyToken"
-      },
-      {
-        "id": "type:Boom",
-        "kind": "actor",
-        "name": "Boom"
-      }
-    ]
-  },
-  "module_graph": {
-    "entry": "mod:main",
-    "modules": [
-      {
-        "functions": [
-          "fn:boom.explode",
-          "fn:boom.crash",
-          "fn:main"
-        ],
-        "id": "mod:main",
-        "imports": [],
-        "path": "main.hew",
-        "source_id": "src:main"
-      }
-    ]
-  },
-  "package_id": "pkg:actor-crash",
-  "profile": "sandbox.educational.v0",
-  "schema_version": "hew.sandbox.bytecode.v0",
-  "source_map": {
-    "sources": [],
-    "spans": []
-  },
-  "stdlib_symbols": [
+  "profile": "sandbox.sandbox-vm-export.v0",
+  "regex_patterns": [],
+  "resources": [],
+  "runtime_families": [
     {
-      "admission": "allowed",
-      "capability": "core.stdout",
-      "id": "sym:core.stdout.println",
-      "module": "core.stdout",
-      "name": "println",
-      "params": [
-        "type:any"
-      ],
-      "result": "type:unit"
+      "detail": {
+        "kind": "Str",
+        "newline": true
+      },
+      "family": "Print",
+      "id": 0
     }
-  ]
+  ],
+  "schema_version": "hew.sandbox.bytecode.v1",
+  "strings": [
+    "unexpected",
+    "dead",
+    "crashed",
+    "boom"
+  ],
+  "structural_render": [],
+  "supervisors": [],
+  "suspend_kinds": [
+    "Ask"
+  ],
+  "value_capabilities": [],
+  "variants": [
+    {
+      "cases": [
+        {
+          "fields": [],
+          "name": "Restart"
+        },
+        {
+          "fields": [],
+          "name": "Escalate"
+        },
+        {
+          "fields": [],
+          "name": "Kill"
+        }
+      ],
+      "id": 0,
+      "name": "std.failure.CrashAction"
+    },
+    {
+      "cases": [
+        {
+          "fields": [
+            "0"
+          ],
+          "name": "Ok"
+        },
+        {
+          "fields": [
+            "0"
+          ],
+          "name": "Err"
+        }
+      ],
+      "id": 1,
+      "name": "Result<(), ActorError<Never, Never>>"
+    },
+    {
+      "cases": [
+        {
+          "fields": [
+            "0"
+          ],
+          "name": "Rejected"
+        },
+        {
+          "fields": [
+            "0"
+          ],
+          "name": "Failed"
+        },
+        {
+          "fields": [],
+          "name": "Trapped"
+        },
+        {
+          "fields": [],
+          "name": "Dead"
+        },
+        {
+          "fields": [],
+          "name": "Timeout"
+        },
+        {
+          "fields": [],
+          "name": "NodeNotRunning"
+        },
+        {
+          "fields": [],
+          "name": "RoutingFailed"
+        },
+        {
+          "fields": [],
+          "name": "EncodeFailed"
+        },
+        {
+          "fields": [],
+          "name": "ConnectionDropped"
+        },
+        {
+          "fields": [],
+          "name": "Partition"
+        }
+      ],
+      "id": 2,
+      "name": "ActorError<Never, Never>"
+    },
+    {
+      "cases": [],
+      "id": 3,
+      "name": "Never"
+    },
+    {
+      "cases": [
+        {
+          "fields": [],
+          "name": "Full"
+        },
+        {
+          "fields": [],
+          "name": "Closed"
+        },
+        {
+          "fields": [],
+          "name": "NodeRoutingNotWired"
+        },
+        {
+          "fields": [],
+          "name": "Partition"
+        },
+        {
+          "fields": [],
+          "name": "StaleRef"
+        },
+        {
+          "fields": [],
+          "name": "LocalShutdown"
+        },
+        {
+          "fields": [],
+          "name": "Cancelled"
+        },
+        {
+          "fields": [],
+          "name": "VersionMismatch"
+        },
+        {
+          "fields": [],
+          "name": "Unauthorized"
+        },
+        {
+          "fields": [],
+          "name": "Backpressure"
+        },
+        {
+          "fields": [],
+          "name": "Dead"
+        }
+      ],
+      "id": 4,
+      "name": "SendError"
+    }
+  ],
+  "vtables": []
 }

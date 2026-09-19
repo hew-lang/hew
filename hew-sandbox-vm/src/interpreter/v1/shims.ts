@@ -1,6 +1,7 @@
+import type { Pipes } from "./pipes.js";
 /// The VM's runtime-family and extern shim table.
 ///
-/// This table is the admission authority (D517 Q415): a package may name a
+/// This table is the runtime-family admission authority: a package may name a
 /// runtime family or an extern symbol exactly when there is a shim here for it.
 /// A family or symbol with no entry is rejected at load, so there is no second
 /// reject list to keep in step with this one. `FileRead` and the `NativeIo`
@@ -25,6 +26,10 @@ export class ShimFault extends Error {
 /// What a shim may reach for. The executor owns faults and traces; a shim
 /// never touches the frame stack or the value environment.
 export interface ShimHost {
+  pipes?: Pipes;
+  newPipe?(capacity: number): VmValue;
+  closePipe?(value: VmValue): void;
+  releaseValue?(value: VmValue): void;
   /// Write to the program's standard output.
   writeStdout(text: string): void;
   /// The next line of replay stdin, and the replay record for it.
@@ -54,6 +59,22 @@ export function resolveRuntimeShim(
   entry: RuntimeFamilyEntry,
 ): RuntimeShim | undefined {
   switch (entry.family) {
+    case "SupervisorPool":
+      return ["Member", "Get", "AwaitRestartMember"].includes(
+        String(entry.detail),
+      )
+        ? () => {
+            throw new Error("SupervisorPool requires its resumable executor");
+          }
+        : undefined;
+    case "StructuralFormat":
+      return () => {
+        throw new Error("StructuralFormat requires its resumable executor");
+      };
+    case "FileRead":
+      return entry.detail === "LastError"
+        ? () => ({ kind: "string", value: "" })
+        : undefined;
     case "Print":
       return printShim(entry.detail);
     case "Vector":
@@ -75,7 +96,15 @@ export function resolveExternShim(symbol: string): RuntimeShim | undefined {
 /// a package that suspends on native I/O is refused at load.
 export const SUPPORTED_SUSPEND_KINDS: ReadonlySet<string> = new Set([
   "ValueClose",
+  "GeneratorNext",
+  "Yield",
   "Sleep",
+  "Ask",
+  "Await",
+  "Join",
+  "Select",
+  "StreamSend",
+  "StreamNext",
 ]);
 
 // ── families ────────────────────────────────────────────────────────────────
@@ -97,6 +126,36 @@ function printShim(detail: unknown): RuntimeShim | undefined {
 }
 
 const UNIT_FAMILY_SHIMS: Record<string, RuntimeShim | undefined> = {
+  StringToBytes: (_host, args) => ({
+    kind: "vector",
+    elementType: "u8",
+    items: [...new TextEncoder().encode(text(args, 0))].map((byte) =>
+      int(BigInt(byte)),
+    ),
+  }),
+  StringToUppercase: (_host, args) => ({
+    kind: "string",
+    value: text(args, 0).toUpperCase(),
+  }),
+  StringToLowercase: (_host, args) => ({
+    kind: "string",
+    value: text(args, 0).toLowerCase(),
+  }),
+  StreamPairSink: (host, args) => host.pipes!.extract(arg(args, 0), "sink"),
+  StreamPairStream: (host, args) => host.pipes!.extract(arg(args, 0), "stream"),
+  SinkClone: (host, args) => host.pipes!.cloneSink(arg(args, 0)),
+  SinkClose: (host, args) => {
+    host.closePipe!(arg(args, 0));
+    return UNIT;
+  },
+  SinkFinish: (host, args) => {
+    host.pipes!.close(arg(args, 0));
+    return UNIT;
+  },
+  StreamClose: (host, args) => {
+    host.closePipe!(arg(args, 0));
+    return UNIT;
+  },
   StringConcat: (_host, args) => str(`${text(args, 0)}${text(args, 1)}`),
   StringClone: (_host, args) => str(text(args, 0)),
   StringEquals: (_host, args) => bool(text(args, 0) === text(args, 1)),
@@ -320,11 +379,36 @@ const MAP_SHIMS: Record<string, RuntimeShim | undefined> = {
     target.entries.set(comparable(key), { key, value: arg(args, 2) });
     return target;
   },
+  Get: (host, args, shape) => {
+    if (!shape) {
+      throw new TypeError(
+        "Map::Get names no result shape to build its Option against",
+      );
+    }
+    const entry = map(args, 0).entries.get(comparable(arg(args, 1)));
+    return entry
+      ? host.enumValue(shape, "Some", [cloneValue(entry.value)])
+      : host.enumValue(shape, "None", []);
+  },
+  ContainsKey: (_host, args) =>
+    bool(map(args, 0).entries.has(comparable(arg(args, 1)))),
 };
 
 // ── externs ─────────────────────────────────────────────────────────────────
 
 const EXTERN_SHIMS: Record<string, RuntimeShim | undefined> = {
+  hew_msg_envelope_release: (host, args) => {
+    host.releaseValue!(arg(args, 0));
+    return UNIT;
+  },
+  hew_stream_channel: (host, args) => host.newPipe!(Number(integer(args, 0))),
+  hew_stream_pair_is_valid: () => ({ kind: "bool", value: true }),
+  hew_stream_pair_free: (host, args) => {
+    host.pipes!.freePair(arg(args, 0));
+    return UNIT;
+  },
+  hew_stream_last_error: () => ({ kind: "string", value: "" }),
+
   hew_regex_new: (host, args) => compileRegex(host, args),
   hew_regex_clone: (_host, args) => cloneValue(arg(args, 0)),
   // Releasing a handle the VM traces by reference is nothing to do.

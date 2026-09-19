@@ -11,7 +11,7 @@ const repoRoot = path.resolve(root, "..");
 const fixturesRoot = path.join(root, "fixtures");
 const deferred = readDeferredManifest();
 const workspaceVersion = readWorkspaceVersion();
-const canonicalCompilerVersion = `hew-sandbox-wasm-${workspaceVersion}`;
+const canonicalCompilerVersion = `hew-wasm-${workspaceVersion}`;
 
 test("sandbox VM package and fixtures track the workspace release version", () => {
   const packageVersion = readJson(path.join(root, "package.json")).version;

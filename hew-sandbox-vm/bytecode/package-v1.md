@@ -45,8 +45,8 @@ capability, and it never matches a symbol prefix.
 {
   "schema_version": "hew.sandbox.bytecode.v1",
   "hew_version": "0.6.0-rc4",
-  "compiler_version": "hew-sandbox-wasm-0.6.0-rc4",
-  "profile": "sandbox-vm-export",
+  "compiler_version": "hew-wasm-0.6.0-rc4",
+  "profile": "sandbox.sandbox-vm-export.v0",
 
   "entry": { "function": 0, "exit": "unit" },
 
@@ -192,7 +192,7 @@ its `origin`, which says where its storage comes from:
 | `aggregate`   | One field of its base, in place                                         | `base` (`{"place": id}` or `{"value": id}`), `shape` (a `variants`-style record id, absent for a tuple), `field` |
 | `capture`     | One field of this closure body's receiver                               | `environment`, `field`                                                                                           |
 | `runtime`     | Storage the runtime owns                                                | -                                                                                                                |
-| `actor_state` | One seat of the actor's state, held by the enclosing turn               | `field`                                                                                                          |
+| `actor_state` | One seat of the actor's state, held by the enclosing turn               | `environment` (the state value id), `field`, `initialized`                                                       |
 
 Only a `local` place is allocated. Every other origin resolves through
 something the body already holds, so a load or store of it reaches that storage
@@ -241,3 +241,22 @@ SIR is pointer-width neutral, so nothing in this package depends on a target
 pointer size. `isize` and `usize` are 64-bit in the VM, matching native
 execution, and the divergences document records that as a promise, not an
 accident.
+
+### Resumable actor frames
+
+The `actors` table projects SIR state seats, lifecycle callables, receive
+members and mailbox policy. `supervisors` projects declared children and their
+spawn callables; a child role resolves its current incarnation on every use.
+
+An `actor_state` place reaches the `environment` value's field. A parked turn
+retains that state receiver and its activation stack; a reply queues its resume
+edge without recursively invoking another actor. The deterministic scheduler
+records each resume as `actor.scheduler-step`, including root resumes.
+
+Operations carry their result's `own` fact. A boundary transfer of an SSA value
+with `own: "none"` does not invalidate it: SIR permits subsequent uses of that
+trivial value. Owned transfers still invalidate their source.
+
+Actor calls and suspensions carry `result_shape` and `error_shape` for the
+checked completion envelope. Runtime-produced `Ok`, `Err`, `Trapped` and `Dead`
+values use those descriptors' declaration-order tags.

@@ -1,0 +1,42 @@
+type Readings<T> = Vec<T>;
+
+impl<T> Display for Readings<T> {
+    fn fmt(values: Readings<T>) -> string {
+        f"readings({values.len()})"
+    }
+}
+
+type Archived<T> = Option<Readings<T>>;
+
+type Report<T> {
+    readings: Readings<T>,
+    archived: Archived<T>,
+    plain: Vec<T>,
+    pair: (Readings<T>, string),
+}
+
+enum Event {
+    Update { readings: Readings<i64> },
+    History(Archived<i64>),
+}
+
+type Stations {
+    values: HashMap<string, Readings<i64>>,
+}
+
+fn show<T>(report: Report<T>) -> string {
+    f"{report:?}"
+}
+
+fn main() {
+    let readings: Readings<i64> = [3, 5];
+    let report = Report { readings: readings, archived: Some(readings), plain: readings, pair: (readings, "west") };
+    println(show(report));
+    let events = [Event.Update { readings: readings }, Event.History(Some(readings))];
+    println(f"{events:?}");
+    var by_station: HashMap<string, Readings<i64>> = HashMap.new();
+    by_station.insert("west", readings);
+    let stations = Stations { values: by_station };
+    println(f"{stations:?}");
+    println(f"{readings:?}");
+}

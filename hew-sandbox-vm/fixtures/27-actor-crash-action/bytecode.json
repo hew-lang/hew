@@ -1,0 +1,1239 @@
+{
+  "actors": [
+    {
+      "crash": 1,
+      "crash_action": 0,
+      "crash_info": 0,
+      "handlers": [
+        {
+          "callable": 2,
+          "fallible": false,
+          "message_id": 1695211016,
+          "name": "fail",
+          "params": 0,
+          "result_shape": null,
+          "streams": false
+        }
+      ],
+      "id": 0,
+      "overflow": "block",
+      "state_fields": [],
+      "stop": []
+    }
+  ],
+  "aggregates": [
+    {
+      "fields": [
+        "code",
+        "message"
+      ],
+      "id": 0,
+      "name": "std.failure.CrashInfo"
+    },
+    {
+      "fields": [
+        "reason",
+        "message"
+      ],
+      "id": 1,
+      "name": "SendFailure<Never>"
+    }
+  ],
+  "bytes": [],
+  "closures": [],
+  "compiler_version": "hew-wasm-0.6.0-rc4",
+  "entry": {
+    "exit": "unit",
+    "function": 0
+  },
+  "externs": [],
+  "functions": [
+    {
+      "blocks": [
+        {
+          "id": 0,
+          "ops": [],
+          "params": [],
+          "term": {
+            "args": [],
+            "error_shape": null,
+            "normal": {
+              "args": [
+                0
+              ],
+              "to": 1
+            },
+            "op": "actor.call",
+            "operation": {
+              "op": "supervisor_spawn",
+              "supervisor": 0
+            },
+            "request_shapes": {
+              "failure": null,
+              "message": null,
+              "reason": null,
+              "request": null
+            },
+            "result": {
+              "own": "none",
+              "value": 0
+            },
+            "result_shape": null,
+            "span": {
+              "end": 272,
+              "start": 272
+            },
+            "submission_shapes": {
+              "failure": null,
+              "reason": null,
+              "success": null
+            },
+            "unwind": {
+              "args": [],
+              "to": 2
+            }
+          }
+        },
+        {
+          "id": 1,
+          "ops": [],
+          "params": [
+            {
+              "own": "none",
+              "value": 1
+            }
+          ],
+          "term": {
+            "args": [
+              {
+                "decision": "move",
+                "value": 1
+              }
+            ],
+            "error_shape": null,
+            "normal": {
+              "args": [
+                2
+              ],
+              "to": 4
+            },
+            "op": "actor.call",
+            "operation": {
+              "child": 0,
+              "op": "supervisor_child",
+              "owner_is_role": false,
+              "supervisor": 0
+            },
+            "request_shapes": {
+              "failure": null,
+              "message": null,
+              "reason": null,
+              "request": null
+            },
+            "result": {
+              "own": "none",
+              "value": 2
+            },
+            "result_shape": null,
+            "span": {
+              "end": 301,
+              "start": 301
+            },
+            "submission_shapes": {
+              "failure": null,
+              "reason": null,
+              "success": null
+            },
+            "unwind": {
+              "args": [],
+              "to": 5
+            }
+          }
+        },
+        {
+          "id": 2,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 3
+            },
+            "op": "goto",
+            "span": {
+              "end": 272,
+              "start": 272
+            }
+          }
+        },
+        {
+          "id": 3,
+          "ops": [],
+          "params": [],
+          "term": {
+            "op": "resume_unwind",
+            "span": {
+              "end": 272,
+              "start": 272
+            }
+          }
+        },
+        {
+          "id": 4,
+          "ops": [],
+          "params": [
+            {
+              "own": "none",
+              "value": 3
+            }
+          ],
+          "term": {
+            "cancel": {
+              "args": [],
+              "to": 8
+            },
+            "detail": {
+              "actor": 0,
+              "deadline_ns": null,
+              "message": 1695211016,
+              "policy": "wait",
+              "sealed": false
+            },
+            "error_shape": 2,
+            "inputs": [
+              {
+                "decision": "borrow",
+                "value": 3
+              }
+            ],
+            "kind": "Ask",
+            "op": "suspend",
+            "request_shapes": {
+              "failure": 1,
+              "message": null,
+              "reason": 4,
+              "request": null
+            },
+            "result": {
+              "own": "none",
+              "value": 4
+            },
+            "result_shape": 1,
+            "resumes": [
+              {
+                "args": [
+                  4
+                ],
+                "to": 7
+              }
+            ],
+            "span": {
+              "end": 326,
+              "start": 326
+            },
+            "unwind": {
+              "args": [],
+              "to": 9
+            }
+          }
+        },
+        {
+          "id": 5,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 6
+            },
+            "op": "goto",
+            "span": {
+              "end": 301,
+              "start": 301
+            }
+          }
+        },
+        {
+          "id": 6,
+          "ops": [],
+          "params": [],
+          "term": {
+            "op": "resume_unwind",
+            "span": {
+              "end": 301,
+              "start": 301
+            }
+          }
+        },
+        {
+          "id": 7,
+          "ops": [],
+          "params": [
+            {
+              "own": "none",
+              "value": 5
+            }
+          ],
+          "term": {
+            "cancel": {
+              "args": [],
+              "to": 13
+            },
+            "detail": {
+              "actor": 0,
+              "deadline_ns": null,
+              "message": 1695211016,
+              "policy": "wait",
+              "sealed": false
+            },
+            "error_shape": 2,
+            "inputs": [
+              {
+                "decision": "borrow",
+                "value": 3
+              }
+            ],
+            "kind": "Ask",
+            "op": "suspend",
+            "request_shapes": {
+              "failure": 1,
+              "message": null,
+              "reason": 4,
+              "request": null
+            },
+            "result": {
+              "own": "none",
+              "value": 6
+            },
+            "result_shape": 1,
+            "resumes": [
+              {
+                "args": [
+                  6
+                ],
+                "to": 12
+              }
+            ],
+            "span": {
+              "end": 359,
+              "start": 359
+            },
+            "unwind": {
+              "args": [],
+              "to": 14
+            }
+          }
+        },
+        {
+          "id": 8,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 10
+            },
+            "op": "goto",
+            "span": {
+              "end": 326,
+              "start": 326
+            }
+          }
+        },
+        {
+          "id": 9,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 11
+            },
+            "op": "goto",
+            "span": {
+              "end": 326,
+              "start": 326
+            }
+          }
+        },
+        {
+          "id": 10,
+          "ops": [],
+          "params": [],
+          "term": {
+            "op": "resume_unwind",
+            "span": {
+              "end": 326,
+              "start": 326
+            }
+          }
+        },
+        {
+          "id": 11,
+          "ops": [],
+          "params": [],
+          "term": {
+            "op": "resume_unwind",
+            "span": {
+              "end": 326,
+              "start": 326
+            }
+          }
+        },
+        {
+          "id": 12,
+          "ops": [],
+          "params": [
+            {
+              "own": "none",
+              "value": 7
+            }
+          ],
+          "term": {
+            "arms": [
+              {
+                "edge": {
+                  "args": [
+                    8
+                  ],
+                  "to": 17
+                },
+                "fields": [
+                  {
+                    "own": "none",
+                    "value": 8
+                  }
+                ],
+                "variant": 0
+              },
+              {
+                "edge": {
+                  "args": [
+                    10
+                  ],
+                  "to": 18
+                },
+                "fields": [
+                  {
+                    "own": "none",
+                    "value": 10
+                  }
+                ],
+                "variant": 1
+              }
+            ],
+            "op": "switch.variant",
+            "scrutinee": 7,
+            "shape": 1,
+            "span": {
+              "end": 359,
+              "start": 359
+            }
+          }
+        },
+        {
+          "id": 13,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 15
+            },
+            "op": "goto",
+            "span": {
+              "end": 359,
+              "start": 359
+            }
+          }
+        },
+        {
+          "id": 14,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 16
+            },
+            "op": "goto",
+            "span": {
+              "end": 359,
+              "start": 359
+            }
+          }
+        },
+        {
+          "id": 15,
+          "ops": [],
+          "params": [],
+          "term": {
+            "op": "resume_unwind",
+            "span": {
+              "end": 359,
+              "start": 359
+            }
+          }
+        },
+        {
+          "id": 16,
+          "ops": [],
+          "params": [],
+          "term": {
+            "op": "resume_unwind",
+            "span": {
+              "end": 359,
+              "start": 359
+            }
+          }
+        },
+        {
+          "id": 17,
+          "ops": [
+            {
+              "dst": 12,
+              "op": "const.str",
+              "own": "owned",
+              "span": {
+                "end": 405,
+                "start": 405
+              },
+              "str": 0
+            }
+          ],
+          "params": [
+            {
+              "own": "none",
+              "value": 9
+            }
+          ],
+          "term": {
+            "edge": {
+              "args": [
+                12
+              ],
+              "to": 21
+            },
+            "op": "goto",
+            "span": {
+              "end": 405,
+              "start": 405
+            }
+          }
+        },
+        {
+          "id": 18,
+          "ops": [
+            {
+              "dst": 13,
+              "op": "variant.is",
+              "own": "none",
+              "shape": 2,
+              "source": 11,
+              "span": null,
+              "variant": 3
+            }
+          ],
+          "params": [
+            {
+              "own": "none",
+              "value": 11
+            }
+          ],
+          "term": {
+            "condition": 13,
+            "else": {
+              "args": [],
+              "to": 20
+            },
+            "op": "branch",
+            "span": {
+              "end": 405,
+              "start": 405
+            },
+            "then": {
+              "args": [],
+              "to": 19
+            }
+          }
+        },
+        {
+          "id": 19,
+          "ops": [
+            {
+              "dst": null,
+              "op": "variant.destructure",
+              "results": [],
+              "shape": 2,
+              "source": 11,
+              "span": null,
+              "variant": 3
+            },
+            {
+              "dst": 14,
+              "op": "const.str",
+              "own": "owned",
+              "span": {
+                "end": 390,
+                "start": 390
+              },
+              "str": 1
+            }
+          ],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [
+                14
+              ],
+              "to": 21
+            },
+            "op": "goto",
+            "span": {
+              "end": 405,
+              "start": 405
+            }
+          }
+        },
+        {
+          "id": 20,
+          "ops": [
+            {
+              "dst": 15,
+              "op": "const.str",
+              "own": "owned",
+              "span": {
+                "end": 405,
+                "start": 405
+              },
+              "str": 0
+            }
+          ],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [
+                15
+              ],
+              "to": 21
+            },
+            "op": "goto",
+            "span": {
+              "end": 405,
+              "start": 405
+            }
+          }
+        },
+        {
+          "id": 21,
+          "ops": [],
+          "params": [
+            {
+              "own": "owned",
+              "value": 16
+            }
+          ],
+          "term": {
+            "args": [
+              {
+                "decision": "borrow",
+                "value": 16
+              }
+            ],
+            "family": 0,
+            "normal": {
+              "args": [],
+              "to": 22
+            },
+            "op": "runtime.call",
+            "result": null,
+            "result_shape": null,
+            "span": {
+              "end": 405,
+              "start": 405
+            },
+            "structural": null,
+            "unwind": null
+          }
+        },
+        {
+          "id": 22,
+          "ops": [
+            {
+              "dst": null,
+              "op": "destroy_value",
+              "span": null,
+              "value": 16
+            }
+          ],
+          "params": [],
+          "term": {
+            "args": [
+              {
+                "decision": "move",
+                "value": 1
+              }
+            ],
+            "error_shape": null,
+            "normal": {
+              "args": [],
+              "to": 23
+            },
+            "op": "actor.call",
+            "operation": {
+              "op": "supervisor_stop",
+              "supervisor": 0
+            },
+            "request_shapes": null,
+            "result": null,
+            "result_shape": null,
+            "span": {
+              "end": 432,
+              "start": 432
+            },
+            "submission_shapes": null,
+            "unwind": {
+              "args": [],
+              "to": 24
+            }
+          }
+        },
+        {
+          "id": 23,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 26
+            },
+            "op": "goto",
+            "span": {
+              "end": 432,
+              "start": 432
+            }
+          }
+        },
+        {
+          "id": 24,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 25
+            },
+            "op": "goto",
+            "span": {
+              "end": 432,
+              "start": 432
+            }
+          }
+        },
+        {
+          "id": 25,
+          "ops": [],
+          "params": [],
+          "term": {
+            "op": "resume_unwind",
+            "span": {
+              "end": 432,
+              "start": 432
+            }
+          }
+        },
+        {
+          "id": 26,
+          "ops": [],
+          "params": [],
+          "term": {
+            "op": "return",
+            "span": {
+              "end": 432,
+              "start": 432
+            },
+            "value": null
+          }
+        }
+      ],
+      "entry": 0,
+      "id": 0,
+      "name": "__hew_fn_main",
+      "params": [],
+      "places": []
+    },
+    {
+      "blocks": [
+        {
+          "id": 0,
+          "ops": [
+            {
+              "dst": null,
+              "op": "alloc_place",
+              "place": 0,
+              "span": null
+            },
+            {
+              "dst": null,
+              "op": "store.init",
+              "place": 0,
+              "span": null,
+              "value": 1
+            },
+            {
+              "dst": 2,
+              "fields": [],
+              "op": "variant.make",
+              "own": "none",
+              "shape": 0,
+              "span": {
+                "end": 122,
+                "start": 122
+              },
+              "variant": 2
+            }
+          ],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 1
+            },
+            "op": "goto",
+            "span": {
+              "end": 122,
+              "start": 122
+            }
+          }
+        },
+        {
+          "id": 1,
+          "ops": [
+            {
+              "dst": null,
+              "op": "end_lifetime",
+              "place": 0,
+              "span": null
+            }
+          ],
+          "params": [],
+          "term": {
+            "op": "return",
+            "span": {
+              "end": 122,
+              "start": 122
+            },
+            "value": {
+              "decision": "move",
+              "value": 2
+            }
+          }
+        }
+      ],
+      "entry": 0,
+      "id": 1,
+      "name": "__hew_actor_0_hook_crashed",
+      "params": [
+        {
+          "own": "guaranteed",
+          "value": 0
+        },
+        {
+          "own": "owned",
+          "value": 1
+        }
+      ],
+      "places": [
+        {
+          "id": 0,
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "blocks": [
+        {
+          "id": 0,
+          "ops": [
+            {
+              "dst": 1,
+              "op": "const.str",
+              "own": "owned",
+              "span": {
+                "end": 45,
+                "start": 45
+              },
+              "str": 2
+            }
+          ],
+          "params": [],
+          "term": {
+            "cleanup": {
+              "args": [],
+              "to": 1
+            },
+            "message": {
+              "decision": "borrow",
+              "value": 1
+            },
+            "op": "panic",
+            "span": {
+              "end": 45,
+              "start": 45
+            }
+          }
+        },
+        {
+          "id": 1,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 2
+            },
+            "op": "goto",
+            "span": {
+              "end": 45,
+              "start": 45
+            }
+          }
+        },
+        {
+          "id": 2,
+          "ops": [
+            {
+              "dst": null,
+              "op": "destroy_value",
+              "span": null,
+              "value": 1
+            }
+          ],
+          "params": [],
+          "term": {
+            "op": "resume_unwind",
+            "span": {
+              "end": 45,
+              "start": 45
+            }
+          }
+        }
+      ],
+      "entry": 0,
+      "id": 2,
+      "name": "__hew_actor_0_Worker__fail",
+      "params": [
+        {
+          "own": "guaranteed",
+          "value": 0
+        }
+      ],
+      "places": []
+    },
+    {
+      "blocks": [
+        {
+          "id": 0,
+          "ops": [],
+          "params": [],
+          "term": {
+            "args": [],
+            "error_shape": null,
+            "normal": {
+              "args": [
+                0
+              ],
+              "to": 1
+            },
+            "op": "actor.call",
+            "operation": {
+              "actor": 0,
+              "op": "spawn"
+            },
+            "request_shapes": {
+              "failure": null,
+              "message": null,
+              "reason": null,
+              "request": null
+            },
+            "result": {
+              "own": "none",
+              "value": 0
+            },
+            "result_shape": null,
+            "span": {
+              "end": 221,
+              "start": 221
+            },
+            "submission_shapes": {
+              "failure": null,
+              "reason": null,
+              "success": null
+            },
+            "unwind": {
+              "args": [],
+              "to": 2
+            }
+          }
+        },
+        {
+          "id": 1,
+          "ops": [],
+          "params": [
+            {
+              "own": "none",
+              "value": 1
+            }
+          ],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 4
+            },
+            "op": "goto",
+            "span": {
+              "end": 221,
+              "start": 221
+            }
+          }
+        },
+        {
+          "id": 2,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 3
+            },
+            "op": "goto",
+            "span": {
+              "end": 221,
+              "start": 221
+            }
+          }
+        },
+        {
+          "id": 3,
+          "ops": [],
+          "params": [],
+          "term": {
+            "op": "resume_unwind",
+            "span": {
+              "end": 221,
+              "start": 221
+            }
+          }
+        },
+        {
+          "id": 4,
+          "ops": [],
+          "params": [],
+          "term": {
+            "op": "return",
+            "span": {
+              "end": 221,
+              "start": 221
+            },
+            "value": {
+              "decision": "move",
+              "value": 1
+            }
+          }
+        }
+      ],
+      "entry": 0,
+      "id": 3,
+      "name": "__hew_supervisor_0_child_0",
+      "params": [],
+      "places": []
+    }
+  ],
+  "hew_version": "0.6.0-rc4",
+  "profile": "sandbox.sandbox-vm-export.v0",
+  "regex_patterns": [],
+  "resources": [],
+  "runtime_families": [
+    {
+      "detail": {
+        "kind": "Str",
+        "newline": true
+      },
+      "family": "Print",
+      "id": 0
+    }
+  ],
+  "schema_version": "hew.sandbox.bytecode.v1",
+  "strings": [
+    "unexpected",
+    "killed",
+    "boom"
+  ],
+  "structural_render": [],
+  "supervisors": [
+    {
+      "children": [
+        {
+          "name": "worker",
+          "restart": "permanent",
+          "role": {
+            "actor": 0
+          },
+          "spawn": 3
+        }
+      ],
+      "id": 0,
+      "max_restarts": 3,
+      "strategy": "one_for_one",
+      "window_secs": 60
+    }
+  ],
+  "suspend_kinds": [
+    "Ask"
+  ],
+  "value_capabilities": [],
+  "variants": [
+    {
+      "cases": [
+        {
+          "fields": [],
+          "name": "Restart"
+        },
+        {
+          "fields": [],
+          "name": "Escalate"
+        },
+        {
+          "fields": [],
+          "name": "Kill"
+        }
+      ],
+      "id": 0,
+      "name": "std.failure.CrashAction"
+    },
+    {
+      "cases": [
+        {
+          "fields": [
+            "0"
+          ],
+          "name": "Ok"
+        },
+        {
+          "fields": [
+            "0"
+          ],
+          "name": "Err"
+        }
+      ],
+      "id": 1,
+      "name": "Result<(), ActorError<Never, Never>>"
+    },
+    {
+      "cases": [
+        {
+          "fields": [
+            "0"
+          ],
+          "name": "Rejected"
+        },
+        {
+          "fields": [
+            "0"
+          ],
+          "name": "Failed"
+        },
+        {
+          "fields": [],
+          "name": "Trapped"
+        },
+        {
+          "fields": [],
+          "name": "Dead"
+        },
+        {
+          "fields": [],
+          "name": "Timeout"
+        },
+        {
+          "fields": [],
+          "name": "NodeNotRunning"
+        },
+        {
+          "fields": [],
+          "name": "RoutingFailed"
+        },
+        {
+          "fields": [],
+          "name": "EncodeFailed"
+        },
+        {
+          "fields": [],
+          "name": "ConnectionDropped"
+        },
+        {
+          "fields": [],
+          "name": "Partition"
+        }
+      ],
+      "id": 2,
+      "name": "ActorError<Never, Never>"
+    },
+    {
+      "cases": [],
+      "id": 3,
+      "name": "Never"
+    },
+    {
+      "cases": [
+        {
+          "fields": [],
+          "name": "Full"
+        },
+        {
+          "fields": [],
+          "name": "Closed"
+        },
+        {
+          "fields": [],
+          "name": "NodeRoutingNotWired"
+        },
+        {
+          "fields": [],
+          "name": "Partition"
+        },
+        {
+          "fields": [],
+          "name": "StaleRef"
+        },
+        {
+          "fields": [],
+          "name": "LocalShutdown"
+        },
+        {
+          "fields": [],
+          "name": "Cancelled"
+        },
+        {
+          "fields": [],
+          "name": "VersionMismatch"
+        },
+        {
+          "fields": [],
+          "name": "Unauthorized"
+        },
+        {
+          "fields": [],
+          "name": "Backpressure"
+        },
+        {
+          "fields": [],
+          "name": "Dead"
+        }
+      ],
+      "id": 4,
+      "name": "SendError"
+    }
+  ],
+  "vtables": []
+}

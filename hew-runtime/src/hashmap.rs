@@ -264,6 +264,7 @@ pub unsafe extern "C" fn hew_hashmap_iter_free_layout(iter: *mut HewLayoutHashMa
 /// `builder` must be a live structural string builder, `m` must be null or a
 /// live layout map, and both callbacks must accept pointers to the map's
 /// borrowed key/value blobs without retaining or mutating them.
+/// `fault` must be writable for a formatter's owned fault on a nonzero return.
 #[no_mangle]
 #[expect(
     clippy::undocumented_unsafe_blocks,
@@ -274,7 +275,8 @@ pub unsafe extern "C" fn hew_structural_format_hashmap(
     m: *const HewLayoutHashMap,
     key_format: Option<crate::string::HewStructuralFormatFn>,
     value_format: Option<crate::string::HewStructuralFormatFn>,
-) {
+    fault: *mut *mut c_void,
+) -> i32 {
     let (Some(key_format), Some(value_format)) = (key_format, value_format) else {
         unsafe { libc::abort() };
     };
@@ -295,13 +297,20 @@ pub unsafe extern "C" fn hew_structural_format_hashmap(
             let key = unsafe { slot_key(map.entries, index, map.stride, map.key_offset) };
             let value = unsafe { slot_val(map.entries, index, map.stride, map.val_offset) };
             unsafe {
-                key_format(builder, key.cast());
+                let status = key_format(builder, key.cast(), fault);
+                if status != 0 {
+                    return status;
+                }
                 crate::string::structural_builder_append(builder, b": ");
-                value_format(builder, value.cast());
+                let status = value_format(builder, value.cast(), fault);
+                if status != 0 {
+                    return status;
+                }
             }
         }
     }
     unsafe { crate::string::structural_builder_append(builder, b"}") };
+    0
 }
 
 /// Round `offset` up to the next multiple of `align`. `align` must be a

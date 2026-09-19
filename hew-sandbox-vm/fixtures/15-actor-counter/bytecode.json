@@ -1,323 +1,875 @@
 {
-  "capabilities": [
+  "actors": [
     {
-      "disposition": "allowed",
-      "id": "core.stdout",
-      "reason": "page stdout shim",
-      "required_by": [
-        "sym:core.stdout.println"
-      ]
+      "handlers": [
+        {
+          "callable": 1,
+          "fallible": false,
+          "message_id": 3918176416,
+          "name": "increment",
+          "params": 1,
+          "result_shape": null,
+          "streams": false
+        }
+      ],
+      "id": 0,
+      "overflow": "block",
+      "state_fields": [
+        {
+          "deferred": false,
+          "mutable": true
+        }
+      ],
+      "stop": []
     }
   ],
-  "compiler_version": "handcrafted-pending-actor-scheduler-emitter",
+  "aggregates": [
+    {
+      "fields": [
+        "reason",
+        "message"
+      ],
+      "id": 0,
+      "name": "SendFailure<Never>"
+    }
+  ],
+  "bytes": [],
+  "closures": [],
+  "compiler_version": "hew-wasm-0.6.0-rc4",
+  "entry": {
+    "exit": "unit",
+    "function": 0
+  },
+  "externs": [],
   "functions": [
     {
       "blocks": [
         {
-          "id": "block:counter.increment.entry",
-          "instructions": [
+          "id": 0,
+          "ops": [
             {
-              "args": [
-                {
-                  "kind": "local",
-                  "value": "local:counter.count"
-                },
-                {
-                  "kind": "local",
-                  "value": "local:counter.n"
-                }
-              ],
-              "dst": "local:counter.next",
-              "op": "i64.add",
-              "span": null
-            },
-            {
-              "args": [
-                {
-                  "kind": "local",
-                  "value": "local:counter.reply"
-                },
-                {
-                  "kind": "local",
-                  "value": "local:counter.next"
-                }
-              ],
-              "dst": null,
-              "op": "actor.reply",
-              "span": null
+              "dst": 0,
+              "op": "const.int",
+              "own": "none",
+              "span": {
+                "end": 180,
+                "start": 180
+              },
+              "ty": "i64",
+              "value": "0"
             }
           ],
           "params": [],
-          "span": null,
-          "terminator": {
+          "term": {
             "args": [
               {
-                "kind": "local",
-                "value": "local:counter.next"
+                "decision": "move",
+                "value": 0
               }
             ],
+            "error_shape": null,
+            "normal": {
+              "args": [
+                1
+              ],
+              "to": 1
+            },
+            "op": "actor.call",
+            "operation": {
+              "actor": 0,
+              "op": "spawn"
+            },
+            "request_shapes": {
+              "failure": null,
+              "message": null,
+              "reason": null,
+              "request": null
+            },
+            "result": {
+              "own": "none",
+              "value": 1
+            },
+            "result_shape": null,
+            "span": {
+              "end": 180,
+              "start": 180
+            },
+            "submission_shapes": {
+              "failure": null,
+              "reason": null,
+              "success": null
+            },
+            "unwind": {
+              "args": [],
+              "to": 2
+            }
+          }
+        },
+        {
+          "id": 1,
+          "ops": [
+            {
+              "dst": 3,
+              "op": "const.int",
+              "own": "none",
+              "span": {
+                "end": 214,
+                "start": 214
+              },
+              "ty": "i64",
+              "value": "5"
+            }
+          ],
+          "params": [
+            {
+              "own": "none",
+              "value": 2
+            }
+          ],
+          "term": {
+            "cancel": {
+              "args": [],
+              "to": 5
+            },
+            "detail": {
+              "actor": 0,
+              "deadline_ns": null,
+              "message": 3918176416,
+              "policy": "wait",
+              "sealed": false
+            },
+            "error_shape": 1,
+            "inputs": [
+              {
+                "decision": "borrow",
+                "value": 2
+              },
+              {
+                "decision": "move",
+                "value": 3
+              }
+            ],
+            "kind": "Ask",
+            "op": "suspend",
+            "request_shapes": {
+              "failure": 0,
+              "message": null,
+              "reason": 3,
+              "request": null
+            },
+            "result": {
+              "own": "none",
+              "value": 4
+            },
+            "result_shape": 0,
+            "resumes": [
+              {
+                "args": [
+                  4
+                ],
+                "to": 4
+              }
+            ],
+            "span": {
+              "end": 214,
+              "start": 214
+            },
+            "unwind": {
+              "args": [],
+              "to": 6
+            }
+          }
+        },
+        {
+          "id": 2,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 3
+            },
+            "op": "goto",
+            "span": {
+              "end": 180,
+              "start": 180
+            }
+          }
+        },
+        {
+          "id": 3,
+          "ops": [],
+          "params": [],
+          "term": {
+            "op": "resume_unwind",
+            "span": {
+              "end": 180,
+              "start": 180
+            }
+          }
+        },
+        {
+          "id": 4,
+          "ops": [],
+          "params": [
+            {
+              "own": "none",
+              "value": 5
+            }
+          ],
+          "term": {
+            "arms": [
+              {
+                "edge": {
+                  "args": [
+                    6
+                  ],
+                  "to": 9
+                },
+                "fields": [
+                  {
+                    "own": "none",
+                    "value": 6
+                  }
+                ],
+                "variant": 0
+              },
+              {
+                "edge": {
+                  "args": [
+                    8
+                  ],
+                  "to": 10
+                },
+                "fields": [
+                  {
+                    "own": "none",
+                    "value": 8
+                  }
+                ],
+                "variant": 1
+              }
+            ],
+            "op": "switch.variant",
+            "scrutinee": 5,
+            "shape": 0,
+            "span": {
+              "end": 214,
+              "start": 214
+            }
+          }
+        },
+        {
+          "id": 5,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 7
+            },
+            "op": "goto",
+            "span": {
+              "end": 214,
+              "start": 214
+            }
+          }
+        },
+        {
+          "id": 6,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 8
+            },
+            "op": "goto",
+            "span": {
+              "end": 214,
+              "start": 214
+            }
+          }
+        },
+        {
+          "id": 7,
+          "ops": [],
+          "params": [],
+          "term": {
+            "op": "resume_unwind",
+            "span": {
+              "end": 214,
+              "start": 214
+            }
+          }
+        },
+        {
+          "id": 8,
+          "ops": [],
+          "params": [],
+          "term": {
+            "op": "resume_unwind",
+            "span": {
+              "end": 214,
+              "start": 214
+            }
+          }
+        },
+        {
+          "id": 9,
+          "ops": [],
+          "params": [
+            {
+              "own": "none",
+              "value": 7
+            }
+          ],
+          "term": {
+            "edge": {
+              "args": [
+                7
+              ],
+              "to": 14
+            },
+            "op": "goto",
+            "span": {
+              "end": 224,
+              "start": 224
+            }
+          }
+        },
+        {
+          "id": 10,
+          "ops": [
+            {
+              "dst": 10,
+              "op": "const.str",
+              "own": "owned",
+              "span": {
+                "end": 196,
+                "start": 196
+              },
+              "str": 0
+            },
+            {
+              "dst": 11,
+              "op": "const.str",
+              "own": "owned",
+              "span": {
+                "end": 224,
+                "start": 224
+              },
+              "str": 1
+            }
+          ],
+          "params": [
+            {
+              "own": "none",
+              "value": 9
+            }
+          ],
+          "term": {
+            "args": [
+              {
+                "decision": "borrow",
+                "value": 10
+              },
+              {
+                "decision": "borrow",
+                "value": 11
+              }
+            ],
+            "family": 0,
+            "normal": {
+              "args": [
+                12
+              ],
+              "to": 11
+            },
+            "op": "runtime.call",
+            "result": {
+              "own": "owned",
+              "value": 12
+            },
+            "result_shape": null,
+            "span": {
+              "end": 224,
+              "start": 224
+            },
+            "structural": null,
+            "unwind": null
+          }
+        },
+        {
+          "id": 11,
+          "ops": [
+            {
+              "dst": null,
+              "op": "destroy_value",
+              "span": null,
+              "value": 11
+            },
+            {
+              "dst": null,
+              "op": "destroy_value",
+              "span": null,
+              "value": 10
+            }
+          ],
+          "params": [
+            {
+              "own": "owned",
+              "value": 13
+            }
+          ],
+          "term": {
+            "cleanup": {
+              "args": [],
+              "to": 12
+            },
+            "message": {
+              "decision": "borrow",
+              "value": 13
+            },
+            "op": "panic",
+            "span": {
+              "end": 224,
+              "start": 224
+            }
+          }
+        },
+        {
+          "id": 12,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 13
+            },
+            "op": "goto",
+            "span": {
+              "end": 224,
+              "start": 224
+            }
+          }
+        },
+        {
+          "id": 13,
+          "ops": [
+            {
+              "dst": null,
+              "op": "destroy_value",
+              "span": null,
+              "value": 13
+            }
+          ],
+          "params": [],
+          "term": {
+            "op": "resume_unwind",
+            "span": {
+              "end": 224,
+              "start": 224
+            }
+          }
+        },
+        {
+          "id": 14,
+          "ops": [],
+          "params": [
+            {
+              "own": "none",
+              "value": 14
+            }
+          ],
+          "term": {
+            "args": [
+              {
+                "decision": "copy",
+                "value": 14
+              }
+            ],
+            "family": 1,
+            "normal": {
+              "args": [],
+              "to": 15
+            },
+            "op": "runtime.call",
+            "result": null,
+            "result_shape": null,
+            "span": {
+              "end": 224,
+              "start": 224
+            },
+            "structural": null,
+            "unwind": null
+          }
+        },
+        {
+          "id": 15,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 16
+            },
+            "op": "goto",
+            "span": {
+              "end": 224,
+              "start": 224
+            }
+          }
+        },
+        {
+          "id": 16,
+          "ops": [],
+          "params": [],
+          "term": {
             "op": "return",
-            "span": null
+            "span": {
+              "end": 224,
+              "start": 224
+            },
+            "value": null
           }
         }
       ],
-      "id": "fn:counter.increment",
-      "locals": [
-        {
-          "id": "local:counter.reply",
-          "mutable": false,
-          "name": "reply",
-          "span": null,
-          "type": "type:reply"
-        },
-        {
-          "id": "local:counter.count",
-          "mutable": false,
-          "name": "count",
-          "span": null,
-          "type": "type:i64"
-        },
-        {
-          "id": "local:counter.n",
-          "mutable": false,
-          "name": "n",
-          "span": null,
-          "type": "type:i64"
-        },
-        {
-          "id": "local:counter.next",
-          "mutable": false,
-          "name": null,
-          "span": null,
-          "type": "type:i64"
-        }
-      ],
-      "module": "mod:main",
-      "name": "Counter.increment",
-      "params": [
-        "local:counter.reply",
-        "local:counter.count",
-        "local:counter.n"
-      ],
-      "result": "type:i64",
-      "span": null
+      "entry": 0,
+      "id": 0,
+      "name": "__hew_fn_main",
+      "params": [],
+      "places": []
     },
     {
       "blocks": [
         {
-          "id": "block:main.entry",
-          "instructions": [
+          "id": 0,
+          "ops": [
             {
-              "args": [
-                {
-                  "kind": "literal",
-                  "value": 0
-                }
-              ],
-              "dst": "local:main.zero",
-              "op": "const.i64",
-              "span": null
-            },
-            {
-              "args": [
-                {
-                  "kind": "type",
-                  "value": "type:Counter"
-                },
-                {
-                  "kind": "local",
-                  "value": "local:main.zero"
-                }
-              ],
-              "dst": "local:main.counter",
-              "op": "actor.spawn",
-              "span": null
-            },
-            {
-              "args": [
-                {
-                  "kind": "literal",
-                  "value": 5
-                }
-              ],
-              "dst": "local:main.n",
-              "op": "const.i64",
-              "span": null
-            },
-            {
-              "args": [
-                {
-                  "kind": "local",
-                  "value": "local:main.counter"
-                },
-                {
-                  "kind": "symbol",
-                  "value": "increment"
-                },
-                {
-                  "kind": "local",
-                  "value": "local:main.n"
-                }
-              ],
-              "dst": "local:main.reply",
-              "op": "actor.ask",
-              "span": null
-            },
-            {
-              "args": [
-                {
-                  "kind": "symbol",
-                  "value": "sym:core.stdout.println"
-                },
-                {
-                  "kind": "local",
-                  "value": "local:main.reply"
-                }
-              ],
-              "dst": null,
-              "op": "call.stdlib",
-              "span": null
+              "dst": 2,
+              "op": "load.copy",
+              "own": "none",
+              "place": 0,
+              "span": {
+                "end": 95,
+                "start": 95
+              }
             }
           ],
           "params": [],
-          "span": null,
-          "terminator": {
-            "args": [],
+          "term": {
+            "binary_op": "Add",
+            "failures": [
+              {
+                "edge": {
+                  "args": [],
+                  "to": 2
+                },
+                "trap": "integer_overflow"
+              }
+            ],
+            "lhs": 2,
+            "normal": {
+              "args": [
+                3
+              ],
+              "to": 1
+            },
+            "op": "checked.binary",
+            "result": {
+              "own": "none",
+              "value": 3
+            },
+            "rhs": 1,
+            "span": {
+              "end": 103,
+              "start": 103
+            },
+            "ty": "i64"
+          }
+        },
+        {
+          "id": 1,
+          "ops": [
+            {
+              "dst": null,
+              "op": "store.assign",
+              "place": 0,
+              "span": {
+                "end": 95,
+                "start": 95
+              },
+              "value": 4
+            },
+            {
+              "dst": 5,
+              "op": "load.copy",
+              "own": "none",
+              "place": 0,
+              "span": {
+                "end": 114,
+                "start": 114
+              }
+            }
+          ],
+          "params": [
+            {
+              "own": "none",
+              "value": 4
+            }
+          ],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 5
+            },
+            "op": "goto",
+            "span": {
+              "end": 114,
+              "start": 114
+            }
+          }
+        },
+        {
+          "id": 2,
+          "ops": [],
+          "params": [],
+          "term": {
+            "cleanup": {
+              "args": [],
+              "to": 3
+            },
+            "op": "checked_raise",
+            "span": {
+              "end": 103,
+              "start": 103
+            },
+            "trap": "integer_overflow"
+          }
+        },
+        {
+          "id": 3,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 4
+            },
+            "op": "goto",
+            "span": {
+              "end": 103,
+              "start": 103
+            }
+          }
+        },
+        {
+          "id": 4,
+          "ops": [],
+          "params": [],
+          "term": {
+            "op": "resume_unwind",
+            "span": {
+              "end": 103,
+              "start": 103
+            }
+          }
+        },
+        {
+          "id": 5,
+          "ops": [],
+          "params": [],
+          "term": {
             "op": "return",
-            "span": null
+            "span": {
+              "end": 114,
+              "start": 114
+            },
+            "value": {
+              "decision": "move",
+              "value": 5
+            }
           }
         }
       ],
-      "id": "fn:main",
-      "locals": [
+      "entry": 0,
+      "id": 1,
+      "name": "__hew_actor_0_Counter__increment",
+      "params": [
         {
-          "id": "local:main.zero",
-          "mutable": false,
-          "name": null,
-          "span": null,
-          "type": "type:i64"
+          "own": "guaranteed",
+          "value": 0
         },
         {
-          "id": "local:main.counter",
-          "mutable": false,
-          "name": "counter",
-          "span": null,
-          "type": "type:Counter"
-        },
-        {
-          "id": "local:main.n",
-          "mutable": false,
-          "name": null,
-          "span": null,
-          "type": "type:i64"
-        },
-        {
-          "id": "local:main.reply",
-          "mutable": false,
-          "name": null,
-          "span": null,
-          "type": "type:i64"
+          "own": "none",
+          "value": 1
         }
       ],
-      "module": "mod:main",
-      "name": "main",
-      "params": [],
-      "result": "type:unit",
-      "span": null
+      "places": [
+        {
+          "environment": 0,
+          "field": 0,
+          "id": 0,
+          "initialized": true,
+          "origin": "actor_state"
+        }
+      ]
     }
   ],
   "hew_version": "0.6.0-rc4",
-  "layouts": {
-    "actors": [
-      {
-        "handlers": [
-          {
-            "function": "fn:counter.increment",
-            "name": "increment"
-          }
-        ],
-        "id": "type:Counter",
-        "max_mailbox": 4,
-        "name": "Counter",
-        "state_fields": [
-          {
-            "index": 0,
-            "name": "count",
-            "type": "type:i64"
-          }
-        ]
-      }
-    ],
-    "enums": [],
-    "machines": [],
-    "records": [],
-    "supervisors": [],
-    "types": [
-      {
-        "id": "type:unit",
-        "kind": "unit",
-        "name": "()"
-      },
-      {
-        "id": "type:i64",
-        "kind": "integer",
-        "name": "i64"
-      },
-      {
-        "id": "type:string",
-        "kind": "string",
-        "name": "String"
-      },
-      {
-        "id": "type:actor",
-        "kind": "actor",
-        "name": "Actor"
-      },
-      {
-        "id": "type:reply",
-        "kind": "opaque",
-        "name": "ReplyToken"
-      },
-      {
-        "id": "type:Counter",
-        "kind": "actor",
-        "name": "Counter"
-      }
-    ]
-  },
-  "module_graph": {
-    "entry": "mod:main",
-    "modules": [
-      {
-        "functions": [
-          "fn:counter.increment",
-          "fn:main"
-        ],
-        "id": "mod:main",
-        "imports": [],
-        "path": "main.hew",
-        "source_id": "src:main"
-      }
-    ]
-  },
-  "package_id": "pkg:actor-counter",
-  "profile": "sandbox.educational.v0",
-  "schema_version": "hew.sandbox.bytecode.v0",
-  "source_map": {
-    "sources": [],
-    "spans": []
-  },
-  "stdlib_symbols": [
+  "profile": "sandbox.sandbox-vm-export.v0",
+  "regex_patterns": [],
+  "resources": [],
+  "runtime_families": [
     {
-      "admission": "allowed",
-      "capability": "core.stdout",
-      "id": "sym:core.stdout.println",
-      "module": "core.stdout",
-      "name": "println",
-      "params": [
-        "type:any"
-      ],
-      "result": "type:unit"
+      "family": "StringConcat",
+      "id": 0
+    },
+    {
+      "detail": {
+        "kind": "I64",
+        "newline": true
+      },
+      "family": "Print",
+      "id": 1
     }
-  ]
+  ],
+  "schema_version": "hew.sandbox.bytecode.v1",
+  "strings": [
+    "expect failed: ",
+    "counter reply"
+  ],
+  "structural_render": [],
+  "supervisors": [],
+  "suspend_kinds": [
+    "Ask"
+  ],
+  "value_capabilities": [],
+  "variants": [
+    {
+      "cases": [
+        {
+          "fields": [
+            "0"
+          ],
+          "name": "Ok"
+        },
+        {
+          "fields": [
+            "0"
+          ],
+          "name": "Err"
+        }
+      ],
+      "id": 0,
+      "name": "Result<i64, ActorError<Never, Never>>"
+    },
+    {
+      "cases": [
+        {
+          "fields": [
+            "0"
+          ],
+          "name": "Rejected"
+        },
+        {
+          "fields": [
+            "0"
+          ],
+          "name": "Failed"
+        },
+        {
+          "fields": [],
+          "name": "Trapped"
+        },
+        {
+          "fields": [],
+          "name": "Dead"
+        },
+        {
+          "fields": [],
+          "name": "Timeout"
+        },
+        {
+          "fields": [],
+          "name": "NodeNotRunning"
+        },
+        {
+          "fields": [],
+          "name": "RoutingFailed"
+        },
+        {
+          "fields": [],
+          "name": "EncodeFailed"
+        },
+        {
+          "fields": [],
+          "name": "ConnectionDropped"
+        },
+        {
+          "fields": [],
+          "name": "Partition"
+        }
+      ],
+      "id": 1,
+      "name": "ActorError<Never, Never>"
+    },
+    {
+      "cases": [],
+      "id": 2,
+      "name": "Never"
+    },
+    {
+      "cases": [
+        {
+          "fields": [],
+          "name": "Full"
+        },
+        {
+          "fields": [],
+          "name": "Closed"
+        },
+        {
+          "fields": [],
+          "name": "NodeRoutingNotWired"
+        },
+        {
+          "fields": [],
+          "name": "Partition"
+        },
+        {
+          "fields": [],
+          "name": "StaleRef"
+        },
+        {
+          "fields": [],
+          "name": "LocalShutdown"
+        },
+        {
+          "fields": [],
+          "name": "Cancelled"
+        },
+        {
+          "fields": [],
+          "name": "VersionMismatch"
+        },
+        {
+          "fields": [],
+          "name": "Unauthorized"
+        },
+        {
+          "fields": [],
+          "name": "Backpressure"
+        },
+        {
+          "fields": [],
+          "name": "Dead"
+        }
+      ],
+      "id": 3,
+      "name": "SendError"
+    }
+  ],
+  "vtables": []
 }

@@ -1,8 +1,9 @@
 {
+  "actors": [],
   "aggregates": [],
   "bytes": [],
   "closures": [],
-  "compiler_version": "hew-sandbox-wasm-0.6.0-rc4",
+  "compiler_version": "hew-wasm-0.6.0-rc4",
   "entry": {
     "exit": "unit",
     "function": 0
@@ -18,6 +19,7 @@
               "dst": 0,
               "nanos": "25000000",
               "op": "const.duration",
+              "own": "none",
               "span": {
                 "end": 22,
                 "start": 22
@@ -31,6 +33,7 @@
               "to": 2
             },
             "detail": null,
+            "error_shape": null,
             "inputs": [
               {
                 "decision": "copy",
@@ -39,7 +42,9 @@
             ],
             "kind": "Sleep",
             "op": "suspend",
+            "request_shapes": null,
             "result": null,
+            "result_shape": null,
             "resumes": [
               {
                 "args": [],
@@ -62,6 +67,7 @@
             {
               "dst": 1,
               "op": "const.str",
+              "own": "owned",
               "span": {
                 "end": 41,
                 "start": 41
@@ -89,6 +95,7 @@
               "end": 41,
               "start": 41
             },
+            "structural": null,
             "unwind": null
           }
         },
@@ -195,6 +202,7 @@
   "hew_version": "0.6.0-rc4",
   "profile": "sandbox.sandbox-vm-export.v0",
   "regex_patterns": [],
+  "resources": [],
   "runtime_families": [
     {
       "detail": {
@@ -209,6 +217,8 @@
   "strings": [
     "awake"
   ],
+  "structural_render": [],
+  "supervisors": [],
   "suspend_kinds": [
     "Sleep"
   ],

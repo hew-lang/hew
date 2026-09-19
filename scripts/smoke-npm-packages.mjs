@@ -42,7 +42,7 @@ fn main() {
 `;
 
 const analysis = await loadPackage("wasm", true);
-const compiler = await loadPackage("sandbox-wasm", true);
+const compiler = analysis;
 const vm = await loadPackage("sandbox-vm");
 assert.equal(analysis.version, compiler.version, "analysis and compiler package versions differ");
 assert.equal(compiler.version, vm.version, "compiler and VM package versions differ");
@@ -61,6 +61,7 @@ for (const [name, source, stdout] of [
   );
   assert.deepEqual(compiled.diagnostics, [], `${name}: compiler diagnostics`);
   assert.ok(compiled.bytecode, `${name}: compiler produced no bytecode`);
+  assert.equal(compiled.bytecode.schema_version, "hew.sandbox.bytecode.v1");
   const trace = vm.module.runBytecode(compiled.bytecode, {
     replay: { step_budget: 1000 },
   });

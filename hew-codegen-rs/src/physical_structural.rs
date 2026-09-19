@@ -49,7 +49,7 @@ impl FunctionEmitter<'_, '_> {
                     "suspending structural rendering requires a caller frame".into(),
                 )
             })?;
-            invoke_child(
+            suspend::invoke_child(
                 self.ctx,
                 self.llvm,
                 &self.builder,
@@ -342,7 +342,7 @@ impl<'ctx> StructuralEmitter<'_, '_, 'ctx> {
             let frame = self.frame.as_ref().ok_or_else(|| {
                 CodegenError::FailClosed("structural child suspension lacks a parent frame".into())
             })?;
-            invoke_child(
+            suspend::invoke_child(
                 self.ctx,
                 self.llvm,
                 self.builder,
@@ -970,33 +970,4 @@ fn structural_glue(
         .get(id.0 as usize)
         .filter(|glue| glue.id == id)
         .ok_or_else(|| CodegenError::FailClosed("unknown structural rendering recipe".into()))
-}
-
-fn invoke_child<'ctx>(
-    ctx: &'ctx Context,
-    llvm: &Module<'ctx>,
-    builder: &Builder<'ctx>,
-    function: FunctionValue<'ctx>,
-    frame: &coro::Frame<'ctx>,
-    callee: FunctionValue<'ctx>,
-    args: &[BasicMetadataValueEnum<'ctx>],
-) -> CodegenResult<IntValue<'ctx>> {
-    let pointer = ctx.ptr_type(AddressSpace::default());
-    let create = coro::external(
-        llvm,
-        "hew_coro_state_child",
-        pointer.fn_type(&[pointer.into()], false),
-    )?;
-    let child = suspend::call_value(
-        builder,
-        create,
-        &[frame.state.into()],
-        "structural.child.state",
-    )?
-    .into_pointer_value();
-    let mut args = args.to_vec();
-    args.push(child.into());
-    let child_frame =
-        suspend::call_value(builder, callee, &args, "structural.child.frame")?.into_pointer_value();
-    suspend::await_child(ctx, llvm, builder, function, frame, child, child_frame)
 }

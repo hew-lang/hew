@@ -2349,6 +2349,28 @@ pub fn canonical_std_io_extern_signatures() -> &'static [CanonicalStdlibExternSi
 }
 
 impl RuntimeCallFamily {
+    /// Selected value operations invoked by this collection kernel. Their
+    /// concrete bodies contribute faults and suspension to the caller.
+    #[must_use]
+    pub const fn value_callback_capabilities(self) -> &'static [crate::ValueCapability] {
+        use crate::ValueCapability::{Eq, Hash};
+        match self {
+            Self::Map(
+                MapValueOp::Index
+                | MapValueOp::Get
+                | MapValueOp::GetBorrow
+                | MapValueOp::ContainsKey
+                | MapValueOp::Insert
+                | MapValueOp::Remove,
+            )
+            | Self::Set(SetValueOp::Contains | SetValueOp::Insert | SetValueOp::Remove) => {
+                &[Hash, Eq]
+            }
+            Self::Vector(VecValueOp::Contains) => &[Eq],
+            _ => &[],
+        }
+    }
+
     #[must_use]
     pub const fn encoding_format(self) -> Option<EncodingFormat> {
         match self {

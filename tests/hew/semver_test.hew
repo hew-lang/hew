@@ -240,6 +240,30 @@ fn test_matches_lte_satisfied() {
     testing.assert_false(v.matches("<=0.9.9"));
 }
 
+#[test]
+fn test_caret_respects_pre_one_compatibility_boundaries() {
+    let minor = semver.parse("0.2.9").expect("valid version");
+    testing.assert_true(minor.matches("^0.2.3"));
+    testing.assert_false(semver.parse("0.3.0").expect("valid version").matches("^0.2.3"));
+    testing.assert_false(semver.parse("0.2.2").expect("valid version").matches("^0.2.3"));
+
+    let patch = semver.parse("0.0.3").expect("valid version");
+    testing.assert_true(patch.matches("^0.0.3"));
+    testing.assert_false(semver.parse("0.0.4").expect("valid version").matches("^0.0.3"));
+    testing.assert_false(semver.parse("0.1.0").expect("valid version").matches("^0.0.3"));
+    testing.assert_true(semver.parse("0.0.0").expect("valid version").matches("^0.0.0"));
+    testing.assert_false(semver.parse("0.0.1").expect("valid version").matches("^0.0.0"));
+}
+
+#[test]
+fn test_caret_keeps_stable_and_unbounded_components() {
+    testing.assert_true(semver.parse("1.9.0").expect("valid version").matches("^1.2.3"));
+    testing.assert_false(semver.parse("2.0.0").expect("valid version").matches("^1.2.3"));
+    let huge = semver.parse("0.999999999999999999999999999999.8").expect("valid version");
+    testing.assert_true(huge.matches("^0.999999999999999999999999999999.2"));
+    testing.assert_false(huge.matches("^0.999999999999999999999999999998.2"));
+}
+
 // ── prerelease precedence (SemVer 2.0 §11) ────────────────────────────
 // Exercises the alphanumeric strcmp path in compare_pre_id, which was
 // previously misread due to an i32/i64 FFI ABI mismatch on

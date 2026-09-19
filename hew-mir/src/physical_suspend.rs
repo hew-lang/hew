@@ -110,6 +110,35 @@ fn close_callers(
     }
 }
 
+fn semantic_value_callees(
+    module: &hew_sir::SemModule,
+    ty: &hew_types::ResolvedTy,
+    capability: hew_types::ValueCapability,
+) -> BTreeSet<CallableId> {
+    let mut pending = vec![ty.clone()];
+    let mut seen = BTreeSet::new();
+    let mut callees = BTreeSet::new();
+    while let Some(ty) = pending.pop() {
+        if !seen.insert(ty.clone()) {
+            continue;
+        }
+        let selected = &module.value_capabilities[&(ty.clone(), capability)];
+        if let Some(callee) = selected.callable {
+            callees.insert(callee);
+        } else {
+            pending.extend(
+                hew_sir::derived_capability_components(
+                    &ty,
+                    &module.aggregate_shapes,
+                    &module.variant_shapes,
+                )
+                .expect("verified derived value capability"),
+            );
+        }
+    }
+    callees
+}
+
 pub(super) fn semantic_callables(checked: &hew_sir::CheckedModule<'_>) -> BTreeSet<CallableId> {
     let module = checked.module();
     let mut resumable = BTreeSet::new();
@@ -192,6 +221,24 @@ pub(super) fn semantic_callables(checked: &hew_sir::CheckedModule<'_>) -> BTreeS
                         pending.extend(selected.members.iter().cloned());
                     }
                 }
+                hew_sir::SemTerminator::ValueCall { ty, capability, .. } => {
+                    calls
+                        .entry(function.callable)
+                        .or_default()
+                        .extend(semantic_value_callees(module, ty, *capability));
+                }
+                hew_sir::SemTerminator::RtCall { family, args, .. } => {
+                    for capability in family.value_callback_capabilities() {
+                        let receiver = &types[&args[0].operand.value];
+                        let (_, arguments) =
+                            hew_types::runtime_call::collection_type_arguments(receiver)
+                                .expect("verified collection callback receiver");
+                        calls
+                            .entry(function.callable)
+                            .or_default()
+                            .extend(semantic_value_callees(module, &arguments[0], *capability));
+                    }
+                }
                 hew_sir::SemTerminator::Call { callee, .. } => {
                     calls.entry(function.callable).or_default().push(*callee);
                 }
@@ -239,12 +286,41 @@ pub(super) fn verify_callables(module: &PhysicalModule) -> Result<(), PhysicalEr
                 } if policy.may_suspend() => {
                     resumable.insert(function.callable);
                 }
-                PhysicalTerminator::RuntimeCall { action, .. } => {
+                PhysicalTerminator::RuntimeCall { action, args, .. } => {
+                    for capability in action.family.value_callback_capabilities() {
+                        let argument = args.first().ok_or_else(|| {
+                            PhysicalError::new("collection callback has no receiver operand")
+                        })?;
+                        let source = match *argument {
+                            super::ArgumentTransfer::Borrow(source)
+                            | super::ArgumentTransfer::BorrowMut(source)
+                            | super::ArgumentTransfer::Move(source)
+                            | super::ArgumentTransfer::Clone { source, .. } => source,
+                        };
+                        let receiver =
+                            function.storage.get(source.0 as usize).ok_or_else(|| {
+                                PhysicalError::new("collection callback has no receiver storage")
+                            })?;
+                        let (_, arguments) =
+                            hew_types::runtime_call::collection_type_arguments(&receiver.ty)
+                                .ok_or_else(|| {
+                                    PhysicalError::new("collection callback has no receiver type")
+                                })?;
+                        calls.entry(function.callable).or_default().extend(
+                            super::capability::callees(module, &arguments[0], *capability)?,
+                        );
+                    }
                     if let super::PhysicalRuntimeCarrier::StructuralFormat(glue) = action.carrier {
                         calls.entry(function.callable).or_default().extend(
                             super::structural::display_callees(&module.structural_glue, glue)?,
                         );
                     }
+                }
+                PhysicalTerminator::ValueCall { ty, capability, .. } => {
+                    calls
+                        .entry(function.callable)
+                        .or_default()
+                        .extend(super::capability::callees(module, ty, *capability)?);
                 }
                 PhysicalTerminator::Call { callee, .. } => {
                     calls.entry(function.callable).or_default().push(*callee);
@@ -261,6 +337,16 @@ pub(super) fn verify_callables(module: &PhysicalModule) -> Result<(), PhysicalEr
         if glue.is_resumable != may_suspend {
             return Err(PhysicalError::new(
                 "structural rendering has an inconsistent resumable ABI",
+            ));
+        }
+    }
+    for ((ty, capability), selected) in &module.value_capabilities {
+        let may_suspend = super::capability::callees(module, ty, *capability)?
+            .iter()
+            .any(|callee| expected.contains(callee));
+        if may_suspend != selected.is_resumable {
+            return Err(PhysicalError::new(
+                "selected value callback has an inconsistent resumable ABI",
             ));
         }
     }

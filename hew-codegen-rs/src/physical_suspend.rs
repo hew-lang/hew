@@ -460,3 +460,32 @@ pub(super) fn await_child<'ctx>(
     free_handle("hew_coro_state_free", child)?;
     Ok(status)
 }
+
+pub(super) fn invoke_child<'ctx>(
+    ctx: &'ctx Context,
+    llvm: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    function: FunctionValue<'ctx>,
+    frame: &coro::Frame<'ctx>,
+    callee: FunctionValue<'ctx>,
+    args: &[BasicMetadataValueEnum<'ctx>],
+) -> CodegenResult<IntValue<'ctx>> {
+    let pointer = ctx.ptr_type(AddressSpace::default());
+    let create = coro::external(
+        llvm,
+        "hew_coro_state_child",
+        pointer.fn_type(&[pointer.into()], false),
+    )?;
+    let child = call_value(
+        builder,
+        create,
+        &[frame.state.into()],
+        "structural.child.state",
+    )?
+    .into_pointer_value();
+    let mut args = args.to_vec();
+    args.push(child.into());
+    let child_frame =
+        call_value(builder, callee, &args, "structural.child.frame")?.into_pointer_value();
+    await_child(ctx, llvm, builder, function, frame, child, child_frame)
+}

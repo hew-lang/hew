@@ -162,7 +162,8 @@ fn add_recipe_callback<'ctx>(
         ramps: BTreeMap::new(),
         value_callbacks: BTreeMap::new(),
     };
-    let mut emitter = SelectedValueEmitter::new(&parent, &callbacks, function, capability).unwrap();
+    let mut emitter =
+        SelectedValueEmitter::new(&parent, &callbacks, function, capability, false).unwrap();
     let lhs = emitter.parameter(0).unwrap();
     let rhs = if capability == ValueCapability::Eq {
         Some(emitter.parameter(1).unwrap())

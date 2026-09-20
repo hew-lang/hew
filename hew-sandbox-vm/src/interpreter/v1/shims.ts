@@ -450,6 +450,18 @@ const EXTERN_SHIMS: Record<string, RuntimeShim | undefined> = {
         : "",
     );
   },
+  hew_regex_capture_index_one: (_host, args) => {
+    const value = arg(args, 0);
+    const capture =
+      value.kind === "regex"
+        ? value.regex.exec(text(args, 1))?.[index(args, 2)]
+        : undefined;
+    return {
+      kind: "vector",
+      elementType: "string",
+      items: capture === undefined ? [] : [str(capture)],
+    };
+  },
   hew_io_read_line: (host) => str(host.readLine()),
   hew_random_seed: (host, args) => {
     host.prng = seededMt(integer(args, 0));

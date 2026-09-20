@@ -875,6 +875,7 @@ fn consuming_close_matches_the_shared_native_manifests() {
         "resource-close-displaced-values",
         "resource-close-displaced-fault",
         "resource-close-actor-generator",
+        "resource-receiver-fallible-argument",
     ] {
         let manifest = std::fs::read_to_string(root.join(format!("cases/{name}.toml")))
             .expect("shared native manifest");

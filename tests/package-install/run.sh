@@ -14,82 +14,82 @@ CARGO_DEBUG_DIR="$(cargo_debug_dir "${ROOT}")"
 HEW_INPUT="${HEW_BIN:-${CARGO_DEBUG_DIR}/hew}"
 
 fail() {
-  echo "FAIL package-install: $*" >&2
-  exit 1
+    echo "FAIL package-install: $*" >&2
+    exit 1
 }
 
 absolute_command_path() {
-  local candidate="$1"
+    local candidate="$1"
 
-  # The harness executes tools after changing into isolated fixture directories.
-  # Anchor caller-relative overrides before any of those directory changes.
-  case "${candidate}" in
+    # The harness executes tools after changing into isolated fixture directories.
+    # Anchor caller-relative overrides before any of those directory changes.
+    case "${candidate}" in
     /*) printf '%s\n' "${candidate}" ;;
     *) printf '%s/%s\n' "$(pwd -P)" "${candidate}" ;;
-  esac
+    esac
 }
 
 HEW="$(absolute_command_path "${HEW_INPUT}")"
 
 require_binary() {
-  local bin="$1"
-  if [[ ! -x "${bin}" ]]; then
-    fail "missing executable ${bin}; run the Makefile target so build prerequisites are present"
-  fi
+    local bin="$1"
+    if [[ ! -x "${bin}" ]]; then
+        fail "missing executable ${bin}; run the Makefile target so build prerequisites are present"
+    fi
 }
 
 run_in() {
-  local dir="$1"
-  local name="$2"
-  shift 2
-  local log="${TMP}/logs/${name}.log"
-  if ! (cd "${dir}" && "$@") >"${log}" 2>&1; then
-    cat "${log}" >&2
-    fail "${name} exited non-zero"
-  fi
+    local dir="$1"
+    local name="$2"
+    shift 2
+    local log="${TMP}/logs/${name}.log"
+    if ! (cd "${dir}" && "$@") >"${log}" 2>&1; then
+        cat "${log}" >&2
+        fail "${name} exited non-zero"
+    fi
 }
 
 assert_contains() {
-  local path="$1"
-  local needle="$2"
-  if ! grep -Fq "${needle}" "${path}"; then
-    echo "Expected ${path} to contain: ${needle}" >&2
-    echo "--- ${path} ---" >&2
-    cat "${path}" >&2
-    fail "missing expected file content"
-  fi
+    local path="$1"
+    local needle="$2"
+    if ! grep -Fq "${needle}" "${path}"; then
+        echo "Expected ${path} to contain: ${needle}" >&2
+        echo "--- ${path} ---" >&2
+        cat "${path}" >&2
+        fail "missing expected file content"
+    fi
 }
 
 assert_output() {
-  local consumer="$1"
-  local expected="$2"
-  local name="$3"
-  local actual="${TMP}/logs/${name}.out"
-  local stderr="${TMP}/logs/${name}.err"
-  if ! (cd "${consumer}" && "${HEW}" run main.hew) >"${actual}" 2>"${stderr}"; then
-    cat "${stderr}" >&2
-    fail "${name}: hew run exited non-zero"
-  fi
-  printf '%s\n' "${expected}" >"${TMP}/logs/${name}.expected"
-  if ! diff -u "${TMP}/logs/${name}.expected" "${actual}"; then
-    fail "${name}: stdout mismatch"
-  fi
+    local consumer="$1"
+    local expected="$2"
+    local name="$3"
+    local actual="${TMP}/logs/${name}.out"
+    local stderr="${TMP}/logs/${name}.err"
+    if ! (cd "${consumer}" && "${HEW}" run main.hew) >"${actual}" 2>"${stderr}"; then
+        cat "${stderr}" >&2
+        fail "${name}: hew run exited non-zero"
+    fi
+    printf '%s\n' "${expected}" >"${TMP}/logs/${name}.expected"
+    if ! diff -u "${TMP}/logs/${name}.expected" "${actual}"; then
+        fail "${name}: stdout mismatch"
+    fi
 }
 
 last_segment() {
-  local package="$1"
-  printf '%s\n' "${package##*.}"
+    local package="$1"
+    printf '%s\n' "${package##*.}"
 }
 
 write_package() {
-  local dir="$1"
-  local package="$2"
-  local version="$3"
-  local value="$4"
-  local entry
-  entry="$(last_segment "${package}")"
-  mkdir -p "${dir}"
-  cat >"${dir}/hew.toml" <<EOF_MANIFEST
+    local dir="$1"
+    local package="$2"
+    local version="$3"
+    local value="$4"
+    local entry
+    entry="$(last_segment "${package}")"
+    mkdir -p "${dir}"
+    cat >"${dir}/hew.toml" <<EOF_MANIFEST
 [package]
 name = "${package}"
 version = "${version}"
@@ -98,7 +98,7 @@ description = "package-install e2e fixture"
 authors = ["Hew Contributors"]
 license = "MIT OR Apache-2.0"
 EOF_MANIFEST
-  cat >"${dir}/${entry}.hew" <<EOF_SOURCE
+    cat >"${dir}/${entry}.hew" <<EOF_SOURCE
 pub fn answer() -> i64 {
     ${value}
 }
@@ -106,13 +106,13 @@ EOF_SOURCE
 }
 
 write_consumer() {
-  local dir="$1"
-  local package="$2"
-  local version="$3"
-  local module
-  module="$(last_segment "${package}")"
-  mkdir -p "${dir}"
-  cat >"${dir}/hew.toml" <<EOF_MANIFEST
+    local dir="$1"
+    local package="$2"
+    local version="$3"
+    local module
+    module="$(last_segment "${package}")"
+    mkdir -p "${dir}"
+    cat >"${dir}/hew.toml" <<EOF_MANIFEST
 [package]
 name = "consumer"
 version = "0.1.0"
@@ -121,7 +121,7 @@ edition = "2026"
 [dependencies]
 "${package}" = "${version}"
 EOF_MANIFEST
-  cat >"${dir}/main.hew" <<EOF_SOURCE
+    cat >"${dir}/main.hew" <<EOF_SOURCE
 import ${package};
 
 fn main() {
@@ -131,34 +131,34 @@ EOF_SOURCE
 }
 
 expect_check_failure() {
-  local dir="$1"
-  local name="$2"
-  local needle="$3"
-  local output
-  if output="$(cd "${dir}" && "${HEW}" check main.hew 2>&1)"; then
-    echo "${output}" >&2
-    fail "${name}: hew check unexpectedly succeeded"
-  fi
-  if ! grep -Fq "${needle}" <<<"${output}"; then
-    echo "${output}" >&2
-    fail "${name}: missing expected diagnostic: ${needle}"
-  fi
+    local dir="$1"
+    local name="$2"
+    local needle="$3"
+    local output
+    if output="$(cd "${dir}" && "${HEW}" check main.hew 2>&1)"; then
+        echo "${output}" >&2
+        fail "${name}: hew check unexpectedly succeeded"
+    fi
+    if ! grep -Fq "${needle}" <<<"${output}"; then
+        echo "${output}" >&2
+        fail "${name}: missing expected diagnostic: ${needle}"
+    fi
 }
 
 expect_install_failure() {
-  local dir="$1"
-  local name="$2"
-  local needle="$3"
-  shift 3
-  local output
-  if output="$(cd "${dir}" && "${HEW}" install "$@" 2>&1)"; then
-    echo "${output}" >&2
-    fail "${name}: hew install unexpectedly succeeded"
-  fi
-  if ! grep -Fq "${needle}" <<<"${output}"; then
-    echo "${output}" >&2
-    fail "${name}: missing expected install diagnostic: ${needle}"
-  fi
+    local dir="$1"
+    local name="$2"
+    local needle="$3"
+    shift 3
+    local output
+    if output="$(cd "${dir}" && "${HEW}" install "$@" 2>&1)"; then
+        echo "${output}" >&2
+        fail "${name}: hew install unexpectedly succeeded"
+    fi
+    if ! grep -Fq "${needle}" <<<"${output}"; then
+        echo "${output}" >&2
+        fail "${name}: missing expected install diagnostic: ${needle}"
+    fi
 }
 
 require_binary "${HEW}"
@@ -182,10 +182,10 @@ run_in "${consumer}" install-adder "${HEW}" install --offline
 test -f "${consumer}/hew.lock" || fail "hew.lock was not written"
 assert_contains "${consumer}/hew.lock" 'name = "acme.adder"'
 assert_contains "${consumer}/hew.lock" 'version = "0.1.0"'
-test -f "${consumer}/.hew/packages/acme/adder/hew.toml" \
-  || fail "project-local package manifest was not materialized"
-test -f "${consumer}/.hew/packages/acme/adder/adder.hew" \
-  || fail "project-local package entry source was not materialized"
+test -f "${consumer}/.hew/packages/acme/adder/hew.toml" ||
+    fail "project-local package manifest was not materialized"
+test -f "${consumer}/.hew/packages/acme/adder/adder.hew" ||
+    fail "project-local package entry source was not materialized"
 run_in "${consumer}" check-adder "${HEW}" check main.hew
 assert_output "${consumer}" "42" "run-adder"
 echo "PASS package-install minimal consumer"
@@ -207,9 +207,9 @@ edition = "2026"
 "evil::../../../tmp/pwned" = "1.0.0"
 EOF_MANIFEST
 expect_install_failure \
-  "${traversal_consumer}" \
-  "traversal package name" \
-  "invalid package name \`evil::../../../tmp/pwned\`"
+    "${traversal_consumer}" \
+    "traversal package name" \
+    "invalid package name \`evil::../../../tmp/pwned\`"
 echo "PASS package-install traversal dependency rejection"
 
 broken_registry="${HOME}/.hew/packages/acme.broken/0.1.0"
@@ -218,10 +218,10 @@ printf 'not valid {{{\n' >"${broken_registry}/hew.toml"
 broken_consumer="${TMP}/broken-consumer"
 write_consumer "${broken_consumer}" "acme.broken" "0.1.0"
 expect_install_failure \
-  "${broken_consumer}" \
-  "malformed package" \
-  "cannot read installed manifest for \`acme.broken@0.1.0\`" \
-  --offline
+    "${broken_consumer}" \
+    "malformed package" \
+    "cannot read installed manifest for \`acme.broken@0.1.0\`" \
+    --offline
 echo "PASS package-install malformed rejection"
 
 versioned_v1="${TMP}/pkgs/versioned-0.1.0"
@@ -238,6 +238,8 @@ assert_contains "${versioned_consumer}/hew.lock" 'name = "acme.versioned"'
 assert_contains "${versioned_consumer}/hew.lock" 'version = "0.1.0"'
 run_in "${versioned_consumer}" check-versioned-v1 "${HEW}" check main.hew
 assert_output "${versioned_consumer}" "101" "run-versioned-v1"
+stale_target="${TMP}/installed-versioned-v1"
+cp -RL "${versioned_consumer}/.hew/packages/acme/versioned" "${stale_target}"
 
 write_consumer "${versioned_consumer}" "acme.versioned" "0.2.0"
 run_in "${versioned_consumer}" install-versioned-v2 "${HEW}" install --offline
@@ -246,15 +248,14 @@ assert_contains "${versioned_consumer}/hew.lock" 'version = "0.2.0"'
 run_in "${versioned_consumer}" check-versioned-v2 "${HEW}" check main.hew
 assert_output "${versioned_consumer}" "202" "run-versioned-v2"
 
-stale_target="${HOME}/.hew/packages/acme.versioned/0.1.0"
 stale_link="${versioned_consumer}/.hew/packages/acme/versioned"
 rm -rf "${stale_link}"
 mkdir -p "$(dirname "${stale_link}")"
 if ! ln -s "${stale_target}" "${stale_link}" 2>/dev/null; then
-  cp -R "${stale_target}" "${stale_link}"
+    cp -R "${stale_target}" "${stale_link}"
 fi
 expect_check_failure \
-  "${versioned_consumer}" \
-  "stale package materialization" \
-  'does not match hew.lock (expected acme.versioned@0.2.0'
+    "${versioned_consumer}" \
+    "stale package materialization" \
+    'does not match hew.lock (expected acme.versioned@0.2.0'
 echo "PASS package-install version matrix"

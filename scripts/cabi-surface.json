@@ -1483,21 +1483,6 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_actor_wait_error( *const HewNativeActorWait) -> i32",
-        "wasm32-wasip1": "fn hew_actor_wait_error( *const HewNativeActorWait) -> i32"
-      },
-      "symbol": "hew_actor_wait_error"
-    },
-    {
-      "availability": [
-        "native",
-        "wasm32-wasip1"
-      ],
-      "classification": "non-declarable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
         "native": "fn hew_actor_wait_free( *mut HewNativeActorWait)",
         "wasm32-wasip1": "fn hew_actor_wait_free( *mut HewNativeActorWait)"
       },
@@ -1532,6 +1517,21 @@
         "wasm32-wasip1": "fn hew_actor_wait_poll( *const HewNativeActorWait) -> i32"
       },
       "symbol": "hew_actor_wait_poll"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "unclassified-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_actor_wait_take_fault( *const HewNativeActorWait, ) -> *mut HewFault",
+        "wasm32-wasip1": "fn hew_actor_wait_take_fault( *const HewNativeActorWait, ) -> *mut HewFault"
+      },
+      "symbol": "hew_actor_wait_take_fault"
     },
     {
       "availability": [

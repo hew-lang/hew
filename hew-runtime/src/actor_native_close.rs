@@ -233,23 +233,6 @@ pub unsafe extern "C" fn hew_actor_wait_poll(wait: *const HewNativeActorWait) ->
     }
 }
 
-/// Read the terminal logical failure code after a failed poll.
-///
-/// # Safety
-/// `wait` is live and the caller has acquired its completed failure.
-#[no_mangle]
-pub unsafe extern "C" fn hew_actor_wait_error(wait: *const HewNativeActorWait) -> i32 {
-    // SAFETY: the caller retains the immutable result descriptor.
-    let Some(completion) = &(unsafe { &*wait }).completion else {
-        return 0;
-    };
-    let record = crate::exit_status::FaultRecord::from_raw(
-        completion.close_fault_record.swap(0, Ordering::AcqRel),
-    );
-    crate::exit_status::settle_supervised_fault(record, crate::exit_status::FaultRuling::Handled);
-    completion.code.load(Ordering::Relaxed)
-}
-
 /// Acquire the complete terminal diagnostic after a failed poll. Each observer
 /// owns its wrapper, while the diagnostic's report identity remains shared.
 ///
@@ -259,11 +242,16 @@ pub unsafe extern "C" fn hew_actor_wait_error(wait: *const HewNativeActorWait) -
 pub unsafe extern "C" fn hew_actor_wait_take_fault(
     wait: *const HewNativeActorWait,
 ) -> *mut crate::fault::HewFault {
-    // SAFETY: this observer has acquired the immutable completed result.
-    let code = unsafe { hew_actor_wait_error(wait) };
-    // SAFETY: the caller retains the live wait descriptor.
-    let completion = unsafe { &*wait }.completion.as_ref();
-    let fault = completion.and_then(|completion| completion.fault.lock_or_recover().clone());
+    // SAFETY: the caller retains the immutable completed result descriptor.
+    let Some(completion) = &(unsafe { &*wait }).completion else {
+        return crate::fault::hew_fault_new(0);
+    };
+    let record = crate::exit_status::FaultRecord::from_raw(
+        completion.close_fault_record.swap(0, Ordering::AcqRel),
+    );
+    crate::exit_status::settle_supervised_fault(record, crate::exit_status::FaultRuling::Handled);
+    let code = completion.code.load(Ordering::Relaxed);
+    let fault = completion.fault.lock_or_recover().clone();
     fault.map_or_else(
         || crate::fault::hew_fault_new(code),
         |fault| Box::into_raw(Box::new(fault)),

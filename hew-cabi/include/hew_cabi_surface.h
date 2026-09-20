@@ -613,12 +613,6 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1634] = {
      "hew_actor_wait_edge_prepare( *const HewActorWaitEdge)\"}",
      "native,wasm32-wasip1", "non-declarable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_actor_wait_error",
-     "{\"native\": \"fn hew_actor_wait_error( *const HewNativeActorWait) -> "
-     "i32\", \"wasm32-wasip1\": \"fn hew_actor_wait_error( *const "
-     "HewNativeActorWait) -> i32\"}",
-     "native,wasm32-wasip1", "non-declarable", "not-applicable",
-     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_actor_wait_free",
      "{\"native\": \"fn hew_actor_wait_free( *mut HewNativeActorWait)\", "
      "\"wasm32-wasip1\": \"fn hew_actor_wait_free( *mut HewNativeActorWait)\"}",
@@ -636,6 +630,12 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1634] = {
      "i32\", \"wasm32-wasip1\": \"fn hew_actor_wait_poll( *const "
      "HewNativeActorWait) -> i32\"}",
      "native,wasm32-wasip1", "non-declarable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_actor_wait_take_fault",
+     "{\"native\": \"fn hew_actor_wait_take_fault( *const HewNativeActorWait, "
+     ") -> *mut HewFault\", \"wasm32-wasip1\": \"fn hew_actor_wait_take_fault( "
+     "*const HewNativeActorWait, ) -> *mut HewFault\"}",
+     "native,wasm32-wasip1", "unclassified-stdlib", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_actor_wake",
      "{\"native\": \"fn hew_actor_wake( *mut HewActor)\", \"wasm32-wasip1\": "

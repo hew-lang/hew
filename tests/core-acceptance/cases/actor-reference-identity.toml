@@ -1,0 +1,11 @@
+[[case]]
+id = "actor-reference-identity"
+intent = "Identity compares actor instances and stable supervised roles consistently through aliases, calls and inferred closures."
+source = "cases/actor-reference-identity.hew"
+suites = ["acceptance"]
+timeout_seconds = 20
+
+[case.expected]
+stdout = "identity preserved\n"
+stderr = ""
+exit = 0

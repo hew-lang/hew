@@ -3760,6 +3760,32 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             (BasicValueEnum::FloatValue(left), BasicValueEnum::FloatValue(right)) => {
                 emit_float_binary(&self.builder, op, left, right)?
             }
+            (BasicValueEnum::StructValue(left), BasicValueEnum::StructValue(right))
+                if ty.is_builtin(hew_types::BuiltinType::ChildRef) && op == BinaryOp::Equal =>
+            {
+                let mut equal = self.ctx.bool_type().const_int(1, false);
+                for index in 0..2 {
+                    let left = self
+                        .builder
+                        .build_extract_value(left, index, "identity.left")
+                        .llvm_ctx("read supervised role identity")?
+                        .into_int_value();
+                    let right = self
+                        .builder
+                        .build_extract_value(right, index, "identity.right")
+                        .llvm_ctx("read supervised role identity")?
+                        .into_int_value();
+                    let component = self
+                        .builder
+                        .build_int_compare(IntPredicate::EQ, left, right, "identity.component")
+                        .llvm_ctx("compare supervised role identity")?;
+                    equal = self
+                        .builder
+                        .build_and(equal, component, "identity.equal")
+                        .llvm_ctx("combine supervised role identity")?;
+                }
+                equal.into()
+            }
             _ => {
                 return Err(CodegenError::FailClosed(
                     "physical binary operands have unsupported carriers".into(),

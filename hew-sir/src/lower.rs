@@ -5651,6 +5651,18 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     self.emit(expr, SemOpKind::Unary { op: *op, value })
                 }
             }
+            HirExprKind::IdentityCompare { left, right } => {
+                let lhs = self.lower_read_operand(left, "identity left operand")?;
+                let rhs = self.lower_read_operand(right, "identity right operand")?;
+                self.emit(
+                    expr,
+                    SemOpKind::Binary {
+                        op: hew_parser::ast::BinaryOp::Equal,
+                        lhs,
+                        rhs,
+                    },
+                )
+            }
             HirExprKind::Binary {
                 op: hew_parser::ast::BinaryOp::And,
                 left,

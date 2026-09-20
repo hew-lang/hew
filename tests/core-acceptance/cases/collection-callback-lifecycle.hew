@@ -13,11 +13,12 @@ actor Oracle {
 
     receive fn inspect(requested: i64, id: i64) -> i64 {
         if requested == self.capability && (!self.old_only || id == 0) {
-            self.entered = true;
             return self.action;
         }
         0
     }
+
+    receive fn ready() { self.entered = true; }
 
     receive fn started() -> bool { self.entered }
 }
@@ -37,6 +38,7 @@ fn probe(oracle: Oracle, id: i64, capability: i64) {
     let action = oracle.inspect(capability, id).expect("callback policy");
     if action > 0 {
         let guard = Payload { id: 0, label: "callback local closed".to_upper() };
+        oracle.ready().expect("callback ready");
         if action == 1 {
             sleep(1ms);
             panic("selected callback failed");

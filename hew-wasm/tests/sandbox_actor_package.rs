@@ -863,7 +863,7 @@ fn dead_actor_calls_drain_their_consumed_message_before_returning() {
 }
 
 #[test]
-fn consuming_close_matches_the_shared_native_manifests() {
+fn shared_native_manifests_execute_with_matching_results() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/core-acceptance");
     for name in [
         "actor_state_closure_field",
@@ -876,6 +876,7 @@ fn consuming_close_matches_the_shared_native_manifests() {
         "resource-close-displaced-fault",
         "resource-close-actor-generator",
         "resource-receiver-fallible-argument",
+        "actor-reference-identity",
     ] {
         let manifest = std::fs::read_to_string(root.join(format!("cases/{name}.toml")))
             .expect("shared native manifest");
@@ -927,6 +928,10 @@ fn main() {{
         after 1ms => println("timeout"),
     }}
     worker.ready().expect("ready");
+    let closed = audit.receipt().expect("receipt");
+    assert(closed == 9);
+    println(f"closed {{closed}}");
+    println("ready");
     close(worker);
     close(audit);
 }}

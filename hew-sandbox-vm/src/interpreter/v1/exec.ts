@@ -3445,6 +3445,9 @@ function canonical(value: VmValue): string {
 
 function toComparable(value: VmValue): unknown {
   switch (value.kind) {
+    case "actor":
+    case "supervisor":
+      return [value.kind, value.id];
     case "i64":
       return value.value.toString();
     case "record":

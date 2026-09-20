@@ -192,6 +192,9 @@ fn dump_op(out: &mut String, op: &crate::SemOp) {
             }
             writeln!(out).expect("write to String");
         }
+        SemOpKind::GeneratorCoerce { source } => {
+            writeln!(out, "generator.coerce %{}", source.value.0).expect("write to String");
+        }
         SemOpKind::CallableCoerce { source } => {
             writeln!(out, "callable.coerce %{}", source.value.0).expect("write to String");
         }

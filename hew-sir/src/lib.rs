@@ -37,8 +37,8 @@ pub use analysis::{
     DefUseIndex, Dominators, EdgeRef, RewriteError,
 };
 pub use callable::{
-    callable_parts, callable_value_signature, generator_parts, verify_callable_coercion, ClosureId,
-    ClosureInstanceKey, SemCaptureField, SemClosure,
+    callable_parts, callable_value_signature, generator_parts, verify_callable_coercion,
+    verify_generator_coercion, ClosureId, ClosureInstanceKey, SemCaptureField, SemClosure,
 };
 pub use capability::{derived_capability_components, SemValueMethodPlan};
 pub use debug::{SemDebugFacts, SemDebugScope};

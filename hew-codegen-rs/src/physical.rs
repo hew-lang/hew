@@ -690,9 +690,10 @@ fn primitive_repr(
         ResolvedTy::Isize | ResolvedTy::Usize => PhysicalRepr::Integer { bits: pointer_bits },
         ResolvedTy::F32 => PhysicalRepr::Float { bits: 32 },
         ResolvedTy::F64 => PhysicalRepr::Float { bits: 64 },
-        ResolvedTy::String | ResolvedTy::CancellationToken | ResolvedTy::Array(_, _) => {
-            PhysicalRepr::Pointer
-        }
+        ResolvedTy::Borrow { .. }
+        | ResolvedTy::String
+        | ResolvedTy::CancellationToken
+        | ResolvedTy::Array(_, _) => PhysicalRepr::Pointer,
         // A trait object is the runtime's two-word `HewTraitObject`:
         // the boxed value and its dispatch table.
         ResolvedTy::Function { .. }
@@ -3152,7 +3153,8 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 vtable,
                 source,
             } => self.emit_dyn_make(*dest, *vtable, *source),
-            PhysicalOp::CallableCoerce { dest, source } => {
+            PhysicalOp::CallableCoerce { dest, source }
+            | PhysicalOp::GeneratorCoerce { dest, source } => {
                 let value = self.load(*source, "callable.coerce")?;
                 self.store(*dest, value)?;
                 self.clear_owned(*source)

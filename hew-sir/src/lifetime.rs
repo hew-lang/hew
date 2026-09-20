@@ -2057,6 +2057,7 @@ fn operation_consumes_operands(kind: &SemOpKind) -> bool {
         SemOpKind::GeneratorMake { .. }
             | SemOpKind::TaskSpawn { .. }
             | SemOpKind::ClosureMake { .. }
+            | SemOpKind::GeneratorCoerce { .. }
             | SemOpKind::CallableCoerce { .. }
             | SemOpKind::DynMake { .. }
             | SemOpKind::TupleMake { .. }

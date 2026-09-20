@@ -1,0 +1,10 @@
+[[case]]
+id = "generator-callable-view"
+intent = "A generator can erase yielded closure capabilities while its yielded capture remains usable after producer cleanup."
+source = "cases/generator-callable-view.hew"
+suites = ["acceptance", "safety"]
+
+[case.expected]
+stdout = "after=11\n"
+stderr = ""
+exit = 0

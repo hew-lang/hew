@@ -2898,7 +2898,7 @@ fn is_initial_call_value(ty: &ResolvedTy) -> bool {
     is_initial_scalar(ty)
         || matches!(
             ty,
-            ResolvedTy::String
+            ResolvedTy::Borrow { .. } | ResolvedTy::String
                 | ResolvedTy::Task(_)
                 | ResolvedTy::Bytes
                 | ResolvedTy::Array(_, _)
@@ -4182,16 +4182,27 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             );
         }
         self.service.require_type_facts(target)?;
-        crate::verify_callable_coercion(&source, target, self.service.checked_facts.rows())
-            .map_err(|reason| {
-                format!("value coercion from {source:?} to {target:?} refused: {reason}")
-            })?;
+        let generator = crate::generator_parts(&source).is_some();
+        let verify = if generator {
+            crate::verify_generator_coercion
+        } else {
+            crate::verify_callable_coercion
+        };
+        verify(&source, target, self.service.checked_facts.rows()).map_err(|reason| {
+            format!("value coercion from {source:?} to {target:?} refused: {reason}")
+        })?;
         self.owned_live.remove(&value);
         self.emit_typed(
             provenance,
             target,
-            SemOpKind::CallableCoerce {
-                source: Operand { value },
+            if generator {
+                SemOpKind::GeneratorCoerce {
+                    source: Operand { value },
+                }
+            } else {
+                SemOpKind::CallableCoerce {
+                    source: Operand { value },
+                }
             },
         )
     }

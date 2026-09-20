@@ -2635,6 +2635,7 @@ fn verify_callable_operation(
         SemOpKind::FunctionMake { .. }
             | SemOpKind::ClosureMake { .. }
             | SemOpKind::GeneratorMake { .. }
+            | SemOpKind::GeneratorCoerce { .. }
             | SemOpKind::CallableCoerce { .. }
             | SemOpKind::DynMake { .. }
     ) {
@@ -2711,6 +2712,12 @@ fn verify_callable_operation(
                     return Err("generator construction changes its producer contract".into());
                 }
             }
+            SemOpKind::GeneratorCoerce { source } => {
+                let source_ty = types
+                    .get(&source.value)
+                    .ok_or("generator coercion has no input definition")?;
+                crate::verify_generator_coercion(source_ty, &result.ty, facts)?;
+            }
             SemOpKind::CallableCoerce { source } => {
                 let source_ty = types
                     .get(&source.value)
@@ -2763,7 +2770,7 @@ fn is_initial_call_value(ty: &ResolvedTy) -> bool {
         || ty.is_builtin(hew_types::BuiltinType::RemotePid)
         || matches!(
             ty,
-            ResolvedTy::String | ResolvedTy::Bytes | ResolvedTy::Task(_) | ResolvedTy::Array(_, _)
+            ResolvedTy::Borrow { .. } | ResolvedTy::String | ResolvedTy::Bytes | ResolvedTy::Task(_) | ResolvedTy::Array(_, _)
         )
 }
 
@@ -3805,6 +3812,7 @@ fn verify_operation_shape(
         | SemOpKind::ClosureMake { .. }
         | SemOpKind::GeneratorMake { .. }
         | SemOpKind::StreamPipe { .. }
+        | SemOpKind::GeneratorCoerce { .. }
         | SemOpKind::CallableCoerce { .. }
         | SemOpKind::DynMake { .. } => {}
         // Dormant operations remain fail-closed until their producer and

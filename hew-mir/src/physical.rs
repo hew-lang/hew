@@ -747,6 +747,10 @@ pub enum PhysicalOp {
         closure: ClosureId,
         fields: Vec<StorageId>,
     },
+    GeneratorCoerce {
+        dest: StorageId,
+        source: StorageId,
+    },
     CallableCoerce {
         dest: StorageId,
         source: StorageId,
@@ -3069,6 +3073,10 @@ impl FunctionLowerer<'_> {
                 dest: self.one_result(operation)?,
                 vtable: PhysicalVtableId(vtable.0),
                 source: self.value(value.value)?,
+            }),
+            SemOpKind::GeneratorCoerce { source } => one(PhysicalOp::GeneratorCoerce {
+                dest: self.one_result(operation)?,
+                source: self.value(source.value)?,
             }),
             SemOpKind::CallableCoerce { source } => one(PhysicalOp::CallableCoerce {
                 dest: self.one_result(operation)?,
@@ -5647,6 +5655,9 @@ fn verify_operation_storage(
 ) -> Result<(), PhysicalError> {
     match operation {
         PhysicalOp::GeneratorMake { .. } => generators::verify_make(module, function, operation)?,
+        PhysicalOp::GeneratorCoerce { dest, source } => {
+            generators::verify_coerce(module, function, *dest, *source)?
+        }
         PhysicalOp::StreamPipe {
             capacity,
             stream,
@@ -6648,6 +6659,7 @@ fn apply_operation(
         }
         PhysicalOp::Transfer { dest, source }
         | PhysicalOp::CallableCoerce { dest, source }
+        | PhysicalOp::GeneratorCoerce { dest, source }
         | PhysicalOp::DynMake { dest, source, .. } => {
             initialized(function, state, *source, block, "transfer")?;
             if dest != source {

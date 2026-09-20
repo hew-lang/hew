@@ -68,6 +68,39 @@ impl FunctionLowerer<'_> {
     }
 }
 
+pub(super) fn verify_coerce(
+    module: &PhysicalModule,
+    function: &PhysicalFunction,
+    dest: super::StorageId,
+    source: super::StorageId,
+) -> Result<(), PhysicalError> {
+    let source = storage(function, source)?;
+    let dest = storage(function, dest)?;
+    hew_sir::verify_generator_coercion(&source.ty, &dest.ty, &module.type_facts)
+        .map_err(PhysicalError::new)?;
+    if source.own != hew_sir::OwnKind::Owned || dest.own != hew_sir::OwnKind::Owned {
+        return Err(PhysicalError::new(
+            "generator coercion must transfer an owned carrier",
+        ));
+    }
+    let (source_yield, source_return) =
+        hew_sir::generator_parts(&source.ty).expect("verified generator");
+    let (target_yield, target_return) =
+        hew_sir::generator_parts(&dest.ty).expect("verified generator");
+    for (source, target) in [
+        (&source.ty, &dest.ty),
+        (source_yield, target_yield),
+        (source_return, target_return),
+    ] {
+        if module.target.layout(source) != module.target.layout(target) {
+            return Err(PhysicalError::new(
+                "generator coercion changes an output carrier",
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn verify_make(
     module: &PhysicalModule,
     function: &PhysicalFunction,

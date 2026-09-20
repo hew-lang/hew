@@ -910,6 +910,10 @@ impl<'m> Walker<'m> {
                 "closure": closure.0,
                 "fields": operands(fields),
             }),
+            SemOpKind::GeneratorCoerce { source } => serde_json::json!({
+                "op": "move",
+                "source": operand(source),
+            }),
             SemOpKind::CallableCoerce { source } => serde_json::json!({
                 "op": "callable.coerce",
                 "source": operand(source),

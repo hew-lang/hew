@@ -101,10 +101,8 @@ fn write_named_registry_token(home: &Path, registry_name: &str, token: &str) {
 
 /// Path the local registry would use if (and only if) a local publish wrote it.
 fn local_package_dir(home: &Path) -> PathBuf {
-    home.join(".hew")
-        .join("packages")
-        .join(PKG_NAME)
-        .join(PKG_VERSION)
+    hew_pkg::registry::Registry::with_root(home.join(".hew").join("packages"))
+        .package_dir(PKG_NAME, PKG_VERSION)
 }
 
 fn publish_command(project: &Path, home: &Path, args: &[&str]) -> Command {
@@ -392,6 +390,10 @@ fn publish_local_flag_exits_zero_and_writes_local_copy() {
     let project = support::tempdir();
     generate_signing_key(home.path());
     write_publishable_manifest(project.path());
+    let manifest_path = project.path().join("hew.toml");
+    let manifest = fs::read_to_string(&manifest_path).unwrap();
+    fs::write(&manifest_path, manifest + "exclude = [\"private.txt\"]\n").unwrap();
+    fs::write(project.path().join("private.txt"), "local notes").unwrap();
     // No credentials.toml, no config.toml — --local must need neither.
 
     let output = run_publish(project.path(), home.path(), &["--local"]);
@@ -411,6 +413,56 @@ fn publish_local_flag_exits_zero_and_writes_local_copy() {
         local_package_dir(home.path()).join("hew.toml").exists(),
         "--local must write the package into the local registry"
     );
+    assert!(
+        !local_package_dir(home.path()).join("private.txt").exists(),
+        "local publication must use the same filtered archive as remote publication"
+    );
+
+    fs::remove_file(project.path().join("main.hew")).unwrap();
+    fs::write(project.path().join("replacement.hew"), "fn main() {}\n").unwrap();
+    let replacement = run_publish(project.path(), home.path(), &["--local"]);
+    assert!(
+        replacement.status.success(),
+        "{}",
+        support::describe_output(&replacement)
+    );
+    let installed = local_package_dir(home.path());
+    assert!(installed.join("replacement.hew").exists());
+    assert!(
+        !installed.join("main.hew").exists(),
+        "republishing must retire deleted files"
+    );
+
+    // The local generation must also become the exact source-namespaced
+    // generation read by locked installation, including after republication.
+    let consumer = support::tempdir();
+    fs::write(
+        consumer.path().join("hew.toml"),
+        format!(
+            "[package]\nname = 'consumer'\nversion = '1.0.0'\n[dependencies]\n'{PKG_NAME}' = '{PKG_VERSION}'\n"
+        ),
+    )
+    .unwrap();
+    for flag in ["--offline", "--locked"] {
+        let mut cmd = support::hew_command();
+        cmd.arg("install")
+            .arg(flag)
+            .current_dir(consumer.path())
+            .env("HOME", home.path())
+            .env("USERPROFILE", home.path());
+        let result = support::run_bounded_command(cmd, "install locally published archive");
+        assert!(
+            result.status.success(),
+            "{}",
+            support::describe_output(&result)
+        );
+    }
+    let dependency = consumer
+        .path()
+        .join(".hew/packages")
+        .join(PKG_NAME.replace('.', "/"));
+    assert!(dependency.join("replacement.hew").exists());
+    assert!(!dependency.join("main.hew").exists());
 }
 
 // ── 7. --local --registry is a usage error ──────────────────────────────────

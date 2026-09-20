@@ -33,6 +33,30 @@ fn inherited(value: &Value) -> bool {
     value.get("workspace").and_then(Value::as_bool) == Some(true)
 }
 
+fn inherits_workspace(manifest: &Table) -> bool {
+    let dependencies_inherit = |table: &Table| {
+        ["dependencies", "build-dependencies", "dev-dependencies"]
+            .iter()
+            .filter_map(|key| table.get(*key).and_then(Value::as_table))
+            .any(|dependencies| dependencies.values().any(inherited))
+    };
+    manifest
+        .get("package")
+        .and_then(Value::as_table)
+        .is_some_and(|package| package.values().any(inherited))
+        || manifest.get("lints").is_some_and(inherited)
+        || dependencies_inherit(manifest)
+        || manifest
+            .get("target")
+            .and_then(Value::as_table)
+            .is_some_and(|targets| {
+                targets
+                    .values()
+                    .filter_map(Value::as_table)
+                    .any(dependencies_inherit)
+            })
+}
+
 fn workspace(crate_dir: &Path) -> io::Result<(PathBuf, Table)> {
     // Cargo owns workspace discovery, including excluded members and explicit
     // package.workspace paths. This query does not resolve or build dependencies.
@@ -239,7 +263,16 @@ impl Bundler<'_> {
                 "native crate must point to a Cargo package, not a virtual workspace",
             ));
         }
-        let (workspace_root, workspace_manifest) = workspace(source)?;
+        // A patched dependency can live beneath a workspace without being a
+        // member. Cargo accepts it as a dependency, but locate-project rejects
+        // it as a workspace entry point. Only resolve its authoring workspace
+        // when it actually inherits settings; the archive root owns resolver,
+        // profiles and patches for the installed dependency graph.
+        let (workspace_root, workspace_manifest) = if root || inherits_workspace(&manifest) {
+            workspace(source)?
+        } else {
+            (source.to_owned(), manifest.clone())
+        };
         let empty = Table::new();
         let workspace = workspace_manifest
             .get("workspace")
@@ -442,6 +475,8 @@ sql = { path = "sql", features = ["shared"] }
 unsafe_op_in_unsafe_fn = "deny"
 [profile.release]
 panic = "abort"
+[patch.crates-io]
+archive-helper = { path = "vendor/helper" }
 "#,
         );
         write(source.path(), "README.md", "Shared SQL client\n");
@@ -472,11 +507,26 @@ readme.workspace = true
 crate-type = ["staticlib"]
 [dependencies]
 sql = { workspace = true, features = ["local"] }
+archive-helper = "1.0.0"
 [lints]
 workspace = true
 "#,
         );
-        write(source.path(), "client/src/lib.rs", "pub use sql::Param;\n");
+        write(
+            source.path(),
+            "client/src/lib.rs",
+            "pub use sql::Param;\npub use archive_helper::Value;\n",
+        );
+        write(
+            source.path(),
+            "vendor/helper/Cargo.toml",
+            "[package]\nname = 'archive-helper'\nversion = '1.0.0'\nedition = '2021'\n",
+        );
+        write(
+            source.path(),
+            "vendor/helper/src/lib.rs",
+            "pub struct Value;\n",
+        );
         write(
             source.path(),
             "sql/Cargo.toml",

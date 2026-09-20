@@ -54,7 +54,7 @@ use crate::node::{
     HirTypeDeclKind, HirVarSelfMethodTarget, HirVariant, HirVariantKind,
 };
 use crate::stdlib_catalog::{self, BuiltinEntry, BuiltinLinkage};
-use crate::{IntentKind, ResourceMarker, ValueClass};
+use crate::{IntentKind, ResourceMarker};
 
 mod fork;
 mod race;
@@ -3955,50 +3955,26 @@ pub fn lower_program_with_mono_cap(
         }
     }
 
-    // Structural BitCopy inference: a user-defined struct whose every field
-    // is BitCopy is itself BitCopy. Run as a fixed-point so that records
-    // composed of other inferred-BitCopy records are also promoted. Generic
-    // type-params remain unknown (we don't infer through them), and any
-    // type that already carries an explicit ownership marker keeps it.
-    // Enums are left alone here — their layout decisions go through the
-    // EnumLayout pass, not the value-class table.
-    {
-        let mut changed = true;
-        while changed {
-            changed = false;
-            let candidates: Vec<(String, Vec<ResolvedTy>)> = type_decl_cache
-                .values()
-                .filter(|d| {
-                    d.marker == ResourceMarker::None
-                        && d.kind == HirTypeDeclKind::Struct
-                        && d.type_params.is_empty()
-                        && !d.fields.is_empty()
-                })
-                .filter(|d| {
-                    ctx.type_classes
-                        .get(&d.name)
-                        .is_some_and(|(m, _)| *m == ResourceMarker::None)
-                })
-                .map(|d| {
-                    (
-                        d.name.clone(),
-                        d.fields.iter().map(|f| f.ty.clone()).collect(),
-                    )
-                })
-                .collect();
-            for (name, field_tys) in candidates {
-                let all_bitcopy = field_tys.iter().all(|ty| {
-                    matches!(
-                        crate::value_class::ValueClass::of_ty(ty, &ctx.type_classes),
-                        crate::value_class::ValueClass::BitCopy
-                    )
-                });
-                if all_bitcopy {
-                    if let Some(entry) = ctx.type_classes.get_mut(&name) {
-                        entry.0 = ResourceMarker::BitCopy;
-                        changed = true;
-                    }
-                }
+    // Project structural ownership from the checker's canonical classifier.
+    // It resolves nested declarations directly, so HIR needs no fixed-point
+    // inference over a second ownership table.
+    let classes = hew_types::value_class::ClassContext::new(&ctx.type_declarations);
+    for declaration in type_decl_cache.values() {
+        if declaration.marker == ResourceMarker::None
+            && declaration.kind == HirTypeDeclKind::Struct
+            && declaration.type_params.is_empty()
+            && !declaration.fields.is_empty()
+            && ctx
+                .type_classes
+                .get(&declaration.name)
+                .is_some_and(|(marker, _)| *marker == ResourceMarker::None)
+            && declaration.fields.iter().all(|field| {
+                hew_types::ValueClass::of_ty(&field.ty, &classes)
+                    == Ok(hew_types::ValueClass::BitCopy)
+            })
+        {
+            if let Some((marker, _)) = ctx.type_classes.get_mut(&declaration.name) {
+                *marker = ResourceMarker::BitCopy;
             }
         }
     }
@@ -5410,6 +5386,7 @@ pub fn lower_program_with_mono_cap(
         &record_layouts,
         &extern_backed_records,
         &mut ctx.type_classes,
+        &ctx.type_declarations,
     );
 
     // FC-P1-B: HIR pre-pass for call-shape gates. Lifts MIR's call-shape
@@ -6045,6 +6022,7 @@ fn finalize_user_record_value_classes(
     record_layouts: &[RecordLayout],
     extern_backed_records: &HashSet<String>,
     type_classes: &mut crate::value_class::TypeClassTable,
+    declarations: &std::collections::BTreeMap<String, hew_types::value_class::DeclaredType>,
 ) {
     for name in record_registry.keys() {
         type_classes
@@ -6077,52 +6055,45 @@ fn finalize_user_record_value_classes(
         }
     }
 
-    let mut changed = true;
-    while changed {
-        changed = false;
+    let classes = hew_types::value_class::ClassContext::new(declarations);
 
-        for (name, entry) in record_registry {
-            let Some((marker, _)) = type_classes.get(name) else {
-                continue;
-            };
-            if *marker != ResourceMarker::None
-                || !entry.type_params.is_empty()
-                || entry.fields.is_empty()
-            {
-                continue;
-            }
-            if entry.fields.iter().all(|(_, ty)| {
-                crate::value_class::ValueClass::of_ty(ty, type_classes)
-                    == crate::value_class::ValueClass::BitCopy
-            }) {
-                if let Some((marker, _)) = type_classes.get_mut(name) {
-                    *marker = ResourceMarker::BitCopy;
-                    changed = true;
-                }
+    for (name, entry) in record_registry {
+        let Some((marker, _)) = type_classes.get(name) else {
+            continue;
+        };
+        if *marker != ResourceMarker::None
+            || !entry.type_params.is_empty()
+            || entry.fields.is_empty()
+        {
+            continue;
+        }
+        if entry.fields.iter().all(|(_, ty)| {
+            hew_types::ValueClass::of_ty(ty, &classes) == Ok(hew_types::ValueClass::BitCopy)
+        }) {
+            if let Some((marker, _)) = type_classes.get_mut(name) {
+                *marker = ResourceMarker::BitCopy;
             }
         }
+    }
 
-        for layout in record_layouts {
-            if layout.fields.is_empty() {
-                continue;
-            }
-            if type_classes
-                .get(&layout.mangled_name)
-                .is_some_and(|(marker, _)| *marker != ResourceMarker::None)
-            {
-                continue;
-            }
-            if layout.fields.iter().all(|(_, ty)| {
-                crate::value_class::ValueClass::of_ty(ty, type_classes)
-                    == crate::value_class::ValueClass::BitCopy
-            }) {
-                type_classes.insert(layout.mangled_name.clone(), (ResourceMarker::BitCopy, None));
-                changed = true;
-            } else {
-                type_classes
-                    .entry(layout.mangled_name.clone())
-                    .or_insert((ResourceMarker::None, None));
-            }
+    for layout in record_layouts {
+        if layout.fields.is_empty() {
+            continue;
+        }
+        if type_classes
+            .get(&layout.mangled_name)
+            .is_some_and(|(marker, _)| *marker != ResourceMarker::None)
+        {
+            continue;
+        }
+        if layout.fields.iter().all(|(_, ty)| {
+            hew_types::ValueClass::of_ty(ty, &classes) == Ok(hew_types::ValueClass::BitCopy)
+        }) {
+            type_classes.insert(layout.mangled_name.clone(), (ResourceMarker::BitCopy, None));
+        } else {
+            type_classes
+                .entry(layout.mangled_name.clone())
+                .or_insert((ResourceMarker::None, None));
         }
     }
 }
@@ -6920,7 +6891,7 @@ struct LowerCtx {
     imported_module_consts: Option<HashMap<String, ConstEntry>>,
     /// Per-named-type marker + close-method registry. Pre-populated from
     /// every `Item::TypeDecl` before function bodies lower so that
-    /// `ValueClass::of_ty` can resolve `Named` types as the body is walked.
+    /// Resource lifecycle lookup consumes the marker and close method.
     /// Also seeded with the substrate types (Sink, Stream, etc.) via
     /// `builtin_type_classes::seed_builtin_type_classes` before the `TypeDecl` loop.
     type_classes: crate::value_class::TypeClassTable,
@@ -7688,7 +7659,7 @@ impl LowerCtx {
     fn new(tc_output: &TypeCheckOutput, mono_cap: usize, target_arch: TargetArch) -> Self {
         let mut type_classes = crate::value_class::TypeClassTable::default();
         // Seed compiler-known M2 substrate types before source-order TypeDecls.
-        // This ensures `ValueClass::of_ty` resolves Sink/Stream as
+        // This registers Sink/Stream resource lifecycle metadata as
         // AffineResource even though they are not user-declared TypeDecl items.
         seed_builtin_type_classes(&mut type_classes);
         Self {
@@ -7992,93 +7963,28 @@ impl LowerCtx {
         result
     }
 
-    /// W4.047 P1.2 — read the typed checker→HIR handoff map.
-    ///
-    /// Returns the `ResolvedTy` the checker recorded for `span`, or `None` if
-    /// the span is absent (a synthesised/no-span node, or a pre-monomorphi-
-    /// zation generic body whose type is a covered inference var and so is
-    /// legitimately not in the typed map).
-    ///
-    /// Phase 1 only consults this through `assert_resolved_ty_totality`; Phase
-    /// 2 promotes it to the primary node-type read path. Annotated `dead_code`
-    /// because in release builds the only caller (the debug-only totality net)
-    /// compiles away.
-    #[cfg_attr(not(debug_assertions), allow(dead_code))]
+    /// Read the checker-resolved type for a source expression. Synthesized
+    /// expressions and abstract generic bodies may have no recorded type.
     fn checked_ty(&self, span: &Span) -> Option<&ResolvedTy> {
         self.resolved_expr_types.get(&self.mk_key(span))
     }
 
-    /// True when the checker typed the expression at `span` as a move-only
-    /// USER-declared `#[resource]` VALUE — a `ResolvedTy::Named` carrying NO
-    /// builtin discriminant whose `ValueClass::of_ty` is `AffineResource`.
-    ///
-    /// ## Why user resources only — the FFI-borrow exclusion
-    ///
-    /// `ValueClass::AffineResource` also covers the builtin runtime handles
-    /// (`Sink` / `Stream` / `Generator` /
-    /// `CancellationToken`), which are seeded with `ResourceMarker::Resource`.
-    /// But those handles are routinely passed BY VALUE into borrowing FFI
-    /// intrinsics — `hew_sink_is_valid(s)`, `hew_stream_last_error()`, the
-    /// channel/stream witnesses — whose C ABI takes the handle pointer for the
-    /// duration of the call and never takes ownership (it neither frees nor
-    /// stores it). Lowering those arguments `Consume` would falsely transition
-    /// the caller's handle to `Consumed`, so a perfectly valid later use (e.g.
-    /// `Ok(s)` after a validity probe) would be rejected as use-after-move and
-    /// the std library would not compile.
-    ///
-    /// A user `#[resource]` type, by contrast, is never an FFI argument: it
-    /// only ever flows into user Hew functions, where a by-value parameter IS
-    /// an ownership move (Hew has no by-reference parameters). Restricting the
-    /// consume decision to `Named { builtin: None }` resources therefore fixes
-    /// the by-value double-close (#1941) without touching the borrowing
-    /// handle-into-intrinsic calls. The narrower builtin-handle-moved-into-a-
-    /// user-function case keeps the pre-existing borrowing `Read` lowering
-    /// (fail-closed: a potential leak, never a new double-free) and is out of
-    /// this change's scope.
-    ///
-    /// ## Why this gates the call-argument intent
-    ///
-    /// Passing a user resource as an ordinary (non-receiver) call argument is
-    /// an ownership MOVE into the callee. Such an argument must lower with
-    /// `IntentKind::Consume` so the MIR dataflow checker sees a
-    /// `Use { intent: Consume }` and transitions the caller's binding to
-    /// `Consumed`. Without it the argument lowers as `Read` (a borrow in MIR),
-    /// the caller binding stays `Live`, and the resource is released twice —
-    /// once by the callee, once by the caller's implicit scope-exit drop —
-    /// while a later use of the moved binding is not refused. This mirrors the
-    /// consuming-receiver treatment a `close(self)` method already gets and the
-    /// channel-handle treatment an actor-send argument gets.
-    ///
-    /// Resolves through `ResolvedTy::from_ty` so the decision rides the typed
-    /// value-class, never a name string. Absent or unconvertible entries answer
-    /// `false` — the conservative no-ownership-transfer default.
+    /// Read the checker's ownership fact for a user resource argument.
+    /// Builtin handles have separate borrowing contracts at foreign boundaries.
     fn checked_span_user_resource_type(&self, span: &Span) -> Option<String> {
-        self.expr_types
-            .get(&self.mk_key(span))
-            .and_then(|ty| ResolvedTy::from_ty(ty).ok())
-            .and_then(|resolved| {
-                // Builtin runtime handles (`builtin: Some(_)`) and the
-                // non-`Named` affine variants (`CancellationToken`) are
-                // excluded: they reach borrowing FFI intrinsics by value.
-                let ResolvedTy::Named {
-                    name,
-                    builtin: None,
-                    ..
-                } = resolved
-                else {
-                    return None;
-                };
-                (crate::value_class::ValueClass::of_ty(
-                    &ResolvedTy::Named {
-                        name: name.clone(),
-                        args: vec![],
-                        builtin: None,
-                        is_opaque: false,
-                    },
-                    &self.type_classes,
-                ) == ValueClass::AffineResource)
-                    .then_some(name)
-            })
+        let ty = self.checked_ty(span)?;
+        let ResolvedTy::Named {
+            name,
+            builtin: None,
+            ..
+        } = ty
+        else {
+            return None;
+        };
+        self.type_facts
+            .get(&hew_types::TypeInstanceKey(ty.clone()))
+            .filter(|facts| facts.class == hew_types::ValueClass::AffineResource)
+            .map(|_| name.clone())
     }
 
     fn checked_span_is_user_resource(&self, span: &Span) -> bool {
@@ -10128,7 +10034,6 @@ impl LowerCtx {
             node: self.ids.node(),
             site: self.ids.site(),
             ty: receiver.ty.clone(),
-            value_class: ValueClass::of_ty(&receiver.ty, &self.type_classes),
             intent: IntentKind::Consume,
             kind: HirExprKind::BindingRef {
                 name: receiver.name.clone(),
@@ -10140,7 +10045,6 @@ impl LowerCtx {
             node: self.ids.node(),
             site: self.ids.site(),
             ty: abi_return_ty.clone(),
-            value_class: ValueClass::of_ty(abi_return_ty, &self.type_classes),
             intent: IntentKind::Read,
             kind: HirExprKind::TupleLiteral {
                 elements: vec![result_expr, self_ref],
@@ -10154,7 +10058,6 @@ impl LowerCtx {
             node: self.ids.node(),
             site: self.ids.site(),
             ty: ResolvedTy::Unit,
-            value_class: ValueClass::of_ty(&ResolvedTy::Unit, &self.type_classes),
             intent: IntentKind::Read,
             kind: HirExprKind::Literal(HirLiteral::Unit),
             span,
@@ -10187,7 +10090,6 @@ impl LowerCtx {
             node: self.ids.node(),
             site: self.ids.site(),
             ty: result_ty.clone(),
-            value_class: ValueClass::of_ty(result_ty, &self.type_classes),
             intent: IntentKind::Read,
             kind: HirExprKind::Match {
                 scrutinee: Box::new(scrutinee),
@@ -10800,7 +10702,6 @@ impl LowerCtx {
         HirExpr {
             node: self.ids.node(),
             site: self.ids.site(),
-            value_class: ValueClass::of_ty(&fn_ty, &self.type_classes),
             ty: fn_ty,
             intent: IntentKind::Read,
             kind: HirExprKind::BindingRef {
@@ -10815,7 +10716,6 @@ impl LowerCtx {
         HirExpr {
             node: self.ids.node(),
             site: self.ids.site(),
-            value_class: ValueClass::BitCopy,
             ty: ResolvedTy::Unit,
             intent: IntentKind::Read,
             kind: HirExprKind::BindingRef {
@@ -10830,7 +10730,6 @@ impl LowerCtx {
         HirExpr {
             node: self.ids.node(),
             site: self.ids.site(),
-            value_class: ValueClass::BitCopy,
             ty: ResolvedTy::Unit,
             intent: IntentKind::Read,
             kind: HirExprKind::BindingRef {
@@ -10848,7 +10747,6 @@ impl LowerCtx {
         HirExpr {
             node: self.ids.node(),
             site: self.ids.site(),
-            value_class: ValueClass::of_ty(&ResolvedTy::String, &self.type_classes),
             ty: ResolvedTy::String,
             intent: IntentKind::Read,
             kind: HirExprKind::Literal(HirLiteral::String(value)),
@@ -10879,7 +10777,6 @@ impl LowerCtx {
         HirExpr {
             node: self.ids.node(),
             site: self.ids.site(),
-            value_class: ValueClass::of_ty(&return_ty, &self.type_classes),
             ty: return_ty,
             intent: IntentKind::Read,
             kind: HirExprKind::Call {
@@ -10912,7 +10809,6 @@ impl LowerCtx {
         let callee = HirExpr {
             node: self.ids.node(),
             site: self.ids.site(),
-            value_class: ValueClass::of_ty(&fn_ty, &self.type_classes),
             ty: fn_ty,
             intent: IntentKind::Read,
             kind: HirExprKind::BindingRef {
@@ -10924,7 +10820,6 @@ impl LowerCtx {
         Some(HirExpr {
             node: self.ids.node(),
             site: self.ids.site(),
-            value_class: ValueClass::of_ty(&return_ty, &self.type_classes),
             ty: return_ty,
             intent: IntentKind::Read,
             kind: HirExprKind::Call {
@@ -10941,7 +10836,6 @@ impl LowerCtx {
         HirExpr {
             node: self.ids.node(),
             site: self.ids.site(),
-            value_class: ValueClass::of_ty(&ResolvedTy::Bool, &self.type_classes),
             ty: ResolvedTy::Bool,
             intent: IntentKind::Read,
             kind: HirExprKind::Unary {
@@ -11118,7 +11012,6 @@ impl LowerCtx {
         HirExpr {
             node: self.ids.node(),
             site: self.ids.site(),
-            value_class: ValueClass::of_ty(&ResolvedTy::String, &self.type_classes),
             ty: ResolvedTy::String,
             intent: IntentKind::Read,
             kind,
@@ -11347,7 +11240,6 @@ impl LowerCtx {
         let callee = HirExpr {
             node: self.ids.node(),
             site: self.ids.site(),
-            value_class: ValueClass::of_ty(&fn_ty, &self.type_classes),
             ty: fn_ty,
             intent: IntentKind::Read,
             kind: HirExprKind::Literal(HirLiteral::Unit),
@@ -11356,7 +11248,6 @@ impl LowerCtx {
         HirExpr {
             node: self.ids.node(),
             site: self.ids.site(),
-            value_class: ValueClass::of_ty(&ResolvedTy::String, &self.type_classes),
             ty: ResolvedTy::String,
             intent: IntentKind::Read,
             kind: HirExprKind::Call {
@@ -11383,7 +11274,6 @@ impl LowerCtx {
             HirExpr {
                 node: self.ids.node(),
                 site: self.ids.site(),
-                value_class: ValueClass::of_ty(&abi_ty, &self.type_classes),
                 ty: abi_ty.clone(),
                 intent: IntentKind::Read,
                 kind: HirExprKind::NumericCast {
@@ -11689,7 +11579,6 @@ impl LowerCtx {
         let then_block = HirExpr {
             node: self.ids.node(),
             site: self.ids.site(),
-            value_class: ValueClass::of_ty(&ResolvedTy::Never, &self.type_classes),
             ty: ResolvedTy::Never,
             intent: IntentKind::Read,
             kind: HirExprKind::Block(HirBlock {
@@ -11949,7 +11838,6 @@ impl LowerCtx {
         let callee = HirExpr {
             node: self.ids.node(),
             site: self.ids.site(),
-            value_class: ValueClass::PersistentShare,
             ty: callee_ty,
             intent: IntentKind::Read,
             kind: HirExprKind::BindingRef {
@@ -13348,7 +13236,6 @@ impl LowerCtx {
         let gen_block_expr = HirExpr {
             node: self.ids.node(),
             site: self.ids.site(),
-            value_class: ValueClass::of_ty(&generator_ty, &self.type_classes),
             ty: generator_ty.clone(),
             intent: IntentKind::Read,
             kind: HirExprKind::GenBlock {
@@ -14533,7 +14420,6 @@ impl LowerCtx {
         let gen_block_expr = HirExpr {
             node: self.ids.node(),
             site: self.ids.site(),
-            value_class: ValueClass::of_ty(&generator_ty, &self.type_classes),
             ty: generator_ty.clone(),
             intent: IntentKind::Read,
             kind: HirExprKind::GenBlock {
@@ -15262,7 +15148,6 @@ impl LowerCtx {
         HirExpr {
             node: self.ids.node(),
             site: self.ids.site(),
-            value_class: ValueClass::of_ty(&ty, &self.type_classes),
             ty,
             intent: IntentKind::Read,
             kind: HirExprKind::BindingRef {
@@ -15526,7 +15411,6 @@ impl LowerCtx {
                     node: self.ids.node(),
                     site: self.ids.site(),
                     ty: then_ty.clone(),
-                    value_class: ValueClass::of_ty(&then_ty, &self.type_classes),
                     intent: IntentKind::Read,
                     kind: HirExprKind::Block(then_hir_block),
                     span: span.clone(),
@@ -15558,7 +15442,6 @@ impl LowerCtx {
                             node: self.ids.node(),
                             site: self.ids.site(),
                             ty: else_ty.clone(),
-                            value_class: ValueClass::of_ty(&else_ty, &self.type_classes),
                             intent: IntentKind::Read,
                             kind: HirExprKind::Block(hir_block),
                             span: span.clone(),
@@ -15573,7 +15456,6 @@ impl LowerCtx {
                     node: self.ids.node(),
                     site: self.ids.site(),
                     ty: if_ty.clone(),
-                    value_class: ValueClass::of_ty(&if_ty, &self.type_classes),
                     intent: IntentKind::Read,
                     kind: HirExprKind::If {
                         condition: Box::new(lowered_condition),
@@ -15597,7 +15479,6 @@ impl LowerCtx {
                     node: self.ids.node(),
                     site: self.ids.site(),
                     ty: ResolvedTy::Unit,
-                    value_class: ValueClass::BitCopy,
                     intent: IntentKind::Read,
                     kind: HirExprKind::While {
                         label: label.clone(),
@@ -15643,7 +15524,6 @@ impl LowerCtx {
                     node: self.ids.node(),
                     site: self.ids.site(),
                     ty: ResolvedTy::Unit,
-                    value_class: ValueClass::BitCopy,
                     intent: IntentKind::Read,
                     kind: HirExprKind::Loop {
                         label: label.clone(),
@@ -15841,7 +15721,6 @@ impl LowerCtx {
                     node: self.ids.node(),
                     site: self.ids.site(),
                     ty: ResolvedTy::Unit,
-                    value_class: ValueClass::BitCopy,
                     intent: IntentKind::Read,
                     kind,
                     span: span.clone(),
@@ -15859,7 +15738,6 @@ impl LowerCtx {
                 let match_expr = HirExpr {
                     node: self.ids.node(),
                     site: self.ids.site(),
-                    value_class: ValueClass::of_ty(&ty, &self.type_classes),
                     ty,
                     intent: IntentKind::Read,
                     kind,
@@ -15896,7 +15774,6 @@ impl LowerCtx {
                     node: self.ids.node(),
                     site: self.ids.site(),
                     ty: loop_ty,
-                    value_class: ValueClass::BitCopy,
                     intent: IntentKind::Read,
                     kind: HirExprKind::Loop {
                         label: label.clone(),
@@ -15924,7 +15801,6 @@ impl LowerCtx {
                     node: self.ids.node(),
                     site: self.ids.site(),
                     ty: ResolvedTy::Unit,
-                    value_class: ValueClass::BitCopy,
                     intent: IntentKind::Read,
                     kind: HirExprKind::Break {
                         label: label.clone(),
@@ -15942,7 +15818,6 @@ impl LowerCtx {
                     node: self.ids.node(),
                     site: self.ids.site(),
                     ty: ResolvedTy::Unit,
-                    value_class: ValueClass::BitCopy,
                     intent: IntentKind::Read,
                     kind: HirExprKind::Continue {
                         label: label.clone(),
@@ -16250,7 +16125,6 @@ impl LowerCtx {
         let fallthrough = HirExpr {
             node: self.ids.node(),
             site: self.ids.site(),
-            value_class: ValueClass::of_ty(&else_ty, &self.type_classes),
             ty: else_ty,
             intent: IntentKind::Read,
             kind: HirExprKind::Block(else_hir_block),
@@ -16456,7 +16330,6 @@ impl LowerCtx {
             node: self.ids.node(),
             site: self.ids.site(),
             ty: target_read.ty.clone(),
-            value_class: target_read.value_class,
             intent: IntentKind::Consume,
             kind: HirExprKind::Binary {
                 op: binary_op,
@@ -16542,7 +16415,6 @@ impl LowerCtx {
         let one = HirExpr {
             node: self.ids.node(),
             site: self.ids.site(),
-            value_class: ValueClass::BitCopy,
             ty: ty.clone(),
             intent: IntentKind::Read,
             kind: HirExprKind::Literal(HirLiteral::Integer(1)),
@@ -16551,7 +16423,6 @@ impl LowerCtx {
         HirExpr {
             node: self.ids.node(),
             site: self.ids.site(),
-            value_class: ValueClass::BitCopy,
             ty,
             intent: IntentKind::Read,
             kind: HirExprKind::Binary {
@@ -16566,17 +16437,6 @@ impl LowerCtx {
     fn lower_expr(&mut self, expr: &Spanned<Expr>, intent: IntentKind) -> HirExpr {
         let mut lowered = self.lower_expr_with_tail_coercion(expr, intent);
         let normalized_ty = self.qualify_current_module_record_ty(lowered.ty.clone());
-        lowered.value_class = self
-            .checked_ty(&expr.1)
-            .and_then(|ty| self.type_facts.get(&hew_types::TypeInstanceKey(ty.clone())))
-            .map_or(ValueClass::Unknown, |facts| match facts.class {
-                hew_types::ValueClass::BitCopy => ValueClass::BitCopy,
-                hew_types::ValueClass::View => ValueClass::View,
-                hew_types::ValueClass::CowValue => ValueClass::CowValue,
-                hew_types::ValueClass::PersistentShare => ValueClass::PersistentShare,
-                hew_types::ValueClass::AffineResource => ValueClass::AffineResource,
-                hew_types::ValueClass::Linear => ValueClass::Linear,
-            });
         lowered.ty = normalized_ty;
 
         if let Some(target) = self.numeric_operand_coercions.get(&self.mk_key(&expr.1)) {
@@ -16585,7 +16445,6 @@ impl LowerCtx {
                     return HirExpr {
                         node: self.ids.node(),
                         site: self.ids.site(),
-                        value_class: ValueClass::BitCopy,
                         ty: to_ty.clone(),
                         intent,
                         span: expr.1.clone(),
@@ -16634,7 +16493,6 @@ impl LowerCtx {
         HirExpr {
             node: self.ids.node(),
             site,
-            value_class: ValueClass::of_ty(&ty, &self.type_classes),
             ty,
             intent,
             kind: HirExprKind::SubsumedValue {
@@ -16857,7 +16715,6 @@ impl LowerCtx {
                 let readdressed = HirExpr {
                     node: self.ids.node(),
                     site,
-                    value_class: ValueClass::of_ty(&message_ty, &self.type_classes),
                     ty: message_ty,
                     intent: IntentKind::Consume,
                     kind: HirExprKind::ActorDelivery {
@@ -16870,7 +16727,6 @@ impl LowerCtx {
                 return HirExpr {
                     node: self.ids.node(),
                     site: self.ids.site(),
-                    value_class: ValueClass::of_ty(&ty, &self.type_classes),
                     ty,
                     intent,
                     kind: HirExprKind::ActorDelivery {
@@ -16890,7 +16746,6 @@ impl LowerCtx {
                 let requested = HirExpr {
                     node: self.ids.node(),
                     site,
-                    value_class: ValueClass::of_ty(&handle_ty, &self.type_classes),
                     ty: handle_ty,
                     intent: IntentKind::Read,
                     kind: HirExprKind::ActorDelivery {
@@ -16903,7 +16758,6 @@ impl LowerCtx {
                 return HirExpr {
                     node: self.ids.node(),
                     site: self.ids.site(),
-                    value_class: ValueClass::of_ty(&ty, &self.type_classes),
                     ty,
                     intent,
                     kind: HirExprKind::ActorDelivery {
@@ -16917,7 +16771,6 @@ impl LowerCtx {
             return HirExpr {
                 node: self.ids.node(),
                 site,
-                value_class: ValueClass::of_ty(&ty, &self.type_classes),
                 ty,
                 intent,
                 kind: HirExprKind::ActorDelivery {
@@ -17121,7 +16974,6 @@ impl LowerCtx {
                     return HirExpr {
                         node: self.ids.node(),
                         site,
-                        value_class: ValueClass::of_ty(&call.ty, &self.type_classes),
                         ty: call.ty.clone(),
                         intent,
                         kind: call.kind,
@@ -17174,7 +17026,6 @@ impl LowerCtx {
                     return HirExpr {
                         node: self.ids.node(),
                         site,
-                        value_class: ValueClass::of_ty(&ty, &self.type_classes),
                         ty,
                         intent,
                         kind,
@@ -17207,7 +17058,6 @@ impl LowerCtx {
                     return HirExpr {
                         node: self.ids.node(),
                         site,
-                        value_class: ValueClass::of_ty(&ty, &self.type_classes),
                         ty,
                         intent,
                         kind,
@@ -17224,7 +17074,6 @@ impl LowerCtx {
                     return HirExpr {
                         node: self.ids.node(),
                         site,
-                        value_class: ValueClass::of_ty(&ty, &self.type_classes),
                         ty,
                         intent,
                         kind,
@@ -17252,7 +17101,6 @@ impl LowerCtx {
                     return HirExpr {
                         node: self.ids.node(),
                         site,
-                        value_class: ValueClass::of_ty(&result_ty, &self.type_classes),
                         ty: result_ty.clone(),
                         intent,
                         kind: HirExprKind::RcIntrinsic {
@@ -18112,7 +17960,6 @@ impl LowerCtx {
                         return HirExpr {
                             node: self.ids.node(),
                             site,
-                            value_class: ValueClass::of_ty(&result_ty, &self.type_classes),
                             ty: result_ty.clone(),
                             intent,
                             kind: HirExprKind::CallDynMethod {
@@ -18164,7 +18011,6 @@ impl LowerCtx {
                             let callee = HirExpr {
                                 node: self.ids.node(),
                                 site: self.ids.site(),
-                                value_class: ValueClass::PersistentShare,
                                 ty: callee_ty,
                                 intent: IntentKind::Read,
                                 kind: HirExprKind::BindingRef {
@@ -18176,7 +18022,6 @@ impl LowerCtx {
                             return HirExpr {
                                 node: self.ids.node(),
                                 site,
-                                value_class: ValueClass::of_ty(&result_ty, &self.type_classes),
                                 ty: result_ty.clone(),
                                 intent,
                                 kind: HirExprKind::Call {
@@ -18261,7 +18106,6 @@ impl LowerCtx {
                                 return HirExpr {
                                     node: self.ids.node(),
                                     site,
-                                    value_class: ValueClass::of_ty(&result_ty, &self.type_classes),
                                     ty: result_ty,
                                     intent,
                                     kind: HirExprKind::MachineVariantCtor {
@@ -18300,7 +18144,6 @@ impl LowerCtx {
                         return HirExpr {
                             node: self.ids.node(),
                             site,
-                            value_class: ValueClass::of_ty(&ty, &self.type_classes),
                             ty,
                             intent,
                             kind: HirExprKind::BindingRef {
@@ -18328,7 +18171,6 @@ impl LowerCtx {
                         return HirExpr {
                             node: self.ids.node(),
                             site,
-                            value_class: ValueClass::of_ty(&ty, &self.type_classes),
                             ty,
                             intent,
                             kind,
@@ -18575,11 +18417,6 @@ impl LowerCtx {
         let inner = HirExpr {
             node: self.ids.node(),
             site,
-            value_class: if Self::is_vec_iter_ty(&ty) {
-                ValueClass::CowValue
-            } else {
-                ValueClass::of_ty(&ty, &self.type_classes)
-            },
             ty,
             intent,
             kind,
@@ -18678,7 +18515,6 @@ impl LowerCtx {
             let wrapped = HirExpr {
                 node: self.ids.node(),
                 site: self.ids.site(),
-                value_class: ValueClass::of_ty(&dyn_ty, &self.type_classes),
                 ty: dyn_ty,
                 intent,
                 kind: HirExprKind::CoerceToDynTrait {
@@ -19738,7 +19574,6 @@ impl LowerCtx {
         let message = HirExpr {
             node: self.ids.node(),
             site: self.ids.site(),
-            value_class: ValueClass::of_ty(&message_ty, &self.type_classes),
             ty: message_ty,
             intent: IntentKind::Consume,
             kind: HirExprKind::ActorMessage {
@@ -19820,7 +19655,6 @@ impl LowerCtx {
                 let value = HirExpr {
                     node: self.ids.node(),
                     site: self.ids.site(),
-                    value_class: ValueClass::of_ty(&capture.ty, &self.type_classes),
                     ty: capture.ty.clone(),
                     intent: IntentKind::Consume,
                     kind: HirExprKind::BindingRef {
@@ -23342,11 +23176,6 @@ impl LowerCtx {
         intent: IntentKind,
         span: Span,
     ) -> HirExpr {
-        let value_class = if Self::is_vec_iter_ty(&ty) {
-            ValueClass::CowValue
-        } else {
-            ValueClass::of_ty(&ty, &self.type_classes)
-        };
         let site = self.ids.site();
         if let Some(operations) = self
             .checked_indexed_place_operations
@@ -23357,7 +23186,6 @@ impl LowerCtx {
         HirExpr {
             node: self.ids.node(),
             site,
-            value_class,
             ty,
             intent,
             kind,
@@ -23374,17 +23202,6 @@ impl LowerCtx {
             ty,
             IntentKind::Read,
             span,
-        )
-    }
-
-    fn is_vec_iter_ty(ty: &ResolvedTy) -> bool {
-        matches!(
-            ty,
-            ResolvedTy::Named {
-                args,
-                builtin: Some(BuiltinType::VecIter),
-                ..
-            } if args.len() == 1
         )
     }
 
@@ -23594,7 +23411,6 @@ impl LowerCtx {
         let callee = HirExpr {
             node: self.ids.node(),
             site: self.ids.site(),
-            value_class: ValueClass::PersistentShare,
             ty: callee_ty,
             intent: IntentKind::Read,
             kind: HirExprKind::BindingRef {
@@ -23608,7 +23424,6 @@ impl LowerCtx {
             node: self.ids.node(),
             site,
             ty: ret_ty.clone(),
-            value_class: ValueClass::of_ty(ret_ty, &self.type_classes),
             intent: IntentKind::Read,
             kind: HirExprKind::Call {
                 target,
@@ -25484,7 +25299,6 @@ impl LowerCtx {
                 node: self.ids.node(),
                 site: self.ids.site(),
                 ty: ResolvedTy::Unit,
-                value_class: ValueClass::BitCopy,
                 intent: IntentKind::Read,
                 kind: HirExprKind::BindingRef {
                     name: callee_symbol.to_string(),
@@ -25776,7 +25590,6 @@ impl LowerCtx {
                     let message = HirExpr {
                         node: self.ids.node(),
                         site: self.ids.site(),
-                        value_class: ValueClass::of_ty(&message_ty, &self.type_classes),
                         ty: message_ty,
                         intent: IntentKind::Consume,
                         kind: HirExprKind::ActorMessage {
@@ -26490,7 +26303,6 @@ impl LowerCtx {
                 let callee = HirExpr {
                     node: self.ids.node(),
                     site: self.ids.site(),
-                    value_class: ValueClass::PersistentShare,
                     ty: ResolvedTy::Function {
                         capabilities: hew_types::CallableCapabilities::FUNCTION_ITEM,
                         params: Vec::new(),
@@ -26578,7 +26390,6 @@ impl LowerCtx {
                 let callee = HirExpr {
                     node: self.ids.node(),
                     site: self.ids.site(),
-                    value_class: ValueClass::PersistentShare,
                     ty: callee_ty,
                     intent: IntentKind::Read,
                     kind: HirExprKind::BindingRef {
@@ -26780,7 +26591,6 @@ impl LowerCtx {
                             let callee = HirExpr {
                                 node: self.ids.node(),
                                 site: self.ids.site(),
-                                value_class: ValueClass::PersistentShare,
                                 ty: callee_ty,
                                 intent: IntentKind::Read,
                                 kind: HirExprKind::BindingRef {
@@ -27275,7 +27085,6 @@ impl LowerCtx {
         HirExpr {
             node: self.ids.node(),
             site: self.ids.site(),
-            value_class: ValueClass::of_ty(&ty, &self.type_classes),
             ty,
             intent: IntentKind::Read,
             kind: HirExprKind::BindingRef {
@@ -27656,7 +27465,6 @@ impl LowerCtx {
         HirExpr {
             node: self.ids.node(),
             site: self.ids.site(),
-            value_class: ValueClass::of_ty(&ty, &self.type_classes),
             ty,
             intent: IntentKind::Consume,
             kind: HirExprKind::MachineVariantCtor {
@@ -27689,7 +27497,6 @@ impl LowerCtx {
         HirExpr {
             node: self.ids.node(),
             site: self.ids.site(),
-            value_class: ValueClass::BitCopy,
             ty: ResolvedTy::Unit,
             intent: IntentKind::Read,
             kind: HirExprKind::Block(block),
@@ -28752,7 +28559,6 @@ impl LowerCtx {
             node: self.ids.node(),
             site: self.ids.site(),
             ty: ResolvedTy::Unit,
-            value_class: ValueClass::BitCopy,
             intent: IntentKind::Unknown,
             kind: HirExprKind::Unsupported(note.into()),
             span,
@@ -29326,7 +29132,6 @@ impl LowerCtx {
                     node: self.ids.node(),
                     site: self.ids.site(),
                     ty: body_ty.clone(),
-                    value_class: ValueClass::of_ty(&body_ty, &self.type_classes),
                     intent: IntentKind::Read,
                     kind: HirExprKind::Block(HirBlock {
                         node: self.ids.node(),
@@ -29442,7 +29247,6 @@ impl LowerCtx {
                 HirExpr {
                     node: self.ids.node(),
                     site: self.ids.site(),
-                    value_class: ValueClass::of_ty(&ty, &self.type_classes),
                     ty: ty.clone(),
                     intent: IntentKind::Read,
                     kind: HirExprKind::TupleLiteral { elements },
@@ -29481,7 +29285,6 @@ impl LowerCtx {
                 node: self.ids.node(),
                 site: self.ids.site(),
                 ty: ty.clone(),
-                value_class: ValueClass::of_ty(&ty, &self.type_classes),
                 intent: IntentKind::Read,
                 kind: HirExprKind::Block(block),
                 span: body_span.clone(),
@@ -29514,7 +29317,6 @@ impl LowerCtx {
                         node: self.ids.node(),
                         site: self.ids.site(),
                         ty: ResolvedTy::Unit,
-                        value_class: ValueClass::BitCopy,
                         intent: IntentKind::Read,
                         kind: HirExprKind::Unsupported(
                             "pattern condition with an unsupported pattern shape".into(),
@@ -29540,7 +29342,6 @@ impl LowerCtx {
                     node: self.ids.node(),
                     site: self.ids.site(),
                     ty: result_ty.clone(),
-                    value_class: ValueClass::of_ty(result_ty, &self.type_classes),
                     intent: IntentKind::Read,
                     kind: HirExprKind::If {
                         condition: Box::new(condition),
@@ -29568,7 +29369,6 @@ impl LowerCtx {
                 node: self.ids.node(),
                 site: self.ids.site(),
                 ty: ResolvedTy::Unit,
-                value_class: ValueClass::BitCopy,
                 intent: IntentKind::Read,
                 kind: HirExprKind::Break {
                     label: None,

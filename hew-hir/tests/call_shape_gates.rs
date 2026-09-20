@@ -22,7 +22,6 @@ use hew_hir::{
     lower_program_host_target, run_call_shape_gates_for_test, HirBinding, HirBlock,
     HirDiagnosticKind, HirExpr, HirExprKind, HirFn, HirItem, HirMachineDecl, HirMachineEvent,
     HirMachineState, HirMachineTransition, HirStmt, HirStmtKind, IntentKind, ResolvedRef,
-    ValueClass,
 };
 use hew_hir::{BindingId, HirNodeId, ItemId, ScopeId, SiteId};
 use hew_parser::parser;
@@ -177,7 +176,6 @@ fn synth_call_with_item_callee(name: &str, item_id: u32) -> HirExpr {
             params: Vec::new(),
             ret: Box::new(ResolvedTy::Unit),
         },
-        value_class: ValueClass::BitCopy,
         intent: IntentKind::Read,
         kind: HirExprKind::BindingRef {
             name: name.to_string(),
@@ -189,7 +187,6 @@ fn synth_call_with_item_callee(name: &str, item_id: u32) -> HirExpr {
         node: HirNodeId(1),
         site: SiteId(1),
         ty: ResolvedTy::Unit,
-        value_class: ValueClass::BitCopy,
         intent: IntentKind::Read,
         kind: HirExprKind::Call {
             target: hew_types::CallTarget::IndirectFunctionValue,
@@ -208,7 +205,6 @@ fn synth_call_with_unresolved_callable_callee(name: &str) -> HirExpr {
             params: Vec::new(),
             ret: Box::new(ResolvedTy::Unit),
         },
-        value_class: ValueClass::BitCopy,
         intent: IntentKind::Read,
         kind: HirExprKind::BindingRef {
             name: name.to_string(),
@@ -220,7 +216,6 @@ fn synth_call_with_unresolved_callable_callee(name: &str) -> HirExpr {
         node: HirNodeId(1),
         site: SiteId(1),
         ty: ResolvedTy::Unit,
-        value_class: ValueClass::BitCopy,
         intent: IntentKind::Read,
         kind: HirExprKind::Call {
             target: hew_types::CallTarget::IndirectFunctionValue,
@@ -241,7 +236,6 @@ fn synth_user_call(name: &str, item_id: u32, declaration: &str) -> HirExpr {
             params: Vec::new(),
             ret: Box::new(ResolvedTy::Unit),
         },
-        value_class: ValueClass::BitCopy,
         intent: IntentKind::Read,
         kind: HirExprKind::BindingRef {
             name: name.to_string(),
@@ -253,7 +247,6 @@ fn synth_user_call(name: &str, item_id: u32, declaration: &str) -> HirExpr {
         node: HirNodeId(1),
         site: SiteId(1),
         ty: ResolvedTy::Unit,
-        value_class: ValueClass::BitCopy,
         intent: IntentKind::Read,
         kind: HirExprKind::Call {
             target: hew_types::CallTarget::User(hew_types::DefId::for_test(declaration)),
@@ -349,7 +342,6 @@ fn item_callee_referencing_module_fn_does_not_emit_diagnostic() {
             node: HirNodeId(0),
             site: SiteId(0),
             ty: ResolvedTy::Unit,
-            value_class: ValueClass::BitCopy,
             intent: IntentKind::Read,
             kind: HirExprKind::Literal(hew_hir::HirLiteral::Unit),
             span: dummy_span(),
@@ -387,7 +379,6 @@ fn emitted_body(declaration: &str, emitted_name: &str, item_id: u32) -> HirItem 
             node: HirNodeId(0),
             site: SiteId(0),
             ty: ResolvedTy::Unit,
-            value_class: ValueClass::BitCopy,
             intent: IntentKind::Read,
             kind: HirExprKind::Literal(hew_hir::HirLiteral::Unit),
             span: dummy_span(),
@@ -470,7 +461,6 @@ fn binding_callee_does_not_emit_indirect_call_unsupported() {
             params: Vec::new(),
             ret: Box::new(ResolvedTy::Unit),
         },
-        value_class: ValueClass::BitCopy,
         intent: IntentKind::Read,
         kind: HirExprKind::BindingRef {
             name: "f".to_string(),
@@ -482,7 +472,6 @@ fn binding_callee_does_not_emit_indirect_call_unsupported() {
         node: HirNodeId(1),
         site: SiteId(1),
         ty: ResolvedTy::Unit,
-        value_class: ValueClass::BitCopy,
         intent: IntentKind::Read,
         kind: HirExprKind::Call {
             target: hew_types::CallTarget::IndirectFunctionValue,

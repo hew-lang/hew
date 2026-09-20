@@ -18,7 +18,7 @@ fn simple_function_lowers_with_stable_sites() {
     assert!(dump.contains("fn i0 main -> i64"));
     assert!(dump.contains("let b0 x: i64"));
     assert!(dump.contains("expr h"));
-    assert!(dump.contains("Read BitCopy: i64"));
+    assert!(dump.contains("Read: i64"));
 }
 
 #[test]
@@ -47,52 +47,6 @@ fn duration_scaling_and_ratio_preserve_checked_operand_types() {
     };
     assert_eq!(left.ty, hew_types::ResolvedTy::I64);
     assert_eq!(right.ty, hew_types::ResolvedTy::Duration);
-}
-
-#[test]
-fn pipe_result_sites_are_affine_in_hir() {
-    let output = support::checker_pipeline::lower_through_checker_with_modules(
-        r#"
-        import std.stream;
-
-        fn make_pipe_result()
-            -> Result<(stream.Sink<i64>, stream.Stream<i64>), string> {
-            panic("not called")
-        }
-
-        fn main() {
-            let result: Result<(stream.Sink<i64>, stream.Stream<i64>), string> =
-                make_pipe_result();
-            match result {
-                .Ok((_sink, _stream)) => (),
-                .Err(error) => panic(error),
-            }
-        }
-        "#,
-    );
-    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
-
-    let main = output
-        .module
-        .items
-        .iter()
-        .find_map(|item| match item {
-            hew_hir::HirItem::Function(function) if function.name == "main" => Some(function),
-            _ => None,
-        })
-        .expect("main function");
-    let HirStmtKind::Let(_, Some(call)) = &main.body.statements[0].kind else {
-        panic!("expected pipe result binding");
-    };
-    let Some(match_expr) = main.body.tail.as_deref() else {
-        panic!("expected match tail");
-    };
-    let HirExprKind::Match { scrutinee, .. } = &match_expr.kind else {
-        panic!("expected Result match");
-    };
-
-    assert_eq!(call.value_class, hew_hir::ValueClass::AffineResource);
-    assert_eq!(scrutinee.value_class, hew_hir::ValueClass::AffineResource);
 }
 
 #[test]

@@ -426,10 +426,7 @@ machine Cell {{
     events {{ Fill, Drain, }}
     state Empty,
     state Full {{ r: Rc<Node>, }},
-    on Fill: Empty => Full {{
-        let shared: Rc<Node> = Rc.new(Node {{ id: 7 }});
-        {{ r: shared }}
-    }}
+    on Fill: Empty => Full {{ r: Rc.new(Node {{ id: 7 }}) }}
     on Drain: Full => Empty,
     default {{ state }}
 }}

@@ -296,7 +296,7 @@ actor Driver {{
 
 fn main() -> i64 {{
     let d = spawn Driver;
-    match await d.go() {{
+    match d.go() {{
         .Ok(v) => v,
         .Err(_e) => 1,
     }}

@@ -364,12 +364,15 @@ impl Builder {
             let Item::Machine(machine) = item else {
                 continue;
             };
-            // Namespace registration owns this diagnostic. Keep the invalid
-            // declaration intact so generated bodies cannot add cascades.
+            self.origin = span.clone();
+            // Register the rejected state declaration through the ordinary
+            // namespace authority, without bodies that would add cascades.
             if crate::ty::is_reserved_type_name(&machine.name) {
+                let mut declaration = self.enum_decl(&machine.name, &[], machine.visibility);
+                declaration.origin = DeclarationOrigin::MachineState;
+                result[ordinal] = (Item::TypeDecl(declaration), span.clone());
                 continue;
             }
-            self.origin = span.clone();
             let source = sources.get(ordinal).cloned();
             let context = if source.is_some() {
                 String::new()

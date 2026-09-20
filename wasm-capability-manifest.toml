@@ -316,6 +316,18 @@ categories = ["stdlib", "networking"]
 tracking = "WASM-TODO"
 tracking_label = "WASM-TODO(http-client):"
 native_only_modules = ["http_client"]
+# Directory-module imports share the canonical std.net.http declaration owner.
+# Classify client members before the HTTP server module's default policy.
+native_only_functions = [
+  "std.net.http.request",
+  "std.net.http.request_string",
+  "std.net.http.set_timeout",
+  "std.net.http.last_error",
+  "std.net.http.get",
+  "std.net.http.post",
+  "std.net.http.get_string",
+  "std.net.http.post_string",
+]
 
 [[feature]]
 id = "smtp"

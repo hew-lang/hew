@@ -105,7 +105,8 @@ pub(super) fn normalize(
                 // items, in authored machine order.
                 let old_sources = sources.clone();
                 for (ordinal, (item, _)) in old_items.iter().enumerate() {
-                    if matches!(item, Item::Machine(_)) {
+                    if matches!(item, Item::Machine(machine) if !crate::ty::is_reserved_type_name(&machine.name))
+                    {
                         let source = old_sources
                             .get(ordinal)
                             .or_else(|| module.source_paths.first());
@@ -363,6 +364,11 @@ impl Builder {
             let Item::Machine(machine) = item else {
                 continue;
             };
+            // Namespace registration owns this diagnostic. Keep the invalid
+            // declaration intact so generated bodies cannot add cascades.
+            if crate::ty::is_reserved_type_name(&machine.name) {
+                continue;
+            }
             self.origin = span.clone();
             let source = sources.get(ordinal).cloned();
             let context = if source.is_some() {

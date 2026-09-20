@@ -10,11 +10,8 @@
 //!   generator surfaces (`gen fn`, `gen {}`, `receive gen fn`)
 //!   already run on `llvm.coro` frames, not OS threads. It is a regression
 //!   fence so the P4 concurrency lane cannot quietly re-thread the pump.
-//! - `fork_children_create_no_os_threads` FAILS today: every `fork` child
-//!   gets its own `std::thread::spawn` OS thread
-//!   (`hew-runtime/src/task_scope.rs:1479`), one per child. It is ledgered in
-//!   `scripts/nextest-expected-failures.tsv` as an expected failure so the P4
-//!   pure-coroutine `fork` lane must flip it, not delete it.
+//! - `fork_children_create_no_os_threads` requires fork continuations to park
+//!   on the shared scheduler without creating OS threads.
 
 #![cfg(target_os = "linux")]
 
@@ -201,20 +198,8 @@ fn main() {
 }
 "#;
 
-/// U370: `fork` children each get a dedicated `std::thread::spawn` OS
-/// thread today (`hew-runtime/src/task_scope.rs:1479`), one per child,
-/// linear in child count. This asserts the ideal — the thread count while N
-/// children are all parked on a long sleep equals the pre-scope count — which
-/// is false today by exactly `N + 1` (the N nappers plus the in-scope
-/// reporter's own thread). It is ledgered in
-/// `scripts/nextest-expected-failures.tsv` as an expected failure so the P4
-/// pure-coroutine `fork` lane must flip it, not delete it.
-///
-/// Parameterized over N so a per-child leak (this) is distinguishable from a
-/// constant per-scope overhead: every N must show the fixture over by exactly
-/// `N + 1` (visible in the failure message's `delta=` field), not by some
-/// N-independent constant. Every N runs to completion (no fail-fast) so a
-/// partial ratchet run always carries the full evidence.
+/// Park several fork children and sample from another child while all are live.
+/// Different child counts distinguish per-task thread creation from fixed costs.
 #[test]
 fn fork_children_create_no_os_threads() {
     require_codegen();
@@ -305,7 +290,13 @@ fn main() -> i64 {{
     );
     std::fs::write(&path, source).expect("write fork thread-fence fixture");
 
-    let output = run_bounded_hew_run(&path, dir.path());
+    let mut command = support::hew_command();
+    command
+        .args(["run"])
+        .arg(&path)
+        .current_dir(dir.path())
+        .env("HEW_WORKERS", "1");
+    let output = support::run_bounded_command(command, "fork thread fence on one worker");
     assert!(
         output.status.success(),
         "N={n}: fork thread-fence fixture should run; stdout: {}\nstderr: {}",

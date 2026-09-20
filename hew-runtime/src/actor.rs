@@ -6704,7 +6704,7 @@ unsafe fn hew_actor_trap_inner(
         let scope = crate::task_scope::current_task_scope();
         if !scope.is_null() {
             // SAFETY: the task-scope lane is installed only while the scope is live.
-            unsafe { crate::task_scope::hew_task_scope_cancel(scope) };
+            unsafe { crate::task_scope::checked::hew_checked_scope_cancel(scope) };
         }
     }
     if matches!(mailbox_reclaim, TrapMailboxReclaim::OwnedActivation)
@@ -10483,14 +10483,17 @@ mod tests {
         // SAFETY: test owns the scope pointer and restores the context before teardown.
         unsafe {
             let _ctx = TestExecutionContext::install(HewExecutionContext::default());
-            let scope = crate::task_scope::hew_task_scope_new();
+            let scope = crate::task_scope::checked::hew_checked_scope_new(ptr::null_mut());
             let previous = crate::task_scope::hew_task_scope_set_current(scope);
 
             hew_actor_trap(actor, 99);
 
-            assert_eq!(crate::task_scope::hew_task_scope_is_cancelled(scope), 1);
+            assert_eq!(
+                crate::cancel_token::hew_cancel_token_is_requested((*scope).cancel_token),
+                1
+            );
             let _ = crate::task_scope::hew_task_scope_set_current(previous);
-            crate::task_scope::hew_task_scope_destroy(scope);
+            crate::task_scope::checked::hew_checked_scope_close(scope);
             assert_eq!(hew_actor_free(actor), 0);
         }
     }

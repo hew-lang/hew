@@ -155,13 +155,11 @@ would otherwise end in a trap or linker failure:
 
   **Release decision:** Tier 2 `scope {}` / `Task` support is deferred from
   v0.6.0-rc1 to a later v0.6.x. LLVM lowering is shared across native and
-  wasm32, but every `SpawnTask*` site still emits
-  `hew_task_spawn_thread_with_inherited_context`; completion and `await task`
-  use the native thread/condvar plus `hew_read_slot_*` wakeup path. The wasm32
-  scheduler has an actor run queue, but no task work queue, task continuation
-  driver, or non-blocking scope join. A synchronous shim is not parity: it
-  erases concurrency and can deadlock task/actor coordination, so the compiler
-  continues to reject the surface before LLVM/linking.
+  wasm32. Native fork now drives checked callable continuations through the
+  shared scheduler, with non-blocking scope drain and retained readiness.
+  The checked task module remains excluded from wasm32, whose actor run queue
+  does not yet accept task continuations. The compiler continues to reject
+  this surface before LLVM/linking until execution parity is established.
 
 - **`select {}`**: a select builds its readiness waitset through the
   task-scope runtime (`hew_checked_task_select_*`), which is not compiled for

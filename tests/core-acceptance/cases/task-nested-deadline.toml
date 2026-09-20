@@ -1,0 +1,14 @@
+[[case]]
+id = "task-nested-deadline"
+intent = "A deadline cancels and drains a nested task tree, bypasses inherited recovery and completes actor-backed resource close on one worker."
+source = "cases/task-nested-deadline.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.env]
+HEW_WORKERS = "1"
+
+[case.expected]
+stdout = "child closed\ndeadline drained\n"
+stderr = ""
+exit = 0

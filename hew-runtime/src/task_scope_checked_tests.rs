@@ -6,6 +6,24 @@ use hew_cabi::value::HewTypeOwnershipKind;
 use std::sync::{mpsc, Condvar};
 use std::time::Duration;
 
+struct TaskRuntime {
+    _guard: crate::RuntimeTestGuard,
+}
+
+impl TaskRuntime {
+    fn new() -> Self {
+        let guard = crate::runtime_test_guard();
+        crate::scheduler::init_real_scheduler_for_test();
+        Self { _guard: guard }
+    }
+}
+
+impl Drop for TaskRuntime {
+    fn drop(&mut self) {
+        crate::scheduler::hew_runtime_cleanup();
+    }
+}
+
 enum ResultValue {
     Scalar(i64),
     Owned,
@@ -202,6 +220,7 @@ static CLOSE_RESULT: HewValueLayout = HewValueLayout {
 
 #[test]
 fn scope_retains_pending_result_cleanup_and_transfers_its_fault_once() {
+    let _runtime = TaskRuntime::new();
     let (readiness, waker) = Readiness::new();
     let (started, receive) = mpsc::channel();
     let gate = Arc::new((Mutex::new(false), Condvar::new()));
@@ -251,6 +270,7 @@ fn scope_retains_pending_result_cleanup_and_transfers_its_fault_once() {
 
 #[test]
 fn discarded_await_result_closes_before_observer_release() {
+    let _runtime = TaskRuntime::new();
     let (readiness, waker) = Readiness::new();
     let (started, receive) = mpsc::channel();
     let gate = Arc::new((Mutex::new(false), Condvar::new()));
@@ -298,6 +318,7 @@ fn discarded_await_result_closes_before_observer_release() {
 
 #[test]
 fn transferred_result_is_closed_only_by_its_new_owner() {
+    let _runtime = TaskRuntime::new();
     let (readiness, waker) = Readiness::new();
     let (started, receive) = mpsc::channel();
     let gate = Arc::new((Mutex::new(false), Condvar::new()));
@@ -349,6 +370,7 @@ fn transferred_result_is_closed_only_by_its_new_owner() {
 
 #[test]
 fn child_fault_remains_primary_while_result_cleanup_is_pending() {
+    let _runtime = TaskRuntime::new();
     let (readiness, waker) = Readiness::new();
     let (started, receive) = mpsc::channel();
     let gate = Arc::new((Mutex::new(false), Condvar::new()));
@@ -445,6 +467,7 @@ unsafe fn spawn(
 
 #[test]
 fn pending_scope_drain_preserves_completed_child_faults() {
+    let _runtime = TaskRuntime::new();
     let (readiness, waker) = Readiness::new();
     let (started, receive) = mpsc::channel();
     let pending_gate = Arc::new((Mutex::new(false), Condvar::new()));
@@ -504,6 +527,7 @@ fn pending_scope_drain_preserves_completed_child_faults() {
 
 #[test]
 fn cancellation_does_not_release_captures_before_the_child_stops() {
+    let _runtime = TaskRuntime::new();
     let (readiness, waker) = Readiness::new();
     let (started, receive) = mpsc::channel();
     let gate = Arc::new((Mutex::new(false), Condvar::new()));
@@ -543,6 +567,7 @@ fn cancellation_does_not_release_captures_before_the_child_stops() {
 
 #[test]
 fn children_start_concurrently_and_each_result_transfers_once() {
+    let _runtime = TaskRuntime::new();
     let (readiness, waker) = Readiness::new();
     let (started, receive) = mpsc::channel();
     let gate = Arc::new((Mutex::new(false), Condvar::new()));
@@ -609,6 +634,7 @@ fn children_start_concurrently_and_each_result_transfers_once() {
 
 #[test]
 fn closing_scope_releases_unobserved_result_before_remaining_handle() {
+    let _runtime = TaskRuntime::new();
     let (readiness, waker) = Readiness::new();
     let (started, receive) = mpsc::channel();
     let gate = Arc::new((Mutex::new(false), Condvar::new()));
@@ -641,6 +667,7 @@ fn closing_scope_releases_unobserved_result_before_remaining_handle() {
 
 #[test]
 fn select_observation_retains_both_results_after_a_task_or_timer_wins() {
+    let _runtime = TaskRuntime::new();
     for timeout in [false, true] {
         let (readiness, waker) = Readiness::new();
         let (started, receive) = mpsc::channel();
@@ -723,6 +750,7 @@ fn select_observation_retains_both_results_after_a_task_or_timer_wins() {
 
 #[test]
 fn race_selection_uses_completion_order_and_drain_suppresses_only_its_cancellation() {
+    let _runtime = TaskRuntime::new();
     for parent_code in [0, crate::fault::HEW_FAULT_DEADLINE] {
         let (readiness, waker) = Readiness::new();
         let (started, receive) = mpsc::channel();
@@ -755,9 +783,13 @@ fn race_selection_uses_completion_order_and_drain_suppresses_only_its_cancellati
                 Arc::clone(&drops),
                 ResultValue::Scalar(3),
             );
-            for _ in 0..3 {
+            // Two deliberately blocking test callbacks occupy both workers.
+            // Complete the second before waiting for the queued third to start.
+            for _ in 0..2 {
                 receive.recv_timeout(Duration::from_secs(2)).unwrap();
             }
+            release(&second_gate);
+            receive.recv_timeout(Duration::from_secs(2)).unwrap();
             let first_wait = hew_checked_task_wait_new(first, waker.descriptor());
             let second_wait = hew_checked_task_wait_new(second, waker.descriptor());
             release(&second_gate);

@@ -365,42 +365,6 @@ pub enum HewError {
     ErrForeignRuntime = -6,
 }
 
-/// Task state (cooperative scheduling within an actor).
-#[repr(i32)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HewTaskState {
-    Ready = 0,
-    Running = 1,
-    Suspended = 2,
-    Done = 3,
-}
-
-impl HewTaskState {
-    /// Convert from the raw `i32` representation.
-    ///
-    /// Returns `None` for values outside the valid range.
-    #[must_use]
-    pub fn from_i32(v: i32) -> Option<Self> {
-        match v {
-            0 => Some(Self::Ready),
-            1 => Some(Self::Running),
-            2 => Some(Self::Suspended),
-            3 => Some(Self::Done),
-            _ => None,
-        }
-    }
-}
-
-/// Task error codes.
-#[repr(i32)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HewTaskError {
-    None = 0,
-    Cancelled = 1,
-    Timeout = 2,
-    Panic = 3,
-}
-
 /// Typed failure reason for an ask (local or remote).
 ///
 /// Written to a thread-local slot whenever `hew_node_api_ask` or

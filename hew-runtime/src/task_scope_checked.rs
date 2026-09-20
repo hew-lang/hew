@@ -1,21 +1,22 @@
-//! Checked structured tasks on the existing native task-thread runtime.
+//! Checked structured tasks driven by the shared scheduler.
 //!
 //! The scope, source handle and worker own independent task references. A
 //! terminal result is published only after the callable driver has destroyed
 //! its frame; task observers retain readiness targets independently of frames.
 
 use super::{
-    free_scope_tasks, hew_cancel_token_cancel, hew_cancel_token_new_child,
-    hew_task_complete_threaded, hew_task_free, hew_task_new, hew_task_scope_spawn,
-    hew_task_spawn_thread, HewCancellationToken, HewTask, HewTaskScope,
+    free_scope_tasks, hew_cancel_token_cancel, hew_cancel_token_new_child, hew_task_free,
+    hew_task_new, hew_task_scope_spawn, HewCancellationToken, HewTask, HewTaskScope,
 };
 use crate::callable::HewCallableValue;
-use crate::coro_root::hew_coro_run_callable;
+#[path = "task_scope_executor.rs"]
+mod executor;
 use crate::coro_state::{hew_coro_state_free, hew_coro_state_new, HewCoroState};
 use crate::fault::{hew_fault_combine, hew_fault_drop, HewFault, HEW_FAULT_CANCELLED};
 use crate::release_walker::{HewReleaseCursor, ReleaseDriver};
 use crate::util::MutexExt;
 use crate::wake::{HewWaker, OwnedWaker};
+pub(crate) use executor::TaskExecution;
 use hew_cabi::value::HewValueLayout;
 use std::alloc::{alloc, dealloc, handle_alloc_error, Layout};
 use std::ffi::c_void;
@@ -174,47 +175,26 @@ unsafe fn checked<'a>(task: *mut HewTask) -> &'a Mutex<CheckedTaskState> {
         .expect("checked task contract")
 }
 
-unsafe extern "C" fn run(task: *mut HewTask) {
-    // SAFETY: the spawn path owns a worker reference until the final statement.
+unsafe fn complete(task: *mut HewTask, status: i32, fault: *mut HewFault) {
+    // SAFETY: the executor retains its task until after frame destruction.
     unsafe {
-        let (callable, output) = {
-            let mut state = checked(task).lock_or_recover();
-            (
-                state.callable.take().expect("one task invocation"),
-                state.result,
-            )
-        };
-        let context = crate::execution_context::current_context();
-        // Use the task's child token, preserving cancellation of one child.
-        (*context).cancel_token = (*task).cancel_token;
-        let mut fault = ptr::null_mut();
-        let status = hew_coro_run_callable(
-            (*callable.descriptor).invoke_once,
-            callable.environment,
-            ptr::null(),
-            output,
-            &raw mut fault,
-        );
         let waiters = {
             let mut state = checked(task).lock_or_recover();
             if status == 0 && state.layout.is_null() {
-                // A callable returning ! cannot publish a successful result.
                 std::process::abort();
             }
             state.initialized = status == 0;
-            state.fault = fault.cast();
+            state.fault = fault;
             state.status = status;
             state.completed = true;
             state.order = COMPLETION_ORDER.fetch_add(1, Ordering::Relaxed);
             std::mem::take(&mut state.waiters)
         };
-        hew_task_complete_threaded(task);
         for waiter in waiters.into_iter().filter_map(|waiter| waiter.upgrade()) {
             if waiter.armed.load(Ordering::Acquire) {
                 waiter.waker.wake();
             }
         }
-        hew_task_free(task);
     }
 }
 
@@ -231,13 +211,8 @@ pub unsafe extern "C" fn hew_checked_scope_new(
     let cancel_token = unsafe { hew_cancel_token_new_child(parent) };
     Box::into_raw(Box::new(HewTaskScope {
         tasks: ptr::null_mut(),
-        task_count: 0,
-        completed_count: 0,
-        cancelled: AtomicBool::new(false),
         cancel_token,
-        deadlines: ptr::null_mut(),
         checked_deadline: ptr::null_mut(),
-        parent: ptr::null_mut(),
     }))
 }
 
@@ -293,7 +268,7 @@ pub unsafe extern "C" fn hew_checked_scope_deadline(scope: *mut HewTaskScope, du
 /// Scope is live and exclusively accessed. Callable and layout have the exact
 /// checked Send input/result contract; the descriptor code outlives the scope.
 /// A null layout declares an uninhabited result: the callable must never succeed.
-/// This consumes and clears `callable` before starting its worker.
+/// This consumes and clears `callable` before scheduling its invocation.
 #[no_mangle]
 pub unsafe extern "C" fn hew_checked_task_spawn(
     scope: *mut HewTaskScope,
@@ -334,8 +309,8 @@ pub unsafe extern "C" fn hew_checked_task_spawn(
         }));
         hew_task_scope_spawn(scope, task); // original reference becomes scope-owned
         retain(task); // source handle
-        retain(task); // worker
-        hew_task_spawn_thread(task, run);
+        retain(task); // execution owner, released after terminal publication
+        TaskExecution::spawn(task);
         task
     }
 }
@@ -688,9 +663,6 @@ pub unsafe extern "C" fn hew_checked_scope_wait_free(wait: *mut HewCheckedScopeW
 pub unsafe extern "C" fn hew_checked_scope_close(scope: *mut HewTaskScope) {
     // SAFETY: the caller transfers a drained scope allocation.
     let mut scope = unsafe { Box::from_raw(scope) };
-    if !scope.deadlines.is_null() {
-        std::process::abort();
-    }
     // The checked drain has closed and disposed every abandoned result before
     // enclosing source resources can be released.
     // SAFETY: scope retains every task and the completed frames no longer use results.

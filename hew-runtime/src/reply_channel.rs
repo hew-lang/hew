@@ -1836,39 +1836,6 @@ mod tests {
     }
 
     #[test]
-    fn task_completion_observer_can_signal_select_readiness_proxy() {
-        let _guard = crate::runtime_test_guard();
-
-        // SAFETY: the test owns all scope/task/channel pointers exclusively.
-        unsafe {
-            let scope = crate::task_scope::hew_task_scope_new();
-            let task = crate::task_scope::hew_task_new();
-            crate::task_scope::hew_task_scope_spawn(scope, task);
-            let ch = hew_reply_channel_new();
-
-            hew_reply_channel_retain(ch);
-            assert_eq!(
-                crate::task_scope::hew_task_completion_observe(
-                    scope,
-                    task,
-                    Some(hew_reply_channel_signal_ready),
-                    ch.cast(),
-                ),
-                0
-            );
-
-            let mut channels = [ch];
-            assert_eq!(hew_select_first(channels.as_mut_ptr(), 1, 0), -1);
-            crate::task_scope::hew_task_scope_complete_task(scope, task);
-            assert_eq!(hew_select_first(channels.as_mut_ptr(), 1, 0), 0);
-            assert!(hew_reply_wait(ch).is_null());
-
-            hew_reply_channel_free(ch);
-            crate::task_scope::hew_task_scope_destroy(scope);
-        }
-    }
-
-    #[test]
     fn send_recv_roundtrip() {
         let _guard = crate::runtime_test_guard();
         let ch = hew_reply_channel_new();

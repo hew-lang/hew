@@ -1,0 +1,43 @@
+import std.stream;
+
+actor Audit {
+    receive fn record() { sleep(1ms); println("child closed"); }
+}
+
+#[resource]
+type Ticket { audit: Audit, }
+impl Ticket {
+    fn close(consume self) { self.audit.record().expect("close child"); }
+}
+
+fn child(audit: Audit, started: Sink<i64>) {
+    let ticket = Ticket { audit: audit };
+    started.send(1).expect("child started");
+    sleep(1h);
+    println("unreachable child");
+}
+
+fn branch(audit: Audit, consume started: Sink<i64>) {
+    scope {
+        let task = fork child(audit, started);
+        await task;
+    } handle failure {
+        println("unreachable inherited recovery");
+    };
+}
+
+fn main() {
+    let audit = spawn Audit;
+    let (output, input): (Sink<i64>, Stream<i64>) = stream.pipe(1).expect("pipe");
+    scope within 100ms {
+        let task = fork branch(audit, output);
+        input.recv().expect("started");
+        await task;
+    } handle failure {
+        match failure {
+            .Deadline { message } => println("deadline drained"),
+            .Fault { message } => panic(message),
+        }
+    };
+    close(audit);
+}

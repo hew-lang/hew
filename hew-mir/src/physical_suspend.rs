@@ -284,6 +284,13 @@ pub(super) fn semantic_callables(checked: &hew_sir::CheckedModule<'_>) -> BTreeS
                 }
             }
             if let hew_sir::SemTerminator::ActorCall { operation, .. } = &block.terminator {
+                if let hew_sir::ActorOperation::Spawn(actor) = operation {
+                    let actor = &module.actors[actor.0 as usize];
+                    calls
+                        .entry(function.callable)
+                        .or_default()
+                        .extend(actor.init.iter().chain(&actor.start).copied());
+                }
                 for ty in actor_release_types(&module.actors, operation) {
                     let (intrinsic, dependencies) = semantic_release_dependencies(module, ty, None);
                     // Actor payload/state cleanup uses the checked continuation
@@ -450,6 +457,13 @@ pub(super) fn verify_callables(module: &PhysicalModule) -> Result<(), PhysicalEr
                 }
             }
             if let PhysicalTerminator::ActorCall { operation, .. } = &block.terminator {
+                if let hew_sir::ActorOperation::Spawn(actor) = operation {
+                    let actor = &module.actors[actor.0 as usize];
+                    calls
+                        .entry(function.callable)
+                        .or_default()
+                        .extend(actor.init.iter().chain(&actor.start).copied());
+                }
                 for ty in actor_release_types(&module.actors, operation) {
                     if module
                         .actor_recipes
@@ -607,14 +621,12 @@ pub(super) fn verify_callables(module: &PhysicalModule) -> Result<(), PhysicalEr
             )));
         }
     }
-    // Init and lifecycle hooks run synchronously inside spawn and the
-    // terminal transition, outside any scheduler-owned frame.
+    // Spawn invokes init and start through its caller's continuation. Other
+    // lifecycle callbacks still use the runtime's synchronous callback ABI.
     for actor in &module.actors {
         if actor
-            .init
+            .stop
             .iter()
-            .chain(&actor.start)
-            .chain(&actor.stop)
             .chain(&actor.crash)
             .chain(&actor.exit)
             .chain(&actor.down)

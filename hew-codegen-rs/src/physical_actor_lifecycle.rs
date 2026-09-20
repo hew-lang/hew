@@ -374,6 +374,14 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             .build_conditional_branch(failed, failure, success)
             .llvm_ctx("branch on crash hook completion")?;
         builder.position_at_end(failure);
+        let report_fault = get_or_declare_external(
+            &self.llvm,
+            "hew_fault_report",
+            self.ctx.i32_type().fn_type(&[ptr.into()], false),
+        )?;
+        builder
+            .build_call(report_fault, &[returned_fault.into()], "")
+            .llvm_ctx("report the failed crash hook before escalation")?;
         let drop_fault = get_or_declare_external(
             &self.llvm,
             "hew_fault_drop",

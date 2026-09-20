@@ -275,6 +275,15 @@ fn print_mermaid(md: &MachineDecl) {
         println!("    [*] --> {}", first.name);
     }
 
+    for group in &md.composite_groups {
+        println!("    state {} {{", group.name);
+        println!("        [*] --> {}", group.initial);
+        for member in &group.members {
+            println!("        {member}");
+        }
+        println!("    }}");
+    }
+
     // fix 1: has_default — note signals stay-on-unhandled semantics.
     if md.has_default {
         println!("    note right of [*]");
@@ -322,6 +331,17 @@ fn print_dot(md: &MachineDecl) {
     println!("digraph {} {{", md.name);
     println!("    rankdir=LR;");
     println!("    node [shape=circle];");
+
+    for group in &md.composite_groups {
+        println!("    subgraph cluster_{} {{", group.name);
+        println!("        label=\"{}\";", group.name);
+        println!("        __start_{} [shape=point, width=0.2];", group.name);
+        println!("        __start_{} -> {};", group.name, group.initial);
+        for member in &group.members {
+            println!("        {member};");
+        }
+        println!("    }}");
+    }
 
     // fix 1: has_default — graph label signals stay-on-unhandled semantics.
     if md.has_default {

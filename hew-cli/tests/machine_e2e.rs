@@ -156,6 +156,28 @@ fn machine_diagram_renders_composite_nesting_in_mermaid() {
         stdout.contains("Authenticating --> Disconnected : Disconnect"),
         "stdout:\n{stdout}"
     );
+
+    let dot = Command::new(hew_binary())
+        .args(["machine", "diagram"])
+        .arg(&input)
+        .args(["--format", "graphviz"])
+        .output()
+        .unwrap();
+    assert!(
+        dot.status.success(),
+        "{}",
+        String::from_utf8_lossy(&dot.stderr)
+    );
+    let dot = String::from_utf8_lossy(&dot.stdout);
+    assert!(dot.contains("subgraph cluster_Connected {"), "{dot}");
+    assert!(
+        dot.contains("__start_Connected -> Authenticating;"),
+        "{dot}"
+    );
+    assert!(
+        dot.contains("Authenticating -> Disconnected [label=\"Disconnect\"]"),
+        "{dot}"
+    );
 }
 
 #[test]
@@ -164,14 +186,11 @@ fn machine_diagram_composite_json_carries_composites_array() {
     let input = dir.path().join("conn.hew");
     std::fs::write(&input, composite_fixture()).unwrap();
 
-    // The native evaluator does not admit composite states (HEW-SPEC-2026
-    // §3.11.2), so the checker refuses this fixture and the renderer only sees
-    // it behind `--no-check`.
     let output = Command::new(hew_binary())
         .arg("machine")
         .arg("diagram")
         .arg(&input)
-        .args(["--format", "json", "--no-check"])
+        .args(["--format", "json"])
         .output()
         .unwrap();
 

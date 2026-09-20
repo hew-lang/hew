@@ -31,8 +31,6 @@ linux,macos,freebsd	failure	hew-cli::dwarf_debugger_locals_e2e	debugger_never_re
 macos	failure	hew-cli::enum_resource_variant_leak_oracle	resource_record_enum_payload_closes_exactly_once	#3426 a resource's close(consume self) cannot release its own raw-handle field
 macos	failure	hew-cli::enum_resource_variant_leak_oracle	returned_bytes_loan_releases_once_on_success_and_crash	#3450 fixes the observable result of a recovery edge
 macos	failure	hew-cli::eval_e2e	eval_aot_timeout_stops_worker_and_allows_next_submission	#3453 serves the next submission after an AOT timeout
-linux,macos,windows,freebsd	failure	hew-cli::explain_cow_e2e	explain_cow_no_sends_produces_no_send_lines	#3383 makes hew check --explain-cow report what it explains
-linux,macos,windows,freebsd	failure	hew-cli::explain_cow_e2e	explain_cow_renders_mir_authored_send_modes	#3383 makes hew check --explain-cow report what it explains
 freebsd	failure	hew-cli::extern_ownership_double_release_e2e	resource_payload_beside_an_interpolated_string_closes_exactly_once	#3106 keeps resource Result match authorities consistent
 macos	failure	hew-cli::ffi_link_e2e	ffi_borrow_boundary_has_no_drop_or_leak_slope	Borrowed scalar &i64 lacks a SIR value contract, as in the shared foreign-borrow execution case
 linux,macos,freebsd	failure	hew-cli::ffi_link_e2e	ffi_borrow_boundary_links_and_prints_exact_values	#3370 gives every type the checker admits a SIR value contract
@@ -44,7 +42,6 @@ macos	failure	hew-cli::identity_monitor_leak_oracle	identity_display_temporaries
 macos	failure	hew-cli::indirect_enum_drop_leak_oracle	indirect_enum_dead_actor_select_request_no_corruption_under_malloc_scribble	#3450 fixes the observable result of a recovery edge
 linux,macos,windows,freebsd	failure	hew-cli::is_value_type_reject_e2e	is_on_an_actor_handle_is_still_accepted	#3372 lowers identity comparison
 linux,macos,windows,freebsd	failure	hew-cli::is_value_type_reject_e2e	is_on_an_actor_handle_through_an_inferred_closure_is_accepted	#3372 lowers identity comparison
-linux,macos,windows,freebsd	failure	hew-cli::machine_e2e	machine_diagram_renders_composite_nesting_in_mermaid	#3379 evaluates const parameters and generic fallbacks in a pure machine
 freebsd	failure	hew-cli::match_payload_reassign_uaf_oracle	borrow_only_guard_fallthrough_runs_safely	#2523 keeps borrow-only payload guards live across fallthrough
 freebsd	failure	hew-cli::match_payload_reassign_uaf_oracle	borrow_only_projection_keeps_scrutinee_live	#2523 keeps borrow-only payload projections attached to the scrutinee
 macos	failure	hew-cli::match_resource_result_handoff_leak_oracle	resource_result_match_handoffs_drop_every_payload_exactly_once	#3426 releases a resource's own raw-handle field from its close

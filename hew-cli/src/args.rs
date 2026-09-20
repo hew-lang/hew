@@ -418,11 +418,11 @@ pub struct CheckArgs {
     /// Input .hew file, or a package directory. Omit it to check the package
     /// enclosing the current directory.
     pub input: Option<PathBuf>,
-    /// Print alias-vs-copy decision for every actor send site.
+    /// Explain payload ownership at actor mailbox boundaries in the input file.
     ///
-    /// Shows whether each `actor.method(arg)` call crossed the mailbox
-    /// boundary via a refcount-bumped alias (no copy) or a deep-copy
-    /// (the compatibility path). Default off; enable it explicitly.
+    /// Reads the verified ownership operations and copy recipes used by the
+    /// compiler: bit copies, retains, structural copies and ownership transfers.
+    /// Sealed requests and stream-producer tuples appear as complete payloads.
     #[arg(long)]
     pub explain_cow: bool,
     /// Target triple.

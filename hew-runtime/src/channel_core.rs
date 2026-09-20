@@ -1727,7 +1727,7 @@ mod tests {
     }
 
     #[test]
-    fn close_stream_releases_parked_producer_owned_envelope() {
+    fn close_stream_releases_queued_and_parked_owned_envelopes() {
         let _g = OWNED_TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -1739,15 +1739,16 @@ mod tests {
         // Ring full → producer parks, owning its envelope.
         let rc = unsafe { core.await_send(std::ptr::null_mut(), slot, owned_envelope(2)) };
         assert_eq!(rc, STREAM_AWAIT_SUSPEND);
-        // Consumer cancels: the parked envelope is released via the witness.
+        // Consumer cancellation releases every unread owner before returning.
         core.close_stream();
         assert_eq!(
             OWNED_DROPS.load(Ordering::SeqCst) - drops_before,
-            1,
-            "close_stream must release the parked producer's owned envelope"
+            2,
+            "close_stream must release both queued and parked owned envelopes"
         );
         unsafe { hew_read_slot_free(slot) };
-        // Core drop releases the still-queued first envelope.
+        // Repeated close and raw core reclamation must not release either again.
+        core.close_stream();
         drop(core);
         assert_eq!(OWNED_DROPS.load(Ordering::SeqCst) - drops_before, 2);
     }

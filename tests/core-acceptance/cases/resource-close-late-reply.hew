@@ -1,5 +1,8 @@
 actor Audit {
-    receive fn record(id: i64) { sleep(1ms); println(f"closed {id}"); }
+    var count: i64 = 0,
+    var last: i64 = 0,
+    receive fn record(id: i64) { sleep(1ms); count += 1; last = id; }
+    receive fn receipt() -> i64 { assert(count == 1); last }
 }
 #[resource]
 type Ticket { audit: Audit, id: i64, }
@@ -8,7 +11,7 @@ impl Ticket {
 }
 actor Worker {
     receive fn create(audit: Audit) -> Ticket { sleep(3ms); Ticket { audit: audit, id: 9 } }
-    receive fn ready() { println("ready"); }
+    receive fn ready() {}
 }
 fn main() {
     let audit = spawn Audit;
@@ -23,6 +26,12 @@ fn main() {
         }
     };
     worker.ready().expect("ready");
+    // The worker barrier waits for late-reply cleanup. Its close may complete
+    // before the caller's deadline handler gets to print, so observe it here.
+    let closed = audit.receipt().expect("receipt");
+    assert(closed == 9);
+    println(f"closed {closed}");
+    println("ready");
     close(worker);
     close(audit);
 }

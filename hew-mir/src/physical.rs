@@ -5656,7 +5656,7 @@ fn verify_operation_storage(
     match operation {
         PhysicalOp::GeneratorMake { .. } => generators::verify_make(module, function, operation)?,
         PhysicalOp::GeneratorCoerce { dest, source } => {
-            generators::verify_coerce(module, function, *dest, *source)?
+            generators::verify_coerce(module, function, *dest, *source)?;
         }
         PhysicalOp::StreamPipe {
             capacity,

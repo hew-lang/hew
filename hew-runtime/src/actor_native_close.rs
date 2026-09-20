@@ -22,6 +22,7 @@ pub struct NativeActorCompletion {
     ready: ReadinessRegistrations,
     terminal_notice: Mutex<Option<crate::actor::TerminalNotification>>,
     close_fault_record: AtomicU64,
+    fault: Mutex<Option<crate::fault::HewFault>>,
 }
 
 impl NativeActorCompletion {
@@ -52,6 +53,17 @@ impl NativeActorCompletion {
             previous.is_none(),
             "native terminal notification already owned"
         );
+    }
+
+    /// Retain the complete incarnation diagnostic for every close observer.
+    pub(crate) fn record_fault(&self, fault: crate::fault::HewFault) -> i32 {
+        let mut retained = self.fault.lock_or_recover();
+        if let Some(primary) = retained.as_mut() {
+            primary.append(fault);
+        } else {
+            *retained = Some(fault);
+        }
+        super::report_checked_failure(retained.as_ref().expect("retained terminal fault"))
     }
 
     /// Publish after the unique terminal owner has released all target state.
@@ -238,6 +250,26 @@ pub unsafe extern "C" fn hew_actor_wait_error(wait: *const HewNativeActorWait) -
     completion.code.load(Ordering::Relaxed)
 }
 
+/// Acquire the complete terminal diagnostic after a failed poll. Each observer
+/// owns its wrapper, while the diagnostic's report identity remains shared.
+///
+/// # Safety
+/// `wait` is live and the caller has acquired its completed failure.
+#[no_mangle]
+pub unsafe extern "C" fn hew_actor_wait_take_fault(
+    wait: *const HewNativeActorWait,
+) -> *mut crate::fault::HewFault {
+    // SAFETY: this observer has acquired the immutable completed result.
+    let code = unsafe { hew_actor_wait_error(wait) };
+    // SAFETY: the caller retains the live wait descriptor.
+    let completion = unsafe { &*wait }.completion.as_ref();
+    let fault = completion.and_then(|completion| completion.fault.lock_or_recover().clone());
+    fault.map_or_else(
+        || crate::fault::hew_fault_new(code),
+        |fault| Box::into_raw(Box::new(fault)),
+    )
+}
+
 /// Detach the observer without revoking any target actor cleanup.
 ///
 /// # Safety
@@ -318,6 +350,10 @@ mod tests {
                 .actor_state
                 .store(HewActorState::Stopped as i32, Ordering::Release);
             actor.error_code.store(212, Ordering::Release);
+            completion.record_fault(crate::fault::HewFault::with_message(
+                212,
+                "state close failed".into(),
+            ));
             actor.terminate_finished.store(true, Ordering::Release);
             // SAFETY: the fixture owns the terminal actor and its empty state.
             unsafe { finish_native_terminal(&actor) };
@@ -331,7 +367,16 @@ mod tests {
             unsafe {
                 assert_eq!(hew_actor_wait_poll(wait), 2);
                 if observe {
-                    assert_eq!(hew_actor_wait_error(wait), 212);
+                    for _ in 0..2 {
+                        let fault = hew_actor_wait_take_fault(wait);
+                        assert_eq!(crate::fault::hew_fault_code(fault), 212);
+                        let message = crate::fault::hew_fault_take_message(fault);
+                        assert_eq!(
+                            hew_cabi::string::string_as_str(message),
+                            "hew: failure: UserPanic (212): state close failed\n"
+                        );
+                        hew_cabi::string::string_release(message);
+                    }
                 }
                 hew_actor_wait_free(wait);
             }

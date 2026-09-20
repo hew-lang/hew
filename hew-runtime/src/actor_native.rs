@@ -114,7 +114,10 @@ pub unsafe extern "C" fn hew_actor_coro_set_fault(fault: *mut HewFault) {
 pub unsafe extern "C" fn hew_actor_terminate_set_fault(fault: *mut HewFault) {
     // SAFETY: the generated terminate sequence relinquishes one owned fault.
     let fault = unsafe { Box::from_raw(fault) };
-    let code = report_checked_failure(&fault);
+    let context = crate::execution_context::current_context();
+    // SAFETY: the terminate activation retains its actor and context.
+    let actor = unsafe { &*(*context).actor };
+    let code = report_actor_failure(actor, *fault);
     crate::trap_code::stamp_current_actor_error_code(code);
 }
 
@@ -471,6 +474,15 @@ pub(crate) fn report_checked_failure(fault: &HewFault) -> i32 {
     fault.code()
 }
 
+/// Preserve a checked actor fault across cleanup and terminal observation.
+pub(crate) fn report_actor_failure(actor: &crate::actor::HewActor, fault: HewFault) -> i32 {
+    if let Some(completion) = &actor.native_completion {
+        completion.record_fault(fault)
+    } else {
+        report_checked_failure(&fault)
+    }
+}
+
 /// Finish the matching native completion or legacy unwind cleanup boundary.
 ///
 /// # Safety
@@ -487,7 +499,8 @@ pub(crate) unsafe fn finish_dispatch_failure(
                 eprintln!("fatal: checked actor failure retained crash-cleanup owners");
                 std::process::abort();
             }
-            report_checked_failure(&fault)
+            // SAFETY: the completed activation retains the exact incarnation.
+            report_actor_failure(unsafe { &*actor }, *fault)
         }
         DispatchFailure::Unwind(payload) => {
             crate::execution_context::reply_channel_swap_unwind();

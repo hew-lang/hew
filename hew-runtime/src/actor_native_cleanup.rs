@@ -248,10 +248,9 @@ pub(crate) unsafe fn drive_actor_cleanup(actor: &HewActor) -> bool {
     unsafe { crate::coro_state::hew_coro_state_free(work.state) };
     let terminal = cleanup.terminal.swap(0, Ordering::AcqRel);
     if !work.fault.is_null() {
-        // SAFETY: this driver owns the completed diagnostic while reporting it.
-        let code = super::report_checked_failure(unsafe { &*work.fault });
-        // SAFETY: all child callbacks have finished using this owned diagnostic.
-        unsafe { crate::fault::hew_fault_drop(work.fault) };
+        // SAFETY: every child finished using this uniquely owned diagnostic.
+        let fault = unsafe { Box::from_raw(work.fault) };
+        let code = super::report_actor_failure(actor, *fault);
         if actor.error_code.load(Ordering::Acquire) == 0 {
             actor.error_code.store(code, Ordering::Release);
         }

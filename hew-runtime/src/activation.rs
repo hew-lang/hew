@@ -1675,7 +1675,7 @@ unsafe fn finish_failed_resume(
                 eprintln!("fatal: checked resumed actor failure retained crash-cleanup owners");
                 std::process::abort();
             }
-            crate::actor_native::report_checked_failure(&fault)
+            crate::actor_native::report_actor_failure(a, *fault)
         }
         crate::actor_native::DispatchFailure::Unwind(payload) => {
             let code = payload

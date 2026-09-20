@@ -1,0 +1,11 @@
+[[case]]
+id = "actor-close-retains-fault-message"
+intent = "A close observer receives the complete primary and secondary state-cleanup diagnostics and can recover without a duplicate report or unrecovered process fault."
+source = "cases/actor-close-retains-fault-message.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "close 2\nclose 1\nrecovered complete close fault\nready after recovery\n"
+stderr = "hew: failure: UserPanic (212): close 2 failed\nhew: secondary failure: UserPanic (212): close 1 failed\n"
+exit = 0

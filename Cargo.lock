@@ -1768,6 +1768,7 @@ dependencies = [
  "filetime",
  "finl_unicode",
  "hew-analysis",
+ "hew-cabi",
  "hew-codegen-rs",
  "hew-compile",
  "hew-hir",

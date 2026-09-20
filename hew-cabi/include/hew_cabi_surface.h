@@ -635,7 +635,7 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1634] = {
      "{\"native\": \"fn hew_actor_wait_take_fault( *const HewNativeActorWait, "
      ") -> *mut HewFault\", \"wasm32-wasip1\": \"fn hew_actor_wait_take_fault( "
      "*const HewNativeActorWait, ) -> *mut HewFault\"}",
-     "native,wasm32-wasip1", "unclassified-stdlib", "not-applicable",
+     "native,wasm32-wasip1", "non-declarable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_actor_wake",
      "{\"native\": \"fn hew_actor_wake( *mut HewActor)\", \"wasm32-wasip1\": "

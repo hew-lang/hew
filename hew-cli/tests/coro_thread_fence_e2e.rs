@@ -252,17 +252,6 @@ fn fork_children_create_no_os_threads() {
 /// reporter fork that sleeps 50ms then samples the thread count while every
 /// other child is still parked. Returns (pre-scope count, during-scope count).
 ///
-/// WHY the sleeps live in free functions (`napper`, `reporter`) instead of
-/// inline in the `fork {}` body: a fork body cannot contain a suspend point
-/// today — the compiler refuses it (`hew-mir/src/lower/closure_gen.rs:714-730`,
-/// #2863, "MIR lowering for suspension inside a closure is not implemented
-/// yet"). A free function is `Default` callconv, so its `sleep` lowers to the
-/// blocking `hew_sleep_ns` instead of a suspend carrier, which is exactly
-/// the behaviour under test — the thread blocks rather than the coroutine
-/// parking. WHEN this seam closes: once #2863 lands the ramp/driver calling
-/// convention for suspending closures (tracked under the P4 concurrency
-/// lane). WHAT the real fix looks like: `sleep(400ms)` written directly
-/// inside `fork { }`, once a fork body can lower to a coroutine frame.
 fn run_fork_thread_probe(n: i64) -> (i64, i64) {
     let dir = support::tempdir();
     let path = dir.path().join(format!("fork_thread_fence_{n}.hew"));
@@ -298,7 +287,7 @@ actor Driver {{
         // blocking). Without this warm-up, `pre` would be sampled before the
         // timer thread exists and `during` after — a false +1 unrelated to
         // fork children.
-        sleep(1ms), println("pre"), println(threads()), scope {{
+        sleep(1ms); println("pre"); println(threads()); scope {{
 {napper_forks}            fork {{ reporter() }};
         }};
         0

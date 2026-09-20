@@ -416,16 +416,7 @@ fn main() -> i64 {{
     )
 }
 
-/// MACHINE-PAYLOAD ingress: the handle is placed into a state payload through
-/// `Place::MachineVariant`.
-///
-/// Over-release only. The leak half is deliberately NOT asserted for this shape:
-/// the machine LOCAL itself has no scope-exit composite drop here — the compiler
-/// says so, with an `ObligationUnderReleased` advisory naming `c` — so the whole
-/// state value leaks once per frame no matter what its payload is. Measured, not
-/// assumed: the identical machine with a `string` payload leaks at the same rate.
-/// That is a machine-composite drop gap, not a refcount-ownership defect, and
-/// pinning it here would ratchet an unrelated defect into this oracle.
+/// The machine state owns an Rc payload until the state value is destroyed.
 fn machine_payload_source(frames: usize) -> String {
     format!(
         r#"
@@ -437,9 +428,9 @@ machine Cell {{
     state Full {{ r: Rc<Node>, }},
     on Fill: Empty => Full {{
         let shared: Rc<Node> = Rc.new(Node {{ id: 7 }});
-        Full {{ r: shared }}
+        {{ r: shared }}
     }}
-    on Drain: Full => Empty {{ Cell.Empty }}
+    on Drain: Full => Empty,
     default {{ state }}
 }}
 

@@ -877,6 +877,7 @@ fn shared_native_manifests_execute_with_matching_results() {
         "resource-close-actor-generator",
         "resource-receiver-fallible-argument",
         "actor-reference-identity",
+        "generator-callable-view",
     ] {
         let manifest = std::fs::read_to_string(root.join(format!("cases/{name}.toml")))
             .expect("shared native manifest");

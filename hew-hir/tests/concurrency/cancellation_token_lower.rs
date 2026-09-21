@@ -1,4 +1,4 @@
-use hew_hir::{lower_program, HirExprKind, HirItem, HirStmtKind, ResolutionCtx, ValueClass};
+use hew_hir::{lower_program, HirExprKind, HirItem, HirStmtKind, ResolutionCtx};
 use hew_types::module_registry::ModuleRegistry;
 use hew_types::{BuiltinType, Checker, ResolvedTy};
 
@@ -86,7 +86,6 @@ fn lowers_cancellation_token_local_and_is_cancelled_intrinsic() {
     };
     assert_eq!(ret.ty, ResolvedTy::Bool);
     assert_eq!(receiver.ty, ResolvedTy::CancellationToken);
-    assert_eq!(receiver.value_class, ValueClass::AffineResource);
 }
 
 #[test]

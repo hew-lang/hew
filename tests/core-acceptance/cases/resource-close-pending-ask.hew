@@ -1,0 +1,38 @@
+import std.stream;
+actor Audit {
+    receive fn record(id: i64) { sleep(1ms); println(f"closed {id}"); }
+}
+#[resource]
+type Ticket { audit: Audit, id: i64, }
+impl Ticket {
+    fn close(consume self) { self.audit.record(self.id).expect("audit"); }
+}
+actor Gate {
+    mailbox 1,
+    receive fn hold(started: Sink<i64>) {
+        started.send(1).expect("started");
+        sleep(1h);
+    }
+    receive fn take(ticket: Ticket) -> i64 { ticket.id }
+    receive fn keep(ticket: Ticket) {}
+}
+fn main() {
+    let audit = spawn Audit;
+    let gate = spawn Gate;
+    let (output, input): (Sink<i64>, Stream<i64>) = stream.pipe(1).expect("pipe");
+    mailbox(gate).hold(output).expect("hold");
+    input.recv().expect("started");
+    mailbox(gate).keep(Ticket { audit: audit, id: 1 }).expect("queued");
+    scope within 1ms {
+        let value = gate.take(Ticket { audit: audit, id: 2 }).expect("take");
+        println(value);
+    } handle failure {
+        match failure {
+            .Deadline { message } => println("deadline"),
+            .Fault { message } => panic(message),
+        }
+    };
+    close(gate);
+    println("gate closed");
+    close(audit);
+}

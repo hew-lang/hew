@@ -3,20 +3,26 @@
 use crate::actor::{HewActor, HewDispatchOwnership};
 use crate::internal::types::HewActorState;
 use crate::lifetime::{live_actors, local_handles};
+use crate::util::MutexExt;
 use crate::wake::{HewWaker, OwnedWaker, ReadinessRegistrations};
-use std::sync::atomic::{AtomicI32, AtomicU8, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicI32, AtomicU64, AtomicU8, Ordering};
+use std::sync::{Arc, Mutex};
 
 /// Completion is published only after the checked turn and typed state cleanup.
 /// Actors reserve phase 1 for cleanup; supervisors use their teardown claim.
-/// Phase 2 publishes the result after either owner finishes.
+/// Actor phase 3 publishes terminal notifications after cleanup. Phase 2 makes
+/// the final result observable after either owner finishes.
 #[derive(Debug, Default)]
 pub struct NativeActorCompletion {
+    pub(crate) cleanup: super::cleanup::Cleanup,
     crash: Option<crate::actor::HewNativeCrashFn>,
     crash_action: AtomicI32,
     phase: AtomicU8,
     code: AtomicI32,
     ready: ReadinessRegistrations,
+    terminal_notice: Mutex<Option<crate::actor::TerminalNotification>>,
+    close_fault_record: AtomicU64,
+    fault: Mutex<Option<crate::fault::HewFault>>,
 }
 
 impl NativeActorCompletion {
@@ -29,12 +35,35 @@ impl NativeActorCompletion {
 
     pub(crate) fn crash_action(&self) -> Option<i32> {
         self.crash
-            .filter(|_| self.is_finished())
+            .filter(|_| self.phase.load(Ordering::Acquire) >= 2)
             .map(|_| self.crash_action.load(Ordering::Relaxed))
     }
 
     pub(crate) fn is_finished(&self) -> bool {
         self.phase.load(Ordering::Acquire) == 2
+    }
+
+    pub(crate) fn cleanup_in_progress(&self) -> bool {
+        matches!(self.phase.load(Ordering::Acquire), 1 | 3)
+    }
+
+    pub(crate) fn defer_terminal_notification(&self, notice: crate::actor::TerminalNotification) {
+        let previous = self.terminal_notice.lock_or_recover().replace(notice);
+        assert!(
+            previous.is_none(),
+            "native terminal notification already owned"
+        );
+    }
+
+    /// Retain the complete incarnation diagnostic for every close observer.
+    pub(crate) fn record_fault(&self, fault: crate::fault::HewFault) -> i32 {
+        let mut retained = self.fault.lock_or_recover();
+        if let Some(primary) = retained.as_mut() {
+            primary.append(fault);
+        } else {
+            *retained = Some(fault);
+        }
+        super::report_checked_failure(retained.as_ref().expect("retained terminal fault"))
     }
 
     /// Publish after the unique terminal owner has released all target state.
@@ -100,16 +129,44 @@ pub(crate) unsafe fn finish_native_terminal(actor: &HewActor) {
             unsafe { hew_cabi::string::string_release(message) };
         }
     }
+    if completion.cleanup.needs_terminal_cleanup() {
+        // SAFETY: the terminal claim retains state until scheduler cleanup
+        // completes; raw actor reclamation must observe this pending claim.
+        unsafe { completion.cleanup.begin_terminal(actor, state) };
+        return;
+    }
     // SAFETY: this terminal owner has reserved completion before taking the
     // actor's existing exactly-once state destructor authority.
     unsafe { crate::actor::drop_initialized_actor_state(actor) };
-    if state == HewActorState::Stopped as i32 {
-        // Native cleanup owns normal DOWN publication, including an idle
-        // actor closed without another scheduler activation. Queue the
-        // notification before a close observer can release its monitor owner.
-        crate::actor::notify_monitors_on_death(actor.id, state, 0);
+    finish_actor_terminal(actor, state);
+}
+
+/// Publish the terminal result after consuming payload and state cleanup.
+pub(crate) fn finish_actor_terminal(actor: &HewActor, state: i32) {
+    let Some(completion) = actor.native_completion.clone() else {
+        return;
+    };
+    let code = actor.error_code.load(Ordering::Acquire);
+    if state == HewActorState::Stopped as i32 && code != 0 {
+        // An explicit close observer transfers this fault to generated caller
+        // code. Without an observer, the open record keeps process exit failing.
+        let record = crate::exit_status::open_pending_fault();
+        completion
+            .close_fault_record
+            .store(record.as_raw(), Ordering::Release);
     }
-    completion.finish(actor.error_code.load(Ordering::Acquire));
+    let actor_id = actor.id;
+    let notice = completion.terminal_notice.lock_or_recover().take();
+    // Cleanup is complete, including the crash hook's decision, but close
+    // observers stay pending until all terminal notifications are published.
+    completion.phase.store(3, Ordering::Release);
+    if let Some(notice) = notice {
+        // SAFETY: terminal ownership retains the supervisor across publication.
+        unsafe { notice.publish_terminal_notification() };
+    } else if state == HewActorState::Stopped as i32 {
+        crate::actor::notify_monitors_on_death(actor_id, state, 0);
+    }
+    completion.finish(code);
 }
 
 /// Request cooperative stop through a stable actor identity.
@@ -176,17 +233,29 @@ pub unsafe extern "C" fn hew_actor_wait_poll(wait: *const HewNativeActorWait) ->
     }
 }
 
-/// Read the terminal logical failure code after a failed poll.
+/// Acquire the complete terminal diagnostic after a failed poll. Each observer
+/// owns its wrapper, while the diagnostic's report identity remains shared.
 ///
 /// # Safety
 /// `wait` is live and the caller has acquired its completed failure.
 #[no_mangle]
-pub unsafe extern "C" fn hew_actor_wait_error(wait: *const HewNativeActorWait) -> i32 {
-    // SAFETY: the caller retains the immutable result descriptor.
-    unsafe { &*wait }
-        .completion
-        .as_ref()
-        .map_or(0, |c| c.code.load(Ordering::Relaxed))
+pub unsafe extern "C" fn hew_actor_wait_take_fault(
+    wait: *const HewNativeActorWait,
+) -> *mut crate::fault::HewFault {
+    // SAFETY: the caller retains the immutable completed result descriptor.
+    let Some(completion) = &(unsafe { &*wait }).completion else {
+        return crate::fault::hew_fault_new(0);
+    };
+    let record = crate::exit_status::FaultRecord::from_raw(
+        completion.close_fault_record.swap(0, Ordering::AcqRel),
+    );
+    crate::exit_status::settle_supervised_fault(record, crate::exit_status::FaultRuling::Handled);
+    let code = completion.code.load(Ordering::Relaxed);
+    let fault = completion.fault.lock_or_recover().clone();
+    fault.map_or_else(
+        || crate::fault::hew_fault_new(code),
+        |fault| Box::into_raw(Box::new(fault)),
+    )
 }
 
 /// Detach the observer without revoking any target actor cleanup.
@@ -256,6 +325,57 @@ mod tests {
             }
         }
     }
+    #[test]
+    fn stop_fault_requires_transfer_to_a_close_observer() {
+        let _runtime = crate::runtime_test_guard();
+        for observe in [false, true] {
+            crate::exit_status::reset_process_exit_status();
+            let mut actor = crate::test_actor::stub_actor();
+            actor.dispatch_ownership = HewDispatchOwnership::UniqueEnvelope;
+            let completion = Arc::new(NativeActorCompletion::default());
+            actor.native_completion = Some(completion.clone());
+            actor
+                .actor_state
+                .store(HewActorState::Stopped as i32, Ordering::Release);
+            actor.error_code.store(212, Ordering::Release);
+            completion.record_fault(crate::fault::HewFault::with_message(
+                212,
+                "state close failed".into(),
+            ));
+            actor.terminate_finished.store(true, Ordering::Release);
+            // SAFETY: the fixture owns the terminal actor and its empty state.
+            unsafe { finish_native_terminal(&actor) };
+            assert_eq!(crate::exit_status::hew_runtime_exit_status(), 1);
+            let (_, waker) = crate::wake::blocking::Readiness::new();
+            let wait = Box::into_raw(Box::new(HewNativeActorWait {
+                completion: Some(completion),
+                _waker: Arc::new(waker),
+            }));
+            // SAFETY: this test owns the unique observer until its final free.
+            unsafe {
+                assert_eq!(hew_actor_wait_poll(wait), 2);
+                if observe {
+                    for _ in 0..2 {
+                        let fault = hew_actor_wait_take_fault(wait);
+                        assert_eq!(crate::fault::hew_fault_code(fault), 212);
+                        let message = crate::fault::hew_fault_take_message(fault);
+                        assert_eq!(
+                            hew_cabi::string::string_as_str(message),
+                            "hew: failure: UserPanic (212): state close failed\n"
+                        );
+                        hew_cabi::string::string_release(message);
+                    }
+                }
+                hew_actor_wait_free(wait);
+            }
+            assert_eq!(
+                crate::exit_status::hew_runtime_exit_status(),
+                i32::from(!observe)
+            );
+        }
+        crate::exit_status::reset_process_exit_status();
+    }
+
     #[test]
     fn supervisor_closed_observers_wait_through_config_cleanup() {
         use crate::supervisor::{hew_local_pid_supervisor_stop, hew_supervisor_native_spawn};

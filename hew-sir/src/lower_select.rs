@@ -238,6 +238,10 @@ impl Builder<'_, '_> {
                 .copied()
                 .collect();
             self.end_call_loans(&ending)?;
+            // A losing invocation's close can fail before the chosen receive.
+            // Its cleanup edge must end the chosen receiver's loan as well.
+            self.argument_receiver_loans
+                .extend_from_slice(selected_loans);
             // Release every losing invocation before entering the selected arm.
             // Task and stream inputs remain borrowed; only these ephemeral
             // operations own work that the selection is abandoning.
@@ -248,6 +252,7 @@ impl Builder<'_, '_> {
                     }
                 }
             }
+            self.argument_receiver_loans.truncate(loan_depth);
             if let Some((_, (_, source))) = source {
                 let (value, output) = match source {
                     SelectSource::ActorCall(started) => {

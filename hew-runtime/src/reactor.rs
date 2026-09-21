@@ -4190,6 +4190,8 @@ mod tests {
                 payload,
                 1,
                 drop_terminal,
+                None,
+                std::ptr::null_mut(),
             )
         };
         assert_eq!(status, 0, "native terminal envelope bypasses capacity");

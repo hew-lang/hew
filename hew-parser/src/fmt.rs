@@ -3033,6 +3033,18 @@ impl<'a> Formatter<'a> {
             if needs_parens {
                 self.write(")");
             }
+        } else if let Expr::Is { lhs, rhs } = expr {
+            let prec = binop_precedence(BinaryOp::Equal);
+            let needs_parens = prec < parent_prec || (prec == parent_prec && is_right);
+            if needs_parens {
+                self.write("(");
+            }
+            self.format_expr_prec(&lhs.0, prec, false);
+            self.write(" is ");
+            self.format_expr_prec(&rhs.0, prec, true);
+            if needs_parens {
+                self.write(")");
+            }
         } else {
             let needs_parens = matches!(
                 expr,
@@ -3069,6 +3081,7 @@ impl<'a> Formatter<'a> {
                 let needs_parens = matches!(
                     operand.0,
                     Expr::Binary { .. }
+                        | Expr::Is { .. }
                         | Expr::Coalesce { .. }
                         | Expr::Handle { .. }
                         | Expr::ReturnError(_)
@@ -3563,13 +3576,7 @@ impl<'a> Formatter<'a> {
                 });
                 self.write("}");
             }
-            Expr::Is { lhs, rhs } => {
-                // Precedence 9 — same as `==`/`!=`; no parens needed around operands
-                // at lower precedence, but we do need them for nested `is`.
-                self.format_expr_prec(&lhs.0, 9, false);
-                self.write(" is ");
-                self.format_expr_prec(&rhs.0, 9, true);
-            }
+            Expr::Is { .. } => self.format_expr_prec(expr, 0, false),
             Expr::MachineEmit { event_name, fields } => {
                 self.write("emit ");
                 self.write(event_name);
@@ -3823,24 +3830,38 @@ fn binary_op_str(op: BinaryOp) -> &'static str {
     }
 }
 
-/// Map binary operators to their precedence level (higher = tighter binding).
-/// Values match the Pratt parser's binding powers in parser.rs.
+/// Use the parser's binding powers so formatting cannot change operator grouping.
 fn binop_precedence(op: BinaryOp) -> u8 {
-    match op {
-        BinaryOp::Or => 3,
-        BinaryOp::BitOr => 5,
-        BinaryOp::BitXor => 7,
-        BinaryOp::BitAnd => 9,
-        BinaryOp::And => 11,
-        BinaryOp::Equal | BinaryOp::NotEqual => 13,
-        BinaryOp::Less | BinaryOp::LessEqual | BinaryOp::Greater | BinaryOp::GreaterEqual => 15,
-        BinaryOp::Range | BinaryOp::RangeInclusive => 17,
-        BinaryOp::Shl | BinaryOp::Shr => 19,
-        // Wrapping add/sub at same precedence as plain add/sub
-        BinaryOp::Add | BinaryOp::Subtract | BinaryOp::WrappingAdd | BinaryOp::WrappingSub => 21,
-        // Wrapping mul at same precedence as plain mul
-        BinaryOp::Multiply | BinaryOp::Divide | BinaryOp::Modulo | BinaryOp::WrappingMul => 23,
-    }
+    use hew_lexer::Token;
+
+    let token = match op {
+        BinaryOp::Or => Token::PipePipe,
+        BinaryOp::BitOr => Token::Pipe,
+        BinaryOp::BitXor => Token::Caret,
+        BinaryOp::BitAnd => Token::Ampersand,
+        BinaryOp::And => Token::AmpAmp,
+        BinaryOp::Equal => Token::EqualEqual,
+        BinaryOp::NotEqual => Token::NotEqual,
+        BinaryOp::Less => Token::Less,
+        BinaryOp::LessEqual => Token::LessEqual,
+        BinaryOp::Greater => Token::Greater,
+        BinaryOp::GreaterEqual => Token::GreaterEqual,
+        BinaryOp::Range => Token::DotDot,
+        BinaryOp::RangeInclusive => Token::DotDotEqual,
+        BinaryOp::Shl => Token::LessLess,
+        BinaryOp::Shr => Token::GreaterGreater,
+        BinaryOp::Add => Token::Plus,
+        BinaryOp::Subtract => Token::Minus,
+        BinaryOp::WrappingAdd => Token::AmpPlus,
+        BinaryOp::WrappingSub => Token::AmpMinus,
+        BinaryOp::Multiply => Token::Star,
+        BinaryOp::Divide => Token::Slash,
+        BinaryOp::Modulo => Token::Percent,
+        BinaryOp::WrappingMul => Token::AmpStar,
+    };
+    crate::parser::infix_bp(&token)
+        .expect("binary operator has an infix binding power")
+        .0
 }
 
 fn compound_assign_op_str(op: CompoundAssignOp) -> &'static str {
@@ -4753,6 +4774,21 @@ fn main() {
             "fn main() {\n    let value = (a ?? b) + c;\n}\n",
         ] {
             assert_eq!(roundtrip(source), source);
+        }
+    }
+
+    #[test]
+    fn identity_preserves_operator_grouping() {
+        for expression in [
+            "!(left is right)",
+            "(left is right) + offset",
+            "left is (middle is right)",
+            "left is (a && b)",
+            "(a == b) & mask",
+            "a || (b .. c)",
+        ] {
+            let source = format!("fn main() {{\n    let value = {expression};\n}}\n");
+            assert_eq!(roundtrip(&source), source);
         }
     }
 

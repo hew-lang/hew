@@ -133,8 +133,8 @@ pub(crate) fn wait_for_peer<'a, T>(
     }
 }
 
-/// A readiness latch for a top-level or task-thread coroutine driver. Actor
-/// workers use their scheduler's readiness target instead of waiting here.
+/// A readiness latch for synchronous hosting boundaries. Actor and task
+/// continuations use scheduler readiness targets instead of waiting here.
 pub mod blocking {
     use super::{HewWaker, OwnedWaker};
     #[cfg(not(target_arch = "wasm32"))]

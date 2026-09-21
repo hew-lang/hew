@@ -2822,54 +2822,85 @@ fn http_client_module_helpers_typecheck_natively() {
 
 #[test]
 fn http_client_module_helpers_rejected_on_wasm() {
-    let output = typecheck_inline_wasm(
-        r#"
-        import std.net.http.http_client;
+    for (import, module) in [
+        ("std.net.http.http_client", "http_client"),
+        ("std.net.http.http_client as client", "client"),
+    ] {
+        let source = format!(
+            r#"
+            import {import};
+            fn main() {{
+                let headers: Vec<(string, string)> = Vec.new();
+                {module}.set_timeout(250);
+                let _body = {module}.request_string("GET", "https://example.com", "", headers);
+                let _request = {module}.request;
+            }}
+            "#,
+        );
+        assert_http_client_wasm_rejections(&source, 3);
+    }
 
+    assert_http_client_wasm_rejections(
+        r#"
+        import std.net.http.http_client.{request_string, set_timeout};
         fn main() {
             let headers: Vec<(string, string)> = Vec.new();
-            http_client.set_timeout(250);
-            let _body = http_client.request_string("GET", "https://example.com", "", headers);
+            set_timeout(250);
+            let _body = request_string("GET", "https://example.com", "", headers);
+            let _request = request_string;
         }
         "#,
+        3,
+    );
+}
+
+fn assert_http_client_wasm_rejections(source: &str, expected: usize) {
+    let native = typecheck_inline(source);
+    assert!(
+        native.errors.is_empty(),
+        "HTTP client source must remain valid natively: {:#?}",
+        native.errors
+    );
+    let output = typecheck_inline_wasm(source);
+    assert_eq!(
+        output.errors.len(),
+        expected,
+        "each HTTP client operation needs one precise capability rejection: {:#?}",
+        output.errors
     );
     assert!(
-        output.errors.iter().any(|e| {
-            e.kind == TypeErrorKind::PlatformLimitation
-                && e.message
+        output.errors.iter().all(|error| {
+            error.kind == TypeErrorKind::PlatformLimitation
+                && error
+                    .message
                     .contains("std.net.http.http_client operations are not supported on WASM32")
         }),
-        "expected http_client wasm rejection, got: {:#?}",
+        "HTTP client operations must not inherit the HTTP server capability: {:#?}",
         output.errors
     );
 }
 
 #[test]
 fn http_client_response_methods_rejected_on_wasm() {
-    let output = typecheck_inline_wasm(
-        r#"
-        import std.net.http.http_client;
-
-        extern "C" {
-            fn fake_response() -> http_client.Response;
-        }
-
-        fn main() {
-            let resp = unsafe { fake_response() };
-            let _status = resp.status();
-            resp.close();
-        }
-        "#,
-    );
-    assert!(
-        output.errors.iter().any(|e| {
-            e.kind == TypeErrorKind::PlatformLimitation
-                && e.message
-                    .contains("std.net.http.http_client operations are not supported on WASM32")
-        }),
-        "expected http_client.Response wasm rejection, got: {:#?}",
-        output.errors
-    );
+    for (import, module) in [
+        ("std.net.http.http_client", "http_client"),
+        ("std.net.http.http_client as client", "client"),
+    ] {
+        let source = format!(
+            r#"
+            import {import};
+            extern "C" {{
+                fn fake_response() -> {module}.Response;
+            }}
+            fn main() {{
+                let resp = unsafe {{ fake_response() }};
+                let _status = resp.status();
+                resp.close();
+            }}
+            "#,
+        );
+        assert_http_client_wasm_rejections(&source, 2);
+    }
 }
 
 #[test]

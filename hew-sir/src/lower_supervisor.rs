@@ -210,7 +210,6 @@ impl InstanceService<'_> {
             node: source.node,
             site: child.site,
             ty: handle.clone(),
-            value_class: hew_hir::ValueClass::BitCopy,
             intent: IntentKind::Consume,
             kind: HirExprKind::Spawn {
                 actor_name: crate::supervisor::declared_handle(&handle)

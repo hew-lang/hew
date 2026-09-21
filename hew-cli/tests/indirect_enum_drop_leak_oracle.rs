@@ -1130,7 +1130,7 @@ fn indirect_enum_ask_reply_drop_routes_through_recursive_free() {
     // one-way submission destroys the payload instead of leaking it.
     assert!(
         ir.lines()
-            .any(|line| line.contains("call void @hew_actor_reply_native(")
+            .any(|line| line.contains("call ptr @hew_actor_reply_native(")
                 && line.contains(&format!("ptr @{symbol}"))),
         "the handler must hand `@{symbol}` to `hew_actor_reply_native`; a reply with no \
          destructor on the one-way leg leaks its heap node\n--- IR ---\n{ir}"

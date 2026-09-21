@@ -387,11 +387,10 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
     let pad = " ".repeat(indent);
     writeln!(
         out,
-        "{pad}expr {} {} {:?} {:?}: {}",
+        "{pad}expr {} {} {:?}: {}",
         expr.node,
         expr.site,
         expr.intent,
-        expr.value_class,
         expr.ty.user_facing()
     )
     .expect("write to string");

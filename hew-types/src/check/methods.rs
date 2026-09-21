@@ -1611,9 +1611,8 @@ impl Checker {
     /// boundary. Module spellings are lexical only: aliases resolve to their
     /// canonical imported owner before consulting the fully-qualified
     /// manifest policy, while user declarations with the same spelling remain
-    /// valid. Whole-module policy remains owned by
-    /// `wasm_native_only_module_feature` so the two tables cannot emit duplicate
-    /// diagnostics for the same call.
+    /// valid. The shared lookup selects one member or module capability so the
+    /// two tables cannot emit duplicate diagnostics for the same call.
     pub(super) fn reject_wasm_native_only_module_function(
         &mut self,
         module_name: &str,
@@ -1623,16 +1622,8 @@ impl Checker {
         if !self.wasm_target {
             return;
         }
-        let owner = self.canonical_module_import_owner(module_name);
-        if !self.canonical_std_module_sources.contains(&owner) {
-            return;
-        }
-        // Function policy is fully qualified and therefore cannot be shadowed
-        // by a user module whose leaf happens to be `fs`.
-        for rejection in crate::NATIVE_ONLY_WASM_FUNCTION_REJECTIONS {
-            if owner == rejection.module && method == rejection.function {
-                self.reject_wasm_feature(span, rejection.feature);
-            }
+        if let Some(feature) = self.wasm_native_only_function_feature(module_name, method) {
+            self.reject_wasm_feature(span, feature);
         }
     }
 
@@ -1651,13 +1642,8 @@ impl Checker {
         let Some((module, function)) = source_identity.rsplit_once('.') else {
             return;
         };
-        if !self.canonical_std_module_sources.contains(module) {
-            return;
-        }
-        for rejection in crate::NATIVE_ONLY_WASM_FUNCTION_REJECTIONS {
-            if module == rejection.module && function == rejection.function {
-                self.reject_wasm_feature(span, rejection.feature);
-            }
+        if let Some(feature) = self.wasm_native_only_function_feature(module, function) {
+            self.reject_wasm_feature(span, feature);
         }
     }
 
@@ -1993,7 +1979,9 @@ impl Checker {
             return;
         }
         match name.as_str() {
-            "http_client.Response" | "std.net.http.http_client.Response" => {
+            "std.net.http.Response"
+                if self.canonical_std_module_sources.contains("std.net.http") =>
+            {
                 self.reject_wasm_feature(span, WasmUnsupportedFeature::HttpClient);
             }
             "smtp.Conn" | "std.net.smtp.Conn" => {
@@ -6948,16 +6936,8 @@ impl Checker {
                     }
                 }
                 self.require_unsafe(&key, span);
-                // Native-only stdlib modules are rejected on wasm32 because
-                // their runtime implementations are not compiled there.
-                // The manifest-generated module rejection slice is shared with
-                // the value-position guard in expressions.rs.
-                if let Some(feature) = self.wasm_native_only_module_feature(name) {
-                    self.reject_wasm_feature(span, feature);
-                }
-                // Exact-function policy is separately keyed by canonical
-                // source owner, so supported modules can retain native-only
-                // member exclusions without weakening alias coverage.
+                // Call and value-position references share the manifest's
+                // canonical member/module capability selection.
                 self.reject_wasm_native_only_module_function(name, method, span);
                 // crypto.random_bytes and its fallible twin depend on a
                 // native-only secure entropy source absent from the wasm32 link

@@ -2898,7 +2898,7 @@ fn is_initial_call_value(ty: &ResolvedTy) -> bool {
     is_initial_scalar(ty)
         || matches!(
             ty,
-            ResolvedTy::String
+            ResolvedTy::Borrow { .. } | ResolvedTy::String
                 | ResolvedTy::Task(_)
                 | ResolvedTy::Bytes
                 | ResolvedTy::Array(_, _)
@@ -4182,16 +4182,27 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             );
         }
         self.service.require_type_facts(target)?;
-        crate::verify_callable_coercion(&source, target, self.service.checked_facts.rows())
-            .map_err(|reason| {
-                format!("value coercion from {source:?} to {target:?} refused: {reason}")
-            })?;
+        let generator = crate::generator_parts(&source).is_some();
+        let verify = if generator {
+            crate::verify_generator_coercion
+        } else {
+            crate::verify_callable_coercion
+        };
+        verify(&source, target, self.service.checked_facts.rows()).map_err(|reason| {
+            format!("value coercion from {source:?} to {target:?} refused: {reason}")
+        })?;
         self.owned_live.remove(&value);
         self.emit_typed(
             provenance,
             target,
-            SemOpKind::CallableCoerce {
-                source: Operand { value },
+            if generator {
+                SemOpKind::GeneratorCoerce {
+                    source: Operand { value },
+                }
+            } else {
+                SemOpKind::CallableCoerce {
+                    source: Operand { value },
+                }
             },
         )
     }
@@ -4377,9 +4388,6 @@ impl<'hir, 'service> Builder<'hir, 'service> {
 
     fn emit_destroy(&mut self, value: ValueId) -> Result<(), String> {
         if let Some(ty) = self.value_ty(value) {
-            if self.value_needs_close(&ty) {
-                self.close_value(None, Some(value))?;
-            }
             self.note_release_may_fault(&ty);
         }
         let id = OpId(self.ops);
@@ -5653,6 +5661,18 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 } else {
                     self.emit(expr, SemOpKind::Unary { op: *op, value })
                 }
+            }
+            HirExprKind::IdentityCompare { left, right } => {
+                let lhs = self.lower_read_operand(left, "identity left operand")?;
+                let rhs = self.lower_read_operand(right, "identity right operand")?;
+                self.emit(
+                    expr,
+                    SemOpKind::Binary {
+                        op: hew_parser::ast::BinaryOp::Equal,
+                        lhs,
+                        rhs,
+                    },
+                )
             }
             HirExprKind::Binary {
                 op: hew_parser::ast::BinaryOp::And,
@@ -8510,6 +8530,28 @@ impl<'hir, 'service> Builder<'hir, 'service> {
     ) -> Result<Option<ValueId>, String> {
         use hew_types::{RuntimeArgumentEffect, RuntimeResultEffect};
 
+        if matches!(
+            family,
+            hew_types::RuntimeCallFamily::StreamClose
+                | hew_types::RuntimeCallFamily::SinkClose
+                | hew_types::RuntimeCallFamily::ActorCallFree
+                | hew_types::RuntimeCallFamily::ActorRequestRelease
+        ) {
+            let [owner] = args else {
+                return Err("consuming release requires exactly one owner".into());
+            };
+            if value_required {
+                return Err("unit-valued release cannot produce an SSA value".into());
+            }
+            let value = if let Some((_, value)) = prelowered.iter().find(|(index, _)| *index == 0) {
+                *value
+            } else {
+                self.lower_consuming_value(owner)?
+            };
+            self.emit_destroy(value)?;
+            return Ok(None);
+        }
+
         let observation = match family {
             hew_types::RuntimeCallFamily::ActorLink => Some(crate::LocalObservationKind::Link),
             hew_types::RuntimeCallFamily::ActorMonitor => {
@@ -8885,29 +8927,6 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     SemOpKind::LoadTake { place: projected },
                 )?
             };
-            if matches!(
-                family,
-                hew_types::RuntimeCallFamily::Array(hew_types::runtime_call::ArrayValueOp::Set)
-                    | hew_types::RuntimeCallFamily::Vector(
-                        hew_types::runtime_call::VecValueOp::Clear
-                            | hew_types::runtime_call::VecValueOp::Set
-                    )
-            ) && self.value_needs_close(&receiver_ty)
-            {
-                let index = matches!(
-                    family,
-                    hew_types::RuntimeCallFamily::Vector(hew_types::runtime_call::VecValueOp::Set)
-                        | hew_types::RuntimeCallFamily::Array(
-                            hew_types::runtime_call::ArrayValueOp::Set
-                        )
-                )
-                .then(|| lowered_args[0].operand.value);
-                let loan_depth = self.argument_receiver_loans.len();
-                self.argument_receiver_loans.extend(loans.iter().copied());
-                self.close_selected_value(None, Some(source), index)?;
-                self.dispatch_value_cleanup()?;
-                self.argument_receiver_loans.truncate(loan_depth);
-            }
             self.owned_live.remove(&source);
             let moved = self.emit_typed(
                 provenance,

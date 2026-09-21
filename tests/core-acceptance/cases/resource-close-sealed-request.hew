@@ -1,0 +1,52 @@
+import std.stream;
+
+actor Audit {
+    receive fn record(id: i64) {
+        sleep(1ms);
+        println(f"closed {id}");
+    }
+}
+
+#[resource]
+type Ticket { audit: Audit, id: i64, }
+impl Ticket {
+    fn close(consume self) { self.audit.record(self.id).expect("audit close"); }
+}
+
+actor Gate {
+    mailbox 1,
+    receive fn hold(started: Sink<i64>) {
+        started.send(1).expect("started");
+        sleep(1h);
+    }
+    receive fn echo(ticket: Ticket) -> i64 { ticket.id }
+    receive fn keep(ticket: Ticket) { println(ticket.id); }
+}
+
+actor Runner {
+    receive fn run(audit: Audit) {
+        let gate = spawn Gate;
+        let (output, input): (Sink<i64>, Stream<i64>) = stream.pipe(1).expect("pipe");
+        mailbox(gate).hold(output).expect("start hold");
+        input.recv().expect("hold running");
+        mailbox(gate).keep(Ticket { audit: audit, id: 1 }).expect("queued");
+        {
+            let rejected = policy(gate, on_full: .Reject).echo(Ticket { audit: audit, id: 2 });
+            let _request = match rejected {
+                .Err(ActorError.Rejected(failure)) => failure.message,
+                _ => panic("full mailbox accepted request"),
+            };
+            close(gate);
+            println("origin closed");
+        }
+        println("request closed");
+    }
+}
+
+fn main() {
+    let audit = spawn Audit;
+    let runner = spawn Runner;
+    runner.run(audit).expect("request cleanup");
+    close(runner);
+    close(audit);
+}

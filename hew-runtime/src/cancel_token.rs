@@ -273,15 +273,3 @@ pub(crate) unsafe fn cancel_token_reason(mut token: *mut HewCancellationToken) -
     }
     race_lost
 }
-
-pub(crate) fn cancel_token_is_requested(token: *mut HewCancellationToken) -> bool {
-    // SAFETY: callers only pass live token pointers or null.
-    unsafe { cancel_token_is_requested_raw(token) }
-}
-
-pub(crate) unsafe fn cancel_token_cancel_if_present(token: *mut HewCancellationToken, reason: i32) {
-    if !token.is_null() {
-        // SAFETY: caller guarantees non-null token is live.
-        unsafe { hew_cancel_token_cancel(token, reason) };
-    }
-}

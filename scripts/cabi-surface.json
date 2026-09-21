@@ -197,6 +197,36 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
+        "native": "fn hew_actor_call_cleanup_fault( *mut HewActorCall, ) -> *mut HewFault",
+        "wasm32-wasip1": "fn hew_actor_call_cleanup_fault( *mut HewActorCall, ) -> *mut HewFault"
+      },
+      "symbol": "hew_actor_call_cleanup_fault"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_actor_call_cleanup_poll( *mut HewActorCall, *mut HewCoroState, ) -> i32",
+        "wasm32-wasip1": "fn hew_actor_call_cleanup_poll( *mut HewActorCall, *mut HewCoroState, ) -> i32"
+      },
+      "symbol": "hew_actor_call_cleanup_poll"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
         "native": "fn hew_actor_call_free( *mut HewActorCall)",
         "wasm32-wasip1": "fn hew_actor_call_free( *mut HewActorCall)"
       },
@@ -212,8 +242,8 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_actor_call_new( HewLocalPidId, i32, *mut c_void, usize, HewMsgEnvelopeDropFn, usize, Option<HewReplyDropFn>, *const HewWaker, i64, i32, i32, ) -> *mut HewActorCall",
-        "wasm32-wasip1": "fn hew_actor_call_new( HewLocalPidId, i32, *mut c_void, usize, HewMsgEnvelopeDropFn, usize, Option<HewReplyDropFn>, *const HewWaker, i64, i32, i32, ) -> *mut HewActorCall"
+        "native": "fn hew_actor_call_new( HewLocalPidId, i32, *mut c_void, usize, HewMsgEnvelopeDropFn, usize, Option<HewReplyDropFn>, *const HewWaker, i64, i32, i32, Option<HewValueReleaseStart>, Option<HewValueReleaseStart>, ) -> *mut HewActorCall",
+        "wasm32-wasip1": "fn hew_actor_call_new( HewLocalPidId, i32, *mut c_void, usize, HewMsgEnvelopeDropFn, usize, Option<HewReplyDropFn>, *const HewWaker, i64, i32, i32, Option<HewValueReleaseStart>, Option<HewValueReleaseStart>, ) -> *mut HewActorCall"
       },
       "symbol": "hew_actor_call_new"
     },
@@ -242,8 +272,8 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_actor_call_resume( HewLocalPidId, i32, *mut HewMsgEnvelope, usize, Option<HewReplyDropFn>, *const HewWaker, i64, i32, i32, ) -> *mut HewActorCall",
-        "wasm32-wasip1": "fn hew_actor_call_resume( HewLocalPidId, i32, *mut HewMsgEnvelope, usize, Option<HewReplyDropFn>, *const HewWaker, i64, i32, i32, ) -> *mut HewActorCall"
+        "native": "fn hew_actor_call_resume( HewLocalPidId, i32, *mut HewMsgEnvelope, usize, Option<HewReplyDropFn>, *const HewWaker, i64, i32, i32, Option<HewValueReleaseStart>, ) -> *mut HewActorCall",
+        "wasm32-wasip1": "fn hew_actor_call_resume( HewLocalPidId, i32, *mut HewMsgEnvelope, usize, Option<HewReplyDropFn>, *const HewWaker, i64, i32, i32, Option<HewValueReleaseStart>, ) -> *mut HewActorCall"
       },
       "symbol": "hew_actor_call_resume"
     },
@@ -838,8 +868,8 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_actor_reply_native( *mut c_void, usize, Option<HewReplyDropFn>, )",
-        "wasm32-wasip1": "fn hew_actor_reply_native( *mut c_void, usize, Option<HewReplyDropFn>, )"
+        "native": "fn hew_actor_reply_native( *mut c_void, usize, Option<HewReplyDropFn>, Option<HewValueReleaseStart>, ) -> *mut HewReleaseCursor",
+        "wasm32-wasip1": "fn hew_actor_reply_native( *mut c_void, usize, Option<HewReplyDropFn>, Option<HewValueReleaseStart>, ) -> *mut HewReleaseCursor"
       },
       "symbol": "hew_actor_reply_native"
     },
@@ -982,8 +1012,8 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_actor_send_wait_new( HewLocalPidId, i32, *mut c_void, usize, HewMsgEnvelopeDropFn, *const HewWaker, ) -> *mut HewNativeSend",
-        "wasm32-wasip1": "fn hew_actor_send_wait_new( HewLocalPidId, i32, *mut c_void, usize, HewMsgEnvelopeDropFn, *const HewWaker, ) -> *mut HewNativeSend"
+        "native": "fn hew_actor_send_wait_new( HewLocalPidId, i32, *mut c_void, usize, HewMsgEnvelopeDropFn, *const HewWaker, Option<hew_cabi::value::HewValueReleaseStart>, ) -> *mut HewNativeSend",
+        "wasm32-wasip1": "fn hew_actor_send_wait_new( HewLocalPidId, i32, *mut c_void, usize, HewMsgEnvelopeDropFn, *const HewWaker, Option<hew_cabi::value::HewValueReleaseStart>, ) -> *mut HewNativeSend"
       },
       "symbol": "hew_actor_send_wait_new"
     },
@@ -1184,8 +1214,8 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_actor_spawn_native( *mut c_void, usize, HewDispatchFn, unsafe extern \"C\" fn(*mut c_void), HewStateCloneFn, Option<unsafe extern \"C-unwind\" fn(*mut c_void)>, i32, i32, usize, *const HewNativePeriodicHandler, usize, Option<HewSysDispatchFn>, Option<HewNativeCrashFn>, *mut *mut HewFault, Option<mailbox::HewCoalesceKeyFn>, i32, ) -> HewLocalPidId",
-        "wasm32-wasip1": "fn hew_actor_spawn_native( *mut c_void, usize, HewDispatchFn, unsafe extern \"C\" fn(*mut c_void), HewStateCloneFn, Option<unsafe extern \"C-unwind\" fn(*mut c_void)>, i32, i32, usize, *const HewNativePeriodicHandler, usize, Option<HewSysDispatchFn>, Option<HewNativeCrashFn>, *mut *mut HewFault, Option<mailbox::HewCoalesceKeyFn>, i32, ) -> HewLocalPidId"
+        "native": "fn hew_actor_spawn_native( *mut c_void, usize, HewDispatchFn, unsafe extern \"C\" fn(*mut c_void), HewStateCloneFn, Option<unsafe extern \"C-unwind\" fn(*mut c_void)>, i32, i32, usize, *const HewNativePeriodicHandler, usize, Option<HewSysDispatchFn>, Option<HewNativeCrashFn>, *mut *mut HewFault, Option<mailbox::HewCoalesceKeyFn>, i32, Option<hew_cabi::value::HewValueReleaseStart>, *mut *mut HewReleaseCursor, ) -> HewLocalPidId",
+        "wasm32-wasip1": "fn hew_actor_spawn_native( *mut c_void, usize, HewDispatchFn, unsafe extern \"C\" fn(*mut c_void), HewStateCloneFn, Option<unsafe extern \"C-unwind\" fn(*mut c_void)>, i32, i32, usize, *const HewNativePeriodicHandler, usize, Option<HewSysDispatchFn>, Option<HewNativeCrashFn>, *mut *mut HewFault, Option<mailbox::HewCoalesceKeyFn>, i32, Option<hew_cabi::value::HewValueReleaseStart>, *mut *mut HewReleaseCursor, ) -> HewLocalPidId"
       },
       "symbol": "hew_actor_spawn_native"
     },
@@ -1294,8 +1324,8 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_actor_submit_native( HewLocalPidId, i32, *mut c_void, usize, HewMsgEnvelopeDropFn, i32, ) -> i32",
-        "wasm32-wasip1": "fn hew_actor_submit_native( HewLocalPidId, i32, *mut c_void, usize, HewMsgEnvelopeDropFn, i32, ) -> i32"
+        "native": "fn hew_actor_submit_native( HewLocalPidId, i32, *mut c_void, usize, HewMsgEnvelopeDropFn, i32, Option<hew_cabi::value::HewValueReleaseStart>, *mut *mut HewReleaseCursor, ) -> i32",
+        "wasm32-wasip1": "fn hew_actor_submit_native( HewLocalPidId, i32, *mut c_void, usize, HewMsgEnvelopeDropFn, i32, Option<hew_cabi::value::HewValueReleaseStart>, *mut *mut HewReleaseCursor, ) -> i32"
       },
       "symbol": "hew_actor_submit_native"
     },
@@ -1309,8 +1339,8 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_actor_submit_native_terminal( HewLocalPidId, i32, *mut c_void, usize, HewMsgEnvelopeDropFn, ) -> i32",
-        "wasm32-wasip1": "fn hew_actor_submit_native_terminal( HewLocalPidId, i32, *mut c_void, usize, HewMsgEnvelopeDropFn, ) -> i32"
+        "native": "fn hew_actor_submit_native_terminal( HewLocalPidId, i32, *mut c_void, usize, HewMsgEnvelopeDropFn, Option<hew_cabi::value::HewValueReleaseStart>, *mut *mut HewReleaseCursor, ) -> i32",
+        "wasm32-wasip1": "fn hew_actor_submit_native_terminal( HewLocalPidId, i32, *mut c_void, usize, HewMsgEnvelopeDropFn, Option<hew_cabi::value::HewValueReleaseStart>, *mut *mut HewReleaseCursor, ) -> i32"
       },
       "symbol": "hew_actor_submit_native_terminal"
     },
@@ -1453,21 +1483,6 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_actor_wait_error( *const HewNativeActorWait) -> i32",
-        "wasm32-wasip1": "fn hew_actor_wait_error( *const HewNativeActorWait) -> i32"
-      },
-      "symbol": "hew_actor_wait_error"
-    },
-    {
-      "availability": [
-        "native",
-        "wasm32-wasip1"
-      ],
-      "classification": "non-declarable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
         "native": "fn hew_actor_wait_free( *mut HewNativeActorWait)",
         "wasm32-wasip1": "fn hew_actor_wait_free( *mut HewNativeActorWait)"
       },
@@ -1502,6 +1517,21 @@
         "wasm32-wasip1": "fn hew_actor_wait_poll( *const HewNativeActorWait) -> i32"
       },
       "symbol": "hew_actor_wait_poll"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_actor_wait_take_fault( *const HewNativeActorWait, ) -> *mut HewFault",
+        "wasm32-wasip1": "fn hew_actor_wait_take_fault( *const HewNativeActorWait, ) -> *mut HewFault"
+      },
+      "symbol": "hew_actor_wait_take_fault"
     },
     {
       "availability": [
@@ -1834,15 +1864,15 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "stable",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_array_visit_close( *mut HewVec, *mut c_void)",
-        "wasm32-wasip1": "fn hew_array_visit_close( *mut HewVec, *mut c_void)"
+        "native": "fn hew_array_release_begin( *mut HewVec) -> *mut HewReleaseCursor",
+        "wasm32-wasip1": "fn hew_array_release_begin( *mut HewVec) -> *mut HewReleaseCursor"
       },
-      "symbol": "hew_array_visit_close"
+      "symbol": "hew_array_release_begin"
     },
     {
       "availability": [
@@ -2785,10 +2815,10 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_callable_visit_close( *mut HewCallableValue, *mut c_void, )",
-        "wasm32-wasip1": "fn hew_callable_visit_close( *mut HewCallableValue, *mut c_void, )"
+        "native": "fn hew_callable_release_begin( *mut HewCallableValue, ) -> *mut HewReleaseCursor",
+        "wasm32-wasip1": "fn hew_callable_release_begin( *mut HewCallableValue, ) -> *mut HewReleaseCursor"
       },
-      "symbol": "hew_callable_visit_close"
+      "symbol": "hew_callable_release_begin"
     },
     {
       "availability": [
@@ -3805,8 +3835,8 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_checked_scope_wait_new( *mut HewTaskScope, *const HewWaker, ) -> *mut HewCheckedScopeWait",
-        "wasm32-wasip1": "fn hew_checked_scope_wait_new( *mut HewTaskScope, *const HewWaker, ) -> *mut HewCheckedScopeWait"
+        "native": "fn hew_checked_scope_wait_new( *mut HewTaskScope, *const HewWaker, *const HewCoroState, ) -> *mut HewCheckedScopeWait",
+        "wasm32-wasip1": "fn hew_checked_scope_wait_new( *mut HewTaskScope, *const HewWaker, *const HewCoroState, ) -> *mut HewCheckedScopeWait"
       },
       "symbol": "hew_checked_scope_wait_new"
     },
@@ -4090,8 +4120,8 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_checked_task_wait_take( *const HewCheckedTaskWait, *mut c_void, *mut *mut HewFault, ) -> i32",
-        "wasm32-wasip1": "fn hew_checked_task_wait_take( *const HewCheckedTaskWait, *mut c_void, *mut *mut HewFault, ) -> i32"
+        "native": "fn hew_checked_task_wait_take( *const HewCheckedTaskWait, *mut c_void, *mut *mut HewFault, *mut *mut HewReleaseCursor, ) -> i32",
+        "wasm32-wasip1": "fn hew_checked_task_wait_take( *const HewCheckedTaskWait, *mut c_void, *mut *mut HewFault, *mut *mut HewReleaseCursor, ) -> i32"
       },
       "symbol": "hew_checked_task_wait_take"
     },
@@ -5052,6 +5082,21 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
+        "native": "fn hew_coro_state_cleanup_child( *const HewCoroState, ) -> *mut HewCoroState",
+        "wasm32-wasip1": "fn hew_coro_state_cleanup_child( *const HewCoroState, ) -> *mut HewCoroState"
+      },
+      "symbol": "hew_coro_state_cleanup_child"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
         "native": "fn hew_coro_state_enter_token( *mut HewCoroState, *mut HewCancellationToken, )",
         "wasm32-wasip1": "fn hew_coro_state_enter_token( *mut HewCoroState, *mut HewCancellationToken, )"
       },
@@ -5176,6 +5221,21 @@
         "wasm32-wasip1": "fn hew_coro_state_resume_yield( *mut HewCoroState) -> i32"
       },
       "symbol": "hew_coro_state_resume_yield"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_coro_state_set_cleanup_fault( *const HewCoroState, *const HewFault, )",
+        "wasm32-wasip1": "fn hew_coro_state_set_cleanup_fault( *const HewCoroState, *const HewFault, )"
+      },
+      "symbol": "hew_coro_state_set_cleanup_fault"
     },
     {
       "availability": [
@@ -6569,6 +6629,21 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
+        "native": "fn hew_fault_code( *const HewFault) -> i32",
+        "wasm32-wasip1": "fn hew_fault_code( *const HewFault) -> i32"
+      },
+      "symbol": "hew_fault_code"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
         "native": "fn hew_fault_combine( *mut HewFault, *mut HewFault, ) -> *mut HewFault",
         "wasm32-wasip1": "fn hew_fault_combine( *mut HewFault, *mut HewFault, ) -> *mut HewFault"
       },
@@ -7221,6 +7296,21 @@
         "native",
         "wasm32-wasip1"
       ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_hashmap_clear_release( *mut HewLayoutHashMap, ) -> *mut HewReleaseCursor",
+        "wasm32-wasip1": "fn hew_hashmap_clear_release( *mut HewLayoutHashMap, ) -> *mut HewReleaseCursor"
+      },
+      "symbol": "hew_hashmap_clear_release"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
@@ -7556,8 +7646,8 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_hashmap_probe_insert_clone( *mut HewLayoutMapProbe, *const c_void, ) -> bool",
-        "wasm32-wasip1": "fn hew_hashmap_probe_insert_clone( *mut HewLayoutMapProbe, *const c_void, ) -> bool"
+        "native": "fn hew_hashmap_probe_insert_clone( *mut HewLayoutMapProbe, *const c_void, *mut *mut HewReleaseCursor, ) -> bool",
+        "wasm32-wasip1": "fn hew_hashmap_probe_insert_clone( *mut HewLayoutMapProbe, *const c_void, *mut *mut HewReleaseCursor, ) -> bool"
       },
       "symbol": "hew_hashmap_probe_insert_clone"
     },
@@ -7571,8 +7661,8 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_hashmap_probe_insert_take( *mut HewLayoutMapProbe, *const c_void, ) -> bool",
-        "wasm32-wasip1": "fn hew_hashmap_probe_insert_take( *mut HewLayoutMapProbe, *const c_void, ) -> bool"
+        "native": "fn hew_hashmap_probe_insert_take( *mut HewLayoutMapProbe, *const c_void, *mut *mut HewReleaseCursor, ) -> bool",
+        "wasm32-wasip1": "fn hew_hashmap_probe_insert_take( *mut HewLayoutMapProbe, *const c_void, *mut *mut HewReleaseCursor, ) -> bool"
       },
       "symbol": "hew_hashmap_probe_insert_take"
     },
@@ -7601,8 +7691,8 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_hashmap_probe_remove_take( *mut HewLayoutMapProbe, *mut c_void, ) -> bool",
-        "wasm32-wasip1": "fn hew_hashmap_probe_remove_take( *mut HewLayoutMapProbe, *mut c_void, ) -> bool"
+        "native": "fn hew_hashmap_probe_remove_take( *mut HewLayoutMapProbe, *mut c_void, *mut *mut HewReleaseCursor, ) -> bool",
+        "wasm32-wasip1": "fn hew_hashmap_probe_remove_take( *mut HewLayoutMapProbe, *mut c_void, *mut *mut HewReleaseCursor, ) -> bool"
       },
       "symbol": "hew_hashmap_probe_remove_take"
     },
@@ -7671,6 +7761,21 @@
         "native",
         "wasm32-wasip1"
       ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_hashmap_release_begin( *mut HewLayoutHashMap, ) -> *mut HewReleaseCursor",
+        "wasm32-wasip1": "fn hew_hashmap_release_begin( *mut HewLayoutHashMap, ) -> *mut HewReleaseCursor"
+      },
+      "symbol": "hew_hashmap_release_begin"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
@@ -7716,21 +7821,6 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "non-declarable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_hashmap_visit_close( *mut HewLayoutHashMap, *mut c_void)",
-        "wasm32-wasip1": "fn hew_hashmap_visit_close( *mut HewLayoutHashMap, *mut c_void)"
-      },
-      "symbol": "hew_hashmap_visit_close"
-    },
-    {
-      "availability": [
-        "native",
-        "wasm32-wasip1"
-      ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
@@ -7740,6 +7830,21 @@
         "wasm32-wasip1": "fn hew_hashset_clear_layout( *mut HewLayoutHashSet)"
       },
       "symbol": "hew_hashset_clear_layout"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_hashset_clear_release( *mut HewLayoutHashSet, ) -> *mut HewReleaseCursor",
+        "wasm32-wasip1": "fn hew_hashset_clear_release( *mut HewLayoutHashSet, ) -> *mut HewReleaseCursor"
+      },
+      "symbol": "hew_hashset_clear_release"
     },
     {
       "availability": [
@@ -7961,8 +8066,8 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_hashset_probe_insert_clone( *mut HewLayoutMapProbe, ) -> bool",
-        "wasm32-wasip1": "fn hew_hashset_probe_insert_clone( *mut HewLayoutMapProbe, ) -> bool"
+        "native": "fn hew_hashset_probe_insert_clone( *mut HewLayoutMapProbe, *mut *mut HewReleaseCursor, ) -> bool",
+        "wasm32-wasip1": "fn hew_hashset_probe_insert_clone( *mut HewLayoutMapProbe, *mut *mut HewReleaseCursor, ) -> bool"
       },
       "symbol": "hew_hashset_probe_insert_clone"
     },
@@ -7976,8 +8081,8 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_hashset_probe_insert_take( *mut HewLayoutMapProbe, ) -> bool",
-        "wasm32-wasip1": "fn hew_hashset_probe_insert_take( *mut HewLayoutMapProbe, ) -> bool"
+        "native": "fn hew_hashset_probe_insert_take( *mut HewLayoutMapProbe, *mut *mut HewReleaseCursor, ) -> bool",
+        "wasm32-wasip1": "fn hew_hashset_probe_insert_take( *mut HewLayoutMapProbe, *mut *mut HewReleaseCursor, ) -> bool"
       },
       "symbol": "hew_hashset_probe_insert_take"
     },
@@ -7991,10 +8096,25 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_hashset_probe_remove( *mut HewLayoutMapProbe) -> bool",
-        "wasm32-wasip1": "fn hew_hashset_probe_remove( *mut HewLayoutMapProbe) -> bool"
+        "native": "fn hew_hashset_probe_remove( *mut HewLayoutMapProbe, *mut *mut HewReleaseCursor, ) -> bool",
+        "wasm32-wasip1": "fn hew_hashset_probe_remove( *mut HewLayoutMapProbe, *mut *mut HewReleaseCursor, ) -> bool"
       },
       "symbol": "hew_hashset_probe_remove"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_hashset_release_begin( *mut HewLayoutHashSet, ) -> *mut HewReleaseCursor",
+        "wasm32-wasip1": "fn hew_hashset_release_begin( *mut HewLayoutHashSet, ) -> *mut HewReleaseCursor"
+      },
+      "symbol": "hew_hashset_release_begin"
     },
     {
       "availability": [
@@ -8025,21 +8145,6 @@
         "wasm32-wasip1": "fn hew_hashset_to_vec_layout( *const HewLayoutHashSet) -> *mut HewVec"
       },
       "symbol": "hew_hashset_to_vec_layout"
-    },
-    {
-      "availability": [
-        "native",
-        "wasm32-wasip1"
-      ],
-      "classification": "non-declarable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_hashset_visit_close( *mut HewLayoutHashSet, *mut c_void)",
-        "wasm32-wasip1": "fn hew_hashset_visit_close( *mut HewLayoutHashSet, *mut c_void)"
-      },
-      "symbol": "hew_hashset_visit_close"
     },
     {
       "availability": [
@@ -11014,6 +11119,21 @@
         "native",
         "wasm32-wasip1"
       ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_msg_envelope_release_begin( *mut HewMsgEnvelope, ) -> *mut HewReleaseCursor",
+        "wasm32-wasip1": "fn hew_msg_envelope_release_begin( *mut HewMsgEnvelope, ) -> *mut HewReleaseCursor"
+      },
+      "symbol": "hew_msg_envelope_release_begin"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
@@ -13467,6 +13587,21 @@
         "native",
         "wasm32-wasip1"
       ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_rc_release_begin( *mut u8, *const hew_cabi::value::HewValueLayout, ) -> *mut HewReleaseCursor",
+        "wasm32-wasip1": "fn hew_rc_release_begin( *mut u8, *const hew_cabi::value::HewValueLayout, ) -> *mut HewReleaseCursor"
+      },
+      "symbol": "hew_rc_release_begin"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
@@ -13476,6 +13611,21 @@
         "wasm32-wasip1": "fn hew_rc_set( *mut u8, *mut u8)"
       },
       "symbol": "hew_rc_set"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_rc_set_release( *mut u8, *mut u8, *const hew_cabi::value::HewValueLayout, ) -> *mut HewReleaseCursor",
+        "wasm32-wasip1": "fn hew_rc_set_release( *mut u8, *mut u8, *const hew_cabi::value::HewValueLayout, ) -> *mut HewReleaseCursor"
+      },
+      "symbol": "hew_rc_set_release"
     },
     {
       "availability": [
@@ -14048,6 +14198,66 @@
         "native",
         "wasm32-wasip1"
       ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_release_finish( *mut HewReleaseCursor)",
+        "wasm32-wasip1": "fn hew_release_finish( *mut HewReleaseCursor)"
+      },
+      "symbol": "hew_release_finish"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_release_layout( *const HewReleaseCursor, ) -> *const HewValueLayout",
+        "wasm32-wasip1": "fn hew_release_layout( *const HewReleaseCursor, ) -> *const HewValueLayout"
+      },
+      "symbol": "hew_release_layout"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_release_next( *mut HewReleaseCursor) -> *mut c_void",
+        "wasm32-wasip1": "fn hew_release_next( *mut HewReleaseCursor) -> *mut c_void"
+      },
+      "symbol": "hew_release_next"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_release_sync( *mut HewReleaseCursor)",
+        "wasm32-wasip1": "fn hew_release_sync( *mut HewReleaseCursor)"
+      },
+      "symbol": "hew_release_sync"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
       "classification": "stable",
       "extent": "length-or-count",
       "nul": "not-applicable",
@@ -14173,8 +14383,8 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_reply_channel_new_native( *const HewWaker, Option<HewReplyDropFn>, ) -> *mut HewReplyChannel",
-        "wasm32-wasip1": "fn hew_reply_channel_new_native( *const HewWaker, Option<HewReplyDropFn>, ) -> *mut HewReplyChannel"
+        "native": "fn hew_reply_channel_new_native( *const HewWaker, Option<HewReplyDropFn>, Option<HewValueReleaseStart>, ) -> *mut HewReplyChannel",
+        "wasm32-wasip1": "fn hew_reply_channel_new_native( *const HewWaker, Option<HewReplyDropFn>, Option<HewValueReleaseStart>, ) -> *mut HewReplyChannel"
       },
       "symbol": "hew_reply_channel_new_native"
     },
@@ -15299,6 +15509,21 @@
         "native",
         "wasm32-wasip1"
       ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_sink_release_begin( *mut HewSink, *const HewCoroState, ) -> *mut HewReleaseCursor",
+        "wasm32-wasip1": "fn hew_sink_release_begin( *mut HewSink, *const HewCoroState, ) -> *mut HewReleaseCursor"
+      },
+      "symbol": "hew_sink_release_begin"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
       "classification": "stable",
       "extent": "length-or-count",
       "nul": "not-applicable",
@@ -15864,6 +16089,21 @@
         "native",
         "wasm32-wasip1"
       ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_stream_operation_release_begin( *mut HewNativeStream, ) -> *mut HewReleaseCursor",
+        "wasm32-wasip1": "fn hew_stream_operation_release_begin( *mut HewNativeStream, ) -> *mut HewReleaseCursor"
+      },
+      "symbol": "hew_stream_operation_release_begin"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
@@ -16029,6 +16269,21 @@
         "native",
         "wasm32-wasip1"
       ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_stream_release_begin( *mut HewStream, ) -> *mut HewReleaseCursor",
+        "wasm32-wasip1": "fn hew_stream_release_begin( *mut HewStream, ) -> *mut HewReleaseCursor"
+      },
+      "symbol": "hew_stream_release_begin"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
@@ -16113,6 +16368,21 @@
         "wasm32-wasip1": "fn hew_stream_try_send_layout( *mut HewSink, *const c_void, *const HewValueLayout, ) -> i32"
       },
       "symbol": "hew_stream_try_send_layout"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_stream_try_send_move_release( *mut HewSink, *mut c_void, *const HewValueLayout, *mut *mut HewReleaseCursor, ) -> i32",
+        "wasm32-wasip1": "fn hew_stream_try_send_move_release( *mut HewSink, *mut c_void, *const HewValueLayout, *mut *mut HewReleaseCursor, ) -> i32"
+      },
+      "symbol": "hew_stream_try_send_move_release"
     },
     {
       "availability": [
@@ -17518,191 +17788,9 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_task_await_blocking( *mut HewTask) -> *mut c_void"
-      },
-      "symbol": "hew_task_await_blocking"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_task_await_suspend( *mut HewTaskScope, *mut HewTask, *mut HewActor, *mut HewReadSlot, ) -> i32"
-      },
-      "symbol": "hew_task_await_suspend"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_task_complete_threaded( *mut HewTask)"
-      },
-      "symbol": "hew_task_complete_threaded"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_task_completion_observe( *mut HewTaskScope, *mut HewTask, Option<TaskCompletionCallback>, *mut c_void, ) -> i32"
-      },
-      "symbol": "hew_task_completion_observe"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_task_completion_unobserve( *mut HewTaskScope, *mut HewTask, Option<TaskCompletionCallback>, *mut c_void, ) -> i32"
-      },
-      "symbol": "hew_task_completion_unobserve"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_task_detach_await( *mut HewTaskScope, *mut HewTask, *mut HewReadSlot, )"
-      },
-      "symbol": "hew_task_detach_await"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
         "native": "fn hew_task_free( *mut HewTask)"
       },
       "symbol": "hew_task_free"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_task_get_env( *mut HewTask) -> *mut c_void"
-      },
-      "symbol": "hew_task_get_env"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_task_get_error( *mut HewTask) -> i32"
-      },
-      "symbol": "hew_task_get_error"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_task_get_result( *mut HewTask) -> *mut c_void"
-      },
-      "symbol": "hew_task_get_result"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_task_is_cancelled( *mut HewTask) -> i32"
-      },
-      "symbol": "hew_task_is_cancelled"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_task_new() -> *mut HewTask"
-      },
-      "symbol": "hew_task_new"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_task_scope_cancel( *mut HewTaskScope)"
-      },
-      "symbol": "hew_task_scope_cancel"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_task_scope_cancel_after_ns( *mut HewTaskScope, i64, )"
-      },
-      "symbol": "hew_task_scope_cancel_after_ns"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_task_scope_cancel_one( *mut HewTaskScope, *mut HewTask, ) -> i32"
-      },
-      "symbol": "hew_task_scope_cancel_one"
     },
     {
       "availability": [
@@ -17721,149 +17809,6 @@
       "availability": [
         "native"
       ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_task_scope_complete_task( *mut HewTaskScope, *mut HewTask, )"
-      },
-      "symbol": "hew_task_scope_complete_task"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_task_scope_completion_observe( *mut HewTaskScope, *mut HewAwaitCancel, *mut HewActor, ) -> i32"
-      },
-      "symbol": "hew_task_scope_completion_observe"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_task_scope_destroy( *mut HewTaskScope)"
-      },
-      "symbol": "hew_task_scope_destroy"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_task_scope_detach_completion( *mut HewTaskScope)"
-      },
-      "symbol": "hew_task_scope_detach_completion"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_task_scope_get_task( *mut HewTaskScope, i32, ) -> *mut HewTask"
-      },
-      "symbol": "hew_task_scope_get_task"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_task_scope_has_active_tasks( *mut HewTaskScope) -> i32"
-      },
-      "symbol": "hew_task_scope_has_active_tasks"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_task_scope_is_cancelled( *mut HewTaskScope) -> i32"
-      },
-      "symbol": "hew_task_scope_is_cancelled"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_task_scope_is_done( *mut HewTaskScope) -> i32"
-      },
-      "symbol": "hew_task_scope_is_done"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_task_scope_join_all( *mut HewTaskScope)"
-      },
-      "symbol": "hew_task_scope_join_all"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_task_scope_new() -> *mut HewTaskScope"
-      },
-      "symbol": "hew_task_scope_new"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_task_scope_poll( *mut HewTaskScope) -> *mut HewTask"
-      },
-      "symbol": "hew_task_scope_poll"
-    },
-    {
-      "availability": [
-        "native"
-      ],
       "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
@@ -17872,136 +17817,6 @@
         "native": "fn hew_task_scope_set_current( *mut HewTaskScope) -> *mut HewTaskScope"
       },
       "symbol": "hew_task_scope_set_current"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_task_scope_spawn( *mut HewTaskScope, *mut HewTask)"
-      },
-      "symbol": "hew_task_scope_spawn"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_task_scope_wait_first( *mut HewTaskScope) -> *mut HewTask"
-      },
-      "symbol": "hew_task_scope_wait_first"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_task_set_cancel_cleanup_fn( *mut HewTask, Option<unsafe extern \"C-unwind\" fn(*mut c_void)>, )"
-      },
-      "symbol": "hew_task_set_cancel_cleanup_fn"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_task_set_cancel_token( *mut HewTask, *mut HewCancellationToken, )"
-      },
-      "symbol": "hew_task_set_cancel_token"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_task_set_env( *mut HewTask, *mut c_void)"
-      },
-      "symbol": "hew_task_set_env"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable",
-      "extent": "length-or-count",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_task_set_result( *mut HewTask, *mut c_void, usize)"
-      },
-      "symbol": "hew_task_set_result"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_task_set_result_drop_fn( *mut HewTask, Option<unsafe extern \"C\" fn(*mut c_void)>, )"
-      },
-      "symbol": "hew_task_set_result_drop_fn"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_task_spawn_thread( *mut HewTask, TaskFn)"
-      },
-      "symbol": "hew_task_spawn_thread"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_task_spawn_thread_with_inherited_context( *mut HewExecutionContext, *mut HewTask, ContextTaskFn, ) -> i32"
-      },
-      "symbol": "hew_task_spawn_thread_with_inherited_context"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_task_take_result( *mut HewTask) -> *mut c_void"
-      },
-      "symbol": "hew_task_take_result"
     },
     {
       "availability": [
@@ -19093,6 +18908,21 @@
     },
     {
       "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_trait_object_release_begin( *mut HewTraitObject, i32, ) -> *mut HewReleaseCursor",
+        "wasm32-wasip1": "fn hew_trait_object_release_begin( *mut HewTraitObject, i32, ) -> *mut HewReleaseCursor"
+      },
+      "symbol": "hew_trait_object_release_begin"
+    },
+    {
+      "availability": [
         "native"
       ],
       "classification": "stable",
@@ -19575,66 +19405,6 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "non-declarable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_value_close_collect( *mut c_void, *const HewValueLayout, *mut c_void, )",
-        "wasm32-wasip1": "fn hew_value_close_collect( *mut c_void, *const HewValueLayout, *mut c_void, )"
-      },
-      "symbol": "hew_value_close_collect"
-    },
-    {
-      "availability": [
-        "native",
-        "wasm32-wasip1"
-      ],
-      "classification": "non-declarable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_value_close_finish( *mut HewValueClose, *mut *mut HewFault, ) -> i32",
-        "wasm32-wasip1": "fn hew_value_close_finish( *mut HewValueClose, *mut *mut HewFault, ) -> i32"
-      },
-      "symbol": "hew_value_close_finish"
-    },
-    {
-      "availability": [
-        "native",
-        "wasm32-wasip1"
-      ],
-      "classification": "non-declarable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_value_close_poll( *mut HewValueClose, *mut c_void, ) -> i32",
-        "wasm32-wasip1": "fn hew_value_close_poll( *mut HewValueClose, *mut c_void, ) -> i32"
-      },
-      "symbol": "hew_value_close_poll"
-    },
-    {
-      "availability": [
-        "native",
-        "wasm32-wasip1"
-      ],
-      "classification": "non-declarable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_value_close_push( *mut c_void, *mut c_void, HewValueClosePoll, )",
-        "wasm32-wasip1": "fn hew_value_close_push( *mut c_void, *mut c_void, HewValueClosePoll, )"
-      },
-      "symbol": "hew_value_close_push"
-    },
-    {
-      "availability": [
-        "native",
-        "wasm32-wasip1"
-      ],
       "classification": "stable",
       "extent": "not-applicable",
       "nul": "not-applicable",
@@ -19704,6 +19474,21 @@
         "wasm32-wasip1": "fn hew_vec_clear( *mut HewVec)"
       },
       "symbol": "hew_vec_clear"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_vec_clear_release( *mut HewVec) -> *mut HewReleaseCursor",
+        "wasm32-wasip1": "fn hew_vec_clear_release( *mut HewVec) -> *mut HewReleaseCursor"
+      },
+      "symbol": "hew_vec_clear_release"
     },
     {
       "availability": [
@@ -20910,6 +20695,21 @@
         "native",
         "wasm32-wasip1"
       ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_vec_release_begin( *mut HewVec) -> *mut HewReleaseCursor",
+        "wasm32-wasip1": "fn hew_vec_release_begin( *mut HewVec) -> *mut HewReleaseCursor"
+      },
+      "symbol": "hew_vec_release_begin"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
       "classification": "stable",
       "extent": "not-applicable",
       "nul": "not-applicable",
@@ -21320,8 +21120,8 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_vec_set_owned( *mut HewVec, i64, *const core::ffi::c_void, )",
-        "wasm32-wasip1": "fn hew_vec_set_owned( *mut HewVec, i64, *const core::ffi::c_void, )"
+        "native": "fn hew_vec_set_owned( *mut HewVec, i64, *const c_void)",
+        "wasm32-wasip1": "fn hew_vec_set_owned( *mut HewVec, i64, *const c_void)"
       },
       "symbol": "hew_vec_set_owned"
     },
@@ -21335,10 +21135,40 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_vec_set_owned_move( *mut HewVec, i64, *const core::ffi::c_void, )",
-        "wasm32-wasip1": "fn hew_vec_set_owned_move( *mut HewVec, i64, *const core::ffi::c_void, )"
+        "native": "fn hew_vec_set_owned_move( *mut HewVec, i64, *const c_void, )",
+        "wasm32-wasip1": "fn hew_vec_set_owned_move( *mut HewVec, i64, *const c_void, )"
       },
       "symbol": "hew_vec_set_owned_move"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_vec_set_owned_move_release( *mut HewVec, i64, *const c_void, ) -> *mut HewReleaseCursor",
+        "wasm32-wasip1": "fn hew_vec_set_owned_move_release( *mut HewVec, i64, *const c_void, ) -> *mut HewReleaseCursor"
+      },
+      "symbol": "hew_vec_set_owned_move_release"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_vec_set_owned_release( *mut HewVec, i64, *const c_void, ) -> *mut HewReleaseCursor",
+        "wasm32-wasip1": "fn hew_vec_set_owned_release( *mut HewVec, i64, *const c_void, ) -> *mut HewReleaseCursor"
+      },
+      "symbol": "hew_vec_set_owned_release"
     },
     {
       "availability": [
@@ -21635,25 +21465,10 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_vec_visit_close( *mut HewVec, *mut c_void)",
-        "wasm32-wasip1": "fn hew_vec_visit_close( *mut HewVec, *mut c_void)"
+        "native": "fn hew_vec_truncate_release( *mut HewVec, i64, ) -> *mut HewReleaseCursor",
+        "wasm32-wasip1": "fn hew_vec_truncate_release( *mut HewVec, i64, ) -> *mut HewReleaseCursor"
       },
-      "symbol": "hew_vec_visit_close"
-    },
-    {
-      "availability": [
-        "native",
-        "wasm32-wasip1"
-      ],
-      "classification": "non-declarable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_vec_visit_element_close( *mut HewVec, i64, *mut c_void, )",
-        "wasm32-wasip1": "fn hew_vec_visit_element_close( *mut HewVec, i64, *mut c_void, )"
-      },
-      "symbol": "hew_vec_visit_element_close"
+      "symbol": "hew_vec_truncate_release"
     },
     {
       "availability": [

@@ -2,9 +2,10 @@
 //!
 //! Implements a 3-phase ordered shutdown:
 //!
-//! 1. **Quiesce** — Stop accepting new actor spawns. Mark runtime as
-//!    shutting down so new messages are rejected. Installed SIGTERM/SIGINT
-//!    handler triggers this phase.
+//! 1. **Quiesce** — Close listener and periodic-event admission. Explicit
+//!    shutdown also rejects new root/external actor requests; accepted actor
+//!    turns retain their peer calls. Installed SIGTERM/SIGINT handlers trigger
+//!    this phase.
 //!
 //! 2. **Drain** — Allow workers to continue processing remaining messages
 //!    for up to `drain_timeout` milliseconds. Supervisors stop their
@@ -18,7 +19,7 @@
 )]
 
 use std::ffi::c_int;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::reactor;
@@ -33,7 +34,7 @@ use crate::scheduler;
 
 /// Not shutting down.
 pub(crate) const PHASE_RUNNING: i32 = 0;
-/// Phase 1: No new spawns or messages accepted.
+/// Phase 1: Close external admission before draining accepted work.
 const PHASE_QUIESCE: i32 = 1;
 /// Phase 2: Draining remaining messages with deadline.
 pub(crate) const PHASE_DRAIN: i32 = 2;
@@ -43,6 +44,68 @@ const PHASE_TERMINATE: i32 = 3;
 const PHASE_DONE: i32 = 4;
 /// Shutdown failed before completion.
 const PHASE_FAILED: i32 = 5;
+
+const INGRESS_CLOSED: usize = 1 << (usize::BITS - 1);
+const INGRESS_COUNT: usize = !INGRESS_CLOSED;
+
+/// Publication by process roots and external producers. Closing admission and
+/// counting already-admitted submissions share one atomic transition, so drain
+/// cannot miss a producer between admission and its scheduler handoff.
+#[derive(Default)]
+pub(crate) struct ExternalIngress(AtomicUsize);
+
+pub(crate) struct IngressPermit<'a>(Option<&'a ExternalIngress>);
+
+impl Drop for IngressPermit<'_> {
+    fn drop(&mut self) {
+        if let Some(ingress) = self.0 {
+            ingress.0.fetch_sub(1, Ordering::Release);
+        }
+    }
+}
+
+impl ExternalIngress {
+    fn enter(&self) -> Result<IngressPermit<'_>, ()> {
+        let mut state = self.0.load(Ordering::Acquire);
+        loop {
+            if state & INGRESS_CLOSED != 0 || state & INGRESS_COUNT == INGRESS_COUNT {
+                return Err(());
+            }
+            match self.0.compare_exchange_weak(
+                state,
+                state + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return Ok(IngressPermit(Some(self))),
+                Err(observed) => state = observed,
+            }
+        }
+    }
+
+    fn close(&self) {
+        self.0.fetch_or(INGRESS_CLOSED, Ordering::AcqRel);
+    }
+
+    pub(crate) fn is_idle(&self) -> bool {
+        self.0.load(Ordering::Acquire) & INGRESS_COUNT == 0
+    }
+}
+
+/// Accepted actor turns may call peers while draining. A process root or an
+/// external producer must acquire admission through its complete publication.
+pub(crate) fn admit_external_work() -> Result<IngressPermit<'static>, ()> {
+    if crate::execution_context::current_context_is_actor_dispatch() {
+        return Ok(IngressPermit(None));
+    }
+    crate::runtime::rt_current_opt().map_or(Ok(IngressPermit(None)), |runtime| {
+        runtime.shutdown_ingress.enter()
+    })
+}
+
+pub(crate) fn external_work_is_idle() -> bool {
+    rt_default().is_none_or(|runtime| runtime.shutdown_ingress.is_idle())
+}
 
 /// Read the current shutdown phase off the installed runtime.
 ///
@@ -255,7 +318,8 @@ pub extern "C" fn hew_shutdown_initiate(drain_timeout_ms: i64) {
 /// Queued work and already-parked reactor waits may finish inside the bounded
 /// drain window. Unlike explicit [`hew_shutdown_initiate`], this does not inject
 /// typed cancellation into those waits; expiry is instead reported as shutdown
-/// failure so main cannot silently claim successful completion.
+/// failure so main cannot silently claim successful completion. Descendant
+/// work remains admissible while the completed process root is being drained.
 #[no_mangle]
 pub extern "C" fn hew_shutdown_initiate_implicit(drain_timeout_ms: i64) {
     shutdown_initiate(drain_timeout_ms, false);
@@ -281,6 +345,10 @@ fn shutdown_initiate(drain_timeout_ms: i64, cancel_parked_waits: bool) {
         .is_err()
     {
         return; // Already shutting down.
+    }
+
+    if cancel_parked_waits {
+        rt_current().shutdown_ingress.close();
     }
 
     let timeout = match drain_timeout_ms {
@@ -357,8 +425,8 @@ pub extern "C" fn hew_shutdown_wait() -> c_int {
 /// handlers are installed for these signals.
 #[cfg(unix)]
 pub unsafe fn install_shutdown_signal_handlers() {
-    // SAFETY: We install a simple handler that only performs an atomic store
-    // (async-signal-safe) and then calls hew_shutdown_initiate.
+    // SAFETY: the handler performs only an async-signal-safe atomic store.
+    // Workers observe that flag and initiate shutdown in ordinary thread context.
     unsafe {
         let mut sa: libc::sigaction = std::mem::zeroed();
         sa.sa_sigaction = shutdown_signal_handler
@@ -500,6 +568,82 @@ fn drain_until_idle(timeout: Duration) -> bool {
     scheduler::drain_is_idle() && reactor::drain_is_idle() && scheduler::drain_is_idle()
 }
 
+/// Finish native payload and state ownership while cleanup can still suspend
+/// on scheduler, timer and reactor work. Completion observers outlive actor
+/// allocations, so no raw allocation pin is held across the wait.
+pub(crate) fn drain_native_actor_cleanup(timeout: Duration) -> bool {
+    let Some(runtime) = rt_default() else {
+        return true;
+    };
+    runtime.shutdown_ingress.close();
+    crate::timer_periodic::quiesce_periodic_timers();
+    reactor::close_listener_admission();
+    let deadline = Instant::now() + timeout;
+    let mut requested = std::collections::HashSet::new();
+    let mut completions = Vec::new();
+    let mut idle_polls = 0;
+    let mut request_wave = true;
+    let mut drained_wave = false;
+    loop {
+        if request_wave {
+            completions.clear();
+            // A completed cleanup may leave newly created peers alive. Stop
+            // that next wave only after the previous cleanup and its accepted
+            // descendant calls settle; never cancel a peer they still await.
+            for id in crate::lifetime::live_actors::snapshot_live_actor_ids() {
+                if requested.contains(&id) {
+                    continue;
+                }
+                let Some(pin) = crate::lifetime::live_actors::pin_actor_by_id(id) else {
+                    continue;
+                };
+                let Some(completion) = pin.actor().native_completion.clone() else {
+                    continue;
+                };
+                requested.insert(id);
+                if !completion.is_finished() {
+                    // SAFETY: the identity pin retains this exact allocation
+                    // for the request. Workers own its cleanup continuation.
+                    unsafe { crate::actor::hew_actor_stop(pin.as_ptr()) };
+                }
+                completions.push(completion);
+            }
+            request_wave = false;
+        }
+        let settled = completions
+            .iter()
+            .all(|completion| completion.is_finished())
+            && scheduler::drain_is_idle()
+            && reactor::drain_is_idle()
+            && scheduler::drain_is_idle();
+        if settled {
+            if drained_wave && completions.is_empty() {
+                return true;
+            }
+            idle_polls += 1;
+            if idle_polls >= 2 {
+                // Confirm the registry after quiescence, including when the
+                // first snapshot was empty but a spawn was still publishing.
+                drained_wave = true;
+                request_wave = true;
+                idle_polls = 0;
+                continue;
+            }
+        } else {
+            idle_polls = 0;
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            eprintln!("hew: actor cleanup timed out after {timeout:?}; retaining live runtime");
+            crate::set_last_error("actor cleanup did not complete before scheduler shutdown");
+            crate::exit_status::record_unrecovered_actor_fault();
+            shutdown_phase_store(PHASE_FAILED, Ordering::Release);
+            return false;
+        }
+        std::thread::sleep(DRAIN_POLL_INTERVAL.min(remaining));
+    }
+}
+
 /// Orchestrate the 3-phase shutdown.
 #[cfg(test)]
 fn shutdown_orchestrate(drain_timeout: Duration) {
@@ -593,10 +737,18 @@ fn shutdown_orchestrate_mode(drain_timeout: Duration, cancel_parked_waits: bool)
         }
     }
 
-    // Shut down the scheduler (joins worker threads — instant since drain converged).
+    // State and queued-payload destructors may suspend. They must finish before
+    // the worker join; the later allocation sweep cannot execute user code.
+    if !drain_native_actor_cleanup(drain_timeout.max(SHUTDOWN_CANCEL_REDRAIN_TIMEOUT)) {
+        return;
+    }
+
+    // Shut down the scheduler after both accepted work and owned cleanup settle.
     scheduler::hew_sched_shutdown();
 
-    shutdown_phase_store(PHASE_DONE, Ordering::Release);
+    if shutdown_phase_load(Ordering::Acquire) != PHASE_FAILED {
+        shutdown_phase_store(PHASE_DONE, Ordering::Release);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -625,6 +777,12 @@ mod tests {
     /// transition the phase and then want to re-assert from running.
     fn reset_shutdown_state() {
         shutdown_phase_store(PHASE_RUNNING, Ordering::Release);
+        let ingress = &rt_current().shutdown_ingress;
+        assert!(
+            ingress.is_idle(),
+            "test reset must not retire an active producer"
+        );
+        ingress.0.store(0, Ordering::Release);
 
         let to_stop = with_supervisor_roots(std::mem::take);
         for supervisor in to_stop {
@@ -634,6 +792,26 @@ mod tests {
                 unsafe { crate::supervisor::hew_supervisor_stop(supervisor.0) };
             }
         }
+    }
+
+    #[test]
+    fn external_publication_keeps_shutdown_drain_active_until_handoff() {
+        let _guard = shutdown_test_guard();
+        let permit = admit_external_work().expect("running runtime accepts external work");
+        rt_current().shutdown_ingress.close();
+        assert!(
+            admit_external_work().is_err(),
+            "late producers must be rejected"
+        );
+        assert!(
+            !scheduler::drain_is_idle(),
+            "an admitted producer has not handed its message to the scheduler yet"
+        );
+        drop(permit);
+        assert!(
+            scheduler::drain_is_idle(),
+            "the completed producer has drained"
+        );
     }
 
     #[test]
@@ -1119,15 +1297,15 @@ mod tests {
     }
 
     #[test]
-    fn shutdown_orchestrate_returns_early_when_drain_is_already_idle() {
+    fn shutdown_orchestrate_completes_when_drain_is_already_idle() {
         let _guard = shutdown_test_guard();
         reset_shutdown_state();
         shutdown_phase_store(PHASE_QUIESCE, Ordering::Release);
 
         let timeout = Duration::from_millis(250);
-        let started = Instant::now();
+        assert!(scheduler::drain_is_idle() && reactor::drain_is_idle());
+        assert!(drain_until_idle(timeout), "idle drain must converge");
         shutdown_orchestrate(timeout);
-        let elapsed = started.elapsed();
 
         assert_eq!(
             shutdown_phase_load(Ordering::Acquire),
@@ -1135,8 +1313,8 @@ mod tests {
             "shutdown_orchestrate must still complete the shutdown sequence"
         );
         assert!(
-            elapsed < Duration::from_millis(150),
-            "shutdown should exit early once the runtime is already drained; elapsed={elapsed:?}"
+            scheduler::drain_is_idle() && reactor::drain_is_idle(),
+            "completed shutdown must leave no queued or active work"
         );
 
         reset_shutdown_state();

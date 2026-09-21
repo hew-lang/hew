@@ -1173,7 +1173,7 @@ mod tests {
         HirBlock, HirExpr, HirExprKind, HirFn, HirItem, HirLiteral, HirModule,
         HirVarSelfMethodTarget,
     };
-    use crate::{IntentKind, TypeClassTable, ValueClass};
+    use crate::{IntentKind, TypeClassTable};
     use hew_types::{CallTarget, ImplId, MethodTargetFamily, ResolvedTy, VecMethod};
 
     fn unit_expr(ids: &mut IdGen) -> HirExpr {
@@ -1181,7 +1181,6 @@ mod tests {
             node: ids.node(),
             site: ids.site(),
             ty: ResolvedTy::Unit,
-            value_class: ValueClass::BitCopy,
             intent: IntentKind::Read,
             kind: HirExprKind::Literal(HirLiteral::Unit),
             span: 0..0,
@@ -1193,7 +1192,6 @@ mod tests {
             node: ids.node(),
             site: ids.site(),
             ty: ResolvedTy::Unit,
-            value_class: ValueClass::BitCopy,
             intent: IntentKind::Read,
             kind,
             span: 0..0,

@@ -1111,9 +1111,6 @@ impl Checker {
             }
         }
         self.require_unsafe(&key, span);
-        if let Some(feature) = self.wasm_native_only_module_feature(module_name) {
-            self.reject_wasm_feature(span, feature);
-        }
         self.reject_wasm_native_only_module_function(module_name, method, span);
         if self.is_shipped_crypto_module(module_name) && method == "random_bytes" {
             self.reject_wasm_feature(span, WasmUnsupportedFeature::CryptoRandom);

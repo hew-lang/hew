@@ -32,6 +32,7 @@ mod diagnostic;
 mod diagnostic_json;
 mod doc;
 mod eval;
+mod explain_cow;
 mod help;
 mod host;
 mod link;
@@ -300,7 +301,7 @@ fn run_check_deep_gates(
     target: &target::TargetSpec,
     state: &hew_compile::FileFrontendState,
     levels: &hew_types::LintLevels,
-) -> Result<(), DiagChannel> {
+) -> Result<Option<hew_compile::SessionOutput>, DiagChannel> {
     // `std/builtins.hew` is compiler-embedded, while `std/prelude.hew` is an
     // import-only authority manifest. Neither has a standalone lowering
     // surface: the former is pre-registered by the checker and the latter's
@@ -310,15 +311,14 @@ fn run_check_deep_gates(
     if is_embedded_stdlib_substrate(input, "std/builtins.hew")
         || is_embedded_stdlib_substrate(input, "std/prelude.hew")
     {
-        return Ok(());
+        return Ok(None);
     }
     let Some(tco) = state.typecheck_result.tco.as_ref() else {
-        return Ok(());
+        return Ok(None);
     };
 
     let _ = levels;
-    lower_program_to_semantics(&state.program, &state.source, input, tco, target)?;
-    Ok(())
+    lower_program_to_semantics(&state.program, &state.source, input, tco, target).map(Some)
 }
 
 fn emit_module(
@@ -1779,19 +1779,18 @@ fn cmd_check_run(a: &args::CheckArgs) -> i32 {
     compile::render_frontend_diagnostics(&result.diagnostics);
     // Stack hints and explain-cow are human-only diagnostic surfaces; suppress
     // them under JSON so stdout carries only the diagnostic array.
-    if !json {
-        if a.show_stack_hints {
-            diagnostic::print_stack_hints(&result.source, &input, &result.stack_hints);
-        } else if a.explain_cow {
-            eprintln!(
-                "E_NOT_YET_IMPLEMENTED: semantic copy-on-write explanations are not implemented"
-            );
-            return DiagChannel::Limitation.exit_code();
-        }
+    if !json && a.show_stack_hints {
+        diagnostic::print_stack_hints(&result.source, &input, &result.stack_hints);
     }
 
-    if let Err(channel) = run_check_deep_gates(&input, &target, &state, &options.lint_levels) {
-        return channel.exit_code();
+    let semantics = match run_check_deep_gates(&input, &target, &state, &options.lint_levels) {
+        Ok(output) => output,
+        Err(channel) => return channel.exit_code(),
+    };
+    if !json && a.explain_cow {
+        if let Some(output) = semantics {
+            explain_cow::print(&output.semantics().module, &input, &result.source);
+        }
     }
 
     if !json {

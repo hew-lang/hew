@@ -1,0 +1,14 @@
+[[case]]
+id = "resource-close-sealed-request"
+intent = "A rejected sealed request outlives its destination and closes its owned payload by asking a peer on one worker."
+source = "cases/resource-close-sealed-request.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 20
+
+[case.env]
+HEW_WORKERS = "1"
+
+[case.expected]
+stdout = "closed 1\norigin closed\nclosed 2\nrequest closed\n"
+stderr = ""
+exit = 0

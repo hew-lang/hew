@@ -7,6 +7,9 @@
 //! The handle is opaque to generated code and is not a public embedding API.
 
 use std::io::{self, Write};
+use std::sync::{Arc, Mutex};
+
+use crate::util::MutexExt;
 
 use hew_cabi::string::{string_as_str, HewString};
 
@@ -19,42 +22,55 @@ pub const HEW_FAULT_DEADLINE: i32 = -2;
 /// Only the owning race drain may suppress this completion diagnostic.
 pub(crate) const HEW_FAULT_RACE_LOST: i32 = -3;
 
-/// An opaque, uniquely owned logical fault. Never free with a foreign allocator.
-#[derive(Debug)]
+/// An opaque, uniquely owned logical fault wrapper. Diagnostic identity is
+/// shared across terminal observers so propagation never reports it twice.
+#[derive(Debug, Clone)]
 pub struct HewFault {
-    code: i32,
-    message: Option<Box<str>>,
-    secondary: Vec<FaultDiagnostic>,
+    primary: Arc<FaultDiagnostic>,
+    secondary: Vec<Arc<FaultDiagnostic>>,
 }
 
 #[derive(Debug)]
 struct FaultDiagnostic {
     code: i32,
     message: Option<Box<str>>,
+    reported: Mutex<bool>,
 }
 
 impl HewFault {
-    pub(crate) fn with_message(code: i32, message: String) -> Self {
+    fn new(code: i32, message: Option<Box<str>>) -> Self {
         Self {
-            code,
-            message: Some(message.into_boxed_str()),
+            primary: Arc::new(FaultDiagnostic {
+                code,
+                message,
+                reported: Mutex::new(false),
+            }),
             secondary: Vec::new(),
         }
     }
+
+    pub(crate) fn with_message(code: i32, message: String) -> Self {
+        Self::new(code, Some(message.into_boxed_str()))
+    }
+
     pub(crate) fn code(&self) -> i32 {
-        self.code
+        self.primary.code
+    }
+
+    pub(crate) fn append(&mut self, secondary: Self) {
+        self.secondary.push(secondary.primary);
+        self.secondary.extend(secondary.secondary);
+    }
+
+    fn diagnostics(&self) -> impl Iterator<Item = &FaultDiagnostic> {
+        std::iter::once(self.primary.as_ref()).chain(self.secondary.iter().map(AsRef::as_ref))
     }
 }
 
-/// Actors whose current turn is unwinding a crash. A pipe sink released
-/// while its owner is here marks the pipe faulted instead of publishing a
-/// clean EOF, so the consumer never mistakes a crash for the end of the data.
-///
-/// An entry is added when generated code raises a crash fault inside an
-/// actor turn (before its cleanup edges run) and removed by the actor's
-/// terminal teardown. Cancellation, deadline and race-loss codes are not
-/// crashes and never enter.
-static UNWINDING_ACTORS: std::sync::Mutex<Vec<u64>> = std::sync::Mutex::new(Vec::new());
+/// Actor incarnations whose terminal crash has been published. This supports
+/// resource disclosure from their legacy task threads; checked local cleanup
+/// carries its fault in the invocation state and never changes this registry.
+static CRASHED_ACTORS: std::sync::Mutex<Vec<u64>> = std::sync::Mutex::new(Vec::new());
 
 thread_local! {
     /// The crashed actor whose owned state this thread is releasing right
@@ -95,40 +111,23 @@ pub(crate) fn with_owning_actor<T>(id: u64, body: impl FnOnce() -> T) -> T {
     result
 }
 
-fn is_crash_code(code: i32) -> bool {
-    !matches!(
-        code,
-        HEW_FAULT_CANCELLED | HEW_FAULT_DEADLINE | HEW_FAULT_RACE_LOST
-    )
-}
-
-/// Record that the current actor turn, if any, is unwinding a crash.
-fn note_unwinding(code: i32) {
-    if !is_crash_code(code) {
-        return;
-    }
-    let actor = crate::actor::hew_actor_self();
-    if actor.is_null() {
-        return;
-    }
-    // SAFETY: the current context's actor is live for the turn that raised
-    // the fault.
-    let id = unsafe { (*actor).id };
-    let mut unwinding = UNWINDING_ACTORS
+/// Register an actual terminal crash before cancelling owned task work.
+pub(crate) fn note_actor_crash(id: u64) {
+    let mut crashed = CRASHED_ACTORS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if !unwinding.contains(&id) {
-        unwinding.push(id);
+    if !crashed.contains(&id) {
+        crashed.push(id);
     }
 }
 
 /// Release the owned state of actor `id` on its terminal teardown. While
 /// `release` runs, a pipe sink it drops learns whether the owner crashed.
 ///
-/// One call site: the actor's terminal free. Also retires the unwinding
-/// entry the crash raised, so the set only ever holds live crashed actors.
+/// One call site: the actor's terminal free. Also retires its terminal crash
+/// entry, so the registry only ever holds live crashed actors.
 pub(crate) fn release_actor_state(id: u64, crashed: bool, release: impl FnOnce()) {
-    UNWINDING_ACTORS
+    CRASHED_ACTORS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .retain(|unwinding| *unwinding != id);
@@ -143,7 +142,7 @@ pub(crate) fn release_actor_state(id: u64, crashed: bool, release: impl FnOnce()
 
 /// The crashed actor releasing a resource on the current thread, if the
 /// release belongs to a crash: either this thread is dropping a crashed
-/// actor's state, or the current actor turn is unwinding its own crash.
+/// actor's state, or its owning actor has published a terminal crash.
 #[must_use]
 pub(crate) fn crashing_owner() -> Option<u64> {
     let releasing = CRASH_RELEASING.with(std::cell::Cell::get);
@@ -154,7 +153,7 @@ pub(crate) fn crashing_owner() -> Option<u64> {
     let id = if actor.is_null() {
         // Not an actor turn. A task forked by an actor still releases that
         // actor's resources, and its scope is joined inside the crashing
-        // turn, so the owner is still recorded as unwinding here.
+        // turn, so the owner is still recorded as crashed here.
         OWNING_ACTOR.with(std::cell::Cell::get)
     } else {
         // SAFETY: the current context's actor is live for the current turn.
@@ -163,7 +162,7 @@ pub(crate) fn crashing_owner() -> Option<u64> {
     if id == 0 {
         return None;
     }
-    UNWINDING_ACTORS
+    CRASHED_ACTORS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .contains(&id)
@@ -177,12 +176,7 @@ pub(crate) fn crashing_owner() -> Option<u64> {
 #[no_mangle]
 #[must_use]
 pub extern "C" fn hew_fault_new(code: i32) -> *mut HewFault {
-    note_unwinding(code);
-    Box::into_raw(Box::new(HewFault {
-        code,
-        message: None,
-        secondary: Vec::new(),
-    }))
+    Box::into_raw(Box::new(HewFault::new(code, None)))
 }
 
 /// Copy a borrowed managed string into one owned logical panic fault.
@@ -196,12 +190,7 @@ pub extern "C" fn hew_fault_new(code: i32) -> *mut HewFault {
 pub unsafe extern "C" fn hew_fault_new_panic(message: *const HewString) -> *mut HewFault {
     // SAFETY: the caller supplies a live length-carrying UTF-8 string borrow.
     let message = unsafe { string_as_str(message) }.into();
-    note_unwinding(HEW_TRAP_USER_PANIC);
-    Box::into_raw(Box::new(HewFault {
-        code: HEW_TRAP_USER_PANIC,
-        message: Some(message),
-        secondary: Vec::new(),
-    }))
+    Box::into_raw(Box::new(HewFault::new(HEW_TRAP_USER_PANIC, Some(message))))
 }
 
 /// Copy a borrowed managed string into the fault a `fails` handler raises
@@ -220,12 +209,10 @@ pub unsafe extern "C" fn hew_fault_new_unhandled_failure(
 ) -> *mut HewFault {
     // SAFETY: the caller supplies a live length-carrying UTF-8 string borrow.
     let message = unsafe { string_as_str(message) }.into();
-    note_unwinding(crate::internal::types::HEW_TRAP_ACTOR_UNHANDLED_FAILURE);
-    Box::into_raw(Box::new(HewFault {
-        code: crate::internal::types::HEW_TRAP_ACTOR_UNHANDLED_FAILURE,
-        message: Some(message),
-        secondary: Vec::new(),
-    }))
+    Box::into_raw(Box::new(HewFault::new(
+        crate::internal::types::HEW_TRAP_ACTOR_UNHANDLED_FAILURE,
+        Some(message),
+    )))
 }
 
 /// Combine optional fault owners, preserving the primary code and message.
@@ -253,15 +240,7 @@ pub unsafe extern "C" fn hew_fault_combine(
     let primary_fault = unsafe { &mut *primary };
     // SAFETY: secondary is a distinct allocation consumed exactly once here.
     let secondary = unsafe { Box::from_raw(secondary) };
-    let HewFault {
-        code,
-        message,
-        secondary,
-    } = *secondary;
-    primary_fault
-        .secondary
-        .push(FaultDiagnostic { code, message });
-    primary_fault.secondary.extend(secondary);
+    primary_fault.append(*secondary);
     primary
 }
 
@@ -279,7 +258,7 @@ pub unsafe extern "C" fn hew_fault_finish_cleanup(fault: *mut HewFault) -> *mut 
     // SAFETY: the caller transfers the unique allocation.
     let mut fault = unsafe { Box::from_raw(fault) };
     if !matches!(
-        fault.code,
+        fault.code(),
         HEW_FAULT_CANCELLED | HEW_FAULT_DEADLINE | HEW_FAULT_RACE_LOST
     ) {
         return Box::into_raw(fault);
@@ -293,8 +272,7 @@ pub unsafe extern "C" fn hew_fault_finish_cleanup(fault: *mut HewFault) -> *mut 
     }) else {
         return std::ptr::null_mut();
     };
-    fault.code = first.code;
-    fault.message = first.message;
+    fault.primary = first;
     fault.secondary = secondary.collect();
     Box::into_raw(fault)
 }
@@ -313,13 +291,12 @@ pub(crate) unsafe fn finish_race_loser(fault: *mut HewFault) -> *mut HewFault {
     fault
         .secondary
         .retain(|diagnostic| diagnostic.code != HEW_FAULT_RACE_LOST);
-    if fault.code == HEW_FAULT_RACE_LOST {
+    if fault.code() == HEW_FAULT_RACE_LOST {
         if fault.secondary.is_empty() {
             return std::ptr::null_mut();
         }
         let first = fault.secondary.remove(0);
-        fault.code = first.code;
-        fault.message = first.message;
+        fault.primary = first;
     }
     Box::into_raw(fault)
 }
@@ -377,8 +354,18 @@ pub unsafe extern "C" fn hew_fault_drop(fault: *mut HewFault) {
     }
 }
 
-/// Borrow a fault to report it to stderr; return 0 on success, 1 on I/O failure
-/// or an absent fault. Reporting does not consume or replace the owner.
+/// Read a logical failure code without reporting or consuming the diagnostic.
+/// # Safety
+/// `fault` is null or points to a live fault borrowed for this call.
+#[no_mangle]
+pub unsafe extern "C" fn hew_fault_code(fault: *const HewFault) -> i32 {
+    // SAFETY: the caller retains the immutable fault through this read.
+    unsafe { fault.as_ref() }.map_or(0, HewFault::code)
+}
+
+/// Report each diagnostic to stderr once across all observers. Return 0 on
+/// success, 1 on I/O failure or an absent fault. Reporting does not consume
+/// the owner or remove any text available to scope recovery and host errors.
 ///
 /// # Safety
 /// A non-null pointer must refer to a live [`HewFault`] for the duration of this
@@ -390,7 +377,7 @@ pub unsafe extern "C" fn hew_fault_report(fault: *const HewFault) -> i32 {
         return 1;
     };
     // Unlike eprintln!, an output error must not panic across this C boundary.
-    i32::from(write_report(fault, &mut io::stderr().lock()).is_err())
+    i32::from(write_unreported(fault, &mut io::stderr().lock()).is_err())
 }
 
 /// Raise a fault that generated drop glue has no owner to carry.
@@ -426,7 +413,7 @@ pub unsafe extern "C-unwind" fn hew_fault_trap(code: i32, fault: *mut HewFault) 
     }
     // SAFETY: the caller transfers one live, unique fault owner.
     let fault = unsafe { Box::from_raw(fault) };
-    let code = fault.code;
+    let code = fault.code();
     let _ = write_report(&fault, &mut io::stderr().lock());
     drop(fault);
     // SAFETY: the bridge accepts any context; the typed line is already out.
@@ -440,11 +427,7 @@ pub unsafe extern "C-unwind" fn hew_fault_trap(code: i32, fault: *mut HewFault) 
 /// [`hew_fault_report`]. Both print the one line HEW-SPEC-2026 5.8 promises,
 /// from this one formatter, so the text does not depend on which path failed.
 pub(crate) fn report_trap_code(code: i32) {
-    let fault = HewFault {
-        code,
-        message: None,
-        secondary: Vec::new(),
-    };
+    let fault = HewFault::new(code, None);
     let _ = write_report(&fault, &mut io::stderr().lock());
 }
 
@@ -462,27 +445,43 @@ fn fault_reason(code: i32) -> &'static str {
     }
 }
 
-fn write_report(fault: &HewFault, output: &mut impl Write) -> io::Result<()> {
-    let code = fault.code;
-    let reason = fault_reason(code);
-    write!(output, "hew: failure: {reason} ({code})")?;
-    if let Some(message) = &fault.message {
+fn write_diagnostic(
+    diagnostic: &FaultDiagnostic,
+    secondary: bool,
+    output: &mut impl Write,
+) -> io::Result<()> {
+    let label = if secondary {
+        "secondary failure"
+    } else {
+        "failure"
+    };
+    write!(
+        output,
+        "hew: {label}: {} ({})",
+        fault_reason(diagnostic.code),
+        diagnostic.code
+    )?;
+    if let Some(message) = &diagnostic.message {
         output.write_all(b": ")?;
         output.write_all(message.as_bytes())?;
     }
-    output.write_all(b"\n")?;
-    for diagnostic in &fault.secondary {
-        write!(
-            output,
-            "hew: secondary failure: {} ({})",
-            fault_reason(diagnostic.code),
-            diagnostic.code
-        )?;
-        if let Some(message) = &diagnostic.message {
-            output.write_all(b": ")?;
-            output.write_all(message.as_bytes())?;
+    output.write_all(b"\n")
+}
+
+fn write_report(fault: &HewFault, output: &mut impl Write) -> io::Result<()> {
+    for (index, diagnostic) in fault.diagnostics().enumerate() {
+        write_diagnostic(diagnostic, index != 0, output)?;
+    }
+    Ok(())
+}
+
+fn write_unreported(fault: &HewFault, output: &mut impl Write) -> io::Result<()> {
+    for (index, diagnostic) in fault.diagnostics().enumerate() {
+        let mut reported = diagnostic.reported.lock_or_recover();
+        if !*reported {
+            write_diagnostic(diagnostic, index != 0, output)?;
+            *reported = true;
         }
-        output.write_all(b"\n")?;
     }
     Ok(())
 }
@@ -490,6 +489,38 @@ fn write_report(fault: &HewFault, output: &mut impl Write) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cloned_faults_report_once_without_losing_recovery_text() {
+        let mut fault = HewFault::with_message(212, "primary".into());
+        fault.append(HewFault::with_message(212, "secondary".into()));
+        let mut observed = fault.clone();
+        let mut output = Vec::new();
+        write_unreported(&fault, &mut output).unwrap();
+        let complete = output.clone();
+        write_unreported(&observed, &mut output).unwrap();
+        assert_eq!(output, complete);
+
+        observed.append(HewFault::with_message(212, "later close".into()));
+        write_unreported(&observed, &mut output).unwrap();
+        assert_eq!(
+            &output[complete.len()..],
+            b"hew: secondary failure: UserPanic (212): later close\n"
+        );
+        let mut recovery = Vec::new();
+        write_report(&observed, &mut recovery).unwrap();
+        assert_eq!(recovery, output);
+    }
+
+    #[test]
+    fn a_failed_report_can_be_retried_by_another_observer() {
+        let fault = HewFault::with_message(212, "retry".into());
+        let observer = fault.clone();
+        assert!(write_unreported(&fault, &mut [].as_mut_slice()).is_err());
+        let mut output = Vec::new();
+        write_unreported(&observer, &mut output).unwrap();
+        assert_eq!(output, b"hew: failure: UserPanic (212): retry\n");
+    }
 
     fn panic_fault(text: &str) -> *mut HewFault {
         let source = hew_cabi::string::string_from_str(text);
@@ -521,7 +552,7 @@ mod tests {
                     // SAFETY: only the combined owner remains live.
                     let fault = unsafe { &*combined };
                     assert_eq!(
-                        fault.code,
+                        fault.code(),
                         if has_primary {
                             202
                         } else {
@@ -529,7 +560,7 @@ mod tests {
                         }
                     );
                     assert_eq!(
-                        fault.message.as_deref(),
+                        fault.primary.message.as_deref(),
                         if has_primary { None } else { Some("secondary") }
                     );
                     assert_eq!(
@@ -568,7 +599,7 @@ mod tests {
                 let failed = hew_fault_combine(hew_fault_new(code), panic_fault("cleanup\0雪"));
                 let failed = hew_fault_combine(failed, panic_fault("older cleanup"));
                 let failed = hew_fault_finish_cleanup(failed);
-                assert_eq!((*failed).code, HEW_TRAP_USER_PANIC);
+                assert_eq!((*failed).code(), HEW_TRAP_USER_PANIC);
                 let mut report = Vec::new();
                 write_report(&*failed, &mut report).unwrap();
                 assert_eq!(report, "hew: failure: UserPanic (212): cleanup\0雪\nhew: secondary failure: UserPanic (212): older cleanup\n".as_bytes());
@@ -588,7 +619,7 @@ mod tests {
                 let fault = hew_fault_combine(fault, panic_fault("cleanup 雪"));
                 let fault = hew_fault_combine(fault, hew_fault_new(HEW_FAULT_RACE_LOST));
                 let fault = finish_race_loser(fault);
-                assert_eq!((*fault).code, retained);
+                assert_eq!((*fault).code(), retained);
                 assert_eq!((*fault).secondary.len(), 1);
                 assert_eq!(
                     (&(*fault).secondary)[0].message.as_deref(),
@@ -612,8 +643,8 @@ mod tests {
         assert_eq!(combined, primary);
         // SAFETY: combined is the sole live owner throughout these report borrows.
         let fault = unsafe { &*combined };
-        assert_eq!(fault.code, HEW_TRAP_USER_PANIC);
-        assert_eq!(fault.message.as_deref(), Some(text));
+        assert_eq!(fault.code(), HEW_TRAP_USER_PANIC);
+        assert_eq!(fault.primary.message.as_deref(), Some(text));
         let expected = format!(
             "hew: failure: UserPanic (212): {text}\n\
              hew: secondary failure: DivideByZero (202)\n\
@@ -685,15 +716,7 @@ mod tests {
     #[test]
     fn logical_fault_report_preserves_canonical_reason_and_code() {
         let mut output = Vec::new();
-        write_report(
-            &HewFault {
-                code: 202,
-                message: None,
-                secondary: Vec::new(),
-            },
-            &mut output,
-        )
-        .unwrap();
+        write_report(&HewFault::new(202, None), &mut output).unwrap();
         assert_eq!(output, b"hew: failure: DivideByZero (202)\n");
     }
 
@@ -704,15 +727,7 @@ mod tests {
             (0, "hew: failure: UnknownFault (0)\n"),
         ] {
             let mut output = Vec::new();
-            write_report(
-                &HewFault {
-                    code,
-                    message: None,
-                    secondary: Vec::new(),
-                },
-                &mut output,
-            )
-            .unwrap();
+            write_report(&HewFault::new(code, None), &mut output).unwrap();
             assert_eq!(output, expected.as_bytes());
         }
     }
@@ -730,16 +745,9 @@ mod tests {
             }
         }
         assert_eq!(
-            write_report(
-                &HewFault {
-                    code: 202,
-                    message: None,
-                    secondary: Vec::new(),
-                },
-                &mut Unwritable
-            )
-            .unwrap_err()
-            .kind(),
+            write_report(&HewFault::new(202, None), &mut Unwritable)
+                .unwrap_err()
+                .kind(),
             io::ErrorKind::BrokenPipe
         );
     }

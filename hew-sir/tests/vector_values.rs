@@ -461,7 +461,7 @@ fn affine_vector_accepts_nested_non_clone_values_without_copy_capability() {
 }
 
 #[test]
-fn selected_value_close_rejects_an_owner_used_as_its_index() {
+fn vector_replacement_rejects_an_owner_used_as_its_index() {
     let mut module = lower_source(
         r"
         gen fn numbers() -> i64 { yield 1; }
@@ -472,26 +472,22 @@ fn selected_value_close_rejects_an_owner_used_as_its_index() {
         }
         ",
     );
-    let inputs = module
+    let args = module
         .functions
         .iter_mut()
         .flat_map(|function| &mut function.blocks)
         .find_map(|block| match &mut block.terminator {
-            SemTerminator::Suspend {
-                kind:
-                    hew_sir::SuspendKind::ValueClose {
-                        selection: hew_sir::ValueCloseSelection::VectorElement,
-                        ..
-                    },
-                inputs,
+            SemTerminator::RtCall {
+                family: RuntimeCallFamily::Vector(VecValueOp::Set),
+                args,
                 ..
-            } => Some(inputs),
+            } => Some(args),
             _ => None,
         })
-        .expect("replacement must close its selected element");
-    inputs[1].operand.value = inputs[0].operand.value;
-    assert!(verify_module(&module)
-        .iter()
-        .any(|diagnostic| format!("{diagnostic:?}")
-            .contains("no matching input/result/resume contract")));
+        .expect("replacement must retain its checked mutation contract");
+    args[1].operand.value = args[0].operand.value;
+    assert!(
+        !verify_module(&module).is_empty(),
+        "vector owner cannot replace its integer index"
+    );
 }

@@ -1,0 +1,42 @@
+actor Audit {
+    receive fn record(id: i64) {
+        sleep(1ms);
+        println(f"closed {id}");
+    }
+}
+
+#[resource]
+type Ticket { audit: Audit, id: i64, }
+impl Ticket {
+    fn close(consume self) { self.audit.record(self.id).expect("close task result"); }
+}
+
+fn create(audit: Audit, id: i64) -> Ticket { Ticket { audit: audit, id: id } }
+fn delayed(audit: Audit) -> Ticket { sleep(1h); create(audit, 4) }
+
+actor Worker {
+    receive fn run(audit: Audit) {
+        scope {
+            let _unclaimed = fork create(audit, 1);
+        }
+        println("unclaimed done");
+        scope {
+            let task = fork create(audit, 2);
+            await task;
+        }
+        println("unused await done");
+        {
+            let winner = race { create(audit, 3), delayed(audit) };
+            assert(winner.id == 3);
+        }
+        println("race done");
+    }
+}
+
+fn main() {
+    let audit = spawn Audit;
+    let worker = spawn Worker;
+    worker.run(audit).expect("task result cleanup");
+    close(worker);
+    close(audit);
+}

@@ -12,6 +12,8 @@ pub enum ResourceRelease {
     Task,
     /// An ephemeral actor invocation owns its request and eventual reply.
     ActorCall,
+    /// An unaccepted sealed request owns its message payload independently.
+    ActorRequest,
     /// Generator storage released only after checked cooperative close.
     Generator,
     /// HIR has validated the consuming close body's forwarding to this release.
@@ -139,6 +141,7 @@ impl ResourceRelease {
                 Self::Nominal { release, .. } => return Ok(&release.symbol),
                 Self::Task => RuntimeCallFamily::TaskFree,
                 Self::ActorCall => RuntimeCallFamily::ActorCallFree,
+                Self::ActorRequest => RuntimeCallFamily::ActorRequestRelease,
                 Self::Generator => RuntimeCallFamily::GeneratorFree,
                 Self::Stream => RuntimeCallFamily::StreamClose,
                 Self::Sink => RuntimeCallFamily::SinkClose,
@@ -157,6 +160,9 @@ pub(crate) fn resource_release_from_hir(
     module: &hew_hir::HirModule,
     ty: &ResolvedTy,
 ) -> Option<ResourceRelease> {
+    if *ty == hew_types::runtime_call::actor_request_owner_ty() {
+        return Some(ResourceRelease::ActorRequest);
+    }
     if ty.is_builtin(hew_types::BuiltinType::ActorCall) {
         return Some(ResourceRelease::ActorCall);
     }
@@ -324,6 +330,14 @@ pub(crate) fn release_may_fault(
             ResolvedTy::Function { .. }
             | ResolvedTy::Closure { .. }
             | ResolvedTy::TraitObject { .. } => true,
+            _ if ty.is_builtin(hew_types::BuiltinType::Stream)
+                || ty.is_builtin(hew_types::BuiltinType::Sink)
+                || ty.is_builtin(hew_types::BuiltinType::ActorCall)
+                || ty.is_builtin(hew_types::BuiltinType::Generator) =>
+            {
+                true
+            }
+            _ if *ty == hew_types::runtime_call::actor_request_owner_ty() => true,
             // A weak handle owns no payload; dropping one only decrements.
             _ if ty.is_builtin(hew_types::BuiltinType::Weak) => false,
             ResolvedTy::Array(element, length) => {
@@ -384,6 +398,13 @@ pub fn verify_resource_release(
             Ok(())
         } else {
             Err("actor completion release requires its exact Result protocol".into())
+        };
+    }
+    if *release == ResourceRelease::ActorRequest {
+        return if *ty == hew_types::runtime_call::actor_request_owner_ty() {
+            Ok(())
+        } else {
+            Err("sealed request release requires its exact runtime owner type".into())
         };
     }
     if *release == ResourceRelease::Generator {
@@ -452,6 +473,7 @@ pub fn verify_resource_release(
     match release {
         ResourceRelease::Generator
         | ResourceRelease::ActorCall
+        | ResourceRelease::ActorRequest
         | ResourceRelease::Task
         | ResourceRelease::Stream
         | ResourceRelease::Sink

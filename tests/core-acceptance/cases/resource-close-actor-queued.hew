@@ -1,0 +1,30 @@
+import std.stream;
+actor Audit { receive fn record(id: i64) { sleep(1ms); println(f"closed {id}"); } }
+#[resource]
+type Ticket { audit: Audit, id: i64, fail_close: bool, }
+impl Ticket {
+    fn close(consume self) {
+        self.audit.record(self.id).expect("audit");
+        if self.fail_close { panic("queued close failed"); }
+    }
+}
+actor Worker {
+    receive fn hold(ticket: Ticket, started: Sink<i64>) {
+        started.send(ticket.id).expect("started");
+        sleep(1h);
+        println("unreached");
+    }
+}
+fn main() {
+    let audit = spawn Audit;
+    let worker = spawn Worker;
+    let (output, input): (Sink<i64>, Stream<i64>) = stream.pipe(1).expect("pipe");
+    mailbox(worker).hold(Ticket { audit: audit, id: 1, fail_close: false }, output.clone()).expect("first");
+    input.recv().expect("started");
+    mailbox(worker).hold(Ticket { audit: audit, id: 2, fail_close: false }, output.clone()).expect("queued");
+    close(worker);
+    println("barrier");
+    output.close();
+    input.close();
+    close(audit);
+}

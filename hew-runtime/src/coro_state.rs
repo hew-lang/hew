@@ -39,6 +39,7 @@ pub struct HewCoroState {
     observer: *mut HewCancelObserver,
     status: AtomicI32,
     private_status: AtomicI32,
+    cleanup_fault: std::sync::atomic::AtomicBool,
 }
 
 impl Drop for HewCoroState {
@@ -83,6 +84,7 @@ pub unsafe extern "C" fn hew_coro_state_new(
         observer,
         status: AtomicI32::new(CoroStatus::Pending as i32),
         private_status: AtomicI32::new(1),
+        cleanup_fault: std::sync::atomic::AtomicBool::new(false),
     }))
 }
 
@@ -114,8 +116,70 @@ pub unsafe extern "C" fn hew_coro_state_child(parent: *const HewCoroState) -> *m
     // SAFETY: parent retains both inputs for child construction.
     let child = unsafe { hew_coro_state_new(parent.waker.descriptor(), parent.token) };
     // SAFETY: the new child is exclusively owned and its parent remains live.
-    unsafe { (*child).actor_turn = parent.actor_turn };
+    unsafe {
+        (*child).actor_turn = parent.actor_turn;
+        (*child).actor_message_type = parent.actor_message_type;
+    }
     child
+}
+
+/// Create a cleanup invocation with the same readiness and actor identity,
+/// shielded from cancellation already being discharged by its parent.
+///
+/// # Safety
+/// `parent` is live through construction. Destroy the cleanup frame before
+/// freeing the returned state, exactly as for an ordinary child invocation.
+#[no_mangle]
+pub unsafe extern "C" fn hew_coro_state_cleanup_child(
+    parent: *const HewCoroState,
+) -> *mut HewCoroState {
+    // SAFETY: the caller retains the parent during construction.
+    let Some(parent) = (unsafe { parent.as_ref() }) else {
+        return std::ptr::null_mut();
+    };
+    // SAFETY: the parent retains the descriptor; null starts fresh ancestry.
+    let child = unsafe { hew_coro_state_new(parent.waker.descriptor(), std::ptr::null_mut()) };
+    // SAFETY: the new state is uniquely owned until returned.
+    unsafe {
+        (*child).actor_turn = parent.actor_turn;
+        (*child).actor_message_type = parent.actor_message_type;
+        (*child).cleanup_fault.store(
+            parent.cleanup_fault.load(Ordering::Acquire),
+            Ordering::Release,
+        );
+    }
+    child
+}
+
+/// Retain the fault-disclosure state of one consuming cleanup invocation.
+/// The diagnostic remains borrowed; freeing the invocation ends this scope.
+/// # Safety
+/// Both pointers are null or live through this call.
+#[no_mangle]
+pub unsafe extern "C" fn hew_coro_state_set_cleanup_fault(
+    state: *const HewCoroState,
+    fault: *const crate::fault::HewFault,
+) {
+    // SAFETY: the caller retains the optional invocation and diagnostic.
+    if let Some(state) = unsafe { state.as_ref() } {
+        // SAFETY: the caller retains this optional diagnostic for this call.
+        let failed = unsafe { fault.as_ref() }.is_some_and(|fault| {
+            !matches!(
+                fault.code(),
+                crate::fault::HEW_FAULT_CANCELLED
+                    | crate::fault::HEW_FAULT_DEADLINE
+                    | crate::fault::HEW_FAULT_RACE_LOST
+            )
+        });
+        state.cleanup_fault.store(failed, Ordering::Release);
+    }
+}
+
+pub(crate) unsafe fn cleanup_fault_owner(state: *const HewCoroState) -> Option<u64> {
+    // SAFETY: this optional state is retained by the consuming callback.
+    let state = unsafe { state.as_ref() }?;
+    let id = state.actor_turn.actor_id();
+    (id != 0 && state.cleanup_fault.load(Ordering::Acquire)).then_some(id)
 }
 
 /// Request cancellation of this invocation and its descendants.

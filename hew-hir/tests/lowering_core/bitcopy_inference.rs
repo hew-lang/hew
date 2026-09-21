@@ -11,7 +11,7 @@
 //! over-promotion that would let `Strategy::UnknownBlocked` get bypassed
 //! for genuinely non-BitCopy aggregates.
 
-use hew_hir::{lower_program, ResolutionCtx, ResourceMarker, ValueClass};
+use hew_hir::{lookup_type_marker_for_ty, lower_program, ResolutionCtx, ResourceMarker};
 use hew_types::{module_registry::ModuleRegistry, BuiltinType, Checker, ResolvedTy};
 
 fn lower_checked(source: &str) -> hew_hir::LowerOutput {
@@ -63,9 +63,9 @@ fn struct_of_primitives_is_inferred_bitcopy() {
 
     let ty = ResolvedTy::named_user("Point", Vec::new());
     assert_eq!(
-        ValueClass::of_ty(&ty, &output.module.type_classes),
-        ValueClass::BitCopy,
-        "ValueClass::of_ty must agree with the table"
+        lookup_type_marker_for_ty(&ty, &output.module.type_classes),
+        Some(ResourceMarker::BitCopy),
+        "The nominal marker lookup must agree with the table"
     );
 }
 
@@ -102,9 +102,9 @@ fn struct_with_non_bitcopy_field_is_not_inferred_bitcopy() {
 
     let ty = ResolvedTy::named_user("Sparse", Vec::new());
     assert_ne!(
-        ValueClass::of_ty(&ty, &output.module.type_classes),
-        ValueClass::BitCopy,
-        "ValueClass::of_ty must agree: a Vec-bearing record is not BitCopy"
+        lookup_type_marker_for_ty(&ty, &output.module.type_classes),
+        Some(ResourceMarker::BitCopy),
+        "The nominal marker lookup must agree: a Vec-bearing record is not BitCopy"
     );
 }
 
@@ -132,8 +132,8 @@ fn concrete_generic_type_instantiation_is_inferred_bitcopy() {
     );
     let ty = ResolvedTy::named_user("Wrapper", vec![ResolvedTy::I64]);
     assert_eq!(
-        ValueClass::of_ty(&ty, &output.module.type_classes),
-        ValueClass::BitCopy
+        lookup_type_marker_for_ty(&ty, &output.module.type_classes),
+        Some(ResourceMarker::BitCopy)
     );
 }
 
@@ -291,16 +291,16 @@ fn user_shadowed_builtin_name_does_not_take_builtin_value_class() {
     );
     let user_ty = ResolvedTy::named_user("Stream", Vec::new());
     assert_eq!(
-        ValueClass::of_ty(&user_ty, &output.module.type_classes),
-        ValueClass::Unknown,
+        lookup_type_marker_for_ty(&user_ty, &output.module.type_classes),
+        Some(ResourceMarker::None),
         "user-defined Stream with builtin: None must not inherit builtin Resource classification"
     );
 
     let builtin_ty =
         ResolvedTy::named_builtin("Stream", BuiltinType::Stream, vec![ResolvedTy::I64]);
     assert_eq!(
-        ValueClass::of_ty(&builtin_ty, &output.module.type_classes),
-        ValueClass::AffineResource,
+        lookup_type_marker_for_ty(&builtin_ty, &output.module.type_classes),
+        Some(ResourceMarker::Resource),
         "builtin-discriminated Stream still follows builtin type-class registration"
     );
 }

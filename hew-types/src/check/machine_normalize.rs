@@ -105,7 +105,8 @@ pub(super) fn normalize(
                 // items, in authored machine order.
                 let old_sources = sources.clone();
                 for (ordinal, (item, _)) in old_items.iter().enumerate() {
-                    if matches!(item, Item::Machine(_)) {
+                    if matches!(item, Item::Machine(machine) if !crate::ty::is_reserved_type_name(&machine.name))
+                    {
                         let source = old_sources
                             .get(ordinal)
                             .or_else(|| module.source_paths.first());
@@ -364,6 +365,14 @@ impl Builder {
                 continue;
             };
             self.origin = span.clone();
+            // Register the rejected state declaration through the ordinary
+            // namespace authority, without bodies that would add cascades.
+            if crate::ty::is_reserved_type_name(&machine.name) {
+                let mut declaration = self.enum_decl(&machine.name, &[], machine.visibility);
+                declaration.origin = DeclarationOrigin::MachineState;
+                result[ordinal] = (Item::TypeDecl(declaration), span.clone());
+                continue;
+            }
             let source = sources.get(ordinal).cloned();
             let context = if source.is_some() {
                 String::new()

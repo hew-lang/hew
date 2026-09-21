@@ -748,7 +748,7 @@ mod wasm_rejects {
             .module_import_bindings
             .insert((None, 0, "ws".to_string()), "acme.websocket".to_string());
         assert_eq!(
-            checker.wasm_native_only_module_feature("ws"),
+            checker.wasm_native_only_function_feature("ws", "connect"),
             None,
             "a user module sharing the websocket leaf must not inherit stdlib capability policy"
         );
@@ -760,7 +760,7 @@ mod wasm_rejects {
             .canonical_std_module_sources
             .insert("std.net.websocket".to_string());
         assert_eq!(
-            checker.wasm_native_only_module_feature("ws"),
+            checker.wasm_native_only_function_feature("ws", "connect"),
             Some(WasmUnsupportedFeature::WebSocket),
             "an alias of the shipped module must retain its exact native-only capability"
         );

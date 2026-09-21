@@ -1,11 +1,5 @@
-// Fixture for --explain-cow golden test.
-//
-// Contains two actor send sites:
-//   1. A last-use string transfer
-//   2. An i64 bit-copy snapshot
-//
-// The golden test verifies that both sites appear in --explain-cow output
-// with MIR-authored ownership modes.
+// A live string needs a retain; a fresh string transfers its existing owner;
+// the integer payload uses a bit copy. The report reads these verified facts.
 actor Printer {
     receive fn print_message(msg: string) {}
 }
@@ -19,5 +13,7 @@ fn main() {
     let counter = spawn Counter;
     let greeting = "hello";
     let _ = printer.print_message(greeting);
+    println(greeting);
+    let _ = printer.print_message("fresh");
     let _ = counter.increment(42);
 }

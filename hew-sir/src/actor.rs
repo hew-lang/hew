@@ -849,6 +849,14 @@ pub enum ActorOperation {
 }
 
 impl ActorOperation {
+    /// These boundaries publish their typed result before discharging retained
+    /// payloads. A cleanup fault therefore belongs to the normal successor,
+    /// which first acquires the result and then dispatches cleanup.
+    #[must_use]
+    pub const fn retains_cleanup_fault(&self) -> bool {
+        matches!(self, Self::Submit { .. } | Self::CallTake(_))
+    }
+
     /// The supervisor boundaries: every one consumes handles and produces a
     /// handle, a role or nothing.
     fn supervisor_signature(

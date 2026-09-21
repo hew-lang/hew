@@ -1853,25 +1853,8 @@ pub enum RuntimeCallFamily {
     WebSocketAttachLocal,
 
     // --- Task ABI (scope{}/spawn/await) ------------------------------------
-    TaskAwaitBlocking,
-    TaskCompleteThreaded,
-    TaskCompletionObserve,
-    TaskCompletionUnobserve,
     TaskFree,
     GeneratorFree,
-    TaskGetEnv,
-    TaskGetError,
-    TaskGetResult,
-    TaskNew,
-    TaskScopeCancelAfterNs,
-    TaskScopeDestroy,
-    TaskScopeJoinAll,
-    TaskScopeNew,
-    TaskScopeSetCurrent,
-    TaskScopeSpawn,
-    TaskSetEnv,
-    TaskSetResult,
-    TaskSpawnThread,
 
     // --- Vec<T> ------------------------------------------------------------
     /// Final semantic values; target lowering chooses layout-backed runtime entry points.
@@ -9198,38 +9181,6 @@ impl RuntimeCallFamily {
             Self::TcpAttachLocal => declared::TCPATTACHLOCAL.row,
             Self::TlsAttachLocal => declared::TLSATTACHLOCAL.row,
             Self::WebSocketAttachLocal => declared::WEBSOCKETATTACHLOCAL.row,
-            Self::TaskAwaitBlocking => RuntimeOpRow {
-                symbol: "hew_task_await_blocking",
-                contract: None,
-                staging: RuntimeStaging::Declared,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::NotAnAction,
-                c_return: RuntimeCReturn::Storage,
-            },
-            Self::TaskCompleteThreaded => RuntimeOpRow {
-                symbol: "hew_task_complete_threaded",
-                contract: None,
-                staging: RuntimeStaging::Declared,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::NotAnAction,
-                c_return: RuntimeCReturn::Storage,
-            },
-            Self::TaskCompletionObserve => RuntimeOpRow {
-                symbol: "hew_task_completion_observe",
-                contract: None,
-                staging: RuntimeStaging::Declared,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::NotAnAction,
-                c_return: RuntimeCReturn::Storage,
-            },
-            Self::TaskCompletionUnobserve => RuntimeOpRow {
-                symbol: "hew_task_completion_unobserve",
-                contract: None,
-                staging: RuntimeStaging::Declared,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::NotAnAction,
-                c_return: RuntimeCReturn::Storage,
-            },
             Self::TaskFree => RuntimeOpRow {
                 symbol: "hew_task_free",
                 contract: None,
@@ -9240,110 +9191,6 @@ impl RuntimeCallFamily {
             },
             Self::GeneratorFree => RuntimeOpRow {
                 symbol: "hew_checked_generator_free",
-                contract: None,
-                staging: RuntimeStaging::Declared,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::NotAnAction,
-                c_return: RuntimeCReturn::Storage,
-            },
-            Self::TaskGetEnv => RuntimeOpRow {
-                symbol: "hew_task_get_env",
-                contract: None,
-                staging: RuntimeStaging::Declared,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::NotAnAction,
-                c_return: RuntimeCReturn::Storage,
-            },
-            Self::TaskGetError => RuntimeOpRow {
-                symbol: "hew_task_get_error",
-                contract: None,
-                staging: RuntimeStaging::Declared,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::NotAnAction,
-                c_return: RuntimeCReturn::Storage,
-            },
-            Self::TaskGetResult => RuntimeOpRow {
-                symbol: "hew_task_get_result",
-                contract: None,
-                staging: RuntimeStaging::Declared,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::NotAnAction,
-                c_return: RuntimeCReturn::Storage,
-            },
-            Self::TaskNew => RuntimeOpRow {
-                symbol: "hew_task_new",
-                contract: None,
-                staging: RuntimeStaging::Declared,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::NotAnAction,
-                c_return: RuntimeCReturn::Storage,
-            },
-            Self::TaskScopeCancelAfterNs => RuntimeOpRow {
-                symbol: "hew_task_scope_cancel_after_ns",
-                contract: None,
-                staging: RuntimeStaging::Declared,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::NotAnAction,
-                c_return: RuntimeCReturn::Storage,
-            },
-            Self::TaskScopeDestroy => RuntimeOpRow {
-                symbol: "hew_task_scope_destroy",
-                contract: None,
-                staging: RuntimeStaging::Declared,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::NotAnAction,
-                c_return: RuntimeCReturn::Storage,
-            },
-            Self::TaskScopeJoinAll => RuntimeOpRow {
-                symbol: "hew_task_scope_join_all",
-                contract: None,
-                staging: RuntimeStaging::Declared,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::NotAnAction,
-                c_return: RuntimeCReturn::Storage,
-            },
-            Self::TaskScopeNew => RuntimeOpRow {
-                symbol: "hew_task_scope_new",
-                contract: None,
-                staging: RuntimeStaging::Declared,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::NotAnAction,
-                c_return: RuntimeCReturn::Storage,
-            },
-            Self::TaskScopeSetCurrent => RuntimeOpRow {
-                symbol: "hew_task_scope_set_current",
-                contract: None,
-                staging: RuntimeStaging::Declared,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::NotAnAction,
-                c_return: RuntimeCReturn::Storage,
-            },
-            Self::TaskScopeSpawn => RuntimeOpRow {
-                symbol: "hew_task_scope_spawn",
-                contract: None,
-                staging: RuntimeStaging::Declared,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::NotAnAction,
-                c_return: RuntimeCReturn::Storage,
-            },
-            Self::TaskSetEnv => RuntimeOpRow {
-                symbol: "hew_task_set_env",
-                contract: None,
-                staging: RuntimeStaging::Declared,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::NotAnAction,
-                c_return: RuntimeCReturn::Storage,
-            },
-            Self::TaskSetResult => RuntimeOpRow {
-                symbol: "hew_task_set_result",
-                contract: None,
-                staging: RuntimeStaging::Declared,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::NotAnAction,
-                c_return: RuntimeCReturn::Storage,
-            },
-            Self::TaskSpawnThread => RuntimeOpRow {
-                symbol: "hew_task_spawn_thread",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
@@ -11925,25 +11772,8 @@ impl RuntimeCallFamily {
             | F::TcpAttachLocal
             | F::TlsAttachLocal
             | F::WebSocketAttachLocal
-            | F::TaskAwaitBlocking
-            | F::TaskCompleteThreaded
-            | F::TaskCompletionObserve
-            | F::TaskCompletionUnobserve
             | F::GeneratorFree
             | F::TaskFree
-            | F::TaskGetEnv
-            | F::TaskGetError
-            | F::TaskGetResult
-            | F::TaskNew
-            | F::TaskScopeCancelAfterNs
-            | F::TaskScopeDestroy
-            | F::TaskScopeJoinAll
-            | F::TaskScopeNew
-            | F::TaskScopeSetCurrent
-            | F::TaskScopeSpawn
-            | F::TaskSetEnv
-            | F::TaskSetResult
-            | F::TaskSpawnThread
             | F::VecCloneLayout
             | F::VecCloneOwned
             | F::VecTakeAll

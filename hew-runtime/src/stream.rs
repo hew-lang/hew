@@ -1231,6 +1231,32 @@ pub unsafe extern "C" fn hew_stream_close(stream: *mut HewStream) {
     }
 }
 
+/// Close read admission and consume queued owners before releasing the handle.
+/// # Safety
+/// `stream` is null or uniquely owned; no operation may retain a loan to it.
+#[no_mangle]
+pub unsafe extern "C" fn hew_stream_release_begin(
+    stream: *mut HewStream,
+) -> *mut crate::release_walker::HewReleaseCursor {
+    use crate::release_walker::{HewReleaseCursor, ReleaseItem};
+    unsafe fn free_stream(owner: *mut c_void) {
+        // SAFETY: the cursor owns the handle and has drained all queued values.
+        unsafe { hew_stream_close(owner.cast()) };
+    }
+    // SAFETY: the caller supplies an exclusive live handle or null.
+    let (layout, discarded) = unsafe { stream.as_ref() }
+        .and_then(|stream| stream.channel.as_ref())
+        .map_or_else(|| (None, Vec::new()), |core| core.close_stream_take());
+    HewReleaseCursor::envelopes(
+        discarded,
+        layout,
+        ReleaseItem::Storage {
+            owner: stream.cast(),
+            free: free_stream,
+        },
+    )
+}
+
 /// Nominally typed file-read handle release used by `std.fs`.
 ///
 /// # Safety
@@ -1287,6 +1313,39 @@ pub unsafe extern "C" fn hew_sink_close(sink: *mut HewSink) {
         // Drop impl calls close() on the backing.
         unsafe { drop(Box::from_raw(sink)) }; // ALLOCATOR-PAIRING: GlobalAlloc
     }
+}
+
+/// Consume a sink and any unaccepted owners discarded by its producer fault.
+/// # Safety
+/// `sink` is null or uniquely owned; no operation may retain a loan to it.
+#[no_mangle]
+pub unsafe extern "C" fn hew_sink_release_begin(
+    sink: *mut HewSink,
+    state: *const crate::coro_state::HewCoroState,
+) -> *mut crate::release_walker::HewReleaseCursor {
+    use crate::release_walker::{HewReleaseCursor, ReleaseItem};
+    unsafe fn free_sink(owner: *mut c_void) {
+        // SAFETY: the cursor owns this handle after discarded values finish.
+        unsafe { hew_sink_close(owner.cast()) };
+    }
+    // SAFETY: the consuming callback retains its invocation through this call.
+    let owner = unsafe { crate::coro_state::cleanup_fault_owner(state) }
+        .or_else(crate::fault::crashing_owner);
+    let (layout, discarded) = if let Some(actor) = owner {
+        // SAFETY: a live channel sink retains its core through cursor completion.
+        unsafe { sink_channel_core(sink) }
+            .map_or_else(|| (None, Vec::new()), |core| core.fault_close_take(actor))
+    } else {
+        (None, Vec::new())
+    };
+    HewReleaseCursor::envelopes(
+        discarded,
+        layout,
+        ReleaseItem::Storage {
+            owner: sink.cast(),
+            free: free_sink,
+        },
+    )
 }
 
 /// `Sink.finish`: publish EOF to the reader and keep the handle.
@@ -2039,6 +2098,50 @@ pub unsafe extern "C" fn hew_stream_try_send_layout(
         }
         // SAFETY: sink is valid per caller contract.
         None => unsafe { (*sink).try_write_item(&env) }.into_abi_code(),
+    }
+}
+
+/// Try one send while transferring its input on every outcome. Rejected
+/// element owners return to the caller as a consuming release cursor.
+/// # Safety
+/// `sink` is null or a live exclusive loan, `data` transfers one value matching
+/// `layout`, and `release_out` is a disjoint writable cursor output.
+#[no_mangle]
+pub unsafe extern "C" fn hew_stream_try_send_move_release(
+    sink: *mut HewSink,
+    data: *mut c_void,
+    layout: *const crate::vec::HewValueLayout,
+    release_out: *mut *mut crate::release_walker::HewReleaseCursor,
+) -> i32 {
+    use crate::channel_common::{move_elem_envelope, move_elem_layout_witness};
+    use crate::release_walker::HewReleaseCursor;
+    // SAFETY: the caller supplies a checked descriptor and one transferred owner.
+    unsafe {
+        *release_out = std::ptr::null_mut();
+        let layout = move_elem_layout_witness(layout, "Sink.try_send");
+        let envelope = move_elem_envelope(data, layout, "Sink.try_send");
+        let (status, rejected) = if sink.is_null() || (*sink).is_closed() {
+            (TrySendResult::Closed, Some(envelope))
+        } else if let Some(core) = sink_channel_core(sink) {
+            if layout.ownership_kind == crate::vec::HewTypeOwnershipKind::LayoutManaged {
+                core.stamp_elem_layout(layout);
+            }
+            core.try_send_owned(envelope)
+        } else {
+            if layout.ownership_kind == crate::vec::HewTypeOwnershipKind::LayoutManaged {
+                crate::channel_common::abort_elem_witness(
+                    "Sink.try_send",
+                    "layout-managed elements require an in-memory channel sink",
+                );
+            }
+            ((*sink).try_write_item(&envelope), None)
+        };
+        if let Some(envelope) = rejected {
+            if layout.ownership_kind == crate::vec::HewTypeOwnershipKind::LayoutManaged {
+                *release_out = HewReleaseCursor::detached(envelope.as_ptr().cast(), *layout);
+            }
+        }
+        status.into_abi_code()
     }
 }
 
@@ -3894,7 +3997,7 @@ mod tests {
 
     fn plain_elem_layout(size: usize, align: usize) -> HewValueLayout {
         HewValueLayout {
-            visit_close: None,
+            release_start: None,
             size,
             align,
             ownership_kind: HewTypeOwnershipKind::Plain,
@@ -3905,7 +4008,7 @@ mod tests {
 
     fn string_elem_layout() -> HewValueLayout {
         HewValueLayout {
-            visit_close: None,
+            release_start: None,
             size: size_of::<*const HewString>(),
             align: align_of::<*const HewString>(),
             ownership_kind: HewTypeOwnershipKind::String,
@@ -3916,7 +4019,7 @@ mod tests {
 
     fn bytes_elem_layout() -> HewValueLayout {
         HewValueLayout {
-            visit_close: None,
+            release_start: None,
             size: size_of::<crate::bytes::BytesTriple>(),
             align: align_of::<crate::bytes::BytesTriple>(),
             ownership_kind: HewTypeOwnershipKind::Bytes,
@@ -4115,7 +4218,7 @@ mod tests {
 
     fn st_owned_layout() -> HewValueLayout {
         HewValueLayout {
-            visit_close: None,
+            release_start: None,
             size: size_of::<StOwnedElem>(),
             align: align_of::<StOwnedElem>(),
             ownership_kind: HewTypeOwnershipKind::LayoutManaged,

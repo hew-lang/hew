@@ -1,0 +1,37 @@
+actor Audit {
+    var count: i64 = 0,
+    var last: i64 = 0,
+    receive fn record(id: i64) { sleep(1ms); count += 1; last = id; }
+    receive fn receipt() -> i64 { assert(count == 1); last }
+}
+#[resource]
+type Ticket { audit: Audit, id: i64, }
+impl Ticket {
+    fn close(consume self) { self.audit.record(self.id).expect("audit"); }
+}
+actor Worker {
+    receive fn create(audit: Audit) -> Ticket { sleep(3ms); Ticket { audit: audit, id: 9 } }
+    receive fn ready() {}
+}
+fn main() {
+    let audit = spawn Audit;
+    let worker = spawn Worker;
+    scope within 1ms {
+        let ticket = worker.create(audit).expect("created");
+        println(ticket.id);
+    } handle failure {
+        match failure {
+            .Deadline { message } => println("deadline"),
+            .Fault { message } => panic(message),
+        }
+    };
+    worker.ready().expect("ready");
+    // The worker barrier waits for late-reply cleanup. Its close may complete
+    // before the caller's deadline handler gets to print, so observe it here.
+    let closed = audit.receipt().expect("receipt");
+    assert(closed == 9);
+    println(f"closed {closed}");
+    println("ready");
+    close(worker);
+    close(audit);
+}

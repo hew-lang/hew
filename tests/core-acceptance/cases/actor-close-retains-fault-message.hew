@@ -1,0 +1,34 @@
+#[resource]
+type Ticket { id: i64, }
+
+impl Ticket {
+    fn close(consume self) {
+        println(f"close {self.id}");
+        panic(f"close {self.id} failed");
+    }
+}
+
+actor Worker {
+    let first: Ticket = Ticket { id: 1 },
+    let second: Ticket = Ticket { id: 2 },
+    receive fn ready() {}
+}
+
+fn main() {
+    let worker = spawn Worker;
+    worker.ready().expect("ready");
+    scope {
+        close(worker);
+        panic("close must fail");
+    } handle failure {
+        match failure {
+            .Fault { message } => {
+                assert(message.contains("close 2 failed"));
+                assert(message.contains("secondary failure: UserPanic (212): close 1 failed"));
+                println("recovered complete close fault");
+            },
+            .Deadline { message } => panic("unexpected deadline"),
+        }
+    };
+    println("ready after recovery");
+}

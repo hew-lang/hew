@@ -1,0 +1,11 @@
+[[case]]
+id = "resource-receiver-fallible-argument"
+intent = "A resource receiver stays borrowed through a successful fallible argument, while early error return ends the borrow before closing the receiver."
+source = "cases/resource-receiver-fallible-argument.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 20
+
+[case.expected]
+stdout = "true\nfailure\n"
+stderr = ""
+exit = 0

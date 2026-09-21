@@ -179,8 +179,7 @@ pub(super) fn edges(term: &PhysicalTerminator) -> Vec<&PhysicalEdge> {
             unwind,
             ..
         } => normal.iter().chain([cancel, unwind]).collect(),
-        PhysicalTerminator::ValueClose { next: body, .. }
-        | PhysicalTerminator::EnterDefer { body, .. }
+        PhysicalTerminator::EnterDefer { body, .. }
         | PhysicalTerminator::FinishDefer { next: body, .. }
         | PhysicalTerminator::CheckedRaiseFault { cleanup: body, .. }
         | PhysicalTerminator::Panic { cleanup: body, .. }
@@ -256,6 +255,7 @@ fn operation_storage(
         PhysicalOp::Unary { dest, source, .. }
         | PhysicalOp::Cast { dest, source, .. }
         | PhysicalOp::CallableCoerce { dest, source }
+        | PhysicalOp::GeneratorCoerce { dest, source }
         | PhysicalOp::DynMake { dest, source, .. }
         | PhysicalOp::Transfer { dest, source }
         | PhysicalOp::Clone { dest, source, .. }
@@ -643,9 +643,7 @@ fn drain_suffix(
         | PhysicalTerminator::FinishDefer { .. }
         | PhysicalTerminator::CleanupDispatch { .. }
         | PhysicalTerminator::RecoverFault { .. } => true,
-        PhysicalTerminator::Goto(_)
-        | PhysicalTerminator::Branch { .. }
-        | PhysicalTerminator::ValueClose { .. } => edges(&block.terminator)
+        PhysicalTerminator::Goto(_) | PhysicalTerminator::Branch { .. } => edges(&block.terminator)
             .iter()
             .all(|e| drain_suffix(e.target, blocks, visiting)),
         _ => false,

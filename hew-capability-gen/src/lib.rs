@@ -115,7 +115,7 @@ pub struct Feature {
     #[serde(default)]
     pub native_only_modules: Vec<String>,
     /// Exact `module.function` entries whose runtime substrate is absent on
-    /// wasm32 even though their containing module is otherwise supported.
+    /// wasm32, taking precedence over any containing module policy.
     #[serde(default)]
     pub native_only_functions: Vec<String>,
 }
@@ -651,7 +651,7 @@ impl Manifest {
             )
             .expect("String write");
         }
-        out.push_str("}\n\n/// A native-only stdlib module and its manifest feature identity.\n#[derive(Debug, Clone, Copy, PartialEq, Eq)]\npub struct WasmModuleRejection {\n    pub module: &'static str,\n    pub feature: WasmUnsupportedFeature,\n}\n\n/// A native-only stdlib function in an otherwise supported module.\n#[derive(Debug, Clone, Copy, PartialEq, Eq)]\npub struct WasmFunctionRejection {\n    pub module: &'static str,\n    pub function: &'static str,\n    pub feature: WasmUnsupportedFeature,\n}\n\n/// Generated module rejection classification.\npub const NATIVE_ONLY_WASM_MODULE_REJECTIONS: &[WasmModuleRejection] = &[\n");
+        out.push_str("}\n\n/// A native-only stdlib module and its manifest feature identity.\n#[derive(Debug, Clone, Copy, PartialEq, Eq)]\npub struct WasmModuleRejection {\n    pub module: &'static str,\n    pub feature: WasmUnsupportedFeature,\n}\n\n/// A native-only stdlib function with a specific capability classification.\n#[derive(Debug, Clone, Copy, PartialEq, Eq)]\npub struct WasmFunctionRejection {\n    pub module: &'static str,\n    pub function: &'static str,\n    pub feature: WasmUnsupportedFeature,\n}\n\n/// Generated module rejection classification.\npub const NATIVE_ONLY_WASM_MODULE_REJECTIONS: &[WasmModuleRejection] = &[\n");
         for feature in &checker_features {
             for module in &feature.native_only_modules {
                 writeln!(

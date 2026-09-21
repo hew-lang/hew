@@ -128,7 +128,14 @@ pub struct HewVtable {
     pub size_of: usize,
     /// `align_of::<ImplType>()` — companion to `size_of`.
     pub align_of: usize,
+    /// Exact concrete value descriptor used for consuming release. Null is
+    /// reserved for foreign synchronous tables that provide only a drop slot.
+    pub value_layout: *const hew_cabi::value::HewValueLayout,
 }
+
+// SAFETY: a vtable and its optional value descriptor are immutable and live
+// for every object that references them, including objects on other workers.
+unsafe impl Sync for HewVtable {}
 
 // SAFETY checks: the fat pointer must be exactly two pointer-widths.
 // Codegen depends on this for the construction (`insertvalue` pair)
@@ -150,9 +157,9 @@ const _: () = assert!(
 // widths. Codegen indexes past this prefix when computing method
 // slots, so any drift here renumbers every method slot.
 const _: () = assert!(
-    std::mem::size_of::<HewVtable>() == 3 * std::mem::size_of::<*const c_void>(),
-    "HewVtable prefix must be exactly three pointer-widths \
-     (drop_in_place, size_of, align_of)."
+    std::mem::size_of::<HewVtable>() == 4 * std::mem::size_of::<*const c_void>(),
+    "HewVtable prefix must be exactly four pointer-widths \
+     (drop_in_place, size_of, align_of, value_layout)."
 );
 
 /// Build the panic message that [`hew_vtable_dispatch_panic_on_oob`]
@@ -405,6 +412,51 @@ pub unsafe extern "C" fn hew_dyn_box_free(ptr: *mut u8, size: usize, align: usiz
     // triple. `Layout` round-trips identically because both entries
     // reconstruct it from the same inputs.
     unsafe { alloc::dealloc(ptr, layout) };
+}
+
+/// Consume a trait object's concrete value using its authoritative descriptor.
+/// # Safety
+/// `slot` is null or a unique live carrier. `free_storage` is one for heap
+/// storage, zero for storage retained by the enclosing continuation frame.
+#[no_mangle]
+pub unsafe extern "C" fn hew_trait_object_release_begin(
+    slot: *mut HewTraitObject,
+    free_storage: i32,
+) -> *mut crate::release_walker::HewReleaseCursor {
+    use crate::release_walker::{HewReleaseCursor, ReleaseItem};
+    let mut pending = Vec::new();
+    if !slot.is_null() {
+        // SAFETY: the caller transfers the carrier before any callback executes.
+        let value = unsafe {
+            slot.replace(HewTraitObject {
+                data: core::ptr::null_mut(),
+                vtable: core::ptr::null(),
+            })
+        };
+        if !value.data.is_null() {
+            // SAFETY: a live data pointer retains its exact immutable vtable.
+            let table = unsafe { &*value.vtable };
+            if free_storage != 0 {
+                pending.push(ReleaseItem::Allocation {
+                    pointer: value.data.cast(),
+                    size: table.size_of,
+                    align: table.align_of,
+                });
+            }
+            // SAFETY: generated tables retain a static concrete descriptor;
+            // foreign synchronous tables may omit it and retain their drop ABI.
+            if let Some(layout) = unsafe { table.value_layout.as_ref() } {
+                pending.push(ReleaseItem::Value {
+                    slot: value.data.cast(),
+                    layout: *layout,
+                });
+            } else {
+                // SAFETY: a descriptor-less table promises synchronous destruction.
+                unsafe { (table.drop_in_place)(value.data) };
+            }
+        }
+    }
+    HewReleaseCursor::new(pending)
 }
 
 /// Drop one heap-boxed trait object stored in an aggregate slot.

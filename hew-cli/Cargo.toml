@@ -48,6 +48,7 @@ windows-sys = { version = "0.61.2", features = [
 
 [dev-dependencies]
 filetime = "0.2"
+hew-cabi = { path = "../hew-cabi" }
 hew-testutil = { path = "../hew-testutil" }
 object = "0.39"
 finl_unicode = { version = "=1.4.0", default-features = false, features = [

@@ -1159,6 +1159,10 @@ pub enum SemOpKind {
         vtable: SemVtableId,
         value: Operand,
     },
+    /// Transfer a generator while weakening only its output callable capabilities.
+    GeneratorCoerce {
+        source: Operand,
+    },
     /// Transfer a callable while weakening only its proved capabilities.
     CallableCoerce {
         source: Operand,
@@ -1457,6 +1461,7 @@ impl SemOpKind {
             | Self::TaskSpawn {
                 callable: value, ..
             }
+            | Self::GeneratorCoerce { source: value }
             | Self::CallableCoerce { source: value }
             | Self::DynMake { value, .. }
             | Self::CopyValue { source: value }
@@ -1551,6 +1556,7 @@ impl SemOpKind {
             | Self::TaskSpawn {
                 callable: value, ..
             }
+            | Self::GeneratorCoerce { source: value }
             | Self::CallableCoerce { source: value }
             | Self::DynMake { value, .. }
             | Self::CopyValue { source: value }
@@ -1589,6 +1595,7 @@ impl SemOpKind {
             | Self::StreamPipe { .. }
             | Self::FunctionMake { .. }
             | Self::ClosureMake { .. }
+            | Self::GeneratorCoerce { .. }
             | Self::CallableCoerce { .. }
             | Self::DynMake { .. }
             | Self::ConstInteger(..)
@@ -1663,6 +1670,7 @@ impl SemOpKind {
             | Self::GeneratorMake { .. }
             | Self::StreamPipe { .. }
             | Self::ClosureMake { .. }
+            | Self::GeneratorCoerce { .. }
             | Self::CallableCoerce { .. }
             | Self::DynMake { .. }
             | Self::CopyValue { .. }
@@ -1725,6 +1733,7 @@ impl SemOpKind {
                 | Self::GeneratorMake { .. }
                 | Self::StreamPipe { .. }
                 | Self::ClosureMake { .. }
+                | Self::GeneratorCoerce { .. }
                 | Self::CallableCoerce { .. }
                 | Self::DynMake { .. }
                 | Self::DestroyValue { .. }

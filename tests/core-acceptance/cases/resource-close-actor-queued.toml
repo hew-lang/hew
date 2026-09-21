@@ -1,0 +1,14 @@
+[[case]]
+id = "resource-close-actor-queued"
+intent = "Closing an actor drains active and queued affine payloads whose authored close asks a sleeping peer, before publishing its completion barrier."
+source = "cases/resource-close-actor-queued.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 20
+
+[case.env]
+HEW_WORKERS = "1"
+
+[case.expected]
+stdout = "closed 1\nclosed 2\nbarrier\n"
+stderr = ""
+exit = 0

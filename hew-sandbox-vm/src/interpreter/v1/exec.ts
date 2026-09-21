@@ -71,9 +71,10 @@ type Ref =
   | { kind: "field"; parent: Ref; index: number }
   | { kind: "payload"; parent: Ref; index: number };
 
-type Fault =
+type Fault = (
   | { kind: "panic"; message: string; cancelled?: boolean; deadline?: boolean }
-  | { kind: "trap"; trap: TrapName; message?: string };
+  | { kind: "trap"; trap: TrapName; message?: string }
+) & { primary?: Fault; secondary?: Fault[] };
 
 interface FrameContext {
   id: string;
@@ -120,6 +121,7 @@ interface ActorInstance {
   drainingMailbox: boolean;
   mailboxDrained: Array<() => void>;
   closingFault: Fault | null;
+  closeFaultDebt?: number;
   crashing: Fault | null;
   active: FrameContext | null;
   closed: Array<() => void>;
@@ -1330,10 +1332,7 @@ class ExecutorV1 {
         if (parked === undefined) {
           throw new Error(`${act.fn.name}: finish_defer has no active body`);
         }
-        act.fault =
-          parked?.kind === "panic" && parked.cancelled
-            ? (act.fault ?? parked)
-            : (parked ?? act.fault);
+        act.fault = combineFaults(parked, act.fault);
         this.takeEdge(act, term.next);
         return;
       }
@@ -1356,10 +1355,7 @@ class ExecutorV1 {
           payload: [
             {
               kind: "string",
-              value:
-                fault.kind === "panic"
-                  ? fault.message
-                  : (fault.message ?? trapMessage(fault.trap)),
+              value: faultReport(fault),
             },
           ],
         };
@@ -1818,11 +1814,17 @@ class ExecutorV1 {
         if (!group) throw new Error("join has no task scope");
         group.joining = true;
         const wake = this.park(act, term);
+        const cancel = act.context.cancel!;
+        let cancellation: Fault | null = null;
         const mode = term.detail.mode;
         if (mode !== "wait")
           for (const task of group.tasks) if (!task.done) task.cancel();
         const ready = () => {
           if (group.tasks.some((task) => !task.done)) return;
+          if (cancellation) {
+            cancel(cancellation);
+            return;
+          }
           const failure =
             group.deadline ??
             group.tasks.find(
@@ -1836,6 +1838,15 @@ class ExecutorV1 {
               ? null
               : (failure ?? null),
           );
+        };
+        // Cancellation requests descendant cleanup; it cannot bypass the
+        // join barrier and let the parent retire their captured resources.
+        act.context.cancel = (
+          fault = { kind: "panic", message: "task cancelled", cancelled: true },
+        ) => {
+          cancellation ??= fault;
+          for (const task of group.tasks) if (!task.done) task.cancel();
+          ready();
         };
         group.changed.push(ready);
         ready();
@@ -2020,11 +2031,7 @@ class ExecutorV1 {
     this.closeValueAsync(value, this.pipeFault(act), (fault) => {
       completed = true;
       finish?.();
-      if (
-        fault &&
-        (!act.fault || (act.fault.kind === "panic" && act.fault.cancelled))
-      )
-        act.fault = fault;
+      act.fault = combineFaults(act.fault, fault);
       if (!synchronous)
         this.scheduler.enqueue(act.context.id, () => this.runFrame(act));
     });
@@ -2083,7 +2090,7 @@ class ExecutorV1 {
     const pending = [value];
     let firstFault: Fault | null = null;
     const next = (failure: Fault | null = null) => {
-      firstFault ??= failure;
+      firstFault = combineFaults(firstFault, failure);
       // Authored cleanup can fail after this drain began. Later owned sinks
       // must disclose that failure instead of publishing a clean end.
       const currentFault =
@@ -2698,6 +2705,8 @@ class ExecutorV1 {
         const actor = this.actorFor(args[0]!);
         const complete = () => {
           const fault = actor.crashing ?? actor.closingFault;
+          if (actor.closeFaultDebt !== undefined)
+            this.faultDebts.delete(actor.closeFaultDebt);
           if (fault) this.raiseFault(act, fault, term.unwind);
           else this.completeShim(act, term, UNIT);
         };
@@ -2871,15 +2880,14 @@ class ExecutorV1 {
     if (actor.busy || !actor.alive || actor.drainingMailbox) return;
     if (actor.closing && actor.mailbox.length > 0) {
       this.drainMailbox(actor, this.faultText(actor.closingFault), (fault) => {
-        actor.closingFault ??= fault;
+        actor.closingFault = combineFaults(actor.closingFault, fault);
         this.dispatchActor(actor);
       });
       return;
     }
     if (actor.mailbox.length === 0) {
       if (actor.closing) {
-        if (actor.closingFault) this.crashActor(actor, actor.closingFault);
-        else this.stopActor(actor);
+        this.stopActor(actor);
       }
       return;
     }
@@ -3000,15 +3008,7 @@ class ExecutorV1 {
       );
     };
     if (actor.layout.crash !== undefined) {
-      const [code, message] =
-        fault.kind === "panic"
-          ? [212, "UserPanic"]
-          : {
-              integer_overflow: [201, "IntegerOverflow"],
-              divide_by_zero: [202, "DivideByZero"],
-              shift_out_of_range: [204, "ShiftOutOfRange"],
-              vector_bounds: [205, "IndexOutOfBounds"],
-            }[fault.trap];
+      const [code, message] = faultInfo(fault);
       const info: VmValue = {
         kind: "record",
         typeId: this.aggregateName(actor.layout.crash_info!),
@@ -3295,17 +3295,23 @@ class ExecutorV1 {
     const next = () => {
       const hook = hooks.shift();
       if (hook !== undefined) {
-        this.invokeFrame(actor, hook, [actor.state], next, (fault) =>
-          this.crashActor(actor, fault),
-        );
+        this.invokeFrame(actor, hook, [actor.state], next, (fault) => {
+          actor.closingFault = combineFaults(actor.closingFault, fault);
+          hooks.length = 0;
+          next();
+        });
       } else {
         this.closeValueAsync(
           actor.state,
-          null,
+          this.faultText(actor.closingFault),
           (fault) => {
-            if (fault) {
-              this.crashActor(actor, fault);
-              return;
+            actor.closingFault = combineFaults(actor.closingFault, fault);
+            // Stopped cleanup belongs to the completion barrier, independently
+            // of handler-crash debt and supervisor restart decisions.
+            actor.crashing = null;
+            if (actor.closingFault) {
+              actor.closeFaultDebt = ++this.nextFaultDebt;
+              this.faultDebts.add(actor.closeFaultDebt);
             }
             actor.completed = true;
             actor.alive = false;
@@ -3339,6 +3345,60 @@ class ExecutorV1 {
     );
     throw new Halt(status);
   }
+}
+
+function combineFaults(
+  primary: Fault | null,
+  secondary: Fault | null,
+): Fault | null {
+  if (!primary) return secondary;
+  if (!secondary || primary === secondary) return primary;
+  const diagnostics: Fault[] = [];
+  const visited = new Set<Fault>();
+  const append = (fault: Fault) => {
+    if (visited.has(fault)) return;
+    visited.add(fault);
+    const origin = fault.primary ?? fault;
+    if (!diagnostics.includes(origin)) diagnostics.push(origin);
+    for (const next of fault.secondary ?? []) append(next);
+  };
+  append(primary);
+  append(secondary);
+  // Reports own an immutable ordered view of original diagnostics. Faults can
+  // be shared by a parked unwind, actor completion and multiple observers;
+  // combining those views must neither duplicate nor mutate their graph.
+  const retained =
+    primary.kind === "panic" && primary.cancelled
+      ? diagnostics.filter(
+          (fault) => !(fault.kind === "panic" && fault.cancelled),
+        )
+      : diagnostics;
+  const [first, ...rest] = retained.length ? retained : diagnostics;
+  return { ...first!, primary: first!, secondary: rest };
+}
+
+function faultInfo(fault: Fault): [number, string] {
+  if (fault.kind === "panic") {
+    if (fault.cancelled) return [-1, "Cancelled"];
+    if (fault.deadline) return [-2, "Deadline"];
+    return [212, "UserPanic"];
+  }
+  return {
+    integer_overflow: [201, "IntegerOverflow"],
+    divide_by_zero: [202, "DivideByZero"],
+    shift_out_of_range: [204, "ShiftOutOfRange"],
+    vector_bounds: [205, "IndexOutOfBounds"],
+  }[fault.trap] as [number, string];
+}
+
+function faultReport(fault: Fault, secondary = false): string {
+  const [code, reason] = faultInfo(fault);
+  const label = secondary ? "secondary failure" : "failure";
+  const message = fault.message === undefined ? "" : `: ${fault.message}`;
+  return (
+    `hew: ${label}: ${reason} (${code})${message}\n` +
+    (fault.secondary ?? []).map((next) => faultReport(next, true)).join("")
+  );
 }
 
 // ── refs ────────────────────────────────────────────────────────────────────

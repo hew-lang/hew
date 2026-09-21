@@ -443,30 +443,7 @@ fn main() {
 
 #[test]
 fn a_task_fault_reaches_scope_recovery_after_deferred_cleanup() {
-    let trace = execute(
-        r#"
-fn fail() -> i64 {
-    defer println("child cleaned");
-    panic("child failed");
-}
-fn main() {
-    scope {
-        defer println("parent cleaned");
-        let task = fork fail();
-        println(await task);
-    } handle failure {
-        match failure {
-            .Fault { message } => println(message),
-            .Deadline { message } => println("unexpected deadline"),
-        }
-    };
-}
-"#,
-    );
-    assert_eq!(
-        stdout(&trace),
-        "child cleaned\nparent cleaned\nchild failed\n"
-    );
+    assert_native_manifest("task-fault-cleanup-diagnostic");
 }
 
 #[test]
@@ -573,7 +550,10 @@ fn main() {
 }
 "#,
     );
-    assert_eq!(stdout(&trace), "slow cleaned\nchild failed\n");
+    assert_eq!(
+        stdout(&trace),
+        "slow cleaned\nhew: failure: UserPanic (212): child failed\n\n"
+    );
     assert_eq!(trace["final_state"]["virtual_clock"]["current_ms"], 1);
 }
 
@@ -864,7 +844,6 @@ fn dead_actor_calls_drain_their_consumed_message_before_returning() {
 
 #[test]
 fn shared_native_manifests_execute_with_matching_results() {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/core-acceptance");
     for name in [
         "actor_state_closure_field",
         "resource-close-actor-composition",
@@ -879,24 +858,39 @@ fn shared_native_manifests_execute_with_matching_results() {
         "actor-reference-identity",
         "generator-callable-view",
     ] {
-        let manifest = std::fs::read_to_string(root.join(format!("cases/{name}.toml")))
-            .expect("shared native manifest");
-        let manifest: toml::Value = toml::from_str(&manifest).expect("valid manifest");
-        let case = &manifest["case"][0];
-        let source = std::fs::read_to_string(root.join(case["source"].as_str().unwrap()))
-            .expect("shared native source");
-        let trace = execute(&source);
-        assert_eq!(
-            stdout(&trace),
-            case["expected"]["stdout"].as_str().unwrap(),
-            "{name}"
-        );
-        assert_eq!(
-            trace["final_state"]["exit_code"].as_i64(),
-            case["expected"]["exit"].as_integer(),
-            "{name}"
-        );
+        assert_native_manifest(name);
     }
+}
+
+fn assert_native_manifest(name: &str) {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/core-acceptance");
+    let manifest = std::fs::read_to_string(root.join(format!("cases/{name}.toml")))
+        .expect("shared native manifest");
+    let manifest: toml::Value = toml::from_str(&manifest).expect("valid manifest");
+    let case = &manifest["case"][0];
+    let source = std::fs::read_to_string(root.join(case["source"].as_str().unwrap()))
+        .expect("shared native source");
+    let trace = execute(&source);
+    assert_eq!(
+        stdout(&trace),
+        case["expected"]["stdout"].as_str().unwrap(),
+        "{name}"
+    );
+    assert_eq!(
+        trace["final_state"]["exit_code"].as_i64(),
+        case["expected"]["exit"].as_integer(),
+        "{name}"
+    );
+}
+
+#[test]
+fn a_nested_deadline_drains_descendants_before_recovery() {
+    assert_native_manifest("task-nested-deadline");
+}
+
+#[test]
+fn a_close_observer_recovers_complete_actor_cleanup_faults() {
+    assert_native_manifest("actor-close-retains-fault-message");
 }
 
 #[test]

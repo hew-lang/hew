@@ -1,0 +1,11 @@
+[[case]]
+id = "task-fault-cleanup-diagnostic"
+intent = "A recovered task fault preserves its native diagnostic after child and parent cleanup."
+source = "cases/task-fault-cleanup-diagnostic.hew"
+suites = ["acceptance"]
+timeout_seconds = 20
+
+[case.expected]
+stdout = "child cleaned\nparent cleaned\nhew: failure: UserPanic (212): child failed\n\n"
+stderr = ""
+exit = 0

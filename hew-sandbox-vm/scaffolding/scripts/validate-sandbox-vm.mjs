@@ -79,7 +79,6 @@ function validateMarkdownLinks() {
 function validateSchemas() {
   const traceSchema = readJson("specs/trace-schema-v0.schema.json");
   const bytecodeSchemas = [
-    readJson("bytecode/sandbox-bytecode-v0.schema.json"),
     readJson("bytecode/sandbox-bytecode-v1.schema.json")
   ];
   if (!traceSchema || bytecodeSchemas.some((schema) => !schema)) {
@@ -94,8 +93,7 @@ function validateSchemas() {
 
   for (const [name, schema] of [
     ["trace schema", traceSchema],
-    ["bytecode v0 schema", bytecodeSchemas[0]],
-    ["bytecode v1 schema", bytecodeSchemas[1]]
+    ["bytecode v1 schema", bytecodeSchemas[0]]
   ]) {
     if (!ajv.validateSchema(schema)) {
       fail(`${name}: ${ajv.errorsText(ajv.errors, { separator: "\n" })}`);

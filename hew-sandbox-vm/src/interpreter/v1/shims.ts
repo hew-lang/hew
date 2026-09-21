@@ -1,6 +1,7 @@
+import type { Pipes } from "./pipes.js";
 /// The VM's runtime-family and extern shim table.
 ///
-/// This table is the admission authority (D517 Q415): a package may name a
+/// This table is the runtime-family admission authority: a package may name a
 /// runtime family or an extern symbol exactly when there is a shim here for it.
 /// A family or symbol with no entry is rejected at load, so there is no second
 /// reject list to keep in step with this one. `FileRead` and the `NativeIo`
@@ -25,6 +26,10 @@ export class ShimFault extends Error {
 /// What a shim may reach for. The executor owns faults and traces; a shim
 /// never touches the frame stack or the value environment.
 export interface ShimHost {
+  pipes?: Pipes;
+  newPipe?(capacity: number): VmValue;
+  closePipe?(value: VmValue): void;
+  releaseValue?(value: VmValue): void;
   /// Write to the program's standard output.
   writeStdout(text: string): void;
   /// The next line of replay stdin, and the replay record for it.
@@ -54,12 +59,72 @@ export function resolveRuntimeShim(
   entry: RuntimeFamilyEntry,
 ): RuntimeShim | undefined {
   switch (entry.family) {
+    case "SupervisorPool":
+      return ["Member", "Get", "AwaitRestartMember"].includes(
+        String(entry.detail),
+      )
+        ? () => {
+            throw new Error("SupervisorPool requires its resumable executor");
+          }
+        : undefined;
+    case "StructuralFormat":
+      return () => {
+        throw new Error("StructuralFormat requires its resumable executor");
+      };
+    case "FileRead":
+      return entry.detail === "LastError"
+        ? () => ({ kind: "string", value: "" })
+        : undefined;
     case "Print":
       return printShim(entry.detail);
+    case "RcNew":
+    case "RcClone":
+    case "RcGet":
+    case "RcIsUnique":
+    case "RcSet":
+    case "RcStrongCount":
+    case "RcWeakCount":
+      return () => {
+        throw new Error("shared operation requires its resumable executor");
+      };
     case "Vector":
-      return VECTOR_SHIMS[detailName(entry.detail)];
+      return ["Contains", "Set", "Clear"].includes(String(entry.detail))
+        ? () => {
+            throw new Error(
+              "vector Contains requires its selected Eq executor",
+            );
+          }
+        : VECTOR_SHIMS[detailName(entry.detail)];
+    case "Array":
+      return entry.detail === "Set"
+        ? () => {
+            throw new Error("array mutation requires its resumable executor");
+          }
+        : undefined;
     case "Map":
-      return MAP_SHIMS[detailName(entry.detail)];
+    case "Set":
+      return [
+        "New",
+        "Len",
+        "Index",
+        "Get",
+        "GetBorrow",
+        "ContainsKey",
+        "Contains",
+        "Insert",
+        "Remove",
+        "Clear",
+        "Keys",
+        "Values",
+        "Entries",
+        "Elements",
+      ].includes(detailName(entry.detail))
+        ? () => {
+            throw new Error(
+              "collection operation requires its resumable executor",
+            );
+          }
+        : undefined;
     case "MathIntrinsic":
       return MATH_SHIMS[detailName(entry.detail)];
     default:
@@ -74,8 +139,15 @@ export function resolveExternShim(symbol: string): RuntimeShim | undefined {
 /// The suspend kinds a sequential package may carry. `NativeIo` is absent, so
 /// a package that suspends on native I/O is refused at load.
 export const SUPPORTED_SUSPEND_KINDS: ReadonlySet<string> = new Set([
-  "ValueClose",
+  "GeneratorNext",
+  "Yield",
   "Sleep",
+  "Ask",
+  "Await",
+  "Join",
+  "Select",
+  "StreamSend",
+  "StreamNext",
 ]);
 
 // ── families ────────────────────────────────────────────────────────────────
@@ -97,9 +169,40 @@ function printShim(detail: unknown): RuntimeShim | undefined {
 }
 
 const UNIT_FAMILY_SHIMS: Record<string, RuntimeShim | undefined> = {
+  StringToBytes: (_host, args) => ({
+    kind: "vector",
+    elementType: "u8",
+    items: [...new TextEncoder().encode(text(args, 0))].map((byte) =>
+      int(BigInt(byte)),
+    ),
+  }),
+  StringToUppercase: (_host, args) => ({
+    kind: "string",
+    value: text(args, 0).toUpperCase(),
+  }),
+  StringToLowercase: (_host, args) => ({
+    kind: "string",
+    value: text(args, 0).toLowerCase(),
+  }),
+  StreamPairSink: (host, args) => host.pipes!.extract(arg(args, 0), "sink"),
+  StreamPairStream: (host, args) => host.pipes!.extract(arg(args, 0), "stream"),
+  SinkClone: (host, args) => host.pipes!.cloneSink(arg(args, 0)),
+  SinkClose: (host, args) => {
+    host.closePipe!(arg(args, 0));
+    return UNIT;
+  },
+  SinkFinish: (host, args) => {
+    host.pipes!.close(arg(args, 0));
+    return UNIT;
+  },
+  StreamClose: (host, args) => {
+    host.closePipe!(arg(args, 0));
+    return UNIT;
+  },
   StringConcat: (_host, args) => str(`${text(args, 0)}${text(args, 1)}`),
   StringClone: (_host, args) => str(text(args, 0)),
   StringEquals: (_host, args) => bool(text(args, 0) === text(args, 1)),
+  StringContains: (_host, args) => bool(text(args, 0).includes(text(args, 1))),
   // Native string length counts codepoints, not bytes.
   StringLen: (_host, args) => int(BigInt([...text(args, 0)].length)),
   StringReplace: (_host, args) =>
@@ -156,10 +259,6 @@ const VECTOR_SHIMS: Record<string, RuntimeShim | undefined> = {
     return cloneValue(items[at]!);
   },
   Len: (_host, args) => int(BigInt(vec(args, 0).items.length)),
-  Contains: (_host, args) => {
-    const needle = comparable(arg(args, 1));
-    return bool(vec(args, 0).items.some((item) => comparable(item) === needle));
-  },
   Slice: (_host, args) => {
     const items = vec(args, 0).items;
     const start = Math.min(Math.max(index(args, 1), 0), items.length);
@@ -311,20 +410,21 @@ function bigMax(left: bigint, right: bigint): bigint {
   return right > left ? right : left;
 }
 
-const MAP_SHIMS: Record<string, RuntimeShim | undefined> = {
-  New: () => ({ kind: "map", entries: new Map() }),
-  Len: (_host, args) => int(BigInt(map(args, 0).entries.size)),
-  Insert: (_host, args) => {
-    const target = map(args, 0);
-    const key = arg(args, 1);
-    target.entries.set(comparable(key), { key, value: arg(args, 2) });
-    return target;
-  },
-};
-
 // ── externs ─────────────────────────────────────────────────────────────────
 
 const EXTERN_SHIMS: Record<string, RuntimeShim | undefined> = {
+  hew_msg_envelope_release: (host, args) => {
+    host.releaseValue!(arg(args, 0));
+    return UNIT;
+  },
+  hew_stream_channel: (host, args) => host.newPipe!(Number(integer(args, 0))),
+  hew_stream_pair_is_valid: () => ({ kind: "bool", value: true }),
+  hew_stream_pair_free: (host, args) => {
+    host.pipes!.freePair(arg(args, 0));
+    return UNIT;
+  },
+  hew_stream_last_error: () => ({ kind: "string", value: "" }),
+
   hew_regex_new: (host, args) => compileRegex(host, args),
   hew_regex_clone: (_host, args) => cloneValue(arg(args, 0)),
   // Releasing a handle the VM traces by reference is nothing to do.
@@ -349,6 +449,18 @@ const EXTERN_SHIMS: Record<string, RuntimeShim | undefined> = {
         ? (value.regex.exec(text(args, 1))?.[0] ?? "")
         : "",
     );
+  },
+  hew_regex_capture_index_one: (_host, args) => {
+    const value = arg(args, 0);
+    const capture =
+      value.kind === "regex"
+        ? value.regex.exec(text(args, 1))?.[index(args, 2)]
+        : undefined;
+    return {
+      kind: "vector",
+      elementType: "string",
+      items: capture === undefined ? [] : [str(capture)],
+    };
   },
   hew_io_read_line: (host) => str(host.readLine()),
   hew_random_seed: (host, args) => {
@@ -432,16 +544,6 @@ function vec(
   if (value.kind !== "vector") {
     throw new TypeError(
       `runtime call expected a vector operand, got ${value.kind}`,
-    );
-  }
-  return value;
-}
-
-function map(args: VmValue[], at: number): Extract<VmValue, { kind: "map" }> {
-  const value = arg(args, at);
-  if (value.kind !== "map") {
-    throw new TypeError(
-      `runtime call expected a map operand, got ${value.kind}`,
     );
   }
   return value;

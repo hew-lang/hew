@@ -1,4 +1,5 @@
 {
+  "actors": [],
   "aggregates": [
     {
       "fields": [
@@ -11,7 +12,7 @@
   ],
   "bytes": [],
   "closures": [],
-  "compiler_version": "hew-sandbox-wasm-0.6.0-rc4",
+  "compiler_version": "hew-wasm-0.6.0-rc4",
   "entry": {
     "exit": "unit",
     "function": 0
@@ -26,6 +27,7 @@
             {
               "dst": 0,
               "op": "const.int",
+              "own": "none",
               "span": {
                 "end": 75,
                 "start": 75
@@ -36,6 +38,7 @@
             {
               "dst": 1,
               "op": "const.int",
+              "own": "none",
               "span": {
                 "end": 81,
                 "start": 81
@@ -50,6 +53,7 @@
                 1
               ],
               "op": "aggregate.make",
+              "own": "none",
               "shape": 0,
               "span": {
                 "end": 64,
@@ -61,6 +65,7 @@
               "dst": 3,
               "field": 0,
               "op": "aggregate.project_copy",
+              "own": "none",
               "shape": 0,
               "span": {
                 "end": 98,
@@ -72,6 +77,7 @@
               "dst": 4,
               "field": 1,
               "op": "aggregate.project_copy",
+              "own": "none",
               "shape": 0,
               "span": {
                 "end": 104,
@@ -127,18 +133,22 @@
                 "value": 6
               }
             ],
+            "callbacks": [],
             "family": 0,
             "normal": {
               "args": [],
               "to": 5
             },
             "op": "runtime.call",
+            "releases_contents": false,
             "result": null,
+            "result_member_shapes": [],
             "result_shape": null,
             "span": {
               "end": 104,
               "start": 104
             },
+            "structural": null,
             "unwind": null
           }
         },
@@ -227,6 +237,7 @@
   "hew_version": "0.6.0-rc4",
   "profile": "sandbox.sandbox-vm-export.v0",
   "regex_patterns": [],
+  "resources": [],
   "runtime_families": [
     {
       "detail": {
@@ -239,6 +250,8 @@
   ],
   "schema_version": "hew.sandbox.bytecode.v1",
   "strings": [],
+  "structural_render": [],
+  "supervisors": [],
   "suspend_kinds": [],
   "value_capabilities": [],
   "variants": [],

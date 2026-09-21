@@ -15,7 +15,6 @@
 #
 # Packages:
 #   @hew-lang/wasm          ← hew-wasm crate
-#   @hew-lang/sandbox-wasm  ← hew-sandbox-wasm crate
 #   @hew-lang/sandbox-vm    ← hew-sandbox-vm TypeScript interpreter
 
 name: Publish npm packages
@@ -23,9 +22,21 @@ name: Publish npm packages
 on:
   workflow_dispatch:
     inputs:
+      operation:
+        description: "Inspect the registry, resolve a consumer, or build/publish a release"
+        type: choice
+        options: [release, inspect, resolve]
+        default: release
       release_tag:
         description: "Immutable release tag to publish (for example v0.6.0-rc1)"
-        required: true
+        type: string
+      consumer:
+        description: "Consumer whose committed dependencies should be resolved"
+        type: choice
+        options: [sdk, website, playground]
+        default: sdk
+      source_commit:
+        description: "Exact consumer commit for dependency resolution"
         type: string
       dry_run:
         description: "Dry run only (build + execute + pack, skip publish)"
@@ -33,7 +44,7 @@ on:
         default: true
 
 concurrency:
-  group: publish-npm-packages-${{ inputs.release_tag }}
+  group: npm-${{ inputs.operation }}-${{ inputs.consumer }}-${{ inputs.release_tag || inputs.source_commit }}
   cancel-in-progress: false
 
 permissions:
@@ -41,7 +52,99 @@ permissions:
   packages: write
 
 jobs:
+  inspect:
+    if: inputs.operation == 'inspect'
+    name: Inspect published package versions
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24
+          registry-url: https://npm.pkg.github.com
+          scope: "@hew-lang"
+      - name: Read registry versions
+        run: node scripts/resolve-browser-dependencies.mjs inspect
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.HEW_PACKAGES_READ_TOKEN || secrets.GITHUB_TOKEN }}
+          HEW_DEPENDENCY_ARTIFACT_DIR: ${{ runner.temp }}/browser-packages
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: browser-package-versions
+          path: ${{ runner.temp }}/browser-packages
+          if-no-files-found: error
+
+  resolve:
+    if: inputs.operation == 'resolve'
+    name: Resolve and validate consumer dependencies
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Select immutable consumer source
+        id: source
+        env:
+          CONSUMER: ${{ inputs.consumer }}
+          SOURCE_COMMIT: ${{ inputs.source_commit }}
+        run: |
+          set -euo pipefail
+          [[ "${SOURCE_COMMIT}" =~ ^[a-f0-9]{40}$ ]] || { echo "::error::source_commit must be a full commit SHA"; exit 1; }
+          case "${CONSUMER}" in
+            sdk) repository=hew-lang/playground-sandbox ;;
+            website) repository=hew-lang/hew.sh ;;
+            playground) repository=hew-lang/hew.run ;;
+            *) exit 1 ;;
+          esac
+          echo "repository=${repository}" >> "${GITHUB_OUTPUT}"
+      - name: Checkout release tooling
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          path: release-machinery
+      - name: Checkout consumer
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          repository: ${{ steps.source.outputs.repository }}
+          ref: ${{ inputs.source_commit }}
+          path: consumer
+          persist-credentials: false
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24
+          registry-url: https://npm.pkg.github.com
+          scope: "@hew-lang"
+      - name: Resolve authentic registry lockfile and archives
+        working-directory: consumer
+        run: node ../release-machinery/scripts/resolve-browser-dependencies.mjs resolve
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.HEW_PACKAGES_READ_TOKEN || secrets.GITHUB_TOKEN }}
+          HEW_CONSUMER_REPOSITORY: ${{ steps.source.outputs.repository }}
+          HEW_CONSUMER_COMMIT: ${{ inputs.source_commit }}
+          HEW_DEPENDENCY_ARTIFACT_DIR: ${{ runner.temp }}/browser-packages
+      - name: Validate installed consumer
+        working-directory: consumer
+        env:
+          CONSUMER: ${{ inputs.consumer }}
+        run: |
+          set -euo pipefail
+          case "${CONSUMER}" in
+            sdk) npm run test:sdk ;;
+            website) npm run test -- --run ;;
+            playground) npm run check && npm run build ;;
+          esac
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: browser-dependencies-${{ inputs.consumer }}-${{ inputs.source_commit }}
+          path: ${{ runner.temp }}/browser-packages
+          if-no-files-found: error
+
   publish:
+    if: inputs.operation == 'release'
     name: Build and publish
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -132,9 +235,24 @@ jobs:
           # Release profile in CI — wasm-opt enabled per Cargo.toml metadata.
           NPM_WASM_PROFILE: release
 
+      - name: Verify packaged source revision
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict';
+          import { execFileSync } from 'node:child_process';
+          import { readFileSync } from 'node:fs';
+          const commit = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+          for (const name of ['wasm', 'sandbox-vm']) {
+            const pkg = JSON.parse(readFileSync(`target/npm/@hew-lang/${name}/package.json`, 'utf8'));
+            assert.deepEqual(pkg.hewSource, { commit, tag: process.env.RELEASE_TAG, dirty: false });
+          }
+          JS
+
       - name: Dry-run pack (verify staging)
         run: |
-          for pkg in wasm sandbox-wasm sandbox-vm; do
+          for pkg in wasm sandbox-vm; do
             echo "=== @hew-lang/${pkg} ==="
             npm pack --dry-run "target/npm/@hew-lang/${pkg}"
             echo ""
@@ -148,19 +266,6 @@ jobs:
           PKG_VERSION="$(node -p "require('./target/npm/@hew-lang/wasm/package.json').version")"
           if npm view "@hew-lang/wasm@${PKG_VERSION}" --registry https://npm.pkg.github.com > /dev/null 2>&1; then
             echo "::notice::@hew-lang/wasm@${PKG_VERSION} already published — skipping"
-          else
-            npm publish "${PKG_DIR}" --ignore-scripts --tag "${NPM_DIST_TAG}" --registry https://npm.pkg.github.com
-          fi
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Publish @hew-lang/sandbox-wasm
-        if: ${{ !inputs.dry_run }}
-        run: |
-          PKG_DIR="target/npm/@hew-lang/sandbox-wasm"
-          PKG_VERSION="$(node -p "require('./target/npm/@hew-lang/sandbox-wasm/package.json').version")"
-          if npm view "@hew-lang/sandbox-wasm@${PKG_VERSION}" --registry https://npm.pkg.github.com > /dev/null 2>&1; then
-            echo "::notice::@hew-lang/sandbox-wasm@${PKG_VERSION} already published — skipping"
           else
             npm publish "${PKG_DIR}" --ignore-scripts --tag "${NPM_DIST_TAG}" --registry https://npm.pkg.github.com
           fi

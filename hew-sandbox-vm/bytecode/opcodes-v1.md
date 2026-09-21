@@ -262,10 +262,9 @@ the instruction stream reaches is also listed in the package's top-level
 `suspend_kinds`, so load-time admission stays a walk of the manifest. The kinds
 a sequential package may carry:
 
-| `kind`       | The VM does                                                                                                           |
-| ------------ | --------------------------------------------------------------------------------------------------------------------- |
-| `ValueClose` | Release the named place or selection and take the first resume edge. A value holding no resource resumes immediately. |
-| `Sleep`      | Advance the virtual clock by the input duration and take the first resume edge.                                       |
-| `NativeIo`   | Reject at load: native I/O is not a sandbox capability.                                                               |
+| `kind`     | The VM does                                                                     |
+| ---------- | ------------------------------------------------------------------------------- |
+| `Sleep`    | Advance the virtual clock by the input duration and take the first resume edge. |
+| `NativeIo` | Reject at load: native I/O is not a sandbox capability.                         |
 
 Every other kind belongs to the concurrency path.

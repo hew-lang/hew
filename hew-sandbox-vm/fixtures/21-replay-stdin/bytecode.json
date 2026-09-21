@@ -1,8 +1,9 @@
 {
+  "actors": [],
   "aggregates": [],
   "bytes": [],
   "closures": [],
-  "compiler_version": "hew-sandbox-wasm-0.6.0-rc4",
+  "compiler_version": "hew-wasm-0.6.0-rc4",
   "entry": {
     "exit": "unit",
     "function": 0
@@ -63,6 +64,7 @@
             {
               "dst": 2,
               "op": "const.str",
+              "own": "owned",
               "span": {
                 "end": 71,
                 "start": 71
@@ -72,6 +74,7 @@
             {
               "dst": 3,
               "op": "load.borrow",
+              "own": "guaranteed",
               "place": 0,
               "span": {
                 "end": 80,
@@ -169,6 +172,7 @@
                 "value": 5
               }
             ],
+            "callbacks": [],
             "family": 0,
             "normal": {
               "args": [
@@ -177,15 +181,18 @@
               "to": 7
             },
             "op": "runtime.call",
+            "releases_contents": false,
             "result": {
               "own": "owned",
               "value": 6
             },
+            "result_member_shapes": [],
             "result_shape": null,
             "span": {
               "end": 80,
               "start": 80
             },
+            "structural": null,
             "unwind": null
           }
         },
@@ -266,18 +273,22 @@
                 "value": 7
               }
             ],
+            "callbacks": [],
             "family": 1,
             "normal": {
               "args": [],
               "to": 8
             },
             "op": "runtime.call",
+            "releases_contents": false,
             "result": null,
+            "result_member_shapes": [],
             "result_shape": null,
             "span": {
               "end": 80,
               "start": 80
             },
+            "structural": null,
             "unwind": null
           }
         },
@@ -407,6 +418,7 @@
             {
               "dst": 1,
               "op": "copy_value",
+              "own": "owned",
               "source": 0,
               "span": null
             }
@@ -450,6 +462,7 @@
   "hew_version": "0.6.0-rc4",
   "profile": "sandbox.sandbox-vm-export.v0",
   "regex_patterns": [],
+  "resources": [],
   "runtime_families": [
     {
       "family": "StringConcat",
@@ -468,6 +481,8 @@
   "strings": [
     "hello "
   ],
+  "structural_render": [],
+  "supervisors": [],
   "suspend_kinds": [],
   "value_capabilities": [],
   "variants": [],

@@ -3,7 +3,7 @@ name = "hew-wasm"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "WebAssembly bindings for Hew analysis-only diagnostics and editor tooling"
+description = "WebAssembly bindings for Hew analysis and verified sandbox compilation"
 repository = "https://github.com/hew-lang/hew"
 readme = "README.md"
 keywords = ["hew", "programming-language", "wasm", "webassembly"]
@@ -31,8 +31,16 @@ hew-compile = { path = "../hew-compile" }
 hew-hir = { path = "../hew-hir" }
 hew-lexer = { path = "../hew-lexer" }
 hew-mir = { path = "../hew-mir" }
+hew-sir = { path = "../hew-sir" }
 hew-parser = { path = "../hew-parser" }
 hew-types = { path = "../hew-types" }
 wasm-bindgen = "0.2.125"
 serde.workspace = true
 serde_json.workspace = true
+
+[dev-dependencies]
+assert_cmd = "2"
+hew-testutil = { path = "../hew-testutil" }
+tempfile.workspace = true
+toml.workspace = true
+walkdir = "2"

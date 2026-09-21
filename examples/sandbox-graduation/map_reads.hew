@@ -1,0 +1,18 @@
+// A map answers a present key, a missing key and a membership test the same way
+// on both engines.
+fn main() {
+    var ages: HashMap<string, i64> = HashMap.new();
+    ages.insert("ada", 36);
+    ages.insert("grace", 45);
+    println(ages.len());
+    println(ages.contains_key("grace"));
+    println(ages.contains_key("nobody"));
+    match ages.get("ada") {
+        .Some(v) => println(v),
+        .None => println(0 - 1),
+    }
+    match ages.get("nobody") {
+        .Some(v) => println(v),
+        .None => println(0 - 1),
+    }
+}

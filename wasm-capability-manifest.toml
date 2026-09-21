@@ -44,19 +44,9 @@ name = "Tier 1"
 crate = "hew-wasm"
 target = "wasm32-unknown-unknown"
 toolchain = "wasm-bindgen"
-use_case = "Browser playground, editor analysis, in-browser type checking"
+use_case = "Browser analysis and verified SIR compilation for the sandbox VM"
 runnable = false
-capability = "analysis-only"
-
-[[tier]]
-id = "sandbox-vm-export"
-name = "sandbox-vm-export"
-crate = "hew-sandbox-wasm"
-target = "wasm32-unknown-unknown"
-toolchain = "wasm-bindgen"
-use_case = "Browser sandbox bytecode export for the educational VM"
-runnable = false
-capability = "sandbox-vm-export"
+capability = "analysis-and-sandbox-compilation"
 
 [[tier]]
 id = "sandbox-vm"
@@ -64,7 +54,7 @@ name = "sandbox-vm"
 crate = "hew-sandbox-vm"
 target = "browser-worker"
 toolchain = "typescript"
-use_case = "Browser educational sandbox execution for deterministic sequential bytecode"
+use_case = "Browser educational sandbox execution of verified SIR bytecode"
 runnable = true
 capability = "sandbox-vm"
 

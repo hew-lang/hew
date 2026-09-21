@@ -1,15 +1,16 @@
 actor Worker {
-    receive fn work() -> string {
-        "done"
-    }
+    receive fn fail() { panic("restart me"); }
+    receive fn work() -> string { "done" }
 }
-
 supervisor WorkerTree {
     strategy: one_for_one,
-    intensity: 1 within 60s,
+    intensity: 3 within 60s,
+    child worker: Worker,
 }
-
 fn main() {
-    let worker = supervise WorkerTree Worker();
-    println(await worker.work());
+    let tree = spawn WorkerTree;
+    let worker = tree.worker;
+    let _ = worker.fail();
+    println(worker.work().expect("fresh incarnation"));
+    close(tree);
 }

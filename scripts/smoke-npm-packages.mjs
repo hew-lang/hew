@@ -9,7 +9,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const sourceRoot = resolve(
   process.env.HEW_SOURCE_ROOT ?? join(dirname(fileURLToPath(import.meta.url)), ".."),
 );
-const stagingRoot = resolve(process.argv[2] ?? join(sourceRoot, "target/npm/@hew-lang"));
+const stagingRoot = resolve(sourceRoot, process.argv[2] ?? process.env.HEW_NPM_STAGE_ROOT ?? "target/npm/@hew-lang");
 
 async function loadPackage(name, wasm = false) {
   const root = join(stagingRoot, name);
@@ -20,7 +20,7 @@ async function loadPackage(name, wasm = false) {
     const bytes = await readFile(join(root, entry.replace(/\.js$/, "_bg.wasm")));
     await module.default({ module_or_path: bytes });
   }
-  return { module, version: metadata.version };
+  return { module, version: metadata.version, source: metadata.hewSource };
 }
 
 const hello = 'fn main() { println("Hello, npm!"); }';
@@ -42,10 +42,13 @@ fn main() {
 `;
 
 const analysis = await loadPackage("wasm", true);
-const compiler = await loadPackage("sandbox-wasm", true);
+const compiler = analysis;
 const vm = await loadPackage("sandbox-vm");
 assert.equal(analysis.version, compiler.version, "analysis and compiler package versions differ");
 assert.equal(compiler.version, vm.version, "compiler and VM package versions differ");
+assert.deepEqual(compiler.source, vm.source, "compiler and VM source revisions differ");
+assert.match(compiler.source?.commit ?? "", /^[a-f0-9]{40}$/, "package source revision is missing");
+assert.equal(typeof compiler.source.dirty, "boolean", "package source state is missing");
 
 const analyzed = JSON.parse(analysis.module.analyze(hello));
 assert.deepEqual(analyzed.diagnostics, [], "staged browser analysis rejected hello");
@@ -61,6 +64,7 @@ for (const [name, source, stdout] of [
   );
   assert.deepEqual(compiled.diagnostics, [], `${name}: compiler diagnostics`);
   assert.ok(compiled.bytecode, `${name}: compiler produced no bytecode`);
+  assert.equal(compiled.bytecode.schema_version, "hew.sandbox.bytecode.v1");
   const trace = vm.module.runBytecode(compiled.bytecode, {
     replay: { step_budget: 1000 },
   });

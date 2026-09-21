@@ -10,11 +10,11 @@ import { runProgram } from "../dist/interpreter/run-program.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const repoRoot = path.resolve(root, "..");
-const wasmDir = fs.mkdtempSync(path.join(os.tmpdir(), "hew-sandbox-wasm-"));
+const wasmDir = fs.mkdtempSync(path.join(os.tmpdir(), "hew-wasm-"));
 
 process.env.HEWPATH = repoRoot;
 buildSandboxWasmBridge();
-const wasmModule = await import(pathToFileURL(path.join(wasmDir, "hew_sandbox_wasm.js")).href);
+const wasmModule = await import(pathToFileURL(path.join(wasmDir, "hew_wasm.js")).href);
 globalThis.__hewSandboxCompileToSandboxBytecode =
   wasmModule.compileToSandboxBytecode ?? wasmModule.default?.compileToSandboxBytecode;
 assert.equal(typeof globalThis.__hewSandboxCompileToSandboxBytecode, "function");
@@ -39,6 +39,7 @@ test("serialized bytecode preserves supervisor child i64 bounds", () => {
 actor Bounds {
     let max: i64,
     let min: i64,
+    receive fn bounds() -> string { f"{max}|{min}" }
 }
 
 supervisor BoundsTree {
@@ -49,6 +50,7 @@ supervisor BoundsTree {
 
 fn main() {
     let tree = spawn BoundsTree;
+    println(match tree.bounds.bounds() { .Ok(value) => value, .Err(_) => "error" });
 }
 `,
     "sandbox-vm-export"
@@ -58,15 +60,10 @@ fn main() {
   assert.ok(compiled.diagnostics.every((diagnostic) => diagnostic.severity !== "error"), JSON.stringify(compiled.diagnostics));
   assert.ok(compiled.bytecode, "compiler should emit bytecode");
   const bytecode = JSON.parse(JSON.stringify(compiled.bytecode));
-  assert.deepEqual(bytecode.layouts.supervisors[0].children[0].start_spec.args, [
-    { kind: "i64", value: "9223372036854775807" },
-    { kind: "i64", value: "-9223372036854775808" }
-  ]);
-
+  assert.equal(bytecode.schema_version, "hew.sandbox.bytecode.v1");
   const trace = runBytecode(bytecode);
-  const childSpawn = trace.events.find((event) => event.message === "actor.spawn");
-  assert.ok(childSpawn?.text, "supervisor child should spawn");
-  assert.deepEqual(JSON.parse(childSpawn.text).state, ["9223372036854775807", "-9223372036854775808"]);
+  assert.equal(trace.result, "ok");
+  assert.equal(trace.final_state.stdout.join(""), "9223372036854775807|-9223372036854775808\n");
 });
 
 test("runProgram reads two stdin lines from the page input buffer byte-cleanly", () => {
@@ -161,7 +158,7 @@ test("runProgram panics map to non-zero exit code and a trap diagnostic", () => 
 function buildSandboxWasmBridge() {
   const result = spawnSync(
     "wasm-pack",
-    ["build", path.join(repoRoot, "hew-sandbox-wasm"), "--target", "nodejs", "--dev", "--out-dir", wasmDir],
+    ["build", path.join(repoRoot, "hew-wasm"), "--target", "nodejs", "--dev", "--out-dir", wasmDir],
     {
       cwd: repoRoot,
       encoding: "utf8"

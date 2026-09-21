@@ -1,8 +1,9 @@
 {
+  "actors": [],
   "aggregates": [],
   "bytes": [],
   "closures": [],
-  "compiler_version": "hew-sandbox-wasm-0.6.0-rc4",
+  "compiler_version": "hew-wasm-0.6.0-rc4",
   "entry": {
     "exit": "unit",
     "function": 0
@@ -17,6 +18,7 @@
             {
               "dst": 0,
               "op": "const.str",
+              "own": "owned",
               "span": {
                 "end": 22,
                 "start": 22
@@ -87,11 +89,14 @@
   "hew_version": "0.6.0-rc4",
   "profile": "sandbox.sandbox-vm-export.v0",
   "regex_patterns": [],
+  "resources": [],
   "runtime_families": [],
   "schema_version": "hew.sandbox.bytecode.v1",
   "strings": [
     "sandbox panic"
   ],
+  "structural_render": [],
+  "supervisors": [],
   "suspend_kinds": [],
   "value_capabilities": [],
   "variants": [],

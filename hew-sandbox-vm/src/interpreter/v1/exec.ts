@@ -15,12 +15,17 @@ import type {
   SandboxTrace,
   TrapKind,
 } from "../types.js";
-import { UNIT, cloneValue, type VmValue } from "../values.js";
+import { UNIT, cloneValue, toJsonValue, type VmValue } from "../values.js";
 import type {
+  ActorShape,
+  SupervisorShape,
+  ActorProtocol,
+  RequestShapes,
   BlockV1,
   BoundaryDecision,
   BoundaryOperand,
   CallResult,
+  ClosureShape,
   Edge,
   FunctionV1,
   OpV1,
@@ -30,6 +35,16 @@ import type {
   ValueDef,
   VariantShape,
 } from "./package.js";
+import { StructuralRenderer } from "./structural.js";
+import {
+  selectedValue,
+  collectionOperation,
+  sharedOperation,
+  type ValueProgram,
+} from "./value-operations.js";
+import { Pipes } from "./pipes.js";
+import { FrameScheduler } from "./scheduler.js";
+import { DeterministicIds } from "../../scheduler/ids.js";
 import { Mt19937 } from "./mt19937.js";
 import {
   ShimFault,
@@ -40,7 +55,6 @@ import {
 import { admitPackage } from "./validate.js";
 
 const DEFAULT_STEP_BUDGET = 1_000_000;
-const NANOS_PER_MS = 1_000_000n;
 
 /// A storage cell. Every SSA value and every place owns one; a loan refers to
 /// one rather than holding a snapshot of its contents.
@@ -57,16 +71,125 @@ type Ref =
   | { kind: "field"; parent: Ref; index: number }
   | { kind: "payload"; parent: Ref; index: number };
 
-type Fault =
-  | { kind: "panic"; message: string }
-  | { kind: "trap"; trap: TrapName; message?: string };
+type Fault = (
+  | { kind: "panic"; message: string; cancelled?: boolean; deadline?: boolean }
+  | { kind: "trap"; trap: TrapName; message?: string }
+) & { primary?: Fault; secondary?: Fault[] };
+
+interface FrameContext {
+  id: string;
+  actor: ActorInstance | null;
+  cancel?: (fault?: Fault) => void;
+  generator?: GeneratorEntry;
+  returned(value: VmValue): void;
+  failed(fault: Fault): void;
+}
+
+interface GeneratorEntry {
+  id: string;
+  frame: Activation;
+  callable: VmValue;
+  started: boolean;
+  done: boolean;
+  fault: Fault | null;
+  resume?: () => void;
+  receive?: (value: VmValue | null, fault: Fault | null) => void;
+  closed: Array<(fault: Fault | null) => void>;
+}
+
+interface ActorMessage {
+  handler: ActorShape["handlers"][number];
+  payload: VmValue[];
+  reply: boolean;
+  complete(
+    value: VmValue | null,
+    error: string | null,
+    drained?: (fault: Fault | null) => void,
+  ): void;
+}
+
+interface ActorInstance {
+  id: string;
+  layout: ActorShape;
+  state: VmValue;
+  mailbox: ActorMessage[];
+  admission: Array<() => void>;
+  busy: boolean;
+  alive: boolean;
+  completed: boolean;
+  closing: boolean;
+  drainingMailbox: boolean;
+  mailboxDrained: Array<() => void>;
+  closingFault: Fault | null;
+  closeFaultDebt?: number;
+  crashing: Fault | null;
+  active: FrameContext | null;
+  closed: Array<() => void>;
+  supervisor?: { owner: SupervisorInstance; child: number };
+}
+
+interface SupervisorInstance {
+  id: string;
+  layout: SupervisorShape;
+  config: VmValue[];
+  children: Array<VmValue | null>;
+  alive: boolean;
+  restartTimes: number[];
+  specs: SupervisorShape["children"];
+  offsets: number[];
+  recovering: Set<number>;
+  restartBusy: boolean;
+  pendingRestarts: Array<{ child: number; debts: number[] }>;
+  spent: Set<number>;
+  completed: boolean;
+  supervisor?: { owner: SupervisorInstance; child: number };
+  closed: Array<() => void>;
+}
+
+interface RoleSlot {
+  ownerId: string;
+  child: number;
+  latest: VmValue | null;
+  waiting: Array<() => void>;
+}
+
+interface TaskEntry {
+  id: string;
+  done: boolean;
+  finishing: boolean;
+  value: VmValue;
+  fault: Fault | null;
+  actorError: string | null;
+  cancel(): void;
+  // Actor-call handles own admission and reply storage. Scoped task handles
+  // leave their execution and any unclaimed result with the enclosing scope.
+  close?: (done: (fault: Fault | null) => void) => void;
+  completedAt: number;
+  changed: Array<() => void>;
+}
+
+interface TaskGroup {
+  tasks: TaskEntry[];
+  changed: Array<() => void>;
+  deadline: Fault | null;
+  joining: boolean;
+  cancelTimer?: () => void;
+}
 
 interface Activation {
+  context: FrameContext;
   fn: FunctionV1;
   block: BlockV1;
+  opIndex: number;
   env: Map<number, Ref>;
+  trivial: Set<number>;
+  scopes: Map<number, TaskGroup>;
   places: Map<number, Cell>;
   fault: Fault | null;
+  /// Faults parked by the `enter_defer` boundaries this activation is inside,
+  /// innermost last. A deferred body runs with its own fault state; its
+  /// `finish_defer` restores the fault the boundary was entered with.
+  parked: Array<Fault | null>;
   caller: Activation | null;
   /// Where the caller binds this activation's return value.
   result: CallResult;
@@ -154,7 +277,12 @@ export function runPackageV1(
     return trace.finish();
   }
 
-  const vm = new ExecutorV1(pkg, trace, StdinReader.fromReplay(replay.inputs));
+  const vm = new ExecutorV1(
+    pkg,
+    trace,
+    StdinReader.fromReplay(replay.inputs),
+    options.schedulerPolicy ?? "round_robin",
+  );
   try {
     vm.run();
   } catch (error) {
@@ -178,13 +306,38 @@ export function runPackageV1(
 class ExecutorV1 {
   private current: Activation;
   private readonly host: ShimHost;
+  private readonly scheduler: FrameScheduler;
+  private readonly ids: DeterministicIds;
+  private readonly actors = new Map<string, ActorInstance>();
+  private readonly supervisors = new Map<string, SupervisorInstance>();
+  private readonly roles = new Map<string, RoleSlot>();
+  private readonly pipes = new Pipes();
+  private readonly generators = new Map<string, GeneratorEntry>();
+  private readonly tasks = new Map<string, TaskEntry>();
+  private completedTasks = 0;
+  private readonly faultDebts = new Set<number>();
+  private nextFaultDebt = 0;
+  private readonly closingResources = new WeakSet<object>();
+  private readonly consumedResources = new WeakSet<object>();
+  private running = false;
+  private rootComplete = false;
+  private rootFault: Fault | null = null;
 
   constructor(
     private readonly pkg: PackageV1,
     private readonly trace: TraceBuilder,
     stdin: StdinReader,
+    policy: "round_robin" | "chaos",
   ) {
+    this.scheduler = new FrameScheduler(trace, policy);
+    this.ids = new DeterministicIds(trace.replay.seed);
     this.host = {
+      pipes: this.pipes,
+      newPipe: (capacity) => this.newPipe(capacity),
+      closePipe: (value) =>
+        this.pipes.close(value, this.pipeFault(this.current)),
+      releaseValue: (value) =>
+        this.closeValue(value, this.pipeFault(this.current)),
       writeStdout: (text) => this.trace.writeStdout(text, null),
       readLine: () => {
         const line = stdin.readLine();
@@ -209,20 +362,71 @@ class ExecutorV1 {
       null,
       undefined,
       null,
+      {
+        id: "actor:root",
+        actor: null,
+        returned: (value) => {
+          this.rootComplete = true;
+          this.trace.exitCode =
+            pkg.entry?.exit === "status" && value.kind === "i64"
+              ? Number(value.value)
+              : 0;
+        },
+        failed: (fault) => {
+          this.rootFault = fault;
+          this.rootComplete = true;
+        },
+      },
     );
   }
 
   /// One instruction or terminator executed is one step, ownership ops
   /// included: the package's ops are what the program does.
   run(): void {
-    while (true) {
+    this.runFrame(this.current);
+    this.scheduler.run();
+    if (!this.rootComplete) {
+      throw new Error("the root frame is waiting with no runnable work");
+    }
+    // Native main return drains accepted work before closing idle actors.
+    for (const owner of this.supervisors.values())
+      if (!owner.supervisor) this.stopSupervisor(owner);
+    for (const actor of this.actors.values())
+      if (!actor.supervisor && actor.alive) this.requestActorClose(actor);
+    this.scheduler.run();
+    if (this.rootFault) this.haltWithFault(this.rootFault);
+    if (this.trace.exitCode === 0 && this.faultDebts.size)
+      this.trace.exitCode = 1;
+  }
+
+  private runFrame(frame: Activation): void {
+    this.current = frame;
+    this.running = true;
+    while (this.running) {
       const act = this.current;
-      for (const op of act.block.ops) {
+      while (act.opIndex < act.block.ops.length) {
+        const op = act.block.ops[act.opIndex++]!;
         this.commitStep();
-        this.execute(act, op);
+        try {
+          this.execute(act, op);
+        } catch (error) {
+          if (error instanceof Halt) throw error;
+          throw new Error(
+            `${act.fn.name} block ${act.block.id} ${op.op}: ${String(error)}`,
+          );
+        }
+        if (!this.running) return;
       }
+      if (!this.running) return;
       this.commitStep();
-      this.terminate(act, act.block.term);
+      try {
+        this.terminate(act, act.block.term);
+      } catch (error) {
+        if (error instanceof Halt) throw error;
+        throw new Error(
+          `${act.fn.name} block ${act.block.id} ${act.block.term.op}: ${String(error)}`,
+        );
+      }
     }
   }
 
@@ -235,18 +439,45 @@ class ExecutorV1 {
     result: CallResult,
     normal: Edge | undefined,
     unwind: Edge | null,
+    context?: FrameContext,
   ): Activation {
+    if (
+      (this.pkg.resources ?? []).some((resource) => resource.close === fn.id) &&
+      args[0]
+    )
+      this.closingResources.add(args[0]);
     const env = new Map<number, Ref>();
     for (const [at, param] of fn.params.entries()) {
       env.set(param.value, ownedRef(args[at] ?? UNIT));
     }
     const places = new Map<number, Cell>();
+    const trivial = new Set<number>();
+    const record = (value: ValueDef) => {
+      if (value.own === "none") trivial.add(value.value);
+    };
+    fn.params.forEach(record);
+    for (const block of fn.blocks) {
+      block.params.forEach(record);
+      for (const op of block.ops) {
+        if (op.dst != null && op.own === "none") trivial.add(op.dst);
+      }
+      const term = block.term;
+      if ("result" in term && term.result && term.result !== "never")
+        record(term.result);
+      if (term.op === "switch.variant")
+        for (const arm of term.arms) arm.fields.forEach(record);
+    }
     return {
+      context: caller?.context ?? context!,
       fn,
       block: this.blockAt(fn, fn.entry),
+      opIndex: 0,
       env,
+      trivial,
+      scopes: new Map(),
       places,
       fault: null,
+      parked: [],
       caller,
       result,
       normal,
@@ -324,7 +555,9 @@ class ExecutorV1 {
   }
 
   private invalidate(act: Activation, id: number): void {
-    invalidateRef(this.refOf(act, id));
+    // A boundary's transfer of a trivial value has no ownership to end. SIR
+    // can use that SSA value again, including a supervisor or child role.
+    if (!act.trivial.has(id)) invalidateRef(this.refOf(act, id));
   }
 
   /// Where a place currently lives. Only a `local` is a cell of its own; a
@@ -355,6 +588,15 @@ class ExecutorV1 {
             "place" in decl.base
               ? this.placeRef(act, decl.base.place)
               : this.refOf(act, decl.base.value),
+          index: decl.field,
+        };
+      case "actor_state":
+      case "capture":
+        // `environment` is the value id the body holds its environment under,
+        // and the place is one field of it.
+        return {
+          kind: "field",
+          parent: this.refOf(act, decl.environment),
           index: decl.field,
         };
       default:
@@ -424,9 +666,12 @@ class ExecutorV1 {
         this.define(act, op.dst, this.read(act, op.source));
         this.invalidate(act, op.source);
         return;
-      case "destroy_value":
+      case "destroy_value": {
+        const value = this.read(act, op.value);
         this.invalidate(act, op.value);
+        this.releaseOperation(act, value);
         return;
+      }
       case "begin_borrow":
         act.env.set(op.dst, this.refOf(act, op.owner));
         return;
@@ -457,9 +702,13 @@ class ExecutorV1 {
       case "load.borrow":
         act.env.set(op.dst, this.placeRef(act, op.place));
         return;
-      case "end_lifetime":
-        invalidateRef(this.placeRef(act, op.place));
+      case "end_lifetime": {
+        const ref = this.placeRef(act, op.place);
+        const value = liveRef(ref) ? readRef(ref) : UNIT;
+        invalidateRef(ref);
+        this.releaseOperation(act, value);
         return;
+      }
 
       case "tuple.make":
         this.define(act, op.dst, {
@@ -585,7 +834,25 @@ class ExecutorV1 {
       case "function.make":
         this.define(act, op.dst, { kind: "function", id: String(op.callable) });
         return;
+      case "closure.make": {
+        // The captures become one environment, in the order the closure shape
+        // declares; a `capture` place in the body reaches its field.
+        const shape = this.closureAt(op.closure);
+        this.define(act, op.dst, {
+          kind: "closure",
+          body: shape.body,
+          environment: {
+            kind: "record",
+            typeId: "",
+            fields: op.fields.map((id) => this.read(act, id)),
+          },
+        });
+        return;
+      }
       case "callable.coerce":
+        // A coercion only weakens the callable's proved capabilities; SIR
+        // refuses one that changes an argument, a result or a capture shape,
+        // so the value itself is unchanged.
         this.define(act, op.dst, this.read(act, op.source));
         return;
       case "dyn.make":
@@ -596,6 +863,175 @@ class ExecutorV1 {
         });
         return;
 
+      // The registration reserves the free places the body reaches; the drain
+      // order is already the CFG's, so there is nothing to record here.
+      case "register_defer":
+        return;
+
+      case "stream.pipe": {
+        const pair = this.newPipe(op.capacity);
+        this.define(
+          act,
+          op.results[0]!.value,
+          this.pipes.extract(pair, "stream"),
+        );
+        this.define(
+          act,
+          op.results[1]!.value,
+          this.pipes.extract(pair, "sink"),
+        );
+        this.pipes.freePair(pair);
+        return;
+      }
+      case "task_scope.enter": {
+        const group: TaskGroup = {
+          tasks: [],
+          changed: [],
+          deadline: null,
+          joining: false,
+        };
+        act.scopes.set(op.scope, group);
+        if (op.duration !== null) {
+          const duration = this.read(act, op.duration);
+          if (duration.kind !== "i64")
+            throw new Error("scope duration is not a duration");
+          group.cancelTimer = this.scheduler.after(duration.value, () => {
+            group.deadline = {
+              kind: "panic",
+              message: "scope deadline elapsed",
+              deadline: true,
+            };
+            for (const task of group.tasks) if (!task.done) task.cancel();
+            if (!group.joining) act.context.cancel?.(group.deadline);
+            for (const changed of [...group.changed]) changed();
+          });
+        }
+        return;
+      }
+      case "task_scope.close": {
+        const group = act.scopes.get(op.scope);
+        group?.cancelTimer?.();
+        this.releaseOperation(
+          act,
+          {
+            kind: "vector",
+            elementType: "task",
+            items: (group?.tasks ?? []).map((task) => ({
+              kind: "task",
+              id: task.id,
+            })),
+          },
+          () => {
+            for (const task of group?.tasks ?? []) this.tasks.delete(task.id);
+            act.scopes.delete(op.scope);
+          },
+        );
+        return;
+      }
+      case "generator.make": {
+        const callable = this.read(act, op.callable);
+        this.invalidate(act, op.callable);
+        const id = `generator:${this.generators.size}`;
+        const context: FrameContext = {
+          id,
+          actor: act.context.actor,
+          returned: (value) =>
+            this.closeValueAsync(value, null, (fault) =>
+              this.finishGenerator(generator, fault),
+            ),
+          failed: (fault) => this.finishGenerator(generator, fault),
+        };
+        const generator: GeneratorEntry = {
+          id,
+          callable,
+          started: false,
+          done: false,
+          fault: null,
+          closed: [],
+          frame: this.activate(
+            this.functionAt(calleeFunction(callable)),
+            callable.kind === "closure" ? [callable.environment] : [],
+            null,
+            null,
+            undefined,
+            null,
+            context,
+          ),
+        };
+        context.generator = generator;
+        this.generators.set(id, generator);
+        this.define(act, op.dst, { kind: "generator", id });
+        return;
+      }
+      case "task.spawn": {
+        const group = act.scopes.get(op.scope);
+        if (!group) throw new Error(`task scope ${op.scope} is missing`);
+        const callable = this.read(act, op.callable);
+        this.invalidate(act, op.callable);
+        const task = this.newTask();
+        group.tasks.push(task);
+        const settle = (value: VmValue, fault: Fault | null) => {
+          if (task.done || task.finishing) return;
+          task.finishing = true;
+          if (
+            fault &&
+            !(fault.kind === "panic" && (fault.cancelled || fault.deadline)) &&
+            act.context.actor
+          )
+            act.context.actor.crashing ??= fault;
+          this.closeValueAsync(
+            callable,
+            act.context.actor
+              ? this.faultText(act.context.actor.crashing)
+              : null,
+            (closeFault) => {
+              if (!fault || (fault.kind === "panic" && fault.cancelled))
+                fault = closeFault ?? fault;
+              this.settleTask(task, value, fault);
+              if (fault && !(fault.kind === "panic" && fault.cancelled)) {
+                for (const sibling of group.tasks)
+                  if (!sibling.done) sibling.cancel();
+                if (!group.joining) act.context.cancel?.(fault);
+              }
+              for (const changed of [...group.changed]) changed();
+            },
+          );
+        };
+        const context: FrameContext = {
+          id: task.id,
+          actor: act.context.actor,
+          returned: (value) => settle(value, null),
+          failed: (fault) => settle(UNIT, fault),
+        };
+        const frame = this.activate(
+          this.functionAt(calleeFunction(callable)),
+          callable.kind === "closure" ? [callable.environment] : [],
+          null,
+          null,
+          undefined,
+          null,
+          context,
+        );
+        let started = false;
+        task.cancel = () => {
+          if (task.done || task.finishing) return;
+          if (started) context.cancel?.();
+          else
+            settle(UNIT, {
+              kind: "panic",
+              message: "task cancelled",
+              cancelled: true,
+            });
+        };
+        this.scheduler.enqueue(task.id, () => {
+          if (task.done || task.finishing) return;
+          started = true;
+          this.runFrame(frame);
+        });
+        this.trace.allocateId("task", task.id, act.context.id);
+        this.define(act, op.dst, { kind: "task", id: task.id });
+        return;
+      }
       default:
         throw new Error(`opcode ${op.op} has no sequential executor`);
     }
@@ -609,6 +1045,8 @@ class ExecutorV1 {
     defs: Array<ValueDef | number>,
   ): void {
     for (const [at, def] of defs.entries()) {
+      if (typeof def !== "number" && def.own === "none")
+        act.trivial.add(def.value);
       this.define(
         act,
         typeof def === "number" ? def : def.value,
@@ -623,6 +1061,16 @@ class ExecutorV1 {
 
   private variantName(shape: number): string {
     return this.pkg.variants[shape]?.name ?? "";
+  }
+
+  private closureAt(id: number): ClosureShape {
+    const shape =
+      this.pkg.closures[id] ??
+      this.pkg.closures.find((candidate) => candidate.id === id);
+    if (!shape) {
+      throw new Error(`closure ${id} is not in the package`);
+    }
+    return shape;
   }
 
   // ── terminators ──────────────────────────────────────────────────────────
@@ -729,15 +1177,10 @@ class ExecutorV1 {
         );
         return;
       }
-      case "call":
-      case "indirect.call": {
-        const callee =
-          term.op === "call"
-            ? term.callee
-            : functionId(this.boundary(act, term.callee));
+      case "call": {
         const args = term.args.map((operand) => this.boundary(act, operand));
         this.current = this.activate(
-          this.functionAt(callee),
+          this.functionAt(term.callee),
           args,
           act,
           term.result,
@@ -746,8 +1189,86 @@ class ExecutorV1 {
         );
         return;
       }
+      case "indirect.call": {
+        // A closure's environment reaches its body's first parameter, ahead of
+        // the call's own arguments, the way a trait object's value reaches
+        // `self`. A plain function value carries none.
+        const callee = this.boundary(act, term.callee);
+        const args = term.args.map((operand) => this.boundary(act, operand));
+        this.current = this.activate(
+          this.functionAt(calleeFunction(callee)),
+          callee.kind === "closure" ? [callee.environment, ...args] : args,
+          act,
+          term.result,
+          term.normal,
+          term.unwind,
+        );
+        return;
+      }
+      case "actor.call":
+        this.actorCall(act, term);
+        return;
       case "runtime.call": {
         const entry = this.pkg.runtime_families[term.family];
+        if (
+          entry &&
+          (entry.family === "Map" ||
+            entry.family === "Set" ||
+            (entry.family === "Array" && entry.detail === "Set") ||
+            (entry.family === "Vector" &&
+              ["Contains", "Clear", "Set"].includes(String(entry.detail))))
+        ) {
+          const args = term.args.map((operand) => this.boundary(act, operand));
+          const iterator = collectionOperation(
+            this.pkg,
+            entry.family === "Array" ? "Vector" : entry.family,
+            String(entry.detail),
+            args,
+            term.callbacks ?? [],
+            term.result_member_shapes?.[1] ?? term.result_shape,
+          );
+          this.runValueProgram(act, term, args, iterator);
+          return;
+        }
+        if (
+          entry &&
+          [
+            "RcNew",
+            "RcClone",
+            "RcGet",
+            "RcIsUnique",
+            "RcSet",
+            "RcStrongCount",
+            "RcWeakCount",
+          ].includes(entry.family)
+        ) {
+          const args = term.args.map((operand) => this.boundary(act, operand));
+          this.runValueProgram(
+            act,
+            term,
+            args,
+            sharedOperation(entry.family, args),
+          );
+          return;
+        }
+        if (entry?.family === "SupervisorPool") {
+          this.supervisorPool(act, term, String(entry.detail));
+          return;
+        }
+        if (entry && ["SinkClose", "StreamClose"].includes(entry.family)) {
+          const value = this.boundary(act, term.args[0]!);
+          this.running = false;
+          this.closeValueAsync(value, this.pipeFault(act), (fault) => {
+            if (fault) this.raiseFault(act, fault, term.unwind);
+            else this.completeShim(act, term, UNIT);
+            this.scheduler.enqueue(act.context.id, () => this.runFrame(act));
+          });
+          return;
+        }
+        if (entry?.family === "StructuralFormat") {
+          this.structuralFormat(act, term);
+          return;
+        }
         const shim = entry ? resolveRuntimeShim(entry) : undefined;
         if (!entry || !shim) {
           throw new Error(
@@ -769,39 +1290,26 @@ class ExecutorV1 {
         return;
       }
       case "value.call": {
-        const plan = this.pkg.value_capabilities[term.plan];
-        if (!plan) {
-          throw new Error(`value.call names no capability plan ${term.plan}`);
-        }
         const args = term.args.map((operand) => this.boundary(act, operand));
-        if (plan.callable !== undefined) {
-          // A user implementation the checker selected: call it.
-          this.current = this.activate(
-            this.functionAt(plan.callable),
-            args,
-            act,
-            term.result,
-            term.normal,
-            term.unwind,
-          );
-          return;
-        }
-        const derived: VmValue =
-          plan.capability === "Eq"
-            ? { kind: "bool", value: equals(args[0] ?? UNIT, args[1] ?? UNIT) }
-            : { kind: "i64", value: structuralHash(args[0] ?? UNIT) };
-        this.completeShim(act, term, derived);
+        this.runValueProgram(
+          act,
+          term,
+          args,
+          selectedValue(this.pkg, term.plan, args),
+        );
         return;
       }
 
       case "panic": {
         const message = this.boundary(act, term.message);
         act.fault = { kind: "panic", message: renderMessage(message) };
+        if (act.context.actor) act.context.actor.crashing ??= act.fault;
         this.takeEdge(act, term.cleanup);
         return;
       }
       case "checked_raise":
         act.fault = { kind: "trap", trap: term.trap };
+        if (act.context.actor) act.context.actor.crashing ??= act.fault;
         this.takeEdge(act, term.cleanup);
         return;
       case "trap":
@@ -810,6 +1318,52 @@ class ExecutorV1 {
       case "cleanup.dispatch":
         this.takeEdge(act, act.fault ? term.fault : term.normal);
         return;
+      case "enter_defer":
+        // The deferred body runs on its own fault state: a body reached while
+        // unwinding must not read the fault it is cleaning up after.
+        act.parked.push(act.fault);
+        act.fault = null;
+        this.takeEdge(act, term.body);
+        return;
+      case "finish_defer": {
+        // Combine the parked fault with whatever the body left, keeping the
+        // first: a join must never forget the fault the boundary carried in.
+        const parked = act.parked.pop();
+        if (parked === undefined) {
+          throw new Error(`${act.fn.name}: finish_defer has no active body`);
+        }
+        act.fault = combineFaults(parked, act.fault);
+        this.takeEdge(act, term.next);
+        return;
+      }
+      case "recover_fault": {
+        const fault = act.fault;
+        if (!fault) throw new Error("recover_fault has no pending fault");
+        if (fault.kind === "panic" && fault.cancelled) {
+          this.raiseFault(act, fault, term.unwind);
+          return;
+        }
+        const shape =
+          term.result_shape == null
+            ? undefined
+            : this.pkg.variants[term.result_shape];
+        const deadline = fault.kind === "panic" && fault.deadline;
+        const value: VmValue = {
+          kind: "enum",
+          typeId: shape?.name ?? "",
+          tag: deadline ? term.deadline_variant : term.fault_variant,
+          payload: [
+            {
+              kind: "string",
+              value: faultReport(fault),
+            },
+          ],
+        };
+        act.fault = null;
+        if (act.context.actor) act.context.actor.crashing = null;
+        this.completeShim(act, term, value);
+        return;
+      }
       case "resume_unwind":
         this.resumeUnwind(act);
         return;
@@ -834,6 +1388,7 @@ class ExecutorV1 {
       act.env.set(param.value, args[at] ?? ownedRef(UNIT));
     }
     act.block = target;
+    act.opIndex = 0;
   }
 
   /// Run a runtime or extern shim. A fault it raises takes the call's `unwind`
@@ -869,6 +1424,162 @@ class ExecutorV1 {
     this.completeShim(act, term, value);
   }
 
+  private runValueProgram(
+    act: Activation,
+    term: Extract<TermV1, { op: "runtime.call" | "value.call" }>,
+    args: VmValue[],
+    iterator: ValueProgram,
+  ): void {
+    this.running = false;
+    let initial = true;
+    const resume = () => {
+      act.context.cancel = undefined;
+      if (initial) this.running = true;
+      else this.scheduler.enqueue(act.context.id, () => this.runFrame(act));
+    };
+    const fail = (fault: Fault, extra: VmValue = UNIT) => {
+      const owned = args.filter((_arg, index) =>
+        ["move", "copy", "snapshot"].includes(term.args[index]!.decision),
+      );
+      this.closeValueAsync(
+        { kind: "vector", elementType: "", items: [...owned, extra] },
+        this.faultText(fault),
+        (closeFault) => {
+          if (fault.kind === "panic" && fault.cancelled && closeFault)
+            fault = closeFault;
+          this.raiseFault(act, fault, term.unwind);
+          resume();
+        },
+      );
+    };
+    const next = (value: VmValue = UNIT) => {
+      let step: IteratorResult<
+        import("./value-operations.js").ValueRequest,
+        VmValue
+      >;
+      try {
+        step = iterator.next(value);
+      } catch (error) {
+        if (error instanceof ShimFault) {
+          fail({ kind: "trap", trap: error.trap, message: error.message });
+          return;
+        }
+        throw error;
+      }
+      if (step.done) {
+        this.completeShim(act, term, step.value);
+        resume();
+      } else if (step.value.kind === "release") {
+        const request = step.value;
+        this.closeValueAsync(request.value, this.pipeFault(act), (fault) => {
+          if (fault) {
+            if (term.op !== "runtime.call" || !term.releases_contents) {
+              fail(fault, request.onFault);
+              return;
+            }
+            // The shared contract republishes the receiver and result owners
+            // before SIR dispatches a failure from releasing their contents.
+            act.fault ??= fault;
+          }
+          next();
+        });
+      } else {
+        const request = step.value;
+        const child = this.invokeFrame(
+          act.context.actor,
+          request.callee,
+          request.args,
+          next,
+          fail,
+        );
+        act.context.cancel = (fault) => child.cancel?.(fault);
+      }
+    };
+    next();
+    initial = false;
+  }
+
+  private supervisorPool(
+    act: Activation,
+    term: Extract<TermV1, { op: "runtime.call" }>,
+    operation: string,
+  ): void {
+    const [view, index] = term.args.map((arg) => this.boundary(act, arg));
+    if (view?.kind !== "vector" || index?.kind !== "i64")
+      throw new Error("pool operation has no view and index");
+    const value = view.items[Number(index.value)];
+    if (operation === "Get") {
+      this.completeShim(
+        act,
+        term,
+        this.variant(
+          term.result_shape,
+          value ? "Some" : "None",
+          value ? [value] : [],
+        ),
+      );
+      return;
+    }
+    if (!value) {
+      this.raiseFault(
+        act,
+        { kind: "trap", trap: "vector_bounds" },
+        term.unwind,
+      );
+      return;
+    }
+    const role = this.roles.get((value as { id: string }).id)!;
+    if (operation === "AwaitRestartMember" && this.rolePending(role)) {
+      this.running = false;
+      const settled = () => {
+        if (this.rolePending(role)) {
+          role.waiting.push(settled);
+          return;
+        }
+        this.completeShim(act, term, value);
+        this.scheduler.enqueue(act.context.id, () => this.runFrame(act));
+      };
+      role.waiting.push(settled);
+    } else this.completeShim(act, term, value);
+  }
+
+  private structuralFormat(
+    act: Activation,
+    term: Extract<TermV1, { op: "runtime.call" }>,
+  ): void {
+    if (term.structural == null)
+      throw new Error("StructuralFormat has no checked recipe");
+    const renderer = new StructuralRenderer(
+      this.pkg.structural_render ?? [],
+      term.structural,
+      this.boundary(act, term.args[0]!),
+    );
+    this.running = false;
+    const continueRendering = () => {
+      const next = renderer.next();
+      if (typeof next === "string") {
+        this.completeShim(act, term, { kind: "string", value: next });
+        this.scheduler.enqueue(act.context.id, () => this.runFrame(act));
+        return;
+      }
+      const callback = this.invokeFrame(
+        act.context.actor,
+        next.callee,
+        [next.value],
+        (value) => {
+          renderer.append(value);
+          continueRendering();
+        },
+        (fault) => {
+          this.raiseFault(act, fault, term.unwind);
+          this.scheduler.enqueue(act.context.id, () => this.runFrame(act));
+        },
+      );
+      act.context.cancel = (fault) => callback.cancel?.(fault);
+    };
+    continueRendering();
+  }
+
   /// A shim returned: bind the call's result on its normal edge and continue.
   private completeShim(
     act: Activation,
@@ -889,7 +1600,8 @@ class ExecutorV1 {
   private returnFrom(act: Activation, value: VmValue): void {
     const caller = act.caller;
     if (!caller) {
-      this.exitProgram(value);
+      this.running = false;
+      act.context.returned(value);
       return;
     }
     if (!act.normal) {
@@ -931,7 +1643,9 @@ class ExecutorV1 {
   /// program when the call names none.
   private raiseFault(act: Activation, fault: Fault, unwind: Edge | null): void {
     if (!unwind) {
-      this.haltWithFault(fault);
+      this.running = false;
+      act.context.failed(fault);
+      return;
     }
     act.fault = fault;
     this.takeEdge(act, unwind);
@@ -944,7 +1658,9 @@ class ExecutorV1 {
     }
     const caller = act.caller;
     if (!caller) {
-      this.haltWithFault(fault);
+      this.running = false;
+      act.context.failed(fault);
+      return;
     }
     if (!act.unwind) {
       throw new Error(
@@ -961,50 +1677,1656 @@ class ExecutorV1 {
     term: Extract<TermV1, { op: "suspend" }>,
   ): void {
     switch (term.kind) {
-      case "ValueClose": {
-        // Release the named place; a value holding no resource releases to
-        // nothing and the activation resumes immediately.
-        const place = valueCloseePlace(term.detail);
-        if (place !== null) {
-          invalidateRef(this.placeRef(act, place));
+      case "Yield": {
+        const generator = act.context.generator;
+        if (!generator || !generator.receive)
+          throw new Error("yield has no generator consumer");
+        const value = this.boundary(act, term.inputs[0]!);
+        const wake = this.park(act, term);
+        generator.resume = () => wake(UNIT);
+        const receive = generator.receive;
+        generator.receive = undefined;
+        receive(value, null);
+        return;
+      }
+      case "GeneratorNext": {
+        const generator = this.generatorFor(
+          this.boundary(act, term.inputs[0]!),
+        );
+        const wake = this.park(act, term);
+        const receive = (value: VmValue | null, fault: Fault | null) => {
+          if (fault) wake(UNIT, fault);
+          else
+            wake(
+              this.variant(
+                term.result_shape,
+                value === null ? "None" : "Some",
+                value === null ? [] : [value],
+              ),
+            );
+        };
+        if (generator.done) {
+          receive(null, generator.fault);
+          return;
         }
-        break;
+        if (generator.receive)
+          throw new Error("generator already has a pending next");
+        generator.receive = receive;
+        const cancel = act.context.cancel;
+        act.context.cancel = (fault) => {
+          generator.receive = undefined;
+          this.closeGenerator(generator, (closeFault) =>
+            cancel?.(closeFault ?? fault),
+          );
+        };
+        if (generator.started) {
+          const resume = generator.resume;
+          generator.resume = undefined;
+          if (!resume) throw new Error("generator has no suspended yield");
+          resume();
+        } else {
+          generator.started = true;
+          this.scheduler.enqueue(generator.id, () =>
+            this.runFrame(generator.frame),
+          );
+        }
+        return;
+      }
+      case "StreamSend": {
+        const [sink, value] = term.inputs.map((input) =>
+          this.boundary(act, input),
+        );
+        let cancelWait = () => {};
+        let owned = true;
+        let closing = false;
+        let cancelled: Fault | null = null;
+        const wake = this.park(act, term, () => cancelWait());
+        const cancel = act.context.cancel!;
+        act.context.cancel = (
+          fault = { kind: "panic", message: "task cancelled", cancelled: true },
+        ) => {
+          cancelled ??= fault;
+          cancelWait();
+          if (owned) {
+            owned = false;
+            closing = true;
+            this.closeValueAsync(value!, this.faultText(fault), (closeFault) =>
+              cancel(closeFault ?? fault),
+            );
+          } else if (!closing) cancel(fault);
+        };
+        cancelWait = this.pipes.send(
+          sink!,
+          value!,
+          term.detail.park,
+          (status) => {
+            owned = false;
+            if (status === 0) wake(UNIT);
+            else {
+              closing = true;
+              this.closeValueAsync(value!, this.pipeFault(act), (fault) =>
+                wake(UNIT, fault ?? cancelled, status),
+              );
+            }
+          },
+        );
+        return;
+      }
+      case "StreamNext": {
+        const stream = this.boundary(act, term.inputs[0]!);
+        let cancelWait = () => {};
+        const wake = this.park(act, term, () => cancelWait());
+        cancelWait = this.pipes.receive(
+          stream,
+          term.detail.park,
+          (value, fault) => {
+            if (fault !== null) wake(UNIT, { kind: "panic", message: fault });
+            else
+              wake(
+                this.variant(
+                  term.result_shape,
+                  value === null ? "None" : "Some",
+                  value === null ? [] : [value],
+                ),
+              );
+          },
+        );
+        return;
+      }
+      case "Await": {
+        const task = this.taskFor(this.boundary(act, term.inputs[0]!));
+        const wake = this.park(act, term);
+        const ready = () => {
+          if (!task.done) return;
+          if (task.fault) wake(UNIT, task.fault);
+          else {
+            const value = task.value;
+            task.value = UNIT;
+            wake(value);
+          }
+        };
+        task.changed.push(ready);
+        ready();
+        return;
+      }
+      case "Join": {
+        const group = act.scopes.get(term.detail.scope);
+        if (!group) throw new Error("join has no task scope");
+        group.joining = true;
+        const wake = this.park(act, term);
+        const cancel = act.context.cancel!;
+        let cancellation: Fault | null = null;
+        const mode = term.detail.mode;
+        if (mode !== "wait")
+          for (const task of group.tasks) if (!task.done) task.cancel();
+        const ready = () => {
+          if (group.tasks.some((task) => !task.done)) return;
+          if (cancellation) {
+            cancel(cancellation);
+            return;
+          }
+          const failure =
+            group.deadline ??
+            group.tasks.find(
+              (task) =>
+                task.fault &&
+                !(task.fault.kind === "panic" && task.fault.cancelled),
+            )?.fault;
+          wake(
+            UNIT,
+            mode === "propagate_fault" || mode === "cancel_losers_after_fault"
+              ? null
+              : (failure ?? null),
+          );
+        };
+        // Cancellation requests descendant cleanup; it cannot bypass the
+        // join barrier and let the parent retire their captured resources.
+        act.context.cancel = (
+          fault = { kind: "panic", message: "task cancelled", cancelled: true },
+        ) => {
+          cancellation ??= fault;
+          for (const task of group.tasks) if (!task.done) task.cancel();
+          ready();
+        };
+        group.changed.push(ready);
+        ready();
+        return;
+      }
+      case "Select": {
+        const values = term.inputs.map((input) => this.boundary(act, input));
+        const hasTimeout = term.detail.has_timeout;
+        const sources = hasTimeout ? values.slice(0, -1) : values;
+        const unwatch: Array<() => void> = [];
+        const wake = this.park(act, term, () =>
+          unwatch.forEach((remove) => remove()),
+        );
+        let cancelTimer: (() => void) | undefined;
+        const choose = () => {
+          const ready = sources.flatMap((value, index) => {
+            if (value.kind === "stream")
+              return this.pipes.readable(value) ? [{ index, order: 0 }] : [];
+            const task = this.taskFor(value);
+            return task.done ? [{ index, order: task.completedAt }] : [];
+          });
+          if (term.detail.order === "completion")
+            ready.sort((a, b) => a.order - b.order);
+          if (ready[0]) {
+            cancelTimer?.();
+            wake({ kind: "i64", value: BigInt(ready[0].index) });
+          }
+        };
+        if (hasTimeout) {
+          const duration = values[values.length - 1];
+          if (duration?.kind !== "i64")
+            throw new Error("selection timeout is not a duration");
+          cancelTimer = this.scheduler.after(duration.value, () =>
+            wake({ kind: "i64", value: BigInt(sources.length) }),
+          );
+        }
+        sources.forEach((value) => {
+          if (value.kind === "stream")
+            unwatch.push(this.pipes.observe(value, choose));
+          else {
+            const task = this.taskFor(value);
+            task.changed.push(choose);
+            unwatch.push(() => {
+              const index = task.changed.indexOf(choose);
+              if (index >= 0) task.changed.splice(index, 1);
+            });
+          }
+        });
+        choose();
+        return;
+      }
+      case "Ask": {
+        const protocol = term.detail as ActorProtocol;
+        const inputs = term.inputs.map((input) => this.boundary(act, input));
+        const wake = this.park(act, term);
+        const cancelRequest = this.ask(
+          protocol,
+          inputs,
+          (value, error, closeFault) => {
+            act.fault ??= closeFault ?? null;
+            return wake(
+              this.completion(
+                term.result_shape,
+                term.error_shape,
+                value,
+                error,
+              ),
+            );
+          },
+          term.request_shapes,
+        );
+        const cancel = act.context.cancel!;
+        act.context.cancel = (fault) =>
+          cancelRequest((closeFault) => cancel(closeFault ?? fault));
+        return;
       }
       case "Sleep": {
         const duration = term.inputs[0]
           ? this.boundary(act, term.inputs[0])
           : UNIT;
         const nanos = duration.kind === "i64" ? duration.value : 0n;
-        this.trace.advanceVirtualClock(Number(nanos / NANOS_PER_MS), null);
-        break;
+        let cancelTimer = () => {};
+        const wake = this.park(act, term, () => cancelTimer());
+        cancelTimer = this.scheduler.after(nanos, () => wake(UNIT));
+        return;
       }
       default:
         throw new Error(
           `suspension kind ${term.kind} resolved no handler after admission`,
         );
     }
-    const resume = term.resumes[0];
-    if (!resume) {
-      throw new Error(`suspension ${term.kind} names no resume edge`);
+  }
+
+  private park(
+    act: Activation,
+    term: Extract<TermV1, { op: "suspend" }>,
+    cleanup: () => void = () => {},
+  ): (value: VmValue, fault?: Fault | null, edgeIndex?: number) => boolean {
+    this.running = false;
+    let pending: { value: VmValue; fault: Fault | null; edge: number } | null =
+      null;
+    const resume = (value: VmValue, fault: Fault | null = null, edge = 0) => {
+      if (pending) return false;
+      pending = { value, fault, edge };
+      cleanup();
+      this.scheduler.enqueue(act.context.id, () => {
+        const outcome = pending!;
+        act.context.cancel = undefined;
+        const finish = (closeFault: Fault | null = null) => {
+          const fault =
+            closeFault ?? (outcome.fault ? (act.fault ?? outcome.fault) : null);
+          if (fault) {
+            act.fault = fault;
+            this.takeEdge(
+              act,
+              fault.kind === "panic" && fault.cancelled
+                ? term.cancel
+                : term.unwind!,
+            );
+          } else {
+            if (term.result && term.result !== "never")
+              this.define(act, term.result.value, outcome.value);
+            const edge = term.resumes[outcome.edge];
+            if (!edge) throw new Error(`${term.kind} has no resume edge`);
+            this.takeEdge(act, edge);
+          }
+          this.runFrame(act);
+        };
+        // A close can arrive after readiness but before this frame runs. Keep
+        // the cancellation latch live through that window and retire a result
+        // whose normal edge the consumer never entered.
+        if (outcome.fault)
+          this.closeValueAsync(
+            outcome.value,
+            this.faultText(act.fault ?? outcome.fault),
+            finish,
+            act.context.actor,
+          );
+        else finish();
+      });
+      return true;
+    };
+    act.context.cancel = (
+      fault = { kind: "panic", message: "task cancelled", cancelled: true },
+    ) => {
+      if (pending) pending.fault ??= fault;
+      else resume(UNIT, fault);
+    };
+    return resume;
+  }
+
+  private newPipe(capacity: number): VmValue {
+    const id = this.ids.channel();
+    this.trace.allocateId(
+      "channel",
+      id,
+      this.current?.context.id ?? "actor:root",
+    );
+    return this.pipes.create(id, capacity);
+  }
+
+  private faultText(fault: Fault | null): string | null {
+    return !fault ||
+      (fault.kind === "panic" && (fault.cancelled || fault.deadline))
+      ? null
+      : fault.kind === "panic"
+        ? fault.message
+        : (fault.message ?? trapMessage(fault.trap));
+  }
+
+  private pipeFault(act: Activation): string | null {
+    return this.faultText(act.context.actor?.crashing ?? act.fault);
+  }
+
+  private releaseOperation(
+    act: Activation,
+    value: VmValue,
+    finish?: () => void,
+  ): void {
+    let synchronous = true;
+    let completed = false;
+    this.closeValueAsync(value, this.pipeFault(act), (fault) => {
+      completed = true;
+      finish?.();
+      act.fault = combineFaults(act.fault, fault);
+      if (!synchronous)
+        this.scheduler.enqueue(act.context.id, () => this.runFrame(act));
+    });
+    synchronous = false;
+    if (!completed) this.running = false;
+  }
+
+  private generatorFor(value: VmValue): GeneratorEntry {
+    if (value.kind !== "generator")
+      throw new Error("generator operand has no generator identity");
+    const generator = this.generators.get(value.id);
+    if (!generator) throw new Error("generator does not exist");
+    return generator;
+  }
+
+  private finishGenerator(
+    generator: GeneratorEntry,
+    fault: Fault | null,
+  ): void {
+    if (generator.done) return;
+    generator.done = true;
+    generator.fault = fault?.kind === "panic" && fault.cancelled ? null : fault;
+    this.closeValueAsync(
+      generator.callable,
+      this.faultText(fault),
+      (closeFault) => {
+        generator.fault ??= closeFault;
+        const receive = generator.receive;
+        generator.receive = undefined;
+        receive?.(null, generator.fault);
+        for (const closed of generator.closed.splice(0))
+          closed(generator.fault);
+      },
+    );
+  }
+
+  private closeGenerator(
+    generator: GeneratorEntry,
+    done: (fault: Fault | null) => void,
+  ): void {
+    if (generator.done) {
+      done(generator.fault);
+      return;
     }
-    if (term.result && term.result !== "never") {
-      this.define(act, term.result.value, UNIT);
+    generator.closed.push(done);
+    if (!generator.started) this.finishGenerator(generator, null);
+    else generator.frame.context.cancel?.();
+  }
+
+  private closeValueAsync(
+    value: VmValue,
+    fault: string | null,
+    done: (fault: Fault | null) => void,
+    actor: ActorInstance | null = this.current.context.actor,
+  ): void {
+    const pending = [value];
+    let firstFault: Fault | null = null;
+    const next = (failure: Fault | null = null) => {
+      firstFault = combineFaults(firstFault, failure);
+      // Authored cleanup can fail after this drain began. Later owned sinks
+      // must disclose that failure instead of publishing a clean end.
+      const currentFault =
+        fault ?? this.faultText(actor?.crashing ?? firstFault);
+      while (pending.length) {
+        const value = pending.pop()!;
+        switch (value.kind) {
+          case "rc":
+            if (!value.closed) {
+              value.closed = true;
+              if (--value.cell.refs === 0) {
+                pending.push(value.cell.value);
+                value.cell.value = UNIT;
+              }
+            }
+            break;
+          case "task": {
+            // Dropping a handle does not cancel scoped work. Join drains the
+            // task, and scope close releases any result that was never taken.
+            const task = this.tasks.get(value.id);
+            if (task?.done) {
+              const result = task.value;
+              task.value = UNIT;
+              this.closeValueAsync(
+                result,
+                currentFault,
+                (fault) => next(fault ?? (task.close ? task.fault : null)),
+                actor,
+              );
+              return;
+            }
+            if (task?.close) {
+              task.close(next);
+              return;
+            }
+            break;
+          }
+          case "map":
+            for (const entry of [...value.entries.values()].reverse())
+              pending.push(entry.value, entry.key);
+            break;
+          case "generator":
+            this.closeGenerator(this.generatorFor(value), next);
+            return;
+          case "closure":
+            pending.push(value.environment);
+            break;
+          case "dyn":
+            pending.push(value.value);
+            break;
+          case "record": {
+            const resource = (this.pkg.resources ?? []).find(
+              (resource) =>
+                resource.kind === "record" && resource.ty === value.typeId,
+            );
+            if (resource?.close !== undefined) {
+              if (this.consumedResources.has(value)) break;
+              if (!this.closingResources.has(value)) {
+                this.invokeFrame(
+                  actor,
+                  resource.close,
+                  [value],
+                  () => next(),
+                  next,
+                );
+                return;
+              }
+              this.consumedResources.add(value);
+            }
+            pending.push(...value.fields);
+            break;
+          }
+          case "enum":
+            pending.push(...[...value.payload].reverse());
+            break;
+          case "vector":
+            pending.push(...[...value.items].reverse());
+            break;
+          case "sink":
+          case "stream":
+            pending.push(...this.pipes.close(value, currentFault).reverse());
+            break;
+        }
+      }
+      done(firstFault);
+    };
+    next();
+  }
+
+  private closeValue(value: VmValue, fault: string | null): void {
+    if (value.kind === "closure") this.closeValue(value.environment, fault);
+    else if (value.kind === "sink" || value.kind === "stream")
+      this.pipes.close(value, fault);
+    else if (value.kind === "record")
+      for (const field of value.fields) this.closeValue(field, fault);
+    else if (value.kind === "enum")
+      for (const field of value.payload) this.closeValue(field, fault);
+    else if (value.kind === "vector")
+      for (const item of value.items) this.closeValue(item, fault);
+  }
+
+  private newTask(): TaskEntry {
+    const task: TaskEntry = {
+      id: this.ids.task(),
+      done: false,
+      finishing: false,
+      value: UNIT,
+      fault: null,
+      actorError: null,
+      cancel: () => {},
+      completedAt: 0,
+      changed: [],
+    };
+    this.tasks.set(task.id, task);
+    return task;
+  }
+
+  private taskFor(value: VmValue): TaskEntry {
+    if (value.kind !== "task")
+      throw new Error(`expected a task, got ${value.kind}`);
+    const task = this.tasks.get(value.id);
+    if (!task) throw new Error("task does not exist");
+    return task;
+  }
+
+  private settleTask(
+    task: TaskEntry,
+    value: VmValue,
+    fault: Fault | null,
+  ): void {
+    if (task.done) return;
+    task.done = true;
+    task.value = value;
+    task.fault = fault;
+    task.completedAt = ++this.completedTasks;
+    for (const changed of [...task.changed]) changed();
+  }
+
+  private invokeFrame(
+    actor: ActorInstance | null,
+    callable: number,
+    args: VmValue[],
+    returned: (value: VmValue) => void,
+    failed: (fault: Fault) => void,
+  ): FrameContext {
+    const frame = this.activate(
+      this.functionAt(callable),
+      args,
+      null,
+      null,
+      undefined,
+      null,
+      {
+        id: actor?.id ?? "actor:root",
+        actor,
+        returned,
+        failed,
+      },
+    );
+    let cancelled: Fault | null = null;
+    frame.context.cancel = (
+      fault = { kind: "panic", message: "task cancelled", cancelled: true },
+    ) => {
+      cancelled = fault;
+    };
+    this.scheduler.enqueue(frame.context.id, () => {
+      frame.context.cancel = undefined;
+      if (cancelled) frame.context.failed(cancelled);
+      else this.runFrame(frame);
+    });
+    return frame.context;
+  }
+
+  private variant(
+    shapeId: number | null | undefined,
+    name: string,
+    payload: VmValue[] = [],
+  ): VmValue {
+    const shape = shapeId == null ? undefined : this.pkg.variants[shapeId];
+    if (!shape)
+      throw new Error(`runtime result has no variant shape ${shapeId}`);
+    const tag = shape.cases.findIndex((entry) => entry.name === name);
+    if (tag < 0) throw new Error(`${shape.name} has no ${name} case`);
+    return { kind: "enum", typeId: shape.name, tag, payload };
+  }
+
+  private completion(
+    result: number | null | undefined,
+    errorShape: number | null | undefined,
+    value: VmValue | null,
+    error: string | null,
+  ): VmValue {
+    return error
+      ? this.variant(result, "Err", [
+          this.variant(
+            errorShape,
+            error,
+            (error === "Failed" || error === "Rejected") && value
+              ? [value]
+              : [],
+          ),
+        ])
+      : this.variant(result, "Ok", [value ?? UNIT]);
+  }
+
+  private actorFor(value: VmValue): ActorInstance {
+    if (value.kind !== "actor")
+      throw new Error(`expected an actor handle, got ${value.kind}`);
+    const role = this.roles.get(value.id);
+    if (role) {
+      const child = this.roleValue(role) ?? role.latest;
+      if (!child) throw new Error("supervised role is between incarnations");
+      return this.actorFor(child);
     }
-    this.takeEdge(act, resume);
+    const actor = this.actors.get(value.id);
+    if (!actor) throw new Error(`actor ${value.id} does not exist`);
+    return actor;
+  }
+
+  private actorCall(
+    act: Activation,
+    term: Extract<TermV1, { op: "actor.call" }>,
+  ): void {
+    const args = term.args.map((arg) => this.boundary(act, arg));
+    const operation = term.operation;
+    switch (operation.op) {
+      case "spawn": {
+        const layout = this.pkg.actors?.find(
+          (actor) => actor.id === operation.actor,
+        );
+        if (!layout)
+          throw new Error(`actor layout ${operation.actor} is missing`);
+        let supplied = 0;
+        const actor: ActorInstance = {
+          id: this.ids.actor(),
+          layout,
+          state: {
+            kind: "record",
+            typeId: "",
+            fields: layout.state_fields.map((field) =>
+              field.deferred ? UNIT : (args[supplied++] ?? UNIT),
+            ),
+          },
+          mailbox: [],
+          admission: [],
+          busy: true,
+          alive: true,
+          completed: false,
+          closing: false,
+          drainingMailbox: false,
+          mailboxDrained: [],
+          closingFault: null,
+          crashing: null,
+          active: null,
+          closed: [],
+        };
+        this.actors.set(actor.id, actor);
+        this.trace.allocateId("actor", actor.id, act.context.id);
+        this.trace.snapshot("actor.spawn", { actor_id: actor.id });
+        const handle: VmValue = { kind: "actor", id: actor.id };
+        this.running = false;
+        const failed = (fault: Fault) => {
+          actor.alive = false;
+          this.closeValueAsync(actor.state, this.faultText(fault), () => {
+            actor.completed = true;
+            for (const message of actor.mailbox.splice(0))
+              message.complete(null, "Dead");
+            for (const closed of actor.closed.splice(0)) closed();
+            this.raiseFault(act, fault, term.unwind);
+            this.scheduler.enqueue(act.context.id, () => this.runFrame(act));
+          });
+        };
+        const started = () => {
+          actor.busy = false;
+          this.dispatchActor(actor);
+          this.completeShim(act, term, handle);
+          this.scheduler.enqueue(act.context.id, () => this.runFrame(act));
+        };
+        const start = () => {
+          if (layout.start !== undefined)
+            this.invokeFrame(
+              actor,
+              layout.start,
+              [actor.state],
+              started,
+              failed,
+            );
+          else started();
+        };
+        if (layout.init !== undefined)
+          this.invokeFrame(
+            actor,
+            layout.init,
+            [actor.state, ...args.slice(supplied)],
+            start,
+            failed,
+          );
+        else start();
+        return;
+      }
+      case "stream_start": {
+        const [target, payload] = args;
+        const fields = fieldsOf(payload!);
+        this.running = false;
+        const admit = () => {
+          const role = "id" in target! ? this.roles.get(target.id) : undefined;
+          if (role && this.rolePending(role)) {
+            role.waiting.push(admit);
+            return;
+          }
+          const actor = this.actorFor(target!);
+          if (!actor.alive || actor.closing) {
+            this.closeValue(payload!, "stream producer is closed");
+            this.raiseFault(
+              act,
+              { kind: "panic", message: "stream producer is closed" },
+              term.unwind,
+            );
+          } else {
+            if (
+              actor.layout.mailbox_capacity !== undefined &&
+              actor.mailbox.length >= actor.layout.mailbox_capacity
+            ) {
+              actor.admission.push(admit);
+              return;
+            }
+            const handler = actor.layout.handlers.find(
+              (handler) =>
+                handler.message_id === operation.message && handler.streams,
+            );
+            if (!handler)
+              throw new Error("stream request has no producer handler");
+            actor.mailbox.push({
+              handler,
+              payload: fields,
+              reply: false,
+              complete: (_value, error, drained) => {
+                if (error) this.closeValue(payload!, error);
+                drained?.(null);
+              },
+            });
+            this.dispatchActor(actor);
+            this.completeShim(act, term, UNIT);
+          }
+          this.scheduler.enqueue(act.context.id, () => this.runFrame(act));
+        };
+        admit();
+        return;
+      }
+      case "call_start": {
+        const task = this.newTask();
+        const cancelRequest = this.ask(
+          operation.protocol,
+          args,
+          (value, error, closeFault) => {
+            task.actorError = error;
+            this.settleTask(task, value ?? UNIT, closeFault ?? null);
+            return true;
+          },
+        );
+        task.close = (done) =>
+          cancelRequest((fault) => {
+            this.settleTask(task, UNIT, fault);
+            done(fault);
+          });
+        this.completeShim(act, term, { kind: "task", id: task.id });
+        return;
+      }
+      case "call_take": {
+        const task = this.taskFor(args[0]!);
+        if (!task.done)
+          throw new Error("actor completion taken before readiness");
+        act.fault ??= task.fault;
+        const value = task.value;
+        task.value = UNIT;
+        this.completeShim(
+          act,
+          term,
+          this.completion(
+            term.result_shape,
+            term.error_shape,
+            value,
+            task.actorError,
+          ),
+        );
+        return;
+      }
+      case "submit": {
+        const request = args[0];
+        if (request?.kind !== "record")
+          throw new Error("submission has no addressed request");
+        const [target, member, payload] = request.fields;
+        if (member?.kind !== "i64" || payload?.kind !== "record")
+          throw new Error("invalid message description");
+        const actor = this.actorFor(target!);
+        const handler = actor.layout.handlers.find(
+          (handler) => handler.message_id === Number(member.value),
+        );
+        if (!handler) throw new Error("submission names no actor handler");
+        const shapes = term.submission_shapes;
+        if (!shapes) throw new Error("submission lacks its result shapes");
+        const accepted = (discarded: boolean) =>
+          this.variant(term.result_shape, "Ok", [
+            this.variant(shapes.success, discarded ? "Discarded" : "Accepted"),
+          ]);
+        const rejected = (reason: string) =>
+          this.variant(term.result_shape, "Err", [
+            {
+              kind: "record",
+              typeId: this.aggregateName(shapes.failure!),
+              fields: [this.variant(shapes.reason, reason), request],
+            },
+          ]);
+        let parked = false;
+        const finish = (value: VmValue) => {
+          this.completeShim(act, term, value);
+          if (parked)
+            this.scheduler.enqueue(act.context.id, () => this.runFrame(act));
+        };
+        const submit = () => {
+          if (!actor.alive || actor.closing) {
+            finish(rejected("Closed"));
+            return;
+          }
+          const full =
+            actor.layout.mailbox_capacity !== undefined &&
+            actor.mailbox.length >= actor.layout.mailbox_capacity;
+          if (full) {
+            if (operation.policy === "drop_newest") {
+              parked = true;
+              this.running = false;
+              this.closeValueAsync(
+                payload,
+                this.pipeFault(act),
+                (fault) => {
+                  act.fault ??= fault;
+                  finish(accepted(true));
+                },
+                act.context.actor,
+              );
+              return;
+            }
+            if (operation.policy === "reject") {
+              finish(rejected("Full"));
+              return;
+            }
+            // The checker already resolved declaration defaults and explicit
+            // overrides. Coalescing is refused by admission until implemented.
+            if (operation.policy !== "wait")
+              throw new Error("submission has no admitted policy");
+            parked = true;
+            this.running = false;
+            actor.admission.push(submit);
+            return;
+          }
+          actor.mailbox.push({
+            handler,
+            payload: payload.fields,
+            reply: false,
+            complete: (_value, _error, drained) => drained?.(null),
+          });
+          this.trace.snapshot("actor.send", {
+            actor_id: actor.id,
+            handler: handler.name,
+          });
+          this.dispatchActor(actor);
+          finish(accepted(false));
+        };
+        submit();
+        return;
+      }
+      case "supervisor_spawn": {
+        const layout = this.pkg.supervisors?.find(
+          (layout) => layout.id === operation.supervisor,
+        );
+        if (!layout) throw new Error("supervisor descriptor is missing");
+        const owner: SupervisorInstance = {
+          id: this.ids.supervisor(),
+          layout,
+          config: args,
+          children: layout.children.flatMap((child) =>
+            Array.from({ length: child.pool_count ?? 1 }, () => null),
+          ),
+          specs: layout.children.flatMap((child) =>
+            Array.from({ length: child.pool_count ?? 1 }, () => child),
+          ),
+          offsets: layout.children.map((_child, index) =>
+            layout.children
+              .slice(0, index)
+              .reduce((sum, child) => sum + (child.pool_count ?? 1), 0),
+          ),
+          recovering: new Set(),
+          restartBusy: false,
+          pendingRestarts: [],
+          spent: new Set(),
+          completed: false,
+          alive: true,
+          restartTimes: [],
+          closed: [],
+        };
+        this.supervisors.set(owner.id, owner);
+        this.trace.allocateId("supervisor", owner.id, act.context.id);
+        this.trace.snapshot("supervisor.spawn", { supervisor_id: owner.id });
+        this.running = false;
+        let child = 0;
+        const next = () => {
+          if (child < owner.children.length) {
+            this.startChild(owner, child++, next, (fault) => {
+              owner.closed.push(() => {
+                this.raiseFault(act, fault, term.unwind);
+                this.scheduler.enqueue(act.context.id, () =>
+                  this.runFrame(act),
+                );
+              });
+              this.stopSupervisor(owner);
+            });
+          } else {
+            this.completeShim(act, term, { kind: "supervisor", id: owner.id });
+            this.scheduler.enqueue(act.context.id, () => this.runFrame(act));
+          }
+        };
+        next();
+        return;
+      }
+      case "supervisor_pool_view":
+      case "supervisor_await_restart":
+      case "supervisor_child": {
+        const owner = this.supervisorFor(args[0]!);
+        const spec = owner.layout.children[operation.child];
+        if (!spec) throw new Error("supervisor child is missing");
+        const ownerId = (args[0] as { id: string }).id;
+        const makeRole = (child: number): VmValue => {
+          const id = `${ownerId}:role:${child}`;
+          if (!this.roles.has(id))
+            this.roles.set(id, {
+              ownerId,
+              child,
+              latest: owner.children[child] ?? null,
+              waiting: [],
+            });
+          return { kind: "actor" in spec.role ? "actor" : "supervisor", id };
+        };
+        const offset = owner.offsets[operation.child]!;
+        if (operation.op === "supervisor_pool_view") {
+          this.completeShim(act, term, {
+            kind: "vector",
+            elementType: "role",
+            items: Array.from({ length: spec.pool_count ?? 1 }, (_, index) =>
+              makeRole(offset + index),
+            ),
+          });
+          return;
+        }
+        const value = makeRole(offset);
+        const role = this.roles.get((value as { id: string }).id)!;
+        if (
+          operation.op === "supervisor_await_restart" &&
+          this.rolePending(role)
+        ) {
+          this.running = false;
+          const settled = () => {
+            if (this.rolePending(role)) {
+              role.waiting.push(settled);
+              return;
+            }
+            this.completeShim(act, term, value);
+            this.scheduler.enqueue(act.context.id, () => this.runFrame(act));
+          };
+          role.waiting.push(settled);
+        } else this.completeShim(act, term, value);
+        return;
+      }
+      case "supervisor_stop": {
+        const owner = this.supervisorFor(args[0]!);
+        this.stopSupervisor(owner);
+        this.completeShim(act, term, args[0]!);
+        return;
+      }
+      case "supervisor_role_await_closed":
+      case "supervisor_await_closed": {
+        const owner = this.supervisorFor(args[0]!);
+        if (
+          operation.op === "supervisor_role_await_closed" &&
+          operation.closing
+        )
+          this.stopSupervisor(owner);
+        if (owner.completed) this.completeShim(act, term, UNIT);
+        else {
+          this.running = false;
+          owner.closed.push(() => {
+            this.completeShim(act, term, UNIT);
+            this.scheduler.enqueue(act.context.id, () => this.runFrame(act));
+          });
+        }
+        return;
+      }
+      case "self_handle":
+        if (!act.context.actor)
+          throw new Error("self handle outside an actor turn");
+        this.completeShim(act, term, {
+          kind: "actor",
+          id: act.context.actor.id,
+        });
+        return;
+      case "close": {
+        const actor = this.actorFor(args[0]!);
+        this.requestActorClose(actor);
+        this.completeShim(act, term, args[0]!);
+        return;
+      }
+      case "await_closed": {
+        const actor = this.actorFor(args[0]!);
+        const complete = () => {
+          const fault = actor.crashing ?? actor.closingFault;
+          if (actor.closeFaultDebt !== undefined)
+            this.faultDebts.delete(actor.closeFaultDebt);
+          if (fault) this.raiseFault(act, fault, term.unwind);
+          else this.completeShim(act, term, UNIT);
+        };
+        if (actor.completed) {
+          complete();
+          return;
+        }
+        this.running = false;
+        actor.closed.push(() => {
+          complete();
+          this.scheduler.enqueue(act.context.id, () => this.runFrame(act));
+        });
+        return;
+      }
+      default:
+        throw new Error(`actor operation ${operation.op} has no executor`);
+    }
+  }
+
+  private ask(
+    protocol: ActorProtocol,
+    inputs: VmValue[],
+    complete: (
+      value: VmValue | null,
+      error: string | null,
+      closeFault?: Fault | null,
+    ) => boolean,
+    shapes?: RequestShapes,
+  ): (done: (fault: Fault | null) => void) => void {
+    let settled = false;
+    let admitted = false;
+    let closing = false;
+    const owner = this.current.context.actor;
+    let receiver: ActorInstance | null = null;
+    let cancelTimer = () => {};
+    const finish: ActorMessage["complete"] = (value, error, drained) => {
+      const alreadySettled = settled;
+      settled = true;
+      cancelTimer();
+      if (alreadySettled || complete(value, error) === false) {
+        // The finishing receiver still owns a reply that its caller no
+        // longer accepts. Its next turn must wait for this release.
+        this.closeValueAsync(
+          value ?? UNIT,
+          null,
+          (fault) => {
+            if (drained) drained(fault);
+            else if (fault && owner) this.crashActor(owner, fault);
+            else if (fault) this.rootFault ??= fault;
+          },
+          admitted ? receiver : owner,
+        );
+      } else drained?.(null);
+    };
+    const target = inputs[0]!;
+    const payload = protocol.sealed ? fieldsOf(inputs[1]!) : inputs.slice(1);
+    let closed = false;
+    let closeFault: Fault | null = null;
+    const closeWaiters: Array<(fault: Fault | null) => void> = [];
+    const closeRequest = (done: (fault: Fault | null) => void) => {
+      if (closed) {
+        done(closeFault);
+        return;
+      }
+      closeWaiters.push(done);
+      if (closing) return;
+      closing = true;
+      cancelTimer();
+      this.closeValueAsync(
+        { kind: "record", typeId: "", fields: payload },
+        null,
+        (fault) => {
+          closed = true;
+          closeFault = fault;
+          for (const waiter of closeWaiters.splice(0)) waiter(fault);
+        },
+        owner,
+      );
+    };
+    const reject = (reason: string) => {
+      if (settled || closing) return;
+      closeRequest((fault) => {
+        if (settled) return;
+        settled = true;
+        complete(null, reason, fault);
+      });
+    };
+    if (protocol.deadline_ns != null)
+      cancelTimer = this.scheduler.after(BigInt(protocol.deadline_ns), () => {
+        if (admitted) finish(null, "Timeout");
+        else reject("Timeout");
+      });
+    const attempt = () => {
+      if (settled || closing) return;
+      const role = "id" in target ? this.roles.get(target.id) : undefined;
+      if (role && this.rolePending(role)) {
+        role.waiting.push(attempt);
+        return;
+      }
+      const actor = this.actorFor(target);
+      if (!actor.alive || actor.closing) {
+        reject("Dead");
+        return;
+      }
+      const handler = actor.layout.handlers.find(
+        (handler) => handler.message_id === protocol.message,
+      );
+      if (!handler)
+        throw new Error(`actor ${actor.id} has no message ${protocol.message}`);
+      const full =
+        actor.layout.mailbox_capacity !== undefined &&
+        actor.mailbox.length >= actor.layout.mailbox_capacity;
+      if (full) {
+        if (protocol.policy === "reject") {
+          if (
+            !shapes ||
+            shapes.failure === null ||
+            shapes.reason === null ||
+            shapes.message === null ||
+            shapes.request === null
+          )
+            throw new Error("rejected call lacks its checked request shapes");
+          const record = (shape: number, fields: VmValue[]): VmValue => ({
+            kind: "record",
+            typeId: this.aggregateName(shape),
+            fields,
+          });
+          const owner: VmValue = {
+            kind: "record",
+            typeId: "",
+            fields: payload,
+          };
+          const request = record(shapes.request, [owner]);
+          const message = record(shapes.message, [
+            target,
+            { kind: "i64", value: BigInt(protocol.message) },
+            request,
+          ]);
+          finish(
+            record(shapes.failure, [
+              this.variant(shapes.reason, "Full"),
+              message,
+            ]),
+            "Rejected",
+          );
+        } else {
+          actor.admission.push(attempt);
+        }
+        return;
+      }
+      admitted = true;
+      receiver = actor;
+      actor.mailbox.push({ handler, payload, complete: finish, reply: true });
+      this.trace.snapshot("actor.ask", {
+        actor_id: actor.id,
+        handler: handler.name,
+      });
+      this.dispatchActor(actor);
+    };
+    attempt();
+    return (done) => {
+      const wasSettled = settled;
+      settled = true;
+      cancelTimer();
+      if (admitted || (wasSettled && !closing)) done(null);
+      else closeRequest(done);
+    };
+  }
+
+  private dispatchActor(actor: ActorInstance): void {
+    if (actor.busy || !actor.alive || actor.drainingMailbox) return;
+    if (actor.closing && actor.mailbox.length > 0) {
+      this.drainMailbox(actor, this.faultText(actor.closingFault), (fault) => {
+        actor.closingFault = combineFaults(actor.closingFault, fault);
+        this.dispatchActor(actor);
+      });
+      return;
+    }
+    if (actor.mailbox.length === 0) {
+      if (actor.closing) {
+        this.stopActor(actor);
+      }
+      return;
+    }
+    actor.busy = true;
+    this.scheduler.enqueue(actor.id, () => {
+      if (actor.closing) {
+        actor.busy = false;
+        this.dispatchActor(actor);
+        return;
+      }
+      const message = actor.mailbox.shift();
+      if (!message || !actor.alive) {
+        actor.busy = false;
+        if (actor.closing && actor.alive) this.dispatchActor(actor);
+        return;
+      }
+      for (const admit of actor.admission.splice(0)) admit();
+      this.trace.snapshot("actor.receive", {
+        actor_id: actor.id,
+        handler: message.handler.name,
+      });
+      const frame = this.activate(
+        this.functionAt(message.handler.callable),
+        [actor.state, ...message.payload],
+        null,
+        null,
+        undefined,
+        null,
+        {
+          id: actor.id,
+          actor,
+          returned: (value) => {
+            actor.active = null;
+            const drained = (fault: Fault | null) => {
+              actor.busy = false;
+              if (fault) this.crashActor(actor, fault);
+              else this.dispatchActor(actor);
+            };
+            this.trace.snapshot("actor.reply", {
+              actor_id: actor.id,
+              value: toJsonValue(value),
+            });
+            if (message.handler.fallible && value.kind === "enum") {
+              const shape = this.pkg.variants[message.handler.result_shape!];
+              if (shape?.cases[value.tag]?.name === "Err") {
+                if (message.reply)
+                  message.complete(value.payload[0] ?? UNIT, "Failed", drained);
+                else {
+                  this.crashActor(actor, {
+                    kind: "panic",
+                    message: "unhandled declared handler failure",
+                  });
+                  return;
+                }
+              } else {
+                message.complete(value.payload[0] ?? UNIT, null, drained);
+              }
+            } else {
+              message.complete(value, null, drained);
+            }
+          },
+          failed: (fault) => {
+            actor.active = null;
+            actor.busy = false;
+            if (fault.kind === "panic" && fault.cancelled) {
+              message.complete(null, "Dead");
+              this.dispatchActor(actor);
+            } else {
+              this.crashActor(actor, fault);
+              message.complete(null, "Trapped");
+            }
+          },
+        },
+      );
+      actor.active = frame.context;
+      this.runFrame(frame);
+    });
+  }
+
+  private crashActor(actor: ActorInstance, fault: Fault): void {
+    const debt = ++this.nextFaultDebt;
+    this.faultDebts.add(debt);
+    if (actor.supervisor)
+      actor.supervisor.owner.recovering.add(actor.supervisor.child);
+    actor.crashing ??= fault;
+    actor.alive = false;
+    actor.busy = false;
+    this.trace.snapshot("actor.crash", {
+      actor_id: actor.id,
+      message: this.faultText(fault),
+    });
+    const finished = (action: string) => {
+      if (actor.drainingMailbox) {
+        actor.mailboxDrained.push(() => finished(action));
+        return;
+      }
+      this.closeValueAsync(
+        actor.state,
+        this.faultText(fault),
+        () =>
+          this.drainMailbox(actor, this.faultText(fault), () => {
+            actor.completed = true;
+            for (const wake of actor.closed.splice(0)) wake();
+            for (const admit of actor.admission.splice(0)) admit();
+            if (actor.supervisor) {
+              const { owner, child } = actor.supervisor;
+              if (action === "Restart") this.restartChild(owner, child, [debt]);
+              else if (action === "Escalate")
+                this.escalateSupervisor(owner, [debt]);
+              else {
+                owner.spent.add(child);
+                owner.recovering.delete(child);
+                this.wakeRoles();
+              }
+            }
+          }),
+        actor,
+      );
+    };
+    if (actor.layout.crash !== undefined) {
+      const [code, message] = faultInfo(fault);
+      const info: VmValue = {
+        kind: "record",
+        typeId: this.aggregateName(actor.layout.crash_info!),
+        fields: [
+          { kind: "i64", value: BigInt(code!) },
+          { kind: "string", value: String(message) },
+        ],
+      };
+      this.invokeFrame(
+        actor,
+        actor.layout.crash,
+        [actor.state, info],
+        (value) => {
+          const shape = this.pkg.variants[actor.layout.crash_action!];
+          const action =
+            value.kind === "enum" ? shape?.cases[value.tag]?.name : undefined;
+          if (!action)
+            throw new Error("crash hook returned no declared action");
+          finished(action);
+        },
+        () => finished("Kill"),
+      );
+    } else finished("Restart");
+  }
+
+  private supervisorFor(value: VmValue): SupervisorInstance {
+    if (value.kind !== "supervisor")
+      throw new Error("expected a supervisor handle");
+    const role = this.roles.get(value.id);
+    if (role) return this.supervisorFor((this.roleValue(role) ?? role.latest)!);
+    const owner = this.supervisors.get(value.id);
+    if (!owner) throw new Error("supervisor does not exist");
+    return owner;
+  }
+
+  private startChild(
+    owner: SupervisorInstance,
+    child: number,
+    done: () => void,
+    failed: (fault: Fault) => void,
+  ): void {
+    const spec = owner.specs[child]!;
+    this.invokeFrame(
+      null,
+      spec.spawn,
+      owner.config,
+      (value) => {
+        owner.children[child] = value;
+        if (value.kind === "actor")
+          this.actorFor(value).supervisor = { owner, child };
+        else if (value.kind === "supervisor")
+          this.supervisorFor(value).supervisor = { owner, child };
+        owner.recovering.delete(child);
+        this.wakeRoles();
+        this.trace.snapshot("supervisor.child", {
+          supervisor_id: owner.id,
+          child,
+        });
+        done();
+      },
+      failed,
+    );
+  }
+
+  private roleOwner(role: RoleSlot): SupervisorInstance | null {
+    const parentRole = this.roles.get(role.ownerId);
+    const value = parentRole
+      ? this.roleValue(parentRole)
+      : ({ kind: "supervisor", id: role.ownerId } as const);
+    return value?.kind === "supervisor"
+      ? (this.supervisors.get(value.id) ?? null)
+      : null;
+  }
+
+  private roleValue(role: RoleSlot): VmValue | null {
+    const value = this.roleOwner(role)?.children[role.child] ?? null;
+    if (value) role.latest = value;
+    return value;
+  }
+
+  private rolePending(role: RoleSlot): boolean {
+    const parentRole = this.roles.get(role.ownerId);
+    if (parentRole && this.rolePending(parentRole)) return true;
+    const owner = this.roleOwner(role);
+    return (
+      !!owner?.alive &&
+      (owner.recovering.has(role.child) || owner.children[role.child] === null)
+    );
+  }
+
+  private wakeRoles(): void {
+    for (const role of this.roles.values()) {
+      this.roleValue(role);
+      if (!this.rolePending(role))
+        for (const wake of role.waiting.splice(0)) wake();
+    }
+  }
+
+  private restartChild(
+    owner: SupervisorInstance,
+    child: number,
+    debts: number[],
+  ): void {
+    if (
+      !owner.alive ||
+      owner.specs[child]!.restart === "temporary" ||
+      owner.spent.has(child)
+    ) {
+      owner.spent.add(child);
+      owner.recovering.delete(child);
+      this.wakeRoles();
+      return;
+    }
+    if (owner.restartBusy) {
+      owner.pendingRestarts.push({ child, debts });
+      return;
+    }
+    const now = this.trace.virtualTimeMs;
+    owner.restartTimes = owner.restartTimes.filter(
+      (at) => now - at < owner.layout.window_secs * 1000,
+    );
+    if (owner.restartTimes.length >= owner.layout.max_restarts) {
+      this.escalateSupervisor(owner, debts);
+      return;
+    }
+    owner.restartTimes.push(now);
+    owner.restartBusy = true;
+    const affected = owner.children
+      .map((_, index) => index)
+      .filter(
+        (index) =>
+          !owner.spent.has(index) &&
+          (owner.layout.strategy === "one_for_all" ||
+            (owner.layout.strategy === "rest_for_one" && index >= child) ||
+            index === child),
+      );
+    for (const index of affected) owner.recovering.add(index);
+    this.trace.snapshot("supervisor.restart", {
+      supervisor_id: owner.id,
+      child,
+    });
+    const stopping = [...affected].reverse();
+    const stop = () => {
+      const index = stopping.shift();
+      if (index === undefined) {
+        start();
+        return;
+      }
+      this.stopChild(owner.children[index]!, () => {
+        owner.children[index] = null;
+        stop();
+      });
+    };
+    const starting = [...affected];
+    const start = () => {
+      if (!owner.alive) {
+        owner.restartBusy = false;
+        this.wakeRoles();
+        return;
+      }
+      const index = starting.shift();
+      if (index === undefined) {
+        for (const debt of debts) this.faultDebts.delete(debt);
+        for (const pending of owner.pendingRestarts.filter((pending) =>
+          affected.includes(pending.child),
+        )) {
+          for (const debt of pending.debts) this.faultDebts.delete(debt);
+        }
+        owner.pendingRestarts = owner.pendingRestarts.filter(
+          (pending) => !affected.includes(pending.child),
+        );
+        owner.restartBusy = false;
+        this.wakeRoles();
+        const pending = owner.pendingRestarts.shift();
+        if (pending) this.restartChild(owner, pending.child, pending.debts);
+        return;
+      }
+      this.startChild(owner, index, start, () => {
+        owner.restartBusy = false;
+        this.restartChild(owner, index, debts);
+      });
+    };
+    stop();
+  }
+
+  private escalateSupervisor(owner: SupervisorInstance, debts: number[]): void {
+    const parent = owner.supervisor;
+    if (parent) parent.owner.recovering.add(parent.child);
+    owner.closed.push(() => {
+      if (parent) this.restartChild(parent.owner, parent.child, debts);
+      else this.wakeRoles();
+    });
+    this.stopSupervisor(owner);
+  }
+
+  private stopChild(value: VmValue | null, done: () => void): void {
+    if (!value) {
+      done();
+      return;
+    }
+    if (value.kind === "actor") {
+      const actor = this.actorFor(value);
+      if (actor.completed) {
+        done();
+        return;
+      }
+      actor.closed.push(done);
+      this.requestActorClose(actor);
+    } else if (value.kind === "supervisor") {
+      const nested = this.supervisorFor(value);
+      if (nested.completed) {
+        done();
+        return;
+      }
+      nested.closed.push(done);
+      this.stopSupervisor(nested);
+    } else throw new Error("supervisor child is neither actor nor supervisor");
+  }
+
+  private stopSupervisor(owner: SupervisorInstance): void {
+    if (!owner.alive) return;
+    owner.alive = false;
+    const children = [...owner.children].reverse();
+    const next = () => {
+      if (children.length) {
+        this.stopChild(children.shift()!, next);
+        return;
+      }
+      this.closeValueAsync(
+        { kind: "record", typeId: "", fields: owner.config },
+        null,
+        (fault) => {
+          if (fault) this.faultDebts.add(++this.nextFaultDebt);
+          owner.completed = true;
+          for (const wake of owner.closed.splice(0)) wake();
+          this.wakeRoles();
+        },
+      );
+    };
+    next();
+  }
+
+  private drainMailbox(
+    actor: ActorInstance,
+    fault: string | null,
+    done: (fault: Fault | null) => void,
+  ): void {
+    const messages = actor.mailbox.splice(0);
+    actor.drainingMailbox = true;
+    this.closeValueAsync(
+      {
+        kind: "vector",
+        elementType: "message",
+        items: messages.map((message) => ({
+          kind: "record",
+          typeId: "",
+          fields: message.payload,
+        })),
+      },
+      fault,
+      (closeFault) => {
+        actor.drainingMailbox = false;
+        for (const message of messages) message.complete(null, "Dead");
+        done(closeFault);
+        for (const wake of actor.mailboxDrained.splice(0)) wake();
+      },
+      actor,
+    );
+  }
+
+  private requestActorClose(actor: ActorInstance): void {
+    if (actor.closing || actor.completed) return;
+    actor.closing = true;
+    // The active turn drains first. Queued owners follow it before state and
+    // stop hooks, and each authored close may call a peer or suspend.
+    actor.active?.cancel?.();
+    this.dispatchActor(actor);
+    for (const admit of actor.admission.splice(0)) admit();
+  }
+
+  private stopActor(actor: ActorInstance): void {
+    actor.busy = true;
+    const hooks = [...actor.layout.stop];
+    const next = () => {
+      const hook = hooks.shift();
+      if (hook !== undefined) {
+        this.invokeFrame(actor, hook, [actor.state], next, (fault) => {
+          actor.closingFault = combineFaults(actor.closingFault, fault);
+          hooks.length = 0;
+          next();
+        });
+      } else {
+        this.closeValueAsync(
+          actor.state,
+          this.faultText(actor.closingFault),
+          (fault) => {
+            actor.closingFault = combineFaults(actor.closingFault, fault);
+            // Stopped cleanup belongs to the completion barrier, independently
+            // of handler-crash debt and supervisor restart decisions.
+            actor.crashing = null;
+            if (actor.closingFault) {
+              actor.closeFaultDebt = ++this.nextFaultDebt;
+              this.faultDebts.add(actor.closeFaultDebt);
+            }
+            actor.completed = true;
+            actor.alive = false;
+            actor.busy = false;
+            this.trace.snapshot("actor.stop", { actor_id: actor.id });
+            for (const wake of actor.closed.splice(0)) wake();
+          },
+          actor,
+        );
+      }
+    };
+    next();
   }
 
   // ── exit and faults ──────────────────────────────────────────────────────
-
-  private exitProgram(value: VmValue): never {
-    // `entry.exit` names what the entry publishes: nothing, or the integer
-    // process status the body returned.
-    const exit =
-      this.pkg.entry?.exit === "status" && value.kind === "i64"
-        ? Number(value.value)
-        : 0;
-    this.trace.exitCode = exit;
-    throw new Halt("ok");
-  }
 
   private haltWithFault(fault: Fault): never {
     const isPanic = fault.kind === "panic";
@@ -1023,6 +3345,60 @@ class ExecutorV1 {
     );
     throw new Halt(status);
   }
+}
+
+function combineFaults(
+  primary: Fault | null,
+  secondary: Fault | null,
+): Fault | null {
+  if (!primary) return secondary;
+  if (!secondary || primary === secondary) return primary;
+  const diagnostics: Fault[] = [];
+  const visited = new Set<Fault>();
+  const append = (fault: Fault) => {
+    if (visited.has(fault)) return;
+    visited.add(fault);
+    const origin = fault.primary ?? fault;
+    if (!diagnostics.includes(origin)) diagnostics.push(origin);
+    for (const next of fault.secondary ?? []) append(next);
+  };
+  append(primary);
+  append(secondary);
+  // Reports own an immutable ordered view of original diagnostics. Faults can
+  // be shared by a parked unwind, actor completion and multiple observers;
+  // combining those views must neither duplicate nor mutate their graph.
+  const retained =
+    primary.kind === "panic" && primary.cancelled
+      ? diagnostics.filter(
+          (fault) => !(fault.kind === "panic" && fault.cancelled),
+        )
+      : diagnostics;
+  const [first, ...rest] = retained.length ? retained : diagnostics;
+  return { ...first!, primary: first!, secondary: rest };
+}
+
+function faultInfo(fault: Fault): [number, string] {
+  if (fault.kind === "panic") {
+    if (fault.cancelled) return [-1, "Cancelled"];
+    if (fault.deadline) return [-2, "Deadline"];
+    return [212, "UserPanic"];
+  }
+  return {
+    integer_overflow: [201, "IntegerOverflow"],
+    divide_by_zero: [202, "DivideByZero"],
+    shift_out_of_range: [204, "ShiftOutOfRange"],
+    vector_bounds: [205, "IndexOutOfBounds"],
+  }[fault.trap] as [number, string];
+}
+
+function faultReport(fault: Fault, secondary = false): string {
+  const [code, reason] = faultInfo(fault);
+  const label = secondary ? "secondary failure" : "failure";
+  const message = fault.message === undefined ? "" : `: ${fault.message}`;
+  return (
+    `hew: ${label}: ${reason} (${code})${message}\n` +
+    (fault.secondary ?? []).map((next) => faultReport(next, true)).join("")
+  );
 }
 
 // ── refs ────────────────────────────────────────────────────────────────────
@@ -1049,9 +3425,8 @@ function writeRef(ref: Ref, value: VmValue): void {
 /// Only a cell of its own can be ended; a projection lives as long as the
 /// storage it reaches through.
 function invalidateRef(ref: Ref): void {
-  if (ref.kind === "cell") {
-    ref.cell.valid = false;
-  }
+  if (ref.kind === "cell") ref.cell.valid = false;
+  else writeRef(ref, UNIT);
 }
 
 function readRef(ref: Ref): VmValue {
@@ -1093,13 +3468,17 @@ function tagOf(value: VmValue): number {
   return value.tag;
 }
 
-function functionId(value: VmValue): number {
-  if (value.kind !== "function") {
-    throw new TypeError(
-      `indirect.call expected a function value, got ${value.kind}`,
-    );
+function calleeFunction(value: VmValue): number {
+  switch (value.kind) {
+    case "function":
+      return Number(value.id);
+    case "closure":
+      return value.body;
+    default:
+      throw new TypeError(
+        `indirect.call expected a callable value, got ${value.kind}`,
+      );
   }
-  return Number(value.id);
 }
 
 function truth(value: VmValue): boolean {
@@ -1126,6 +3505,9 @@ function canonical(value: VmValue): string {
 
 function toComparable(value: VmValue): unknown {
   switch (value.kind) {
+    case "actor":
+    case "supervisor":
+      return [value.kind, value.id];
     case "i64":
       return value.value.toString();
     case "record":
@@ -1134,6 +3516,8 @@ function toComparable(value: VmValue): unknown {
       return [value.tag, value.payload.map(toComparable)];
     case "vector":
       return value.items.map(toComparable);
+    case "rc":
+      return toComparable(value.cell.value);
     case "map":
       return [...value.entries.values()].map((entry) => [
         toComparable(entry.key),
@@ -1163,11 +3547,6 @@ function floatConst(op: Extract<OpV1, { op: "const.float" }>): number {
     default:
       return narrowFloat(op.value ?? 0, op.ty);
   }
-}
-
-function valueCloseePlace(detail: unknown): number | null {
-  const place = (detail as { place?: unknown } | null | undefined)?.place;
-  return typeof place === "number" ? place : null;
 }
 
 function trapMessage(trap: TrapName): string {
@@ -1445,19 +3824,6 @@ function equals(lhs: VmValue, rhs: VmValue): boolean {
   return canonical(lhs) === canonical(rhs);
 }
 
-/// The derived structural hash. FNV-1a over the canonical rendering keeps equal
-/// values hashing equally and the result stable across runs.
-function structuralHash(value: VmValue): bigint {
-  let hash = 0xcbf29ce484222325n;
-  for (const unit of canonical(value)) {
-    hash = BigInt.asUintN(
-      64,
-      (hash ^ BigInt(unit.codePointAt(0) ?? 0)) * 0x100000001b3n,
-    );
-  }
-  return BigInt.asIntN(64, hash);
-}
-
 function ordered(op: string, lhs: VmValue, rhs: VmValue): boolean {
   const left =
     lhs.kind === "string"
@@ -1513,4 +3879,8 @@ function asFloat(value: VmValue): number {
 
 function asString(value: VmValue): string {
   return value.kind === "string" ? value.value : canonical(value);
+}
+
+function liveRef(ref: Ref): boolean {
+  return ref.kind === "cell" ? ref.cell.valid : liveRef(ref.parent);
 }

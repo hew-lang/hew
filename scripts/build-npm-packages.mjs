@@ -1,10 +1,9 @@
 #!/usr/bin/env node
 /**
- * Build all three Hew npm packages and stage them under target/npm/<pkg>.
+ * Build both Hew npm packages and stage them under target/npm/<pkg>.
  *
  * Packages produced:
  *   target/npm/@hew-lang/wasm          ← hew-wasm crate (wasm-pack --target web)
- *   target/npm/@hew-lang/sandbox-wasm  ← hew-sandbox-wasm crate (wasm-pack --target web)
  *   target/npm/@hew-lang/sandbox-vm    ← hew-sandbox-vm (tsc)
  *
  * Environment:
@@ -22,12 +21,10 @@ import { fileURLToPath } from "node:url";
 
 const SCRIPT_REPO_ROOT = resolve(fileURLToPath(import.meta.url), "../..");
 const REPO_ROOT = resolve(process.env.HEW_SOURCE_ROOT ?? SCRIPT_REPO_ROOT);
+const STAGING_ROOT = resolve(REPO_ROOT, process.env.HEW_NPM_STAGE_ROOT ?? "target/npm/@hew-lang");
 const GITHUB_PACKAGES_REGISTRY = "https://npm.pkg.github.com";
 
-// Honour NPM_WASM_PROFILE=dev for fast local builds.
-// WHY: wasm-pack release builds run wasm-opt which takes minutes; dev skips it.
-// WHEN obsolete: never — this is the intentional local-vs-CI distinction.
-// REAL solution: this IS the real solution.
+// Use the development Wasm profile for fast local iteration.
 const wasmProfile = process.env.NPM_WASM_PROFILE === "dev" ? "dev" : "release";
 
 /** Read the workspace Cargo.toml and extract the package version. */
@@ -36,6 +33,17 @@ function workspaceVersion() {
   const m = cargoToml.match(/\[workspace\.package\][\s\S]*?\nversion\s*=\s*"([^"]+)"/);
   if (!m) throw new Error("Could not find [workspace.package].version in workspace Cargo.toml");
   return m[1];
+}
+
+function sourceIdentity() {
+  const git = (args) => execFileSync("git", args, { cwd: REPO_ROOT, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+  const commit = git(["rev-parse", "HEAD"]);
+  let tag;
+  try { tag = git(["describe", "--tags", "--exact-match", "HEAD"]); }
+  catch { /* Development commits need no release tag. */ }
+  // Publishing checks out release tooling beside the tagged source. That
+  // tooling is not an input to the compiler or VM source build.
+  return { commit, ...(tag ? { tag } : {}), dirty: git(["status", "--porcelain", "--untracked-files=normal", "--", ".", ":!release-machinery"]) !== "" };
 }
 
 function run(cmd, args, opts = {}) {
@@ -50,8 +58,8 @@ function run(cmd, args, opts = {}) {
  * `@hew-lang/hew-wasm`). We rename it to the canonical name and update
  * `publishConfig` for GitHub Packages.
  */
-function buildWasmCrate({ crate, outName, version }) {
-  const stagingDir = join(REPO_ROOT, "target", "npm", "@hew-lang", outName);
+function buildWasmCrate({ crate, outName, version, source }) {
+  const stagingDir = join(STAGING_ROOT, outName);
 
   console.log(`\n==> Building ${crate} (profile: ${wasmProfile}) → @hew-lang/${outName}`);
 
@@ -74,6 +82,7 @@ function buildWasmCrate({ crate, outName, version }) {
   const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
   pkg.name = `@hew-lang/${outName}`;
   pkg.version = version;
+  pkg.hewSource = source;
   pkg.publishConfig = {
     registry: GITHUB_PACKAGES_REGISTRY,
     access: "public",
@@ -93,10 +102,10 @@ function buildWasmCrate({ crate, outName, version }) {
 /**
  * Build hew-sandbox-vm via tsc and stage the dist output.
  */
-function buildSandboxVm({ version }) {
+function buildSandboxVm({ version, source }) {
   const vmDir = join(REPO_ROOT, "hew-sandbox-vm");
   const distDir = join(vmDir, "dist");
-  const stagingDir = join(REPO_ROOT, "target", "npm", "@hew-lang", "sandbox-vm");
+  const stagingDir = join(STAGING_ROOT, "sandbox-vm");
 
   console.log(`\n==> Building hew-sandbox-vm (tsc) → @hew-lang/sandbox-vm`);
 
@@ -127,6 +136,7 @@ function buildSandboxVm({ version }) {
   const publishPkg = {
     name: "@hew-lang/sandbox-vm",
     version,
+    hewSource: source,
     description: srcPkg.description ?? "Deterministic TypeScript interpreter for the Hew educational sandbox",
     type: "module",
     main: "./dist/interpreter/index.js",
@@ -136,10 +146,7 @@ function buildSandboxVm({ version }) {
         import: "./dist/interpreter/index.js",
         types: "./dist/interpreter/index.d.ts",
       },
-      "./scheduler": {
-        import: "./dist/scheduler/scheduler.js",
-        types: "./dist/scheduler/scheduler.d.ts",
-      },
+
     },
     files: ["dist/"],
     keywords: srcPkg.keywords ?? ["hew", "sandbox", "interpreter", "wasm"],
@@ -165,17 +172,19 @@ function buildSandboxVm({ version }) {
 
 async function main() {
   const version = workspaceVersion();
+  const source = sourceIdentity();
   console.log(`Building Hew npm packages at version ${version} (wasm profile: ${wasmProfile})`);
 
-  mkdirSync(join(REPO_ROOT, "target", "npm"), { recursive: true });
+  mkdirSync(STAGING_ROOT, { recursive: true });
 
-  buildWasmCrate({ crate: "hew-wasm", outName: "wasm", version });
-  buildWasmCrate({ crate: "hew-sandbox-wasm", outName: "sandbox-wasm", version });
-  buildSandboxVm({ version });
+  buildWasmCrate({ crate: "hew-wasm", outName: "wasm", version, source });
+  buildSandboxVm({ version, source });
+  if (JSON.stringify(sourceIdentity()) !== JSON.stringify(source)) {
+    throw new Error("Source checkout changed while building npm packages.");
+  }
 
-  console.log(`\nAll packages staged under target/npm/@hew-lang/`);
+  console.log(`\nAll packages staged under ${STAGING_ROOT}`);
   console.log(`  @hew-lang/wasm@${version}`);
-  console.log(`  @hew-lang/sandbox-wasm@${version}`);
   console.log(`  @hew-lang/sandbox-vm@${version}`);
   console.log(`\nTo verify: npm pack --dry-run  in each staged directory.`);
 }

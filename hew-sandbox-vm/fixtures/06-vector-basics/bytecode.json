@@ -1,8 +1,9 @@
 {
+  "actors": [],
   "aggregates": [],
   "bytes": [],
   "closures": [],
-  "compiler_version": "hew-sandbox-wasm-0.6.0-rc4",
+  "compiler_version": "hew-wasm-0.6.0-rc4",
   "entry": {
     "exit": "unit",
     "function": 0
@@ -17,6 +18,7 @@
           "params": [],
           "term": {
             "args": [],
+            "callbacks": [],
             "family": 0,
             "normal": {
               "args": [
@@ -25,15 +27,18 @@
               "to": 1
             },
             "op": "runtime.call",
+            "releases_contents": false,
             "result": {
               "own": "owned",
               "value": 0
             },
+            "result_member_shapes": [],
             "result_shape": null,
             "span": {
               "end": 29,
               "start": 29
             },
+            "structural": null,
             "unwind": null
           }
         },
@@ -56,6 +61,7 @@
             {
               "dst": 2,
               "op": "const.int",
+              "own": "none",
               "span": {
                 "end": 61,
                 "start": 61
@@ -66,6 +72,7 @@
             {
               "dst": 3,
               "op": "load.take",
+              "own": "owned",
               "place": 0,
               "span": {
                 "end": 49,
@@ -75,6 +82,7 @@
             {
               "dst": 4,
               "op": "move",
+              "own": "owned",
               "source": 3,
               "span": {
                 "end": 49,
@@ -99,6 +107,7 @@
                 "value": 2
               }
             ],
+            "callbacks": [],
             "family": 1,
             "normal": {
               "args": [
@@ -107,15 +116,18 @@
               "to": 2
             },
             "op": "runtime.call",
+            "releases_contents": false,
             "result": {
               "own": "owned",
               "value": 5
             },
+            "result_member_shapes": [],
             "result_shape": null,
             "span": {
               "end": 61,
               "start": 61
             },
+            "structural": null,
             "unwind": null
           }
         },
@@ -135,6 +147,7 @@
             {
               "dst": 7,
               "op": "const.int",
+              "own": "none",
               "span": {
                 "end": 82,
                 "start": 82
@@ -145,6 +158,7 @@
             {
               "dst": 8,
               "op": "load.take",
+              "own": "owned",
               "place": 0,
               "span": {
                 "end": 70,
@@ -154,6 +168,7 @@
             {
               "dst": 9,
               "op": "move",
+              "own": "owned",
               "source": 8,
               "span": {
                 "end": 70,
@@ -178,6 +193,7 @@
                 "value": 7
               }
             ],
+            "callbacks": [],
             "family": 1,
             "normal": {
               "args": [
@@ -186,15 +202,18 @@
               "to": 3
             },
             "op": "runtime.call",
+            "releases_contents": false,
             "result": {
               "own": "owned",
               "value": 10
             },
+            "result_member_shapes": [],
             "result_shape": null,
             "span": {
               "end": 82,
               "start": 82
             },
+            "structural": null,
             "unwind": null
           }
         },
@@ -214,6 +233,7 @@
             {
               "dst": 12,
               "op": "load.borrow",
+              "own": "guaranteed",
               "place": 0,
               "span": {
                 "end": 99,
@@ -234,6 +254,7 @@
                 "value": 12
               }
             ],
+            "callbacks": [],
             "family": 2,
             "normal": {
               "args": [
@@ -242,15 +263,18 @@
               "to": 4
             },
             "op": "runtime.call",
+            "releases_contents": false,
             "result": {
               "own": "none",
               "value": 13
             },
+            "result_member_shapes": [],
             "result_shape": null,
             "span": {
               "end": 99,
               "start": 99
             },
+            "structural": null,
             "unwind": null
           }
         },
@@ -277,18 +301,22 @@
                 "value": 14
               }
             ],
+            "callbacks": [],
             "family": 3,
             "normal": {
               "args": [],
               "to": 5
             },
             "op": "runtime.call",
+            "releases_contents": false,
             "result": null,
+            "result_member_shapes": [],
             "result_shape": null,
             "span": {
               "end": 99,
               "start": 99
             },
+            "structural": null,
             "unwind": null
           }
         },
@@ -298,6 +326,7 @@
             {
               "dst": 15,
               "op": "load.borrow",
+              "own": "guaranteed",
               "place": 0,
               "span": {
                 "end": 124,
@@ -307,6 +336,7 @@
             {
               "dst": 16,
               "op": "const.int",
+              "own": "none",
               "span": {
                 "end": 135,
                 "start": 135
@@ -327,6 +357,7 @@
                 "value": 16
               }
             ],
+            "callbacks": [],
             "family": 4,
             "normal": {
               "args": [
@@ -335,15 +366,18 @@
               "to": 6
             },
             "op": "runtime.call",
+            "releases_contents": false,
             "result": {
               "own": "none",
               "value": 17
             },
+            "result_member_shapes": [],
             "result_shape": 0,
             "span": {
               "end": 135,
               "start": 135
             },
+            "structural": null,
             "unwind": null
           }
         },
@@ -414,18 +448,22 @@
                 "value": 20
               }
             ],
+            "callbacks": [],
             "family": 3,
             "normal": {
               "args": [],
               "to": 9
             },
             "op": "runtime.call",
+            "releases_contents": false,
             "result": null,
+            "result_member_shapes": [],
             "result_shape": null,
             "span": {
               "end": 160,
               "start": 160
             },
+            "structural": null,
             "unwind": null
           }
         },
@@ -435,6 +473,7 @@
             {
               "dst": 21,
               "op": "const.int",
+              "own": "none",
               "span": {
                 "end": 197,
                 "start": 197
@@ -451,18 +490,22 @@
                 "value": 21
               }
             ],
+            "callbacks": [],
             "family": 3,
             "normal": {
               "args": [],
               "to": 10
             },
             "op": "runtime.call",
+            "releases_contents": false,
             "result": null,
+            "result_member_shapes": [],
             "result_shape": null,
             "span": {
               "end": 197,
               "start": 197
             },
+            "structural": null,
             "unwind": null
           }
         },
@@ -550,6 +593,7 @@
   "hew_version": "0.6.0-rc4",
   "profile": "sandbox.sandbox-vm-export.v0",
   "regex_patterns": [],
+  "resources": [],
   "runtime_families": [
     {
       "detail": "New",
@@ -582,6 +626,8 @@
   ],
   "schema_version": "hew.sandbox.bytecode.v1",
   "strings": [],
+  "structural_render": [],
+  "supervisors": [],
   "suspend_kinds": [],
   "value_capabilities": [],
   "variants": [

@@ -1,6 +1,7 @@
 import type { JsonValue } from "./types.js";
 
 export type VmValue =
+  | { kind: "rc"; cell: { value: VmValue; refs: number }; closed: boolean }
   | { kind: "unit" }
   | { kind: "bool"; value: boolean }
   | { kind: "i64"; value: bigint }
@@ -12,6 +13,7 @@ export type VmValue =
   | { kind: "reply"; id: string }
   | { kind: "channel"; id: string }
   | { kind: "task"; id: string }
+  | { kind: "generator"; id: string }
   | { kind: "stream"; channelId: string }
   | { kind: "sink"; channelId: string }
   | { kind: "duplex"; channelId: string }
@@ -19,9 +21,14 @@ export type VmValue =
   | { kind: "record"; typeId: string; fields: VmValue[] }
   | { kind: "enum"; typeId: string; tag: number; payload: VmValue[] }
   | { kind: "vector"; elementType: string; items: VmValue[] }
-  /** A hash map. Keys are canonical renderings of the key value, so lookup is
-   *  structural; `entries` keeps insertion order so iteration is stable. */
-  | { kind: "map"; entries: Map<string, { key: VmValue; value: VmValue }> }
+  /** A map or set owns its occupied slots. Selected Hash/Eq operations probe
+   *  the table; tombstones preserve collision chains across removal. */
+  | {
+      kind: "map";
+      entries: Map<string, { key: VmValue; value: VmValue }>;
+      capacity?: number;
+      tombstones?: Set<number>;
+    }
   /** A trait object: the vtable the checker selected, and the value it wraps.
    *  A `dyn.call` resolves its method through `vtable`, never through the
    *  wrapped value's shape. */
@@ -29,7 +36,12 @@ export type VmValue =
   /** A first-class function reference materialised by `const.function`.
    *  `id` is the bytecode function id (e.g. `"fn:my_handler"`).
    *  Function values are immutable: `cloneValue` is identity. */
-  | { kind: "function"; id: string };
+  | { kind: "function"; id: string }
+  /** A closure: the function that is its body, and the environment holding its
+   *  captures. Calling it passes `environment` to the body's first parameter,
+   *  which is where a `capture` place reaches its field. The environment is
+   *  owned by the closure, so `cloneValue` clones it. */
+  | { kind: "closure"; body: number; environment: VmValue };
 
 export const UNIT: VmValue = { kind: "unit" };
 
@@ -37,6 +49,10 @@ const I64_LITERAL_DECIMAL = /^(?:0|-?[1-9]\d*)$/;
 
 export function cloneValue(value: VmValue): VmValue {
   switch (value.kind) {
+    case "rc":
+      if (value.closed) throw new Error("cannot copy a released Rc");
+      value.cell.refs += 1;
+      return { kind: "rc", cell: value.cell, closed: false };
     case "unit":
       return UNIT;
     case "bool":
@@ -48,6 +64,7 @@ export function cloneValue(value: VmValue): VmValue {
     case "monitor":
     case "reply":
     case "channel":
+    case "generator":
     case "task":
     case "stream":
     case "sink":
@@ -85,9 +102,17 @@ export function cloneValue(value: VmValue): VmValue {
         vtable: value.vtable,
         value: cloneValue(value.value),
       };
+    case "closure":
+      return {
+        kind: "closure",
+        body: value.body,
+        environment: cloneValue(value.environment),
+      };
     case "map":
       return {
         kind: "map",
+        capacity: value.capacity,
+        tombstones: value.tombstones ? new Set(value.tombstones) : undefined,
         entries: new Map(
           [...value.entries].map(([key, entry]) => [
             key,
@@ -216,6 +241,7 @@ export function renderStdout(value: VmValue): string {
       return value.id;
     case "channel":
       return value.id;
+    case "generator":
     case "task":
       return value.id;
     case "stream":
@@ -237,12 +263,16 @@ export function renderStdout(value: VmValue): string {
       });
     case "vector":
       return canonicalJson(value.items.map((item) => toJsonValue(item)));
+    case "rc":
+      return renderStdout(value.cell.value);
     case "map":
       return canonicalJson(mapEntriesJson(value));
     case "dyn":
       return renderStdout(value.value);
     case "function":
       return value.id;
+    case "closure":
+      return `closure:${value.body}`;
   }
 }
 
@@ -263,6 +293,7 @@ export function toJsonValue(value: VmValue): JsonValue {
       return value.id;
     case "channel":
       return value.id;
+    case "generator":
     case "task":
       return value.id;
     case "stream":
@@ -281,12 +312,16 @@ export function toJsonValue(value: VmValue): JsonValue {
       };
     case "vector":
       return value.items.map(toJsonValue);
+    case "rc":
+      return toJsonValue(value.cell.value);
     case "map":
       return mapEntriesJson(value);
     case "dyn":
       return toJsonValue(value.value);
     case "function":
       return value.id;
+    case "closure":
+      return `closure:${value.body}`;
   }
 }
 

@@ -1,0 +1,16 @@
+fn fail() -> i64 {
+    defer println("child cleaned");
+    panic("child failed");
+}
+fn main() {
+    scope {
+        defer println("parent cleaned");
+        let task = fork fail();
+        println(await task);
+    } handle failure {
+        match failure {
+            .Fault { message } => println(message),
+            .Deadline { message } => println("unexpected deadline"),
+        }
+    };
+}

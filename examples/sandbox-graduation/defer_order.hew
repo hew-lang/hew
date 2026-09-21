@@ -1,0 +1,7 @@
+// Deferred work runs as the scope ends, in reverse registration order, so a
+// lesson about cleanup reads the same on both engines.
+fn main() {
+    defer println("third: cleanup done");
+    defer println("second: closing resources");
+    println("first: doing work");
+}

@@ -1,8 +1,9 @@
 {
+  "actors": [],
   "aggregates": [],
   "bytes": [],
   "closures": [],
-  "compiler_version": "hew-sandbox-wasm-0.6.0-rc4",
+  "compiler_version": "hew-wasm-0.6.0-rc4",
   "entry": {
     "exit": "unit",
     "function": 0
@@ -17,6 +18,7 @@
             {
               "dst": 0,
               "op": "const.int",
+              "own": "none",
               "span": {
                 "end": 28,
                 "start": 28
@@ -40,6 +42,7 @@
             {
               "dst": 1,
               "op": "const.int",
+              "own": "none",
               "span": {
                 "end": 44,
                 "start": 44
@@ -50,6 +53,7 @@
             {
               "dst": 2,
               "op": "const.int",
+              "own": "none",
               "span": {
                 "end": 49,
                 "start": 49
@@ -60,6 +64,7 @@
             {
               "dst": 3,
               "op": "const.int",
+              "own": "none",
               "span": {
                 "end": 44,
                 "start": 44
@@ -70,6 +75,7 @@
             {
               "dst": 4,
               "op": "const.int",
+              "own": "none",
               "span": null,
               "ty": "i64",
               "value": "0"
@@ -79,6 +85,7 @@
               "dst": 5,
               "lhs": 3,
               "op": "binary",
+              "own": "none",
               "rhs": 4,
               "span": null,
               "ty": "i64"
@@ -110,6 +117,7 @@
               "dst": 10,
               "lhs": 1,
               "op": "binary",
+              "own": "none",
               "rhs": 2,
               "span": null,
               "ty": "i64"
@@ -141,6 +149,7 @@
             {
               "dst": 6,
               "op": "const.str",
+              "own": "owned",
               "span": {
                 "end": 44,
                 "start": 44
@@ -214,6 +223,7 @@
               "dst": 11,
               "lhs": 7,
               "op": "binary",
+              "own": "none",
               "rhs": 2,
               "span": null,
               "ty": "i64"
@@ -252,6 +262,7 @@
               "dst": 17,
               "lhs": 8,
               "op": "binary",
+              "own": "none",
               "rhs": 3,
               "span": null,
               "ty": "i64"
@@ -261,6 +272,7 @@
               "dst": 18,
               "lhs": 17,
               "op": "binary",
+              "own": "none",
               "rhs": 8,
               "span": null,
               "ty": "i64"
@@ -297,6 +309,7 @@
             {
               "dst": 19,
               "op": "load.copy",
+              "own": "none",
               "place": 0,
               "span": {
                 "end": 131,
@@ -317,18 +330,22 @@
                 "value": 19
               }
             ],
+            "callbacks": [],
             "family": 0,
             "normal": {
               "args": [],
               "to": 18
             },
             "op": "runtime.call",
+            "releases_contents": false,
             "result": null,
+            "result_member_shapes": [],
             "result_shape": null,
             "span": {
               "end": 123,
               "start": 123
             },
+            "structural": null,
             "unwind": null
           }
         },
@@ -356,6 +373,7 @@
             {
               "dst": 12,
               "op": "const.int",
+              "own": "none",
               "span": {
                 "end": 68,
                 "start": 68
@@ -368,6 +386,7 @@
               "dst": 13,
               "lhs": 7,
               "op": "binary",
+              "own": "none",
               "rhs": 12,
               "span": {
                 "end": 64,
@@ -400,6 +419,7 @@
             {
               "dst": 14,
               "op": "load.copy",
+              "own": "none",
               "place": 0,
               "span": {
                 "end": 92,
@@ -627,6 +647,7 @@
   "hew_version": "0.6.0-rc4",
   "profile": "sandbox.sandbox-vm-export.v0",
   "regex_patterns": [],
+  "resources": [],
   "runtime_families": [
     {
       "detail": {
@@ -641,6 +662,8 @@
   "strings": [
     "step_by requires a positive step"
   ],
+  "structural_render": [],
+  "supervisors": [],
   "suspend_kinds": [],
   "value_capabilities": [],
   "variants": [],

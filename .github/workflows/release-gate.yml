@@ -236,11 +236,11 @@ jobs:
         # compiler's broker example before a release candidate is tagged.
         run: make mqtt-broker-e2e
 
-      # Browser-analysis WASM gate — Linux x86_64 only.
+      # Browser compiler/VM gate — Linux x86_64 only.
       # Installs wasm-pack + Binaryen + wasm32-unknown-unknown and runs the full
       # playground
-      # check: manifest freshness, full hew-wasm test suite (lib + fixture-coverage
-      # integration), and the wasm-pack release build.  Scoped to x86_64 to avoid
+      # check: manifest freshness, analysis and source-to-VM execution tests,
+      # and the wasm-pack release build. Scoped to x86_64 to avoid
       # multiplying wasm-pack installs across aarch64/macOS/Windows lanes.
       - name: Install wasm-pack v0.13.1 and Binaryen 117 (browser-analysis gate)
         uses: ./.github/actions/setup-wasm-pack
@@ -248,7 +248,14 @@ jobs:
       - name: Add wasm32-unknown-unknown target
         run: rustup target add wasm32-unknown-unknown
 
-      - name: Browser-analysis playground gate
+      - name: Set up Node.js for browser execution
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: hew-sandbox-vm/package-lock.json
+
+      - name: Browser compiler and VM playground gate
         run: make playground-check
 
       - name: Upload test reports

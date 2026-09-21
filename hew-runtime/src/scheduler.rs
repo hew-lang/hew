@@ -1412,9 +1412,9 @@ fn worker_loop(id: usize, rt: WorkerRuntimePtr, local: &WorkDeque) {
         // 5. Park on the per-worker condvar until notified or timeout. Queue
         // state is probed once more under the same mutex wake notifiers acquire,
         // closing the final-probe -> wait-registration lost-wakeup window.
-        if park_worker(sched, id, local, true) == WorkerParkOutcome::Shutdown {
-            break;
-        }
+        // Observe shutdown through the single worker exit above, including
+        // its teardown rendezvous, even when it arrived during parking.
+        let _ = park_worker(sched, id, local, true);
     }
 }
 

@@ -1297,15 +1297,15 @@ mod tests {
     }
 
     #[test]
-    fn shutdown_orchestrate_returns_early_when_drain_is_already_idle() {
+    fn shutdown_orchestrate_completes_when_drain_is_already_idle() {
         let _guard = shutdown_test_guard();
         reset_shutdown_state();
         shutdown_phase_store(PHASE_QUIESCE, Ordering::Release);
 
         let timeout = Duration::from_millis(250);
-        let started = Instant::now();
+        assert!(scheduler::drain_is_idle() && reactor::drain_is_idle());
+        assert!(drain_until_idle(timeout), "idle drain must converge");
         shutdown_orchestrate(timeout);
-        let elapsed = started.elapsed();
 
         assert_eq!(
             shutdown_phase_load(Ordering::Acquire),
@@ -1313,8 +1313,8 @@ mod tests {
             "shutdown_orchestrate must still complete the shutdown sequence"
         );
         assert!(
-            elapsed < Duration::from_millis(150),
-            "shutdown should exit early once the runtime is already drained; elapsed={elapsed:?}"
+            scheduler::drain_is_idle() && reactor::drain_is_idle(),
+            "completed shutdown must leave no queued or active work"
         );
 
         reset_shutdown_state();

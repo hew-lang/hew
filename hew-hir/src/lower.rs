@@ -7969,7 +7969,8 @@ impl LowerCtx {
         self.resolved_expr_types.get(&self.mk_key(span))
     }
 
-    /// Read the checker's ownership fact for a user resource argument.
+    /// Read the checker's move-only ownership facts for a user resource argument.
+    /// Rc-bearing records can have resource storage while remaining copyable.
     /// Builtin handles have separate borrowing contracts at foreign boundaries.
     fn checked_span_user_resource_type(&self, span: &Span) -> Option<String> {
         let ty = self.checked_ty(span)?;
@@ -7983,7 +7984,10 @@ impl LowerCtx {
         };
         self.type_facts
             .get(&hew_types::TypeInstanceKey(ty.clone()))
-            .filter(|facts| facts.class == hew_types::ValueClass::AffineResource)
+            .filter(|facts| {
+                facts.class == hew_types::ValueClass::AffineResource
+                    && facts.clone == hew_types::CloneKind::None
+            })
             .map(|_| name.clone())
     }
 

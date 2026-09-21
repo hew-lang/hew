@@ -37,8 +37,8 @@ pub use analysis::{
     DefUseIndex, Dominators, EdgeRef, RewriteError,
 };
 pub use callable::{
-    callable_parts, callable_value_signature, generator_parts, verify_callable_coercion, ClosureId,
-    ClosureInstanceKey, SemCaptureField, SemClosure,
+    callable_parts, callable_value_signature, generator_parts, verify_callable_coercion,
+    verify_generator_coercion, ClosureId, ClosureInstanceKey, SemCaptureField, SemClosure,
 };
 pub use capability::{derived_capability_components, SemValueMethodPlan};
 pub use debug::{SemDebugFacts, SemDebugScope};
@@ -70,7 +70,6 @@ pub use ownership::{
     variant_field_types, AggregateFieldRecipe, Binding, BindingId, BindingTarget, BoundaryDecision,
     BytesLiteralId, OwnKind, OwnerRoot, PlaceBase, PlaceDecl, PlaceId, PlaceOrigin,
     SnapshotDecision, StringLiteralId, SuspendKind, TaskScopeId, TaskScopeJoinMode, TrapKind,
-    ValueCloseSelection,
 };
 pub use projection::{place_plan, AggregateProjection, AggregateProjectionStep, PlacePlan};
 pub use resource::{

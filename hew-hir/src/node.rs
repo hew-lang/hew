@@ -14,7 +14,7 @@ use hew_types::{TryConversionKind, VecElementToken, WireCodecDirection};
 use crate::ids::{BindingId, HirNodeId, ItemId, ResolvedRef, ScopeId, SiteId};
 use crate::monomorph::{EnumLayout, MonomorphizedFn, RecordLayout};
 use crate::value_class::{ResourceMarker, TypeClassTable};
-use crate::{IntentKind, ValueClass};
+use crate::IntentKind;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirModule {
@@ -54,10 +54,8 @@ pub struct HirModule {
     /// marked types. `BitCopy` substrate registrations are resolved through
     /// `lookup_type_marker`.
     ///
-    /// This is the single authority for downstream phases asking "is this
-    /// Named type resource/linear/`BitCopy`?" — `ValueClass::of_ty(ty, &type_classes)`
-    /// reads from here. No phase re-derives the answer by walking the parser
-    /// AST. LESSONS: `type-info-survival`.
+    /// This table carries declared markers and resource lifecycle metadata.
+    /// Ownership classification comes from the checker's `TypeFacts`.
     pub type_classes: TypeClassTable,
     /// Distinct generic-function instantiations observed at call sites in
     /// this module. Populated from the checker's `call_type_args`
@@ -1172,7 +1170,6 @@ pub struct HirExpr {
     pub node: HirNodeId,
     pub site: SiteId,
     pub ty: ResolvedTy,
-    pub value_class: ValueClass,
     pub intent: IntentKind,
     pub kind: HirExprKind,
     pub span: Span,

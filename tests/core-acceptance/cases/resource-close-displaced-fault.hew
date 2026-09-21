@@ -1,0 +1,44 @@
+actor Audit {
+    receive fn record(id: i64) {
+        sleep(1ms);
+        println(f"closed {id}");
+    }
+}
+
+#[resource]
+type Ticket { audit: Audit, id: i64, }
+
+impl Ticket {
+    fn close(consume self) {
+        self.audit.record(self.id).expect("displaced close");
+        if self.id == 1 { panic("displaced value failed"); }
+    }
+}
+
+actor Worker {
+    receive fn run(audit: Audit) {
+        scope {
+            var values: HashMap<i64, Ticket> = HashMap.new();
+            values.insert(0, Ticket { audit: audit, id: 1 });
+            values.insert(0, Ticket { audit: audit, id: 2 });
+            panic("replacement close did not fail");
+        } handle failure {
+            match failure {
+                .Fault { message } => {
+                    assert(message.contains("displaced value failed"));
+                    println("recovered");
+                },
+                .Deadline { message } => panic("unexpected deadline"),
+            }
+        };
+        println("worker ready");
+    }
+}
+
+fn main() {
+    let audit = spawn Audit;
+    let worker = spawn Worker;
+    worker.run(audit).expect("recovered replacement fault");
+    close(worker);
+    close(audit);
+}

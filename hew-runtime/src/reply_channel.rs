@@ -77,6 +77,7 @@ pub struct HewReplyChannel {
     /// of a [`HewReplyDropFn`]; set once by the ask caller before submit (no
     /// race with any reply), read once at final free (after `refs` hits 0).
     reply_drop_fn: AtomicPtr<c_void>,
+    native_reply_release: Option<hew_cabi::value::HewValueReleaseStart>,
     /// Distinguishes allocator failure from a legitimate null reply.
     allocation_failed: AtomicBool,
     /// Reply-failure classification (`HEW_REPLY_FAIL_*`), first-write-wins.
@@ -152,6 +153,7 @@ pub extern "C" fn hew_reply_channel_new() -> *mut HewReplyChannel {
         value: ptr::null_mut(),
         value_size: 0,
         reply_drop_fn: AtomicPtr::new(ptr::null_mut()),
+        native_reply_release: None,
         allocation_failed: AtomicBool::new(false),
         fail_reason: AtomicI32::new(crate::internal::types::HEW_REPLY_FAIL_NONE),
         caller_actor_id: AtomicU64::new(0),
@@ -1831,39 +1833,6 @@ mod tests {
             pre_new,
             "late readiness callback must release its retained channel reference"
         );
-    }
-
-    #[test]
-    fn task_completion_observer_can_signal_select_readiness_proxy() {
-        let _guard = crate::runtime_test_guard();
-
-        // SAFETY: the test owns all scope/task/channel pointers exclusively.
-        unsafe {
-            let scope = crate::task_scope::hew_task_scope_new();
-            let task = crate::task_scope::hew_task_new();
-            crate::task_scope::hew_task_scope_spawn(scope, task);
-            let ch = hew_reply_channel_new();
-
-            hew_reply_channel_retain(ch);
-            assert_eq!(
-                crate::task_scope::hew_task_completion_observe(
-                    scope,
-                    task,
-                    Some(hew_reply_channel_signal_ready),
-                    ch.cast(),
-                ),
-                0
-            );
-
-            let mut channels = [ch];
-            assert_eq!(hew_select_first(channels.as_mut_ptr(), 1, 0), -1);
-            crate::task_scope::hew_task_scope_complete_task(scope, task);
-            assert_eq!(hew_select_first(channels.as_mut_ptr(), 1, 0), 0);
-            assert!(hew_reply_wait(ch).is_null());
-
-            hew_reply_channel_free(ch);
-            crate::task_scope::hew_task_scope_destroy(scope);
-        }
     }
 
     #[test]

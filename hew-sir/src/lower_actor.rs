@@ -209,16 +209,6 @@ impl InstanceService<'_> {
             self.require_type_facts(argument)?;
         }
         let overflow = actor_overflow(&source);
-        if let Some(field) = source.state_fields.iter().find(|field| {
-            super::generators::value_needs_close(self, &substitution.apply(&field.ty))
-        }) {
-            // Terminal cleanup releases state synchronously; a value that must
-            // drain cooperatively first cannot live there yet.
-            return Err(format!(
-                "actor state field `{}` owns a value that needs cooperative close",
-                field.name
-            ));
-        }
         let fields: Vec<_> = source
             .state_fields
             .iter()
@@ -906,6 +896,8 @@ impl Builder<'_, '_> {
         if own == OwnKind::Owned {
             self.owned_live.insert(value, output);
         }
+        self.cleanup_may_fail = true;
+        self.dispatch_value_cleanup()?;
         Ok(value)
     }
 
@@ -1142,20 +1134,22 @@ impl Builder<'_, '_> {
             return Err("actor argument count differs from its protocol".into());
         }
         let mut args = Vec::new();
-        let mut transferred = BTreeSet::new();
+        let mut remaining = vec![0usize; values.len()];
+        for &index in &argument_order {
+            remaining[index] += 1;
+        }
         for (index, parameter) in argument_order.into_iter().zip(&signature.params) {
-            if self.value_ty(values[index]).as_ref() != Some(&parameter.ty) {
-                return Err("actor argument changes its protocol type".into());
-            }
-            let value = if !transferred.insert(index)
-                && OwnKind::of_ty(&parameter.ty, self.service.checked_facts.rows())?
-                    == OwnKind::Owned
+            let source_ty = self
+                .value_ty(values[index])
+                .ok_or("actor argument has no concrete type")?;
+            remaining[index] -= 1;
+            let value = if remaining[index] != 0
+                && OwnKind::of_ty(&source_ty, self.service.checked_facts.rows())? == OwnKind::Owned
             {
                 // One evaluated spawn argument may initialize both state and
                 // an init parameter. Each owning destination needs its own
                 // copy, created before either owner crosses the boundary.
-                if self.service.checked_facts.rows()
-                    [&hew_types::TypeInstanceKey(parameter.ty.clone())]
+                if self.service.checked_facts.rows()[&hew_types::TypeInstanceKey(source_ty.clone())]
                     .clone
                     == hew_types::CloneKind::None
                 {
@@ -1166,7 +1160,7 @@ impl Builder<'_, '_> {
                 }
                 self.emit_typed(
                     Provenance::Site(expression.site),
-                    &parameter.ty,
+                    &source_ty,
                     SemOpKind::CopyValue {
                         source: Operand {
                             value: values[index],
@@ -1176,7 +1170,11 @@ impl Builder<'_, '_> {
             } else {
                 values[index]
             };
-            args.push(value);
+            args.push(self.coerce_value(
+                value,
+                &parameter.ty,
+                Provenance::Site(expression.site),
+            )?);
         }
         self.emit_actor_call(operation, signature, args)
     }
@@ -1200,6 +1198,7 @@ impl Builder<'_, '_> {
         signature: SemSignature,
         args: Vec<ValueId>,
     ) -> Result<Option<ValueId>, String> {
+        let retains_cleanup_fault = operation.retains_cleanup_fault();
         let args: Vec<_> = args
             .into_iter()
             .zip(&signature.params)
@@ -1271,6 +1270,10 @@ impl Builder<'_, '_> {
                     self.value_ty(value).ok_or("actor result lacks its type")?,
                 );
             }
+        }
+        if retains_cleanup_fault {
+            self.cleanup_may_fail = true;
+            self.dispatch_value_cleanup()?;
         }
         Ok(continuation)
     }

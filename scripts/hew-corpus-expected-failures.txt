@@ -59,7 +59,6 @@
 # final-path-limitation: the distributed Node surface has no ownership-SIR
 # operation contract on the final path yet
 examples/distributed/kv_client.hew E_SIR_UNSUPPORTED
-examples/distributed_hello.hew E_SIR_UNSUPPORTED
 
 # internal-channel (#3401): a `dyn Drawable` parameter reaches SIR verification
 # with no published dispatch table
@@ -71,10 +70,6 @@ examples/multifile/02_geometry/geo/distance.hew
 
 # final-path-limitation: QUIC / advanced net
 examples/quic_mesh/client.hew E_SIR_UNSUPPORTED
-
-# final-path-limitation: cancellation observation and the linear accept corpus
-# reach unlowered semantic operations
-examples/v05/cancellation_is_cancelled_observation.hew E_SIR_UNSUPPORTED
 
 # corpus-intentional-refusal: `*_fails.hew` programs demonstrate the refusal
 # their name states
@@ -141,7 +136,6 @@ hew-sandbox-vm/fixtures/29-mixed-scalar-compare-rejected/main.hew
 # final-path-limitation: each of these repros documents the E_SIR_UNSUPPORTED
 # refusal named in its own leading comment
 docs/repros/final-core/own-generic-identity-transfer.hew
-docs/repros/final-core/sir-identity-compare-unsupported.hew E_SIR_UNSUPPORTED
 
 # ── repros/ ─────────────────────────────────────────────────────────────────────
 
@@ -279,9 +273,6 @@ tests/pkg-import/two_module_same_generic_valueclass_accept.hew
 # lower yet
 tests/vertical-slice/accept/actor_state_field_reinit.hew E_SIR_UNSUPPORTED
 tests/vertical-slice/accept/branch_join_diverging_guard.hew E_SIR_UNSUPPORTED
-tests/vertical-slice/accept/free_fn_actor_scope_spawn.hew E_SIR_UNSUPPORTED
-tests/vertical-slice/accept/gen_block_explicit_return.hew E_SIR_UNSUPPORTED
-tests/vertical-slice/accept/generic_spawn_unit.hew E_SIR_UNSUPPORTED
 tests/vertical-slice/accept/hashmap_for_in_call.hew E_SIR_UNSUPPORTED
 tests/vertical-slice/accept/hashset_for_in_call.hew E_SIR_UNSUPPORTED
 
@@ -304,7 +295,6 @@ tests/vertical-slice/accept/returns_receiver_consuming_result.hew
 tests/vertical-slice/accept/supervisor_childref_value_flow_states.hew E_SIR_VERIFY
 tests/vertical-slice/accept/toml_value_resource_exactly_once.hew E_SIR_VERIFY
 tests/vertical-slice/accept/vec_into_iter_typeck.hew E_SIR_UNSUPPORTED
-tests/vertical-slice/accept/w2006_scope_spawn.hew E_SIR_UNSUPPORTED
 
 # ── tools/ ──────────────────────────────────────────────────────────────────────
 

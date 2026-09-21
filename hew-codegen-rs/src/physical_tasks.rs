@@ -251,23 +251,54 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         self.emit_edge(cancel)?;
         self.builder.position_at_end(take);
         let private_status = self.state_value("hew_checked_task_wait_private_status", wait)?;
+        self.builder
+            .build_store(self.active_status, private_status)
+            .llvm_ctx("retain child fault status")?;
         let output = result.map_or(pointer.const_null(), |result| self.slots[result.0 as usize]);
+        let cleanup = self
+            .value_emitter()
+            .entry_scratch(pointer.into(), "await.result.cleanup")?;
+        self.builder
+            .build_store(cleanup, pointer.const_null())
+            .llvm_ctx("initialize unused task result cleanup")?;
         let take_fn = coro::external(
             self.llvm,
             "hew_checked_task_wait_take",
-            self.ctx.i32_type().fn_type(&[pointer.into(); 3], false),
+            self.ctx.i32_type().fn_type(&[pointer.into(); 4], false),
         )?;
         let taken = suspend::call_value(
             &self.builder,
             take_fn,
-            &[wait.into(), output.into(), self.active_fault.into()],
+            &[
+                wait.into(),
+                output.into(),
+                self.active_fault.into(),
+                cleanup.into(),
+            ],
             "await.outcome",
         )?
         .into_int_value();
+        let cleanup = self
+            .builder
+            .build_load(pointer, cleanup, "await.result.cursor")
+            .llvm_ctx("read unused task result cleanup")?
+            .into_pointer_value();
+        release::drain_cursor(&self.value_emitter(), frame, cleanup)?;
         self.free_handle("hew_checked_task_wait_free", wait)?;
+        let dispatch = self.ctx.append_basic_block(self.value, "await.dispatch");
+        let fault = self
+            .builder
+            .build_load(pointer, self.active_fault, "await.result.fault")
+            .llvm_ctx("read task result cleanup fault")?
+            .into_pointer_value();
+        let failed = self
+            .builder
+            .build_is_not_null(fault, "await.result.failed")
+            .llvm_ctx("test task result cleanup fault")?;
         self.builder
-            .build_store(self.active_status, private_status)
-            .llvm_ctx("retain child fault status")?;
+            .build_conditional_branch(failed, failure, dispatch)
+            .llvm_ctx("dispatch task result cleanup")?;
+        self.builder.position_at_end(dispatch);
         self.builder
             .build_switch(
                 taken,
@@ -305,8 +336,10 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let pointer = self.ctx.ptr_type(AddressSpace::default());
         let handle = self.task_scope_handle(scope)?;
         let waker = self.task_pointer_call("hew_coro_state_waker", &[frame.state.into()])?;
-        let wait =
-            self.task_pointer_call("hew_checked_scope_wait_new", &[handle.into(), waker.into()])?;
+        let wait = self.task_pointer_call(
+            "hew_checked_scope_wait_new",
+            &[handle.into(), waker.into(), frame.state.into()],
+        )?;
         if mode.cancels_losers() {
             self.free_handle("hew_checked_scope_wait_cancel_losers", wait)?;
         } else if mode.preserves_fault() {

@@ -1100,8 +1100,12 @@ pub unsafe extern "C" fn hew_msg_node_free(node: *mut HewMsgNode) {
     untrack_ask_node_for_test(node);
     // SAFETY: caller guarantees `node` came from the sized-block allocator and is exclusively owned.
     unsafe {
-        // Explicit orphaned-ask teardown: queued ask nodes own a sender-side
-        // reply reference that must be retired before the node memory is freed.
+        // A queued native ask keeps its sender reference until typed payload
+        // cleanup completes, so its caller cannot pass that cleanup barrier.
+        if !(*node).envelope.is_null() && (*(*node).envelope).release_start.is_some() {
+            (*(*node).envelope).release_reply =
+                std::mem::replace(&mut (*node).reply_channel, ptr::null_mut());
+        }
         retire_msg_node_ask_sender_ref(node);
         // Phase-α COW: branch on the envelope discriminator. Legacy
         // nodes hold a sized-block-allocated payload buffer in `data`; envelope

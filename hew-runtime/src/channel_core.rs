@@ -40,7 +40,9 @@ use std::sync::{Condvar, Mutex};
 use std::time::Duration;
 
 use hew_cabi::sink::TrySendResult;
-use hew_cabi::vec::{HewTypeOwnershipKind, HewValueLayout};
+#[cfg(test)]
+use hew_cabi::vec::HewTypeOwnershipKind;
+use hew_cabi::vec::HewValueLayout;
 
 use crate::actor::HewActor;
 use crate::lifetime::live_actors::ActorIncarnation;
@@ -272,25 +274,8 @@ impl ChannelCore {
     /// the envelope's owned heap is dropped via `drop_fn` exactly once; for
     /// every other element kind the `Vec<u8>` drop is sufficient. Runs OUTSIDE
     /// the core lock (the thunk may free arbitrary owned heap).
-    fn drop_envelope(layout: Option<&HewValueLayout>, mut env: Vec<u8>) {
-        let Some(l) = layout else {
-            return;
-        };
-        if l.ownership_kind != HewTypeOwnershipKind::LayoutManaged {
-            return;
-        }
-        if env.len() != l.size {
-            crate::channel_common::abort_elem_witness(
-                "ChannelCore::drop_envelope",
-                "owned envelope size does not match the stamped witness",
-            );
-        }
-        if let Some(drop_fn) = l.drop_fn {
-            // SAFETY: the envelope holds one live owned element (deep-copied in
-            // by the send edge and never consumed); the thunk releases its
-            // owned heap exactly once. The envelope bytes are dead afterwards.
-            unsafe { drop_fn(env.as_mut_ptr().cast()) };
-        }
+    fn drop_envelope(layout: Option<&HewValueLayout>, env: Vec<u8>) {
+        crate::channel_common::drop_elem_envelope(layout, env, "ChannelCore::drop_envelope");
     }
 
     /// Deposit a Data readiness signal and wake the parked peer. Runs OUTSIDE
@@ -802,19 +787,25 @@ impl ChannelCore {
 
     /// Non-blocking producer send (`try_send`).
     pub fn try_send(&self, item: Vec<u8>) -> TrySendResult {
+        let (result, rejected) = self.try_send_owned(item);
+        if let Some(item) = rejected {
+            let layout = self.locked().elem_layout;
+            Self::drop_envelope(layout.as_ref(), item);
+        }
+        result
+    }
+
+    /// Try admission without executing release callbacks. The caller owns any
+    /// rejected envelope and must consume it using the stamped descriptor.
+    pub(crate) fn try_send_owned(&self, item: Vec<u8>) -> (TrySendResult, Option<Vec<u8>>) {
         let consumer_wake;
         {
             let mut inner = self.locked();
             if inner.stream_closed || inner.sink_closed || inner.sink_fault {
-                // Release an owned envelope via the stamped witness outside the
-                // lock, and report the terminal channel cannot accept the item.
-                let layout = inner.elem_layout;
-                drop(inner);
-                Self::drop_envelope(layout.as_ref(), item);
-                return TrySendResult::Closed;
+                return (TrySendResult::Closed, Some(item));
             }
             if inner.queue.len() >= inner.capacity {
-                return TrySendResult::Full;
+                return (TrySendResult::Full, Some(item));
             }
             inner.queue.push_back(item);
             consumer_wake = inner.consumer.take();
@@ -824,7 +815,7 @@ impl ChannelCore {
             unsafe { Self::wake(w) };
         }
         self.cv.notify_all();
-        TrySendResult::Accepted
+        (TrySendResult::Accepted, None)
     }
 
     /// Detach an abandoned producer registration (the codegen abandon edge).
@@ -899,6 +890,15 @@ impl ChannelCore {
     /// so their `await_send` resumes (the writes become no-ops) and drops their
     /// pending items — owned envelopes are released via the stamped witness.
     pub fn close_stream(&self) {
+        let (layout, discarded) = self.close_stream_take();
+        for value in discarded {
+            Self::drop_envelope(layout.as_ref(), value);
+        }
+    }
+
+    /// Close reader admission and transfer every discarded value to its
+    /// consuming cleanup owner, without invoking authored code under the lock.
+    pub(crate) fn close_stream_take(&self) -> (Option<HewValueLayout>, Vec<Vec<u8>>) {
         let mut wakes: Vec<Waiter> = Vec::new();
         let mut discarded: Vec<Vec<u8>> = Vec::new();
         let layout;
@@ -907,6 +907,7 @@ impl ChannelCore {
             let mut inner = self.locked();
             inner.stream_closed = true;
             layout = inner.elem_layout;
+            discarded.extend(inner.queue.drain(..));
             native_producers = std::mem::take(&mut inner.native_producers);
             while let Some(mut w) = inner.producers.pop_front() {
                 if let Some(item) = w.item.take() {
@@ -926,10 +927,8 @@ impl ChannelCore {
             // it exactly once.
             unsafe { Self::wake(w) };
         }
-        for env in discarded {
-            Self::drop_envelope(layout.as_ref(), env);
-        }
         self.cv.notify_all();
+        (layout, discarded)
     }
 
     /// Mark this pipe permanently FAULTED: the registered producer (a
@@ -950,6 +949,15 @@ impl ChannelCore {
     /// that had not entered the queue are discarded; the fault applies once
     /// the pre-fault queue empties (see `pop`/`blocking_recv`).
     pub fn fault_close(&self, actor_id: u64) {
+        let (layout, discarded) = self.fault_close_take(actor_id);
+        for value in discarded {
+            Self::drop_envelope(layout.as_ref(), value);
+        }
+    }
+
+    /// Publish a producer fault while transferring unaccepted values for
+    /// cleanup. Already accepted items remain readable before the fault.
+    pub(crate) fn fault_close_take(&self, actor_id: u64) -> (Option<HewValueLayout>, Vec<Vec<u8>>) {
         let consumer_wake;
         let mut producer_wakes = Vec::new();
         let mut discarded = Vec::new();
@@ -1001,9 +1009,7 @@ impl ChannelCore {
             // send continuation instead of remaining parked forever.
             unsafe { Self::wake(producer) };
         }
-        for item in discarded {
-            Self::drop_envelope(layout.as_ref(), item);
-        }
+        (layout, discarded)
     }
 
     /// Fail closed on a send that the drain will never let complete: never a
@@ -1479,7 +1485,7 @@ mod tests {
 
     fn blocking_elem_layout() -> HewValueLayout {
         HewValueLayout {
-            visit_close: None,
+            release_start: None,
             size: size_of::<u64>(),
             align: align_of::<u64>(),
             ownership_kind: HewTypeOwnershipKind::LayoutManaged,
@@ -1648,7 +1654,7 @@ mod tests {
 
     fn owned_elem_layout() -> HewValueLayout {
         HewValueLayout {
-            visit_close: None,
+            release_start: None,
             size: size_of::<OwnedElem>(),
             align: align_of::<OwnedElem>(),
             ownership_kind: HewTypeOwnershipKind::LayoutManaged,
@@ -1681,6 +1687,27 @@ mod tests {
     }
 
     #[test]
+    fn refused_try_send_releases_owned_envelopes_once() {
+        let _g = OWNED_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let before = OWNED_DROPS.load(Ordering::SeqCst);
+        let core = ChannelCore::new(1);
+        core.stamp_elem_layout(&owned_elem_layout());
+        assert_eq!(core.try_send(owned_envelope(1)), TrySendResult::Accepted);
+        assert_eq!(core.try_send(owned_envelope(2)), TrySendResult::Full);
+        assert_eq!(OWNED_DROPS.load(Ordering::SeqCst) - before, 1);
+        let (result, rejected) = core.try_send_owned(owned_envelope(3));
+        assert_eq!(result, TrySendResult::Full);
+        assert_eq!(OWNED_DROPS.load(Ordering::SeqCst) - before, 1);
+        ChannelCore::drop_envelope(Some(&owned_elem_layout()), rejected.unwrap());
+        core.close_stream();
+        assert_eq!(core.try_send(owned_envelope(4)), TrySendResult::Closed);
+        drop(core);
+        assert_eq!(OWNED_DROPS.load(Ordering::SeqCst) - before, 4);
+    }
+
+    #[test]
     fn core_drop_releases_unconsumed_owned_envelopes_exactly_once() {
         let _g = OWNED_TEST_LOCK
             .lock()
@@ -1700,7 +1727,7 @@ mod tests {
     }
 
     #[test]
-    fn close_stream_releases_parked_producer_owned_envelope() {
+    fn close_stream_releases_queued_and_parked_owned_envelopes() {
         let _g = OWNED_TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -1712,15 +1739,16 @@ mod tests {
         // Ring full → producer parks, owning its envelope.
         let rc = unsafe { core.await_send(std::ptr::null_mut(), slot, owned_envelope(2)) };
         assert_eq!(rc, STREAM_AWAIT_SUSPEND);
-        // Consumer cancels: the parked envelope is released via the witness.
+        // Consumer cancellation releases every unread owner before returning.
         core.close_stream();
         assert_eq!(
             OWNED_DROPS.load(Ordering::SeqCst) - drops_before,
-            1,
-            "close_stream must release the parked producer's owned envelope"
+            2,
+            "close_stream must release both queued and parked owned envelopes"
         );
         unsafe { hew_read_slot_free(slot) };
-        // Core drop releases the still-queued first envelope.
+        // Repeated close and raw core reclamation must not release either again.
+        core.close_stream();
         drop(core);
         assert_eq!(OWNED_DROPS.load(Ordering::SeqCst) - drops_before, 2);
     }

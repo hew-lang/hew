@@ -319,7 +319,7 @@ pub fn seed_builtin_type_classes(type_classes: &mut TypeClassTable) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::value_class::ValueClass;
+    use crate::lookup_type_marker_for_ty;
 
     #[test]
     fn sink_is_seeded_as_resource() {
@@ -351,8 +351,8 @@ mod tests {
         ] {
             let ty = ResolvedTy::named_builtin(name, builtin, vec![ResolvedTy::String]);
             assert_eq!(
-                ValueClass::of_ty(&ty, &table),
-                ValueClass::AffineResource,
+                lookup_type_marker_for_ty(&ty, &table),
+                Some(ResourceMarker::Resource),
                 "{name}<string> must enter resource drop elaboration"
             );
         }
@@ -366,8 +366,8 @@ mod tests {
         for name in ["foo.Sink", "foo.Stream"] {
             let ty = ResolvedTy::named_user(name, vec![ResolvedTy::String]);
             assert_ne!(
-                ValueClass::of_ty(&ty, &table),
-                ValueClass::AffineResource,
+                lookup_type_marker_for_ty(&ty, &table),
+                Some(ResourceMarker::Resource),
                 "user `{name}` without builtin identity must not receive pipe teardown"
             );
         }
@@ -409,8 +409,8 @@ mod tests {
         seed_builtin_type_classes(&mut table);
         let ty = ResolvedTy::named_user("CrashInfo", vec![]);
         assert_ne!(
-            ValueClass::of_ty(&ty, &table),
-            ValueClass::BitCopy,
+            lookup_type_marker_for_ty(&ty, &table),
+            Some(ResourceMarker::BitCopy),
             "CrashInfo must not be BitCopy once it owns a `message: string` field"
         );
     }

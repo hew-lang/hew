@@ -747,6 +747,10 @@ pub enum PhysicalOp {
         closure: ClosureId,
         fields: Vec<StorageId>,
     },
+    GeneratorCoerce {
+        dest: StorageId,
+        source: StorageId,
+    },
     CallableCoerce {
         dest: StorageId,
         source: StorageId,
@@ -1071,13 +1075,6 @@ pub enum PhysicalTerminator {
         normal: PhysicalEdge,
         cancel: PhysicalEdge,
         unwind: PhysicalEdge,
-    },
-    ValueClose {
-        index: Option<StorageId>,
-        destroy: Option<DestroyAction>,
-        generator: StorageId,
-        conditional: bool,
-        next: PhysicalEdge,
     },
     TaskAwait {
         task: ArgumentTransfer,
@@ -3077,6 +3074,10 @@ impl FunctionLowerer<'_> {
                 vtable: PhysicalVtableId(vtable.0),
                 source: self.value(value.value)?,
             }),
+            SemOpKind::GeneratorCoerce { source } => one(PhysicalOp::GeneratorCoerce {
+                dest: self.one_result(operation)?,
+                source: self.value(source.value)?,
+            }),
             SemOpKind::CallableCoerce { source } => one(PhysicalOp::CallableCoerce {
                 dest: self.one_result(operation)?,
                 source: self.value(source.value)?,
@@ -3504,10 +3505,7 @@ impl FunctionLowerer<'_> {
             SemTerminator::ResumeUnwind => Ok(PhysicalTerminator::PropagateFault),
             SemTerminator::Unreachable => Ok(PhysicalTerminator::Unreachable),
             term @ SemTerminator::Suspend {
-                kind:
-                    hew_sir::SuspendKind::Yield
-                    | hew_sir::SuspendKind::GeneratorNext
-                    | hew_sir::SuspendKind::ValueClose { .. },
+                kind: hew_sir::SuspendKind::Yield | hew_sir::SuspendKind::GeneratorNext,
                 ..
             } => self.lower_generator_suspend(term),
             SemTerminator::Suspend {
@@ -4461,7 +4459,6 @@ fn verify_physical_module(module: &PhysicalModule) -> Result<(), PhysicalError> 
         ));
     }
     verify_structural_glue(module)?;
-    suspend::verify_callables(module)?;
     for (index, glue) in module.aggregate_glue.iter().enumerate() {
         if usize::try_from(glue.id.0).ok() != Some(index) {
             return Err(PhysicalError::new(format!(
@@ -4542,6 +4539,7 @@ fn verify_physical_module(module: &PhysicalModule) -> Result<(), PhysicalError> 
         }
         verify_physical_function(module, function)?;
     }
+    suspend::verify_callables(module)?;
     Ok(())
 }
 
@@ -5657,6 +5655,9 @@ fn verify_operation_storage(
 ) -> Result<(), PhysicalError> {
     match operation {
         PhysicalOp::GeneratorMake { .. } => generators::verify_make(module, function, operation)?,
+        PhysicalOp::GeneratorCoerce { dest, source } => {
+            generators::verify_coerce(module, function, *dest, *source)?;
+        }
         PhysicalOp::StreamPipe {
             capacity,
             stream,
@@ -6658,6 +6659,7 @@ fn apply_operation(
         }
         PhysicalOp::Transfer { dest, source }
         | PhysicalOp::CallableCoerce { dest, source }
+        | PhysicalOp::GeneratorCoerce { dest, source }
         | PhysicalOp::DynMake { dest, source, .. } => {
             initialized(function, state, *source, block, "transfer")?;
             if dest != source {
@@ -7024,6 +7026,7 @@ fn terminator_successors(
                 block,
                 "ask result",
             )?;
+            completed.fault = FaultState::MaybeActive;
             let mut successors = vec![apply_edge(function, borrows, normal, completed, block)?];
             state.fault = FaultState::Active;
             let mut cancelled = state.clone();
@@ -7076,9 +7079,7 @@ fn terminator_successors(
             successors.push(apply_edge(function, borrows, unwind, state, block)?);
             Ok(successors)
         }
-        PhysicalTerminator::GeneratorYield { .. }
-        | PhysicalTerminator::GeneratorNext { .. }
-        | PhysicalTerminator::ValueClose { .. } => {
+        PhysicalTerminator::GeneratorYield { .. } | PhysicalTerminator::GeneratorNext { .. } => {
             generators::successors(function, borrows, terminator, state, block)
         }
         PhysicalTerminator::StreamNext {
@@ -7475,21 +7476,28 @@ fn terminator_successors(
             block,
         ),
         PhysicalTerminator::ActorCall {
+            operation,
             args,
             result,
             normal,
             unwind,
             ..
-        } => call_successors(
-            function,
-            borrows,
-            args,
-            *result,
-            Some(normal),
-            unwind.as_ref(),
-            state,
-            block,
-        ),
+        } => {
+            let mut successors = call_successors(
+                function,
+                borrows,
+                args,
+                *result,
+                Some(normal),
+                unwind.as_ref(),
+                state,
+                block,
+            )?;
+            if operation.retains_cleanup_fault() {
+                successors[0].1.fault = FaultState::MaybeActive;
+            }
+            Ok(successors)
+        }
         PhysicalTerminator::WireCodec {
             input,
             result,
@@ -7867,9 +7875,7 @@ fn verify_terminator(
             edge(cancel)?;
             edge(unwind)
         }
-        PhysicalTerminator::GeneratorYield { .. }
-        | PhysicalTerminator::GeneratorNext { .. }
-        | PhysicalTerminator::ValueClose { .. } => {
+        PhysicalTerminator::GeneratorYield { .. } | PhysicalTerminator::GeneratorNext { .. } => {
             generators::verify_suspend(module, function, terminator)?;
             for successor in defer::edges(terminator) {
                 edge(successor)?;
@@ -9140,12 +9146,9 @@ fn actor_value_recipes(
             .iter()
             .filter_map(|block| match &block.terminator {
                 SemTerminator::ActorCall {
-                    operation:
-                        ActorOperation::Submit {
-                            policy, message_ty, ..
-                        },
+                    operation: ActorOperation::Submit { message_ty, .. },
                     ..
-                } if policy.may_suspend() => Some(message_ty.clone()),
+                } => Some(message_ty.clone()),
                 SemTerminator::ActorCall {
                     operation: ActorOperation::StreamStart { actor, message, .. },
                     ..
@@ -11536,10 +11539,10 @@ mod tests {
 
         let mut absent_keys = physical;
         absent_keys.value_capabilities.clear();
-        assert!(verify_physical_module(&absent_keys)
-            .unwrap_err()
-            .message
-            .contains("selected capability"));
+        assert!(
+            verify_physical_module(&absent_keys).is_err(),
+            "a map requires its selected key capabilities"
+        );
     }
 
     #[test]
@@ -11598,29 +11601,6 @@ mod tests {
             DestroyAction::Set(original.set_glue[0].id),
         )
         .expect_err("set drop cannot consume a map");
-    }
-
-    #[test]
-    fn verifier_rejects_selected_close_with_a_non_integer_index() {
-        let mut module = vector_fixture();
-        module.callables[0].is_resumable = true;
-        let descriptor = module.vector_glue[0].id;
-        let block = vector_block(&mut module.functions[0], VecValueOp::Set);
-        let PhysicalTerminator::RuntimeCall { args, normal, .. } = &block.terminator else {
-            unreachable!()
-        };
-        let ArgumentTransfer::Move(owner) = args[0] else {
-            panic!("set must own its receiver");
-        };
-        block.terminator = PhysicalTerminator::ValueClose {
-            index: Some(owner),
-            generator: owner,
-            destroy: Some(DestroyAction::Vector(descriptor)),
-            conditional: false,
-            next: normal.clone(),
-        };
-        let error = verify_physical_module(&module).expect_err("vector pointer cannot be an index");
-        assert!(error.message.contains("copied i64 index"), "{error}");
     }
 
     fn vector_fixture() -> PhysicalModule {

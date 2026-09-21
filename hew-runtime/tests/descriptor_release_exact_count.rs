@@ -139,7 +139,7 @@ unsafe extern "C" fn eq_i64(
 
 fn layout<T>(drop_fn: unsafe extern "C-unwind" fn(*mut c_void)) -> HewValueLayout {
     HewValueLayout {
-        visit_close: None,
+        release_start: None,
         size: size_of::<T>(),
         align: align_of::<T>(),
         ownership_kind: HewTypeOwnershipKind::LayoutManaged,
@@ -248,7 +248,7 @@ fn assert_map_value_releases() {
     let inner_layout = layout::<RecordOwningHeap>(drop_map_inner_record);
     let key_layout = HewMapKeyLayout {
         value: HewValueLayout {
-            visit_close: None,
+            release_start: None,
             size: size_of::<i64>(),
             align: align_of::<i64>(),
             ownership_kind: HewTypeOwnershipKind::Plain,
@@ -259,7 +259,7 @@ fn assert_map_value_releases() {
         eq_fn: Some(eq_i64),
     };
     let value_layout = HewValueLayout {
-        visit_close: None,
+        release_start: None,
         size: size_of::<*mut HewVec>(),
         align: align_of::<*mut HewVec>(),
         ownership_kind: HewTypeOwnershipKind::LayoutManaged,
@@ -358,7 +358,7 @@ fn suppressed_release_fails_exact_count_for_each_issue_2553_shape() {
     let vec = unsafe { make_vec(&inner_layout, &inner) };
     let key_layout = HewMapKeyLayout {
         value: HewValueLayout {
-            visit_close: None,
+            release_start: None,
             size: size_of::<i64>(),
             align: align_of::<i64>(),
             ownership_kind: HewTypeOwnershipKind::Plain,
@@ -369,7 +369,7 @@ fn suppressed_release_fails_exact_count_for_each_issue_2553_shape() {
         eq_fn: Some(eq_i64),
     };
     let shallow_value_layout = HewValueLayout {
-        visit_close: None,
+        release_start: None,
         size: size_of::<*mut HewVec>(),
         align: align_of::<*mut HewVec>(),
         ownership_kind: HewTypeOwnershipKind::Plain,
@@ -477,7 +477,7 @@ fn injected_extra_release_helper() {
             let vec = unsafe { make_vec(&inner_layout, &inner) };
             let key_layout = HewMapKeyLayout {
                 value: HewValueLayout {
-                    visit_close: None,
+                    release_start: None,
                     size: size_of::<i64>(),
                     align: align_of::<i64>(),
                     ownership_kind: HewTypeOwnershipKind::Plain,
@@ -488,7 +488,7 @@ fn injected_extra_release_helper() {
                 eq_fn: Some(eq_i64),
             };
             let value_layout = HewValueLayout {
-                visit_close: None,
+                release_start: None,
                 size: size_of::<*mut HewVec>(),
                 align: align_of::<*mut HewVec>(),
                 ownership_kind: HewTypeOwnershipKind::LayoutManaged,

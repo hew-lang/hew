@@ -1,0 +1,29 @@
+actor Worker { receive fn ping() {} }
+
+supervisor Group {
+    child first: Worker,
+    child second: Worker,
+}
+
+fn same(left: Worker, right: Worker) -> bool { left is right }
+
+fn main() {
+    let first = spawn Worker;
+    let second = spawn Worker;
+    let alias = first;
+    assert(same(first, alias));
+    assert(!(first is second));
+    let compare = |left, right| left is right;
+    assert(compare(alias, first));
+    let group = spawn Group;
+    let other = spawn Group;
+    let role = group.first;
+    assert(role is group.first);
+    assert(!(role is group.second));
+    assert(!(role is other.first));
+    close(first);
+    close(second);
+    close(group);
+    close(other);
+    println("identity preserved");
+}

@@ -45,12 +45,12 @@ mod suspend;
 #[path = "physical_tasks.rs"]
 mod tasks;
 
-#[path = "physical_close.rs"]
-mod close;
 #[path = "physical_dyn.rs"]
 mod dyn_object;
 #[path = "physical_host.rs"]
 mod host;
+#[path = "physical_release.rs"]
+mod release;
 #[path = "physical_shared.rs"]
 mod shared;
 #[path = "physical_structural.rs"]
@@ -690,9 +690,10 @@ fn primitive_repr(
         ResolvedTy::Isize | ResolvedTy::Usize => PhysicalRepr::Integer { bits: pointer_bits },
         ResolvedTy::F32 => PhysicalRepr::Float { bits: 32 },
         ResolvedTy::F64 => PhysicalRepr::Float { bits: 64 },
-        ResolvedTy::String | ResolvedTy::CancellationToken | ResolvedTy::Array(_, _) => {
-            PhysicalRepr::Pointer
-        }
+        ResolvedTy::Borrow { .. }
+        | ResolvedTy::String
+        | ResolvedTy::CancellationToken
+        | ResolvedTy::Array(_, _) => PhysicalRepr::Pointer,
         // A trait object is the runtime's two-word `HewTraitObject`:
         // the boxed value and its dispatch table.
         ResolvedTy::Function { .. }
@@ -1340,10 +1341,18 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
             .builder
             .build_is_not_null(primary, "resource.close.primary.present")
             .llvm_ctx("test the frame's active fault")?;
+        let no_new_fault = self
+            .builder
+            .build_is_null(raised.into_pointer_value(), "resource.close.raised.absent")
+            .llvm_ctx("test whether release raised a fault")?;
+        let keep_status = self
+            .builder
+            .build_or(present, no_new_fault, "resource.close.keep.status")
+            .llvm_ctx("preserve an existing outcome when cleanup succeeds")?;
         let combined_status = self
             .builder
             .build_select(
-                present,
+                keep_status,
                 primary_status,
                 BasicValueEnum::from(status),
                 "resource.close.combined.status",
@@ -1380,7 +1389,7 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
     /// releases inside the runtime, which has no fault slot of its own to hand
     /// back. The sink is that slot: a failing `close` records against it, the
     /// release still finishes, and the fault comes back here to join the
-    /// frame's own record (D516).
+    /// frame's own record.
     ///
     /// This adds no basic block. A release sits inside sequences whose later
     /// phi nodes name the block it was emitted into, so the bracket folds the
@@ -2279,6 +2288,10 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             self.emit_value_descriptor(&map_value_descriptor_symbol(glue.id), &glue.value)?;
         }
         for glue in &self.module.shared_glue {
+            self.emit_value_descriptor(
+                &format!("__hew_shared_payload_{}_layout", glue.id.0),
+                &glue.payload,
+            )?;
             let Some(action) = glue.payload.destroy else {
                 continue;
             };
@@ -2402,7 +2415,10 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
 
     fn emit_value_descriptor(&self, name: &str, recipe: &PhysicalValueRecipe) -> CodegenResult<()> {
         let value = self.value_descriptor(name, recipe)?;
-        let global = self.llvm.add_global(value.get_type(), None, name);
+        let global = self
+            .llvm
+            .get_global(name)
+            .unwrap_or_else(|| self.llvm.add_global(value.get_type(), None, name));
         global.set_linkage(Linkage::Internal);
         global.set_constant(true);
         global.set_initializer(&value);
@@ -2450,8 +2466,15 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             self.ctx.i8_type().const_int(ownership as u64, false).into(),
             clone.into(),
             drop.into(),
-            self.emit_value_close_callback(&format!("{name}_close"), layout, recipe.destroy)?
-                .into(),
+            match recipe.destroy {
+                Some(action) if self.module.releases.suspends(action) => {
+                    release::callback(self.ctx, &self.llvm, self.module, layout, action)?
+                        .as_global_value()
+                        .as_pointer_value()
+                }
+                _ => pointer.const_null(),
+            }
+            .into(),
         ]))
     }
 
@@ -3130,7 +3153,8 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 vtable,
                 source,
             } => self.emit_dyn_make(*dest, *vtable, *source),
-            PhysicalOp::CallableCoerce { dest, source } => {
+            PhysicalOp::CallableCoerce { dest, source }
+            | PhysicalOp::GeneratorCoerce { dest, source } => {
                 let value = self.load(*source, "callable.coerce")?;
                 self.store(*dest, value)?;
                 self.clear_owned(*source)
@@ -3463,11 +3487,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 ) {
                     if let Some(action) = destroy {
                         let value = self.load(*storage, "seat.release")?;
-                        self.value_emitter().destroy_loaded_value(
-                            value,
-                            &self.storage(*storage)?.layout,
-                            *action,
-                        )?;
+                        self.release_loaded(value, &self.storage(*storage)?.layout, *action)?;
                     }
                     return Ok(());
                 }
@@ -3742,6 +3762,32 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             (BasicValueEnum::FloatValue(left), BasicValueEnum::FloatValue(right)) => {
                 emit_float_binary(&self.builder, op, left, right)?
             }
+            (BasicValueEnum::StructValue(left), BasicValueEnum::StructValue(right))
+                if ty.is_builtin(hew_types::BuiltinType::ChildRef) && op == BinaryOp::Equal =>
+            {
+                let mut equal = self.ctx.bool_type().const_int(1, false);
+                for index in 0..2 {
+                    let left = self
+                        .builder
+                        .build_extract_value(left, index, "identity.left")
+                        .llvm_ctx("read supervised role identity")?
+                        .into_int_value();
+                    let right = self
+                        .builder
+                        .build_extract_value(right, index, "identity.right")
+                        .llvm_ctx("read supervised role identity")?
+                        .into_int_value();
+                    let component = self
+                        .builder
+                        .build_int_compare(IntPredicate::EQ, left, right, "identity.component")
+                        .llvm_ctx("compare supervised role identity")?;
+                    equal = self
+                        .builder
+                        .build_and(equal, component, "identity.equal")
+                        .llvm_ctx("combine supervised role identity")?;
+                }
+                equal.into()
+            }
             _ => {
                 return Err(CodegenError::FailClosed(
                     "physical binary operands have unsupported carriers".into(),
@@ -3844,8 +3890,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         }
         let value = self.load(source, "destroy.source")?;
         self.clear_owned(source)?;
-        self.value_emitter()
-            .destroy_loaded_value(value, &self.storage(source)?.layout, action)
+        self.release_loaded(value, &self.storage(source)?.layout, action)
     }
 
     /// Release an operand this emitter still owns on an operation's own
@@ -3861,8 +3906,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         }
         let value = self.load(source, "destroy.source")?;
         self.clear_owned(source)?;
-        self.value_emitter()
-            .destroy_loaded_value(value, &self.storage(source)?.layout, action)
+        self.release_loaded(value, &self.storage(source)?.layout, action)
     }
 
     fn emit_terminator(&self, block: &PhysicalBlock) -> CodegenResult<()> {
@@ -3914,13 +3958,6 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             } => self.emit_generator_next(generator, *result, normal, cancel, unwind),
             PhysicalTerminator::StreamNext { .. } => self.emit_stream_next(block),
             PhysicalTerminator::StreamSend { .. } => self.emit_stream_send(block),
-            PhysicalTerminator::ValueClose {
-                index,
-                destroy,
-                generator,
-                conditional,
-                next,
-            } => self.emit_value_close(*generator, *index, *destroy, *conditional, next),
             PhysicalTerminator::TaskAwait {
                 task,
                 result,
@@ -6640,10 +6677,15 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                         self.clear_owned(source(1)?)?;
                     }
                 } else {
-                    let function = external_drop(self.ctx, self.llvm, "hew_vec_clear")?;
-                    self.value_emitter().emit_release_in_sink(|| {
-                        self.runtime_call_void(function, &[vector.into()], "vector.clear")
-                    })?;
+                    let function =
+                        external_unary_ptr(self.ctx, self.llvm, "hew_vec_clear_release")?;
+                    let cursor = self
+                        .runtime_call_value(function, &[vector.into()], "vector.clear")?
+                        .into_pointer_value();
+                    self.clear_owned(receiver)?;
+                    self.store(result, vector.into())?;
+                    release::drain(&self.value_emitter(), self.frame.as_ref(), cursor)?;
+                    return self.emit_result_edge(Some(result), normal);
                 }
                 self.clear_owned(receiver)?;
                 self.store(result, vector.into())?;
@@ -6655,29 +6697,28 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 let function = get_or_declare_external(
                     self.llvm,
                     if moved {
-                        "hew_vec_set_owned_move"
+                        "hew_vec_set_owned_move_release"
                     } else {
-                        "hew_vec_set_owned"
+                        "hew_vec_set_owned_release"
                     },
-                    self.ctx
-                        .void_type()
-                        .fn_type(&[pointer.into(), i64_ty.into(), pointer.into()], false),
+                    pointer.fn_type(&[pointer.into(), i64_ty.into(), pointer.into()], false),
                 )?;
                 // The set releases the element it displaces, so a `close` that
                 // fails inside it reaches this frame's fault record.
                 let replacement = self.slots[source(2)?.0 as usize];
-                self.value_emitter().emit_release_in_sink(|| {
-                    self.runtime_call_void(
+                let cursor = self
+                    .runtime_call_value(
                         function,
                         &[vector.into(), index.into(), replacement.into()],
                         "vector.set",
-                    )
-                })?;
+                    )?
+                    .into_pointer_value();
                 if moved {
                     self.clear_owned(source(2)?)?;
                 }
                 self.clear_owned(receiver)?;
                 self.store(result, vector.into())?;
+                release::drain(&self.value_emitter(), self.frame.as_ref(), cursor)?;
             }
             PhysicalVectorOp::Index
             | PhysicalVectorOp::Get { .. }
@@ -7092,7 +7133,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 self.store(result, len)?;
             }
             PhysicalMapOp::ContainsKey => {
-                let contains = self.emit_collection_probe(
+                let (contains, _) = self.emit_collection_probe(
                     CollectionProbe {
                         key: &self.module.map_glue[glue.0 as usize].key.ty,
                         begin: "hew_hashmap_probe_begin",
@@ -7101,6 +7142,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                         inserting: false,
                         commit: "hew_hashmap_probe_contains",
                         commit_args: &[],
+                        releases: false,
                     },
                     failure,
                     &[],
@@ -7108,7 +7150,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 self.store(result, contains.into())?;
             }
             PhysicalMapOp::Insert | PhysicalMapOp::Clear => {
-                if operation == PhysicalMapOp::Insert {
+                let cursor = if operation == PhysicalMapOp::Insert {
                     // The adopted value transfers into the slot; the key is
                     // cloned in either entry point.
                     let moved = matches!(transfers.get(2), Some(ArgumentTransfer::Move(_)));
@@ -7122,7 +7164,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                             consumed.push((source(2)?, destroy));
                         }
                     }
-                    self.emit_collection_probe(
+                    let (_, cursor) = self.emit_collection_probe(
                         CollectionProbe {
                             key: &self.module.map_glue[glue.0 as usize].key.ty,
                             begin: "hew_hashmap_probe_begin",
@@ -7135,6 +7177,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                                 "hew_hashmap_probe_insert_clone"
                             },
                             commit_args: &[self.slots[source(2)?.0 as usize].into()],
+                            releases: true,
                         },
                         failure,
                         &consumed,
@@ -7142,14 +7185,16 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     if moved {
                         self.clear_owned(source(2)?)?;
                     }
+                    cursor.expect("map insertion detaches displaced owners")
                 } else {
-                    let function = external_drop(self.ctx, self.llvm, "hew_hashmap_clear_layout")?;
-                    self.value_emitter().emit_release_in_sink(|| {
-                        self.runtime_call_void(function, &[map.into()], "map.clear")
-                    })?;
-                }
+                    let function =
+                        external_unary_ptr(self.ctx, self.llvm, "hew_hashmap_clear_release")?;
+                    self.runtime_call_value(function, &[map.into()], "map.clear")?
+                        .into_pointer_value()
+                };
                 self.clear_owned(receiver)?;
                 self.store(result, map)?;
+                release::drain(&self.value_emitter(), self.frame.as_ref(), cursor)?;
             }
             PhysicalMapOp::Keys | PhysicalMapOp::Values => {
                 let symbol = if operation == PhysicalMapOp::Keys {
@@ -7252,7 +7297,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         };
         let consumed = matches!(operation, PhysicalMapOp::Remove { .. })
             .then_some((receiver, DestroyAction::Map(id)));
-        let found = self.emit_collection_probe(
+        let (found, cursor) = self.emit_collection_probe(
             CollectionProbe {
                 key: &glue.key.ty,
                 begin: "hew_hashmap_probe_begin",
@@ -7261,6 +7306,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 inserting: false,
                 commit: symbol,
                 commit_args: &[output.into()],
+                releases: matches!(operation, PhysicalMapOp::Remove { .. }),
             },
             failure,
             consumed.as_slice(),
@@ -7325,6 +7371,9 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             } else {
                 self.store(result, value)?;
             }
+        }
+        if let Some(cursor) = cursor {
+            release::drain(&self.value_emitter(), self.frame.as_ref(), cursor)?;
         }
         self.emit_result_edge(Some(result), normal)
     }
@@ -7392,7 +7441,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                         consumed.push((source(1)?, destroy));
                     }
                 }
-                let present = self.emit_collection_probe(
+                let (present, cursor) = self.emit_collection_probe(
                     CollectionProbe {
                         key: &self.module.set_glue[glue.0 as usize].element.ty,
                         begin: "hew_hashset_probe_begin",
@@ -7401,6 +7450,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                         inserting: matches!(operation, PhysicalSetOp::Insert { .. }),
                         commit: symbol,
                         commit_args: &[],
+                        releases: operation != PhysicalSetOp::Contains,
                     },
                     failure,
                     &consumed,
@@ -7413,14 +7463,19 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 } else {
                     self.store_receiver_pair(result, receiver, present.into())?;
                 }
+                if let Some(cursor) = cursor {
+                    release::drain(&self.value_emitter(), self.frame.as_ref(), cursor)?;
+                }
             }
             PhysicalSetOp::Clear => {
-                let function = external_drop(self.ctx, self.llvm, "hew_hashset_clear_layout")?;
-                self.value_emitter().emit_release_in_sink(|| {
-                    self.runtime_call_void(function, &[set.into()], "set.clear")
-                })?;
+                let function =
+                    external_unary_ptr(self.ctx, self.llvm, "hew_hashset_clear_release")?;
+                let cursor = self
+                    .runtime_call_value(function, &[set.into()], "set.clear")?
+                    .into_pointer_value();
                 self.clear_owned(receiver)?;
                 self.store(result, set)?;
+                release::drain(&self.value_emitter(), self.frame.as_ref(), cursor)?;
             }
             PhysicalSetOp::Elements => {
                 let function =
@@ -9171,7 +9226,7 @@ mod tests {
             offset_of!(HewValueLayout, ownership_kind),
             offset_of!(HewValueLayout, clone_fn),
             offset_of!(HewValueLayout, drop_fn),
-            offset_of!(HewValueLayout, visit_close),
+            offset_of!(HewValueLayout, release_start),
         ]
         .into_iter()
         .enumerate()

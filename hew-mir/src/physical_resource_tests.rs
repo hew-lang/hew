@@ -17,8 +17,29 @@ fn stream_owner() -> (SemModule, ResolvedTy) {
         id: BlockId(0),
         args: vec![],
         ops: vec![op(0, SemOpKind::DestroyValue { value: operand(0) }, vec![])],
-        terminator: SemTerminator::Return { value: None },
+        terminator: SemTerminator::CleanupDispatch {
+            normal: hew_sir::Edge {
+                target: BlockId(1),
+                args: vec![],
+            },
+            fault: hew_sir::Edge {
+                target: BlockId(2),
+                args: vec![],
+            },
+        },
     }];
+    for (id, terminator) in [
+        (1, SemTerminator::Return { value: None }),
+        (2, SemTerminator::ResumeUnwind),
+    ] {
+        module.functions[0].blocks.push(hew_sir::SemBlock {
+            terminator_provenance: hew_sir::Provenance::Synthesized,
+            id: BlockId(id),
+            args: vec![],
+            ops: vec![],
+            terminator,
+        });
+    }
     (module, ty)
 }
 

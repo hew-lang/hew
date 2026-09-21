@@ -75,7 +75,7 @@ pub(crate) unsafe fn elem_layout_witness<'a>(
     // SAFETY: descriptor validity is the caller's contract.
     let l = unsafe { element_layout(layout, context) };
     if l.ownership_kind == HewTypeOwnershipKind::LayoutManaged
-        && (l.clone_fn.is_none() || l.drop_fn.is_none())
+        && (l.clone_fn.is_none() || (l.drop_fn.is_none() && l.release_start.is_none()))
     {
         abort_elem_witness(
             context,
@@ -96,7 +96,10 @@ pub(crate) unsafe fn move_elem_layout_witness<'a>(
 ) -> &'a HewValueLayout {
     // SAFETY: descriptor validity is the caller's contract.
     let layout = unsafe { element_layout(layout, context) };
-    if layout.ownership_kind != HewTypeOwnershipKind::Plain && layout.drop_fn.is_none() {
+    if layout.ownership_kind != HewTypeOwnershipKind::Plain
+        && layout.drop_fn.is_none()
+        && layout.release_start.is_none()
+    {
         abort_elem_witness(context, "owned element witness is missing its drop thunk");
     }
     layout
@@ -139,7 +142,7 @@ pub(crate) unsafe fn move_elem_envelope(
 #[allow(dead_code, reason = "used by the wasm32 channel backing")]
 pub(crate) fn drop_elem_envelope(
     layout: Option<&HewValueLayout>,
-    mut envelope: Vec<u8>,
+    envelope: Vec<u8>,
     context: &str,
 ) {
     let Some(layout) = layout else {
@@ -154,10 +157,13 @@ pub(crate) fn drop_elem_envelope(
             "owned envelope size does not match the stamped witness",
         );
     }
-    if let Some(drop_fn) = layout.drop_fn {
-        // SAFETY: a layout-managed envelope contains one live deep-cloned
-        // element. This path owns the envelope and is its only disposer.
-        unsafe { drop_fn(envelope.as_mut_ptr().cast()) };
+    // SAFETY: the envelope transfers its initialized owner into aligned storage.
+    // Synchronous foreign callers must supply a non-suspending release recipe.
+    unsafe {
+        let cursor =
+            crate::release_walker::HewReleaseCursor::detached(envelope.as_ptr().cast(), *layout);
+        drop(envelope);
+        crate::release_walker::hew_release_sync(cursor);
     }
 }
 

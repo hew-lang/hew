@@ -40,6 +40,7 @@ pub unsafe extern "C" fn hew_actor_send_wait_new(
     size: usize,
     drop_payload: super::HewMsgEnvelopeDropFn,
     waker: *const HewWaker,
+    payload_release: Option<hew_cabi::value::HewValueReleaseStart>,
 ) -> *mut HewNativeSend {
     // SAFETY: the caller supplies a unique unpublished wrapper and live waker.
     let (envelope, waker) = unsafe {
@@ -53,6 +54,8 @@ pub unsafe extern "C" fn hew_actor_send_wait_new(
         unsafe { crate::mem::buf_free(payload) };
         return std::ptr::null_mut();
     }
+    // SAFETY: the unpublished envelope's fields still belong to its source.
+    unsafe { (*envelope).release_start = payload_release };
     crate::actor::register_native_capacity(token, &waker);
     Box::into_raw(Box::new(HewNativeSend {
         token,
@@ -347,6 +350,7 @@ mod tests {
                 let channel = crate::reply_channel::native::hew_reply_channel_new_native(
                     waker.descriptor(),
                     None,
+                    None,
                 );
                 let wait = hew_actor_ask_wait_new(
                     crate::lifetime::local_handles::HewLocalPidId::INVALID,
@@ -370,6 +374,7 @@ mod tests {
                 if resubmit {
                     let channel = crate::reply_channel::native::hew_reply_channel_new_native(
                         waker.descriptor(),
+                        None,
                         None,
                     );
                     let wait = hew_actor_ask_wait_resume(
@@ -414,6 +419,7 @@ mod tests {
                     size_of_val(&source),
                     drop_owned,
                     waker.descriptor(),
+                    None,
                 );
                 drop(waker);
                 if poll {

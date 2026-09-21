@@ -259,7 +259,7 @@ pub struct WasmModuleRejection {
     pub feature: WasmUnsupportedFeature,
 }
 
-/// A native-only stdlib function in an otherwise supported module.
+/// A native-only stdlib function with a specific capability classification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WasmFunctionRejection {
     pub module: &'static str,
@@ -287,6 +287,14 @@ pub const NATIVE_ONLY_WASM_MODULE_REJECTIONS: &[WasmModuleRejection] = &[
 pub const NATIVE_ONLY_WASM_FUNCTION_REJECTIONS: &[WasmFunctionRejection] = &[
     WasmFunctionRejection { module: "std.fs", function: "read", feature: WasmUnsupportedFeature::FilesystemStreams },
     WasmFunctionRejection { module: "std.stream", function: "open", feature: WasmUnsupportedFeature::FilesystemStreams },
+    WasmFunctionRejection { module: "std.net.http", function: "request", feature: WasmUnsupportedFeature::HttpClient },
+    WasmFunctionRejection { module: "std.net.http", function: "request_string", feature: WasmUnsupportedFeature::HttpClient },
+    WasmFunctionRejection { module: "std.net.http", function: "set_timeout", feature: WasmUnsupportedFeature::HttpClient },
+    WasmFunctionRejection { module: "std.net.http", function: "last_error", feature: WasmUnsupportedFeature::HttpClient },
+    WasmFunctionRejection { module: "std.net.http", function: "get", feature: WasmUnsupportedFeature::HttpClient },
+    WasmFunctionRejection { module: "std.net.http", function: "post", feature: WasmUnsupportedFeature::HttpClient },
+    WasmFunctionRejection { module: "std.net.http", function: "get_string", feature: WasmUnsupportedFeature::HttpClient },
+    WasmFunctionRejection { module: "std.net.http", function: "post_string", feature: WasmUnsupportedFeature::HttpClient },
 ];
 
 /// Generated native-only module short-names for sandbox and checker consumers.

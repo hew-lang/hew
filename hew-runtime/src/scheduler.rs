@@ -312,12 +312,16 @@ pub(crate) fn drain_is_idle() -> bool {
         return true;
     };
 
-    if crate::activation::ACTIVE_ACTIVATIONS.load(Ordering::Acquire) != 0
+    if !crate::shutdown::external_work_is_idle()
+        || crate::activation::ACTIVE_ACTIVATIONS.load(Ordering::Acquire) != 0
         || activation_handoff_in_flight()
     {
         return false;
     }
-    if !sched.global_queue.is_empty() {
+    if !sched.global_queue.is_empty()
+        || !sched.task_queue.lock_or_recover().is_empty()
+        || crate::task_scope::checked::TaskExecution::has_live_tasks()
+    {
         return false;
     }
     if sched.stealers.iter().any(|stealer| !stealer.is_empty()) {
@@ -336,6 +340,7 @@ pub(crate) fn drain_is_idle() -> bool {
     // started inside this window is visible to one of the two reads.
     crate::activation::ACTIVE_ACTIVATIONS.load(Ordering::Acquire) == 0
         && !activation_handoff_in_flight()
+        && crate::shutdown::external_work_is_idle()
 }
 
 /// The scheduler owns the shared global queue, per-worker stealers,
@@ -349,6 +354,9 @@ pub(crate) struct Scheduler {
     worker_join_state: AtomicU8,
     shutdown_finalized: AtomicBool,
     global_queue: GlobalQueue,
+    task_queue: Mutex<
+        std::collections::VecDeque<std::sync::Arc<crate::task_scope::checked::TaskExecution>>,
+    >,
     stealers: Vec<WorkStealer>,
     shutdown: AtomicBool,
     /// Number of workers that published their parker state before the final
@@ -540,6 +548,7 @@ pub extern "C" fn hew_sched_init() -> c_int {
         worker_join_state: AtomicU8::new(WORKERS_LIVE),
         shutdown_finalized: AtomicBool::new(false),
         global_queue,
+        task_queue: Mutex::new(std::collections::VecDeque::new()),
         stealers,
         shutdown: AtomicBool::new(false),
         parked_workers: AtomicU64::new(0),
@@ -853,6 +862,12 @@ pub extern "C" fn hew_sched_shutdown() {
     // Both waits are bounded: an actor that never yields cannot hold exit open.
     quiesce_before_worker_teardown(SHUTDOWN_QUIESCE_TIMEOUT);
 
+    if !sched.shutdown.load(Ordering::Acquire)
+        && !crate::shutdown::drain_native_actor_cleanup(Duration::from_secs(5))
+    {
+        return;
+    }
+
     if teardown_workers(sched as *const Scheduler, None, false).all_joined {
         finalize_scheduler_shutdown(sched);
     }
@@ -927,6 +942,12 @@ pub extern "C" fn hew_runtime_cleanup() {
     let Some(sched) = get_scheduler() else {
         return;
     };
+    if !sched.shutdown.load(Ordering::Acquire) {
+        hew_sched_shutdown();
+        if !sched.shutdown.load(Ordering::Acquire) {
+            return;
+        }
+    }
     if !teardown_workers(sched as *const Scheduler, None, false).all_joined {
         set_last_error("runtime cleanup: scheduler workers remain joinable");
         return;
@@ -1088,6 +1109,13 @@ pub(crate) use crate::mailbox::{MESSAGES_RECEIVED, MESSAGES_SENT};
 pub(crate) fn publish_queue_entry(entry: SchedulerQueueEntry) {
     let sched = get_scheduler().expect("scheduler not initialized");
     sched_enqueue_owned_inner(sched, entry);
+}
+
+/// Publish a ready task on the same worker pool as actor activations.
+pub(crate) fn enqueue_task(task: std::sync::Arc<crate::task_scope::checked::TaskExecution>) {
+    let sched = get_scheduler().expect("scheduler not initialized");
+    sched.task_queue.lock_or_recover().push_back(task);
+    sched_try_wake();
 }
 
 pub(crate) fn sched_enqueue(actor: *mut HewActor) {
@@ -1271,6 +1299,7 @@ fn worker_loop(id: usize, rt: WorkerRuntimePtr, local: &WorkDeque) {
     )]
     crate::signal::init_worker_recovery(id as u32);
 
+    let mut prefer_task = true;
     loop {
         // Test-only drain handshake. In production the default-runtime pointer
         // is never swapped during a worker's lifetime, so this entire block is
@@ -1340,6 +1369,18 @@ fn worker_loop(id: usize, rt: WorkerRuntimePtr, local: &WorkDeque) {
         {
             let _handoff = ActivationClaim::new();
 
+            // Bound task/actor priority to one activation so a self-waking
+            // task cannot starve an actor needed for its progress or cancellation.
+            if prefer_task {
+                let task = sched.task_queue.lock_or_recover().pop_front();
+                if let Some(task) = task {
+                    prefer_task = false;
+                    task.poll();
+                    continue;
+                }
+            }
+            prefer_task = true;
+
             // 1. Pop from local deque (LIFO — cache-friendly).
             if let Some(ptr) = local.pop() {
                 activate_queued_actor(ptr.cast::<HewActor>());
@@ -1355,6 +1396,12 @@ fn worker_loop(id: usize, rt: WorkerRuntimePtr, local: &WorkDeque) {
             // 3. Try global queue (batch steal into local deque).
             if let Some(ptr) = sched.global_queue.steal_batch_and_pop(local) {
                 activate_queued_actor(ptr.cast::<HewActor>());
+                continue;
+            }
+            let task = sched.task_queue.lock_or_recover().pop_front();
+            if let Some(task) = task {
+                prefer_task = false;
+                task.poll();
                 continue;
             }
         }
@@ -1407,6 +1454,7 @@ fn park_worker(
     if probe_queues
         && (!local.is_empty()
             || !sched.global_queue.is_empty()
+            || !sched.task_queue.lock_or_recover().is_empty()
             || sched.stealers.iter().any(|stealer| !stealer.is_empty()))
     {
         parker.parked.store(false, Ordering::SeqCst);
@@ -1771,6 +1819,7 @@ pub(crate) fn worker_less_scheduler() -> Scheduler {
         shutdown_finalized: AtomicBool::new(false),
         // SAFETY: single-threaded test setup with scheduler-owned queue state.
         global_queue: unsafe { crate::deque::GlobalQueue::new() },
+        task_queue: Mutex::new(std::collections::VecDeque::new()),
         shutdown: AtomicBool::new(false),
         parked_workers: AtomicU64::new(0),
     }
@@ -2040,19 +2089,11 @@ pub extern "C" fn hew_actor_cooperate() -> c_int {
 
     // SAFETY: a non-null canonical context points to a live context slot owned
     // by the current dispatch/scope boundary.
-    let (actor, cancel_token, scope) =
-        unsafe { ((*ctx).actor, (*ctx).cancel_token, (*ctx).task_scope) };
+    let (actor, cancel_token) = unsafe { ((*ctx).actor, (*ctx).cancel_token) };
 
     if !cancel_token.is_null() {
         // SAFETY: cancel_token is owned by the installed task scope.
         if unsafe { crate::cancel_token::hew_cancel_token_is_requested(cancel_token) } != 0 {
-            return 2;
-        }
-    }
-
-    if !scope.is_null() {
-        // SAFETY: scope is valid per canonical context installation contract.
-        if unsafe { crate::task_scope::hew_task_scope_is_cancelled(scope) } != 0 {
             return 2;
         }
     }
@@ -2580,6 +2621,7 @@ mod tests {
             shutdown_finalized: AtomicBool::new(false),
             // SAFETY: no values are stored in this local scheduler queue.
             global_queue: unsafe { GlobalQueue::new() },
+            task_queue: Mutex::new(std::collections::VecDeque::new()),
             shutdown: AtomicBool::new(false),
             parked_workers: AtomicU64::new(1),
         };
@@ -5258,6 +5300,7 @@ mod tests {
             shutdown_finalized: AtomicBool::new(false),
             // SAFETY: single-threaded test setup with scheduler-owned queue state.
             global_queue: unsafe { crate::deque::GlobalQueue::new() },
+            task_queue: Mutex::new(std::collections::VecDeque::new()),
             shutdown: AtomicBool::new(false),
             parked_workers: AtomicU64::new(0),
         };
@@ -5356,6 +5399,7 @@ mod tests {
             shutdown_finalized: AtomicBool::new(false),
             // SAFETY: no preconditions for GlobalQueue::new().
             global_queue: unsafe { crate::deque::GlobalQueue::new() },
+            task_queue: Mutex::new(std::collections::VecDeque::new()),
             shutdown: AtomicBool::new(false),
             parked_workers: AtomicU64::new(0),
         };
@@ -5428,6 +5472,7 @@ mod tests {
             shutdown_finalized: AtomicBool::new(false),
             // SAFETY: single-threaded test setup with scheduler-owned queue state.
             global_queue: unsafe { crate::deque::GlobalQueue::new() },
+            task_queue: Mutex::new(std::collections::VecDeque::new()),
             shutdown: AtomicBool::new(false),
             parked_workers: AtomicU64::new(0),
         };
@@ -5848,6 +5893,7 @@ mod tests {
             shutdown_finalized: AtomicBool::new(false),
             // SAFETY: single-threaded test setup with scheduler-owned queue state.
             global_queue: unsafe { crate::deque::GlobalQueue::new() },
+            task_queue: Mutex::new(std::collections::VecDeque::new()),
             shutdown: AtomicBool::new(false),
             parked_workers: AtomicU64::new(0),
         };
@@ -6497,6 +6543,7 @@ mod tests {
             shutdown_finalized: AtomicBool::new(false),
             // SAFETY: single-threaded test setup with scheduler-owned queue state.
             global_queue: unsafe { crate::deque::GlobalQueue::new() },
+            task_queue: Mutex::new(std::collections::VecDeque::new()),
             shutdown: AtomicBool::new(false),
             parked_workers: AtomicU64::new(0),
         };

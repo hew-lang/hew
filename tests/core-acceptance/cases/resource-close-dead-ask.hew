@@ -1,0 +1,19 @@
+actor Audit {
+    receive fn record(id: i64) { sleep(1ms); println(f"closed {id}"); }
+}
+#[resource]
+type Ticket { audit: Audit, id: i64, }
+impl Ticket {
+    fn close(consume self) { self.audit.record(self.id).expect("audit"); }
+}
+actor Worker { receive fn take(ticket: Ticket) -> i64 { ticket.id } }
+fn main() {
+    let audit = spawn Audit;
+    let worker = spawn Worker;
+    close(worker);
+    match worker.take(Ticket { audit: audit, id: 9 }) {
+        .Err(_) => println("dead"),
+        .Ok(_) => panic("closed actor accepted"),
+    }
+    close(audit);
+}

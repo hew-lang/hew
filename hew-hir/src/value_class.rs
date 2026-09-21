@@ -29,14 +29,6 @@ impl From<hew_parser::ast::ResourceMarker> for ResourceMarker {
     }
 }
 
-/// Per-named-type classification table consumed by `ValueClass::of_ty`.
-///
-/// Construction-site authority: the table is populated by HIR lowering
-/// from every `Item::TypeDecl`'s `#[resource]` / `#[linear]` marker and
-/// compiler-known substrate registrations. Parser-level storage is retained
-/// for compatibility with existing HIR/MIR construction sites; callers must use
-/// `lookup_type_marker` so `BitCopy` registrations that have no parser spelling
-/// are still observed. LESSONS: `type-info-survival`.
 /// Checker-admitted lifecycle for one exact qualified opaque resource.
 ///
 /// This is deliberately distinct from the user-facing type-class entry.  The
@@ -340,125 +332,6 @@ pub fn lookup_type_marker_for_ty(
     type_classes.get(name).map(|(marker, _)| *marker)
 }
 
-/// LEGACY (P5) - the legacy lowerer's value class.
-///
-/// `hew_types::ValueClass` is the one authority (ir-ladder §1.1): it is total
-/// over `ResolvedTy`, has no `Unknown`, and reads a declaration's marker and
-/// members through a `ClassContext`. This enum survives because every one of
-/// its consumers is in `hew-mir/src/lower/**`, and that lowering is the parity
-/// harness's second leg until the legacy route is deleted at P5. Deleting
-/// `Unknown` here would widen what that leg lowers, which is exactly what the
-/// oracle must not do mid-migration.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ValueClass {
-    BitCopy,
-    CowValue,
-    PersistentShare,
-    /// `@resource` types — external-resource values with an implicit drop side
-    /// effect (`close(consume self)`). Drop elaboration emits an explicit
-    /// `ElabMir::Drop { drop_fn: Some(close) }` on every reachable exit.
-    AffineResource,
-    /// `@linear` types — single-owner values with **no implicit drop**.
-    /// The move-checker rejects any function where a `Linear` binding is
-    /// live at an exit without being consumed via a declared consuming
-    /// method (`MirCheck::MustConsume`).
-    Linear,
-    View,
-    Unknown,
-}
-
-impl ValueClass {
-    /// LEGACY (P5) - resolve a type's value-class for the legacy lowerer.
-    ///
-    /// `hew_types::ValueClass::of_ty` is the authority that replaces this; it
-    /// is deleted with the legacy lowering path at P5.
-    ///
-    /// For `ResolvedTy::Named { name, .. }`, looks up the marker in the
-    /// supplied `TypeClassTable`:
-    /// - `Some((BitCopy, _))` → `Self::BitCopy`
-    /// - `Some((Resource, _))` → `Self::AffineResource`
-    /// - `Some((Linear, _))` → `Self::Linear`
-    /// - `Some((None, _))` or absent → `Self::Unknown` (preserved fallback;
-    ///   the unmarked Named-type behaviour the slice still routes through
-    ///   `Strategy::UnknownBlocked` at MIR boundary).
-    ///
-    /// Builtin types are independent of the table.
-    #[must_use]
-    pub fn of_ty(ty: &ResolvedTy, type_classes: &TypeClassTable) -> Self {
-        match ty {
-            ResolvedTy::Bool
-            | ResolvedTy::Char
-            | ResolvedTy::I8
-            | ResolvedTy::I16
-            | ResolvedTy::I32
-            | ResolvedTy::I64
-            | ResolvedTy::U8
-            | ResolvedTy::U16
-            | ResolvedTy::U32
-            | ResolvedTy::U64
-            | ResolvedTy::Isize
-            | ResolvedTy::Usize
-            | ResolvedTy::F32
-            | ResolvedTy::F64
-            | ResolvedTy::Duration
-            | ResolvedTy::Named {
-                builtin: Some(BuiltinType::SupervisorPool),
-                ..
-            }
-            | ResolvedTy::Unit
-            | ResolvedTy::Never => Self::BitCopy,
-            ResolvedTy::String
-            | ResolvedTy::Bytes
-            | ResolvedTy::Array(_, _)
-            | ResolvedTy::Tuple(_) => Self::CowValue,
-            // A `Generator<Y, R>` value is an owned, affine
-            // runtime handle (`*mut HewGenCtx`), same as CancellationToken: it
-            // has exactly one owner, must be released exactly once on scope exit
-            // (via `hew_gen_free`), and is never bit-copied. Classifying it as
-            // `AffineResource` makes the construction binding enter `owned_locals`
-            // and get a scope-exit drop.
-            // A task handle owns a reference independently of scope execution.
-            ResolvedTy::Task(_)
-            | ResolvedTy::CancellationToken
-            | ResolvedTy::Named {
-                builtin: Some(BuiltinType::Generator | BuiltinType::Rc | BuiltinType::Weak),
-                ..
-            } => Self::AffineResource,
-            // An extern-returned `&T` is a non-owning foreign boundary view:
-            // reuse `View` so it shares the no-retain/no-drop elaboration arm.
-            ResolvedTy::Slice(_) | ResolvedTy::Pointer { .. } | ResolvedTy::Borrow { .. } => {
-                Self::View
-            }
-            ResolvedTy::Function { .. }
-            | ResolvedTy::Closure { .. }
-            | ResolvedTy::TraitObject { .. } => Self::PersistentShare,
-            ResolvedTy::Named { builtin, .. } => {
-                match lookup_type_marker_for_ty(ty, type_classes) {
-                    Some(ResourceMarker::BitCopy) => Self::BitCopy,
-                    Some(ResourceMarker::Resource) => Self::AffineResource,
-                    Some(ResourceMarker::Linear) => Self::Linear,
-                    Some(ResourceMarker::None) | None => {
-                        if matches!(
-                            builtin,
-                            Some(BuiltinType::Vec | BuiltinType::HashMap | BuiltinType::HashSet)
-                        ) {
-                            Self::CowValue
-                        } else {
-                            Self::Unknown
-                        }
-                    }
-                }
-            }
-            // An abstract parameter's value-class depends on the type that
-            // monomorphisation substitutes in. Until then it is genuinely
-            // unknown, so it routes through the conservative `Unknown` arm
-            // (the same fail-closed boundary as an unmarked Named). This only
-            // arises in gated polymorphic bodies, which never reach codegen.
-            ResolvedTy::TypeParam { .. } => Self::Unknown,
-        }
-    }
-}
-
 #[must_use]
 pub fn contains_named_type(ty: &ResolvedTy) -> bool {
     !named_type_names(ty).is_empty()
@@ -650,7 +523,7 @@ mod tests {
 
     #[test]
     fn source_layout_lifecycle_discriminators_are_total_without_leaf_rows() {
-        use super::{lookup_type_marker_for_ty, ResourceMarker, TypeClassTable, ValueClass};
+        use super::{lookup_type_marker_for_ty, ResourceMarker, TypeClassTable};
 
         let table = TypeClassTable::default();
         for builtin in [
@@ -669,23 +542,17 @@ mod tests {
                 Some(ResourceMarker::BitCopy),
                 "the exact {builtin:?} discriminator must carry its compiler-admitted marker"
             );
-            assert_eq!(
-                ValueClass::of_ty(&ty, &table),
-                ValueClass::BitCopy,
-                "the exact {builtin:?} discriminator must produce a concrete decision"
-            );
         }
     }
 
     #[test]
     fn source_layout_lifecycle_marker_does_not_cross_user_nominal_identity() {
-        use super::{lookup_type_marker_for_ty, TypeClassTable, ValueClass};
+        use super::{lookup_type_marker_for_ty, TypeClassTable};
 
         let table = TypeClassTable::default();
         for name in ["DownNotification", "user.DownNotification"] {
             let ty = ResolvedTy::named_user(name, Vec::new());
             assert_eq!(lookup_type_marker_for_ty(&ty, &table), None);
-            assert_eq!(ValueClass::of_ty(&ty, &table), ValueClass::Unknown);
         }
     }
 

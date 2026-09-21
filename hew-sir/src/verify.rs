@@ -2635,6 +2635,7 @@ fn verify_callable_operation(
         SemOpKind::FunctionMake { .. }
             | SemOpKind::ClosureMake { .. }
             | SemOpKind::GeneratorMake { .. }
+            | SemOpKind::GeneratorCoerce { .. }
             | SemOpKind::CallableCoerce { .. }
             | SemOpKind::DynMake { .. }
     ) {
@@ -2711,6 +2712,12 @@ fn verify_callable_operation(
                     return Err("generator construction changes its producer contract".into());
                 }
             }
+            SemOpKind::GeneratorCoerce { source } => {
+                let source_ty = types
+                    .get(&source.value)
+                    .ok_or("generator coercion has no input definition")?;
+                crate::verify_generator_coercion(source_ty, &result.ty, facts)?;
+            }
             SemOpKind::CallableCoerce { source } => {
                 let source_ty = types
                     .get(&source.value)
@@ -2763,7 +2770,7 @@ fn is_initial_call_value(ty: &ResolvedTy) -> bool {
         || ty.is_builtin(hew_types::BuiltinType::RemotePid)
         || matches!(
             ty,
-            ResolvedTy::String | ResolvedTy::Bytes | ResolvedTy::Task(_) | ResolvedTy::Array(_, _)
+            ResolvedTy::Borrow { .. } | ResolvedTy::String | ResolvedTy::Bytes | ResolvedTy::Task(_) | ResolvedTy::Array(_, _)
         )
 }
 
@@ -3805,6 +3812,7 @@ fn verify_operation_shape(
         | SemOpKind::ClosureMake { .. }
         | SemOpKind::GeneratorMake { .. }
         | SemOpKind::StreamPipe { .. }
+        | SemOpKind::GeneratorCoerce { .. }
         | SemOpKind::CallableCoerce { .. }
         | SemOpKind::DynMake { .. } => {}
         // Dormant operations remain fail-closed until their producer and
@@ -4505,16 +4513,6 @@ pub(crate) fn defer_drain_suffix(
         | SemTerminator::FinishDefer { .. }
         | SemTerminator::CleanupDispatch { .. }
         | SemTerminator::RecoverFault { .. } => true,
-        SemTerminator::Suspend {
-            kind: crate::SuspendKind::ValueClose { .. },
-            resumes,
-            cancel,
-            unwind,
-            ..
-        } => resumes
-            .iter()
-            .chain([cancel, unwind])
-            .all(|edge| defer_drain_suffix(edge.target, blocks, visiting)),
         SemTerminator::Goto(edge) => defer_drain_suffix(edge.target, blocks, visiting),
         SemTerminator::Branch {
             then_target,
@@ -4636,8 +4634,7 @@ fn failure_cfg_matches_exit(
                             crate::TaskScopeJoinMode::PropagateFault
                             | crate::TaskScopeJoinMode::CancelLosersAfterFault,
                         ..
-                    }
-                    | crate::SuspendKind::ValueClose { .. },
+                    },
                 resumes,
                 cancel,
                 unwind,
@@ -5279,8 +5276,7 @@ fn verify_terminator_shape(
             inputs,
             result,
             resumes,
-            cancel,
-            unwind,
+            ..
         } => {
             let valid = match kind {
                 crate::SuspendKind::Ask {
@@ -5404,46 +5400,6 @@ fn verify_terminator_shape(
                             && value.decision == crate::BoundaryDecision::Move
                             && types.get(&sink.operand.value).and_then(crate::sink_element)
                                 .is_some_and(|element| types.get(&value.operand.value) == Some(element)))
-                }
-                crate::SuspendKind::ValueClose { place, selection } => {
-                    resumes.len() == 1
-                        && resumes.first() == Some(cancel)
-                        && resumes.first() == Some(unwind)
-                        && matches!(result, crate::CallResult::Unit)
-                        && if let Some(place) = place {
-                            *selection == crate::ValueCloseSelection::Whole
-                                && inputs.is_empty()
-                                && function.places.iter().any(|declaration| {
-                                    declaration.id == *place
-                                        && matches!(
-                                            declaration.origin,
-                                            crate::PlaceOrigin::Local
-                                                | crate::PlaceOrigin::Aggregate { .. }
-                                        )
-                                        && crate::OwnKind::of_ty(&declaration.ty, variants.facts)
-                                            .ok()
-                                            == Some(crate::OwnKind::Owned)
-                                })
-                        } else {
-                            let expected_len = if *selection == crate::ValueCloseSelection::Whole {
-                                1
-                            } else {
-                                2
-                            };
-                            inputs.len() == expected_len
-                                && inputs[0].decision == crate::BoundaryDecision::Borrow
-                                && types.get(&inputs[0].operand.value).is_some_and(|ty| {
-                                    crate::OwnKind::of_ty(ty, variants.facts).ok()
-                                        == Some(crate::OwnKind::Owned)
-                                        && (*selection == crate::ValueCloseSelection::Whole
-                                            || hew_types::runtime_call::sequence_element_type(ty)
-                                                .is_some())
-                                })
-                                && (*selection == crate::ValueCloseSelection::Whole
-                                    || (inputs[1].decision == crate::BoundaryDecision::Copy
-                                        && types.get(&inputs[1].operand.value)
-                                            == Some(&ResolvedTy::I64)))
-                        }
                 }
                 crate::SuspendKind::Join { .. } => {
                     inputs.is_empty()
@@ -6116,83 +6072,6 @@ mod binding_table_tests {
                 SirDiagnosticKind::UnknownBinding { .. }
             )),
             "{diagnostics:#?}"
-        );
-    }
-}
-
-#[cfg(test)]
-mod defer_close_suffix_tests {
-    use super::{defer_drain_suffix, BTreeSet, BlockId, SemTerminator};
-    use crate::Edge;
-
-    #[test]
-    fn value_close_requires_finite_cleanup_on_every_successor() {
-        let edge = |id| Edge {
-            target: BlockId(id),
-            args: Vec::new(),
-        };
-        let close = |resume, cancel, unwind| SemTerminator::Suspend {
-            kind: crate::SuspendKind::ValueClose {
-                place: Some(crate::PlaceId(0)),
-                selection: crate::ValueCloseSelection::Whole,
-            },
-            inputs: Vec::new(),
-            result: crate::CallResult::Unit,
-            resumes: vec![edge(resume)],
-            cancel: edge(cancel),
-            unwind: edge(unwind),
-        };
-        let check = |terminator| {
-            let blocks = [
-                crate::SemBlock {
-                    terminator_provenance: crate::Provenance::Synthesized,
-                    id: BlockId(0),
-                    args: Vec::new(),
-                    ops: Vec::new(),
-                    terminator,
-                },
-                crate::SemBlock {
-                    terminator_provenance: crate::Provenance::Synthesized,
-                    id: BlockId(1),
-                    args: Vec::new(),
-                    ops: Vec::new(),
-                    terminator: SemTerminator::CleanupDispatch {
-                        normal: edge(2),
-                        fault: edge(2),
-                    },
-                },
-                crate::SemBlock {
-                    terminator_provenance: crate::Provenance::Synthesized,
-                    id: BlockId(2),
-                    args: Vec::new(),
-                    ops: Vec::new(),
-                    terminator: SemTerminator::Unreachable,
-                },
-            ];
-            let map = blocks.iter().map(|block| (block.id, block)).collect();
-            defer_drain_suffix(BlockId(0), &map, &mut BTreeSet::new())
-        };
-        assert!(check(close(1, 1, 1)));
-        for exits in [
-            (0, 1, 1),
-            (1, 0, 1),
-            (1, 1, 0),
-            (2, 1, 1),
-            (1, 2, 1),
-            (1, 1, 2),
-        ] {
-            assert!(
-                !check(close(exits.0, exits.1, exits.2)),
-                "invalid cleanup exits {exits:?}"
-            );
-        }
-        let mut ordinary = close(1, 1, 1);
-        if let SemTerminator::Suspend { kind, .. } = &mut ordinary {
-            *kind = crate::SuspendKind::Yield;
-        }
-        assert!(
-            !check(ordinary),
-            "ordinary suspension cannot become cleanup"
         );
     }
 }

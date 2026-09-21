@@ -1916,9 +1916,8 @@ none `BorrowMut`, and none `AffineResource`/`Linear` is `Send` and `Share`able
 (§1.3.5, §1.1: an `AffineResource`-classed closure is `Transfer` only by rule
 5, so it never has two live handles in two actors) and may be retained into a
 lambda-actor environment or a spawn
-environment that runs on another OS thread (`lambda_actor.rs:1461-1466`
-dispatch thread; `thunks.rs:686-760`
-`hew_task_spawn_thread_with_inherited_context`), so a non-atomic count would be
+environment that runs on another scheduler worker (actor dispatch or a
+checked task continuation), so a non-atomic count would be
 touched from two threads. `hew_rc_*` is reserved for `Rc<T>`/`Weak<T>`, whose
 send fact is false by construction — and, because the `Rc` can hide inside a
 `dyn`'s concrete payload, by the `CoerceToDynTrait` send wall of §1.1 as well:

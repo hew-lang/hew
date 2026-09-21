@@ -12,6 +12,7 @@ pub(super) struct CollectionProbe<'a, 'ctx> {
     pub inserting: bool,
     pub commit: &'static str,
     pub commit_args: &'a [BasicMetadataValueEnum<'ctx>],
+    pub releases: bool,
 }
 
 pub(super) struct CollectionCallbacks<'a, 'ctx> {
@@ -70,8 +71,7 @@ impl<'ctx> CollectionCallbacks<'_, 'ctx> {
     pub(super) fn probe(
         &self,
         operation: CollectionProbe<'_, 'ctx>,
-        release_commit: bool,
-    ) -> CodegenResult<IntValue<'ctx>> {
+    ) -> CodegenResult<(IntValue<'ctx>, Option<PointerValue<'ctx>>)> {
         let pointer = self.values.ctx.ptr_type(AddressSpace::default());
         let i32_ty = self.values.ctx.i32_type();
         let begin = get_or_declare_external(
@@ -248,24 +248,36 @@ impl<'ctx> CollectionCallbacks<'_, 'ctx> {
         self.values.builder.position_at_end(ready);
         let mut arguments = vec![probe.into()];
         arguments.extend_from_slice(operation.commit_args);
+        let release_out = if operation.releases {
+            let slot = self.scratch(pointer.into(), "collection.displaced")?;
+            self.values
+                .builder
+                .build_store(slot, pointer.const_null())
+                .llvm_ctx("initialize displaced collection owners")?;
+            arguments.push(slot.into());
+            Some(slot)
+        } else {
+            None
+        };
         let parameters = vec![pointer.into(); arguments.len()];
         let commit = get_or_declare_external(
             self.values.llvm,
             operation.commit,
             self.values.ctx.i8_type().fn_type(&parameters, false),
         )?;
-        let invoke = || {
-            Ok(self
-                .call_value(commit, &arguments, "collection.probe.commit")?
-                .into_int_value())
-        };
-        // The result becomes owned in the normal successor before a displaced
-        // value's close fault enters cleanup. End the sink before that edge.
-        if release_commit {
-            self.values.emit_release_in_sink(invoke)
-        } else {
-            invoke()
-        }
+        let result = self
+            .call_value(commit, &arguments, "collection.probe.commit")?
+            .into_int_value();
+        let cursor = release_out
+            .map(|slot| {
+                self.values
+                    .builder
+                    .build_load(pointer, slot, "collection.release.cursor")
+                    .llvm_ctx("read detached collection owners")
+                    .map(BasicValueEnum::into_pointer_value)
+            })
+            .transpose()?;
+        Ok((result, cursor))
     }
 }
 
@@ -275,7 +287,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         operation: CollectionProbe<'_, 'ctx>,
         failure: Option<&PhysicalEdge>,
         consumed: &[(StorageId, DestroyAction)],
-    ) -> CodegenResult<IntValue<'ctx>> {
+    ) -> CodegenResult<(IntValue<'ctx>, Option<PointerValue<'ctx>>)> {
         let failure = failure.ok_or_else(|| {
             CodegenError::FailClosed("collection probe lacks callback cleanup".into())
         })?;
@@ -292,12 +304,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             failure: failed,
             allocations: None,
         };
-        let result = emitter.probe(
-            operation,
-            consumed
-                .iter()
-                .any(|(_, action)| self.module.releases.raises_fault(*action)),
-        )?;
+        let result = emitter.probe(operation)?;
         let ready = self
             .builder
             .get_insert_block()

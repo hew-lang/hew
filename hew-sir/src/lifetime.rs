@@ -399,13 +399,6 @@ pub(crate) fn cleanup_suffixes(function: &SemFunction) -> BTreeMap<BlockId, usiz
                 | SemTerminator::FinishDefer { .. }
                 | SemTerminator::CheckedRaiseFault { .. } => boundaries.is_some(),
                 SemTerminator::Goto(edge) => suffixes.get(&edge.target) == Some(&0),
-                SemTerminator::Suspend {
-                    kind: crate::SuspendKind::ValueClose { .. },
-                    resumes,
-                    ..
-                } => resumes
-                    .iter()
-                    .all(|edge| suffixes.get(&edge.target) == Some(&0)),
                 SemTerminator::Branch {
                     then_target,
                     else_target,
@@ -1142,6 +1135,11 @@ impl<'a> Flow<'a> {
                             returned.fault |= LIVE;
                         }
                     }
+                    if let SemTerminator::ActorCall { operation, .. } = &block.terminator {
+                        if operation.retains_cleanup_fault() {
+                            returned.fault |= LIVE;
+                        }
+                    }
                     successors.extend(self.edge(id, normal, returned, emit));
                 }
                 if let CallUnwind::Cleanup(edge) = unwind {
@@ -1192,34 +1190,6 @@ impl<'a> Flow<'a> {
                 scrutinee, arms, ..
             } => successors.extend(self.variant_switch(id, scrutinee, arms, &state, emit)),
             SemTerminator::Suspend {
-                kind: crate::SuspendKind::ValueClose { place, .. },
-                resumes,
-                ..
-            } => {
-                if let Some(place) = place {
-                    let root = self
-                        .projections
-                        .projection(*place)
-                        .map_or(OwnerRoot::Local(*place), |projection| projection.root);
-                    let base = match root {
-                        OwnerRoot::Local(root) => {
-                            self.require_active(id, root, &state, emit);
-                            PlaceBase::Place(root)
-                        }
-                        OwnerRoot::Value(root) => {
-                            self.access(id, root, false, &mut state, emit);
-                            PlaceBase::Value(root)
-                        }
-                    };
-                    self.require_no_live_borrows(id, base, &state, emit);
-                }
-                state.fault = combine_fault(state.fault, DEAD | LIVE);
-                state.exit |= TRAP;
-                for edge in resumes {
-                    successors.extend(self.edge(id, edge, state.clone(), emit));
-                }
-            }
-            SemTerminator::Suspend {
                 kind:
                     crate::SuspendKind::Join {
                         mode:
@@ -1240,6 +1210,7 @@ impl<'a> Flow<'a> {
                 }
             }
             SemTerminator::Suspend {
+                kind,
                 resumes,
                 cancel,
                 unwind,
@@ -1248,6 +1219,9 @@ impl<'a> Flow<'a> {
                 Self::require_fault(id, DEAD, &state, emit);
                 for (index, edge) in resumes.iter().enumerate() {
                     let mut resumed = state.clone();
+                    if matches!(kind, crate::SuspendKind::Ask { .. }) {
+                        resumed.fault |= LIVE;
+                    }
                     if index == 0 {
                         block
                             .terminator
@@ -2000,20 +1974,7 @@ impl<'a> Flow<'a> {
         let mut roots = BTreeMap::<_, bool>::new();
         terminator.visit_boundary_operands(|_, operand| {
             let value = operand.operand.value;
-            if matches!(
-                terminator,
-                SemTerminator::Suspend {
-                    kind: crate::SuspendKind::ValueClose { .. },
-                    ..
-                }
-            ) {
-                // Closing visits only initialized captures and retains the
-                // carrier until ordinary destruction. It never copies or
-                // invokes the partially consumed environment.
-                self.require_no_live_borrows(id, PlaceBase::Value(value), state, emit);
-            } else {
-                self.require_complete_environment(id, value, state, emit);
-            }
+            self.require_complete_environment(id, value, state, emit);
             let exclusive = operand.decision == BoundaryDecision::BorrowMut;
             if exclusive {
                 self.require_exclusive(id, value, state, emit);
@@ -2096,6 +2057,7 @@ fn operation_consumes_operands(kind: &SemOpKind) -> bool {
         SemOpKind::GeneratorMake { .. }
             | SemOpKind::TaskSpawn { .. }
             | SemOpKind::ClosureMake { .. }
+            | SemOpKind::GeneratorCoerce { .. }
             | SemOpKind::CallableCoerce { .. }
             | SemOpKind::DynMake { .. }
             | SemOpKind::TupleMake { .. }

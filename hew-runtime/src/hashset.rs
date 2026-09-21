@@ -80,7 +80,7 @@ use crate::vec::HewVec;
 /// A `static` binding provides program-lifetime validity without any
 /// heap allocation.
 static VALUE_LAYOUT: HewValueLayout = HewValueLayout {
-    visit_close: None,
+    release_start: None,
     size: 0,
     align: 1,
     ownership_kind: HewTypeOwnershipKind::Plain,
@@ -528,6 +528,20 @@ pub unsafe extern "C" fn hew_hashset_clear_layout(set: *mut HewLayoutHashSet) {
 // Len
 // ---------------------------------------------------------------------------
 
+/// Empty the set and transfer removed owners to checked release.
+/// # Safety
+/// `set` is a live exclusively borrowed set. The returned cursor is owned.
+#[no_mangle]
+pub unsafe extern "C" fn hew_hashset_clear_release(
+    set: *mut HewLayoutHashSet,
+) -> *mut crate::release_walker::HewReleaseCursor {
+    // SAFETY: set validation proves the wrapped map is live.
+    unsafe {
+        validate_set_op(set.cast_const());
+        crate::hashmap::hew_hashmap_clear_release((*set).map)
+    }
+}
+
 /// Return the number of elements in the set.
 ///
 /// `set` must be non-null.
@@ -683,13 +697,23 @@ unsafe fn release_set(set: *mut HewLayoutHashSet, deferred: bool) {
     unsafe { release_map(map, deferred) };
 }
 
-/// Visit initialized set elements through their owning map descriptor.
+/// Transfer a set into its backing map's consuming release traversal.
 /// # Safety
-/// The set remains exclusively borrowed until all selected children drain.
+/// `set` is null or uniquely owned and may not be used after this call.
 #[no_mangle]
-pub unsafe extern "C" fn hew_hashset_visit_close(set: *mut HewLayoutHashSet, context: *mut c_void) {
-    // SAFETY: the set uniquely owns its backing map throughout cleanup.
-    unsafe {
-        crate::hashmap::hew_hashmap_visit_close((*set).map, context);
-    }
+pub unsafe extern "C" fn hew_hashset_release_begin(
+    set: *mut HewLayoutHashSet,
+) -> *mut crate::release_walker::HewReleaseCursor {
+    let map = if set.is_null() {
+        ptr::null_mut()
+    } else {
+        // SAFETY: the caller transfers the header and its unique backing map.
+        unsafe {
+            let map = (*set).map;
+            crate::mem::buf_free(set.cast());
+            map
+        }
+    };
+    // SAFETY: the detached map owner transfers to the returned cursor.
+    unsafe { crate::release_walker::hew_hashmap_release_begin(map) }
 }

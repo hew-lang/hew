@@ -88,8 +88,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         self.emit_result_edge(Some(result), normal)?;
         self.builder.position_at_end(cancelled);
         self.free_handle("hew_actor_wait_edge_free", wait_edge)?;
-        self.free_handle("hew_actor_call_free", operation)?;
         self.initialize_cancellation_fault()?;
+        self.free_handle("hew_actor_call_free", operation)?;
         self.emit_edge(cancel)?;
         self.builder.position_at_end(cycle);
         self.initialize_actor_cycle_fault(wait_edge)?;
@@ -98,8 +98,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         self.emit_edge(unwind)?;
         self.builder.position_at_end(failed);
         self.free_handle("hew_actor_wait_edge_free", wait_edge)?;
-        self.free_handle("hew_actor_call_free", operation)?;
         self.initialize_active_fault(HEW_TRAP_USER_PANIC)?;
+        self.free_handle("hew_actor_call_free", operation)?;
         self.emit_edge(unwind)
     }
 
@@ -280,6 +280,14 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 )
                 .into(),
         ]);
+        if !sealed {
+            types.push(ptr.into());
+            arguments.push(message_release(self.llvm, self.ctx, actor.id, message).into());
+        }
+        types.push(ptr.into());
+        arguments.push(
+            actor_value_release(self.ctx, self.llvm, self.module, &handler.return_ty)?.into(),
+        );
         let start = coro::external(
             self.llvm,
             if sealed {

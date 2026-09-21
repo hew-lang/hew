@@ -14,6 +14,7 @@ pub(super) struct Frame<'ctx> {
     pub state: PointerValue<'ctx>,
     pub destroying: PointerValue<'ctx>,
     pub finish: BasicBlock<'ctx>,
+    pub allocations: BasicBlock<'ctx>,
     exit: BasicBlock<'ctx>,
 }
 
@@ -156,6 +157,7 @@ pub(super) fn begin<'ctx>(
         state,
         destroying,
         finish: ctx.append_basic_block(function, "coro.finish"),
+        allocations: body,
         exit: ctx.append_basic_block(function, "coro.exit"),
     };
     let final_suspend = ctx.append_basic_block(function, "coro.final");

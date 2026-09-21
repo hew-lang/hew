@@ -209,7 +209,6 @@ stable = [
   "hew_array_clone",
   "hew_array_free",
   "hew_array_free_walk",
-  "hew_array_visit_close",
   "hew_ask_error_translate_for_public_result",
   "hew_assert",
   "hew_blocking_pool_new",
@@ -673,43 +672,8 @@ stable = [
   "hew_supervisor_pool_member_add",
   "hew_supervisor_pool_member_add_static",
   "hew_supervisor_pool_member_remove",
-  "hew_task_await_blocking",
-  "hew_task_await_suspend",
-  "hew_task_complete_threaded",
-  "hew_task_completion_observe",
-  "hew_task_completion_unobserve",
-  "hew_task_detach_await",
   "hew_task_free",
-  "hew_task_get_env",
-  "hew_task_get_error",
-  "hew_task_get_result",
-  "hew_task_take_result",
-  "hew_task_is_cancelled",
-  "hew_task_new",
-  "hew_task_scope_cancel",
-  "hew_task_scope_cancel_after_ns",
   "hew_task_scope_cancel_token",
-  "hew_task_scope_cancel_one",
-  "hew_task_scope_complete_task",
-  "hew_task_scope_completion_observe",
-  "hew_task_scope_destroy",
-  "hew_task_scope_detach_completion",
-  "hew_task_scope_get_task",
-  "hew_task_scope_has_active_tasks",
-  "hew_task_scope_is_cancelled",
-  "hew_task_scope_is_done",
-  "hew_task_scope_join_all",
-  "hew_task_scope_new",
-  "hew_task_scope_poll",
-  "hew_task_scope_spawn",
-  "hew_task_scope_wait_first",
-  "hew_task_set_cancel_cleanup_fn",
-  "hew_task_set_cancel_token",
-  "hew_task_set_env",
-  "hew_task_set_result_drop_fn",
-  "hew_task_set_result",
-  "hew_task_spawn_thread",
-  "hew_task_spawn_thread_with_inherited_context",
   "hew_tcp_accept",
   "hew_tcp_broadcast_except",
   "hew_tcp_close",
@@ -1254,6 +1218,8 @@ non-declarable = [
   "hew_actor_ask_wait_resume",
   "hew_actor_ask_wait_take_request",
   "hew_actor_call_free",
+  "hew_actor_call_cleanup_poll",
+  "hew_actor_call_cleanup_fault",
   "hew_actor_call_new",
   "hew_actor_call_poll",
   "hew_actor_call_resume",
@@ -1278,10 +1244,10 @@ non-declarable = [
   "hew_actor_wait_edge_new",
   "hew_actor_wait_edge_pending",
   "hew_actor_wait_edge_prepare",
-  "hew_actor_wait_error",
   "hew_actor_wait_free",
   "hew_actor_wait_new",
   "hew_actor_wait_poll",
+  "hew_actor_wait_take_fault",
   "hew_async_file_read",
   "hew_async_file_write",
   "hew_async_file_write_string",
@@ -1298,7 +1264,6 @@ non-declarable = [
   "hew_async_tcp_connect_timeout",
   "hew_async_tcp_read",
   "hew_async_tcp_write",
-  "hew_callable_visit_close",
   "hew_checked_generator_close_poll",
   "hew_checked_generator_free",
   "hew_checked_generator_new",
@@ -1340,6 +1305,32 @@ non-declarable = [
   "hew_coro_state_cancel",
   "hew_coro_state_cancel_code",
   "hew_coro_state_child",
+  "hew_coro_state_cleanup_child",
+  "hew_coro_state_set_cleanup_fault",
+  "hew_fault_code",
+  "hew_vec_release_begin",
+  "hew_array_release_begin",
+  "hew_hashmap_release_begin",
+  "hew_hashset_release_begin",
+  "hew_callable_release_begin",
+  "hew_rc_release_begin",
+  "hew_release_next",
+  "hew_release_layout",
+  "hew_release_finish",
+  "hew_release_sync",
+  "hew_vec_set_owned_release",
+  "hew_vec_set_owned_move_release",
+  "hew_vec_clear_release",
+  "hew_vec_truncate_release",
+  "hew_hashmap_clear_release",
+  "hew_hashset_clear_release",
+  "hew_rc_set_release",
+  "hew_stream_try_send_move_release",
+  "hew_trait_object_release_begin",
+  "hew_stream_release_begin",
+  "hew_sink_release_begin",
+  "hew_stream_operation_release_begin",
+  "hew_msg_envelope_release_begin",
   "hew_coro_state_enter_token",
   "hew_coro_state_finish",
   "hew_coro_state_free",
@@ -1364,12 +1355,10 @@ non-declarable = [
   "hew_hashmap_probe_step",
   "hew_hashmap_probe_submit_eq",
   "hew_hashmap_probe_submit_hash",
-  "hew_hashmap_visit_close",
   "hew_hashset_probe_begin",
   "hew_hashset_probe_insert_clone",
   "hew_hashset_probe_insert_take",
   "hew_hashset_probe_remove",
-  "hew_hashset_visit_close",
   "hew_native_runtime_finish",
   "hew_process_exit_byte",
   "hew_reply_channel_new_native",
@@ -1384,11 +1373,6 @@ non-declarable = [
   "hew_stream_write_poll_native",
   "hew_stream_write_start_native",
   "hew_stream_pipe_native",
-  "hew_value_close_finish",
-  "hew_value_close_poll",
-  "hew_value_close_push",
-  "hew_vec_visit_close",
-  "hew_vec_visit_element_close",
   "hew_actor_await_send_by_id",
   "hew_actor_cooperate",
   "hew_actor_detach_await_send_by_id",
@@ -1602,7 +1586,6 @@ non-declarable = [
   "hew_coro_state_new",
   "hew_coro_state_resume_yield",
   "hew_fault_finish_cleanup",
-  "hew_value_close_collect",
   "_start",
   "hew_actor_drain_outcome_free",
   # `hew_actor_free` is the actor-side twin of `hew_mailbox_free`: it destroys
@@ -1972,7 +1955,7 @@ actor context and resolves the target through the runtime's local handle table.
 The raw-pointer caller hew_actor_monitor remains non-declarable. Neither source
 monitor form supplies a system tag, payload, watcher identity or terminal reason."""
 
-"finish_native_terminal -> notify_monitors_on_death" = """
+"finish_actor_terminal -> notify_monitors_on_death" = """
 The private native completion owner publishes normal DOWN only after claiming
 terminal cleanup, observing no checked invocation and releasing typed state.
 Its actor identity and Stopped reason come from that owned incarnation, not
@@ -1986,8 +1969,11 @@ direct child token. The receiving parent validates that exact incarnation before
 applying normal-stop policy. Source close can request teardown but cannot supply
 the parent, slot, child event payload or system-message kind."""
 
-"hew_actor_trap_inner -> hew_supervisor_notify_child_actor_event" = """
-Authenticated producer. hew_actor_trap_inner is NOT user-declarable (private, \
+"publish_terminal_notification -> hew_supervisor_notify_child_actor_event" = """
+Authenticated producer. The private publisher consumes the terminal notice
+recorded by hew_actor_trap_inner before any observer is woken. The delayed
+notice preserves that exact actor, supervisor, reason and fault record through
+consuming cleanup. hew_actor_trap_inner is NOT user-declarable (private, \
 and reached through hew_actor_trap, whose internal tier is \
 asserted by extern_rt_system_lane_symbols_rejected), which is what makes the \
 rest of this reason true: it was demoted precisely because its `actor` and \
@@ -2000,7 +1986,7 @@ hew_actor_close / hew_actor_group_stop_all via call_terminate_fn -> \
 handle_crash_recovery when a terminate hook panics — those callers name the \
 actor they already own and supply no code at all."""
 
-"hew_actor_trap_inner -> propagate_exit_to_links" = """
+"publish_terminal_notification -> propagate_exit_to_links" = """
 Authenticated producer, and see the edge above for why hew_actor_trap_inner \
 is no longer user-declarable. The trapping actor has died; \
 propagate_exit_to_links fans the EXIT out to the link set the runtime recorded \
@@ -2008,7 +1994,7 @@ for it. No remaining caller supplies the recipients (they are whoever linked \
 to this actor) or the reason (it is the crash record). Refusing this edge \
 would mean links cannot fire, which is the whole contract of link()."""
 
-"hew_actor_trap_inner -> notify_monitors_on_death" = """
+"publish_terminal_notification -> notify_monitors_on_death" = """
 The third and last of hew_actor_trap_inner's death fan-outs (links, monitors, \
 parent supervisor). Same authentication: the actor is already dead, the \
 watcher set is runtime state, and the reason is the recorded crash. Listed as \

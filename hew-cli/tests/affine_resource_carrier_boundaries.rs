@@ -514,58 +514,26 @@ fn receiver_vec_move_is_descriptor_owned_and_read_copy_surfaces_reject() {
     );
     assert_eq!(String::from_utf8_lossy(&output.stdout), "1\n");
 
-    // Lost coverage: this test used to also dump `--dump-mir raw` (retired)
-    // here to pin the channel affine close guards and the exact
-    // push-owned-move/consume opcode shape directly. Physical MIR's
-    // structured (Debug) dump has no equivalent single-line text to grep,
-    // so that MIR-emission detail has no direct replacement; the LLVM-IR
-    // assertion below still proves the externally observable half.
-
     let ir = std::fs::read_to_string(dir.path().join("receiver_move.ll"))
         .expect("read drop-only Receiver Vec LLVM IR");
     assert!(
         ir.contains("call ptr @hew_vec_new_with_elem_layout")
             && ir.contains("call void @hew_vec_push_owned_move")
-            && ir.contains("call void @hew_vec_free_owned"),
-        "Receiver Vec must build through the element-layout descriptor and move its endpoint in:\n{ir}"
+            && ir.contains("call ptr @hew_vec_release_begin")
+            && ir.contains("call ptr @hew_stream_release_begin"),
+        "Receiver Vec must move its endpoint through the element descriptor and consuming release cursor:\n{ir}"
     );
-    // The descriptor is the subject, not its mangled name: an element-layout
-    // constant carrying a NULL clone slot is what makes the Vec drop-only, and
-    // the drop thunk it names is where the endpoint's close must land. Matching
-    // the emitted symbol out of the descriptor keeps this off the emission
-    // order, which decides only the numeric suffix.
     let descriptor = ir
         .lines()
-        .find(|line| line.contains("= internal constant { i64, i64, i8, ptr, ptr, ptr }"))
-        .unwrap_or_else(|| panic!("no Vec element-layout descriptor emitted:\n{ir}"));
-    let clone_null_prefix = "i8 2, ptr null, ptr @";
-    let drop_symbol = descriptor
-        .split_once(clone_null_prefix)
-        .unwrap_or_else(|| {
-            panic!("Receiver Vec descriptor must carry a null clone slot:\n{descriptor}")
+        .find(|line| {
+            line.contains("@__hew_vector_element_layout_") && line.contains("= internal constant")
         })
-        .1
-        .split(',')
-        .next()
-        .expect("drop thunk symbol")
-        .trim();
-    let drop_thunk = ir
-        .split_once(&format!("define internal void @{drop_symbol}(ptr %0) {{"))
-        .unwrap_or_else(|| panic!("descriptor names a missing drop thunk @{drop_symbol}:\n{ir}"))
-        .1;
-    let drop_body = drop_thunk
-        .split_once("\n}")
-        .expect("drop thunk body is unterminated")
-        .0;
+        .unwrap_or_else(|| panic!("no Vec element-layout descriptor emitted:\n{ir}"));
     assert!(
-        drop_body.contains("call void @hew_stream_close"),
-        "the drop-only element thunk @{drop_symbol} must close the endpoint exactly once:\n{drop_body}"
+        descriptor.contains("i8 2, ptr null,") && descriptor.contains("ptr @\"__hew_release_"),
+        "Receiver Vec must forbid copying and retain its consuming endpoint release:\n{descriptor}"
     );
 
-    // Lost coverage: `--dump-mir raw` (retired) used to also confirm each of
-    // these two fixtures carried an explicit move-in consume event through
-    // its owned-move symbol; physical MIR has no equivalent single-line
-    // text to grep, so that MIR-emission detail has no direct replacement.
     for (name, body) in [
         ("receiver_bound_push", CHANNEL_RECEIVER_COPY_PUSH_BODY),
         ("receiver_bound_set", CHANNEL_RECEIVER_COPY_SET_BODY),

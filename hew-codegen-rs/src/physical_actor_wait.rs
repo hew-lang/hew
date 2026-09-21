@@ -217,10 +217,21 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         self.builder.position_at_end(destroyed);
         self.reject_invalid_task_state()?;
         self.builder.position_at_end(failed);
-        let code = self.state_value("hew_actor_wait_error", wait)?;
+        let take_fault = coro::external(
+            self.llvm,
+            "hew_actor_wait_take_fault",
+            ptr.fn_type(&[ptr.into()], false),
+        )?;
+        let fault = call_value(
+            &self.builder,
+            take_fault,
+            &[wait.into()],
+            "actor.close.fault",
+        )?;
+        let code = self.state_value("hew_fault_code", fault.into_pointer_value())?;
         self.free_handle("hew_actor_wait_free", wait)?;
         self.free_handle("hew_actor_wait_edge_free", edge)?;
-        self.initialize_active_fault_value(code)?;
+        self.store_active_fault_value(fault, code)?;
         if let Some(unwind) = unwind {
             self.emit_edge(unwind)?;
         } else {
@@ -252,6 +263,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
     pub(super) fn emit_actor_send_wait(
         &self,
         request: &[BasicMetadataValueEnum<'ctx>],
+        release: PointerValue<'ctx>,
         source: StorageId,
         unwind: Option<&PhysicalEdge>,
     ) -> CodegenResult<IntValue<'ctx>> {
@@ -278,6 +290,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     size_ty.into(),
                     ptr.into(),
                     ptr.into(),
+                    ptr.into(),
                 ],
                 false,
             ),
@@ -286,6 +299,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let cycle = self.ctx.append_basic_block(self.value, "send.cycle.fault");
         let mut args = request.to_vec();
         args.push(waker.into());
+        args.push(release.into());
         let wait = call_value(&self.builder, new, &args, "send.wait")?.into_pointer_value();
         let poll = self.ctx.append_basic_block(self.value, "send.poll");
         let inspect = self.ctx.append_basic_block(self.value, "send.inspect");

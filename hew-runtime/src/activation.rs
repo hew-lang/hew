@@ -482,19 +482,23 @@ unsafe fn resume_suspended_activation(actor: *mut HewActor) {
     // refused resume, which ran nothing at all) leaves the slot holding the only
     // reference to a caller still parked in `hew_reply_wait`. Clear the stash
     // either way so a re-armed multi-await actor does not reuse a freed channel.
-    // On Pending the handler re-parked, so the stash stays for the next resume.
+    // A reply may also be consumed before a Pending result: disposing of an
+    // undelivered reply can suspend. That continuation no longer owns a sender
+    // reference, so never reinstall the channel on its next resume.
     let resume_reply_consumed = current_reply_channel_consumed_on(&raw mut resume_context);
     let restored = crate::execution_context::set_current_context(prev_context);
     debug_assert_eq!(restored, &raw mut resume_context);
+    if resume_reply_consumed {
+        a.suspended_reply_channel
+            .store(std::ptr::null_mut(), Ordering::Release);
+        release_parked_ask_channel(a);
+    }
     if matches!(poll, Some(crate::cont::ResumePoll::Ready) | None) {
         // The parked ask is over either way; drop the drain gate's reference
         // (a no-op inside `retire_suspended_reply_channel` on the else arm —
         // the swap keeps it exactly once).
         release_parked_ask_channel(a);
-        if resume_reply_consumed {
-            a.suspended_reply_channel
-                .store(std::ptr::null_mut(), Ordering::Release);
-        } else {
+        if !resume_reply_consumed {
             retire_suspended_reply_channel(a);
         }
         clear_suspended_cancel_token(a);
@@ -608,6 +612,18 @@ pub(crate) fn activate_queued_actor(actor: *mut HewActor) {
 
     // The CAS won: keep ownership for the rest of this frame.
     let _activation_ownership = activation_ownership;
+
+    if a.checked_invocation.load(Ordering::Acquire).is_null()
+        || a.native_completion
+            .as_ref()
+            .is_some_and(|completion| completion.cleanup.is_driving())
+    {
+        // SAFETY: this worker owns the Running activation. Cleanup resumes
+        // through the same incarnation wake protocol before another handler.
+        if unsafe { crate::actor_native::cleanup::drive_actor_cleanup(a) } {
+            return;
+        }
+    }
 
     // Test-only rendezvous at the exact CAS->marker-gap location: the actor is
     // now `Running` and trap-stealable. A regression test fires an external trap
@@ -1359,12 +1375,17 @@ pub(crate) fn activate_queued_actor(actor: *mut HewActor) {
     run_activate_pre_reenqueue_hook(actor);
 
     // After processing: check for remaining messages.
-    let has_more = if mailbox.is_null() {
-        false
-    } else {
-        // SAFETY: mailbox pointer is valid.
-        unsafe { hew_mailbox_has_messages(mailbox) != 0 }
-    };
+    let cleanup_ready = a
+        .native_completion
+        .as_ref()
+        .is_some_and(|completion| completion.cleanup.has_work());
+    let has_more = cleanup_ready
+        || if mailbox.is_null() {
+            false
+        } else {
+            // SAFETY: mailbox pointer is valid.
+            unsafe { hew_mailbox_has_messages(mailbox) != 0 }
+        };
 
     if has_more {
         // Budget exhausted, more work pending → RUNNING → RUNNABLE, re-enqueue.
@@ -1397,7 +1418,8 @@ pub(crate) fn activate_queued_actor(actor: *mut HewActor) {
             // CAS IDLE→RUNNABLE would have failed, so we must re-check.
             if !mailbox.is_null()
                 // SAFETY: mailbox pointer is valid for the actor's lifetime.
-                && unsafe { hew_mailbox_has_messages(mailbox) != 0 }
+                && (unsafe { hew_mailbox_has_messages(mailbox) != 0 }
+                || a.native_completion.as_ref().is_some_and(|completion| completion.cleanup.has_work()))
             {
                 // Messages appeared → IDLE → RUNNABLE, re-enqueue.
                 if a.actor_state
@@ -1653,7 +1675,7 @@ unsafe fn finish_failed_resume(
                 eprintln!("fatal: checked resumed actor failure retained crash-cleanup owners");
                 std::process::abort();
             }
-            crate::actor_native::report_checked_failure(&fault)
+            crate::actor_native::report_actor_failure(a, *fault)
         }
         crate::actor_native::DispatchFailure::Unwind(payload) => {
             let code = payload
@@ -1792,6 +1814,17 @@ unsafe fn finish_failed_resume(
 /// the mailbox still has work, else `Running → Idle` with the standard
 /// idle→runnable / idle→stopped rechecks. Factored out so the resume re-entry
 /// and the message loop share one settle path.
+/// Settle a completed runtime-owned cleanup turn through ordinary requeue rules.
+/// # Safety
+/// The scheduler owns the actor's Running activation.
+pub(crate) unsafe fn settle_native_cleanup(actor: *mut HewActor) {
+    settle_after_activation(actor, 0);
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "mailbox and consuming cleanup share one atomic idle recheck protocol"
+)]
 fn settle_after_activation(actor: *mut HewActor, msgs_processed: u32) {
     // SAFETY: caller owns `actor` via the Running CAS.
     let a = unsafe { &*actor };
@@ -1866,12 +1899,17 @@ fn settle_after_activation(actor: *mut HewActor, msgs_processed: u32) {
 
     actor::update_hibernation_state(a, msgs_processed);
 
-    let has_more = if mailbox.is_null() {
-        false
-    } else {
-        // SAFETY: mailbox pointer is valid for the actor's lifetime.
-        unsafe { hew_mailbox_has_messages(mailbox) != 0 }
-    };
+    let cleanup_ready = a
+        .native_completion
+        .as_ref()
+        .is_some_and(|completion| completion.cleanup.has_work());
+    let has_more = cleanup_ready
+        || if mailbox.is_null() {
+            false
+        } else {
+            // SAFETY: mailbox pointer is valid for the actor's lifetime.
+            unsafe { hew_mailbox_has_messages(mailbox) != 0 }
+        };
 
     if has_more {
         if a.actor_state
@@ -1897,7 +1935,8 @@ fn settle_after_activation(actor: *mut HewActor, msgs_processed: u32) {
     {
         if !mailbox.is_null()
             // SAFETY: mailbox pointer is valid for the actor's lifetime.
-            && unsafe { hew_mailbox_has_messages(mailbox) != 0 }
+            && (unsafe { hew_mailbox_has_messages(mailbox) != 0 }
+                || a.native_completion.as_ref().is_some_and(|completion| completion.cleanup.has_work()))
         {
             if a.actor_state
                 .compare_exchange(

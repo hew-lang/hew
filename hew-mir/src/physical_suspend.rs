@@ -139,6 +139,89 @@ fn semantic_value_callees(
     callees
 }
 
+/// Release reaches the selected consuming close, or the concrete fields of a
+/// structural value. Erased callables and dynamic objects retain their runtime
+/// release descriptor, so their callers must allow a continuation.
+fn semantic_release_dependencies(
+    module: &hew_sir::SemModule,
+    ty: &hew_types::ResolvedTy,
+    body: Option<CallableId>,
+) -> (bool, BTreeSet<CallableId>) {
+    use hew_types::{BuiltinType, ResolvedTy};
+    let mut pending = vec![ty.clone()];
+    let mut seen = BTreeSet::new();
+    let mut callees = BTreeSet::new();
+    let mut intrinsic = false;
+    while let Some(ty) = pending.pop() {
+        if !seen.insert(ty.clone()) {
+            continue;
+        }
+        let own_record_close = matches!(module.resources.get(&ty),
+            Some(hew_sir::ResourceRelease::RecordClose { close, .. }) if Some(*close) == body);
+        if let Some(release) = module.resources.get(&ty).filter(|_| !own_record_close) {
+            match release {
+                hew_sir::ResourceRelease::RecordClose { close, .. }
+                | hew_sir::ResourceRelease::OpaqueClose { close, .. } => {
+                    callees.insert(*close);
+                }
+                hew_sir::ResourceRelease::Generator
+                | hew_sir::ResourceRelease::ActorCall
+                | hew_sir::ResourceRelease::ActorRequest
+                | hew_sir::ResourceRelease::Stream
+                | hew_sir::ResourceRelease::Sink => intrinsic = true,
+                _ => {}
+            }
+            continue;
+        }
+        match &ty {
+            ResolvedTy::Function { .. }
+            | ResolvedTy::Closure { .. }
+            | ResolvedTy::TraitObject { .. } => intrinsic = true,
+            ResolvedTy::Tuple(fields) => pending.extend(fields.iter().cloned()),
+            ResolvedTy::Array(element, size) if *size != 0 => pending.push((**element).clone()),
+            ResolvedTy::Named {
+                builtin:
+                    Some(
+                        BuiltinType::Vec
+                        | BuiltinType::HashMap
+                        | BuiltinType::HashSet
+                        | BuiltinType::Rc,
+                    ),
+                args,
+                ..
+            } => pending.extend(args.iter().cloned()),
+            _ => {
+                if let Some(shape) = module.aggregate_shape_for_type(&ty) {
+                    pending.extend(shape.fields.iter().map(|field| field.ty.clone()));
+                }
+                if let Some(shape) = module
+                    .variant_shapes
+                    .iter()
+                    .find(|shape| shape.enum_ty == ty)
+                {
+                    pending.extend(
+                        shape.variants.iter().flat_map(|variant| {
+                            variant.fields.iter().map(|field| field.ty.clone())
+                        }),
+                    );
+                }
+            }
+        }
+    }
+    (intrinsic, callees)
+}
+
+fn actor_release_types<'a>(
+    actors: &'a [hew_sir::SemActor],
+    operation: &'a hew_sir::ActorOperation,
+) -> Vec<&'a hew_types::ResolvedTy> {
+    match operation {
+        hew_sir::ActorOperation::Spawn(id) => vec![&actors[id.0 as usize].state_ty],
+        hew_sir::ActorOperation::Submit { message_ty, .. } => vec![message_ty],
+        _ => Vec::new(),
+    }
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "one terminator dispatch closes direct and selected callback dependencies"
@@ -174,11 +257,75 @@ pub(super) fn semantic_callables(checked: &hew_sir::CheckedModule<'_>) -> BTreeS
             .iter()
             .filter(|block| lifetimes.is_reachable(block.id))
         {
+            for operation in &block.ops {
+                let ty = match &operation.kind {
+                    hew_sir::SemOpKind::DestroyValue { value } => Some(&types[&value.value]),
+                    hew_sir::SemOpKind::StoreAssign { place, .. }
+                    | hew_sir::SemOpKind::EndLifetime { place } => Some(
+                        &function
+                            .places
+                            .iter()
+                            .find(|candidate| candidate.id == *place)
+                            .expect("verified place identity")
+                            .ty,
+                    ),
+                    _ => None,
+                };
+                if let Some(ty) = ty {
+                    let (intrinsic, dependencies) =
+                        semantic_release_dependencies(module, ty, Some(function.callable));
+                    if intrinsic {
+                        resumable.insert(function.callable);
+                    }
+                    calls
+                        .entry(function.callable)
+                        .or_default()
+                        .extend(dependencies);
+                }
+            }
+            if let hew_sir::SemTerminator::ActorCall { operation, .. } = &block.terminator {
+                if let hew_sir::ActorOperation::Spawn(actor) = operation {
+                    let actor = &module.actors[actor.0 as usize];
+                    calls
+                        .entry(function.callable)
+                        .or_default()
+                        .extend(actor.init.iter().chain(&actor.start).copied());
+                }
+                for ty in actor_release_types(&module.actors, operation) {
+                    let (intrinsic, dependencies) = semantic_release_dependencies(module, ty, None);
+                    // Actor payload/state cleanup uses the checked continuation
+                    // ABI even for a pure close, so a retained fault cannot
+                    // unwind through the scheduler's synchronous drop callback.
+                    if intrinsic || !dependencies.is_empty() {
+                        resumable.insert(function.callable);
+                    }
+                    calls
+                        .entry(function.callable)
+                        .or_default()
+                        .extend(dependencies);
+                }
+            }
             match &block.terminator {
                 hew_sir::SemTerminator::Suspend {
-                    kind:
-                        hew_sir::SuspendKind::StreamNext { park: false }
-                        | hew_sir::SuspendKind::StreamSend { park: false },
+                    kind: hew_sir::SuspendKind::StreamSend { park: false },
+                    inputs,
+                    ..
+                } => {
+                    let (intrinsic, dependencies) = semantic_release_dependencies(
+                        module,
+                        &types[&inputs[1].operand.value],
+                        None,
+                    );
+                    if intrinsic {
+                        resumable.insert(function.callable);
+                    }
+                    calls
+                        .entry(function.callable)
+                        .or_default()
+                        .extend(dependencies);
+                }
+                hew_sir::SemTerminator::Suspend {
+                    kind: hew_sir::SuspendKind::StreamNext { park: false },
                     ..
                 } => {}
                 hew_sir::SemTerminator::RecoverFault { .. }
@@ -234,6 +381,17 @@ pub(super) fn semantic_callables(checked: &hew_sir::CheckedModule<'_>) -> BTreeS
                 hew_sir::SemTerminator::WireCodec {
                     direction, plan, ..
                 } if !direction.is_serialize() => {
+                    plan.visit_types(&mut |ty| {
+                        let (intrinsic, dependencies) =
+                            semantic_release_dependencies(module, ty, None);
+                        if intrinsic {
+                            resumable.insert(function.callable);
+                        }
+                        calls
+                            .entry(function.callable)
+                            .or_default()
+                            .extend(dependencies);
+                    });
                     plan.visit_decode_capabilities(&mut |ty, capability| {
                         calls
                             .entry(function.callable)
@@ -242,6 +400,20 @@ pub(super) fn semantic_callables(checked: &hew_sir::CheckedModule<'_>) -> BTreeS
                     });
                 }
                 hew_sir::SemTerminator::RtCall { family, args, .. } => {
+                    if family.releases_receiver_contents() {
+                        let (intrinsic, dependencies) = semantic_release_dependencies(
+                            module,
+                            &types[&args[0].operand.value],
+                            None,
+                        );
+                        if intrinsic {
+                            resumable.insert(function.callable);
+                        }
+                        calls
+                            .entry(function.callable)
+                            .or_default()
+                            .extend(dependencies);
+                    }
                     for capability in family.value_callback_capabilities() {
                         let receiver = &types[&args[0].operand.value];
                         let (_, arguments) =
@@ -270,9 +442,54 @@ pub(super) fn semantic_callables(checked: &hew_sir::CheckedModule<'_>) -> BTreeS
 pub(super) fn verify_callables(module: &PhysicalModule) -> Result<(), PhysicalError> {
     let mut resumable = BTreeSet::new();
     let mut calls = BTreeMap::<_, Vec<_>>::new();
+    let releases = super::release::ReleaseEffects::compute(module);
     for function in &module.functions {
         for block in &function.blocks {
+            for operation in &block.ops {
+                let action = match operation {
+                    super::PhysicalOp::Destroy { action, .. } => Some(*action),
+                    super::PhysicalOp::Assign { destroy_old, .. } => *destroy_old,
+                    super::PhysicalOp::StorageDead { destroy, .. } => *destroy,
+                    _ => None,
+                };
+                if action.is_some_and(|action| releases.suspends(action)) {
+                    resumable.insert(function.callable);
+                }
+            }
+            if let PhysicalTerminator::ActorCall { operation, .. } = &block.terminator {
+                if let hew_sir::ActorOperation::Spawn(actor) = operation {
+                    let actor = &module.actors[actor.0 as usize];
+                    calls
+                        .entry(function.callable)
+                        .or_default()
+                        .extend(actor.init.iter().chain(&actor.start).copied());
+                }
+                for ty in actor_release_types(&module.actors, operation) {
+                    if module
+                        .actor_recipes
+                        .get(ty)
+                        .and_then(|recipe| recipe.destroy)
+                        .is_some_and(|action| {
+                            releases.suspends(action) || releases.raises_fault(action)
+                        })
+                    {
+                        resumable.insert(function.callable);
+                    }
+                }
+            }
             match &block.terminator {
+                PhysicalTerminator::StreamSend {
+                    park: false,
+                    element,
+                    ..
+                } => {
+                    if element
+                        .destroy
+                        .is_some_and(|action| releases.suspends(action))
+                    {
+                        resumable.insert(function.callable);
+                    }
+                }
                 PhysicalTerminator::RecoverFault { .. }
                 | PhysicalTerminator::NativeIo { .. }
                 | PhysicalTerminator::Sleep { .. }
@@ -282,7 +499,6 @@ pub(super) fn verify_callables(module: &PhysicalModule) -> Result<(), PhysicalEr
                 | PhysicalTerminator::GeneratorNext { .. }
                 | PhysicalTerminator::StreamNext { park: true, .. }
                 | PhysicalTerminator::StreamSend { park: true, .. }
-                | PhysicalTerminator::ValueClose { .. }
                 | PhysicalTerminator::IndirectCall { .. }
                 | PhysicalTerminator::TaskAwait { .. }
                 | PhysicalTerminator::ActorAsk { .. }
@@ -305,6 +521,11 @@ pub(super) fn verify_callables(module: &PhysicalModule) -> Result<(), PhysicalEr
                     resumable.insert(function.callable);
                 }
                 PhysicalTerminator::RuntimeCall { action, args, .. } => {
+                    if super::runtime_receiver_release(module, action)?
+                        .is_some_and(|action| releases.suspends(action))
+                    {
+                        resumable.insert(function.callable);
+                    }
                     for capability in action.family.value_callback_capabilities() {
                         let argument = args.first().ok_or_else(|| {
                             PhysicalError::new("collection callback has no receiver operand")
@@ -341,8 +562,18 @@ pub(super) fn verify_callables(module: &PhysicalModule) -> Result<(), PhysicalEr
                         .extend(super::capability::callees(module, ty, *capability)?);
                 }
                 PhysicalTerminator::WireCodec {
-                    direction, plan, ..
+                    direction,
+                    plan,
+                    recipes,
+                    ..
                 } if !direction.is_serialize() => {
+                    if recipes.values().any(|recipe| {
+                        recipe
+                            .destroy
+                            .is_some_and(|action| releases.suspends(action))
+                    }) {
+                        resumable.insert(function.callable);
+                    }
                     let mut dependencies = Vec::new();
                     plan.visit_decode_capabilities(&mut |ty, capability| {
                         dependencies.push(super::capability::callees(module, ty, capability));
@@ -385,19 +616,17 @@ pub(super) fn verify_callables(module: &PhysicalModule) -> Result<(), PhysicalEr
     for callable in &module.callables {
         if callable.is_resumable != expected.contains(&callable.id) {
             return Err(PhysicalError::new(format!(
-                "callable {} has an inconsistent resumable ABI",
-                callable.id.0
+                "callable {} (`{}`) has an inconsistent resumable ABI",
+                callable.id.0, callable.symbol
             )));
         }
     }
-    // Init and lifecycle hooks run synchronously inside spawn and the
-    // terminal transition, outside any scheduler-owned frame.
+    // Spawn invokes init and start through its caller's continuation. Other
+    // lifecycle callbacks still use the runtime's synchronous callback ABI.
     for actor in &module.actors {
         if actor
-            .init
+            .stop
             .iter()
-            .chain(&actor.start)
-            .chain(&actor.stop)
             .chain(&actor.crash)
             .chain(&actor.exit)
             .chain(&actor.down)

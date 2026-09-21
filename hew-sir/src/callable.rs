@@ -148,6 +148,27 @@ pub fn verify_callable_coercion(
     Ok(())
 }
 
+/// Verify a generator view that retains its producer and exact output owners.
+///
+/// # Errors
+/// Refuses changed output types except for proved callable capability weakening.
+pub fn verify_generator_coercion(
+    source: &ResolvedTy,
+    target: &ResolvedTy,
+    facts: &TypeFactTable,
+) -> Result<(), String> {
+    let (source_yield, source_return) =
+        generator_parts(source).ok_or("generator coercion requires a source generator")?;
+    let (target_yield, target_return) =
+        generator_parts(target).ok_or("generator coercion requires a target generator")?;
+    for (source, target) in [(source_yield, target_yield), (source_return, target_return)] {
+        if source != target {
+            verify_callable_coercion(source, target, facts)?;
+        }
+    }
+    Ok(())
+}
+
 impl SemClosure {
     /// Derive capture ownership with the same field recipes used by aggregates.
     ///

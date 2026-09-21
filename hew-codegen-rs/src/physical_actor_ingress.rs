@@ -152,6 +152,17 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             arguments.push(i32_ty.const_zero().into());
             "hew_actor_submit_native"
         };
+        parameters.push(ptr.into());
+        arguments
+            .push(message_release(&self.llvm, self.ctx, adapter.actor, adapter.message).into());
+        let discarded = builder
+            .build_alloca(ptr, "ingress.discarded")
+            .llvm_ctx("allocate ingress discard cursor")?;
+        builder
+            .build_store(discarded, ptr.const_null())
+            .llvm_ctx("initialize ingress discard cursor")?;
+        parameters.push(ptr.into());
+        arguments.push(discarded.into());
         let submit =
             get_or_declare_external(&self.llvm, symbol, i32_ty.fn_type(&parameters, false))?;
         let status = call_value(&builder, submit, &arguments, "ingress.status")?.into_int_value();

@@ -7575,9 +7575,6 @@ else needs `impl Display for {rendered}`)"
                                 self.current_module_idx,
                                 name.clone(),
                             ));
-                            if let Some(feature) = self.wasm_native_only_module_feature(name) {
-                                self.reject_wasm_feature(span, feature);
-                            }
                             self.reject_wasm_native_only_module_function(name, field, span);
                             if self.is_shipped_crypto_module(name)
                                 && matches!(field, "random_bytes" | "try_random_bytes")

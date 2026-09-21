@@ -4,7 +4,7 @@
 //! edges own cancellation and drain; synchronous release is legal only after
 //! that drain (or before the lazy body has ever been invoked).
 
-use crate::callable::{hew_callable_drop, HewCallableValue};
+use crate::callable::HewCallableValue;
 use crate::cont::{hew_cont_destroy, hew_cont_done, hew_cont_resume};
 use crate::coro_state::{
     hew_coro_state_cancel, hew_coro_state_free, hew_coro_state_new, hew_coro_state_resume_yield,
@@ -12,6 +12,7 @@ use crate::coro_state::{
 };
 use crate::execution_context::{current_context, set_current_context, HewExecutionContext};
 use crate::fault::{hew_fault_drop, HewFault};
+use crate::release_walker::{HewReleaseCursor, ReleaseDriver};
 use crate::util::MutexExt;
 use crate::wake::{HewWaker, OwnedWaker};
 use hew_cabi::value::HewValueLayout;
@@ -73,54 +74,38 @@ pub struct HewCheckedGenerator {
     state: *mut HewCoroState,
     frame: *mut c_void,
     fault: *mut HewFault,
+    producer_fault: *mut HewFault,
     closed: bool,
-    children: *mut crate::value_close::HewValueClose,
-    children_collected: bool,
+    release: Option<Box<ReleaseDriver>>,
 }
 
 impl HewCheckedGenerator {
-    unsafe fn close_children(&mut self, parent: *mut HewCoroState, lazy: bool) -> bool {
-        use crate::value_close::{
-            hew_value_close_collect, hew_value_close_finish, hew_value_close_poll,
-        };
-        // SAFETY: the generator retains the output or lazy environment unchanged
-        // across every Pending result until all recursively selected owners drain.
+    unsafe fn release_owned(&mut self, parent: *mut HewCoroState, lazy: bool) -> bool {
+        // SAFETY: the generator retains its output allocation and callable
+        // carrier until the consuming driver completes every selected callback.
         unsafe {
-            if !self.children_collected {
-                if lazy {
-                    if let Some(callable) = self.callable.as_mut() {
-                        crate::callable::hew_callable_visit_close(
-                            callable,
-                            (&raw mut self.children).cast(),
-                        );
-                    }
-                } else if let Some(layout) = self.initialized {
-                    hew_value_close_collect(self.output, layout, (&raw mut self.children).cast());
-                }
-                self.children_collected = true;
+            if self.release.is_none() {
+                let cursor = if lazy {
+                    self.callable.as_mut().map_or(ptr::null_mut(), |callable| {
+                        crate::callable::hew_callable_release_begin(callable)
+                    })
+                } else {
+                    self.initialized.take().map_or(ptr::null_mut(), |layout| {
+                        HewReleaseCursor::values([(self.output, *layout)])
+                    })
+                };
+                self.release = Some(ReleaseDriver::new(cursor));
             }
-            if hew_value_close_poll(self.children, parent.cast()) == CoroStatus::Pending as i32 {
+            let driver = self.release.as_mut().expect("generator release owner");
+            if !driver.poll(parent) {
                 return false;
             }
-            let mut fault = ptr::null_mut();
-            hew_value_close_finish(
-                std::mem::replace(&mut self.children, ptr::null_mut()),
-                &raw mut fault,
-            );
-            self.fault = crate::fault::hew_fault_combine(self.fault, fault);
-            self.children_collected = false;
-            true
-        }
-    }
-
-    unsafe fn discard_output(&mut self) {
-        if let Some(layout) = self.initialized.take() {
-            // SAFETY: the publication status selected this initialized layout;
-            // taking the flag first prevents a second release.
-            if let Some(drop) = unsafe { (*layout).drop_fn } {
-                // SAFETY: the generator exclusively owns this exact value.
-                unsafe { drop(self.output) };
+            self.fault = crate::fault::hew_fault_combine(self.fault, driver.take_fault());
+            self.release = None;
+            if lazy {
+                self.callable = None;
             }
+            true
         }
     }
 }
@@ -173,9 +158,9 @@ pub unsafe extern "C" fn hew_checked_generator_new(
         state: ptr::null_mut(),
         frame: ptr::null_mut(),
         fault: ptr::null_mut(),
+        producer_fault: ptr::null_mut(),
         closed: false,
-        children: ptr::null_mut(),
-        children_collected: false,
+        release: None,
     }))
 }
 
@@ -203,12 +188,8 @@ pub unsafe extern "C" fn hew_checked_generator_poll(
     }
     if closing && generator.state.is_null() {
         // SAFETY: the lazy environment is retained until its captures finish cleanup.
-        if !unsafe { generator.close_children(parent, true) } {
+        if !unsafe { generator.release_owned(parent, true) } {
             return CoroStatus::Pending as i32;
-        }
-        if let Some(mut callable) = generator.callable.take() {
-            // SAFETY: the lazy callable has not transferred its environment.
-            unsafe { hew_callable_drop(&raw mut callable) };
         }
         generator.closed = true;
         return if generator.fault.is_null() {
@@ -230,6 +211,13 @@ pub unsafe extern "C" fn hew_checked_generator_poll(
         generator.state =
             unsafe { hew_coro_state_new(&raw const descriptor, hew_coro_state_token(parent)) };
     }
+    // The generator executes in its current consumer's actor turn, including
+    // after ownership moves to another actor between yields.
+    // SAFETY: both invocation states remain live throughout this poll.
+    unsafe {
+        (*generator.state).actor_turn = (*parent).actor_turn;
+        (*generator.state).actor_message_type = (*parent).actor_message_type;
+    }
     if closing {
         // SAFETY: this owner retains the child invocation state.
         unsafe { hew_coro_state_cancel(generator.state) };
@@ -241,11 +229,9 @@ pub unsafe extern "C" fn hew_checked_generator_poll(
     if resuming_yield {
         if closing {
             // SAFETY: the output remains initialized while its children drain.
-            if !unsafe { generator.close_children(parent, false) } {
+            if !unsafe { generator.release_owned(parent, false) } {
                 return CoroStatus::Pending as i32;
             }
-            // SAFETY: closing consumes any previously published yield.
-            unsafe { generator.discard_output() };
         } else if generator.initialized.is_some() {
             std::process::abort();
         }
@@ -261,6 +247,18 @@ pub unsafe extern "C" fn hew_checked_generator_poll(
             prev_context: previous,
             ..HewExecutionContext::default()
         };
+        // Preserve actor admission, supervisor and tracing identity while the
+        // generator supplies its own cancellation and reply boundaries.
+        // SAFETY: the previous context is installed for the duration of this poll.
+        if let Some(parent_context) = unsafe { previous.as_ref() } {
+            context.actor = parent_context.actor;
+            context.actor_id = parent_context.actor_id;
+            context.parent_supervisor = parent_context.parent_supervisor;
+            context.supervisor_child_index = parent_context.supervisor_child_index;
+            context.arena = parent_context.arena;
+            context.trace = parent_context.trace;
+            context.partition_policy = parent_context.partition_policy;
+        }
         let _previous = set_current_context(&raw mut context);
         if let Some(callable) = generator.callable.take() {
             // SAFETY: the compiler's once adapter owns environment cleanup on
@@ -270,7 +268,7 @@ pub unsafe extern "C" fn hew_checked_generator_poll(
                     callable.environment,
                     ptr::null(),
                     generator.output,
-                    (&raw mut generator.fault).cast(),
+                    (&raw mut generator.producer_fault).cast(),
                     generator.state.cast(),
                 )
             };
@@ -303,13 +301,20 @@ pub unsafe extern "C" fn hew_checked_generator_poll(
             unsafe { hew_cont_destroy(generator.frame) };
             generator.frame = ptr::null_mut();
         }
+        // Producer publication has one separate fault output while its frame
+        // can still resume; an earlier abandoned-yield close fault stays owned.
+        // SAFETY: the terminal producer transfers its optional fault exactly once.
+        generator.fault = unsafe {
+            crate::fault::hew_fault_combine(
+                generator.fault,
+                std::mem::take(&mut generator.producer_fault),
+            )
+        };
         if closing {
             // SAFETY: terminal output remains owned through recursive cleanup.
-            if !unsafe { generator.close_children(parent, false) } {
+            if !unsafe { generator.release_owned(parent, false) } {
                 return CoroStatus::Pending as i32;
             }
-            // SAFETY: close consumes the final return value, if any.
-            unsafe { generator.discard_output() };
             generator.closed = true;
             {
                 // SAFETY: this close requested cancellation solely to drain.
@@ -379,16 +384,18 @@ pub unsafe extern "C" fn hew_checked_generator_free(generator: *mut HewCheckedGe
         return;
     }
     // SAFETY: the caller transfers the unique owning handle.
-    let mut generator = unsafe { Box::from_raw(generator) };
-    if !generator.frame.is_null() {
+    let generator = unsafe { Box::from_raw(generator) };
+    if !generator.closed
+        || !generator.frame.is_null()
+        || generator.callable.is_some()
+        || generator.initialized.is_some()
+        || generator.release.is_some()
+        || !generator.producer_fault.is_null()
+    {
         std::process::abort();
     }
     // SAFETY: no frame can access these uniquely owned values or invocation state.
     unsafe {
-        if let Some(mut callable) = generator.callable.take() {
-            hew_callable_drop(&raw mut callable);
-        }
-        generator.discard_output();
         hew_fault_drop(generator.fault);
         hew_coro_state_free(generator.state);
         dealloc(generator.output.cast(), generator.allocation);

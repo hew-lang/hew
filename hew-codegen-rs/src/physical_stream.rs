@@ -382,20 +382,23 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         self.builder.position_at_end(cancelled);
         self.free_handle("hew_stream_cancel_native", request)?;
         self.drain_stream(request, waker)?;
-        self.free_handle("hew_stream_operation_free_native", request)?;
         self.initialize_cancellation_fault()?;
+        self.free_handle("hew_stream_operation_free_native", request)?;
         self.emit_edge(cancel)?;
         self.builder.position_at_end(failed);
         self.finish_stream(request, waker, cancelled)?;
-        self.free_handle("hew_stream_operation_free_native", request)?;
         self.initialize_active_fault(HEW_TRAP_USER_PANIC)?;
+        self.free_handle("hew_stream_operation_free_native", request)?;
         self.emit_edge(unwind)
     }
 
     /// `try_send()`: one non-parking transfer. The runtime entry moves the
-    /// element in and reports 0 accepted, 1 closed or 2 full, so there is no
-    /// waker, no frame and no cancellation observation — an immediate answer
-    /// cannot be interrupted.
+    /// element in and reports 0 accepted, 1 closed or 2 full. Rejected owners
+    /// finish consuming cleanup without waiting for channel capacity.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the send carries each checked outcome edge"
+    )]
     fn emit_stream_try_send(
         &self,
         handle: BasicValueEnum<'ctx>,
@@ -404,14 +407,19 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         normal: &PhysicalEdge,
         closed: &PhysicalEdge,
         full: &PhysicalEdge,
+        unwind: &PhysicalEdge,
     ) -> CodegenResult<()> {
         let pointer = self.ctx.ptr_type(AddressSpace::default());
+        let cleanup = self
+            .value_emitter()
+            .entry_scratch(pointer.into(), "stream.rejected.owner")?;
+        self.builder
+            .build_store(cleanup, pointer.const_null())
+            .llvm_ctx("initialize rejected stream owner")?;
         let send = coro::external(
             self.llvm,
-            "hew_stream_try_send_layout",
-            self.ctx
-                .i32_type()
-                .fn_type(&[pointer.into(), pointer.into(), pointer.into()], false),
+            "hew_stream_try_send_move_release",
+            self.ctx.i32_type().fn_type(&[pointer.into(); 4], false),
         )?;
         let status = suspend::call_value(
             &self.builder,
@@ -420,6 +428,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 handle.into(),
                 self.slots[value.0 as usize].into(),
                 witness.into(),
+                cleanup.into(),
             ],
             "stream.try_send.status",
         )?
@@ -427,6 +436,33 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         // The runtime copied the element into its envelope; the slot no
         // longer owns it on any outcome.
         self.clear_owned(value)?;
+        let cursor = self
+            .builder
+            .build_load(pointer, cleanup, "stream.rejected.cursor")
+            .llvm_ctx("read rejected stream owner")?
+            .into_pointer_value();
+        release::drain(&self.value_emitter(), self.frame.as_ref(), cursor)?;
+        let failed = self
+            .ctx
+            .append_basic_block(self.value, "stream.rejected.failed");
+        let dispatch = self
+            .ctx
+            .append_basic_block(self.value, "stream.try_send.dispatch");
+        let fault = self
+            .builder
+            .build_load(pointer, self.active_fault, "stream.rejected.fault")
+            .llvm_ctx("read rejected stream cleanup fault")?
+            .into_pointer_value();
+        let faulted = self
+            .builder
+            .build_is_not_null(fault, "stream.rejected.faulted")
+            .llvm_ctx("test rejected stream cleanup fault")?;
+        self.builder
+            .build_conditional_branch(faulted, failed, dispatch)
+            .llvm_ctx("dispatch rejected stream cleanup")?;
+        self.builder.position_at_end(failed);
+        self.emit_edge(unwind)?;
+        self.builder.position_at_end(dispatch);
         let accepted = self
             .ctx
             .append_basic_block(self.value, "stream.try_send.accepted");
@@ -482,7 +518,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             let full = full.as_ref().ok_or_else(|| {
                 CodegenError::FailClosed("non-parking stream send lacks its full edge".into())
             })?;
-            return self.emit_stream_try_send(handle, *value, witness, normal, closed, full);
+            return self
+                .emit_stream_try_send(handle, *value, witness, normal, closed, full, unwind);
         }
         let frame = self.stream_frame()?;
         let pointer = self.ctx.ptr_type(AddressSpace::default());
@@ -555,17 +592,26 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         self.builder.position_at_end(peer_closed);
         self.finish_stream(request, waker, cancelled)?;
         self.free_handle("hew_stream_operation_free_native", request)?;
-        self.emit_edge(closed)?;
+        let status = self
+            .builder
+            .build_load(
+                self.ctx.i32_type(),
+                self.active_status,
+                "stream.close.status",
+            )
+            .llvm_ctx("read rejected element release outcome")?
+            .into_int_value();
+        self.emit_call_outcome(status, None, Some(closed), Some(unwind))?;
         self.builder.position_at_end(cancelled);
         self.free_handle("hew_stream_cancel_native", request)?;
         self.drain_stream(request, waker)?;
-        self.free_handle("hew_stream_operation_free_native", request)?;
         self.initialize_cancellation_fault()?;
+        self.free_handle("hew_stream_operation_free_native", request)?;
         self.emit_edge(cancel)?;
         self.builder.position_at_end(failed);
         self.finish_stream(request, waker, cancelled)?;
-        self.free_handle("hew_stream_operation_free_native", request)?;
         self.initialize_active_fault(HEW_TRAP_USER_PANIC)?;
+        self.free_handle("hew_stream_operation_free_native", request)?;
         self.emit_edge(unwind)
     }
 }

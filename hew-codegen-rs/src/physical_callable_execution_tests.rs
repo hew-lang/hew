@@ -445,10 +445,21 @@ unsafe extern "C" fn counted_callable_drop(value: *mut hew_runtime::callable::He
     unsafe { hew_runtime::callable::hew_callable_drop(value) };
 }
 
+unsafe extern "C" fn counted_callable_release(
+    value: *mut hew_runtime::callable::HewCallableValue,
+) -> *mut hew_runtime::release_walker::HewReleaseCursor {
+    CALLABLE_DROPS.set(CALLABLE_DROPS.get() + 1);
+    // SAFETY: generated consuming cleanup transfers this live owning carrier.
+    unsafe { hew_runtime::callable::hew_callable_release_begin(value) }
+}
+
 fn counter_engine<'ctx>(llvm: &Module<'ctx>, optimized: bool) -> ExecutionEngine<'ctx> {
     let engine = engine(llvm, optimized);
     if let Some(drop) = llvm.get_function("hew_callable_drop") {
         engine.add_global_mapping(&drop, counted_callable_drop as *const () as usize);
+    }
+    if let Some(release) = llvm.get_function("hew_callable_release_begin") {
+        engine.add_global_mapping(&release, counted_callable_release as *const () as usize);
     }
     engine
 }

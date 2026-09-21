@@ -998,5 +998,3 @@ mod exit_code_resolution_tests {
 
 #[cfg(test)]
 mod test_string;
-
-pub mod value_close;

@@ -11,9 +11,13 @@ use crate::execution_context::HewExecutionContext;
 use crate::fault::HewFault;
 use crate::lifetime::live_actors::ActorIncarnation;
 
+#[path = "actor_native_cleanup.rs"]
+pub(crate) mod cleanup;
 #[path = "actor_native_close.rs"]
 mod close;
-pub(crate) use close::{finish_native_terminal, hew_actor_close_native, hew_actor_wait_new};
+pub(crate) use close::{
+    finish_actor_terminal, finish_native_terminal, hew_actor_close_native, hew_actor_wait_new,
+};
 pub use close::{HewNativeActorWait, NativeActorCompletion};
 #[path = "actor_native_wait_graph.rs"]
 pub(crate) mod wait_graph;
@@ -47,8 +51,16 @@ pub unsafe extern "C" fn hew_actor_coro_state_new() -> *mut crate::coro_state::H
     let context = crate::execution_context::current_context();
     // SAFETY: the generated dispatch adapter runs under its live context.
     let context = unsafe { &*context };
+    // SAFETY: the current dispatch pins both actor and cancellation ancestry.
+    unsafe { new_actor_state(context.actor, context.cancel_token) }
+}
+
+unsafe fn new_actor_state(
+    actor: *mut crate::actor::HewActor,
+    token: *mut crate::cancel_token::HewCancellationToken,
+) -> *mut crate::coro_state::HewCoroState {
     // SAFETY: activation ownership keeps the actor alive during capture.
-    let target = Arc::new(unsafe { ActorIncarnation::of(context.actor) });
+    let target = Arc::new(unsafe { ActorIncarnation::of(actor) });
     let waker = crate::wake::HewWaker {
         context: Arc::as_ptr(&target).cast_mut().cast(),
         wake: wake_actor,
@@ -56,17 +68,24 @@ pub unsafe extern "C" fn hew_actor_coro_state_new() -> *mut crate::coro_state::H
         release: release_actor_wake,
     };
     // SAFETY: the local Arc and current context retain both inputs for creation.
-    let state =
-        unsafe { crate::coro_state::hew_coro_state_new(&raw const waker, context.cancel_token) };
+    let state = unsafe { crate::coro_state::hew_coro_state_new(&raw const waker, token) };
     // SAFETY: the new invocation belongs exclusively to this strict actor turn.
     unsafe { (*state).actor_turn = *target };
     // SAFETY: this activation owns the actor and its one strict turn. The
     // adapter clears the borrowed slot after child completion under the same
     // activation ownership, before another turn can start.
-    unsafe { &*context.actor }
+    unsafe { &*actor }
         .checked_invocation
         .store(state.cast(), std::sync::atomic::Ordering::Release);
     state
+}
+
+pub(crate) unsafe fn new_cleanup_state(
+    actor: &crate::actor::HewActor,
+) -> *mut crate::coro_state::HewCoroState {
+    // SAFETY: the exclusive cleanup activation retains the actor; cleanup
+    // begins fresh cancellation ancestry while preserving readiness identity.
+    unsafe { new_actor_state(ptr::from_ref(actor).cast_mut(), ptr::null_mut()) }
 }
 
 /// Publish a completed handler fault through the current resume context.
@@ -95,7 +114,10 @@ pub unsafe extern "C" fn hew_actor_coro_set_fault(fault: *mut HewFault) {
 pub unsafe extern "C" fn hew_actor_terminate_set_fault(fault: *mut HewFault) {
     // SAFETY: the generated terminate sequence relinquishes one owned fault.
     let fault = unsafe { Box::from_raw(fault) };
-    let code = report_checked_failure(&fault);
+    let context = crate::execution_context::current_context();
+    // SAFETY: the terminate activation retains its actor and context.
+    let actor = unsafe { &*(*context).actor };
+    let code = report_actor_failure(actor, *fault);
     crate::trap_code::stamp_current_actor_error_code(code);
 }
 
@@ -208,9 +230,23 @@ pub unsafe extern "C" fn hew_actor_submit_native(
     size: usize,
     drop_payload: crate::mailbox::HewMsgEnvelopeDropFn,
     policy: i32,
+    payload_release: Option<hew_cabi::value::HewValueReleaseStart>,
+    discarded_release_out: *mut *mut crate::release_walker::HewReleaseCursor,
 ) -> i32 {
     // SAFETY: forwards the unpublished wrapper and typed ownership contract.
-    unsafe { submit_native(token, message, payload, size, drop_payload, policy, false) }
+    unsafe {
+        submit_native(
+            token,
+            message,
+            payload,
+            size,
+            drop_payload,
+            policy,
+            false,
+            payload_release,
+            discarded_release_out,
+        )
+    }
 }
 
 /// Submit an attachment close event after queued data without capacity refusal.
@@ -224,11 +260,29 @@ pub unsafe extern "C" fn hew_actor_submit_native_terminal(
     payload: *mut std::ffi::c_void,
     size: usize,
     drop_payload: crate::mailbox::HewMsgEnvelopeDropFn,
+    payload_release: Option<hew_cabi::value::HewValueReleaseStart>,
+    discarded_release_out: *mut *mut crate::release_walker::HewReleaseCursor,
 ) -> i32 {
     // SAFETY: forwards the unpublished wrapper and typed ownership contract.
-    unsafe { submit_native(token, message, payload, size, drop_payload, 0, true) }
+    unsafe {
+        submit_native(
+            token,
+            message,
+            payload,
+            size,
+            drop_payload,
+            0,
+            true,
+            payload_release,
+            discarded_release_out,
+        )
+    }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "complete compiler-private payload admission and cleanup contract"
+)]
 unsafe fn submit_native(
     token: crate::lifetime::local_handles::HewLocalPidId,
     message: i32,
@@ -237,7 +291,14 @@ unsafe fn submit_native(
     drop_payload: crate::mailbox::HewMsgEnvelopeDropFn,
     policy: i32,
     terminal: bool,
+    payload_release: Option<hew_cabi::value::HewValueReleaseStart>,
+    discarded_release_out: *mut *mut crate::release_walker::HewReleaseCursor,
 ) -> i32 {
+    // SAFETY: the generated caller supplies its writable cursor output.
+    if !discarded_release_out.is_null() {
+        // SAFETY: generated code supplies a writable optional cursor output.
+        unsafe { discarded_release_out.write(ptr::null_mut()) };
+    }
     if payload.is_null() {
         return 3;
     }
@@ -251,6 +312,8 @@ unsafe fn submit_native(
         }
         return 3;
     }
+    // SAFETY: attach the selected consuming callback before publication.
+    unsafe { (*envelope).release_start = payload_release };
     // SAFETY: the envelope is unpublished and transfers only on admission.
     let outcome = unsafe {
         if terminal {
@@ -270,7 +333,12 @@ unsafe fn submit_native(
         crate::mailbox::SendOutcome::Failed if policy == 2 => {
             // SAFETY: explicit DropNewest transfers the typed payload for destruction.
             unsafe {
-                crate::mailbox::hew_msg_envelope_release(envelope);
+                let cursor = crate::cow_envelope::release_cursor(envelope);
+                if discarded_release_out.is_null() {
+                    assert!(cursor.is_null());
+                } else {
+                    discarded_release_out.write(cursor);
+                }
             }
             return 4;
         }
@@ -406,6 +474,15 @@ pub(crate) fn report_checked_failure(fault: &HewFault) -> i32 {
     fault.code()
 }
 
+/// Preserve a checked actor fault across cleanup and terminal observation.
+pub(crate) fn report_actor_failure(actor: &crate::actor::HewActor, fault: HewFault) -> i32 {
+    if let Some(completion) = &actor.native_completion {
+        completion.record_fault(fault)
+    } else {
+        report_checked_failure(&fault)
+    }
+}
+
 /// Finish the matching native completion or legacy unwind cleanup boundary.
 ///
 /// # Safety
@@ -422,7 +499,8 @@ pub(crate) unsafe fn finish_dispatch_failure(
                 eprintln!("fatal: checked actor failure retained crash-cleanup owners");
                 std::process::abort();
             }
-            report_checked_failure(&fault)
+            // SAFETY: the completed activation retains the exact incarnation.
+            report_actor_failure(unsafe { &*actor }, *fault)
         }
         DispatchFailure::Unwind(payload) => {
             crate::execution_context::reply_channel_swap_unwind();

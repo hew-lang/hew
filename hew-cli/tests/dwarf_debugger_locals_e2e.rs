@@ -656,16 +656,56 @@ fn debugger_reports_unstored_post_suspend_local_unavailable_not_wrong() {
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 const STOP_SPLIT: &str = "HEW_STOP_SPLIT";
 
-/// gdb `printf` command for the string local `s`, under `set language c`.
-/// Prints the pointer's raw hex AND its dereferenced content in one line
-/// shaped like lldb's native `s = 0x… "content"` render, so the shared
-/// `s_pointer_reads`/`s_reads_null`/`s_reads_unavailable` helpers below work
-/// unmodified against either debugger's transcript. `printf` flushes the
-/// literal `s = ` prefix before evaluating the arguments, so an unavailable
-/// `s` still yields a line starting with `s = ` (followed by gdb's own
-/// "optimized out" wording) rather than losing the prefix entirely.
+/// Read a managed string through the debugger's memory API, without resuming
+/// the inferior or treating its opaque header pointer as a C string. The
+/// native header offsets come from the allocation's owning CABI definition.
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
-const GDB_PRINT_S: &str = "printf \"s = 0x%lx \\\"%s\\\"\\n\", (unsigned long)s, (char*)s";
+fn debugger_print_s(debugger: &str) -> String {
+    let reader = if debugger == "lldb" {
+        r#"frame = lldb.debugger.GetSelectedTarget().GetProcess().GetSelectedThread().GetSelectedFrame()
+value = frame.FindVariable("s")
+unavailable = not value.IsValid() or value.GetValue() is None
+if not unavailable:
+    pointer = value.GetValueAsUnsigned()
+    def read(address, length):
+        error = lldb.SBError()
+        data = value.GetProcess().ReadMemory(address, length, error)
+        if error.Fail():
+            raise RuntimeError(str(error))
+        return data
+"#
+    } else {
+        r#"value = gdb.parse_and_eval("s")
+unavailable = value.is_optimized_out or getattr(value, "is_unavailable", False)
+if not unavailable:
+    pointer = int(value)
+    def read(address, length):
+        return bytes(gdb.selected_inferior().read_memory(address, length))
+"#
+    };
+    let script = format!(
+        r#"import json, sys
+{reader}
+if unavailable:
+    print("s = <optimized out>")
+else:
+    length = int.from_bytes(read(pointer + {length_offset}, {word_bytes}), sys.byteorder) if pointer else 0
+    if length > 4096:
+        raise RuntimeError("fixture string length exceeds observation bound")
+    content = read(pointer + {data_offset}, length).decode("utf-8") if length else ""
+    print("s = 0x%x %s" % (pointer, json.dumps(content, ensure_ascii=False)))
+"#,
+        length_offset = hew_cabi::string::STRING_DEBUG_BYTE_LEN_OFFSET,
+        word_bytes = size_of::<usize>(),
+        data_offset = hew_cabi::string::STRING_DEBUG_DATA_OFFSET,
+    );
+    let command = if debugger == "lldb" {
+        "script"
+    } else {
+        "python"
+    };
+    format!("{command} exec({script:?})")
+}
 
 /// A debugger's read of a pointer variable renders as `s = 0x…` (`frame
 /// variable` and `info locals` both do). Requiring the `0x` is what keeps
@@ -719,7 +759,9 @@ fn two_stop_reassign_cmd(dbg: &str, src: &str, bin: &str) -> Command {
             "-o",
             "run",
             "-o",
-            "frame variable k s",
+            "frame variable k",
+            "-o",
+            &debugger_print_s(dbg),
             "-o",
             &format!("script print(\"{STOP_SPLIT}\")"),
             "-o",
@@ -727,7 +769,9 @@ fn two_stop_reassign_cmd(dbg: &str, src: &str, bin: &str) -> Command {
             "-o",
             "continue",
             "-o",
-            "frame variable k s",
+            "frame variable k",
+            "-o",
+            &debugger_print_s(dbg),
             "-o",
             "quit",
             bin,
@@ -743,18 +787,14 @@ fn two_stop_reassign_cmd(dbg: &str, src: &str, bin: &str) -> Command {
             &format!("break {src}:9"),
             "-ex",
             "run",
-            // gdb auto-detects the DWARF source language as Rust from the
-            // producer; in Rust mode `print`/`info locals` render a `*mut u8`
-            // (Hew's string ABI pointer) as a bare address, never dereferenced
-            // into content — unlike lldb, which prints the string. Forcing C
-            // mode lets an explicit `(char*)` cast trigger gdb's string
-            // rendering.
+            // Scalar expressions use C syntax; string bytes are read through
+            // the debugger API using the canonical managed allocation layout.
             "-ex",
             "set language c",
             "-ex",
             "printf \"k = %ld\\n\", k",
             "-ex",
-            GDB_PRINT_S,
+            &debugger_print_s(dbg),
             "-ex",
             &format!("echo {STOP_SPLIT}\\n"),
             "-ex",
@@ -764,7 +804,7 @@ fn two_stop_reassign_cmd(dbg: &str, src: &str, bin: &str) -> Command {
             "-ex",
             "printf \"k = %ld\\n\", k",
             "-ex",
-            GDB_PRINT_S,
+            &debugger_print_s(dbg),
             bin,
         ]);
         command
@@ -810,7 +850,7 @@ fn debugger_never_reads_reassigned_reference_local_as_interior_null() {
         assert!(
             !s_pointer_reads(section)
                 .iter()
-                .any(|line| line.contains("before")),
+                .any(|line| line.trim_end().ends_with("\"before\"")),
             "`s` must never read the released pre-suspend \"before\" at {label}:\n{text}"
         );
         // The reassigned scalar reads its true value at both stops — never
@@ -841,7 +881,7 @@ fn debugger_never_reads_reassigned_reference_local_as_interior_null() {
     // specific line-scoped form, never satisfiable by stdout or the listing.
     let stop1_after = s_pointer_reads(stop1)
         .iter()
-        .any(|line| line.contains("after"));
+        .any(|line| line.trim_end().ends_with("\"after\""));
     assert!(
         s_reads_unavailable(stop1) || stop1_after,
         "`s` must be unavailable or the real replacement at stop 1:\n{text}"
@@ -851,7 +891,7 @@ fn debugger_never_reads_reassigned_reference_local_as_interior_null() {
     assert!(
         s_pointer_reads(stop2)
             .iter()
-            .any(|line| line.contains("after")),
+            .any(|line| line.trim_end().ends_with("\"after\"")),
         "`s` must read the replacement string at stop 2:\n{text}"
     );
 }
@@ -881,7 +921,9 @@ fn debugger_reports_untaken_conditional_reassignment_unavailable_not_wrong() {
             "-o",
             "run",
             "-o",
-            "frame variable n s",
+            "frame variable n",
+            "-o",
+            &debugger_print_s(dbg),
             "-o",
             "quit",
             bin,
@@ -895,15 +937,14 @@ fn debugger_reports_untaken_conditional_reassignment_unavailable_not_wrong() {
             &format!("break {src}:8"),
             "-ex",
             "run",
-            // See `two_stop_reassign_cmd`: force C mode so the `(char*)` cast
-            // in `GDB_PRINT_S` dereferences the string pointer instead of
-            // printing a bare address.
+            // Use the same scalar language and managed string observer as
+            // the two-stop reassignment fixture.
             "-ex",
             "set language c",
             "-ex",
             "info args",
             "-ex",
-            GDB_PRINT_S,
+            &debugger_print_s(dbg),
             bin,
         ]);
         command
@@ -911,25 +952,11 @@ fn debugger_reports_untaken_conditional_reassignment_unavailable_not_wrong() {
     let out = run_bounded_command(cmd, format!("{dbg} untaken conditional reassignment"));
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
-    // GDB treats an unavailable value requested by `printf` as a command
-    // error and therefore exits 1 in batch mode.  That is the exact honest
-    // state this test admits, not a failed debug session.  Normalize only
-    // that diagnostic into the same line-scoped form LLDB reports; every
-    // other debugger error remains fatal.
-    let gdb_reports_unavailable = dbg == "gdb"
-        && out.status.code() == Some(1)
-        && stderr
-            .lines()
-            .any(|line| line.contains("value has been optimized out"));
     assert!(
-        out.status.success() || gdb_reports_unavailable,
+        out.status.success(),
         "{dbg} failed while debugging conditional handler:\n{stdout}\n{stderr}"
     );
-    let text = if gdb_reports_unavailable {
-        format!("{stdout}\ns = <optimized out>\n")
-    } else {
-        stdout.into_owned()
-    };
+    let text = stdout;
     // The never-executed branch's value must not be presented; pointer-render
     // scoped so the source listing's `s = \"high\"` line cannot trip it.
     assert!(
@@ -947,7 +974,7 @@ fn debugger_reports_untaken_conditional_reassignment_unavailable_not_wrong() {
     // future full-fidelity pass recovers availability.
     let s_reads_before = s_pointer_reads(&text)
         .iter()
-        .any(|line| line.contains("before"));
+        .any(|line| line.trim_end().ends_with("\"before\""));
     assert!(
         s_reads_unavailable(&text) || s_reads_before,
         "`s` must read unavailable (or its true untouched value):\n{text}"

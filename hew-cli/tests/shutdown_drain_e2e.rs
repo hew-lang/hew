@@ -65,7 +65,7 @@ fn main() {{
     )
 }
 
-fn compile_fixture(source: &str, dir: &Path) -> PathBuf {
+fn compile_fixture(source: &str, dir: &Path, opt_level: u8) -> PathBuf {
     let source_path = dir.join("shutdown_drain_tcp.hew");
     std::fs::write(&source_path, source).expect("write shutdown drain fixture");
     let output = Command::new(hew_binary())
@@ -75,6 +75,8 @@ fn compile_fixture(source: &str, dir: &Path) -> PathBuf {
             dir.to_str().expect("emit directory is UTF-8"),
             source_path.to_str().expect("fixture path is UTF-8"),
         ])
+        .arg("--opt-level")
+        .arg(opt_level.to_string())
         .current_dir(repo_root())
         .output()
         .expect("invoke hew compile");
@@ -177,11 +179,69 @@ fn finish_fixture(mut fixture: RunningFixture) -> (ExitStatus, Vec<String>, Stri
 }
 
 #[test]
+fn signal_shutdown_stops_root_admission_and_drains_accepted_peer_calls() {
+    require_codegen();
+    let source = r#"
+#[resource]
+type Ticket { id: i64 }
+impl Ticket {
+    fn close(consume self) { println(f"CLOSED:{self.id}"); }
+}
+actor Peer {
+    receive fn answer() -> i64 { 42 }
+}
+actor Service {
+    var held: Ticket,
+    receive fn poll(peer: Peer) -> i64 {
+        println("REQUEST_ACCEPTED");
+        sleep(200ms);
+        let value = peer.answer().expect("accepted handler must finish its peer call");
+        println("PEER_REPLY");
+        value
+    }
+}
+fn main() {
+    let root = Ticket { id: 1 };
+    let peer = spawn Peer;
+    let service = spawn Service(held: Ticket { id: 2 });
+    loop {
+        match service.poll(peer) {
+            .Ok(value) => assert(value == 42),
+            .Err(_) => break,
+        }
+    }
+    println("ROOT_DONE");
+}
+"#;
+    for opt_level in [0, 2] {
+        let dir = tempfile::tempdir().expect("create signal shutdown fixture directory");
+        let binary = compile_fixture(source, dir.path(), opt_level);
+        let fixture = spawn_fixture(&binary);
+        wait_for_line(&fixture.lines, "REQUEST_ACCEPTED");
+        let pid = i32::try_from(fixture.child.0.id()).expect("child PID fits pid_t");
+        // SAFETY: this live child belongs to the test; SIGTERM invokes its runtime
+        // shutdown handler while the accepted service turn is suspended.
+        assert_eq!(unsafe { libc::kill(pid, libc::SIGTERM) }, 0);
+        let (status, stdout, stderr) = finish_fixture(fixture);
+        assert!(status.success(), "shutdown exited {status}: {stderr}");
+        assert!(stdout.iter().any(|line| line == "PEER_REPLY"), "{stdout:?}");
+        for event in ["ROOT_DONE", "CLOSED:1", "CLOSED:2"] {
+            assert_eq!(
+                stdout.iter().filter(|line| *line == event).count(),
+                1,
+                "{stdout:?}"
+            );
+        }
+        assert!(stderr.is_empty(), "clean shutdown diagnostics: {stderr}");
+    }
+}
+
+#[test]
 fn tcp_handler_finishing_inside_budget_delivers_response_and_exits_zero() {
     require_codegen();
     let port = allocate_loopback_port();
     let dir = tempfile::tempdir().expect("create shutdown drain fixture directory");
-    let binary = compile_fixture(&fixture_source(port), dir.path());
+    let binary = compile_fixture(&fixture_source(port), dir.path(), 0);
     let fixture = spawn_fixture(&binary);
 
     wait_for_line(&fixture.lines, "READY");
@@ -229,7 +289,7 @@ fn tcp_handler_exceeding_budget_is_observable_as_nonzero_exit() {
     require_codegen();
     let port = allocate_loopback_port();
     let dir = tempfile::tempdir().expect("create shutdown drain fixture directory");
-    let binary = compile_fixture(&fixture_source(port), dir.path());
+    let binary = compile_fixture(&fixture_source(port), dir.path(), 0);
     let fixture = spawn_fixture(&binary);
 
     wait_for_line(&fixture.lines, "READY");

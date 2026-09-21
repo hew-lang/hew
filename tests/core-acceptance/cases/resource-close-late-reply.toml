@@ -1,0 +1,14 @@
+[[case]]
+id = "resource-close-late-reply"
+intent = "A caller deadline leaves a late owned reply with its handler, which finishes cleanup before accepting the next message."
+source = "cases/resource-close-late-reply.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 20
+
+[case.env]
+HEW_WORKERS = "1"
+
+[case.expected]
+stdout = "deadline\nclosed 9\nready\n"
+stderr = ""
+exit = 0

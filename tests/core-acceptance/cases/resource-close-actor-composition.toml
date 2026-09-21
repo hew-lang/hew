@@ -1,0 +1,14 @@
+[[case]]
+id = "resource-close-actor-composition"
+intent = "Consuming resource close asks a peer actor through tuples, variants, vectors, shared owners and maps on one worker."
+source = "cases/resource-close-actor-composition.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 20
+
+[case.env]
+HEW_WORKERS = "1"
+
+[case.expected]
+stdout = "closed 2\nclosed 1\nclosed 3\nclosed 4\nclosed 5\nclosed 6\nclosed 7\nworker complete\nbarrier\n"
+stderr = ""
+exit = 0

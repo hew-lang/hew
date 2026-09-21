@@ -270,11 +270,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             };
             self.set_place_initialized(leaf.storage, false)?;
             let value = self.load(leaf.storage, "aggregate.drop.value")?;
-            self.value_emitter().destroy_loaded_value(
-                value,
-                &self.storage(leaf.storage)?.layout,
-                action,
-            )?;
+            self.release_loaded(value, &self.storage(leaf.storage)?.layout, action)?;
             if let Some(next) = next {
                 self.builder
                     .build_unconditional_branch(next)

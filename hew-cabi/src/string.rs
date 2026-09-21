@@ -28,6 +28,14 @@ struct HewStringHeader {
     rc: AtomicU32,
 }
 
+/// Native-target offset of the byte length for read-only debugger tooling.
+/// Runtime and package code should use [`string_as_bytes`] instead.
+pub const STRING_DEBUG_BYTE_LEN_OFFSET: usize = core::mem::offset_of!(HewStringHeader, byte_len);
+
+/// Native-target offset of the UTF-8 payload for read-only debugger tooling.
+/// The payload has exactly the header's byte length and no C terminator.
+pub const STRING_DEBUG_DATA_OFFSET: usize = core::mem::size_of::<HewStringHeader>();
+
 const MAX_REFCOUNT: u32 = u32::MAX / 2;
 
 /// Why a foreign C string could not be copied into managed string storage.

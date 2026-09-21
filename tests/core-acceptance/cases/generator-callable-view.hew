@@ -1,0 +1,13 @@
+type Holder { label: string }
+
+fn make() -> Generator<fn() -> i64, ()> {
+    let holder = Holder { label: "first" + " value" };
+    let source = gen { yield move || holder.label.len(); };
+    source
+}
+
+fn main() {
+    var kept: fn() -> i64 = || 0;
+    for callback in make() { kept = callback; }
+    println(f"after={kept()}");
+}

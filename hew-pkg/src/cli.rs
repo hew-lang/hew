@@ -1036,7 +1036,9 @@ fn pin_offline_registry_packages(
                 continue;
             }
 
-            let package_pin = if package.pin.is_generation() {
+            let package_pin = if package.pin.is_generation()
+                && package.path.starts_with(registry.source_root(&registry_id))
+            {
                 package.pin
             } else {
                 let slot = registry.package_slot_for(&registry_id, &package.name, &package.version);
@@ -1751,7 +1753,7 @@ fn cmd_publish(
 
     // `--dry-run`: the archive is built and validated above (manifest
     // fields, name, version, packing, checksum, signature); stop before
-    // either the `--local` copy or the remote upload — nothing is written.
+    // either the local archive installation or the remote upload.
     if dry_run {
         println!(
             "Would publish {}@{} ({} bytes)",
@@ -1790,16 +1792,20 @@ fn cmd_publish(
         .collect();
 
     if local {
-        let dest = registry.package_dir(&m.package.name, &m.package.version);
-        if let Err(e) = copy_dir(&cwd, &dest) {
-            eprintln!("hew publish: {e}");
+        let dest = registry.package_slot(&m.package.name, &m.package.version);
+        let published = crate::atomic_fs::StagedDir::new(&dest).and_then(|staged| {
+            tarball::unpack(&pack_result.data, staged.path()).map_err(std::io::Error::other)?;
+            staged.publish_pinned(&dest)
+        });
+        let published = published.unwrap_or_else(|error| {
+            eprintln!("hew publish: {error}");
             std::process::exit(1);
-        }
+        });
         println!(
             "Published {}@{} to {} (local registry only — not published to a remote registry)",
             m.package.name,
             m.package.version,
-            dest.display()
+            published.path().display()
         );
         println!("Checksum: {}", pack_result.checksum);
         println!("Signature: {signature}");

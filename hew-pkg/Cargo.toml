@@ -32,6 +32,7 @@ windows-sys = { version = "0.61", features = [
 ] }
 
 [dev-dependencies]
+hew-testutil = { path = "../hew-testutil" }
 tempfile.workspace = true
 tiny_http = "0.12"
 serde_json.workspace = true

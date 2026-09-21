@@ -1004,6 +1004,10 @@ pub fn cargo_build_isolated(
     }
     let mut cmd = Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
     cmd.arg("build")
+        // Keep the supported host toolchain when the fixture's working
+        // directory is outside the repository (notably lld-link on Windows).
+        .arg("--config")
+        .arg(repo_root.join(".cargo/config.toml"))
         .args(extra_args)
         .arg("--manifest-path")
         .arg(manifest_path)

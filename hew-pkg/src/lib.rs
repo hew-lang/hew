@@ -22,6 +22,7 @@ pub mod cli;
 mod atomic_fs;
 mod checksum;
 mod lockfile;
+mod native_archive;
 mod package_fs;
 mod package_name;
 mod paths;

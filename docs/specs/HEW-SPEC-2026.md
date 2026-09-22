@@ -2375,6 +2375,13 @@ branches and loops; mutation or draining is refused when the compiler cannot
 prove the loan has ended. HashMap `get` similarly borrows clone-free values;
 `remove` transfers a value out.
 
+Plain iteration over a concrete copyable `Vec`, `HashMap`, or `HashSet` reads a
+point-in-time logical snapshot. Mutating the source collection during the loop
+is permitted, but copy-on-write detaches that mutation: replacement, element
+assignment, insertion, removal, `push`, and `clear` do not change the active
+cursor. This snapshot contract is distinct from the clone-free generic path
+above, whose element loans keep their source borrowed.
+
 #### 3.8.2 Type-Erased Dispatch with `dyn Trait`
 
 Single-trait `dyn Trait` dispatch is implemented. A concrete value whose type

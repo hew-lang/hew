@@ -1,0 +1,10 @@
+[[case]]
+id = "match_float_literal_arm"
+intent = "Float literal match arms compare f32 and f64 scrutinees on the native path."
+source = "../vertical-slice/accept/match_float_literal_arm.hew"
+suites = ["acceptance"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "1\n0\n3\n"
+exit = 0

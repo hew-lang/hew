@@ -1,0 +1,10 @@
+[[case]]
+id = "branch_join_diverging_guard"
+intent = "A match guard that returns contributes no false edge or arm result while pattern-failure paths retain their owned state."
+source = "../vertical-slice/accept/branch_join_diverging_guard.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "1 closed\n1\n1 closed\n1\n2 closed\n10\n2 closed\n20\n"
+exit = 0

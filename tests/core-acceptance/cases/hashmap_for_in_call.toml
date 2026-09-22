@@ -1,0 +1,10 @@
+[[case]]
+id = "hashmap_for_in_call"
+intent = "HashMap iteration captures a call result once and visits each key and value snapshot."
+source = "../vertical-slice/accept/hashmap_for_in_call.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = ""
+exit = 66

@@ -9308,6 +9308,19 @@ else needs `impl Display for {rendered}`)"
                 .zip(resolved_type_args.iter().cloned())
                 .collect();
             self.check_spawn_constructor_args(&name, args, Some(&type_subst));
+            if let Some(expected_args) = self.actor_spawn_args.get(&name).cloned() {
+                for (argument, required) in expected_args {
+                    if required && !args.iter().any(|(provided, _)| provided == &argument) {
+                        self.report_error(
+                            TypeErrorKind::MissingActorSpawnArgument,
+                            span,
+                            format!(
+                                "actor `{name}` requires an initialized spawn value for `{argument}`"
+                            ),
+                        );
+                    }
+                }
+            }
             resolved_type_args = resolved_type_args
                 .iter()
                 .map(|argument| self.subst.resolve(argument))

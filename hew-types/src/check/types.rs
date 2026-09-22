@@ -3322,6 +3322,11 @@ pub struct Checker {
     ///
     /// Used by the supervisor checker (S-B) to validate `wired_to:` type compatibility.
     pub(super) actor_init_params: HashMap<String, Vec<ActorInitParamInfo>>,
+    /// Spawn argument names and whether each one is required, keyed by the
+    /// actor declaration identity. State fields with defaults are optional;
+    /// fields initialized by `init` are absent; explicit `init` parameters
+    /// are always required.
+    pub(super) actor_spawn_args: HashMap<String, Vec<(String, bool)>>,
     /// When set, records the scope depth at which a lambda was entered.
     /// Variable lookups from scopes below this depth are captures.
     pub(super) lambda_capture_depth: Option<usize>,
@@ -4115,6 +4120,7 @@ impl Checker {
             select_sources: HashMap::new(),
             closure_escape_facts: HashMap::new(),
             actor_init_params: HashMap::new(),
+            actor_spawn_args: HashMap::new(),
             lambda_capture_depth: None,
             lambda_captures: Vec::new(),
             lambda_capture_facts: Vec::new(),

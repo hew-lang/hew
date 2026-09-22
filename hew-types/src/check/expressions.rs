@@ -1640,6 +1640,13 @@ else needs `impl Display for {rendered}`)"
         };
         let mut parent = self.subst.resolve(&binding.ty);
         for field in path {
+            if self.resource_close_owns_self_field(root, &parent) {
+                let Some(selected) = self.project_named_field(&parent, field) else {
+                    return false;
+                };
+                parent = self.subst.resolve(&selected);
+                continue;
+            }
             let Some(selected) = self.independent_record_or_tuple_field(&parent, field) else {
                 self.report_error_with_suggestions(
                     TypeErrorKind::OwnPartialConsume,
@@ -1656,6 +1663,52 @@ else needs `impl Display for {rendered}`)"
             parent = self.subst.resolve(&selected);
         }
         false
+    }
+
+    /// A resource destructor owns its receiver and may transfer one field to
+    /// the external release operation. Close-body cleanup retains every field
+    /// it does not move out. This exception is deliberately narrower than an
+    /// arbitrary consuming method: it requires the registered inherent
+    /// `close(consume self)` contract and the lexical receiver binding.
+    fn resource_close_owns_self_field(&self, root: &str, parent: &Ty) -> bool {
+        if root != "self" {
+            return false;
+        }
+        let Some(function) = self.current_function.as_ref() else {
+            return false;
+        };
+        let Some(signature) = self.fn_sigs.get(function) else {
+            return false;
+        };
+        if !signature.consumes_receiver
+            || !signature
+                .impl_method
+                .as_ref()
+                .is_some_and(|method| method.is_inherent && method.name == "close")
+        {
+            return false;
+        }
+        matches!(parent, Ty::Named { name, .. } if self.registry.is_resource(name))
+    }
+
+    fn project_named_field(&self, parent: &Ty, field: &str) -> Option<Ty> {
+        let Ty::Named { name, args, .. } = parent else {
+            return None;
+        };
+        let definition = self.type_defs.get(name)?;
+        if definition.type_params.len() != args.len() {
+            return None;
+        }
+        let substitutions = definition
+            .type_params
+            .iter()
+            .cloned()
+            .zip(args.iter().cloned())
+            .collect();
+        definition
+            .fields
+            .get(field)
+            .map(|ty| ty.substitute_named_params_parallel(&substitutions))
     }
 
     fn independent_record_or_tuple_field(&self, parent: &Ty, field: &str) -> Option<Ty> {

@@ -288,7 +288,7 @@ fn main() {
         if seen == 1 {
             holder.items.push(7);
         }
-        if seen == 3 {
+        if seen == 2 {
             holder.items.clear();
         }
     }

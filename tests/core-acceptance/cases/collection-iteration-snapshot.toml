@@ -1,0 +1,10 @@
+[[case]]
+id = "collection-iteration-snapshot"
+intent = "Mutation of a copyable collection during plain iteration detaches the source and leaves the point-in-time cursor unchanged."
+source = "cases/collection-iteration-snapshot.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "push-clear 2 42 0\nindex 2 42 9\n"
+exit = 0

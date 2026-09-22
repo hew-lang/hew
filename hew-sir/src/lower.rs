@@ -3115,7 +3115,10 @@ fn lower_initial_value_transfer(
         require_initial_value_transfer(expr.intent, &ty, context)?;
         return builder.lower_expr(expr);
     }
-    if !matches!(expr.intent, IntentKind::Read | IntentKind::Consume) {
+    if !matches!(
+        expr.intent,
+        IntentKind::Read | IntentKind::Consume | IntentKind::Capture
+    ) {
         return Err(format!(
             "{context}: HIR {:?} intent cannot transfer `{}` in the owned SIR slice",
             expr.intent,

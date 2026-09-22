@@ -759,6 +759,38 @@ fn partial_move_custom_cleanup_ancestors_must_remain_whole() {
 }
 
 #[test]
+fn resource_close_may_dispose_its_owned_field_only() {
+    let output = check_source(
+        r#"
+        #[opaque]
+        type Raw {}
+        #[resource]
+        type Handle { raw: Raw, label: string }
+        impl Handle {
+            fn close(consume self) {
+                unsafe { free_raw(self.raw) };
+                println(self.label);
+            }
+            fn detach(consume self) {
+                unsafe { free_raw(self.raw) };
+            }
+        }
+        extern "C" { fn free_raw(consume raw: Raw); }
+        "#,
+    );
+    assert_eq!(
+        output
+            .errors
+            .iter()
+            .filter(|error| error.kind == TypeErrorKind::OwnPartialConsume)
+            .count(),
+        1,
+        "only the non-close partial move must be rejected: {:?}",
+        output.errors
+    );
+}
+
+#[test]
 fn callable_erasure_cannot_discard_linear_capture_obligations() {
     let output = check_source(
         "#[linear] type Ticket { value: i64 } impl Ticket { fn finish(consume self) -> i64 { self.value } } fn erase(ticket: Ticket) -> fn[once]() -> i64 { move || ticket.finish() }",

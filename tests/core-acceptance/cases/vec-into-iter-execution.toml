@@ -1,0 +1,10 @@
+[[case]]
+id = "vec-into-iter-execution"
+intent = "Vec.into_iter resolves a concrete cursor that consumes and visits its elements."
+source = "cases/vec-into-iter-execution.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "30\n"
+exit = 0

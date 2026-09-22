@@ -775,6 +775,13 @@ fn resource_close_may_dispose_its_owned_field_only() {
                 unsafe { free_raw(self.raw) };
             }
         }
+        #[resource]
+        type Outer { inner: Handle }
+        impl Outer {
+            fn close(consume self) {
+                unsafe { free_raw(self.inner.raw) };
+            }
+        }
         extern "C" { fn free_raw(consume raw: Raw); }
         "#,
     );
@@ -784,8 +791,8 @@ fn resource_close_may_dispose_its_owned_field_only() {
             .iter()
             .filter(|error| error.kind == TypeErrorKind::OwnPartialConsume)
             .count(),
-        1,
-        "only the non-close partial move must be rejected: {:?}",
+        2,
+        "non-close moves and bypassing a nested resource's cleanup must be rejected: {:?}",
         output.errors
     );
 }

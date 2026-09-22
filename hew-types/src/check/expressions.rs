@@ -1639,8 +1639,8 @@ else needs `impl Display for {rendered}`)"
             return false;
         };
         let mut parent = self.subst.resolve(&binding.ty);
-        for field in path {
-            if self.resource_close_owns_self_field(root, &parent) {
+        for (depth, field) in path.iter().enumerate() {
+            if depth == 0 && self.resource_close_owns_self_field(root, &parent) {
                 let Some(selected) = self.project_named_field(&parent, field) else {
                     return false;
                 };

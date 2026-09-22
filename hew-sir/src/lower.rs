@@ -8062,6 +8062,27 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         if signature.return_ty != result_ty {
             signature.return_ty = result_ty.clone();
         }
+        // A checker-approved `#[returns_receiver]` call used only for its
+        // effect carries a Read receiver even though the selected parameter
+        // consumes it. Transfer the seat into the call, then publish the exact
+        // returned owner back into that same seat on the normal edge. The
+        // unwind edge deliberately leaves the seat dead: the callee consumed
+        // the receiver and the caller's ordinary fault cleanup must not release
+        // it a second time.
+        let receiver_writeback = args
+            .first()
+            .zip(signature.params.get(seats))
+            .filter(|(receiver, parameter)| {
+                receiver.intent == IntentKind::Read
+                    && parameter.passing == SemParamPassing::Consume
+                    && self.ty(&receiver.ty) == signature.return_ty
+            })
+            .map(|(receiver, _)| {
+                self.expression_projection(receiver)?.ok_or_else(|| {
+                    "receiver-preserving consume requires one owning storage seat".to_string()
+                })
+            })
+            .transpose()?;
         let mut lowered_args =
             self.lower_user_arguments(args, &signature.params[seats..], &mut loans)?;
         if let Some(actor) = actor {
@@ -8085,14 +8106,29 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 },
             );
         }
-        self.finish_user_call(
+        let result = self.finish_user_call(
             callee,
             signature,
             lowered_args,
             &loans,
             &live_before_arguments,
             value_required,
-        )
+        )?;
+        if let Some(place) = receiver_writeback {
+            let value = result.ok_or_else(|| {
+                "receiver-preserving consume did not return its receiver owner".to_string()
+            })?;
+            self.emit_place_operation(
+                SemOpKind::StoreInit {
+                    place,
+                    value: Operand { value },
+                },
+                Provenance::Site(expr.site),
+            )?;
+            self.owned_live.remove(&value);
+            return Ok(None);
+        }
+        Ok(result)
     }
 
     /// Lower a trait-method call reached through a where-clause bound.

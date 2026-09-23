@@ -435,25 +435,16 @@ impl<T> Display for RemotePid<T> {
 }
 
 impl<T: ActorMsg> RemotePid<T> {
-    /// Send a message to this remote actor.
-    ///
-    /// Lowered by codegen: the checker rewrites every `pid.send(msg)` site
-    /// on a `RemotePid<T>` receiver to a direct call to
-    /// `hew_remote_pid_send`, and the LLVM backend intercepts that call
-    /// and emits the
-    /// `hew_node_api_send_location(location, dispatch, msg_type, ptr, size)`
-    /// runtime ABI plus an in-place `Result<(), SendError>` construction.
-    /// The body below is unreachable on the native path and is retained
-    /// only for type-check seeding and as a fail-closed fallback on targets
-    /// without the codegen
-    /// interception (notably WASM, where remote routing is not wired —
-    /// WASM-TODO(distributed): add authenticated remote routing on wasm32).
+    /// Send a message to this remote actor's `ActorMsg` member. The message
+    /// needs a `#[wire]` schema. The checker lowers every native call site
+    /// to a remote submission, so this body only seeds its signature.
     fn send(pid: RemotePid<T>, msg: T.Msg) -> Result<(), SendError> {
         Err(SendError.NodeRoutingNotWired)
     }
     /// Ask this remote actor for a reply, failing with `ActorError` if the
     /// caller-supplied timeout elapses or routing/reply delivery fails. A
     /// remote call carries no sealed message, so it never reports `Rejected`.
+    /// The message and reply need `#[wire]` schemas.
     fn ask(pid: RemotePid<T>, msg: T.Msg, timeout_ms: u64) -> Result<T.Reply, ActorError<Never, Never>> {
         Err(ActorError.NodeNotRunning)
     }

@@ -193,7 +193,7 @@ impl WasmUnsupportedFeature {
             Self::Quic => "the std.net.quic transport is backed by quinn over native sockets; no wasm32 QUIC bridge exists yet",
             Self::Dns => "the std.net.dns resolver uses the native OS resolver; no wasm32 implementation exists yet",
             Self::OsEnv => "the std.os helpers rely on native POSIX APIs; the os runtime layer is not compiled for wasm32",
-            Self::Distributed => "the Node cluster API and RemotePid messaging route through the native mesh transport (hew_node_api_* / hew_remote_pid_send), which is not compiled for wasm32; no wasm32 distributed runtime exists yet",
+            Self::Distributed => "the Node cluster API and RemotePid messaging route through the native mesh transport (hew_node_api_* / hew_remote_call_*), which is not compiled for wasm32; no wasm32 distributed runtime exists yet",
             Self::CryptoRandom => "the std.crypto.random_bytes secure entropy source (ring::SystemRandom) is native-only and absent from the wasm32 link set; no cryptographically secure wasm32 implementation exists yet; generating key material on wasm32 would not be secure",
             Self::CryptoEncrypt => "the std.crypto.encrypt module is backed by a native-only staticlib companion crate (std/crypto/encrypt) that is absent from the wasm32 link set; no wasm32 AES-GCM seal/open implementation exists yet",
             Self::CryptoSign => "the std.crypto.sign module is backed by a native-only staticlib companion crate (std/crypto/sign) that is absent from the wasm32 link set; no wasm32 Ed25519 implementation exists yet",

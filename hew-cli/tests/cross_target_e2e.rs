@@ -268,27 +268,166 @@ fn emit_obj_reports_expected_metadata_for_cross_target_matrix() {
     }
 }
 
-/// A Hew program with a Serializable actor message registers its cross-node
-/// codec from a program-start constructor (`hew_module_init_actor_codecs`). That
-/// constructor only runs if it lands in the section the target's startup
-/// mechanism actually walks: ELF `.init_array`, Mach-O `__mod_init_func`.
+/// A remote member with an explicit `#[wire]` payload registers its
+/// cross-node codecs from a program-start constructor
+/// (`hew_module_init_actor_codecs`). That constructor only runs if it lands in
+/// the section the target's startup mechanism walks: ELF `.init_array`,
+/// Mach-O `__mod_init_func`, COFF `.CRT$XCU`.
 ///
-/// The bug this guards: hew's `TargetMachine` is built through the LLVM-C API,
-/// whose `UseInitArray` option defaults to `false` with no C setter (clang/llc
-/// set it `true`). With `UseInitArray == false` the `AsmPrinter` lowers
-/// `@llvm.global_ctors` into the LEGACY ELF `.ctors` section, which modern
-/// glibc/musl startup does not walk and `--gc-sections` strips — so on Linux the
-/// codec registration never ran and every cross-node send failed closed with
-/// "no serialization codec registered". macOS was unaffected (Mach-O has only
-/// `__mod_init_func`). The fix emits the ctor pointers directly into
-/// `.init_array` + `@llvm.used` on ELF.
+/// The LLVM-C `TargetMachine` defaults `UseInitArray` to false, which lowers
+/// `@llvm.global_ctors` into the legacy ELF `.ctors` section that modern
+/// startup does not walk and `--gc-sections` strips. The constructor is
+/// therefore placed directly in the target's section and kept by `@llvm.used`.
 ///
-/// Teeth: assert the ELF object carries an EXACTLY-named `.init_array` section
-/// (not the legacy `.ctors`, and not the `,.init_array` an inkwell host-cfg
-/// quirk produces when cross-building from macOS), and the Mach-O object carries
-/// `__mod_init_func`. Section presence, not `count > 0`.
+/// Teeth: each object carries an exactly named section (not `.ctors`, and not
+/// the `,.init_array` spelling an inkwell host quirk produces when
+/// cross-building from macOS). Section presence, not `count > 0`.
 #[test]
-fn serializable_actor_emits_target_walked_ctor_section() {
+fn wire_actor_emits_target_walked_ctor_section() {
+    assert_actor_codec_ctor_sections(&format!("{WIRE_ECHO}fn main() {{}}\n"));
+}
+
+/// A remote member whose payload has a wire schema: the one actor protocol
+/// that registers request and reply codecs.
+const WIRE_ECHO: &str = "#[wire] type Ping { seq: i64 @1 }\nactor Echo { receive fn handle(msg: Ping) -> i64 { msg.seq } }\nimpl ActorMsg for Echo { type Msg = Ping; type Reply = i64; }\n";
+
+#[cfg(target_os = "linux")]
+const ACTOR_CODEC_PROBE: &str = r#"
+#include <assert.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+typedef unsigned char *(*Encode)(const void *, size_t *);
+typedef void *(*Decode)(const unsigned char *, size_t, size_t *);
+typedef void (*Drop)(void *);
+static Encode encoders[2];
+static Decode decoders[2];
+extern void __real_hew_xnode_register_codec(const void *, int, Encode, Decode, Drop, size_t);
+extern void __real_hew_xnode_register_reply_codec(const void *, int, Encode, Decode, Drop, size_t);
+extern void hew_ser_free_bytes(unsigned char *);
+extern void hew_actor_payload_free(void *);
+struct Ping { int64_t seq; };
+struct Message { uint8_t active; struct Ping ping; };
+void __wrap_hew_xnode_register_codec(const void *dispatch, int id, Encode encode, Decode decode, Drop drop, size_t size) {
+    assert(dispatch && !encoders[0] && drop && size == sizeof(struct Message));
+    encoders[0] = encode; decoders[0] = decode;
+    __real_hew_xnode_register_codec(dispatch, id, encode, decode, drop, size);
+}
+void __wrap_hew_xnode_register_reply_codec(const void *dispatch, int id, Encode encode, Decode decode, Drop drop, size_t size) {
+    assert(dispatch && !encoders[1] && size == sizeof(int64_t));
+    encoders[1] = encode; decoders[1] = decode;
+    __real_hew_xnode_register_reply_codec(dispatch, id, encode, decode, drop, size);
+}
+int32_t codec_probe(void) {
+    assert(encoders[0] && encoders[1] && decoders[0] && decoders[1]);
+    int encoding = strcmp(getenv("HEW_CODEC_MODE"), "encode") == 0;
+    FILE *file = fopen(getenv("HEW_CODEC_FILE"), encoding ? "wb" : "rb");
+    assert(file);
+    struct Message message = { 1, { 42 } };
+    int64_t reply = 43;
+    for (int i = 0; i < 2; ++i) {
+        size_t length = 0;
+        if (encoding) {
+            unsigned char *bytes = encoders[i](i ? (void *)&reply : (void *)&message, &length);
+            assert(bytes && length && length < 256);
+            assert(fputc((int)length, file) != EOF);
+            assert(fwrite(bytes, 1, length, file) == length);
+            hew_ser_free_bytes(bytes);
+        } else {
+            int count = fgetc(file);
+            assert(count > 0);
+            length = (size_t)count;
+            unsigned char bytes[256];
+            assert(fread(bytes, 1, length, file) == length);
+            size_t size = 0;
+            void *value = decoders[i](bytes, length, &size);
+            assert(value);
+            if (i) { assert(size == sizeof reply && *(int64_t *)value == reply); }
+            else {
+                assert(size == sizeof message);
+                assert(((struct Message *)value)->active == 1);
+                assert(((struct Message *)value)->ping.seq == message.ping.seq);
+            }
+            hew_actor_payload_free(value);
+            size = 999;
+            assert(!decoders[i](bytes, length - 1, &size) && size == 0);
+        }
+    }
+    assert(fclose(file) == 0);
+    return 0;
+}
+"#;
+
+/// Both processes discover the thunks through real startup registration. The
+/// linker wrappers observe that registration and forward it to the runtime.
+#[cfg(target_os = "linux")]
+#[test]
+fn wire_actor_registration_transports_request_and_reply_between_processes() {
+    support::require_codegen();
+    let dir = workspace();
+    let shim = dir.path().join("codec_probe.c");
+    std::fs::write(&shim, ACTOR_CODEC_PROBE).expect("write codec probe");
+    let object = dir.path().join("codec_probe.o");
+    let compile = Command::new("cc")
+        .args(["-c", "-std=c11", "-Wall", "-Wextra", "-Werror"])
+        .arg(&shim)
+        .arg("-o")
+        .arg(&object)
+        .output()
+        .expect("compile codec probe");
+    assert!(
+        compile.status.success(),
+        "{}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let source = dir.path().join("codec.hew");
+    std::fs::write(
+        &source,
+        format!("{WIRE_ECHO}extern \"C\" {{ fn codec_probe() -> i32; }}\nfn main() -> i32 {{ unsafe {{ codec_probe() }} }}\n"),
+    )
+    .expect("write wire actor");
+    for level in ["0", "2"] {
+        let binary = dir.path().join(format!("codec-{level}"));
+        let build = Command::new(hew_binary())
+            .arg("build")
+            .arg(&source)
+            .args([
+                "--opt-level",
+                level,
+                "--link-lib",
+                "-Wl,--wrap=hew_xnode_register_codec",
+                "--link-lib",
+                "-Wl,--wrap=hew_xnode_register_reply_codec",
+                "--link-lib",
+            ])
+            .arg(&object)
+            .arg("-o")
+            .arg(&binary)
+            .output()
+            .expect("build wire actor");
+        assert!(
+            build.status.success(),
+            "{}",
+            String::from_utf8_lossy(&build.stderr)
+        );
+        let transfer = dir.path().join(format!("transfer-{level}.cbor"));
+        for mode in ["encode", "decode"] {
+            let output = Command::new(&binary)
+                .env("HEW_CODEC_MODE", mode)
+                .env("HEW_CODEC_FILE", &transfer)
+                .output()
+                .expect("run codec process");
+            assert!(
+                output.status.success(),
+                "O{level} {mode}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+}
+
+fn assert_actor_codec_ctor_sections(src: &str) {
     struct Case {
         triple: &'static str,
         output_suffix: &'static str,
@@ -307,18 +446,12 @@ fn serializable_actor_emits_target_walked_ctor_section() {
             output_suffix: ".o",
             expected_ctor_section: ".init_array",
         },
+        Case {
+            triple: "x86_64-pc-windows-msvc",
+            output_suffix: ".obj",
+            expected_ctor_section: ".CRT$XCU",
+        },
     ];
-
-    // Minimal program that forces a cross-node codec ctor: a Serializable record
-    // message + an actor with a receive handler taking it. The codec module-init
-    // pass seeds a codec for the handler's message type, emitting the ctor.
-    let src = "\
-type Ping { seq: i64 }
-actor Echo {
-    receive fn handle(msg: Ping) -> i64 { msg.seq }
-}
-fn main() {}
-";
 
     for case in cases {
         let dir = workspace();

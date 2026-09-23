@@ -29,7 +29,7 @@ impl InstanceService<'_> {
         clippy::too_many_lines,
         reason = "the exhaustive schema walk keeps every admitted value shape together"
     )]
-    fn wire_plan(
+    pub(super) fn wire_plan(
         &mut self,
         ty: &ResolvedTy,
         path: &mut Vec<ResolvedTy>,

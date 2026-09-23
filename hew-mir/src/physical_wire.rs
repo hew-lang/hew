@@ -137,3 +137,30 @@ pub(super) fn verify_wire_plan(
     }
     Ok(())
 }
+
+/// Verify each portable protocol against its selected handler signature.
+pub(super) fn verify_actor_codecs(module: &PhysicalModule) -> Result<(), PhysicalError> {
+    for actor in &module.actors {
+        for handler in &actor.handlers {
+            if let Some(codec) = &handler.codec {
+                if codec.params.len() != handler.params.len()
+                    || codec
+                        .params
+                        .iter()
+                        .zip(&handler.params)
+                        .any(|(plan, ty)| &plan.ty != ty)
+                    || codec.reply.as_ref().map(|plan| &plan.ty)
+                        != (handler.return_ty != ResolvedTy::Unit).then_some(&handler.return_ty)
+                {
+                    return Err(PhysicalError::new(
+                        "actor codec differs from its handler signature",
+                    ));
+                }
+                for plan in codec.params.iter().chain(codec.reply.iter()) {
+                    verify_wire_plan(module, plan)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}

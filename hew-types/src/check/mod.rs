@@ -21,6 +21,7 @@ use hew_parser::ast::{
 use std::collections::{hash_map::Entry, BTreeMap, HashMap, HashSet};
 use std::sync::OnceLock;
 
+mod actor_codec;
 mod actor_delivery;
 pub(crate) mod admissibility;
 mod branch_join;
@@ -2333,6 +2334,7 @@ impl Checker {
         // `self.actor_protocol_descriptors`. Take it for the typed output here
         // rather than rebuilding: a rebuild would re-run collision detection
         // and double-emit the diagnostics.
+        self.select_actor_codecs();
         let actor_protocol_descriptors = std::mem::take(&mut self.actor_protocol_descriptors);
 
         // Compute the set of monomorphic builtin enum names that landed in
@@ -2561,6 +2563,9 @@ impl Checker {
                     // Resolve inference variables in every payload binding type.
                     for pb in &mut arm.payload_bindings {
                         pb.ty = self.finalize_type_for_handoff(&pb.ty);
+                    }
+                    for nested in &mut arm.payload_variant_patterns {
+                        self.finalize_payload_variant_pattern(nested);
                     }
                     (k, arm)
                 })

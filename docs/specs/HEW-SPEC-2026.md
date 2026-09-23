@@ -289,7 +289,9 @@ the rule is the wire rule: a remote payload must be CBOR-serializable, and a
 handle is not (`E_OPAQUE_MESSAGE_PAYLOAD`). Counted handles (`Rc`, `Weak`, an
 anonymous actor's handle) are never payloads, local or remote, because an actor's heap is its
 own; closures, generators, and tasks are never payloads either
-(`E_CALLABLE_MESSAGE_PAYLOAD`).
+(`E_CALLABLE_MESSAGE_PAYLOAD`). A remote payload is a scalar, a collection of
+such values, or a `#[wire]` type with tagged fields; a plain record is
+refused at the remote call.
 
 **Delivery outcomes (normative).**
 

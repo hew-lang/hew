@@ -2449,6 +2449,21 @@ impl Checker {
         self.normalize_for_use(ty).materialize_literal_defaults()
     }
 
+    /// Finalize every type a nested constructor pattern carries, so its
+    /// payload compares equal to the scrutinee field it tests.
+    pub(super) fn finalize_payload_variant_pattern(&self, pattern: &mut PayloadVariantPattern) {
+        pattern.payload_ty = self.finalize_type_for_handoff(&pattern.payload_ty);
+        for binding in &mut pattern.bindings {
+            binding.ty = self.finalize_type_for_handoff(&binding.ty);
+        }
+        for literal in &mut pattern.literals {
+            literal.ty = self.finalize_type_for_handoff(&literal.ty);
+        }
+        for nested in &mut pattern.nested {
+            self.finalize_payload_variant_pattern(nested);
+        }
+    }
+
     /// Recursively replace a proven nominal presentation alias with the
     /// checker-owned source identity.  This is deliberately narrower than a
     /// leaf-name rewrite: `canonical_nominal_name` preserves same-leaf user
@@ -3755,7 +3770,19 @@ impl Checker {
                     )
                     || (resolved_name.contains('.')
                         && builtin.is_some_and(|kind| {
-                            kind.is_collection() || kind.is_substrate_handle()
+                            kind.is_collection()
+                                || kind.is_substrate_handle()
+                                // The identity carriers declare a bodyless
+                                // surface stub in `std/builtins.hew`; a
+                                // signature written there qualifies it under
+                                // that module, and the carrier, not the stub,
+                                // is what every consumer dispatches on.
+                                || matches!(
+                                    kind,
+                                    BuiltinType::NodeId
+                                        | BuiltinType::Location
+                                        | BuiltinType::RemotePid
+                                )
                         }));
                 // Preserve the lexical declaration decision made above. A
                 // local source type may be owner-qualified before this point,
@@ -3822,10 +3849,18 @@ impl Checker {
                             })
                             .map_or_else(
                                 || {
-                                    // A pipe half carries its identity in the
-                                    // discriminator; every stage spells it by
-                                    // the canonical name.
-                                    if builtin.is_substrate_handle() {
+                                    // A pipe half and an identity carrier
+                                    // carry their identity in the
+                                    // discriminator; every stage spells them
+                                    // by the canonical name.
+                                    if builtin.is_substrate_handle()
+                                        || matches!(
+                                            builtin,
+                                            BuiltinType::NodeId
+                                                | BuiltinType::Location
+                                                | BuiltinType::RemotePid
+                                        )
+                                    {
                                         builtin.canonical_name().to_string()
                                     } else {
                                         resolved_name.clone()

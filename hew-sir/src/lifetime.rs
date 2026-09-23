@@ -2028,7 +2028,8 @@ impl<'a> Flow<'a> {
                                 | crate::SuspendKind::NativeIo { .. }
                                 // An ask reads its target to address the actor
                                 // and retains nothing past the reply.
-                                | crate::SuspendKind::Ask { .. },
+                                | crate::SuspendKind::Ask { .. }
+                                | crate::SuspendKind::RemoteAsk { .. },
                             ..
                         }
                 ) && matches!(

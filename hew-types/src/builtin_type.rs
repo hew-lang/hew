@@ -688,6 +688,10 @@ pub fn lookup_builtin_type(name: &str) -> Option<BuiltinType> {
         "link_monitor.MonitorError" | "std.link_monitor.MonitorError" => {
             return Some(BuiltinType::MonitorError);
         }
+        // The identity carriers' bodyless surface stubs in `std/builtins.hew`
+        // name the carriers themselves.
+        "std.builtins.NodeId" => return Some(BuiltinType::NodeId),
+        "std.builtins.Location" => return Some(BuiltinType::Location),
         _ => {}
     }
     if let Some(kind) = builtin_types()

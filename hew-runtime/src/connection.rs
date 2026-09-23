@@ -2401,10 +2401,6 @@ fn handle_monitor_down_frame(
         set_last_error("connection reader monitor down target Location mismatch");
         return;
     }
-    let Some(rt) = crate::runtime::rt_current_opt() else {
-        set_last_error("connection reader monitor down: no runtime installed");
-        return;
-    };
     let crashed = payload.reason == crate::internal::types::HewActorState::Crashed as i32;
     if !crashed && payload.reason != crate::internal::types::HewActorState::Stopped as i32 {
         set_last_error("connection reader monitor down invalid terminal reason");
@@ -2414,18 +2410,7 @@ fn handle_monitor_down_frame(
         set_last_error("connection reader monitor down invalid crash kind");
         return;
     }
-    if let Some(down) = rt
-        .monitors
-        .deliver_monitor_to_ref(payload.ref_id, payload.target)
-    {
-        rt.monitors.enqueue_down(
-            down.watcher_actor_id,
-            down.monitor_id,
-            down.target,
-            payload.reason,
-            payload.crash_kind.cast_unsigned(),
-        );
-    }
+    crate::hew_node::handle_inbound_monitor_down(&payload);
 }
 
 /// Handle an inbound `CTRL_LINK_REQ`: a remote node is linking one of our local

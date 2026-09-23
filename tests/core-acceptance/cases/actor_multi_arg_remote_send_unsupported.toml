@@ -1,13 +1,13 @@
 [[case]]
 id = "actor_multi_arg_remote_send_unsupported"
-intent = "Reject fixture: remote send resolving to a multi-parameter receive handler (E_REMOTE_PAYLOAD_UNSUPPORTED)."
+intent = "Reject fixture: a remote send whose ActorMsg names no single-parameter receive member."
 source = "../vertical-slice/reject/actor_multi_arg_remote_send_unsupported.hew"
 suites = ["acceptance"]
 timeout_seconds = 30
 kind = "reject"
 
 [[case.expected.diagnostics]]
-code = "E_SIR_UNSUPPORTED"
-line = 22
-column = 1
-message = "semantic lowering of `__hew_fn_main` is not implemented: runtime family `RemotePidSend` has no ownership-SIR semantic contract"
+code = "BoundsNotSatisfied"
+line = 21
+column = 47
+message = "remote actor `Logger` has no receive fn taking `i64` and returning `()`, the message and reply its `ActorMsg` impl names"

@@ -2843,19 +2843,6 @@ impl Checker {
         );
     }
 
-    fn report_nonserializable_remote_actor_reply(&mut self, ty: &Ty, span: &Span) {
-        self.report_error(
-            TypeErrorKind::BoundsNotSatisfied,
-            span,
-            format!(
-                "remote actor reply type `{}` must implement Serializable before it can \
-                 cross a RemotePid ask boundary; {}",
-                ty.user_facing(),
-                self.serializable_failure_reason(ty)
-            ),
-        );
-    }
-
     fn enforce_remote_actor_msg_serializable(&mut self, ty: &Ty, span: &Span) -> bool {
         let resolved = self.subst.resolve(ty);
         if matches!(resolved, Ty::Var(_) | Ty::Error) {
@@ -2870,39 +2857,6 @@ impl Checker {
             self.report_nonserializable_remote_actor_msg(&resolved, span);
             false
         }
-    }
-
-    fn enforce_remote_actor_reply_serializable(&mut self, ty: &Ty, span: &Span) -> bool {
-        let projected = self.project_assoc_types(ty);
-        let resolved = self.subst.resolve(&projected);
-        if matches!(resolved, Ty::Var(_) | Ty::Error) {
-            return true;
-        }
-        if self
-            .registry
-            .implements_marker(&resolved, MarkerTrait::Serializable)
-        {
-            true
-        } else {
-            self.report_nonserializable_remote_actor_reply(&resolved, span);
-            false
-        }
-    }
-
-    fn enforce_remote_actor_ask_reply_serializable(&mut self, return_ty: &Ty, span: &Span) -> bool {
-        let resolved = self.subst.resolve(return_ty);
-        let Ty::Named {
-            builtin: Some(BuiltinType::Result),
-            args,
-            ..
-        } = resolved
-        else {
-            return true;
-        };
-        let Some(reply_ty) = args.first() else {
-            return true;
-        };
-        self.enforce_remote_actor_reply_serializable(reply_ty, span)
     }
 
     /// Enforce the A640 remote serializability floor after method signature
@@ -8114,67 +8068,23 @@ impl Checker {
                             && !self.checking_canonical_stdlib_source("std.builtins")
                         {
                             // `RemotePid<T>::send` / `::ask` route to the native
-                            // mesh transport (`hew_remote_pid_send` →
-                            // `hew_actor_send_by_id`), which is not compiled for
+                            // mesh transport (`hew_node_api_send_location` /
+                            // `hew_remote_call_*`), which is not compiled for
                             // wasm32. Reject at check time so remote messaging
                             // fails closed with a structured diagnostic instead
                             // of compiling to a module that imports undefined
                             // native send symbols and traps at instantiation.
                             self.reject_wasm_feature(span, WasmUnsupportedFeature::Distributed);
                             self.enforce_actor_method_send_args(args);
-                            // A640/S3: this is only a compile-time floor. The
-                            // native RemotePid lowering still wraps raw
-                            // in-memory ABI bytes in the CBOR envelope; a
-                            // structural Hew-value encoder is a later slice.
-                            self.enforce_remote_actor_method_serializable_args(args);
-                            if method == "ask" {
-                                self.enforce_remote_actor_ask_reply_serializable(
-                                    &return_type,
-                                    span,
-                                );
-                                self.method_call_rewrites.insert(
-                                    SpanKey::in_module(span, self.current_module_idx),
-                                    MethodCallRewrite::RemoteActorAsk,
-                                );
+                            if let Some(actor) = receiver_args.first() {
+                                self.check_remote_actor_payloads(actor, method == "ask", span);
                             }
-                        }
-                        if method == "send" {
-                            // S5: real RemotePid<T>::send lowering. Record a
-                            // direct-call rewrite so HIR/MIR lower the call
-                            // to `hew_remote_pid_send`, which codegen
-                            // intercepts and lowers to the
-                            // `hew_actor_send_by_id` runtime ABI plus a
-                            // `Result<(), SendError>` construction. The
-                            // catalog entry registers the FFI shape; the
-                            // codegen Terminator::Call branch consumes the
-                            // resolved receiver + msg arg types from the
-                            // checker output (no re-inference in codegen
-                            // per the `checker-authority` invariant).
                             self.method_call_rewrites.insert(
                                 SpanKey::in_module(span, self.current_module_idx),
-                                MethodCallRewrite::RewriteToFunction {
-                                    target: CallTarget::Runtime(
-                                        crate::runtime_call::RuntimeCallFamily::RemotePidSend,
-                                    ),
-                                    c_symbol: "hew_remote_pid_send".to_string(),
-                                    // Closed runtime call dispatched by callee-
-                                    // name intercept in codegen; the substrate
-                                    // enumerates this family.
-                                    descriptor: Some(
-                                        crate::runtime_call::RuntimeCallDescriptor::new(
-                                            crate::runtime_call::RuntimeCallFamily::RemotePidSend,
-                                            None,
-                                        )
-                                        .expect("RemotePidSend rejects elem"),
-                                    ),
-                                    extern_identity: None,
-                                    elem_ty: None,
-                                    // Fire-and-forget send; borrows the pid
-                                    // handle, does not release it.
-                                    consumes_receiver: false,
-                                    requires_mutable_receiver: false,
-                                    receiver_update: crate::ReceiverUpdate::Replace,
-                                    returns_receiver_identity: false,
+                                if method == "ask" {
+                                    MethodCallRewrite::RemoteActorAsk
+                                } else {
+                                    MethodCallRewrite::RemoteActorSend
                                 },
                             );
                         }

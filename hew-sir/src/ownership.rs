@@ -500,7 +500,12 @@ pub enum SuspendKind {
         /// The input is the sealed request owner instead of fresh arguments.
         sealed: bool,
     },
-    RemoteAsk,
+    /// A `RemotePid` ask to the actor's checked remote member. The request
+    /// is encoded before the caller parks; the reply is decoded on resume.
+    RemoteAsk {
+        actor: crate::ActorId,
+        message: u32,
+    },
     Read,
     Accept,
     /// A stream consumer takes the next element. `park` is the `recv()`

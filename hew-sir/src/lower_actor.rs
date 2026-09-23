@@ -495,6 +495,11 @@ impl InstanceService<'_> {
                     ))
                 }
             };
+            let codec = if row.remote_codec {
+                Some(self.resolve_actor_codec(&params, &return_ty)?)
+            } else {
+                None
+            };
             self.actors[id.0 as usize]
                 .handlers
                 .push(crate::SemActorHandler {
@@ -507,6 +512,7 @@ impl InstanceService<'_> {
                     return_ty,
                     stream,
                     failure_display,
+                    codec,
                 });
         }
         Ok(())

@@ -80,6 +80,10 @@ pub struct ActorHandlerDescriptor {
     /// `fails` clause, and for an error type whose rendering the checker
     /// cannot name — those handlers stay refused through a view.
     pub failure_display: Option<ReceiveFailureDisplay>,
+    /// This is the member a `RemotePid` addresses through the actor's
+    /// `ActorMsg` impl, and every payload it carries has a `#[wire]` schema.
+    /// Native code registers its request and reply codecs at startup.
+    pub remote_codec: bool,
 }
 
 /// How one `fails` handler's declared error becomes fault text.
@@ -185,6 +189,7 @@ impl ActorProtocolDescriptor {
                 return_ty: spec.return_ty.clone(),
                 symbol: spec.symbol.clone(),
                 failure_display: None,
+                remote_codec: false,
             });
         }
         Ok(Self {
@@ -229,6 +234,7 @@ impl ActorProtocolDescriptor {
                 return_ty: spec.return_ty.clone(),
                 symbol: spec.symbol.clone(),
                 failure_display: None,
+                remote_codec: false,
             });
         }
         Ok(Self {

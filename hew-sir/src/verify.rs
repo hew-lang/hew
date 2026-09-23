@@ -5313,6 +5313,35 @@ fn verify_terminator_shape(
                                 && matches!(result, crate::CallResult::Value(value) if value.ty == signature.return_ty)
                         })
                 }
+                crate::SuspendKind::RemoteAsk { actor, message } => callable_context
+                    .and_then(|context| context.actors.get(actor.0 as usize))
+                    .filter(|descriptor| descriptor.id == *actor)
+                    .and_then(|descriptor| {
+                        let target = types.get(&inputs.first()?.operand.value)?;
+                        let crate::CallResult::Value(value) = result else {
+                            return None;
+                        };
+                        descriptor
+                            .remote_signature(*message, target, value.ty.clone(), true)
+                            .ok()
+                    })
+                    .is_some_and(|signature| {
+                        // The pid is read to address the peer, the message
+                        // transfers into its encoding and the timeout is a copy.
+                        let decisions = [
+                            crate::BoundaryDecision::Borrow,
+                            crate::BoundaryDecision::Move,
+                            crate::BoundaryDecision::Copy,
+                        ];
+                        resumes.len() == 1
+                            && inputs.len() == decisions.len()
+                            && inputs.iter().zip(&signature.params).zip(decisions).all(
+                                |((input, parameter), decision)| {
+                                    input.decision == decision
+                                        && types.get(&input.operand.value) == Some(&parameter.ty)
+                                },
+                            )
+                    }),
                 crate::SuspendKind::NativeIo { operation } => {
                     let argument_types = inputs
                         .iter()

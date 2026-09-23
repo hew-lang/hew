@@ -11,6 +11,8 @@ use super::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PhysicalValueMethod {
     Scalar,
+    /// A node identity carrier's fixed-width words, with no padding.
+    Identity,
     String,
     Bytes,
     Aggregate(PhysicalAggregateId),
@@ -94,6 +96,7 @@ fn derived_method(
         _ if ids.maps.contains_key(ty) => PhysicalValueMethod::Map(ids.maps[ty]),
         _ if ids.sets.contains_key(ty) => PhysicalValueMethod::Set(ids.sets[ty]),
         _ if is_scalar(ty) => PhysicalValueMethod::Scalar,
+        _ if hew_sir::is_identity_carrier(ty) => PhysicalValueMethod::Identity,
         _ => {
             return Err(PhysicalError::new(
                 "selected capability has no concrete value recipe",
@@ -161,6 +164,7 @@ fn derived_components<'a>(
     let mismatch = || PhysicalError::new("physical derived capability uses another type's recipe");
     match method {
         PhysicalValueMethod::Scalar if is_scalar(ty) => Ok(vec![]),
+        PhysicalValueMethod::Identity if hew_sir::is_identity_carrier(ty) => Ok(vec![]),
         PhysicalValueMethod::String if *ty == ResolvedTy::String => Ok(vec![]),
         PhysicalValueMethod::Bytes if *ty == ResolvedTy::Bytes => Ok(vec![]),
         PhysicalValueMethod::Aggregate(id) => {

@@ -564,6 +564,11 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
             dump_expr(out, msg, indent + 4);
             dump_expr(out, timeout_ms, indent + 4);
         }
+        HirExprKind::RemoteActorSend { receiver, msg } => {
+            writeln!(out, "{pad}  remote-actor-send").expect("write to string");
+            dump_expr(out, receiver, indent + 4);
+            dump_expr(out, msg, indent + 4);
+        }
         HirExprKind::Block(block) => {
             writeln!(out, "{pad}  block {}", block.scope).expect("write to string");
         }

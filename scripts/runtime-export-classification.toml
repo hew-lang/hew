@@ -438,7 +438,6 @@ stable = [
   "hew_node_api_start_config",
   "hew_node_api_start",
   "hew_node_api_unregister",
-  "hew_node_ask_take_last_error",
   "hew_node_connect",
   "hew_node_demonitor",
   "hew_node_free",
@@ -1504,19 +1503,33 @@ non-declarable = [
   "hew_glob_is_valid",
   "hew_global_timer_wheel",
   "hew_listener_await_accept",
+  "hew_location_display",
   "hew_location_format",
+  "hew_location_incarnation",
+  "hew_location_node_id",
+  "hew_location_slot",
   "hew_machine_emit_push",
   "hew_machine_emit_step_enter",
   "hew_machine_emit_step_exit_keep",
   "hew_machine_emit_take",
-  "hew_node_api_ask_async_location",
-  "hew_node_api_ask_location",
   "hew_node_api_id",
   "hew_node_api_lookup_location",
   "hew_node_api_send_location",
+  "hew_node_id_display",
   "hew_node_id_format",
   "hew_node_link_remote_location",
   "hew_node_monitor_location",
+  "hew_remote_call_cleanup_fault",
+  "hew_remote_call_cleanup_poll",
+  "hew_remote_call_free",
+  "hew_remote_call_new",
+  "hew_remote_call_poll",
+  "hew_remote_call_take",
+  "hew_remote_pid_display",
+  "hew_remote_pid_incarnation",
+  "hew_remote_pid_location",
+  "hew_remote_pid_node_id",
+  "hew_remote_pid_slot",
   "hew_read_slot_cancel",
   "hew_read_slot_cancel_cleanup",
   "hew_read_slot_free",
@@ -1764,8 +1777,7 @@ non-declarable = [
   "hew_mailbox_sys_len",
   "hew_mailbox_try_recv",
   "hew_mailbox_try_recv_sys",
-  "hew_node_api_ask_cancel",
-  "hew_node_api_ask_finish",
+  "hew_node_api_connect_string",
   "hew_node_api_lookup_location_string",
   "hew_node_api_register",
   "hew_node_lookup_location",
@@ -2445,6 +2457,30 @@ result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_location_format"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+result-retention = "transferred"
+
+[[ownership.contracts]]
+symbol = "hew_node_id_display"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+result-retention = "transferred"
+
+[[ownership.contracts]]
+symbol = "hew_location_display"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+result-retention = "transferred"
+
+[[ownership.contracts]]
+symbol = "hew_remote_pid_display"
 result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_string_drop"

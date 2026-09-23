@@ -1918,6 +1918,9 @@ pub enum MethodCallRewrite {
     /// `HirExprKind::RemoteActorAsk`, preserving the checker-authoritative
     /// `Result<T::Reply, AskError>` return type.
     RemoteActorAsk,
+    /// Remote `RemotePid<T>::send(msg)` one-way submission, lowered by HIR to
+    /// `HirExprKind::RemoteActorSend` with its `Result<(), SendError>` type.
+    RemoteActorSend,
     /// Builtin `Vec<T>` higher-order pipeline call (`map` / `filter` /
     /// `reduce`, spec §3.8.6). HIR expands the call site into a counted
     /// loop over the receiver — bind the receiver and the closure argument

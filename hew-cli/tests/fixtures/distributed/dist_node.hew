@@ -33,39 +33,21 @@ import std.link_monitor.{DownNotification, DownReason, DownTarget, MonitorError,
 // Self-stop FFI: the cross-node clean-exit scenario drives the remote actor to
 // the Stopped terminal state from within its own handler. `stop(self)` is not a
 // working surface yet, so the actor calls the runtime self-stop directly.
-//
-// hew_node_api_unregister: the repoint_preserves_ref scenario re-points a
-// registered name to a DIFFERENT actor. `Node::unregister` is not yet a Hew
-// surface, so the server calls the runtime api directly.
 extern "C" {
     fn hew_actor_self_stop();
     fn hew_actor_self_id() -> i64;
-    fn hew_node_api_unregister(name: string) -> i32;
     fn hew_dist_setup_race_kind() -> i64;
 }
 
-// The granular Node.set_transport / Node.load_keys / Node.allow_peer /
-// Node.start(addr: string) calls were folded into one atomic
-// Node.start(NodeConfig { ... }), which consumes transport, key and peers
-// together in a single transaction. This fixture's mutual credential
-// exchange is two-phase (mint/load this node's own identity, publish it,
-// wait for the peer's published credential, THEN pin it) — the peer's
-// credential is not known until after this node's identity is already
-// minted, so it cannot be expressed as one atomic NodeConfig. Drop to the
-// same low-level runtime entry points NodeConfig itself calls internally.
-extern "C" {
-    fn hew_node_api_set_transport(name: string) -> i32;
-    fn hew_node_api_load_keys(path: string) -> i32;
-    fn hew_node_api_allow_peer(route_slot: u16, credential_hex: string) -> i32;
-    fn hew_node_api_start(addr: string) -> i32;
-}
-
-// `record` is Serializable — required for RemotePid messaging across the wire.
+// Every value a RemotePid message carries declares its wire schema: fields
+// carry explicit @N tags and enum variants are tagged by declaration order.
+#[wire]
 type KvPut {
-    key: string,
-    val: string
+    key: string @1,
+    val: string @2,
 }
 
+#[wire]
 enum KvReq {
     Put(KvPut),
     GetKey(string),
@@ -80,6 +62,7 @@ enum KvReq {
     Stall,
 }
 
+#[wire]
 enum KvResp {
     Ack,
     Value(string),
@@ -87,13 +70,10 @@ enum KvResp {
 
 // ── #[wire] cross-process body types ─────────────────────────────────────────
 //
-// The KV types above are plain record/enum: they cross the wire as Serializable
-// types and get @N tags by the codec's positional fallback. The types below are
-// explicitly #[wire]-annotated with EXPLICIT @N field/variant tags, so they
-// exercise the tag-keyed CBOR body the positional path does not — a struct as an
-// @N-keyed map, an enum as a unit tag (Ping) or a map-of-one (Move). Both the
+// These types exercise the tag-keyed CBOR body with a nested record: a struct as
+// an @N-keyed map, an enum as a unit tag (Ping) or a map-of-one (Move). Both the
 // request (WireCmd) and the reply (WireResult) are #[wire] types, so the
-// explicit-@N body is proven crossing the wire in BOTH directions.
+// explicit-@N body is proven crossing the wire in both directions.
 #[wire]
 type WirePoint {
     x: i64 @1,
@@ -184,16 +164,19 @@ impl ActorMsg for WireProbe {
     type Reply = WireResult;
 }
 
+#[wire]
 type DistIdentity {
-    node_id: string,
-    slot: u64,
-    incarnation: u32
+    node_id: string @1,
+    slot: u64 @2,
+    incarnation: u32 @3,
 }
 
+#[wire]
 enum IdentityReq {
     Inspect,
 }
 
+#[wire]
 enum IdentityResp {
     Value(DistIdentity),
 }
@@ -352,6 +335,22 @@ actor Linker {
     }
 }
 
+// The registration id of a held monitor. The state seat keeps the MonitorRef
+// live, so the id is read through a borrow rather than moved out of the seat.
+fn registration_id(setup: Result<MonitorRef, MonitorError>) -> u64 {
+    match setup {
+        Result.Ok(monitor_ref) => monitor_ref.id().value,
+        Result.Err(_) => 0,
+    }
+}
+
+fn local_registration_id(setup: Result<MonitorRef, LinkError>) -> u64 {
+    match setup {
+        Result.Ok(monitor_ref) => monitor_ref.id().value,
+        Result.Err(_) => 0,
+    }
+}
+
 actor MonitorProbe {
     var active_monitor: Result<MonitorRef, MonitorError>,
     var expected_monitor_id: u64 = 0,
@@ -361,10 +360,7 @@ actor MonitorProbe {
     // drive: 0 = clean stop, 1 = crash, 2 = leave target alive.
     receive fn arm(peer: RemotePid<KeyValue>, drive: i64) -> i64 {
         active_monitor = monitor(peer);
-        expected_monitor_id = match active_monitor {
-            Result.Ok(monitor_ref) => monitor_ref.id().value,
-            Result.Err(_) => 0,
-        };
+        expected_monitor_id = registration_id(active_monitor);
         if expected_monitor_id == 0 {
             return 1;
         }
@@ -763,10 +759,7 @@ actor LinkSetupRaceProbe {
     receive fn arm(peer: RemotePid<KeyValue>) -> i64 {
         let linker = spawn Linker(policy_sel: 0);
         active_monitor = monitor(linker);
-        expected_monitor_id = match active_monitor {
-            Result.Ok(monitor_ref) => monitor_ref.id().value,
-            Result.Err(_) => 0,
-        };
+        expected_monitor_id = local_registration_id(active_monitor);
         if expected_monitor_id == 0 {
             return 0;
         }
@@ -911,9 +904,19 @@ fn wait_for_file(path: string) -> string {
     }
 }
 
-fn stage_peer_credentials(kx: string, my_role: string, peer_role: string, peer_route_slot: u16) {
-    unsafe { hew_node_api_load_keys(f"{kx}/{my_role}.key") };
+// Start this node pinned to its peer. The mutual exchange is two-phase: each
+// node mints its durable identity with a first start, publishes it and stops,
+// then waits for the peer's published credential and starts again pinned to it
+// as route slot 1.
+fn start_pinned(kx: string, my_role: string, peer_role: string, bind: string) {
+    let key = f"{kx}/{my_role}.key";
+    let mint = NodeConfig { bind: "127.0.0.1:0", transport: "tcp", key: key, trust: "pinned", peers: [], seeds: [] };
+    match Node.start(mint) {
+        Result.Ok(_) => {},
+        Result.Err(_) => println(f"FAIL {my_role} identity-mint"),
+    }
     let me = Node.identity_key();
+    Node.shutdown();
     publish_atomic(kx, f"{my_role}.pub", me);
     let peer_key = wait_for_file(f"{kx}/{peer_role}.pub");
     let configured_peer_key = if os.env("HEW_DIST_BAD_PEER_PIN").unwrap_or("") == "1" {
@@ -921,7 +924,11 @@ fn stage_peer_credentials(kx: string, my_role: string, peer_role: string, peer_r
     } else {
         peer_key
     };
-    unsafe { hew_node_api_allow_peer(peer_route_slot, configured_peer_key) };
+    let config = NodeConfig { bind: bind, transport: "tcp", key: key, trust: "pinned", peers: [configured_peer_key], seeds: [] };
+    match Node.start(config) {
+        Result.Ok(_) => {},
+        Result.Err(_) => println(f"FAIL {my_role} pinned-start"),
+    }
 }
 
 fn signal_server_listening(kx: string) {
@@ -998,9 +1005,7 @@ fn lookup_identity_with_retry(name: string) -> Result<RemotePid<IdentityProbe>, 
 fn run_server(port: string, scenario: string) {
     let addr = f"127.0.0.1:{port}";
     let kx = os.env("HEW_DIST_KX_DIR").unwrap_or("");
-    unsafe { hew_node_api_set_transport("tcp") };
-    stage_peer_credentials(kx, "server", "client", 2);
-    unsafe { hew_node_api_start(addr) };
+    start_pinned(kx, "server", "client", addr);
     let s: HashMap<string, string> = HashMap.new();
     let kv = spawn KeyValue(store: s);
     Node.register("kv", kv);
@@ -1035,9 +1040,7 @@ fn run_server(port: string, scenario: string) {
         } else {
             if scenario == "repoint_preserves_ref" {
                 sleep(1s);
-                let _ = unsafe {
-                    hew_node_api_unregister("kv")
-                };
+                // Registering the name again re-points it to the new actor.
                 let s2: HashMap<string, string> = HashMap.new();
                 let kv2 = spawn KeyValue(store: s2);
                 Node.register("kv", kv2);
@@ -1780,6 +1783,111 @@ fn scenario_link_remote_non_crashlinked(kv: RemotePid<KeyValue>) -> i64 {
     }
 }
 
+// A RemotePid naming an actor on the client's own node routes locally while a
+// peer is connected: send, ask, monitor and link reach the local actor with the
+// results a peer gives, and the peer's actor stays reachable alongside.
+fn scenario_local_route(kv: RemotePid<KeyValue>) -> i64 {
+    let local_store: HashMap<string, string> = HashMap.new();
+    Node.register("kv-local", spawn KeyValue(store: local_store));
+    let local = match lookup_with_retry("kv-local") {
+        Result.Ok(pid) => pid,
+        Result.Err(_) => {
+            println("FAIL local_route local-lookup-unresolved");
+            return 1;
+        },
+    };
+    match local.send(KvReq.Put(KvPut { key: "colour", val: "teal" })) {
+        Result.Ok(_) => {},
+        Result.Err(_) => {
+            println("FAIL local_route local-send");
+            return 2;
+        },
+    }
+    match local.ask(KvReq.GetKey("colour"), 3000) {
+        Result.Ok(KvResp.Value(v)) => println(f"PASS local_route local-ask={v}"),
+        Result.Ok(_) => {
+            println("FAIL local_route local-ask-shape");
+            return 3;
+        },
+        Result.Err(_) => {
+            println("FAIL local_route local-ask");
+            return 4;
+        },
+    }
+    match kv.ask(KvReq.GetKey("colour"), 3000) {
+        Result.Ok(KvResp.Value(v)) => println(f"PASS local_route peer-ask=[{v}]"),
+        Result.Ok(_) => {
+            println("FAIL local_route peer-ask-shape");
+            return 5;
+        },
+        Result.Err(_) => {
+            println("FAIL local_route peer-ask");
+            return 6;
+        },
+    }
+
+    let probe = spawn MonitorProbe(active_monitor: Err(MonitorError.NodeNotRunning));
+    match probe.arm(local, 0) {
+        Result.Ok(0) => {},
+        _ => {
+            println("FAIL local_route monitor-arm");
+            return 7;
+        },
+    }
+    var down: i64 = 100;
+    for _ in 0..100 {
+        down = match probe.status() {
+            Result.Ok(value) => value,
+            Result.Err(_) => -100,
+        };
+        if down != 100 {
+            break;
+        }
+        sleep(20ms);
+    }
+    if down != 6 {
+        println(f"FAIL local_route monitor-down={down}");
+        return 8;
+    }
+    println("PASS local_route monitor-down=exited");
+
+    let doomed_store: HashMap<string, string> = HashMap.new();
+    Node.register("kv-doomed", spawn KeyValue(store: doomed_store));
+    let doomed = match lookup_with_retry("kv-doomed") {
+        Result.Ok(pid) => pid,
+        Result.Err(_) => {
+            println("FAIL local_route doomed-lookup-unresolved");
+            return 9;
+        },
+    };
+    let linker = spawn Linker(policy_sel: 0);
+    match linker.link_go(doomed) {
+        Result.Ok(id) if id != 0 => {},
+        _ => {
+            println("FAIL local_route link-register");
+            return 10;
+        },
+    }
+    let _ = doomed.send(KvReq.CrashSelf);
+    var linker_alive = true;
+    for _ in 0..100 {
+        linker_alive = match linker.ping() {
+            Result.Ok(_) => true,
+            Result.Err(_) => false,
+        };
+        if !linker_alive {
+            break;
+        }
+        sleep(20ms);
+    }
+    if linker_alive {
+        println("FAIL local_route linker-survived");
+        return 11;
+    }
+    println("PASS local_route link-crash");
+    0
+}
+
 fn scenario_linker_local_crash() -> i64 {
     let linker = spawn Linker(policy_sel: 0);
     match linker.crash_local() {
@@ -1794,10 +1902,9 @@ fn scenario_linker_local_crash() -> i64 {
 fn scenario_server_monitor_close_reclaim() {
     // Registration is derived from the monotonic event counter, not a sampled
     // live count: a sleep-poll can miss a short-lived count==1 window under a
-    // coarse host timer tick, while the cumulative total cannot be missed.
-    let base = unsafe {
-        hew_dist_monitor_remote_watcher_registered_total()
-    };
+    // coarse host timer tick, while the cumulative total cannot be missed. The
+    // total counts from process start: the client may register before this
+    // scenario begins, so no baseline is sampled here.
     var registered: i64 = 0;
     var wait_attempts: i64 = 0;
     loop {
@@ -1811,7 +1918,7 @@ fn scenario_server_monitor_close_reclaim() {
         let total = unsafe {
             hew_dist_monitor_remote_watcher_registered_total()
         };
-        registered = total - base;
+        registered = total;
         if registered > 1 {
             println(f"FAIL cross_node_monitor_close_reclaim unexpected-registered-total={registered}");
             return;
@@ -1869,9 +1976,6 @@ fn scenario_server_monitor_leak(kx: string, scenario: string, expected: i64) {
     // can phase-lock with the cycles and miss every count==1 window. The
     // cumulative total cannot be missed. The sampled count keeps only its
     // over-registration tooth (count > 1), which can never false-fail.
-    let base = unsafe {
-        hew_dist_monitor_remote_watcher_registered_total()
-    };
     var attempts: i64 = 0;
     loop {
         let count = unsafe {
@@ -1896,7 +2000,7 @@ fn scenario_server_monitor_leak(kx: string, scenario: string, expected: i64) {
     let total = unsafe {
         hew_dist_monitor_remote_watcher_registered_total()
     };
-    let registered = total - base;
+    let registered = total;
     if registered != expected {
         println(f"FAIL {scenario} registered-total={registered} expected={expected}");
         return;
@@ -2080,9 +2184,7 @@ fn scenario_stale_incarnation_restart(old: RemotePid<KeyValue>, kx: string, port
 
 fn run_client(port: string, scenario: string) -> i64 {
     let kx = os.env("HEW_DIST_KX_DIR").unwrap_or("");
-    unsafe { hew_node_api_set_transport("tcp") };
-    stage_peer_credentials(kx, "client", "server", 1);
-    unsafe { hew_node_api_start("127.0.0.1:0") };
+    start_pinned(kx, "client", "server", "127.0.0.1:0");
     wait_for_server_listening(kx);
     let remote_addr = f"1@127.0.0.1:{port}";
     Node.connect(remote_addr);
@@ -2154,6 +2256,8 @@ fn run_client(port: string, scenario: string) -> i64 {
                     scenario_remote_ask(kv)
                 } else if scenario == "linker_local_crash" {
                     scenario_linker_local_crash()
+                } else if scenario == "local_route" {
+                    scenario_local_route(kv)
                 } else {
                     if scenario == "remote_monitor_clean_exit" {
                         scenario_remote_monitor_clean_exit(kv)

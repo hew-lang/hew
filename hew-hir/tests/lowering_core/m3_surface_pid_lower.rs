@@ -197,8 +197,9 @@ fn hir_module_has_main() {
 #[test]
 fn remote_pid_ask_lowers_to_hir_remote_actor_ask() {
     let source = r"
+        #[wire]
         type Job {
-            n: i32,
+            n: i32 @1,
         }
 
         actor Worker {

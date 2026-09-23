@@ -1827,6 +1827,18 @@ fn actor_operation(operation: &hew_sir::ActorOperation) -> serde_json::Value {
             "op": "local_observation",
             "kind": observation_name(*kind),
         }),
+        Op::RemoteObservation { kind, .. } => serde_json::json!({
+            "op": "remote_observation",
+            "kind": match kind {
+                hew_sir::RemoteObservationKind::Link => "link",
+                hew_sir::RemoteObservationKind::Monitor => "monitor",
+            },
+        }),
+        Op::RemoteSend { actor, message, .. } => serde_json::json!({
+            "op": "remote_send",
+            "actor": actor.0,
+            "message": message,
+        }),
         Op::SupervisorSpawn(supervisor) => {
             serde_json::json!({ "op": "supervisor_spawn", "supervisor": supervisor.0 })
         }
@@ -2001,7 +2013,10 @@ fn suspend_shape(kind: &SuspendKind) -> (&'static str, serde_json::Value) {
         ),
         SuspendKind::ActorSend => ("ActorSend", serde_json::Value::Null),
         SuspendKind::RestartWait => ("RestartWait", serde_json::Value::Null),
-        SuspendKind::RemoteAsk => ("RemoteAsk", serde_json::Value::Null),
+        SuspendKind::RemoteAsk { actor, message } => (
+            "RemoteAsk",
+            serde_json::json!({ "actor": actor.0, "message": message }),
+        ),
         SuspendKind::Read => ("Read", serde_json::Value::Null),
         SuspendKind::Accept => ("Accept", serde_json::Value::Null),
         SuspendKind::StreamSend { park } => ("StreamSend", serde_json::json!({ "park": park })),

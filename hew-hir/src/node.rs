@@ -1385,6 +1385,12 @@ pub enum HirExprKind {
         timeout_ms: Box<HirExpr>,
         reply_ty: ResolvedTy,
     },
+    /// Cross-node one-way submission on `RemotePid<T>::send(msg)`. The
+    /// expression type is `Result<(), SendError>`.
+    RemoteActorSend {
+        receiver: Box<HirExpr>,
+        msg: Box<HirExpr>,
+    },
     /// Bare `self` inside an actor `receive fn` — the actor's own handle.
     ///
     /// A zero-payload leaf: `Self`, the actor's own type, recorded by the

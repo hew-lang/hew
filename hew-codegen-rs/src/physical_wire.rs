@@ -114,7 +114,7 @@ fn decode_is_resumable(
     resumable
 }
 
-fn emit_callback<'ctx>(
+pub(super) fn emit_callback<'ctx>(
     module: &PhysicalModule,
     ctx: &'ctx Context,
     llvm: &Module<'ctx>,

@@ -614,6 +614,10 @@ impl Verifier {
                 self.expr(msg);
                 self.expr(timeout_ms);
             }
+            HirExprKind::RemoteActorSend { receiver, msg } => {
+                self.expr(receiver);
+                self.expr(msg);
+            }
             HirExprKind::Block(block) => self.block(block),
             HirExprKind::If {
                 condition,

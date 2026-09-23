@@ -21,4 +21,3 @@
 # still disagrees. Source repairs removed old ABI and shared-mutation probes.
 
 # ── Platform-specific defects ───────────────────────────────────────────
-windows	tcp_write_backpressure  # 3436 a full send-buffer write does not yet report backpressure on Windows

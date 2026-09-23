@@ -1,0 +1,11 @@
+[[case]]
+id = "actor-notification-hooks-suspend"
+intent = "EXIT and DOWN hooks that sleep and ask another actor resume with their notification intact, and the actor serves later calls after each hook completes."
+source = "cases/actor-notification-hooks-suspend.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "hooks 11\n"
+stderr = "hew: failure: UserPanic (212): linked target\nhew: actor crash in Target.fail (actor 2): UserPanic\n"
+exit = 1

@@ -166,8 +166,9 @@ unsafe extern "C-unwind" fn monitor_sys_dispatch(
     sys_msg: i32,
     data: *mut c_void,
     data_size: usize,
-) {
+) -> *mut c_void {
     MONITOR_DISPATCH_SIGNAL.record_dispatch(sys_msg, data, data_size);
+    std::ptr::null_mut()
 }
 
 unsafe extern "C-unwind" fn exit_sys_dispatch(
@@ -176,8 +177,9 @@ unsafe extern "C-unwind" fn exit_sys_dispatch(
     sys_msg: i32,
     data: *mut c_void,
     data_size: usize,
-) {
+) -> *mut c_void {
     EXIT_DISPATCH_SIGNAL.record_dispatch(sys_msg, data, data_size);
+    std::ptr::null_mut()
 }
 
 #[test]

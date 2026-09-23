@@ -621,19 +621,14 @@ pub(super) fn verify_callables(module: &PhysicalModule) -> Result<(), PhysicalEr
             )));
         }
     }
-    // Spawn invokes init and start through its caller's continuation, and
-    // terminal cleanup drives stop hooks as a resumable release. Other
-    // lifecycle callbacks still use the runtime's synchronous callback ABI.
+    // Spawn invokes init and start through its caller's continuation,
+    // terminal cleanup drives stop hooks as a resumable release, and the
+    // system lane parks a suspending EXIT or DOWN hook like a handler. The
+    // crash hook still runs through the runtime's synchronous callback ABI.
     for actor in &module.actors {
-        if actor
-            .crash
-            .iter()
-            .chain(&actor.exit)
-            .chain(&actor.down)
-            .any(|body| expected.contains(body))
-        {
+        if actor.crash.iter().any(|body| expected.contains(body)) {
             return Err(PhysicalError::new(
-                "native actor init and lifecycle suspension is not implemented",
+                "native actor crash hook suspension is not implemented",
             ));
         }
     }

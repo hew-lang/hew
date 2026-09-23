@@ -154,8 +154,9 @@ unsafe extern "C-unwind" fn exit_capture_sys_dispatch(
     sys_msg: i32,
     data: *mut c_void,
     data_size: usize,
-) {
+) -> *mut c_void {
     EXIT_SIGNAL.record(sys_msg, data, data_size);
+    std::ptr::null_mut()
 }
 
 unsafe extern "C-unwind" fn down_capture_sys_dispatch(
@@ -164,8 +165,9 @@ unsafe extern "C-unwind" fn down_capture_sys_dispatch(
     sys_msg: i32,
     data: *mut c_void,
     data_size: usize,
-) {
+) -> *mut c_void {
     DOWN_SIGNAL.record(sys_msg, data, data_size);
+    std::ptr::null_mut()
 }
 
 // ── Contract tests ───────────────────────────────────────────────────────────

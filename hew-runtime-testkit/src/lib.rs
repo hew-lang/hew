@@ -112,8 +112,13 @@ pub type DispatchFn = unsafe extern "C-unwind" fn(
 /// `HewSysDispatchFn` — the second, disjoint dispatch channel that carries
 /// runtime lifecycle signals (`HewSysMsg` discriminants), unreachable from the
 /// user queue.
-pub type SysDispatchFn =
-    unsafe extern "C-unwind" fn(*mut HewExecutionContext, *mut c_void, i32, *mut c_void, usize);
+pub type SysDispatchFn = unsafe extern "C-unwind" fn(
+    *mut HewExecutionContext,
+    *mut c_void,
+    i32,
+    *mut c_void,
+    usize,
+) -> *mut c_void;
 
 /// Initialise the runtime scheduler exactly once across all tests in the
 /// process.

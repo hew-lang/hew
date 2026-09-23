@@ -4096,9 +4096,11 @@ unsafe extern "C-unwind" fn supervisor_sys_dispatch(
     sys_msg: i32,
     data: *mut c_void,
     data_size: usize,
-) {
+) -> *mut c_void {
     // SAFETY: forwards the caller's invariants unchanged to the impl.
     unsafe { supervisor_sys_dispatch_impl(ctx, state, sys_msg, data, data_size) };
+    // Supervision events run to completion.
+    ptr::null_mut()
 }
 
 /// Handle one `ChildStopped` / `ChildCrashed` system event.

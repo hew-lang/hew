@@ -1,0 +1,65 @@
+// EXIT and DOWN hooks may suspend. Each sleeps and asks another actor, and
+// the notification it was handed is still intact when it resumes; the actor
+// serves later calls once each hook's continuation completes.
+import std.failure;
+import std.link_monitor;
+
+actor Audit {
+    var notes: i64 = 0,
+    receive fn note(kind: string) -> i64 { notes = notes + 1; notes }
+}
+
+actor Target {
+    receive fn fail() { panic("linked target"); }
+}
+
+actor Watcher {
+    audit: Audit,
+    var exits: i64 = 0,
+    var downs: i64 = 0,
+
+    receive fn watch(target: Target) -> link_monitor.MonitorRef {
+        link(target).expect("link target");
+        monitor(target).expect("monitor target")
+    }
+
+    receive fn counts() -> i64 { exits * 10 + downs }
+
+    #[on(exit)]
+    fn exited(note: failure.CrashNotification) {
+        sleep(1ms);
+        audit.note("exit").expect("audit exit");
+        assert(note.actor_id > 0);
+        assert(note.kind == failure.CrashKind.Crashed);
+        exits = exits + 1;
+    }
+
+    #[on(down)]
+    fn down(note: link_monitor.DownNotification) {
+        audit.note("down").expect("audit down");
+        sleep(1ms);
+        assert(match note.reason {
+            .Crashed(kind) => kind == failure.CrashKind.Crashed,
+            _ => false,
+        });
+        downs = downs + 1;
+    }
+}
+
+fn main() {
+    let audit = spawn Audit;
+    let target = spawn Target;
+    let watcher = spawn Watcher(audit: audit);
+    let observation = watcher.watch(target).expect("watch target");
+    let _ = target.fail();
+    for _ in 0 .. 1000 {
+        if watcher.counts().expect("hook outcomes") == 11 {
+            break;
+        }
+        sleep(1ms);
+    }
+    println(f"hooks {watcher.counts().expect("hook outcomes")}");
+    observation.close();
+    close(watcher);
+    close(audit);
+}

@@ -1012,22 +1012,14 @@ pub(crate) fn activate_queued_actor(actor: *mut HewActor) {
                             0,
                         )
                     },
-                    DispatchTarget::Sys(sys_dispatch, kind) => {
-                        // SAFETY: `sys_dispatch` is the actor's registered
-                        // system entry point and `kind` decoded from the
-                        // system queue. System handlers run to completion,
-                        // so there is no continuation handle to park.
-                        unsafe {
-                            sys_dispatch(
-                                ec_ptr,
-                                a.state,
-                                kind.as_i32(),
-                                dispatch_data,
-                                dispatch_size,
-                            );
-                        }
-                        std::ptr::null_mut()
-                    }
+                    DispatchTarget::Sys(sys_dispatch, kind) =>
+                    // SAFETY: `sys_dispatch` is the actor's registered
+                    // system entry point and `kind` decoded from the system
+                    // queue. A lifecycle hook that suspended returns its
+                    // continuation, parked below like a handler's.
+                    unsafe {
+                        sys_dispatch(ec_ptr, a.state, kind.as_i32(), dispatch_data, dispatch_size)
+                    },
                 }));
 
                 // SAFETY: `execution_context.lock_seat` was initialized from the

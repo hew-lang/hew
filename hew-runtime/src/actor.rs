@@ -7322,9 +7322,10 @@ mod tests {
         sys_msg: i32,
         _data: *mut c_void,
         _size: usize,
-    ) {
+    ) -> *mut c_void {
         SYS_PROBE_LAST_KIND.store(sys_msg, Ordering::Release);
         SYS_PROBE_SEEN.fetch_add(1, Ordering::Release);
+        ptr::null_mut()
     }
 
     /// NON-VACUITY companion to

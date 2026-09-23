@@ -1935,16 +1935,25 @@ impl<'a> InstanceService<'a> {
                 // source. A foreign-module function's span would index the
                 // wrong file, so it stays spanless rather than render a caret
                 // against unrelated text.
+                //
+                // `SemCallable::source_origin` is the one authority for that
+                // fact — every callable (direct, generic, closure, actor
+                // member, entry adapter) sets it once at construction from
+                // `function_source_origin`. Actor members register it against
+                // the *actor's* HIR item id (their bodies live inside
+                // `HirActorDecl`, not the free-function item table), so
+                // re-deriving origin here through `functions_by_item` — which
+                // only holds free functions and flattened impl methods — gave
+                // every actor handler and actor-enclosed closure `None` even
+                // when declared in the root file. Trust the stored fact
+                // instead of reconstructing it from a table that does not
+                // cover every callable shape.
                 let span = self
                     .callable(callable)
-                    .and_then(|meta| self.table.functions_by_item.get(&meta.function))
-                    .filter(|function| {
-                        matches!(
-                            function_source_origin(self.module, function),
-                            FunctionSourceOrigin::RootUnit
-                        )
-                    })
-                    .map(|function| function.span.clone());
+                    .is_some_and(|meta| meta.source_origin == FunctionSourceOrigin::RootUnit)
+                    .then(|| self.input_for_callable(callable).ok())
+                    .flatten()
+                    .map(|input| input.function.span.clone());
                 self.statuses[index] = Some(SirLoweringStatus::Unsupported { reason, span });
             }
         }

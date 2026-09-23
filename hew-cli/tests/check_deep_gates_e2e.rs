@@ -405,6 +405,74 @@ fn check_sir_unsupported_renders_with_source_span() {
     );
 }
 
+/// Same limitation as [`check_sir_unsupported_renders_with_source_span`], but
+/// raised inside a root-file actor's `receive fn` body instead of a free
+/// `fn main`.
+///
+/// Actor handler bodies never populate HIR's `functions_by_item` table (they
+/// live inside `HirActorDecl`, not the free-function item list), so a naive
+/// re-derivation of source origin through that table always misses them.
+/// `SemCallable::source_origin` is set once, correctly, at construction for
+/// every callable shape including actor members; this pins that the span
+/// path reads that stored fact rather than reconstructing it.
+#[test]
+fn check_sir_unsupported_renders_with_source_span_for_actor_handler() {
+    let (_dir, path) = write_fixture(
+        "#[resource]\n\
+         type Tok {\n\
+         \x20\x20\x20\x20id: i64,\n\
+         }\n\
+         \n\
+         impl Tok {\n\
+         \x20\x20\x20\x20fn close(consume self) {\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20println(f\"close {self.id}\");\n\
+         \x20\x20\x20\x20}\n\
+         }\n\
+         \n\
+         actor Holder {\n\
+         \x20\x20\x20\x20var m: HashMap<string, Tok>,\n\
+         \n\
+         \x20\x20\x20\x20receive fn poke() {\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20match m.get(\"a\") {\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20Option.Some(t) => t.close(),\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20Option.None => println(\"none\"),\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20}\n\
+         \x20\x20\x20\x20}\n\
+         }\n\
+         \n\
+         fn main() {\n\
+         \x20\x20\x20\x20let h = spawn Holder(m: HashMap.new());\n\
+         \x20\x20\x20\x20let _ = h.poke();\n\
+         }\n",
+    );
+
+    let output = run_check(&["check", path.to_str().unwrap()]);
+    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+
+    assert!(!output.status.success(), "{}", describe_output(&output));
+    assert!(
+        stderr.contains("E_SIR_UNSUPPORTED"),
+        "expected the actor handler's consume-wall limitation to report E_SIR_UNSUPPORTED; got:\n{stderr}"
+    );
+    let file_name = path.file_name().unwrap().to_str().unwrap();
+    assert!(
+        stderr.lines().any(|line| {
+            line.contains(file_name) && line.contains(':') && line.contains("E_SIR_UNSUPPORTED")
+        }),
+        "expected a `{file_name}:<line>:<col>: ... E_SIR_UNSUPPORTED` header for the actor handler; got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("match m.get"),
+        "expected the handler body's own source line in the excerpt, not a bare line; got:\n{stderr}"
+    );
+    assert!(
+        stderr.lines().any(|line| line
+            .split_once('|')
+            .is_some_and(|(_, marker)| marker.trim_start().starts_with('^'))),
+        "expected a caret underline against the fixture source; got:\n{stderr}"
+    );
+}
+
 /// Same limitation as [`check_sir_unsupported_renders_with_source_span`],
 /// through `--format json`: the JSON diagnostic must carry the fixture's
 /// real file and a non-zero span, not the zero span a spanless limitation

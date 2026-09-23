@@ -3527,10 +3527,11 @@ mod supervisor_escalation_tests {
     use hew_runtime::actor::{hew_actor_send, hew_actor_trap};
     use hew_runtime::supervisor::{
         hew_supervisor_add_child_spec, hew_supervisor_add_child_supervisor,
-        hew_supervisor_add_child_supervisor_with_init, hew_supervisor_get_child,
-        hew_supervisor_get_child_supervisor, hew_supervisor_get_child_wait,
-        hew_supervisor_is_running, hew_supervisor_new, hew_supervisor_start, hew_supervisor_stop,
-        test_wait_for_restart, HewChildSpec, HewSupervisor,
+        hew_supervisor_add_child_supervisor_with_init, hew_supervisor_direct_id,
+        hew_supervisor_get_child, hew_supervisor_get_child_supervisor,
+        hew_supervisor_get_child_wait, hew_supervisor_is_running, hew_supervisor_new,
+        hew_supervisor_start, hew_supervisor_stop, test_wait_for_restart, HewChildSpec,
+        HewSupervisor,
     };
 
     const STRATEGY_ONE_FOR_ONE: i32 = 0;
@@ -3857,6 +3858,12 @@ mod supervisor_escalation_tests {
 
             let child = nested_child_supervisor_init();
             assert!(!child.is_null(), "child supervisor init should succeed");
+            // Capture the original incarnation's identity now, while `child`
+            // is still live: once the parent recovers the exhausted
+            // supervisor, this pointer is freed and dereferencing it again
+            // (even just to read a field) is a use-after-free that can
+            // alias the replacement's freshly reused address.
+            let child_id = hew_supervisor_direct_id(child);
             assert_eq!(
                 NESTED_INIT_CALLS.load(Ordering::SeqCst),
                 1,
@@ -3963,8 +3970,18 @@ mod supervisor_escalation_tests {
                 !restarted_child.is_null(),
                 "parent should expose a replacement child supervisor",
             );
+            // A pointer comparison is not a valid identity oracle here: the
+            // exhausted child supervisor's allocation is freed off-thread
+            // before the replacement is created, and an allocator (observed
+            // on Windows and macOS) can hand the freed block straight back
+            // out, giving the replacement the same address as the original.
+            // Compare against `child_id`, captured while the original `child`
+            // pointer was still live — re-dereferencing `child` here would be
+            // a use-after-free that can alias the replacement's reused
+            // address and silently read the new incarnation's own identity.
             assert_ne!(
-                restarted_child, child,
+                hew_supervisor_direct_id(restarted_child),
+                child_id,
                 "parent should replace the exhausted child supervisor instance",
             );
             assert_eq!(hew_supervisor_is_running(restarted_child), 1);

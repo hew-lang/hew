@@ -6,10 +6,11 @@
 //! exactly once to a physical action and never infers another lifetime.
 
 pub use hew_sir::{
-    ActorId, ActorIngressAdapter, ActorOperation, LocalObservationKind, SemActor, SemActorCoalesce,
-    SemActorField, SemActorHandler, SemActorOverflow, SemCoalesceFallback, SemCoalesceKey,
-    SemCoalesceKeyKind, SemFailureDisplay, SemRestartPolicy, SemRestartStrategy, SemSupervisedRole,
-    SemSupervisor, SemVariantKind, SupervisorId, TaskScopeJoinMode, TaskSelectionOrder,
+    ActorId, ActorIngressAdapter, ActorOperation, LocalObservationKind, RemoteObservationKind,
+    SemActor, SemActorCoalesce, SemActorField, SemActorHandler, SemActorOverflow,
+    SemCoalesceFallback, SemCoalesceKey, SemCoalesceKeyKind, SemFailureDisplay, SemRestartPolicy,
+    SemRestartStrategy, SemSupervisedRole, SemSupervisor, SemVariantKind, SupervisorId,
+    TaskScopeJoinMode, TaskSelectionOrder,
 };
 use hew_types::runtime_call::{sequence_element_type, ArrayValueOp};
 
@@ -1049,6 +1050,19 @@ pub enum PhysicalTerminator {
         deadline_ns: Option<i64>,
         sealed: bool,
         args: Vec<ArgumentTransfer>,
+        result: StorageId,
+        normal: PhysicalEdge,
+        cancel: PhysicalEdge,
+        unwind: PhysicalEdge,
+    },
+    /// A `RemotePid` ask: borrowed pid, moved message and copied millisecond
+    /// timeout. The message is encoded and released before the caller parks.
+    RemoteAsk {
+        actor: ActorId,
+        message: u32,
+        target: StorageId,
+        payload: StorageId,
+        timeout: StorageId,
         result: StorageId,
         normal: PhysicalEdge,
         cancel: PhysicalEdge,
@@ -3649,6 +3663,24 @@ impl FunctionLowerer<'_> {
                 deadline_ns: *deadline_ns,
                 sealed: *sealed,
                 args: self.argument_transfers(inputs)?,
+                result: self.value(result.id)?,
+                normal: self.lower_edge(&resumes[0])?,
+                cancel: self.lower_edge(cancel)?,
+                unwind: self.lower_edge(unwind)?,
+            }),
+            SemTerminator::Suspend {
+                kind: hew_sir::SuspendKind::RemoteAsk { actor, message },
+                inputs,
+                result: CallResult::Value(result),
+                resumes,
+                cancel,
+                unwind,
+            } => Ok(PhysicalTerminator::RemoteAsk {
+                actor: *actor,
+                message: *message,
+                target: self.value(inputs[0].operand.value)?,
+                payload: self.value(inputs[1].operand.value)?,
+                timeout: self.value(inputs[2].operand.value)?,
                 result: self.value(result.id)?,
                 normal: self.lower_edge(&resumes[0])?,
                 cancel: self.lower_edge(cancel)?,
@@ -6995,6 +7027,45 @@ fn terminator_successors(
         ));
     }
     match terminator {
+        PhysicalTerminator::RemoteAsk {
+            target,
+            payload,
+            timeout,
+            result,
+            normal,
+            cancel,
+            unwind,
+            ..
+        } => {
+            // The pid is borrowed, the message is consumed into its encoding
+            // before the caller parks and the timeout is a copied scalar.
+            for source in [target, payload, timeout] {
+                initialized(function, &state, *source, block, "remote ask request")?;
+            }
+            consume_if_owned(function, borrows, &mut state, *payload)?;
+            if state.fault != FaultState::None {
+                return Err(PhysicalError::new(
+                    "remote ask cannot replace an active fault",
+                ));
+            }
+            let mut completed = state.clone();
+            define(
+                function,
+                borrows,
+                &mut completed,
+                *result,
+                block,
+                "remote ask result",
+            )?;
+            let mut successors = vec![apply_edge(function, borrows, normal, completed, block)?];
+            state.fault = FaultState::Active;
+            let mut cancelled = state.clone();
+            cancelled.exit = defer::CANCEL;
+            successors.push(apply_edge(function, borrows, cancel, cancelled, block)?);
+            state.exit = defer::TRAP;
+            successors.push(apply_edge(function, borrows, unwind, state, block)?);
+            Ok(successors)
+        }
         PhysicalTerminator::ActorAsk {
             args,
             result,
@@ -7776,6 +7847,45 @@ fn verify_terminator(
         }
     };
     match terminator {
+        PhysicalTerminator::RemoteAsk {
+            actor,
+            message,
+            target,
+            payload,
+            timeout,
+            result,
+            normal,
+            cancel,
+            unwind,
+        } => {
+            let signature = module
+                .actors
+                .get(actor.0 as usize)
+                .filter(|descriptor| descriptor.id == *actor)
+                .ok_or_else(|| PhysicalError::new("remote ask requires its exact actor"))?
+                .remote_signature(
+                    *message,
+                    &slot(*target)?.ty,
+                    slot(*result)?.ty.clone(),
+                    true,
+                )
+                .map_err(PhysicalError::new)?;
+            let types = [&slot(*target)?.ty, &slot(*payload)?.ty, &slot(*timeout)?.ty];
+            if signature.params.len() != types.len()
+                || signature
+                    .params
+                    .iter()
+                    .zip(types)
+                    .any(|(parameter, ty)| parameter.ty != *ty)
+            {
+                return Err(PhysicalError::new(
+                    "remote ask differs from its member's pid, message and timeout",
+                ));
+            }
+            edge(normal)?;
+            edge(cancel)?;
+            edge(unwind)
+        }
         PhysicalTerminator::ActorAsk {
             actor,
             message,

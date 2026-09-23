@@ -17,6 +17,8 @@ mod writable;
 mod actor;
 #[path = "lower_actor_codec.rs"]
 mod actor_codec;
+#[path = "lower_remote_actor.rs"]
+mod remote_actor;
 
 #[path = "lower_supervisor.rs"]
 mod supervisor;
@@ -5622,6 +5624,8 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             HirExprKind::ActorMessage { .. } => self.lower_actor_message(expr),
             HirExprKind::ActorDelivery { .. } => self.lower_actor_delivery(expr),
             HirExprKind::ActorAsk { .. } => self.lower_actor_ask(expr),
+            HirExprKind::RemoteActorAsk { .. } => self.lower_remote_actor_ask(expr),
+            HirExprKind::RemoteActorSend { .. } => self.lower_remote_actor_send(expr),
             HirExprKind::ActorGenStream { .. } => self.lower_actor_stream(expr),
             HirExprKind::CoerceToDynTrait {
                 value,
@@ -8688,6 +8692,30 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             }
             _ => None,
         };
+        let remote = match family {
+            hew_types::RuntimeCallFamily::LinkRemote => Some(crate::RemoteObservationKind::Link),
+            hew_types::RuntimeCallFamily::NodeMonitor => {
+                Some(crate::RemoteObservationKind::Monitor)
+            }
+            _ => None,
+        };
+        if let Some(kind) = remote {
+            let operation = crate::ActorOperation::RemoteObservation {
+                kind,
+                params: args.iter().map(|arg| self.ty(&arg.ty)).collect(),
+                result: self.ty(&expr.ty),
+            };
+            let signature = self.actor_signature(&operation)?;
+            self.service.require_type_facts(&signature.return_ty)?;
+            let mut values = Vec::with_capacity(args.len());
+            for arg in args {
+                values.push(self.lower_expr(arg)?);
+                if !self.is_open() {
+                    return Ok(values.pop());
+                }
+            }
+            return self.emit_actor_call(operation, signature, values);
+        }
         if let Some(kind) = observation {
             let [target] = args else {
                 return Err("local observation takes one target".into());

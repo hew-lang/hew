@@ -25,10 +25,18 @@ impl FunctionEmitter<'_, '_> {
             .iter()
             .map(|transfer| {
                 let source = argument_source(transfer);
-                // `bytes` is the runtime's `{ptr, u32, u32}` triple and every C
-                // entry takes it by pointer. Everything else crosses by value
-                // out of its storage.
-                if self.storage(source)?.ty == ResolvedTy::Bytes {
+                // `bytes` is the runtime's `{ptr, u32, u32}` triple and the
+                // identity carriers are its `HewNodeId` / `HewLocation` /
+                // `HewRemotePid` structs; every C entry takes those by pointer,
+                // since a first-class aggregate argument and a C struct
+                // parameter do not agree on how the bytes travel. Everything
+                // else crosses by value out of its storage.
+                let ty = &self.storage(source)?.ty;
+                if *ty == ResolvedTy::Bytes
+                    || ty.is_builtin(hew_types::BuiltinType::NodeId)
+                    || ty.is_builtin(hew_types::BuiltinType::Location)
+                    || ty.is_builtin(hew_types::BuiltinType::RemotePid)
+                {
                     if matches!(transfer, ArgumentTransfer::Move(_)) {
                         return Err(CodegenError::FailClosed(
                             "a moved byte operand needs its own emission".into(),

@@ -3755,7 +3755,19 @@ impl Checker {
                     )
                     || (resolved_name.contains('.')
                         && builtin.is_some_and(|kind| {
-                            kind.is_collection() || kind.is_substrate_handle()
+                            kind.is_collection()
+                                || kind.is_substrate_handle()
+                                // The identity carriers declare a bodyless
+                                // surface stub in `std/builtins.hew`; a
+                                // signature written there qualifies it under
+                                // that module, and the carrier, not the stub,
+                                // is what every consumer dispatches on.
+                                || matches!(
+                                    kind,
+                                    BuiltinType::NodeId
+                                        | BuiltinType::Location
+                                        | BuiltinType::RemotePid
+                                )
                         }));
                 // Preserve the lexical declaration decision made above. A
                 // local source type may be owner-qualified before this point,
@@ -3822,10 +3834,18 @@ impl Checker {
                             })
                             .map_or_else(
                                 || {
-                                    // A pipe half carries its identity in the
-                                    // discriminator; every stage spells it by
-                                    // the canonical name.
-                                    if builtin.is_substrate_handle() {
+                                    // A pipe half and an identity carrier
+                                    // carry their identity in the
+                                    // discriminator; every stage spells them
+                                    // by the canonical name.
+                                    if builtin.is_substrate_handle()
+                                        || matches!(
+                                            builtin,
+                                            BuiltinType::NodeId
+                                                | BuiltinType::Location
+                                                | BuiltinType::RemotePid
+                                        )
+                                    {
                                         builtin.canonical_name().to_string()
                                     } else {
                                         resolved_name.clone()

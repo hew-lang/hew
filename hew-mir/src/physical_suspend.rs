@@ -502,6 +502,7 @@ pub(super) fn verify_callables(module: &PhysicalModule) -> Result<(), PhysicalEr
                 | PhysicalTerminator::IndirectCall { .. }
                 | PhysicalTerminator::TaskAwait { .. }
                 | PhysicalTerminator::ActorAsk { .. }
+                | PhysicalTerminator::RemoteAsk { .. }
                 | PhysicalTerminator::TaskScopeJoin { .. }
                 | PhysicalTerminator::ActorCall {
                     operation:

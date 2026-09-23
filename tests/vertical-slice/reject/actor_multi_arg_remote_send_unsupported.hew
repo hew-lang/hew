@@ -1,13 +1,8 @@
-// Reject fixture: remote send resolving to a multi-parameter receive
-// handler (E_REMOTE_PAYLOAD_UNSUPPORTED).
-//
-// The send seam is codegen's `hew_remote_pid_send` intercept (the ask
-// seam fails closed earlier, in MIR's remote handler matcher). Same
-// invariant on both seams: the remote wire carries one message value,
-// the multi-arg handler's local wire is the packed-args record, and a
-// first-param match between the two is a wire-width mismatch — refused
-// at compile time rather than sending short bytes to a body that
-// unpacks the full record.
+// Reject fixture: a remote call addresses the one receive fn taking the
+// actor's `ActorMsg.Msg` and returning its `ActorMsg.Reply`. The remote wire
+// carries one message value, so a multi-parameter handler is never that
+// member, and the checker refuses the call rather than send a value no
+// handler receives.
 actor Logger {
     receive fn log_pair(code: i64, label: string) {
         println(f"[{label}] code={code}");

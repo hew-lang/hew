@@ -8068,8 +8068,8 @@ impl Checker {
                             && !self.checking_canonical_stdlib_source("std.builtins")
                         {
                             // `RemotePid<T>::send` / `::ask` route to the native
-                            // mesh transport (`hew_remote_pid_send` →
-                            // `hew_actor_send_by_id`), which is not compiled for
+                            // mesh transport (`hew_node_api_send_location` /
+                            // `hew_remote_call_*`), which is not compiled for
                             // wasm32. Reject at check time so remote messaging
                             // fails closed with a structured diagnostic instead
                             // of compiling to a module that imports undefined
@@ -8079,50 +8079,12 @@ impl Checker {
                             if let Some(actor) = receiver_args.first() {
                                 self.check_remote_actor_payloads(actor, method == "ask", span);
                             }
-                            if method == "ask" {
-                                self.method_call_rewrites.insert(
-                                    SpanKey::in_module(span, self.current_module_idx),
-                                    MethodCallRewrite::RemoteActorAsk,
-                                );
-                            }
-                        }
-                        if method == "send" {
-                            // S5: real RemotePid<T>::send lowering. Record a
-                            // direct-call rewrite so HIR/MIR lower the call
-                            // to `hew_remote_pid_send`, which codegen
-                            // intercepts and lowers to the
-                            // `hew_actor_send_by_id` runtime ABI plus a
-                            // `Result<(), SendError>` construction. The
-                            // catalog entry registers the FFI shape; the
-                            // codegen Terminator::Call branch consumes the
-                            // resolved receiver + msg arg types from the
-                            // checker output (no re-inference in codegen
-                            // per the `checker-authority` invariant).
                             self.method_call_rewrites.insert(
                                 SpanKey::in_module(span, self.current_module_idx),
-                                MethodCallRewrite::RewriteToFunction {
-                                    target: CallTarget::Runtime(
-                                        crate::runtime_call::RuntimeCallFamily::RemotePidSend,
-                                    ),
-                                    c_symbol: "hew_remote_pid_send".to_string(),
-                                    // Closed runtime call dispatched by callee-
-                                    // name intercept in codegen; the substrate
-                                    // enumerates this family.
-                                    descriptor: Some(
-                                        crate::runtime_call::RuntimeCallDescriptor::new(
-                                            crate::runtime_call::RuntimeCallFamily::RemotePidSend,
-                                            None,
-                                        )
-                                        .expect("RemotePidSend rejects elem"),
-                                    ),
-                                    extern_identity: None,
-                                    elem_ty: None,
-                                    // Fire-and-forget send; borrows the pid
-                                    // handle, does not release it.
-                                    consumes_receiver: false,
-                                    requires_mutable_receiver: false,
-                                    receiver_update: crate::ReceiverUpdate::Replace,
-                                    returns_receiver_identity: false,
+                                if method == "ask" {
+                                    MethodCallRewrite::RemoteActorAsk
+                                } else {
+                                    MethodCallRewrite::RemoteActorSend
                                 },
                             );
                         }

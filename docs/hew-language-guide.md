@@ -4199,6 +4199,12 @@ remote path, and the local-mailbox bridge for that path is scoped to fail
 closed as `ActorError.RoutingFailed`; use a direct actor call when both actors
 are intentionally local.
 
+A remote call addresses the one receive fn whose parameter is the actor's
+`ActorMsg.Msg` and whose result is its `ActorMsg.Reply`. Both cross the node
+as bytes, so each is a scalar, a collection of such values, or a `#[wire]`
+type with tagged fields. A plain record is refused at the call with a
+suggestion to declare its wire schema.
+
 > **Not yet in this build.** A local handle is the actor's own type
 > (HEW-SPEC-2026 §2.1.1), but a handle obtained from a node lookup is still
 > written `RemotePid<A>`: a remote handle has its own runtime representation,

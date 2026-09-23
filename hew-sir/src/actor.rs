@@ -375,6 +375,69 @@ impl SemActor {
         })
     }
 
+    /// A `RemotePid` send or ask to the checker-selected remote member: the
+    /// borrowed pid, the moved message and, for an ask, its millisecond
+    /// timeout. An ask returns its checked `Result`; a send answers with the
+    /// node's submission status. The request crosses the wire as bytes, so
+    /// no call is sealed.
+    ///
+    /// # Errors
+    /// Refuses a member without codecs, another actor's pid or another result.
+    pub fn remote_signature(
+        &self,
+        message: u32,
+        target: &ResolvedTy,
+        result_ty: ResolvedTy,
+        ask: bool,
+    ) -> Result<crate::SemSignature, String> {
+        let handler = self
+            .handlers
+            .iter()
+            .find(|handler| handler.message_id == message && handler.codec.is_some())
+            .ok_or("remote call has no portable receive member")?;
+        let [msg] = handler.params.as_slice() else {
+            return Err("a remote member takes exactly its message".into());
+        };
+        let addressed = matches!(target, ResolvedTy::Named {
+            builtin: Some(hew_types::BuiltinType::RemotePid),
+            args,
+            ..
+        } if args.as_slice() == std::slice::from_ref(&self.handle_ty));
+        if !addressed {
+            return Err("remote call target is not this actor's RemotePid".into());
+        }
+        if ask {
+            let [reply, error] =
+                result_parts(&result_ty).ok_or("a remote ask must return its checked Result")?;
+            let expected = hew_types::Ty::actor_error_with_request(
+                hew_types::Ty::never_type(),
+                hew_types::Ty::never_type(),
+            );
+            if *reply != handler.return_ty || error.to_ty() != expected {
+                return Err("remote ask differs from its member's reply and failure".into());
+            }
+        } else if result_ty != ResolvedTy::I32 {
+            // HIR folds the node's submission status into `Result<(), SendError>`.
+            return Err("remote send answers with its i32 submission status".into());
+        }
+        let param = |ty: &ResolvedTy, passing| crate::SemAbiParam {
+            ty: ty.clone(),
+            passing,
+            caller_visible_projection: false,
+        };
+        let mut params = vec![
+            param(target, crate::SemParamPassing::Borrow),
+            param(msg, crate::SemParamPassing::Consume),
+        ];
+        if ask {
+            params.push(param(&ResolvedTy::U64, crate::SemParamPassing::ReadOnly));
+        }
+        Ok(crate::SemSignature {
+            params,
+            return_ty: result_ty,
+        })
+    }
+
     /// Check the handle spelling this descriptor answers to.
     fn validate_handle(&self) -> Result<(), String> {
         // A named actor is addressed by its own type. An anonymous actor has no
@@ -783,6 +846,60 @@ impl LocalObservationKind {
     }
 }
 
+/// A cross-node link or monitor addressed by a borrowed `RemotePid`. The
+/// node reports failures in the result's error vocabulary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemoteObservationKind {
+    /// `link_remote(pid, policy) -> Result<(), LinkError>`.
+    Link,
+    /// `monitor(pid) -> Result<MonitorRef, MonitorError>`.
+    Monitor,
+}
+
+impl RemoteObservationKind {
+    fn signature(
+        self,
+        params: &[ResolvedTy],
+        result: &ResolvedTy,
+    ) -> Result<crate::SemSignature, String> {
+        let valid = match (self, params) {
+            (Self::Link, [target, _]) | (Self::Monitor, [target]) => {
+                target.is_builtin(hew_types::BuiltinType::RemotePid)
+                    && result_parts(result).is_some_and(|[ok, error]| match self {
+                        Self::Link => {
+                            *ok == ResolvedTy::Unit
+                                && error.is_builtin(hew_types::BuiltinType::LinkError)
+                        }
+                        Self::Monitor => {
+                            ok.is_builtin(hew_types::BuiltinType::MonitorRef)
+                                && error.to_ty() == hew_types::Ty::monitor_error()
+                        }
+                    })
+            }
+            _ => false,
+        };
+        if !valid {
+            return Err("remote observation changes its checked signature".into());
+        }
+        Ok(crate::SemSignature {
+            params: params
+                .iter()
+                .enumerate()
+                .map(|(index, ty)| crate::SemAbiParam {
+                    ty: ty.clone(),
+                    passing: if index == 0 {
+                        crate::SemParamPassing::Borrow
+                    } else {
+                        crate::SemParamPassing::Consume
+                    },
+                    caller_visible_projection: false,
+                })
+                .collect(),
+            return_ty: result.clone(),
+        })
+    }
+}
+
 /// Actor boundary selected from an exact demanded protocol.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ActorOperation {
@@ -815,6 +932,18 @@ pub enum ActorOperation {
         policy: hew_types::actor_delivery::SendPolicy,
         message_ty: ResolvedTy,
         result_ty: ResolvedTy,
+    },
+    RemoteObservation {
+        kind: RemoteObservationKind,
+        params: Vec<ResolvedTy>,
+        result: ResolvedTy,
+    },
+    /// Encode one message for the actor's remote member and submit it to the
+    /// peer addressed by a borrowed `RemotePid`.
+    RemoteSend {
+        actor: ActorId,
+        message: u32,
+        target: ResolvedTy,
     },
     /// Construct the supervisor from its config, spawn every declared child
     /// through its spawn callable and start supervising. The result is the
@@ -1001,6 +1130,14 @@ impl ActorOperation {
         {
             return kind.signature(target, result);
         }
+        if let Self::RemoteObservation {
+            kind,
+            params,
+            result,
+        } = self
+        {
+            return kind.signature(params, result);
+        }
         let consume = |types: Vec<ResolvedTy>, return_ty| crate::SemSignature {
             params: types
                 .into_iter()
@@ -1013,7 +1150,10 @@ impl ActorOperation {
             return_ty,
         };
         let id = match self {
-            Self::LocalObservation { .. } | Self::CallStart(_) | Self::CallTake(_) => {
+            Self::LocalObservation { .. }
+            | Self::RemoteObservation { .. }
+            | Self::CallStart(_)
+            | Self::CallTake(_) => {
                 unreachable!("special boundary returned above")
             }
             Self::Spawn(id)
@@ -1022,6 +1162,17 @@ impl ActorOperation {
             | Self::SelfHandle(id)
             | Self::StreamStart { actor: id, .. }
             | Self::Submit { actor: id, .. } => *id,
+            Self::RemoteSend {
+                actor,
+                message,
+                target,
+            } => {
+                let actor = actors
+                    .get(actor.0 as usize)
+                    .filter(|candidate| candidate.id == *actor)
+                    .ok_or("unknown remote actor identity")?;
+                return actor.remote_signature(*message, target, ResolvedTy::I32, false);
+            }
             Self::SupervisorSpawn(_)
             | Self::SupervisorChild { .. }
             | Self::SupervisorAwaitRestart { .. }
@@ -1035,7 +1186,11 @@ impl ActorOperation {
             .filter(|actor| actor.id == id)
             .ok_or("unknown actor identity")?;
         let (mut types, return_ty) = match self {
-            Self::LocalObservation { .. } | Self::CallStart(_) | Self::CallTake(_) => {
+            Self::LocalObservation { .. }
+            | Self::RemoteObservation { .. }
+            | Self::CallStart(_)
+            | Self::CallTake(_)
+            | Self::RemoteSend { .. } => {
                 unreachable!("special boundary returned above")
             }
             Self::StreamStart {

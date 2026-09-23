@@ -526,7 +526,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         Ok(value.into())
     }
 
-    fn emit_ask_result(
+    pub(super) fn emit_ask_result(
         &self,
         result: StorageId,
         status: IntValue<'ctx>,

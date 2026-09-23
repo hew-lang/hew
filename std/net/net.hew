@@ -757,8 +757,7 @@ extern "C" {
     // rewrites each call site to `hew_tcp_attach_local`, which codegen
     // intercepts to synthesise the handler `msg_id`s and emit the runtime attach
     // ABI directly. No extern declaration here would match that 4-arg ABI, so
-    // none is declared (mirrors `hew_remote_pid_send`, whose real symbol
-    // `hew_actor_send_by_id` is interned in codegen rather than declared in Hew).
+    // none is declared.
     fn hew_tcp_detach(conn: Connection);
     fn hew_tcp_listener_close(consume listener: Listener) -> i32;
     fn hew_tcp_close(consume conn: Connection) -> i32;

@@ -650,6 +650,27 @@ const SYNTHETIC_RESULT_ITEM: ItemId = ItemId(u32::MAX - 2);
 /// path as `Option` / `Result` so `Err(LookupError::NotFound)` match arms
 /// resolve via `machine_ctor_registry`.
 const SYNTHETIC_LOOKUP_ERROR_ITEM: ItemId = ItemId(u32::MAX - 1000);
+/// The status codes a send folds into `SendError`: `named` pairs one runtime
+/// status with its error; every other nonzero status is `otherwise`.
+#[derive(Clone, Copy)]
+struct SendStatusCodes {
+    named: (i128, &'static str),
+    otherwise: &'static str,
+}
+
+/// A pipe reports `1` when its reader left and `2` when full.
+const PIPE_SEND_STATUS: SendStatusCodes = SendStatusCodes {
+    named: (1, "Closed"),
+    otherwise: "Full",
+};
+
+/// A node reports `HEW_ERR_STALE_REF` for a superseded pid; every other
+/// failure leaves the peer unreachable.
+const REMOTE_SEND_STATUS: SendStatusCodes = SendStatusCodes {
+    named: (-16, "StaleRef"),
+    otherwise: "Partition",
+};
+
 /// `SendError` is also declared in `std/builtins.hew` and likewise invisible
 /// to the user-enum walk. Surface it so `match e { SendError::NodeRoutingNotWired
 /// => ... }` arms inside `Result<(), SendError>` matches resolve via
@@ -6488,6 +6509,10 @@ fn collect_call_sites_in_expr(
             collect_call_sites_in_expr(msg, out, trait_out);
             collect_call_sites_in_expr(timeout_ms, out, trait_out);
         }
+        HirExprKind::RemoteActorSend { receiver, msg } => {
+            collect_call_sites_in_expr(receiver, out, trait_out);
+            collect_call_sites_in_expr(msg, out, trait_out);
+        }
         HirExprKind::CallTraitMethodStatic {
             receiver,
             receiver_type_param,
@@ -10294,6 +10319,13 @@ impl LowerCtx {
                 self.wrap_var_self_explicit_expr_returns(target, receiver, abi_return_ty);
                 self.wrap_var_self_explicit_expr_returns(msg, receiver, abi_return_ty);
                 self.wrap_var_self_explicit_expr_returns(timeout_ms, receiver, abi_return_ty);
+            }
+            HirExprKind::RemoteActorSend {
+                receiver: target,
+                msg,
+            } => {
+                self.wrap_var_self_explicit_expr_returns(target, receiver, abi_return_ty);
+                self.wrap_var_self_explicit_expr_returns(msg, receiver, abi_return_ty);
             }
             HirExprKind::Binary { left, right, .. }
             | HirExprKind::IdentityCompare { left, right } => {
@@ -26006,6 +26038,38 @@ impl LowerCtx {
             Some(MethodCallRewrite::BuiltinOptionResult { method }) => {
                 self.lower_builtin_option_result_method(method, receiver, args, span)
             }
+            Some(MethodCallRewrite::RemoteActorSend) => {
+                self.try_register_enum_instantiation(&span);
+                let ret_ty = self
+                    .expr_types
+                    .get(&key)
+                    .cloned()
+                    .and_then(|ty| ResolvedTy::from_ty(&ty).ok());
+                let (Some(ret_ty), [msg]) = (ret_ty, args) else {
+                    self.diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::CheckerBoundaryViolation {
+                            name: "RemotePid.send".to_string(),
+                            reason: "checker side-table lacks the message or result type"
+                                .to_string(),
+                        },
+                        span.clone(),
+                        "remote actor send lowering requires its checked message and result",
+                    ));
+                    return (
+                        HirExprKind::Unsupported("RemotePid.send lost its checked facts".into()),
+                        ResolvedTy::Unit,
+                    );
+                };
+                let receiver = Box::new(self.lower_expr(receiver, IntentKind::Read));
+                let msg = Box::new(self.lower_expr(msg.expr(), IntentKind::Read));
+                let status = self.make_expr(
+                    HirExprKind::RemoteActorSend { receiver, msg },
+                    ResolvedTy::I32,
+                    IntentKind::Read,
+                    span.clone(),
+                );
+                self.lower_send_status_result(status, ret_ty, REMOTE_SEND_STATUS, &span)
+            }
             Some(MethodCallRewrite::RemoteActorAsk) => {
                 self.try_register_enum_instantiation(&span);
                 if args.len() != 2 {
@@ -26291,7 +26355,7 @@ impl LowerCtx {
                 };
                 if send_status {
                     let call = self.make_expr(call, call_ty, IntentKind::Read, span.clone());
-                    return self.lower_send_status_result(call, ret_ty, &span);
+                    return self.lower_send_status_result(call, ret_ty, PIPE_SEND_STATUS, &span);
                 }
                 (call, ret_ty)
             }
@@ -28095,10 +28159,9 @@ impl LowerCtx {
         self.lower_runtime_status_result(call, &error, result_ty, span)
     }
 
-    /// Fold a pipe send status into `Result<(), SendError>`: `0` is `Ok(())`,
-    /// `1` is `Err(SendError.Closed)` (the reader is gone or the sink
-    /// finished) and `2` is `Err(SendError.Full)` (`try_send` on a pipe at
-    /// capacity).
+    /// Fold a send status into `Result<(), SendError>`: `0` is `Ok(())`, the
+    /// table's code is its named error, and any other status is the table's
+    /// remaining error.
     #[allow(
         clippy::too_many_lines,
         reason = "one fold builds every constructor of the Result it returns"
@@ -28107,17 +28170,18 @@ impl LowerCtx {
         &mut self,
         status: HirExpr,
         result_ty: ResolvedTy,
+        codes: SendStatusCodes,
         span: &Span,
     ) -> (HirExprKind, ResolvedTy) {
         let ResolvedTy::Named { args, .. } = &result_ty else {
             return (
-                HirExprKind::Unsupported("pipe send result is not a Result".to_string()),
+                HirExprKind::Unsupported("send result is not a Result".to_string()),
                 result_ty,
             );
         };
         let Some(error_ty) = args.get(1).cloned() else {
             return (
-                HirExprKind::Unsupported("pipe send result has no error arm".to_string()),
+                HirExprKind::Unsupported("send result has no error arm".to_string()),
                 result_ty,
             );
         };
@@ -28134,13 +28198,13 @@ impl LowerCtx {
                 .get(&format!("{error_name}::{variant}"))
                 .map(|(_, index)| *index)
         };
-        let constructors = variant_index(self, "Closed")
-            .zip(variant_index(self, "Full"))
+        let constructors = variant_index(self, codes.named.1)
+            .zip(variant_index(self, codes.otherwise))
             .zip(self.builtin_variant_predicate(BuiltinType::Result, "Ok", span))
             .zip(self.builtin_variant_predicate(BuiltinType::Result, "Err", span));
         let Some((((closed_index, full_index), ok), err)) = constructors else {
             return (
-                HirExprKind::Unsupported("pipe send result constructors".to_string()),
+                HirExprKind::Unsupported("send result constructors".to_string()),
                 result_ty,
             );
         };
@@ -28192,7 +28256,7 @@ impl LowerCtx {
             this.synthetic_binding_ref(status_name, status_binding, ResolvedTy::I32, span)
         };
         let is_closed = {
-            let one = literal(self, 1);
+            let one = literal(self, codes.named.0);
             let status = status_ref(self);
             self.make_expr(
                 HirExprKind::Binary {
@@ -29629,6 +29693,10 @@ fn collect_captures_walk(
             collect_captures_walk(msg, param_ids, seen, captures, self_id);
             collect_captures_walk(timeout_ms, param_ids, seen, captures, self_id);
         }
+        HirExprKind::RemoteActorSend { receiver, msg } => {
+            collect_captures_walk(receiver, param_ids, seen, captures, self_id);
+            collect_captures_walk(msg, param_ids, seen, captures, self_id);
+        }
         HirExprKind::Block(block)
         | HirExprKind::Scope { body: block }
         | HirExprKind::Race { body: block }
@@ -29887,6 +29955,10 @@ fn collect_general_closure_captures_walk(
             collect_general_closure_captures_walk(receiver, outer_bindings, seen, captures);
             collect_general_closure_captures_walk(msg, outer_bindings, seen, captures);
             collect_general_closure_captures_walk(timeout_ms, outer_bindings, seen, captures);
+        }
+        HirExprKind::RemoteActorSend { receiver, msg } => {
+            collect_general_closure_captures_walk(receiver, outer_bindings, seen, captures);
+            collect_general_closure_captures_walk(msg, outer_bindings, seen, captures);
         }
         HirExprKind::Block(block)
         | HirExprKind::Scope { body: block }
@@ -31409,6 +31481,10 @@ fn scan_expr_for_call_shape(
             scan_expr_for_call_shape(receiver, callable, diagnostics);
             scan_expr_for_call_shape(msg, callable, diagnostics);
             scan_expr_for_call_shape(timeout_ms, callable, diagnostics);
+        }
+        HirExprKind::RemoteActorSend { receiver, msg } => {
+            scan_expr_for_call_shape(receiver, callable, diagnostics);
+            scan_expr_for_call_shape(msg, callable, diagnostics);
         }
         HirExprKind::Block(b) => scan_block_for_call_shape(b, callable, diagnostics),
         HirExprKind::If {

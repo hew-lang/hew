@@ -66,19 +66,32 @@ impl Checker {
             if *ty == ResolvedTy::Unit || self.is_wire_portable(ty) {
                 continue;
             }
-            self.report_error_with_suggestions(
-                super::TypeErrorKind::BoundsNotSatisfied,
-                span,
-                format!(
-                    "remote actor `{canonical}` cannot carry `{}`: a value sent to a \
-                     remote actor needs an explicit wire schema",
-                    ty.user_facing()
-                ),
-                vec![format!(
-                    "declare `{}` with `#[wire]` and tag each field, e.g. `seq: i64 @1`",
-                    ty.user_facing()
-                )],
+            // A record or enum can declare its schema; any other value has
+            // no wire representation at all.
+            let declarable = matches!(ty, ResolvedTy::Named { name, builtin: None, .. }
+                if self.type_defs.contains_key(name) && !self.actor_protocol_descriptors.contains_key(name));
+            let message = format!(
+                "remote actor `{canonical}` cannot carry `{}`: a value sent to a remote \
+                 actor needs an explicit wire schema",
+                ty.user_facing()
             );
+            if declarable {
+                self.report_error_with_suggestions(
+                    super::TypeErrorKind::BoundsNotSatisfied,
+                    span,
+                    message,
+                    vec![format!(
+                        "declare `{}` with `#[wire]` and tag each field, e.g. `seq: i64 @1`",
+                        ty.user_facing()
+                    )],
+                );
+            } else {
+                self.report_error(
+                    super::TypeErrorKind::BoundsNotSatisfied,
+                    span,
+                    format!("{message}, and `{}` has none", ty.user_facing()),
+                );
+            }
             ok = false;
         }
         let addressed = self
@@ -90,8 +103,10 @@ impl Checker {
                 super::TypeErrorKind::BoundsNotSatisfied,
                 span,
                 format!(
-                    "remote actor `{canonical}` has no receive fn taking its `ActorMsg.Msg` \
-                     and returning its `ActorMsg.Reply`"
+                    "remote actor `{canonical}` has no receive fn taking `{}` and returning \
+                     `{}`, the message and reply its `ActorMsg` impl names",
+                    msg.user_facing(),
+                    reply.user_facing()
                 ),
             );
             ok = false;

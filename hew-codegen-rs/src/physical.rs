@@ -3914,6 +3914,19 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
 
     fn emit_terminator(&self, block: &PhysicalBlock) -> CodegenResult<()> {
         match &block.terminator {
+            PhysicalTerminator::RemoteAsk {
+                actor,
+                message,
+                target,
+                payload,
+                timeout,
+                result,
+                normal,
+                cancel,
+                unwind,
+            } => self.emit_remote_ask(
+                *actor, *message, *target, *payload, *timeout, *result, normal, cancel, unwind,
+            ),
             PhysicalTerminator::ActorAsk {
                 actor,
                 message,
@@ -5136,7 +5149,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     )?,
                     hew_types::RuntimeCallFamily::NodeConnect => get_or_declare_external(
                         self.llvm,
-                        "hew_node_api_connect",
+                        "hew_node_api_connect_string",
                         status_ty.fn_type(&[ptr.into()], false),
                     )?,
                     hew_types::RuntimeCallFamily::NodeShutdown => get_or_declare_external(

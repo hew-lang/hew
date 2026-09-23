@@ -70,7 +70,43 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                         .emit_actor_codec_adapter(&label, handler, payload, &plans, reply, false)?;
                     let decode = self
                         .emit_actor_codec_adapter(&label, handler, payload, &plans, reply, true)?;
-                    registrations.push((dispatch, handler.message_id, encode, decode, reply));
+                    // A received value the runtime never delivers is released
+                    // by the same destructor a local mailbox or reply uses.
+                    let (drop, size) = if reply {
+                        (
+                            actor::reply_symbol(actor.id, handler.message_id),
+                            self.module
+                                .target
+                                .layout(&handler.return_ty)
+                                .ok_or_else(|| {
+                                    CodegenError::FailClosed(
+                                        "actor codec reply lacks layout".into(),
+                                    )
+                                })?
+                                .size,
+                        )
+                    } else {
+                        (
+                            actor::message_symbol(actor.id, handler.message_id),
+                            TargetData::create(&self.module.target.data_layout)
+                                .get_store_size(&payload),
+                        )
+                    };
+                    let drop = self
+                        .llvm
+                        .get_function(&drop)
+                        .map_or(ptr.const_null(), |drop| {
+                            drop.as_global_value().as_pointer_value()
+                        });
+                    registrations.push((
+                        dispatch,
+                        handler.message_id,
+                        encode,
+                        decode,
+                        drop,
+                        size,
+                        reply,
+                    ));
                 }
             }
         }
@@ -84,7 +120,10 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         );
         let builder = self.ctx.create_builder();
         builder.position_at_end(self.ctx.append_basic_block(init, "entry"));
-        for (dispatch, message, encode, decode, reply) in registrations {
+        let size_ty = self
+            .ctx
+            .ptr_sized_int_type(&TargetData::create(&self.module.target.data_layout), None);
+        for (dispatch, message, encode, decode, drop, size, reply) in registrations {
             self.codec_runtime(
                 &builder,
                 if reply {
@@ -101,6 +140,8 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                         .into(),
                     encode.as_global_value().as_pointer_value().into(),
                     decode.as_global_value().as_pointer_value().into(),
+                    drop.into(),
+                    size_ty.const_int(size, false).into(),
                 ],
             )?;
         }

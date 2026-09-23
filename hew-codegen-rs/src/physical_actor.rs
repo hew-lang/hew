@@ -32,6 +32,9 @@ pub(super) fn ingress_symbol(adapter: ActorIngressAdapter) -> String {
 #[path = "physical_actor_lifecycle.rs"]
 mod lifecycle;
 
+#[path = "physical_actor_remote.rs"]
+mod remote;
+
 #[path = "physical_actor_wait.rs"]
 mod wait;
 
@@ -80,7 +83,7 @@ pub(super) fn state_field_initialized<'ctx>(
     .llvm_ctx("address actor state initialization flag")
 }
 
-fn message_symbol(actor: ActorId, message: u32) -> String {
+pub(super) fn message_symbol(actor: ActorId, message: u32) -> String {
     symbol(actor, &format!("message_{message}_drop"))
 }
 
@@ -102,7 +105,7 @@ fn message_release<'ctx>(
         )
 }
 
-fn reply_symbol(actor: ActorId, message: u32) -> String {
+pub(super) fn reply_symbol(actor: ActorId, message: u32) -> String {
     symbol(actor, &format!("reply_{message}_drop"))
 }
 
@@ -1526,6 +1529,12 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         if let ActorOperation::LocalObservation { kind, .. } = &operation {
             return self.emit_local_observation(*kind, transfers, result, normal, unwind);
         }
+        if let ActorOperation::RemoteSend { actor, message, .. } = &operation {
+            return self.emit_remote_send(*actor, *message, transfers, result, normal);
+        }
+        if let ActorOperation::RemoteObservation { kind, params, .. } = &operation {
+            return self.emit_remote_observation(*kind, params, transfers, result, normal);
+        }
         match &operation {
             ActorOperation::CallStart(protocol) => {
                 let result = result.ok_or_else(|| {
@@ -1571,8 +1580,10 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         }
         let id = match &operation {
             ActorOperation::LocalObservation { .. }
+            | ActorOperation::RemoteObservation { .. }
             | ActorOperation::CallStart(_)
-            | ActorOperation::CallTake(_) => {
+            | ActorOperation::CallTake(_)
+            | ActorOperation::RemoteSend { .. } => {
                 unreachable!("special boundary returned above")
             }
             ActorOperation::Spawn(id)
@@ -1639,8 +1650,10 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let retains_cleanup_fault = operation.retains_cleanup_fault();
         let status = match operation {
             ActorOperation::LocalObservation { .. }
+            | ActorOperation::RemoteObservation { .. }
             | ActorOperation::CallStart(_)
-            | ActorOperation::CallTake(_) => {
+            | ActorOperation::CallTake(_)
+            | ActorOperation::RemoteSend { .. } => {
                 unreachable!("special boundary returned above")
             }
             ActorOperation::Close(_) => {
@@ -1831,6 +1844,23 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             self.emit_propagate_fault()?;
         }
         self.builder.position_at_end(typed);
+        self.emit_observation_result(
+            result,
+            status,
+            (kind == LocalObservationKind::Monitor).then_some(id),
+            normal,
+        )
+    }
+
+    /// Status `0` is `Ok`, carrying the registration id a monitor wrote; a
+    /// positive status is one plus the error's declaration index.
+    pub(super) fn emit_observation_result(
+        &self,
+        result: Option<StorageId>,
+        status: IntValue<'ctx>,
+        monitor_id: Option<PointerValue<'ctx>>,
+        normal: &PhysicalEdge,
+    ) -> CodegenResult<()> {
         let result = result.ok_or_else(|| {
             CodegenError::FailClosed("observation lacks its checked result".into())
         })?;
@@ -1866,7 +1896,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .build_conditional_branch(ok, success, failure)
             .llvm_ctx("select observation result")?;
         self.builder.position_at_end(success);
-        let fields = if kind == LocalObservationKind::Monitor {
+        let fields = if let Some(id) = monitor_id {
             let id = self
                 .builder
                 .build_load(self.ctx.i64_type(), id, "monitor.identity")

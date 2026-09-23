@@ -244,6 +244,7 @@ impl<'a, 'ctx, 'm> SelectedValueEmitter<'a, 'ctx, 'm> {
                 };
                 self.finish(result)
             }
+            PhysicalValueMethod::Identity => self.identity(ty, lhs, rhs),
             PhysicalValueMethod::String => self.string(lhs, rhs),
             PhysicalValueMethod::Bytes => self.bytes(lhs, rhs),
             PhysicalValueMethod::Aggregate(id) => {
@@ -622,6 +623,49 @@ impl<'a, 'ctx, 'm> SelectedValueEmitter<'a, 'ctx, 'm> {
         self.builder
             .build_int_z_extend_or_bit_cast(bits, ctx.i64_type(), "key.bits")
             .llvm_ctx("widen key scalar bits")
+    }
+
+    /// Equal carriers have equal words; the hash mixes each 64-bit word.
+    fn identity(
+        &self,
+        ty: &ResolvedTy,
+        lhs: PointerValue<'ctx>,
+        rhs: Option<PointerValue<'ctx>>,
+    ) -> CodegenResult<()> {
+        let ctx = self.parent.ctx;
+        let size = self.layout(ty)?.size;
+        if size == 0 || size % 8 != 0 {
+            return Err(CodegenError::FailClosed(
+                "identity carrier is not whole 64-bit words".into(),
+            ));
+        }
+        let words = u32::try_from(size / 8)
+            .map_err(|_| CodegenError::FailClosed("identity carrier exceeds u32 words".into()))?;
+        let word_ty = ctx.i64_type().array_type(words);
+        let word = |source: PointerValue<'ctx>, index: u32| -> CodegenResult<IntValue<'ctx>> {
+            let value = self.load(word_ty.into(), source)?.into_array_value();
+            Ok(self
+                .builder
+                .build_extract_value(value, index, "key.identity.word")
+                .llvm_ctx("read identity word")?
+                .into_int_value())
+        };
+        if let Some(rhs) = rhs {
+            let mut equal = ctx.bool_type().const_int(1, false);
+            for index in 0..words {
+                let same = self.equal(word(lhs, index)?, word(rhs, index)?)?;
+                equal = self
+                    .builder
+                    .build_and(equal, same, "key.identity.equal")
+                    .llvm_ctx("join identity words")?;
+            }
+            return self.finish(equal);
+        }
+        let mut state = ctx.i64_type().const_int(FNV_OFFSET, false);
+        for index in 0..words {
+            state = self.mix(state, word(lhs, index)?)?;
+        }
+        self.finish(state)
     }
 
     fn string(

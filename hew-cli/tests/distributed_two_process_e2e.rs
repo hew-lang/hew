@@ -136,8 +136,12 @@ fn compiled_node_binary() -> &'static Path {
             let emit_path = emit_dir.path().to_path_buf();
 
             let mut command = Command::new(hew_binary());
+            command.arg("compile");
+            // The same scenarios prove the optimized build when requested.
+            if let Ok(level) = std::env::var("HEW_DIST_E2E_OPT_LEVEL") {
+                command.arg("--opt-level").arg(level);
+            }
             command
-                .arg("compile")
                 .arg("--emit-dir")
                 .arg(&emit_path)
                 .arg(&source)
@@ -1358,17 +1362,18 @@ fn quarantine_rejoin_stale_rejected_higher_readmitted() {
 
 /// A carried `RemotePid` is fenced across a same-key process restart. The
 /// replacement has the same key-derived `NodeId` and a strictly higher durable
-/// session incarnation; its fresh PID works while the captured PID fails with
-/// the exact stale-reference error.
+/// session incarnation; its fresh PID works while the captured PID fails. The
+/// runtime's stale-reference refusal reaches the caller as `ActorError.Dead`:
+/// the incarnation it named is gone and will not come back.
 #[test]
 fn carried_remote_pid_rejected_after_same_key_restart() {
     let stdout = run_stale_incarnation_restart_scenario();
     assert!(
         stdout.contains("PASS stale_incarnation_restart old=")
             && stdout.contains(" new=")
-            && stdout.contains(" error=StaleRef"),
+            && stdout.contains(" error=Dead"),
         "same-key restart must admit only the higher incarnation and reject the \
-         captured PID with StaleRef; client stdout:\n{stdout}"
+         captured PID as Dead; client stdout:\n{stdout}"
     );
     assert!(
         !stdout.contains("FAIL "),

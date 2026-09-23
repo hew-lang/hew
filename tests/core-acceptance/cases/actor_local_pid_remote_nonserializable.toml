@@ -8,6 +8,6 @@ kind = "reject"
 
 [[case.expected.diagnostics]]
 code = "BoundsNotSatisfied"
-line = 28
-column = 49
-message = "must implement Serializable before it can cross a RemotePid boundary"
+line = 23
+column = 39
+message = "remote actor `Holder` cannot carry `Holder`: a value sent to a remote actor needs an explicit wire schema"

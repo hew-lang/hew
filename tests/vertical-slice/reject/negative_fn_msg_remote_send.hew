@@ -1,5 +1,5 @@
-// Reject: fn pointers are Send but not Serializable, so they must not cross a
-// RemotePid<T>::send boundary.
+// Reject: a function value has no wire representation, so it must not cross
+// a RemotePid<T>::send boundary.
 fn inc(x: i64) -> i64 {
     x + 1
 }

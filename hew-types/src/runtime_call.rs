@@ -1691,23 +1691,10 @@ pub enum RuntimeCallFamily {
     RegexHandle,
     RegexMatch,
 
-    // --- RemotePid<T>::send intercept --------------------------------------
-    // Pre-staged for codegen-intercept consumers: `pid.send(msg)` on a
-    // `RemotePid<T>` receiver dispatches via the `hew_remote_pid_send`
-    // callee-name intercept (`hew-codegen-rs/src/llvm.rs:25649`); it
-    // does NOT call that symbol directly (codegen emits the
-    // `hew_actor_send_by_id` sequence + `Result<(), SendError>` wrapping
-    // in-place). The catalog declares `hew_remote_pid_send` with linkage
-    // `BuiltinLinkage::CalleeNameDispatchOnly` so the symbol is a real
-    // callee identity but has no extern body.
-    //
-    // `RemoteActorAsk` is INTENTIONALLY ABSENT: the checker's
-    // `MethodCallRewrite::RemoteActorAsk` is a fieldless structured
-    // marker that HIR lowers to `HirExprKind::RemoteActorAsk` and MIR
-    // lowers to `Terminator::RemoteAsk` — there is no callee-name string
-    // anywhere in that path, so it does not belong in a runtime-call
-    // descriptor catalog.
-    RemotePidSend,
+    // Remote `RemotePid<T>` send and ask are not runtime families: the
+    // checker records `MethodCallRewrite::RemoteActorSend` / `RemoteActorAsk`,
+    // HIR lowers them to `HirExprKind::RemoteActorSend` / `RemoteActorAsk`,
+    // and SIR addresses the actor's checked remote member.
 
     // --- Reply channel surface (select{} actor-ask arm) ---------------------
     ReplyChannelCancel,
@@ -7206,7 +7193,7 @@ impl RuntimeCallFamily {
                         ty: K::BuiltinArgument(BuiltinType::Location),
                         effect: E::Borrow,
                     }],
-                    result: R::BitCopy(K::Named("std.builtins.NodeId")),
+                    result: R::BitCopy(K::BuiltinNominal(BuiltinType::NodeId)),
                     failures: &[],
                 }),
                 staging: RuntimeStaging::Declared,
@@ -7266,7 +7253,7 @@ impl RuntimeCallFamily {
                         ty: K::BuiltinArgument(BuiltinType::RemotePid),
                         effect: E::Borrow,
                     }],
-                    result: R::BitCopy(K::Named("std.builtins.Location")),
+                    result: R::BitCopy(K::BuiltinNominal(BuiltinType::Location)),
                     failures: &[],
                 }),
                 staging: RuntimeStaging::Declared,
@@ -7281,7 +7268,7 @@ impl RuntimeCallFamily {
                         ty: K::BuiltinArgument(BuiltinType::RemotePid),
                         effect: E::Borrow,
                     }],
-                    result: R::BitCopy(K::Named("std.builtins.NodeId")),
+                    result: R::BitCopy(K::BuiltinNominal(BuiltinType::NodeId)),
                     failures: &[],
                 }),
                 staging: RuntimeStaging::Declared,
@@ -7827,14 +7814,6 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
-                c_return: RuntimeCReturn::Storage,
-            },
-            Self::RemotePidSend => RuntimeOpRow {
-                symbol: "hew_remote_pid_send",
-                contract: None,
-                staging: RuntimeStaging::PreStaged,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::NotAnAction,
                 c_return: RuntimeCReturn::Storage,
             },
             Self::ReplyChannelCancel => RuntimeOpRow {
@@ -11711,7 +11690,6 @@ impl RuntimeCallFamily {
             | F::RegexFreeCapture
             | F::RegexHandle
             | F::RegexMatch
-            | F::RemotePidSend
             | F::ReplyChannelCancel
             | F::ReplyChannelFree
             | F::ReplyChannelNew

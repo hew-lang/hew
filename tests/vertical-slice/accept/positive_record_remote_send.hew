@@ -1,7 +1,8 @@
-// Accept: record-value messages are admitted by the RemotePid<T>::send
-// Serializable gate.
+// Accept: a record message with an explicit wire schema crosses a
+// RemotePid<T>::send boundary.
+#[wire]
 type Ping {
-    n: i64,
+    n: i64 @1,
 }
 
 actor Worker {

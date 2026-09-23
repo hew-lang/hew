@@ -13,17 +13,21 @@
 //   .tmp/run-node-e2e.sh
 import std.os;
 
-// `record` is Serializable (required for RemotePid messaging).
+// A value that crosses a node declares its wire schema: field tags on
+// records, declaration order on enum variants.
+#[wire]
 type KvPut {
-    key: string,
-    val: string,
+    key: string @1,
+    val: string @2,
 }
 
+#[wire]
 enum KvReq {
     Put(KvPut),
     GetKey(string),
 }
 
+#[wire]
 enum KvResp {
     Ack,
     Value(string),

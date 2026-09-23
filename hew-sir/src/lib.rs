@@ -29,8 +29,8 @@ mod wire;
 
 pub use actor::{
     ActorCallProtocol, ActorId, ActorIngressAdapter, ActorOperation, LocalObservationKind,
-    SemActor, SemActorCoalesce, SemActorField, SemActorHandler, SemActorOverflow,
-    SemCoalesceFallback, SemCoalesceKey, SemCoalesceKeyKind, SemFailureDisplay,
+    RemoteObservationKind, SemActor, SemActorCoalesce, SemActorField, SemActorHandler,
+    SemActorOverflow, SemCoalesceFallback, SemCoalesceKey, SemCoalesceKeyKind, SemFailureDisplay,
 };
 pub use analysis::{
     build_cfg_index, build_def_use, compute_dominators, replace_all_uses, replace_use, CfgIndex,
@@ -40,7 +40,7 @@ pub use callable::{
     callable_parts, callable_value_signature, generator_parts, verify_callable_coercion,
     verify_generator_coercion, ClosureId, ClosureInstanceKey, SemCaptureField, SemClosure,
 };
-pub use capability::{derived_capability_components, SemValueMethodPlan};
+pub use capability::{derived_capability_components, is_identity_carrier, SemValueMethodPlan};
 pub use debug::{SemDebugFacts, SemDebugScope};
 pub use dump::{dump_lowering, dump_sir};
 pub use lifetime::{CleanupMode, LeafContents, PlaceLifetimes};

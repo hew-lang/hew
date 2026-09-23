@@ -6034,9 +6034,6 @@ unsafe fn actor_ask_by_id_inner(
     // SAFETY: ch is valid and single-reader; reply_size is a valid stack pointer.
     let result = unsafe { reply_channel::hew_reply_wait_with_size(ch, &raw mut reply_size) };
 
-    // Store the reply size in a thread-local so the caller can retrieve it.
-    LAST_REPLY_SIZE.set(reply_size);
-
     if result.is_null() {
         // SAFETY: ch is still live — we hold the caller-side reference.
         let is_orphaned = unsafe { (*ch).orphaned.load(Ordering::Acquire) };
@@ -6107,19 +6104,6 @@ pub unsafe extern "C" fn hew_local_pid_ask_with_channel(
         record_ask_error(AskError::ActorStopped);
         HewError::ErrActorStopped as i32
     })
-}
-
-// Thread-local storage for the reply size from the last `hew_actor_ask_by_id`.
-std::thread_local! {
-    static LAST_REPLY_SIZE: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
-
-/// Retrieve the size of the reply data from the most recent
-/// `hew_actor_ask_by_id` call on the current thread.
-// live on not(wasm32) — hew_node.rs ask path; dead on wasm32; caller hew_node.rs:1009
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
-pub(crate) unsafe fn hew_reply_data_size(_ptr: *mut c_void) -> usize {
-    LAST_REPLY_SIZE.get()
 }
 
 // ── Receive-gen stream-producer sink registry ─────────────────────────────

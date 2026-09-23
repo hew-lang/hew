@@ -8,17 +8,20 @@
 //   hew run examples/distributed/kv_client.hew
 import std.os;
 
-// Mirror the server's serializable types.  Both nodes must agree on these.
+// Mirror the server's wire types. Both nodes must agree on these schemas.
+#[wire]
 type KvPut {
-    key: string,
-    val: string,
+    key: string @1,
+    val: string @2,
 }
 
+#[wire]
 enum KvReq {
     Put(KvPut),
     GetKey(string),
 }
 
+#[wire]
 enum KvResp {
     Ack,
     Value(string),

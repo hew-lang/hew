@@ -56,16 +56,10 @@
 
 # ── examples/ ───────────────────────────────────────────────────────────────────
 
-# final-path-limitation: the distributed Node surface has no ownership-SIR
-# operation contract on the final path yet
-examples/distributed/kv_client.hew E_SIR_UNSUPPORTED
 
 # deferred-nyi: multifile compilation is not implemented (requires multi-file resolve)
 examples/multifile/02_geometry/geo/area.hew
 examples/multifile/02_geometry/geo/distance.hew
-
-# final-path-limitation: QUIC / advanced net
-examples/quic_mesh/client.hew E_SIR_UNSUPPORTED
 
 # corpus-intentional-refusal: `*_fails.hew` programs demonstrate the refusal
 # their name states
@@ -73,9 +67,6 @@ examples/v05/pipe_vec_element_fails.hew
 examples/v05/vec_unsupported_method_fails.hew
 
 # ── hew-cli/ ────────────────────────────────────────────────────────────────────
-
-# final-path-limitation: the distributed node fixture
-hew-cli/tests/fixtures/distributed/dist_node.hew E_SIR_UNSUPPORTED
 
 # corpus-intentional-refusal: hew-cli's `result_error_type_must_implement_error`
 # test asserts this exact refusal and its exit status

@@ -85,6 +85,7 @@ impl<'a> HostExport<'a> {
                     | PhysicalTerminator::TaskSelect { .. }
                     | PhysicalTerminator::TaskAwait { .. }
                     | PhysicalTerminator::ActorAsk { .. }
+                    | PhysicalTerminator::RemoteAsk { .. }
                     | PhysicalTerminator::TaskScopeJoin { .. }
                     | PhysicalTerminator::ValueCall { .. }
                     | PhysicalTerminator::ExternCall { .. }

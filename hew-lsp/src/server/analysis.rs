@@ -1582,8 +1582,9 @@ pub(super) mod tests {
 
     #[test]
     fn coverage_remote_ask_surface() {
-        let source = "type Job {\n\
-                      \x20   n: i32,\n\
+        let source = "#[wire]\n\
+                      type Job {\n\
+                      \x20   n: i32 @1,\n\
                       }\n\
                       actor Worker {\n\
                       \x20   receive fn run(job: Job) -> i64 { 21 }\n\

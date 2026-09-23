@@ -81,12 +81,18 @@ pub type DeserializeThunk =
 pub type SerializeThunk =
     unsafe extern "C" fn(value_ptr: *const c_void, out_len: *mut usize) -> *mut u8;
 
-// `serialize` is read by `lookup_serialize` (consumed by the ask reply-encode
-// path); `deserialize` by `lookup_deserialize` (the tell/ask receive-decode
-// path). Both are wired in the runtime receive slices of this implementation.
-struct ThunkPair {
-    serialize: SerializeThunk,
-    deserialize: DeserializeThunk,
+/// C-ABI signature of a codegen-emitted destructor: it releases the owned
+/// fields of a value in place, leaving its storage to the caller.
+pub type DropThunk = unsafe extern "C" fn(value: *mut c_void);
+
+/// One registered value codec: its two directions, the destructor for a value
+/// the runtime holds but never delivers, and the value's in-memory size.
+#[derive(Clone, Copy)]
+pub(crate) struct ThunkPair {
+    pub(crate) serialize: SerializeThunk,
+    pub(crate) deserialize: DeserializeThunk,
+    pub(crate) drop: Option<DropThunk>,
+    pub(crate) size: usize,
 }
 
 /// Codec-registry key: `(dispatch, msg_type)`.
@@ -152,14 +158,20 @@ pub unsafe extern "C" fn hew_xnode_register_codec(
     msg_type: i32,
     serialize: SerializeThunk,
     deserialize: DeserializeThunk,
+    drop: Option<DropThunk>,
+    size: usize,
 ) {
     register_codec_into(
         &THUNK_REGISTRY,
         "request",
         dispatch,
         msg_type,
-        serialize,
-        deserialize,
+        ThunkPair {
+            serialize,
+            deserialize,
+            drop,
+            size,
+        },
     );
 }
 
@@ -187,14 +199,20 @@ pub unsafe extern "C" fn hew_xnode_register_reply_codec(
     msg_type: i32,
     serialize: SerializeThunk,
     deserialize: DeserializeThunk,
+    drop: Option<DropThunk>,
+    size: usize,
 ) {
     register_codec_into(
         &REPLY_REGISTRY,
         "reply",
         dispatch,
         msg_type,
-        serialize,
-        deserialize,
+        ThunkPair {
+            serialize,
+            deserialize,
+            drop,
+            size,
+        },
     );
 }
 
@@ -209,16 +227,17 @@ fn register_codec_into(
     which: &str,
     dispatch: *const c_void,
     msg_type: i32,
-    serialize: SerializeThunk,
-    deserialize: DeserializeThunk,
+    codec: ThunkPair,
 ) {
     let key = CodecKey::new(dispatch, msg_type);
     let Ok(mut reg) = registry.lock() else {
         return;
     };
     if let Some(slot) = reg.iter_mut().find(|(k, _)| *k == key) {
-        let same = slot.1.serialize as usize == serialize as usize
-            && slot.1.deserialize as usize == deserialize as usize;
+        let same = slot.1.serialize as usize == codec.serialize as usize
+            && slot.1.deserialize as usize == codec.deserialize as usize
+            && slot.1.drop.map(|drop| drop as usize) == codec.drop.map(|drop| drop as usize)
+            && slot.1.size == codec.size;
         // Fail closed in release AND debug: a TRUE collision on the full
         // `(dispatch, msg_type)` key means two distinct codecs claim the same
         // actor-type + discriminant — an unrecoverable wire-routing ambiguity.
@@ -232,13 +251,7 @@ fn register_codec_into(
             key.dispatch
         );
     } else {
-        reg.push((
-            key,
-            ThunkPair {
-                serialize,
-                deserialize,
-            },
-        ));
+        reg.push((key, codec));
     }
 }
 
@@ -253,28 +266,18 @@ fn register_codec_into(
 // The four `lookup_*` resolvers below are the codec-key layer those entry
 // points call, so they stay reachable without an allow of their own.
 
-/// Look up the deserialize thunk for `(dispatch, msg_type)`, if registered.
-pub(crate) fn lookup_deserialize(
-    dispatch: *const c_void,
-    msg_type: i32,
-) -> Option<DeserializeThunk> {
+/// The complete request codec for `(dispatch, msg_type)`, if registered.
+pub(crate) fn lookup_request(dispatch: *const c_void, msg_type: i32) -> Option<ThunkPair> {
     let key = CodecKey::new(dispatch, msg_type);
     let reg = THUNK_REGISTRY.lock().ok()?;
-    reg.iter()
-        .find(|(k, _)| *k == key)
-        .map(|(_, p)| p.deserialize)
+    reg.iter().find(|(k, _)| *k == key).map(|(_, codec)| *codec)
 }
 
-/// Look up the reply SERIALIZE thunk for `(dispatch, request msg_type)`.
-pub(crate) fn lookup_reply_serialize(
-    dispatch: *const c_void,
-    msg_type: i32,
-) -> Option<SerializeThunk> {
+/// The complete reply codec for `(dispatch, request msg_type)`, if registered.
+pub(crate) fn lookup_reply(dispatch: *const c_void, msg_type: i32) -> Option<ThunkPair> {
     let key = CodecKey::new(dispatch, msg_type);
     let reg = REPLY_REGISTRY.lock().ok()?;
-    reg.iter()
-        .find(|(k, _)| *k == key)
-        .map(|(_, p)| p.serialize)
+    reg.iter().find(|(k, _)| *k == key).map(|(_, codec)| *codec)
 }
 
 /// Look up the reply DESERIALIZE thunk for `(dispatch, request msg_type)`.
@@ -312,31 +315,6 @@ pub(crate) unsafe fn decode_reply(
     (value, struct_size)
 }
 
-/// Decode an inbound wire payload for `(dispatch, msg_type)` into a freshly
-/// reconstructed value in this node's address space. Returns null if no codec is
-/// registered for the key (fail-closed: the caller must drop the message rather
-/// than feed raw bytes to the mailbox) or if the registered thunk reports
-/// failure.
-///
-/// # Safety
-/// `data` must be valid for `len` bytes (or null when `len == 0`).
-// KEEP(wasm32): see the codec note above; caller is hew_node.rs.
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
-pub(crate) unsafe fn decode_payload(
-    dispatch: *const c_void,
-    msg_type: i32,
-    data: *const u8,
-    len: usize,
-) -> (*mut c_void, usize) {
-    let Some(thunk) = lookup_deserialize(dispatch, msg_type) else {
-        return (std::ptr::null_mut(), 0);
-    };
-    let mut struct_size: usize = 0;
-    // SAFETY: thunk is a valid codegen-emitted deserialize thunk; data/len valid.
-    let value = unsafe { thunk(data, len, &raw mut struct_size) };
-    (value, struct_size)
-}
-
 /// Look up the request SERIALIZE thunk for `(dispatch, msg_type)`, if registered.
 pub(crate) fn lookup_serialize(dispatch: *const c_void, msg_type: i32) -> Option<SerializeThunk> {
     let key = CodecKey::new(dispatch, msg_type);
@@ -370,33 +348,6 @@ pub(crate) unsafe fn encode_payload(
         return std::ptr::null_mut();
     };
     // SAFETY: thunk is a valid codegen-emitted serialize thunk.
-    unsafe { thunk(value_ptr, out_len) }
-}
-
-/// Encode an ask REPLY value (keyed by `(dispatch, request msg_type)`) into a
-/// freshly `malloc`'d byte buffer. Returns null + `*out_len = 0` if no reply
-/// codec is registered (fail-closed: the inbound-ask worker then sends no reply,
-/// and the originating ask times out rather than receiving raw bytes).
-///
-/// # Safety
-/// `value_ptr` must point to a valid value of the reply type for `msg_type`;
-/// `out_len` must be a valid writable pointer.
-// KEEP(wasm32): see the codec note above; caller is hew_node.rs.
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
-pub(crate) unsafe fn encode_reply(
-    dispatch: *const c_void,
-    msg_type: i32,
-    value_ptr: *const c_void,
-    out_len: *mut usize,
-) -> *mut u8 {
-    let Some(thunk) = lookup_reply_serialize(dispatch, msg_type) else {
-        if !out_len.is_null() {
-            // SAFETY: out_len validated non-null.
-            unsafe { *out_len = 0 };
-        }
-        return std::ptr::null_mut();
-    };
-    // SAFETY: thunk is a valid codegen-emitted reply serialize thunk.
     unsafe { thunk(value_ptr, out_len) }
 }
 
@@ -580,21 +531,18 @@ mod tests {
         // SAFETY: register two distinct codecs under the SAME msg_type but
         // DIFFERENT dispatch keys (modeling two distinct actor types).
         unsafe {
-            hew_xnode_register_codec(dispatch_a(), COLLIDING_MSG_TYPE, ser_a, de_a);
-            hew_xnode_register_codec(dispatch_b(), COLLIDING_MSG_TYPE, ser_b, de_b);
+            hew_xnode_register_codec(dispatch_a(), COLLIDING_MSG_TYPE, ser_a, de_a, None, 8);
+            hew_xnode_register_codec(dispatch_b(), COLLIDING_MSG_TYPE, ser_b, de_b, None, 8);
         }
 
         // Actor A's frame (an i64) must decode under A's codec to the i64 value.
         let a_bytes = encode_with_a(-987_654_321);
         // SAFETY: decode against A's dispatch key; bytes valid for their length.
-        let (a_val, a_size) = unsafe {
-            decode_payload(
-                dispatch_a(),
-                COLLIDING_MSG_TYPE,
-                a_bytes.as_ptr(),
-                a_bytes.len(),
-            )
-        };
+        let codec = lookup_request(dispatch_a(), COLLIDING_MSG_TYPE).expect("registered codec");
+        let mut a_size = 0;
+        // SAFETY: the registered thunk borrows the frame bytes for this decode.
+        let a_val =
+            unsafe { (codec.deserialize)(a_bytes.as_ptr(), a_bytes.len(), &raw mut a_size) };
         assert!(
             !a_val.is_null(),
             "actor A's frame must route to A's codec, not be lost to B's registration"
@@ -612,14 +560,11 @@ mod tests {
         // Actor B's frame (a string) must decode under B's codec to the string.
         let b_bytes = encode_with_b("collision-payload");
         // SAFETY: decode against B's dispatch key; bytes valid for their length.
-        let (b_val, b_size) = unsafe {
-            decode_payload(
-                dispatch_b(),
-                COLLIDING_MSG_TYPE,
-                b_bytes.as_ptr(),
-                b_bytes.len(),
-            )
-        };
+        let codec = lookup_request(dispatch_b(), COLLIDING_MSG_TYPE).expect("registered codec");
+        let mut b_size = 0;
+        // SAFETY: the registered thunk borrows the frame bytes for this decode.
+        let b_val =
+            unsafe { (codec.deserialize)(b_bytes.as_ptr(), b_bytes.len(), &raw mut b_size) };
         assert!(
             !b_val.is_null(),
             "actor B's frame must route to B's codec, not A's (type-confusion)"

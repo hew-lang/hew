@@ -4409,15 +4409,7 @@ pub fn lower_program_with_mono_cap(
                 // visible body the MIR fixpoint can scan, so it is exempt.
                 for trait_item in &trait_decl.items {
                     if let TraitItem::Method(method) = trait_item {
-                        if method.body.is_none() {
-                            ctx.check_boundary_consume_discipline(
-                                &method.name,
-                                &method.params,
-                                None,
-                                "trait method signature",
-                                &method.span,
-                            );
-                        }
+                        if method.body.is_none() {}
                     }
                 }
             }
@@ -4439,13 +4431,6 @@ pub fn lower_program_with_mono_cap(
                         .return_type
                         .as_ref()
                         .map_or(ResolvedTy::Unit, |ret| ctx.lower_type(ret));
-                    ctx.check_boundary_consume_discipline(
-                        &func.name,
-                        &func.params,
-                        Some(&param_tys),
-                        "extern fn",
-                        &func.span,
-                    );
                     let provenance = extern_provenance(ctx.current_module_name.as_deref());
                     let runtime_capability = extern_runtime_capability(&provenance, &func.name);
                     let Some(declaration) = ctx.source_declaration(
@@ -4725,13 +4710,6 @@ pub fn lower_program_with_mono_cap(
                                     .return_type
                                     .as_ref()
                                     .map_or(ResolvedTy::Unit, |ret| ctx.lower_type(ret));
-                                ctx.check_boundary_consume_discipline(
-                                    &func.name,
-                                    &func.params,
-                                    Some(&param_tys),
-                                    "extern fn",
-                                    &func.span,
-                                );
                                 let provenance =
                                     extern_provenance(ctx.current_module_name.as_deref());
                                 let runtime_capability =
@@ -5012,15 +4990,7 @@ pub fn lower_program_with_mono_cap(
                         Item::Trait(trait_decl) => {
                             for trait_item in &trait_decl.items {
                                 if let TraitItem::Method(method) = trait_item {
-                                    if method.body.is_none() {
-                                        ctx.check_boundary_consume_discipline(
-                                            &method.name,
-                                            &method.params,
-                                            None,
-                                            "trait method signature",
-                                            &method.span,
-                                        );
-                                    }
+                                    if method.body.is_none() {}
                                 }
                             }
                         }
@@ -13252,109 +13222,6 @@ impl LowerCtx {
             span: span.clone(),
         };
         (body, generator_ty)
-    }
-
-    /// Fail-close a `#[resource]`/`#[linear]` value parameter declared at an
-    /// invisible-body boundary (an `extern` fn or a bodyless trait method
-    /// signature) without an explicit `consume` modifier.
-    ///
-    /// Such a parameter has no body to scan, so the interprocedural
-    /// borrow-vs-consume fixpoint in MIR cannot infer its disposition. Leaving
-    /// it unannotated forces a silent guess: a caller that borrows across a body
-    /// which actually consumes double-drops; a caller that moves in across a
-    /// body which only borrows leaks. The ratified surface makes `consume`
-    /// MANDATORY here — pinning the by-move transfer so the callee/ABI owns and
-    /// drops the handle. A receiver (`self` / a `Self`-typed receiver) is never
-    /// flagged: it is not a concrete resource nominal in `type_classes`, and its
-    /// disposition rides the method dispatch surface, not borrow-pass.
-    fn check_boundary_consume_discipline(
-        &mut self,
-        func_name: &str,
-        params: &[hew_parser::ast::Param],
-        resolved_param_tys: Option<&[ResolvedTy]>,
-        boundary: &str,
-        span: &Span,
-    ) {
-        let offenders: Vec<(String, String)> = params
-            .iter()
-            .enumerate()
-            .filter(|(_, p)| !p.is_consume)
-            .filter_map(|(index, p)| match &p.ty.0 {
-                TypeExpr::Named { name, .. } => {
-                    // Builtin affine handles (ActorHandle/RemotePid/ActorFn,
-                    // channel halves, CancellationToken, MonitorRef, ...) are
-                    // runtime-managed pointer words: their drop is dispatched
-                    // by the runtime on a coherent path, and their disposition
-                    // at a C ABI barrier is a known borrow by construction
-                    // (e.g. a supervisor pid threaded through a restart
-                    // barrier and re-read afterwards). They are NOT part of the
-                    // user `#[resource]`/`#[linear]` borrow/consume surface, so
-                    // they are exempt from boundary-consume discipline — the
-                    // surface-level analog of the `builtin:None` gate that
-                    // free-fn / method arg ownership classification uses. Only
-                    // user-declared resources, whose `close` frees a real
-                    // foreign resource and could double-free across an
-                    // invisible body, must pin `consume` here.
-                    let resolved_nominal = resolved_param_tys
-                        .and_then(|tys| tys.get(index))
-                        .and_then(|ty| match ty {
-                            ResolvedTy::Named { name, builtin, .. } => Some((name, *builtin)),
-                            _ => None,
-                        });
-                    if resolved_nominal.is_some_and(|(_, builtin)| builtin.is_some())
-                        || crate::builtin_type_classes::builtin_type_registration(name).is_some()
-                    {
-                        return None;
-                    }
-                    match self.type_classes.get(name) {
-                        Some((ResourceMarker::Resource | ResourceMarker::Linear, _)) => {
-                            // A typed FFI ownership-contract row is the only
-                            // positive proof that a by-value resource handle
-                            // is merely borrowed across this invisible body.
-                            // The proof binds the exact nominal and the
-                            // trusted std.net declaration too: an arbitrary
-                            // `Foo` must not inherit `hew_tcp_read`'s scalar
-                            // ABI spelling. An absent/short row, a wrong
-                            // nominal/module, Retain, or Consume still
-                            // requires the surface `consume` marker.
-                            if boundary == "extern fn"
-                                && hew_types::ffi_contracts::extern_resource_param_is_audited_borrow(
-                                    func_name,
-                                    index,
-                                    self.current_module_name.as_deref(),
-                                    resolved_nominal.map_or(name.as_str(), |(name, _)| name.as_str()),
-                                )
-                            {
-                                None
-                            } else {
-                                Some((p.name.clone(), name.clone()))
-                            }
-                        }
-                        _ => None,
-                    }
-                }
-                _ => None,
-            })
-            .collect();
-        for (param, ty) in offenders {
-            self.diagnostics.push(HirDiagnostic::new(
-                HirDiagnosticKind::ResourceBoundaryParamMustConsume {
-                    func: func_name.to_string(),
-                    param: param.clone(),
-                    ty: ty.clone(),
-                    boundary: boundary.to_string(),
-                },
-                span.clone(),
-                format!(
-                    "`{ty}` is a `#[resource]`/`#[linear]` handle passed by value to \
-                     {boundary} `{func_name}`, whose body is not visible at the call \
-                     site, so its borrow-vs-consume disposition cannot be inferred; \
-                     annotate `consume {param}: {ty}` to pin the by-move ownership \
-                     transfer (the callee / foreign ABI owns and drops it), or pass an \
-                     owned handle/id by value instead of the resource itself"
-                ),
-            ));
-        }
     }
 
     /// Query checker signatures by their canonical receiver identity.
@@ -34192,59 +34059,6 @@ impl Widget {
             builtin: None,
             is_opaque: false,
         }
-    }
-
-    #[test]
-    fn tcp_borrow_contract_rejects_spoofed_and_unclassified_resource_params() {
-        // A resource may cross an extern boundary without `consume` only when
-        // the source declaration is std.net's audited nominal. In particular,
-        // neither the familiar TCP spelling nor a scalar-compatible Foo ABI
-        // lets a root module forge Connection's borrow privilege.
-        let (_, _, lowered) = parse_typecheck_and_lower(
-            r#"
-            #[resource]
-            #[opaque]
-            type Handle {}
-
-            impl Handle {
-                fn close(consume self) {}
-            }
-
-            extern "C" {
-                fn hew_tcp_read(handle: Handle);
-                fn hew_tcp_unclassified(handle: Handle);
-            }
-            "#,
-        );
-
-        let boundary_diagnostics: Vec<_> = lowered
-            .diagnostics
-            .iter()
-            .filter(|diagnostic| {
-                matches!(
-                    diagnostic.kind,
-                    HirDiagnosticKind::ResourceBoundaryParamMustConsume { .. }
-                )
-            })
-            .collect();
-        assert_eq!(
-            boundary_diagnostics.len(),
-            2,
-            "both a spoofed TCP spelling and an unclassified resource parameter must be rejected: {:#?}",
-            lowered.diagnostics
-        );
-        let rejected: Vec<_> = boundary_diagnostics
-            .iter()
-            .filter_map(|diagnostic| match &diagnostic.kind {
-                HirDiagnosticKind::ResourceBoundaryParamMustConsume { func, .. } => Some(func),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(
-            rejected,
-            vec!["hew_tcp_read", "hew_tcp_unclassified"],
-            "the generated borrow row must not be inherited by a root `Handle`: {boundary_diagnostics:#?}"
-        );
     }
 
     #[test]

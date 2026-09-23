@@ -1110,3 +1110,42 @@ fn unaliased_item_import_binds_the_bare_extern_nominal() {
         output.errors
     );
 }
+
+/// A `#[resource]` value crossing an extern or bodyless trait boundary must
+/// say `consume`; the refusal is decided at check time (#3228). A root type
+/// cannot borrow through a std symbol's audited row by spelling the symbol,
+/// and a `consume` parameter or a non-resource value passes.
+#[test]
+fn boundary_resource_params_must_consume_at_check() {
+    let output = check_source(
+        r#"
+        #[resource]
+        #[opaque]
+        type Handle {}
+        impl Handle { fn close(consume self) {} }
+        extern "C" {
+            fn hew_tcp_read(handle: Handle);
+            fn hew_tcp_unclassified(handle: Handle);
+            fn hew_takes(consume handle: Handle);
+            fn hew_len(text: string) -> i64;
+        }
+        trait Sink { fn put(self, item: Handle); fn take(self, consume item: Handle); }
+        fn main() {}
+        "#,
+    );
+    let mut rejected: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|error| error.kind == TypeErrorKind::BoundaryResourceMustConsume)
+        .map(|error| error.message.clone())
+        .collect();
+    rejected.sort();
+    assert_eq!(rejected.len(), 3, "{:#?}", output.errors);
+    for (message, function) in
+        rejected
+            .iter()
+            .zip(["`hew_tcp_read`", "`hew_tcp_unclassified`", "`put`"])
+    {
+        assert!(message.contains(function), "{message}");
+    }
+}

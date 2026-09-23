@@ -5934,27 +5934,18 @@ impl Foo { fn close(consume self) {} }
 extern "C" { fn hew_tcp_read(foo: Foo); }
 "#,
         );
-        let spoof_state = run_file_frontend_to_typecheck(&spoof, &FrontendOptions::default())
-            .expect("the spoof is syntactically/type valid before HIR boundary enforcement");
-        let spoof_tco = spoof_state
-            .typecheck_result
-            .tco
-            .as_ref()
-            .expect("successful spoof type check has type output");
-        let spoof_hir = hew_hir::lower_program(
-            &spoof_state.program,
-            spoof_tco,
-            &hew_hir::ResolutionCtx,
-            hew_hir::TargetArch::host(),
-        );
+        let Err(spoof) = run_file_frontend_to_typecheck(&spoof, &FrontendOptions::default()) else {
+            panic!("a user Foo must not inherit std.net.Connection's borrow row");
+        };
         assert!(
-            spoof_hir.diagnostics.iter().any(|diagnostic| matches!(
-                diagnostic.kind,
-                hew_hir::HirDiagnosticKind::ResourceBoundaryParamMustConsume { ref func, .. }
-                    if func == "hew_tcp_read"
+            spoof.diagnostics.iter().any(|diagnostic| matches!(
+                &diagnostic.kind,
+                FrontendDiagnosticKind::Type(error)
+                    if error.kind == hew_types::error::TypeErrorKind::BoundaryResourceMustConsume
+                        && error.message.contains("`hew_tcp_read`")
             )),
             "a user Foo must not inherit std.net.Connection's borrow row: {:#?}",
-            spoof_hir.diagnostics
+            spoof.diagnostics
         );
     }
 

@@ -28,6 +28,83 @@ fn copy_ints(v: Vec<i64>) -> Vec<i64> {
     out
 }
 
+fn copy_generic<T>(v: Vec<T>) -> Vec<T> {
+    var out: Vec<T> = Vec.new();
+    for i in 0 .. v.len() {
+        out.push(v[i]);
+    }
+    out
+}
+
+// Iterative bottom-up merge sort driven by a caller-supplied `less`
+// predicate rather than the `<` operator, so it works for any `T` without
+// requiring an ordering trait (`std.builtins` declares none yet — see
+// `sort_by`'s doc comment). `less(a, b)` calls its closure by value on each
+// element, which the checker treats as a read borrow (matching
+// `std.iter.Filter`'s predicate calls), so `a`/`b` remain owned and reusable
+// by the merge afterward.
+fn sort_by_core<T>(var v: Vec<T>, less: fn(T, T) -> bool) -> Vec<T> {
+    let n = v.len();
+    if n < 2 {
+        return v;
+    }
+    var scratch = copy_generic(v);
+    var width = 1;
+    while width < n {
+        var start = 0;
+        while start < n {
+            let left_len = if width < n - start {
+                width
+            } else {
+                n - start
+            };
+            let mid = start + left_len;
+            let right_len = if width < n - mid {
+                width
+            } else {
+                n - mid
+            };
+            let end = mid + right_len;
+            var left = start;
+            var right = mid;
+            var write = start;
+            while left < mid && right < end {
+                let left_value = v[left];
+                let right_value = v[right];
+                // Taking the left element on equality makes each merge left-biased (stable).
+                if less(right_value, left_value) {
+                    scratch.set(write, right_value);
+                    right = right + 1;
+                } else {
+                    scratch.set(write, left_value);
+                    left = left + 1;
+                }
+                write = write + 1;
+            }
+            while left < mid {
+                scratch.set(write, v[left]);
+                left = left + 1;
+                write = write + 1;
+            }
+            while right < end {
+                scratch.set(write, v[right]);
+                right = right + 1;
+                write = write + 1;
+            }
+            start = end;
+        }
+        for i in 0 .. n {
+            v.set(i, scratch[i]);
+        }
+        width = if width > n / 2 {
+            n
+        } else {
+            width * 2
+        };
+    }
+    v
+}
+
 // Iterative bottom-up merge sort. `v` arrives as this function's own copy of
 // the caller's vector (a parameter is a value, never a view of the caller's
 // binding), so the sorted vector travels back through the return value along
@@ -163,6 +240,46 @@ fn sort_strings_core(var v: Vec<string>) -> (Vec<string>, i64) {
 }
 
 // ── Module-level functions ────────────────────────────────────────────
+/// Sort any `Vec<T>` in the order `less` defines, where `less(a, b)` returns
+/// `true` when `a` belongs strictly before `b`. Stable: elements for which
+/// neither is `less` than the other keep their relative order.
+///
+/// Returns a new sorted vector; the original is unchanged.
+///
+/// There is no generic `sort()` alongside this: it would need an ordering
+/// trait bound (`T: Ord` or similar), and `std.builtins` does not declare
+/// one yet. `sort_ints`/`sort_strings`/`sort_floats` remain the built-in
+/// orderings for those concrete types.
+///
+/// There is also no `v.sort_by(less)` fluent method form: the checker
+/// reserves inherent `impl Vec<T> { ... }` blocks for `std/builtins.hew`
+/// (`E_HIR: impl-block shape not yet lowered`) and, even there, `Vec`'s
+/// method dispatch only forwards runtime-backed (`#[extern_symbol]`)
+/// methods, panicking on a pure-Hew one (`hew-types/src/check/methods.rs`,
+/// "Vec method signature was present immediately before dispatch"). Both are
+/// compiler gaps outside this module's reach; see the stdlib-packages lane
+/// report for hew-lang/hew#2933.
+///
+/// # Examples
+///
+/// ```
+/// import std.sort;
+///
+/// fn main() {
+///     var nums: Vec<i64> = Vec.new();
+///     nums.push(3);
+///     nums.push(1);
+///     nums.push(2);
+///     let sorted = sort.sort_by(nums, |a: i64, b: i64| a < b);
+///     println(sorted[0]);  // 1
+///     println(sorted[1]);  // 2
+///     println(sorted[2]);  // 3
+/// }
+/// ```
+pub fn sort_by<T>(v: Vec<T>, less: fn(T, T) -> bool) -> Vec<T> {
+    sort_by_core(v, less)
+}
+
 /// Sort a vector of integers in ascending order.
 ///
 /// Returns a new sorted vector; the original is unchanged.

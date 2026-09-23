@@ -140,3 +140,65 @@ fn test_unwrap_err_str_ok_panics() {
     let x: Result<string, string> = Ok("value");
     result.unwrap_err_str(x);
 }
+
+// ── Generic combinators (hew-lang/hew#2933) ──────────────────────────
+//
+// `ok`/`map`/`map_err` are plain generic functions (`result.map(r, f)`),
+// not `impl Result<T, E>` methods, for the same reason as `std.option`'s
+// combinators — see that module's impl block doc comment.
+#[test]
+fn test_ok_converts_ok_to_some() {
+    let x: Result<i64, string> = Ok(10);
+    match result.ok(x) {
+        .Some(v) => testing.assert_eq(v, 10),
+        .None => testing.assert_true(false),
+    }
+}
+
+#[test]
+fn test_ok_converts_err_to_none() {
+    let x: Result<i64, string> = Err("bad");
+    // Negative control: `Err` must discard its payload and become `None`.
+    match result.ok(x) {
+        .Some(_) => testing.assert_true(false),
+        .None => testing.assert_true(true),
+    }
+}
+
+#[test]
+fn test_map_applies_f_on_ok() {
+    let x: Result<i64, string> = Ok(10);
+    match result.map(x, |v: i64| v + 1) {
+        .Ok(v) => testing.assert_eq(v, 11),
+        .Err(_) => testing.assert_true(false),
+    }
+}
+
+#[test]
+fn test_map_leaves_err_unchanged() {
+    let x: Result<i64, string> = Err("bad");
+    // Negative control: `f` must not run on the `Err` path.
+    match result.map(x, |v: i64| v + 1) {
+        .Ok(_) => testing.assert_true(false),
+        .Err(e) => testing.assert_eq_str(e, "bad"),
+    }
+}
+
+#[test]
+fn test_map_err_applies_f_on_err() {
+    let x: Result<i64, string> = Err("bad");
+    match result.map_err(x, |e: string| e + "!") {
+        .Ok(_) => testing.assert_true(false),
+        .Err(e) => testing.assert_eq_str(e, "bad!"),
+    }
+}
+
+#[test]
+fn test_map_err_leaves_ok_unchanged() {
+    let x: Result<i64, string> = Ok(10);
+    // Negative control: `f` must not run on the `Ok` path.
+    match result.map_err(x, |e: string| e + "!") {
+        .Ok(v) => testing.assert_eq(v, 10),
+        .Err(_) => testing.assert_true(false),
+    }
+}

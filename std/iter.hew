@@ -434,6 +434,193 @@ impl<T> VecIter<T> {
     }
 }
 
+// Adapter method surface -----------------------------------------------
+//
+// Each lazy adapter (`Map`, `Filter`, `Take`, `Skip`, `Enumerate`) gets the
+// same thin-wrapper method surface as `VecIter` above, so a chain like
+// `v.into_iter().filter(pred).map(f).collect()` keeps dispatching through
+// method syntax at every stage instead of only the first one. Every method
+// here forwards to the matching free function; the where-clause on each
+// `impl` block matches the adapter's own `Iterator` impl exactly, which is
+// what lets the free functions' `I: Iterator<Item = A>` bound resolve for
+// `self`.
+impl<I, A, B> Map<I, A, B> where I: Iterator<Item = A> {
+    pub fn map<C>(consume self, consume f: fn(B) -> C) -> Map<Map<I, A, B>, B, C> {
+        map(self, f)
+    }
+    pub fn filter(consume self, consume pred: fn(B) -> bool) -> Filter<Map<I, A, B>, B> {
+        filter(self, pred)
+    }
+    pub fn fold<C>(consume self, init: C, f: fn(C, B) -> C) -> C {
+        fold(self, init, f)
+    }
+    pub fn any(consume self, pred: fn(B) -> bool) -> bool {
+        any(self, pred)
+    }
+    pub fn all(consume self, pred: fn(B) -> bool) -> bool {
+        all(self, pred)
+    }
+    pub fn find(consume self, pred: fn(B) -> bool) -> Option<B> {
+        find(self, pred)
+    }
+    pub fn count(consume self) -> i64 {
+        count(self)
+    }
+    pub fn enumerate(consume self) -> Enumerate<Map<I, A, B>, B> {
+        enumerate(self)
+    }
+    pub fn take(consume self, n: i64) -> Take<Map<I, A, B>, B> {
+        take(self, n)
+    }
+    pub fn skip(consume self, n: i64) -> Skip<Map<I, A, B>, B> {
+        skip(self, n)
+    }
+    pub fn collect(consume self) -> Vec<B> {
+        collect(self)
+    }
+}
+
+impl<I, A> Filter<I, A> where I: Iterator<Item = A> {
+    pub fn map<B>(consume self, consume f: fn(A) -> B) -> Map<Filter<I, A>, A, B> {
+        map(self, f)
+    }
+    pub fn filter(consume self, consume pred: fn(A) -> bool) -> Filter<Filter<I, A>, A> {
+        filter(self, pred)
+    }
+    pub fn fold<B>(consume self, init: B, f: fn(B, A) -> B) -> B {
+        fold(self, init, f)
+    }
+    pub fn any(consume self, pred: fn(A) -> bool) -> bool {
+        any(self, pred)
+    }
+    pub fn all(consume self, pred: fn(A) -> bool) -> bool {
+        all(self, pred)
+    }
+    pub fn find(consume self, pred: fn(A) -> bool) -> Option<A> {
+        find(self, pred)
+    }
+    pub fn count(consume self) -> i64 {
+        count(self)
+    }
+    pub fn enumerate(consume self) -> Enumerate<Filter<I, A>, A> {
+        enumerate(self)
+    }
+    pub fn take(consume self, n: i64) -> Take<Filter<I, A>, A> {
+        take(self, n)
+    }
+    pub fn skip(consume self, n: i64) -> Skip<Filter<I, A>, A> {
+        skip(self, n)
+    }
+    pub fn collect(consume self) -> Vec<A> {
+        collect(self)
+    }
+}
+
+impl<I, A> Take<I, A> where I: Iterator<Item = A> {
+    pub fn map<B>(consume self, consume f: fn(A) -> B) -> Map<Take<I, A>, A, B> {
+        map(self, f)
+    }
+    pub fn filter(consume self, consume pred: fn(A) -> bool) -> Filter<Take<I, A>, A> {
+        filter(self, pred)
+    }
+    pub fn fold<B>(consume self, init: B, f: fn(B, A) -> B) -> B {
+        fold(self, init, f)
+    }
+    pub fn any(consume self, pred: fn(A) -> bool) -> bool {
+        any(self, pred)
+    }
+    pub fn all(consume self, pred: fn(A) -> bool) -> bool {
+        all(self, pred)
+    }
+    pub fn find(consume self, pred: fn(A) -> bool) -> Option<A> {
+        find(self, pred)
+    }
+    pub fn count(consume self) -> i64 {
+        count(self)
+    }
+    pub fn enumerate(consume self) -> Enumerate<Take<I, A>, A> {
+        enumerate(self)
+    }
+    pub fn take(consume self, n: i64) -> Take<Take<I, A>, A> {
+        take(self, n)
+    }
+    pub fn skip(consume self, n: i64) -> Skip<Take<I, A>, A> {
+        skip(self, n)
+    }
+    pub fn collect(consume self) -> Vec<A> {
+        collect(self)
+    }
+}
+
+impl<I, A> Skip<I, A> where I: Iterator<Item = A> {
+    pub fn map<B>(consume self, consume f: fn(A) -> B) -> Map<Skip<I, A>, A, B> {
+        map(self, f)
+    }
+    pub fn filter(consume self, consume pred: fn(A) -> bool) -> Filter<Skip<I, A>, A> {
+        filter(self, pred)
+    }
+    pub fn fold<B>(consume self, init: B, f: fn(B, A) -> B) -> B {
+        fold(self, init, f)
+    }
+    pub fn any(consume self, pred: fn(A) -> bool) -> bool {
+        any(self, pred)
+    }
+    pub fn all(consume self, pred: fn(A) -> bool) -> bool {
+        all(self, pred)
+    }
+    pub fn find(consume self, pred: fn(A) -> bool) -> Option<A> {
+        find(self, pred)
+    }
+    pub fn count(consume self) -> i64 {
+        count(self)
+    }
+    pub fn enumerate(consume self) -> Enumerate<Skip<I, A>, A> {
+        enumerate(self)
+    }
+    pub fn take(consume self, n: i64) -> Take<Skip<I, A>, A> {
+        take(self, n)
+    }
+    pub fn skip(consume self, n: i64) -> Skip<Skip<I, A>, A> {
+        skip(self, n)
+    }
+    pub fn collect(consume self) -> Vec<A> {
+        collect(self)
+    }
+}
+
+impl<I, A> Enumerate<I, A> where I: Iterator<Item = A> {
+    pub fn map<B>(consume self, consume f: fn((i64, A)) -> B) -> Map<Enumerate<I, A>, (i64, A), B> {
+        map(self, f)
+    }
+    pub fn filter(consume self, consume pred: fn((i64, A)) -> bool) -> Filter<Enumerate<I, A>, (i64, A)> {
+        filter(self, pred)
+    }
+    pub fn fold<B>(consume self, init: B, f: fn(B, (i64, A)) -> B) -> B {
+        fold(self, init, f)
+    }
+    pub fn any(consume self, pred: fn((i64, A)) -> bool) -> bool {
+        any(self, pred)
+    }
+    pub fn all(consume self, pred: fn((i64, A)) -> bool) -> bool {
+        all(self, pred)
+    }
+    pub fn find(consume self, pred: fn((i64, A)) -> bool) -> Option<(i64, A)> {
+        find(self, pred)
+    }
+    pub fn count(consume self) -> i64 {
+        count(self)
+    }
+    pub fn take(consume self, n: i64) -> Take<Enumerate<I, A>, (i64, A)> {
+        take(self, n)
+    }
+    pub fn skip(consume self, n: i64) -> Skip<Enumerate<I, A>, (i64, A)> {
+        skip(self, n)
+    }
+    pub fn collect(consume self) -> Vec<(i64, A)> {
+        collect(self)
+    }
+}
+
 /// Return the sum of every `i64` item produced by `it`.
 pub fn sum<I>(consume it: I) -> i64 where I: Iterator<Item = i64> {
     fold(it, 0, |acc: i64, x: i64| acc + x)

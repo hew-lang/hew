@@ -1,9 +1,4 @@
 # platform<TAB>outcome<TAB>suite<TAB>test<TAB>reason
-linux,macos,windows,freebsd	failure	hew-cli::actor_fault_isolation_e2e	crash_in_the_supervisor_itself_fails_the_process_without_cascading	#3381 reports a fault raised inside an on(crash) hook
-windows,freebsd	failure	hew-cli::branch_divergent_return_drop_ir	nested_returned_string_scope_exit_is_discharged_exactly_once	#3118 releases branch-local siblings on normal edges
-windows,freebsd	failure	hew-cli::branch_divergent_return_drop_ir	returned_result_branch_releases_only_the_nonreturned_string_sibling	#3118 releases branch-local siblings on normal edges
-linux,freebsd,macos	failure	hew-cli::closure_env_drop_leak_oracle	generator_transitive_capture_outliving_its_generator_is_not_a_use_after_free	#3370 feat/generators-adaptors: coerces a Generator value at a callee boundary
-macos	failure	hew-cli::closure_env_drop_leak_oracle	generator_transitive_capture_outliving_its_generator_survives_the_poisoned_allocator	#3370 feat/generators-adaptors: coerces a Generator value at a callee boundary
 linux,macos,windows,freebsd	failure	hew-cli::cross_target_e2e	serializable_actor_emits_target_walked_ctor_section	#3382 emits the target-walked constructor section
 linux,macos,windows,freebsd	failure	hew-cli::distributed_two_process_e2e	authenticated_v2_handshake_rejects_wrong_credential_pin	feat/remote-pid-final-path gives hew_node_id_display a verified ownership-SIR operation contract
 linux,macos,windows,freebsd	failure	hew-cli::distributed_two_process_e2e	captured_remote_ref_survives_name_repoint	feat/remote-pid-final-path gives hew_node_id_display a verified ownership-SIR operation contract
@@ -26,26 +21,11 @@ linux,macos,windows,freebsd	failure	hew-cli::distributed_two_process_e2e	remote_
 linux,macos,windows,freebsd	failure	hew-cli::distributed_two_process_e2e	remote_monitor_setup_after_drop_returns_typed_partition	feat/remote-pid-final-path gives hew_node_id_display a verified ownership-SIR operation contract
 linux,macos,windows,freebsd	failure	hew-cli::distributed_two_process_e2e	repeated_cross_node_monitor_close_keeps_tables_empty	feat/remote-pid-final-path gives hew_node_id_display a verified ownership-SIR operation contract
 linux,macos,windows,freebsd	failure	hew-cli::distributed_two_process_e2e	wire_cbor_cross_process_round_trip	feat/remote-pid-final-path gives hew_node_id_display a verified ownership-SIR operation contract
-linux,macos,freebsd	failure	hew-cli::dwarf_debugger_locals_e2e	debugger_never_reads_reassigned_reference_local_as_interior_null	#3369 the debugger reads a string handle, not the byte pointer this assertion renders
 macos	failure	hew-cli::enum_resource_variant_leak_oracle	resource_record_enum_payload_closes_exactly_once	#3426 a resource's close(consume self) cannot release its own raw-handle field
-macos	failure	hew-cli::enum_resource_variant_leak_oracle	returned_bytes_loan_releases_once_on_success_and_crash	#3450 fixes the observable result of a recovery edge
-macos	failure	hew-cli::eval_e2e	eval_aot_timeout_stops_worker_and_allows_next_submission	#3453 serves the next submission after an AOT timeout
-freebsd	failure	hew-cli::extern_ownership_double_release_e2e	resource_payload_beside_an_interpolated_string_closes_exactly_once	#3106 keeps resource Result match authorities consistent
-macos	failure	hew-cli::ffi_link_e2e	ffi_borrow_boundary_has_no_drop_or_leak_slope	Borrowed scalar &i64 lacks a SIR value contract, as in the shared foreign-borrow execution case
-linux,macos,freebsd	failure	hew-cli::ffi_link_e2e	ffi_borrow_boundary_links_and_prints_exact_values	#3370 gives every type the checker admits a SIR value contract
-macos	failure	hew-cli::ffi_link_e2e	ffi_link_duplicate_runtime_symbol_fails_closed_with_hint	#3452 fails the link closed on a duplicate runtime symbol
-macos	failure	hew-cli::ffi_link_e2e	link_line_carries_single_runtime_archive	#3452 restores the linker shim's argv capture
 macos	failure	hew-cli::hashmap_borrowed_string_ingress_leak_oracle	borrowed_string_collection_ingress_does_not_double_free	#3445 copies a borrowed string into the map
 macos	failure	hew-cli::identity_monitor_leak_oracle	cross_process_monitor_close_has_zero_leak_slope_and_no_poisoned_allocator_failure	#3373 lowers a remote actor ask; the identity contracts this fixture also needs landed
 macos	failure	hew-cli::identity_monitor_leak_oracle	identity_display_temporaries_have_zero_leak_slope_and_no_poisoned_allocator_failure	#3373 lowers a remote actor ask; the identity contracts this fixture also needs landed
-macos	failure	hew-cli::indirect_enum_drop_leak_oracle	indirect_enum_dead_actor_select_request_no_corruption_under_malloc_scribble	#3450 fixes the observable result of a recovery edge
-linux,macos,windows,freebsd	failure	hew-cli::is_value_type_reject_e2e	is_on_an_actor_handle_is_still_accepted	#3372 lowers identity comparison
-linux,macos,windows,freebsd	failure	hew-cli::is_value_type_reject_e2e	is_on_an_actor_handle_through_an_inferred_closure_is_accepted	#3372 lowers identity comparison
-freebsd	failure	hew-cli::match_payload_reassign_uaf_oracle	borrow_only_guard_fallthrough_runs_safely	#2523 keeps borrow-only payload guards live across fallthrough
-freebsd	failure	hew-cli::match_payload_reassign_uaf_oracle	borrow_only_projection_keeps_scrutinee_live	#2523 keeps borrow-only payload projections attached to the scrutinee
 macos	failure	hew-cli::match_resource_result_handoff_leak_oracle	resource_result_match_handoffs_drop_every_payload_exactly_once	#3426 releases a resource's own raw-handle field from its close
-macos	failure	hew-cli::on_crash_message_leak_oracle	supervisor_exit_paths_are_leak_free_under_guard_malloc	#3450 fixes the observable result of a recovery edge
-macos	failure	hew-cli::on_start_suspension_leak_oracle	suspending_on_start_no_per_actor_coro_frame_leak	#3443 implements native actor init and lifecycle suspension
 macos	failure	hew-cli::owned_project_literal_predicate_drop_leak_oracle	owned_project_predicate_borrow_leak_slope_is_flat	#3427 stops a wildcard-only arm reading as a consume
 macos	failure	hew-cli::owned_project_literal_predicate_drop_leak_oracle	owned_project_predicate_borrow_releases_each_owner_once	#3427 stops a wildcard-only arm reading as a consume
 macos	failure	hew-cli::owned_project_literal_predicate_drop_leak_oracle	owned_project_predicate_consume_leak_slope_is_flat	#3427 stops a wildcard-only arm reading as a consume
@@ -55,9 +35,5 @@ macos	failure	hew-cli::param_record_field_loop_drop_leak_oracle	iterated_field_p
 macos	failure	hew-cli::pipeline_stdlib_ownership_oracle	pipeline_owned_payload_cancellation_has_flat_leak_slope	#3455 lets the pipeline cancellation probe finish
 macos	failure	hew-cli::pipeline_stdlib_ownership_oracle	pipeline_owned_payload_lifecycle_edges_do_not_double_free	#3455 lets the pipeline cancellation probe finish
 linux,freebsd,macos	failure	hew-cli::rc_aggregate_ingress_ownership_oracle	machine_state_payload_does_not_over_release	#3379 evaluates const parameters and generic fallbacks in a pure machine
-linux,macos,freebsd	failure	hew-cli::shutdown_drain_e2e	tcp_handler_finishing_inside_budget_delivers_response_and_exits_zero	#3397 delivers an in-budget handler's response before the drained socket closes
 linux,macos,windows,freebsd	failure	hew-cli::supervisor_init_args_e2e	supervisor_missing_field_diagnostic_points_at_child_declaration	#3393 makes hew check and hew compile agree on a supervisor child
 macos	failure	hew-cli::vec_iter_closure_unwind_leak_oracle	temporary_vec_iter_closure_trap_invokes_guarded_cleanup_without_leak	#3449 emits a closure call in a guarded region as an invoke
-linux,macos,windows,freebsd	failure	hew-types	check::tests::basic::reserved_type_names_fail_closed_across_declaration_kinds	#3388 fails closed once on a reserved type name in a machine
-linux,macos,windows,freebsd	failure	hew-types::e2e_typecheck	http_client_module_helpers_rejected_on_wasm	#3386 gates std.net.http.http_client as the HTTP client on wasm
-linux,macos,windows,freebsd	failure	hew-types::e2e_typecheck	http_client_response_methods_rejected_on_wasm	#3386 gates std.net.http.http_client as the HTTP client on wasm

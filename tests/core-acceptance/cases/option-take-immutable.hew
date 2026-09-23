@@ -1,0 +1,7 @@
+fn main() {
+    let name: Option<string> = Some("ada");
+    let first = name.take();
+    println(first.is_some());
+    let second = Some(1).take();
+    println(second.is_some());
+}

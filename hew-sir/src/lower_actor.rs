@@ -495,12 +495,11 @@ impl InstanceService<'_> {
                     ))
                 }
             };
-            let codec = row
-                .codec
-                .as_ref()
-                .map(|plan| self.resolve_actor_codec(plan))
-                .transpose()?
-                .flatten();
+            let codec = if row.remote_codec {
+                Some(self.resolve_actor_codec(&params, &return_ty)?)
+            } else {
+                None
+            };
             self.actors[id.0 as usize]
                 .handlers
                 .push(crate::SemActorHandler {

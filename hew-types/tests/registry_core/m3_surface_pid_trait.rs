@@ -140,8 +140,9 @@ fn local_pid_send_without_handler_rejected_even_with_actor_msg_envelope() {
 fn remote_pid_send_returns_typed_send_error_stub() {
     let output = typecheck(
         r"
+        #[wire]
         type Job {
-            n: i32,
+            n: i32 @1,
         }
 
         actor Worker {
@@ -152,7 +153,7 @@ fn remote_pid_send_returns_typed_send_error_stub() {
 
         impl ActorMsg for Worker {
             type Msg = Job;
-            type Reply = i32;
+            type Reply = ();
         }
 
         fn main() {
@@ -172,8 +173,9 @@ fn remote_pid_send_returns_typed_send_error_stub() {
 fn remote_pid_ask_returns_typed_reply_or_ask_error() {
     let output = typecheck(
         r"
+        #[wire]
         type Job {
-            n: i32,
+            n: i32 @1,
         }
 
         actor Worker {
@@ -201,13 +203,14 @@ fn remote_pid_ask_returns_typed_reply_or_ask_error() {
 }
 
 #[test]
-fn remote_pid_ask_rejects_nonserializable_reply() {
+fn remote_pid_ask_rejects_reply_without_wire_schema() {
     let output = typecheck(
         r"
         fn inc(x: i64) -> i64 { x + 1 }
 
+        #[wire]
         type Job {
-            n: i32,
+            n: i32 @1,
         }
 
         actor Worker {
@@ -229,10 +232,11 @@ fn remote_pid_ask_rejects_nonserializable_reply() {
     );
     assert!(
         output.errors.iter().any(|error| {
-            error.message.contains("remote actor reply type")
-                && error.message.contains("must implement Serializable")
+            error
+                .message
+                .contains("remote actor `Worker` cannot carry `fn(i64) -> i64`")
         }),
-        "RemotePid.ask must reject non-Serializable replies: {:#?}",
+        "RemotePid.ask must reject a reply without a wire schema: {:#?}",
         output.errors
     );
 }

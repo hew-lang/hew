@@ -1585,7 +1585,7 @@ fn main() {
 
     fn remote_pid_send_source() -> &'static str {
         concat!(
-            "type Ping { n: i64 }\n",
+            "#[wire] type Ping { n: i64 @1 }\n",
             "actor Worker { receive fn ping(msg: Ping) {} }\n",
             "impl ActorMsg for Worker { type Msg = Ping; type Reply = (); }\n",
             "fn main() {\n",
@@ -1597,7 +1597,7 @@ fn main() {
 
     fn remote_pid_ask_source() -> &'static str {
         concat!(
-            "type Ping { n: i64 }\n",
+            "#[wire] type Ping { n: i64 @1 }\n",
             "actor Worker { receive fn ping(msg: Ping) -> i64 { 0 } }\n",
             "impl ActorMsg for Worker { type Msg = Ping; type Reply = i64; }\n",
             "fn main() {\n",

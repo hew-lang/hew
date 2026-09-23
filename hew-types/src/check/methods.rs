@@ -2843,19 +2843,6 @@ impl Checker {
         );
     }
 
-    fn report_nonserializable_remote_actor_reply(&mut self, ty: &Ty, span: &Span) {
-        self.report_error(
-            TypeErrorKind::BoundsNotSatisfied,
-            span,
-            format!(
-                "remote actor reply type `{}` must implement Serializable before it can \
-                 cross a RemotePid ask boundary; {}",
-                ty.user_facing(),
-                self.serializable_failure_reason(ty)
-            ),
-        );
-    }
-
     fn enforce_remote_actor_msg_serializable(&mut self, ty: &Ty, span: &Span) -> bool {
         let resolved = self.subst.resolve(ty);
         if matches!(resolved, Ty::Var(_) | Ty::Error) {
@@ -2870,39 +2857,6 @@ impl Checker {
             self.report_nonserializable_remote_actor_msg(&resolved, span);
             false
         }
-    }
-
-    fn enforce_remote_actor_reply_serializable(&mut self, ty: &Ty, span: &Span) -> bool {
-        let projected = self.project_assoc_types(ty);
-        let resolved = self.subst.resolve(&projected);
-        if matches!(resolved, Ty::Var(_) | Ty::Error) {
-            return true;
-        }
-        if self
-            .registry
-            .implements_marker(&resolved, MarkerTrait::Serializable)
-        {
-            true
-        } else {
-            self.report_nonserializable_remote_actor_reply(&resolved, span);
-            false
-        }
-    }
-
-    fn enforce_remote_actor_ask_reply_serializable(&mut self, return_ty: &Ty, span: &Span) -> bool {
-        let resolved = self.subst.resolve(return_ty);
-        let Ty::Named {
-            builtin: Some(BuiltinType::Result),
-            args,
-            ..
-        } = resolved
-        else {
-            return true;
-        };
-        let Some(reply_ty) = args.first() else {
-            return true;
-        };
-        self.enforce_remote_actor_reply_serializable(reply_ty, span)
     }
 
     /// Enforce the A640 remote serializability floor after method signature
@@ -8122,16 +8076,10 @@ impl Checker {
                             // native send symbols and traps at instantiation.
                             self.reject_wasm_feature(span, WasmUnsupportedFeature::Distributed);
                             self.enforce_actor_method_send_args(args);
-                            // A640/S3: this is only a compile-time floor. The
-                            // native RemotePid lowering still wraps raw
-                            // in-memory ABI bytes in the CBOR envelope; a
-                            // structural Hew-value encoder is a later slice.
-                            self.enforce_remote_actor_method_serializable_args(args);
+                            if let Some(actor) = receiver_args.first() {
+                                self.check_remote_actor_payloads(actor, method == "ask", span);
+                            }
                             if method == "ask" {
-                                self.enforce_remote_actor_ask_reply_serializable(
-                                    &return_type,
-                                    span,
-                                );
                                 self.method_call_rewrites.insert(
                                     SpanKey::in_module(span, self.current_module_idx),
                                     MethodCallRewrite::RemoteActorAsk,

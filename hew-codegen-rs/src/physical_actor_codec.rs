@@ -140,10 +140,6 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
     }
 
     #[expect(
-        clippy::too_many_arguments,
-        reason = "the adapter realizes one checked request or reply in both codec directions"
-    )]
-    #[expect(
         clippy::too_many_lines,
         reason = "codec publication and malformed-input rollback share one ownership flow"
     )]

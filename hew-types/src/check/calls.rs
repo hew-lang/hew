@@ -2036,10 +2036,8 @@ impl Checker {
             // resolves to a `RemotePid<T>`, accept it here and return
             // `Result<MonitorRef, MonitorError>` — remote setup can fail before
             // a registration exists, so it must not manufacture a zero-valued
-            // handle. The MIR lowering branches on the argument's resolved type
-            // to route a remote receiver to the node monitor ABI
-            // (`hew_node_monitor_location`) instead of the in-process
-            // `hew_actor_monitor`.
+            // handle. The remote form is its own runtime family, the node
+            // monitor ABI (`hew_node_monitor_location`).
             // The cross-node LINK form is `link_remote(RemotePid<T>,
             // PartitionPolicy)` — its own builtin, routed via the generic
             // `fn_sigs` path; a bare `link(RemotePid)` is rejected above with a
@@ -2053,7 +2051,7 @@ impl Checker {
                     self.record_type(span, &result_ty);
                     self.record_direct_call_target(
                         span,
-                        CallTarget::Runtime(crate::runtime_call::RuntimeCallFamily::ActorMonitor),
+                        CallTarget::Runtime(crate::runtime_call::RuntimeCallFamily::NodeMonitor),
                     );
                     return result_ty;
                 }

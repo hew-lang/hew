@@ -5922,6 +5922,56 @@ fn remote_receive_fn_dispatch_with_pipe_handle_refused() {
     );
 }
 
+fn remote_ask_source(ping: &str) -> String {
+    format!(
+        r"
+        {ping}
+        actor Echo {{
+            receive fn handle(msg: Ping) -> i64 {{ msg.seq }}
+        }}
+        impl ActorMsg for Echo {{
+            type Msg = Ping;
+            type Reply = i64;
+        }}
+        fn call(echo: RemotePid<Echo>) -> i64 {{
+            match echo.ask(Ping {{ seq: 1 }}, 100) {{
+                .Ok(value) => value,
+                .Err(_) => 0,
+            }}
+        }}
+        "
+    )
+}
+
+/// A value crosses a node only through an explicit wire schema (D524). A
+/// plain record is refused at the remote call, naming the type and the fix.
+#[test]
+fn remote_ask_requires_explicit_wire_schema() {
+    let plain = typecheck_inline(&remote_ask_source("type Ping { seq: i64 }"));
+    let refusal = plain
+        .errors
+        .iter()
+        .find(|e| {
+            e.message
+                .contains("remote actor `Echo` cannot carry `Ping`")
+        })
+        .unwrap_or_else(|| panic!("plain record must be refused; got: {:#?}", plain.errors));
+    assert!(
+        refusal
+            .suggestions
+            .iter()
+            .any(|help| help.contains("#[wire]") && help.contains("@1")),
+        "refusal must suggest a tagged #[wire] schema: {refusal:#?}"
+    );
+
+    let wire = typecheck_inline(&remote_ask_source("#[wire] type Ping { seq: i64 @1 }"));
+    assert!(
+        wire.errors.is_empty(),
+        "a tagged #[wire] message crosses the node: {:#?}",
+        wire.errors
+    );
+}
+
 #[test]
 fn signed_module_const_arithmetic_is_checked_in_its_declared_type() {
     let output = typecheck_inline(

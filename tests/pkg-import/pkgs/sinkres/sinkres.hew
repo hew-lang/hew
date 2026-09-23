@@ -8,10 +8,10 @@
 //! disposition. The ratified RAII-2 surface (#1295) makes `consume` MANDATORY
 //! here, exactly as at an `extern` boundary.
 //!
-//! The root and file-flattened lowering passes already enforce this; this
-//! package exists to prove the discipline also fires when the trait crosses a
-//! PACKAGE import — the importer lowers this module's items and must reject the
-//! unannotated `item: Sticky` with `ResourceBoundaryParamMustConsume`.
+//! Root and file-flattened traits are already refused; this package exists to
+//! prove the discipline also fires when the trait crosses a PACKAGE import — the
+//! checker must reject the unannotated `item: Sticky` with
+//! `E_BOUNDARY_RESOURCE_MUST_CONSUME`.
 
 #[resource]
 #[opaque]

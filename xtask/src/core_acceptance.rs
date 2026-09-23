@@ -2445,7 +2445,7 @@ mod tests {
     #[test]
     fn diagnostics_match_rejects_the_wrong_file() {
         let actual = vec![ActualDiagnostic {
-            code: "ResourceBoundaryParamMustConsume".to_string(),
+            code: "E_BOUNDARY_RESOURCE_MUST_CONSUME".to_string(),
             severity: "error".to_string(),
             span: ActualSpan {
                 start_line: 13,
@@ -2455,7 +2455,7 @@ mod tests {
             file: Some("/checkout/cases/main.hew".to_string()),
         }];
         let expected = vec![ExpectedDiagnostic {
-            code: "ResourceBoundaryParamMustConsume".to_string(),
+            code: "E_BOUNDARY_RESOURCE_MUST_CONSUME".to_string(),
             line: 13,
             column: 5,
             severity: None,
@@ -2472,7 +2472,7 @@ mod tests {
     #[test]
     fn diagnostics_match_accepts_a_windows_reported_path() {
         let actual = vec![ActualDiagnostic {
-            code: "ResourceBoundaryParamMustConsume".to_string(),
+            code: "E_BOUNDARY_RESOURCE_MUST_CONSUME".to_string(),
             severity: "error".to_string(),
             span: ActualSpan {
                 start_line: 13,
@@ -2482,7 +2482,7 @@ mod tests {
             file: Some(r"\\?\D:\checkout\fixtures\provenance\token.hew".to_string()),
         }];
         let expected = vec![ExpectedDiagnostic {
-            code: "ResourceBoundaryParamMustConsume".to_string(),
+            code: "E_BOUNDARY_RESOURCE_MUST_CONSUME".to_string(),
             line: 13,
             column: 5,
             severity: None,

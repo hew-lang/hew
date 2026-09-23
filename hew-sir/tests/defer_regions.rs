@@ -29,7 +29,7 @@ fn rejects(mut module: hew_sir::SemModule, reason: &str) {
 }
 
 #[test]
-fn defer_dependencies_reserve_availability_but_allow_replacement_and_own_consume() {
+fn defer_dependencies_are_initialized_when_the_action_runs() {
     use hew_sir::*;
     let mut replacement = fixture::module(false);
     fixture::probe(&mut replacement).blocks[0]
@@ -49,11 +49,27 @@ fn defer_dependencies_reserve_availability_but_allow_replacement_and_own_consume
         "called action has already popped its reservation"
     );
 
+    // A take may empty a pending action's place until it is stored again
+    // (a `var self` call re-publishes its receiver on both edges); the action
+    // itself requires the place initialized when it runs.
+    let mut restored = fixture::module(false);
+    let block = &mut fixture::probe(&mut restored).blocks[4];
+    block.ops[0].kind = SemOpKind::LoadTake { place: PlaceId(0) };
+    block.ops.insert(
+        1,
+        fixture::op(SemOpKind::StoreInit {
+            place: PlaceId(0),
+            value: fixture::operand(11),
+        }),
+    );
+    fixture::normalize(&mut restored);
+    assert!(verify_module(&restored).is_empty());
+
     let mut stolen = fixture::module(false);
     fixture::probe(&mut stolen).blocks[4].ops[0].kind = SemOpKind::LoadTake { place: PlaceId(0) };
     rejects(
         stolen,
-        "consume or end would invalidate a pending defer dependency",
+        "defer dependency is not initialized on every incoming path",
     );
 
     let mut ended = fixture::module(false);

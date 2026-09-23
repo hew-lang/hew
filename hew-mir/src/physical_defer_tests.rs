@@ -228,7 +228,7 @@ fn physical_defer_keeps_the_parked_linear_cleanup_cause() {
             },
         ),
         fixture::block(4, vec![], local_fixture::done()),
-        fixture::block(5, vec![], SemTerminator::ResumeUnwind),
+        fixture::block(5, vec![], SemTerminator::ResumeUnwind { handback: None }),
     ];
     fixture::normalize(&mut semantic);
     let mut physical = lower_physical_module(&semantic, tests::target_for_inventory(&semantic))

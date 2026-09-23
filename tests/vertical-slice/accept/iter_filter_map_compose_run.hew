@@ -1,9 +1,10 @@
 //! Runnable end-to-end fixture for composed lazy adapters.
 //!
 //! Exercises `Map` composed with `Filter` (map-then-filter pipeline),
-//! proving that the Route-B inner-cursor write-back chains correctly
-//! across two adapter layers: Map advances the Countdown cursor, Filter
-//! advances the Map cursor.
+//! proving that in-place inner-cursor advancement chains correctly across
+//! two adapter layers: Map advances the Countdown cursor, Filter advances
+//! the Map cursor. Each adapter keeps its receiver whole, so a failing
+//! inner call hands it back intact.
 //!
 //! Inlined and fully monomorphised: cross-module generic instantiation
 //! of `std::iter` does not yet lower through MIR (a separate backend
@@ -41,13 +42,10 @@ impl<I, A, B> Iterator for Map<I, A, B> where I: Iterator<Item = A> {
     type Item = B;
     /// Pump the inner iterator once and lift the item through `f`.
     fn next(var self) -> Option<B> {
-        var inner = self.iter;
-        let result = match inner.next() {
+        match self.iter.next() {
             .Some(x) => Some((self.f)(x)),
             .None => None,
-        };
-        self.iter = inner;
-        result
+        }
     }
 }
 
@@ -60,24 +58,19 @@ impl<I, A> Iterator for Filter<I, A> where I: Iterator<Item = A> {
     type Item = A;
     /// Multi-pump loop: advance inner until predicate accepts or exhaustion.
     fn next(var self) -> Option<A> {
-        var inner = self.iter;
-        var found: Option<A> = None;
         loop {
-            match inner.next() {
+            match self.iter.next() {
                 .Some(x) => {
                     if (self.pred)(x) {
-                        found = Some(x);
-                        break;
+                        return Some(x);
                     }
                     // x rejected; dropped here
                 },
                 .None => {
-                    break;
+                    return None;
                 },
             }
         }
-        self.iter = inner;
-        found
     }
 }
 

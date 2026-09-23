@@ -273,7 +273,7 @@ fn two_pass_lowering_resolves_forward_scalar_calls_through_callable_ids() {
     let cleanup_target = cleanup_terminal(main, cleanup.target);
     assert!(matches!(
         main.blocks[cleanup_target.0 as usize].terminator,
-        SemTerminator::ResumeUnwind
+        SemTerminator::ResumeUnwind { .. }
     ));
 }
 

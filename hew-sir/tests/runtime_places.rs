@@ -296,6 +296,10 @@ fn map_and_set_field_mutations_publish_receiver_and_returned_value() {
     }
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one fixture walk checks the failure edge, its cleanup and the negative control together"
+)]
 fn assert_retained_sibling_cleanup(module: &SemModule, family: RuntimeCallFamily) {
     let main = module
         .functions
@@ -317,6 +321,7 @@ fn assert_retained_sibling_cleanup(module: &SemModule, family: RuntimeCallFamily
         })
         .unwrap();
     let (leaf, place) = taken_receiver(call, moved);
+    let failure = cleanup;
     let cleanup = match &main.blocks[cleanup.0 as usize].terminator {
         SemTerminator::CheckedRaiseFault { kind, cleanup } => {
             assert_eq!(*kind, hew_sir::TrapKind::IndexOutOfBounds);
@@ -347,6 +352,7 @@ fn assert_retained_sibling_cleanup(module: &SemModule, family: RuntimeCallFamily
     }
     let cleanup_ops = reachable
         .iter()
+        .chain([&failure])
         .flat_map(|id| &main.blocks[id.0 as usize].ops)
         .collect::<Vec<_>>();
     assert!(
@@ -354,9 +360,24 @@ fn assert_retained_sibling_cleanup(module: &SemModule, family: RuntimeCallFamily
         SemOpKind::EndLifetime { place } if hew_sir::OwnerRoot::Local(place) == field.root)),
         "failure must clean the partially initialized root's remaining fields"
     );
-    assert!(!cleanup_ops.iter().any(|op| matches!(op.kind,
-        SemOpKind::StoreAssign { place: p, .. } | SemOpKind::StoreInit { place: p, .. } if p == place)),
-        "failure cannot reinstall the receiver");
+    // A failing mutation leaves its target whole: where the runtime keeps the
+    // receiver, the failure edge re-initializes the place it took, and the
+    // root's cleanup releases it with its siblings.
+    let preserved = family
+        .semantic_contract()
+        .unwrap()
+        .preserves_inputs_on_failure();
+    assert_eq!(
+        cleanup_ops.iter().any(|op| matches!(op.kind,
+            SemOpKind::StoreInit { place: p, .. } if p == place)),
+        preserved,
+        "failure reinstalls exactly the receiver the runtime keeps"
+    );
+    assert!(
+        !cleanup_ops.iter().any(|op| matches!(op.kind,
+        SemOpKind::StoreAssign { place: p, .. } if p == place)),
+        "failure cannot replace the receiver"
+    );
     let mut missing_cleanup = module.clone();
     let function = missing_cleanup
         .functions
@@ -385,12 +406,9 @@ fn assert_retained_sibling_cleanup(module: &SemModule, family: RuntimeCallFamily
         !destroyed(leaf),
         "the pre-transfer receiver cannot be destroyed again"
     );
-    assert_eq!(
-        destroyed(moved),
-        family
-            .semantic_contract()
-            .unwrap()
-            .preserves_inputs_on_failure()
+    assert!(
+        !destroyed(moved),
+        "a kept receiver is released through its place, a consumed one by the runtime"
     );
 }
 

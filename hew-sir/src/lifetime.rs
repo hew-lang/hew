@@ -350,6 +350,8 @@ fn mark_trap(state: &mut State) {
     };
 }
 
+/// Releases, and the moves that hand a failing `var self` method's receiver
+/// back to its caller.
 fn is_cleanup(kind: &SemOpKind) -> bool {
     matches!(
         kind,
@@ -357,6 +359,8 @@ fn is_cleanup(kind: &SemOpKind) -> bool {
             | SemOpKind::TaskScopeClose { .. }
             | SemOpKind::DestroyValue { .. }
             | SemOpKind::EndLifetime { .. }
+            | SemOpKind::LoadTake { .. }
+            | SemOpKind::Destructure { .. }
     )
 }
 
@@ -374,7 +378,7 @@ pub(crate) fn cleanup_suffixes(function: &SemFunction) -> BTreeMap<BlockId, usiz
             }
             let terminal = match &block.terminator {
                 SemTerminator::Trap { .. }
-                | SemTerminator::ResumeUnwind
+                | SemTerminator::ResumeUnwind { .. }
                 | SemTerminator::RecoverFault { .. } => true,
                 SemTerminator::Suspend {
                     kind:
@@ -995,6 +999,9 @@ impl<'a> Flow<'a> {
         match &block.terminator {
             SemTerminator::EnterDefer { defer, park, body } => {
                 if let Some(registration) = self.defers.registrations.get(defer) {
+                    for place in &registration.dependencies {
+                        self.require_dependency(id, *place, &state, emit);
+                    }
                     let frame = crate::defer::Frame {
                         defer: *defer,
                         scope: registration.scope,
@@ -1095,16 +1102,24 @@ impl<'a> Flow<'a> {
             | SemTerminator::IndirectCall { normal, unwind, .. }
             | SemTerminator::DynCall { normal, unwind, .. } => {
                 Self::require_fault(id, DEAD, &state, emit);
+                // The result exists only on the normal edge and a `var self`
+                // receiver handed back by a failing callee only on the unwind.
+                let handback = block.terminator.call_handback().map(|def| def.id);
                 let mut returned = state.clone();
-                block
-                    .terminator
-                    .visit_results(|result| self.define(id, result.id, &mut returned, emit));
+                block.terminator.visit_results(|result| {
+                    if Some(result.id) != handback {
+                        self.define(id, result.id, &mut returned, emit);
+                    }
+                });
                 if let Some(normal) = normal {
                     successors.extend(self.edge(id, normal, returned, emit));
                 }
                 if let CallUnwind::Cleanup(edge) = unwind {
                     state.fault = LIVE;
                     mark_trap(&mut state);
+                    if let Some(handback) = handback {
+                        self.define(id, handback, &mut state, emit);
+                    }
                     successors.extend(self.edge(id, edge, state, emit));
                 }
             }
@@ -1238,7 +1253,7 @@ impl<'a> Flow<'a> {
                 successors.extend(self.edge(id, cancel, state, emit));
             }
             SemTerminator::Return { .. }
-            | SemTerminator::ResumeUnwind
+            | SemTerminator::ResumeUnwind { .. }
             | SemTerminator::Trap { .. }
             | SemTerminator::Unreachable => {
                 self.exit(id, &block.terminator, &state, emit);
@@ -1271,7 +1286,7 @@ impl<'a> Flow<'a> {
         if state.exit & TRAP != 0
             && !matches!(
                 terminator,
-                SemTerminator::Trap { .. } | SemTerminator::ResumeUnwind
+                SemTerminator::Trap { .. } | SemTerminator::ResumeUnwind { .. }
             )
         {
             emit(Violation {
@@ -1282,7 +1297,7 @@ impl<'a> Flow<'a> {
                 reason: "trap cleanup cannot resume ordinary or cancellation execution",
             });
         }
-        let expected = if matches!(terminator, SemTerminator::ResumeUnwind) {
+        let expected = if matches!(terminator, SemTerminator::ResumeUnwind { .. }) {
             LIVE
         } else {
             DEAD
@@ -1290,7 +1305,7 @@ impl<'a> Flow<'a> {
         Self::require_fault(id, expected, state, emit);
         if matches!(
             terminator,
-            SemTerminator::Return { .. } | SemTerminator::ResumeUnwind
+            SemTerminator::Return { .. } | SemTerminator::ResumeUnwind { .. }
         ) {
             // Init publishes complete state on return and owns nothing of the
             // deferred seats once a fault leaves it (D447).
@@ -1381,7 +1396,10 @@ impl<'a> Flow<'a> {
                     Self::defer_error(id, reason, emit);
                 }
             }
-            if let SemOpKind::LoadTake { place } | SemOpKind::EndLifetime { place } = &op.kind {
+            // A take may leave a pending action's place empty only until it is
+            // stored again: the action requires it initialized when it runs.
+            // Ending the place cannot be undone.
+            if let SemOpKind::EndLifetime { place } = &op.kind {
                 self.require_unreserved(id, PlaceBase::Place(*place), state, emit);
             }
             let cleanup = self.cleanup_mode(id, index, &op.kind, state, cleanup_exit);
@@ -2397,10 +2415,10 @@ mod tests {
                         },
                         vec![],
                     )],
-                    SemTerminator::ResumeUnwind,
+                    SemTerminator::ResumeUnwind { handback: None },
                 ),
                 block(4, vec![], done()),
-                block(5, vec![], SemTerminator::ResumeUnwind),
+                block(5, vec![], SemTerminator::ResumeUnwind { handback: None }),
             ]);
             assert!(analysis.violations.is_empty(), "{:?}", analysis.violations);
             assert_eq!(
@@ -2579,7 +2597,7 @@ mod tests {
                     },
                 ),
                 block(1, cleanup.clone(), done()),
-                block(2, cleanup, SemTerminator::ResumeUnwind),
+                block(2, cleanup, SemTerminator::ResumeUnwind { handback: None }),
             ]);
             f.params[0].ty = ResolvedTy::Function {
                 capabilities: hew_types::CallableCapabilities {
@@ -2684,10 +2702,15 @@ mod tests {
                     result: CallResult::Unit,
                     normal: Some(edge(1, &[])),
                     unwind: CallUnwind::Cleanup(edge(2, &[])),
+                    handback: None,
                 },
             ),
             block(1, Vec::new(), done()),
-            block(2, Vec::new(), SemTerminator::ResumeUnwind),
+            block(
+                2,
+                Vec::new(),
+                SemTerminator::ResumeUnwind { handback: None },
+            ),
         ]);
         f.params[0].own = OwnKind::Guaranteed;
         assert!(verify(&f).is_empty());
@@ -2914,10 +2937,15 @@ mod tests {
                     result: CallResult::Value(owned(1)),
                     normal: Some(edge(1, &[])),
                     unwind: CallUnwind::Cleanup(edge(2, &[])),
+                    handback: None,
                 },
             ),
             block(1, vec![destroy(1, 1)], done()),
-            block(2, Vec::new(), SemTerminator::ResumeUnwind),
+            block(
+                2,
+                Vec::new(),
+                SemTerminator::ResumeUnwind { handback: None },
+            ),
         ]);
         assert!(verify(&f).is_empty(), "{:?}", verify(&f));
         let mut invalid = f;
@@ -2943,10 +2971,15 @@ mod tests {
                     result: CallResult::Unit,
                     normal: Some(edge(1, &[])),
                     unwind: CallUnwind::Cleanup(edge(2, &[])),
+                    handback: None,
                 },
             ),
             block(1, Vec::new(), done()),
-            block(2, Vec::new(), SemTerminator::ResumeUnwind),
+            block(
+                2,
+                Vec::new(),
+                SemTerminator::ResumeUnwind { handback: None },
+            ),
         ]);
         f.params.clear();
         f
@@ -2971,7 +3004,7 @@ mod tests {
         }
 
         let mut invalid = f.clone();
-        invalid.blocks[1].terminator = SemTerminator::ResumeUnwind;
+        invalid.blocks[1].terminator = SemTerminator::ResumeUnwind { handback: None };
         assert!(verify(&invalid).iter().any(|v| v.block == BlockId(1)
             && v.reason == "fault propagation requires an active fault on every incoming path"));
 
@@ -3104,7 +3137,7 @@ mod tests {
         let f = function(vec![
             block(0, vec![begin_borrow(0, 0, 1)], call),
             block(1, cleanup.clone(), done()),
-            block(2, cleanup, SemTerminator::ResumeUnwind),
+            block(2, cleanup, SemTerminator::ResumeUnwind { handback: None }),
         ]);
         assert!(verify(&f).is_empty(), "{:?}", verify(&f));
         let mut second_loan = f.clone();

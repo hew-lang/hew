@@ -666,7 +666,7 @@ mod tests {
                     id: BlockId(2),
                     args: vec![],
                     ops: vec![drop_callable(4, 1)],
-                    terminator: SemTerminator::ResumeUnwind,
+                    terminator: SemTerminator::ResumeUnwind { handback: None },
                 },
                 SemBlock {
                     terminator_provenance: crate::Provenance::Synthesized,
@@ -689,7 +689,7 @@ mod tests {
                     id: BlockId(4),
                     args: vec![],
                     ops: vec![],
-                    terminator: SemTerminator::ResumeUnwind,
+                    terminator: SemTerminator::ResumeUnwind { handback: None },
                 },
             ],
         });

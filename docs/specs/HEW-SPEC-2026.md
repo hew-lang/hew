@@ -1632,6 +1632,12 @@ is refused with "requires a mutable binding receiver" and the `let`→`var`
 fix-it (§3.2). A `consume self` method takes the value: any later use of the
 binding is a use-after-consume diagnostic.
 
+A `var self` method that fails leaves the receiver, as last written, in the
+caller's binding, field or actor state field; the place is never left empty.
+The method must therefore keep `self` whole wherever it can fail: moving a
+field out of `self` and restoring it after a call that can fail is refused.
+Call the field's own `var self` method in place instead.
+
 The consuming receiver is spelled `consume self`, matching a consuming
 parameter such as `consume value: T`. Both inherent and trait methods use the
 same borrowing, mutable and consuming receiver contracts.

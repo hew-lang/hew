@@ -458,10 +458,11 @@ fn whole_value_calls_and_returns_require_complete_roots() {
                 result: CallResult::Unit,
                 normal: Some(edge(1, None)),
                 unwind: CallUnwind::Cleanup(edge(2, None)),
+                handback: None,
             },
         ),
         block(1, vec![], done()),
-        block(2, vec![], SemTerminator::ResumeUnwind),
+        block(2, vec![], SemTerminator::ResumeUnwind { handback: None }),
     ];
     assert_lifetime(
         &call,
@@ -638,10 +639,15 @@ fn call_failure_cleanup_keeps_the_partially_consumed_root() {
                 }),
                 normal: Some(edge(1, None)),
                 unwind: CallUnwind::Cleanup(edge(2, None)),
+                handback: None,
             },
         ),
         block(1, vec![destroy(2, 0)], done()),
-        block(2, vec![destroy(3, 0)], SemTerminator::ResumeUnwind),
+        block(
+            2,
+            vec![destroy(3, 0)],
+            SemTerminator::ResumeUnwind { handback: None },
+        ),
     ];
     // Original source locals are replaced by this reduced semantic fixture.
     probe(&mut module).bindings.retain(|binding| {

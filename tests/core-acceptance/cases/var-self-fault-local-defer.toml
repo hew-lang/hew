@@ -1,0 +1,11 @@
+[[case]]
+id = "var-self-fault-local-defer"
+intent = "A `var self` call on a local that faults, in its body or in its own exit cleanup, leaves the receiver as last written in the local, where a pending defer reads it before the local closes once."
+source = "cases/var-self-fault-local-defer.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "defer sees fd 2\nclose conn 2\nrun faulted\nclose guard 100\ndefer sees fd 110\nclose conn 110\ncleanup faulted\n"
+stderr = "hew: failure: UserPanic (212): bump failed\nhew: actor crash in Worker.run (actor 1): UserPanic\nhew: failure: UserPanic (212): guard close failed\nhew: actor crash in Worker.cleanup_fault (actor 2): UserPanic\n"
+exit = 1

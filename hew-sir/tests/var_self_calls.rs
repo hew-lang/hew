@@ -169,7 +169,7 @@ fn argument_alias_and_nested_mutation_precede_the_receiver_take() {
         let cleanup = cleanup_region(main, unwind.target);
         assert!(cleanup
             .iter()
-            .any(|block| matches!(block.terminator, SemTerminator::ResumeUnwind)));
+            .any(|block| matches!(block.terminator, SemTerminator::ResumeUnwind { .. })));
         assert!(!cleanup
             .iter()
             .flat_map(|block| &block.ops)
@@ -204,6 +204,141 @@ fn argument_and_callee_faults_preserve_the_ordinary_cleanup_contract() {
         }
     "#,
     );
+}
+
+#[test]
+fn failing_method_hands_its_receiver_back_into_the_callers_place() {
+    let module = lower(
+        r#"
+        type Text { value: string }
+        trait Replace { fn replace(var self, divisor: i64) -> i64; }
+        impl Replace for Text {
+            fn replace(var self, divisor: i64) -> i64 {
+                self.value = "changed".to_upper();
+                8 / divisor
+            }
+        }
+        fn main() -> i64 {
+            var text = Text { value: "original".to_upper() };
+            text.replace(0) + text.value.len()
+        }
+    "#,
+    );
+    let main = module
+        .functions
+        .iter()
+        .find(|f| f.declaration.full_path() == "main")
+        .unwrap();
+    let BindingTarget::Place(receiver) = main
+        .bindings
+        .iter()
+        .find(|binding| binding.name == "text")
+        .unwrap()
+        .target
+    else {
+        panic!("owning receiver requires canonical local storage")
+    };
+    let (unwind, handback) = main
+        .blocks
+        .iter()
+        .find_map(|block| match &block.terminator {
+            SemTerminator::Call {
+                unwind: CallUnwind::Cleanup(unwind),
+                handback: Some(handback),
+                ..
+            } => Some((unwind.clone(), handback.clone())),
+            _ => None,
+        })
+        .expect("the `var self` call receives its handed-back receiver");
+    assert_eq!(unwind.args.len(), 1);
+    assert_eq!(unwind.args[0].value, handback.id);
+    let failure = &main.blocks[unwind.target.0 as usize];
+    let returned = failure.args[0].value;
+    assert!(failure.ops.iter().any(|op| matches!(&op.kind,
+        SemOpKind::StoreInit { place, value } if *place == receiver && value.value == returned)));
+
+    let method = module
+        .functions
+        .iter()
+        .find(|f| f.declaration.full_path().ends_with("replace"))
+        .unwrap();
+    let exits: Vec<_> = method
+        .blocks
+        .iter()
+        .filter_map(|block| match &block.terminator {
+            SemTerminator::ResumeUnwind { handback } => Some(handback.is_some()),
+            _ => None,
+        })
+        .collect();
+    assert!(!exits.is_empty() && exits.iter().all(|handed_back| *handed_back));
+
+    let mut dropped_call = module.clone();
+    for block in dropped_call
+        .functions
+        .iter_mut()
+        .flat_map(|f| &mut f.blocks)
+    {
+        if let SemTerminator::Call { handback, .. } = &mut block.terminator {
+            *handback = None;
+        }
+    }
+    assert!(verify_module(&dropped_call)
+        .iter()
+        .any(|diagnostic| matches!(
+            &diagnostic.kind,
+            hew_sir::SirDiagnosticKind::InvalidOperation { reason, .. }
+                if reason.contains("must carry exactly the `var self` receiver")
+        )));
+
+    let mut released = module.clone();
+    for block in released
+        .functions
+        .iter_mut()
+        .filter(|f| f.declaration.full_path().ends_with("replace"))
+        .flat_map(|f| &mut f.blocks)
+    {
+        if let SemTerminator::ResumeUnwind { handback } = &mut block.terminator {
+            *handback = None;
+        }
+    }
+    assert!(verify_module(&released).iter().any(|diagnostic| matches!(
+        &diagnostic.kind,
+        hew_sir::SirDiagnosticKind::InvalidTerminator { reason }
+            if reason.contains("hands back exactly the `var self` receiver")
+    )));
+}
+
+#[test]
+fn a_receiver_moved_out_across_a_failing_call_is_refused() {
+    let source = r"
+        #[resource]
+        type Conn { fd: i64 }
+        impl Conn { fn close(consume self) {} }
+        type Holder { conn: Conn, count: i64 }
+        trait Touch { fn touch(var self, divisor: i64); }
+        impl Touch for Holder {
+            fn touch(var self, divisor: i64) {
+                let conn = self.conn;
+                self.count = 8 / divisor;
+                self.conn = conn;
+            }
+        }
+        fn main() -> i64 {
+            var holder = Holder { conn: Conn { fd: 1 }, count: 0 };
+            holder.touch(2);
+            holder.count
+        }
+    ";
+    let parsed = hew_parser::parse(source);
+    let checked = Checker::new(ModuleRegistry::new(Vec::new())).check_program(&parsed.program);
+    assert!(checked.errors.is_empty(), "{:?}", checked.errors);
+    let hir = lower_program_host_target(&parsed.program, &checked, &ResolutionCtx);
+    let lowered = lower_module(&hir.module, &checked);
+    assert!(lowered.callable_statuses.iter().any(|(_, status)| matches!(
+        status,
+        SirLoweringStatus::Unsupported { reason, .. }
+            if reason.contains("must keep its receiver whole wherever it can fail")
+    )));
 }
 
 #[test]

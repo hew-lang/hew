@@ -32,6 +32,7 @@ impl Builder<'_, '_> {
                 &[],
                 &live_before,
                 true,
+                None,
             )?
             .ok_or("entry callable produced no result")?;
         let result_ty = entry.signature.return_ty.clone();
@@ -141,7 +142,7 @@ impl Builder<'_, '_> {
             }]
         };
         let rendered = self
-            .finish_user_call(callee, signature, arguments, &[], &live_before, true)?
+            .finish_user_call(callee, signature, arguments, &[], &live_before, true, None)?
             .ok_or("entry Display target produced no string")?;
         if self.owned_live.contains_key(&error) {
             self.emit_destroy(error)?;

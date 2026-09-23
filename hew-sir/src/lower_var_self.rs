@@ -181,6 +181,16 @@ impl Builder<'_, '_> {
                 },
             },
         );
+        // A failing callee hands the receiver back as last written; it goes
+        // where the normal edge would publish it.
+        let handback = signature
+            .hands_back_receiver()
+            .then(|| super::FaultHandback {
+                ty: receiver_ty.clone(),
+                writeback: selected
+                    .filter(|_| *receiver_update == hew_types::ReceiverUpdate::Replace),
+                provenance: provenance.clone(),
+            });
         let result = self
             .finish_user_call(
                 PreparedCallee::Direct(callee.id),
@@ -189,6 +199,7 @@ impl Builder<'_, '_> {
                 &loans,
                 &live_before_arguments,
                 true,
+                handback,
             )?
             .ok_or_else(|| "mutable method did not return its result and receiver".to_string())?;
         let shape = self.service.require_aggregate_shape(&dual_return_ty)?;

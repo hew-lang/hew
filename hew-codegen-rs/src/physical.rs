@@ -4119,7 +4119,15 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 result,
                 normal,
                 unwind,
-            } => self.emit_call(*callee, args, *result, normal.as_ref(), unwind.as_ref()),
+                handback,
+            } => self.emit_call(
+                *callee,
+                args,
+                *result,
+                *handback,
+                normal.as_ref(),
+                unwind.as_ref(),
+            ),
             PhysicalTerminator::WireCodec {
                 direction,
                 plan,
@@ -4167,7 +4175,12 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 let code = trap_code(*kind);
                 self.emit_new_fault(code)
             }
-            PhysicalTerminator::PropagateFault => self.emit_propagate_fault(),
+            PhysicalTerminator::PropagateFault { handback } => {
+                if let Some(handback) = handback {
+                    self.emit_receiver_handback(*handback)?;
+                }
+                self.emit_propagate_fault()
+            }
             PhysicalTerminator::Unreachable => self
                 .builder
                 .build_unreachable()
@@ -4504,6 +4517,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         callee_id: CallableId,
         transfers: &[ArgumentTransfer],
         result: Option<StorageId>,
+        handback: Option<StorageId>,
         normal: Option<&PhysicalEdge>,
         unwind: Option<&PhysicalEdge>,
     ) -> CodegenResult<()> {
@@ -4558,9 +4572,10 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             arguments.push(self.slots[result.0 as usize].into());
         }
         arguments.push(self.active_fault.into());
+        let handback = handback.zip(result);
         if callee.is_resumable {
             let status = self.emit_resumable_call(callee_id, &arguments, &moved)?;
-            return self.emit_call_outcome(status, result, normal, unwind);
+            return self.emit_call_outcome_with_handback(status, result, handback, normal, unwind);
         }
         let status = self
             .builder
@@ -4576,7 +4591,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         for source in moved {
             self.clear_owned(source)?;
         }
-        self.emit_call_outcome(status, result, normal, unwind)
+        self.emit_call_outcome_with_handback(status, result, handback, normal, unwind)
     }
 
     fn emit_value_call(
@@ -4636,6 +4651,19 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         normal: Option<&PhysicalEdge>,
         unwind: Option<&PhysicalEdge>,
     ) -> CodegenResult<()> {
+        self.emit_call_outcome_with_handback(status, result, None, normal, unwind)
+    }
+
+    /// A failing `var self` callee left its receiver in the dual result's
+    /// receiver field; the unwind edge takes it from there.
+    fn emit_call_outcome_with_handback(
+        &self,
+        status: IntValue<'ctx>,
+        result: Option<StorageId>,
+        handback: Option<(StorageId, StorageId)>,
+        normal: Option<&PhysicalEdge>,
+        unwind: Option<&PhysicalEdge>,
+    ) -> CodegenResult<()> {
         let success = self.ctx.append_basic_block(self.value, "call.success");
         let failure = self.ctx.append_basic_block(self.value, "call.failure");
         let ok = self
@@ -4657,11 +4685,58 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             self.reject_invalid_task_state()?;
         }
         self.builder.position_at_end(failure);
+        if let Some((handback, result)) = handback {
+            let receiver = self.dual_result_receiver(self.slots[result.0 as usize], result)?;
+            let value = self
+                .builder
+                .build_load(
+                    llvm_type(self.ctx, &self.storage(handback)?.layout.repr)?,
+                    receiver,
+                    "call.handback",
+                )
+                .llvm_ctx("take handed-back receiver")?;
+            self.store(handback, value)?;
+        }
         if let Some(unwind) = unwind {
             self.emit_edge(unwind)
         } else {
             self.emit_propagate_fault()
         }
+    }
+
+    /// The receiver field of a `var self` method's dual result.
+    fn dual_result_receiver(
+        &self,
+        result: PointerValue<'ctx>,
+        storage: StorageId,
+    ) -> CodegenResult<PointerValue<'ctx>> {
+        let dual = llvm_type(self.ctx, &self.storage(storage)?.layout.repr)?.into_struct_type();
+        self.builder
+            .build_struct_gep(dual, result, 1, "dual.receiver")
+            .llvm_ctx("address dual result receiver")
+    }
+
+    /// Hand a failing `var self` method's receiver back to its caller.
+    fn emit_receiver_handback(&self, handback: StorageId) -> CodegenResult<()> {
+        let result_out = self.result_out.ok_or_else(|| {
+            CodegenError::FailClosed("receiver handback has no result-out parameter".into())
+        })?;
+        let layout = callable(self.module, self.function.callable)?
+            .return_layout
+            .as_ref()
+            .ok_or_else(|| {
+                CodegenError::FailClosed("receiver handback lacks a dual result".into())
+            })?;
+        let dual = llvm_type(self.ctx, &layout.repr)?.into_struct_type();
+        let receiver = self
+            .builder
+            .build_struct_gep(dual, result_out, 1, "dual.receiver")
+            .llvm_ctx("address handed-back receiver")?;
+        let value = self.load(handback, "handback.value")?;
+        self.builder
+            .build_store(receiver, value)
+            .llvm_ctx("hand back receiver")?;
+        Ok(())
     }
 
     #[allow(
@@ -9512,7 +9587,7 @@ mod tests {
                 args: vec![],
                 ops: failed_inputs,
                 terminator: if contract.propagates_fault() {
-                    SemTerminator::ResumeUnwind
+                    SemTerminator::ResumeUnwind { handback: None }
                 } else {
                     SemTerminator::Trap {
                         kind: hew_sir::runtime_failure_trap_kind(*failure).unwrap(),

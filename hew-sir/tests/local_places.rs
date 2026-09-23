@@ -534,7 +534,7 @@ fn local_copy_requires_the_exact_type_clone_contract() {
             },
         ),
         block(1, vec![], done()),
-        block(2, vec![], SemTerminator::ResumeUnwind),
+        block(2, vec![], SemTerminator::ResumeUnwind { handback: None }),
     ];
     valid(&mut module);
     let ty = probe(&mut module).places[0].ty.clone();
@@ -789,7 +789,7 @@ fn parked_fault_preserves_trap_only_linear_cleanup() {
             },
         ),
         block(4, vec![], done()),
-        block(5, vec![], SemTerminator::ResumeUnwind),
+        block(5, vec![], SemTerminator::ResumeUnwind { handback: None }),
     ];
     valid(&mut module);
     let function = probe(&mut module).clone();

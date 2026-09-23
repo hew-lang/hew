@@ -149,7 +149,7 @@ fn counter_body(module: &sir::SemModule, mode: CallableCallMode, fault: bool) ->
             id: BlockId(2),
             args: vec![],
             ops: vec![],
-            terminator: sir::SemTerminator::ResumeUnwind,
+            terminator: sir::SemTerminator::ResumeUnwind { handback: None },
         });
     }
     let mut body = function(&module.callables[1], blocks);
@@ -294,7 +294,7 @@ fn factory_body(module: &sir::SemModule, weak_once: bool, invoke: bool) -> sir::
                 id: BlockId(2),
                 args: vec![],
                 ops: cleanup(6),
-                terminator: sir::SemTerminator::ResumeUnwind,
+                terminator: sir::SemTerminator::ResumeUnwind { handback: None },
             },
         ],
     )

@@ -401,6 +401,9 @@ pub struct PhysicalCallable {
     /// Derived from verified suspension and call edges, then checked again
     /// against the physical CFG before emission.
     pub is_resumable: bool,
+    /// A `var self` method: its fault exits write the receiver into the
+    /// dual result's receiver field instead of releasing it.
+    pub receiver_handback: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1210,6 +1213,9 @@ pub enum PhysicalTerminator {
         result: Option<StorageId>,
         normal: Option<PhysicalEdge>,
         unwind: Option<PhysicalEdge>,
+        /// A failing `var self` callee writes its receiver into the dual
+        /// result's receiver field; the unwind edge finds it here.
+        handback: Option<StorageId>,
     },
     /// Execute the exact selected value callback with borrowed slots. Success
     /// initializes the scalar result; failure owns a fault on the cleanup edge.
@@ -1259,8 +1265,11 @@ pub enum PhysicalTerminator {
     },
     Trap(TrapKind),
     /// Propagate the currently owned fault and non-zero status through this
-    /// function's private `fault_out` and status result.
-    PropagateFault,
+    /// function's private `fault_out` and status result. A `var self` method
+    /// first hands its receiver back through the dual result's receiver field.
+    PropagateFault {
+        handback: Option<StorageId>,
+    },
     Unreachable,
 }
 
@@ -1508,6 +1517,7 @@ pub fn lower_physical_module(
                 return_ty: callable.signature.return_ty.clone(),
                 return_layout,
                 is_resumable: resumable.contains(&callable.id),
+                receiver_handback: callable.signature.hands_back_receiver(),
             })
         })
         .collect::<Result<Vec<_>, PhysicalError>>()?;
@@ -2398,6 +2408,18 @@ fn lower_function(
                 &result.ty,
                 result.own,
                 StorageOrigin::Value(result.id),
+            )?;
+        }
+        if let SemTerminator::Call {
+            handback: Some(handback),
+            ..
+        } = &block.terminator
+        {
+            lowerer.insert_value(
+                handback.id,
+                &handback.ty,
+                handback.own,
+                StorageOrigin::Value(handback.id),
             )?;
         }
         if let SemTerminator::SwitchVariant { arms, .. } = &block.terminator {
@@ -3359,8 +3381,13 @@ impl FunctionLowerer<'_> {
                 result,
                 normal,
                 unwind,
+                handback,
                 ..
             } => Ok(PhysicalTerminator::Call {
+                handback: handback
+                    .as_ref()
+                    .map(|handback| self.value(handback.id))
+                    .transpose()?,
                 callee: *callee,
                 args: self.argument_transfers(args)?,
                 result: match result {
@@ -3516,7 +3543,12 @@ impl FunctionLowerer<'_> {
                 cleanup: self.lower_edge(cleanup)?,
             }),
             SemTerminator::Trap { kind } => Ok(PhysicalTerminator::Trap(*kind)),
-            SemTerminator::ResumeUnwind => Ok(PhysicalTerminator::PropagateFault),
+            SemTerminator::ResumeUnwind { handback } => Ok(PhysicalTerminator::PropagateFault {
+                handback: handback
+                    .as_ref()
+                    .map(|handback| self.value(handback.operand.value))
+                    .transpose()?,
+            }),
             SemTerminator::Unreachable => Ok(PhysicalTerminator::Unreachable),
             term @ SemTerminator::Suspend {
                 kind: hew_sir::SuspendKind::Yield | hew_sir::SuspendKind::GeneratorNext,
@@ -6495,7 +6527,17 @@ fn consume_if_owned(
     state: &mut FlowState,
     id: StorageId,
 ) -> Result<(), PhysicalError> {
-    defer::require_unreserved(function, state, id)?;
+    // A take may leave a pending action's place empty until it is stored
+    // again; the action requires it initialized when it runs.
+    if !matches!(
+        storage(function, id)?.origin,
+        StorageOrigin::Local(_)
+            | StorageOrigin::Aggregate(_)
+            | StorageOrigin::ActorState { .. }
+            | StorageOrigin::Capture { .. }
+    ) {
+        defer::require_unreserved(function, state, id)?;
+    }
     if let Some(entry) = function.place_storage.get(&id) {
         require_no_live_borrows(function, borrows, state, id)?;
         if entry.root == id {
@@ -6903,6 +6945,28 @@ fn call_successors(
     result: Option<StorageId>,
     normal: Option<&PhysicalEdge>,
     unwind: Option<&PhysicalEdge>,
+    state: FlowState,
+    block: BlockId,
+) -> Result<Vec<(BlockId, FlowState)>, PhysicalError> {
+    call_successors_with_handback(
+        function, borrows, args, result, None, normal, unwind, state, block,
+    )
+}
+
+/// A `var self` call's unwind edge also defines the receiver its failing
+/// callee handed back.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "every invoke-style terminator shares this transfer"
+)]
+fn call_successors_with_handback(
+    function: &PhysicalFunction,
+    borrows: &BorrowDependents,
+    args: &[ArgumentTransfer],
+    result: Option<StorageId>,
+    handback: Option<StorageId>,
+    normal: Option<&PhysicalEdge>,
+    unwind: Option<&PhysicalEdge>,
     mut state: FlowState,
     block: BlockId,
 ) -> Result<Vec<(BlockId, FlowState)>, PhysicalError> {
@@ -6959,6 +7023,16 @@ fn call_successors(
         }
         failure_state.fault = FaultState::Active;
         failure_state.exit = defer::TRAP;
+        if let Some(handback) = handback {
+            define(
+                function,
+                borrows,
+                &mut failure_state,
+                handback,
+                block,
+                "receiver handback",
+            )?;
+        }
         successors.push(apply_edge(function, borrows, unwind, failure_state, block)?);
     }
     Ok(successors)
@@ -6989,7 +7063,7 @@ fn terminator_successors(
     if matches!(
         terminator,
         PhysicalTerminator::Return { .. }
-            | PhysicalTerminator::PropagateFault
+            | PhysicalTerminator::PropagateFault { .. }
             | PhysicalTerminator::Trap(_)
             | PhysicalTerminator::Unreachable
     ) && (!state.defers.pending.is_empty() || !state.defers.active.is_empty())
@@ -7003,7 +7077,7 @@ fn terminator_successors(
         PhysicalTerminator::Return { .. }
             | PhysicalTerminator::Trap(_)
             | PhysicalTerminator::Unreachable
-            | PhysicalTerminator::PropagateFault
+            | PhysicalTerminator::PropagateFault { .. }
     ) && function.storage.iter().any(|slot| {
         slot.borrow_parent.is_some() && state.slots[slot.id.0 as usize] != InitState::Uninitialized
     }) {
@@ -7016,7 +7090,7 @@ fn terminator_successors(
         PhysicalTerminator::Return { .. }
             | PhysicalTerminator::Trap(_)
             | PhysicalTerminator::Unreachable
-            | PhysicalTerminator::PropagateFault
+            | PhysicalTerminator::PropagateFault { .. }
     ) && state
         .active
         .iter()
@@ -7536,12 +7610,14 @@ fn terminator_successors(
             result,
             normal,
             unwind,
+            handback,
             ..
-        } => call_successors(
+        } => call_successors_with_handback(
             function,
             borrows,
             args,
             *result,
+            *handback,
             normal.as_ref(),
             unwind.as_ref(),
             state,
@@ -7736,12 +7812,16 @@ fn terminator_successors(
             }
             Ok(vec![])
         }
-        PhysicalTerminator::PropagateFault => {
+        PhysicalTerminator::PropagateFault { handback } => {
             if state.fault != FaultState::Active {
                 return Err(PhysicalError::new(format!(
                     "physical bb{} propagates a fault that is not initialized",
                     block.0
                 )));
+            }
+            if let Some(handback) = handback {
+                initialized(function, &state, *handback, block, "receiver handback")?;
+                consume_if_owned(function, borrows, &mut state, *handback)?;
             }
             if function.storage.iter().any(|slot| {
                 slot.own == OwnKind::Owned
@@ -8367,8 +8447,21 @@ fn verify_terminator(
             result,
             normal,
             unwind,
+            handback,
         } => {
             let callee = callable_for(module, *callee)?;
+            if handback.is_some() != callee.receiver_handback
+                || handback.is_some_and(|handback| {
+                    result.is_none()
+                        || callee.params.first().is_none_or(|receiver| {
+                            slot(handback).is_ok_and(|slot| slot.ty != receiver.ty)
+                        })
+                })
+            {
+                return Err(PhysicalError::new(
+                    "physical call receiver handback disagrees with its `var self` callee",
+                ));
+            }
             if args.len() != callee.params.len() {
                 return Err(PhysicalError::new(format!(
                     "physical call to {} has {} arguments for {} parameters",
@@ -8933,9 +9026,22 @@ fn verify_terminator(
             }
             edge(cleanup)
         }
-        PhysicalTerminator::Trap(_)
-        | PhysicalTerminator::PropagateFault
-        | PhysicalTerminator::Unreachable => Ok(()),
+        PhysicalTerminator::PropagateFault { handback } => {
+            let own = callable_for(module, function.callable)?;
+            if handback.is_some() != own.receiver_handback
+                || handback.is_some_and(|handback| {
+                    own.params.first().is_none_or(|receiver| {
+                        slot(handback).is_ok_and(|slot| slot.ty != receiver.ty)
+                    })
+                })
+            {
+                return Err(PhysicalError::new(
+                    "physical fault exit hands back exactly its `var self` receiver",
+                ));
+            }
+            Ok(())
+        }
+        PhysicalTerminator::Trap(_) | PhysicalTerminator::Unreachable => Ok(()),
     }
 }
 
@@ -9938,6 +10044,7 @@ mod tests {
                         target: BlockId(2),
                         args: vec![],
                     }),
+                    handback: None,
                 },
             },
             SemBlock {
@@ -9961,7 +10068,7 @@ mod tests {
                 id: BlockId(2),
                 args: vec![],
                 ops: vec![],
-                terminator: SemTerminator::ResumeUnwind,
+                terminator: SemTerminator::ResumeUnwind { handback: None },
             },
         ];
         module.functions.push(helper);
@@ -10991,7 +11098,8 @@ mod tests {
     fn verifier_rejects_propagating_an_uninitialized_fault() {
         let verified = lower_physical_module(&module_with_return(), target()).expect("lower");
         let mut physical = verified.into_unverified();
-        physical.functions[0].blocks[0].terminator = PhysicalTerminator::PropagateFault;
+        physical.functions[0].blocks[0].terminator =
+            PhysicalTerminator::PropagateFault { handback: None };
         let error = verify_physical_module(&physical).expect_err("fault must be initialized");
         assert!(error.message.contains("fault that is not initialized"));
     }
@@ -11329,6 +11437,7 @@ mod tests {
             instance: CallableInstance::Monomorphic,
             symbol: "malformed_owner_merge".to_string(),
             is_resumable: false,
+            receiver_handback: false,
             params: vec![],
             return_ty: ResolvedTy::Unit,
             return_layout: None,
@@ -11567,7 +11676,7 @@ mod tests {
             .iter_mut()
             .find(|block| matches!(block.terminator, PhysicalTerminator::Return { .. }))
             .unwrap();
-        success.terminator = PhysicalTerminator::PropagateFault;
+        success.terminator = PhysicalTerminator::PropagateFault { handback: None };
         let error = verify_physical_module(&invalid).unwrap_err();
         assert!(
             error
@@ -12316,6 +12425,7 @@ mod tests {
                     result,
                     normal,
                     unwind,
+                    ..
                 } = &block.terminator
                 {
                     if *callee == selected {

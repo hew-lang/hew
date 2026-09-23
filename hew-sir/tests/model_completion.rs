@@ -145,6 +145,7 @@ fn invoke_value_result_flows_to_the_normal_block_and_visits_both_cfg_edges() {
                     target: BlockId(2),
                     args: Vec::new(),
                 }),
+                handback: None,
             },
         },
         SemBlock {
@@ -165,7 +166,7 @@ fn invoke_value_result_flows_to_the_normal_block_and_visits_both_cfg_edges() {
             id: BlockId(2),
             args: Vec::new(),
             ops: Vec::new(),
-            terminator: SemTerminator::ResumeUnwind,
+            terminator: SemTerminator::ResumeUnwind { handback: None },
         },
     ];
 
@@ -273,6 +274,7 @@ fn no_unwind_call_visits_only_its_normal_cfg_edge() {
             args: Vec::new(),
         }),
         unwind: CallUnwind::NotApplicable,
+        handback: None,
     };
 
     let mut successors = Vec::new();

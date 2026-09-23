@@ -55,7 +55,7 @@ pub fn module(owned: bool) -> sir::SemModule {
             } else {
                 vec![]
             },
-            terminator: sir::SemTerminator::ResumeUnwind,
+            terminator: sir::SemTerminator::ResumeUnwind { handback: None },
         },
     ];
     if owned {

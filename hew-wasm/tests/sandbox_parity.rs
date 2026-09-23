@@ -366,6 +366,12 @@ const PARITY_CASES: &[ParityCase] = &[
         source_rel: "examples/sandbox-graduation/option_some_none.hew",
     },
     ParityCase {
+        // A failing `var self` method hands its receiver back: the defer sees
+        // the value as last written on both engines.
+        test_name: "var_self_fault_defer",
+        source_rel: "examples/sandbox-graduation/var_self_fault_defer.hew",
+    },
+    ParityCase {
         // `take()` is a `var self` std method: the value leaves the place and
         // `None` stays behind on both engines.
         test_name: "option_take",

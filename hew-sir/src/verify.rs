@@ -1851,11 +1851,13 @@ fn verify_callable_table<'a>(
                     ),
                 }));
             }
-            if abi.caller_visible_projection {
+            if abi.caller_visible_projection
+                && !is_var_self_receiver(&callable.signature, parameter)
+            {
                 diagnostics.push(module_diag(SirDiagnosticKind::InvalidCallable {
                     callable: callable.id,
                     reason: format!(
-                        "parameter {parameter} has a caller-visible projection before SIR owns that ABI feature"
+                        "parameter {parameter} has a caller-visible projection but is not a `var self` receiver its dual return hands back"
                     ),
                 }));
             }
@@ -1997,7 +1999,8 @@ fn verify_generic_template_headers<'a>(
             if !matches!(
                 parameter.passing,
                 SemParamPassing::ReadOnly | SemParamPassing::Consume
-            ) || parameter.caller_visible_projection
+            ) || (parameter.caller_visible_projection
+                && !is_var_self_receiver(&template.signature, index))
             {
                 diagnostics.push(module_diag(SirDiagnosticKind::InvalidGenericTemplate {
                     template: name.clone(),
@@ -2151,7 +2154,8 @@ fn substitute_template_signature(
                     } else {
                         SemParamPassing::ReadOnly
                     },
-                    caller_visible_projection: parameter.caller_visible_projection,
+                    caller_visible_projection: parameter.caller_visible_projection
+                        && own == crate::OwnKind::Owned,
                 })
             })
             .collect::<Result<Vec<_>, String>>()?,
@@ -3834,6 +3838,61 @@ fn verify_operation_shape(
     }
 }
 
+/// A call to a `var self` method receives the receiver its failing callee
+/// hands back, and passes exactly that value to its unwind block.
+fn verify_call_handback(
+    function: &SemFunction,
+    id: OpId,
+    callee: CallableId,
+    unwind: &crate::CallUnwind,
+    handback: Option<&crate::ValueDef>,
+    callable_context: Option<&CallableContext<'_>>,
+    diagnostics: &mut Vec<SirDiagnostic>,
+) {
+    let Some(target) = callable_context.and_then(|context| context.callable(callee)) else {
+        return;
+    };
+    let receiver = target
+        .signature
+        .params
+        .first()
+        .filter(|_| target.signature.hands_back_receiver());
+    let carried = match unwind {
+        crate::CallUnwind::Cleanup(edge) => edge.args.as_slice(),
+        crate::CallUnwind::NotApplicable => &[],
+    };
+    let agrees = match (receiver, handback) {
+        (None, None) => true,
+        (Some(receiver), Some(handback)) => {
+            handback.ty == receiver.ty
+                && handback.own == OwnKind::Owned
+                && matches!(carried, [only] if only.value == handback.id)
+        }
+        _ => false,
+    };
+    if !agrees {
+        invalid_operation(
+            function,
+            id,
+            format!(
+                "direct call to `{}` must carry exactly the `var self` receiver its failing callee hands back",
+                target.declaration.full_path()
+            ),
+            diagnostics,
+        );
+    }
+}
+
+/// An owned `var self` receiver: the first parameter, consumed, and handed
+/// back to the caller in the second field of the dual return. Its callee
+/// also hands it back when the call fails.
+fn is_var_self_receiver(signature: &crate::SemSignature, parameter: usize) -> bool {
+    parameter == 0
+        && signature.params[0].passing == SemParamPassing::Consume
+        && matches!(&signature.return_ty, ResolvedTy::Tuple(fields)
+            if fields.len() == 2 && fields[1] == signature.params[0].ty)
+}
+
 #[allow(
     clippy::too_many_arguments,
     clippy::too_many_lines,
@@ -4606,8 +4665,9 @@ fn failure_cfg_matches_exit(
         let Some(block) = blocks.get(&block_id) else {
             return false;
         };
-        // Releases, and the re-publication of a state seat the call took and
-        // handed back on this edge. Nothing else runs on a failure edge.
+        // Releases, the re-publication of a seat a call took and handed back
+        // on this edge, and the moves that hand a failing `var self` method's
+        // receiver back. Nothing else runs on a failure edge.
         if block.ops.iter().any(|op| {
             !matches!(
                 op.kind,
@@ -4616,6 +4676,8 @@ fn failure_cfg_matches_exit(
                     | SemOpKind::DestroyValue { .. }
                     | SemOpKind::EndLifetime { .. }
                     | SemOpKind::StoreInit { .. }
+                    | SemOpKind::LoadTake { .. }
+                    | SemOpKind::Destructure { .. }
             )
         }) {
             return false;
@@ -4642,7 +4704,7 @@ fn failure_cfg_matches_exit(
             SemTerminator::EnterDefer { .. }
             | SemTerminator::FinishDefer { .. }
             | SemTerminator::RecoverFault { .. }
-            | SemTerminator::ResumeUnwind => expected.is_none(),
+            | SemTerminator::ResumeUnwind { .. } => expected.is_none(),
             SemTerminator::CheckedRaiseFault { kind, .. } => expected == Some(*kind),
             SemTerminator::CleanupDispatch { fault, .. } => {
                 expected.is_none()
@@ -5056,18 +5118,30 @@ fn verify_terminator_shape(
             args,
             result,
             normal,
-            ..
-        } => verify_direct_call_terminator(
-            function,
-            *id,
-            *callee,
-            args,
-            result,
-            normal.as_ref(),
-            types,
-            callable_context,
-            diagnostics,
-        ),
+            unwind,
+            handback,
+        } => {
+            verify_direct_call_terminator(
+                function,
+                *id,
+                *callee,
+                args,
+                result,
+                normal.as_ref(),
+                types,
+                callable_context,
+                diagnostics,
+            );
+            verify_call_handback(
+                function,
+                *id,
+                *callee,
+                unwind,
+                handback.as_ref(),
+                callable_context,
+                diagnostics,
+            );
+        }
         SemTerminator::CheckedBinary {
             id,
             op,
@@ -5252,11 +5326,36 @@ fn verify_terminator_shape(
             variants,
             diagnostics,
         ),
+        SemTerminator::ResumeUnwind { handback } => {
+            // A `var self` method hands its receiver back on every fault exit;
+            // no other body hands anything back.
+            let receiver = callable_context
+                .and_then(|context| context.callable(function.callable))
+                .filter(|callable| callable.signature.hands_back_receiver())
+                .and_then(|callable| callable.signature.params.first());
+            let agrees = match (receiver, handback) {
+                (None, None) => true,
+                (Some(receiver), Some(handback)) => {
+                    handback.decision == crate::BoundaryDecision::Move
+                        && types.get(&handback.operand.value) == Some(&receiver.ty)
+                }
+                _ => false,
+            };
+            if !agrees {
+                diagnostics.push(diag(
+                    function,
+                    SirDiagnosticKind::InvalidTerminator {
+                        reason:
+                            "a fault exit hands back exactly the `var self` receiver of its method"
+                                .into(),
+                    },
+                ));
+            }
+        }
         SemTerminator::EnterDefer { .. }
         | SemTerminator::Return { .. }
         | SemTerminator::Goto(_)
         | SemTerminator::Trap { .. }
-        | SemTerminator::ResumeUnwind
         | SemTerminator::Unreachable => {}
         // `Trap`'s kind table and `Suspend`'s shape rules - §1.5's kind/arity/
         // mode agreement and the cancel-edge and resume-edge orderings -
@@ -5662,8 +5761,17 @@ fn uses_in_terminator(term: &SemTerminator) -> Vec<(ValueId, bool)> {
         }
         _ => 0..0,
     };
+    // A `var self` call's handback is defined on its unwind edge instead,
+    // whose arguments follow the normal-edge interval.
+    let handback = term.call_handback().map(|def| def.id);
     term.visit_operands(|slot, operand| {
-        uses.push((operand.value, normal_slots.contains(&(slot.0 as usize))));
+        let slot = slot.0 as usize;
+        let on_defining_edge = if Some(operand.value) == handback {
+            slot >= normal_slots.end
+        } else {
+            normal_slots.contains(&slot)
+        };
+        uses.push((operand.value, on_defining_edge));
     });
     uses
 }

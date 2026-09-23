@@ -1,7 +1,7 @@
 // A `var self` method called on an actor state field takes the seat for the
-// call and re-publishes it when the call returns. When the method panics, the
-// method releases the receiver it owns and the actor's teardown skips the
-// empty seat, so the resource closes exactly once.
+// call and re-publishes it when the call returns. When the method panics, it
+// hands the receiver back, as last written, into the seat, and the actor's
+// teardown closes the resource exactly once.
 #[resource]
 type Conn {
     fd: i64,
@@ -52,8 +52,7 @@ fn main() {
         .Ok(value) => println(f"second {value}"),
         .Err(_) => println("second failed"),
     }
-    match holder.poke(true) {
-        .Ok(value) => println(f"third {value}"),
-        .Err(_) => println("third failed"),
-    }
+    // Teardown runs on the actor after the failed reply, so nothing here
+    // prints after it.
+    let _ = holder.poke(true);
 }

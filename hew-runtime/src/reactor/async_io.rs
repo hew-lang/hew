@@ -324,8 +324,8 @@ pub(super) fn handle_ready(
 /// write of any size while its send buffer is not yet full, so an unbounded
 /// write to a peer that never reads completes at once and no backpressure is
 /// ever observed; bounded writes fill the buffer and meet `WouldBlock` on every
-/// platform.
-const WRITE_CHUNK: usize = 64 * 1024;
+/// platform, with Windows overcommitting at most one chunk.
+const WRITE_CHUNK: usize = 1024 * 1024;
 
 /// Preserve the committed prefix across `WouldBlock`. Each syscall is
 /// nonblocking, and cancellation can stop the loop between partial writes.

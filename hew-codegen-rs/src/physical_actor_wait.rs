@@ -1,6 +1,7 @@
 //! Checked mailbox capacity waits retain the source message until admission.
 
 use super::*;
+use hew_runtime::actor_native::HewSubmitStatus;
 
 impl<'ctx> FunctionEmitter<'_, 'ctx> {
     pub(super) fn new_actor_wait_edge(
@@ -334,7 +335,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .build_int_compare(
                 IntPredicate::EQ,
                 status,
-                self.ctx.i32_type().const_all_ones(),
+                super::actor::submit_status(self.ctx, HewSubmitStatus::Pending),
                 "send.waiting",
             )
             .llvm_ctx("inspect capacity readiness")?;

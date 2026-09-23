@@ -1,5 +1,6 @@
 //! Native capacity readiness without retaining an actor or its mailbox.
 
+use crate::actor_native::HewSubmitStatus;
 use crate::wake::{HewWaker, OwnedWaker};
 use std::sync::Arc;
 
@@ -223,10 +224,9 @@ pub unsafe extern "C" fn hew_actor_ask_wait_resume(
     }))
 }
 
-/// Return -1 while full, 0 after transferring the message, 2 when closed, 3 on
-/// allocation failure, or 4 when the destination's declared mailbox policy took
-/// the message and discarded it. Terminal failures preserve the caller's typed
-/// fields; 0 and 4 both mean the destination owns them.
+/// Answer a [`HewSubmitStatus`]: `Pending` while the mailbox stays full,
+/// otherwise the terminal admission. Terminal failures preserve the caller's
+/// typed fields; `Accepted` and `Discarded` both mean the destination owns them.
 ///
 /// # Safety
 /// The handle is null or uniquely borrowed until a terminal poll and release.
@@ -234,32 +234,23 @@ pub unsafe extern "C" fn hew_actor_ask_wait_resume(
 pub unsafe extern "C" fn hew_actor_send_wait_poll(wait: *mut HewNativeSend) -> i32 {
     // SAFETY: the caller exclusively drives this operation.
     let Some(wait) = (unsafe { wait.as_mut() }) else {
-        return 3;
+        return HewSubmitStatus::Oom as i32;
     };
     // SAFETY: this operation owns its unpublished envelope until admission.
     let outcome = unsafe {
         crate::actor::try_submit_native_envelope(wait.token, wait.message, wait.envelope)
     };
-    match outcome {
-        super::SendOutcome::Enqueued => {
-            wait.envelope = std::ptr::null_mut();
-            0
-        }
-        // A coalescing mailbox admits by replacing the message this one
-        // supersedes, and a `drop_new` fallback discards it: both consumed the
-        // envelope and neither leaves the sender anything to retry. The
-        // destination's declaration chose the loss, so it reports as a discard.
-        super::SendOutcome::Coalesced | super::SendOutcome::Dropped => {
-            wait.envelope = std::ptr::null_mut();
-            4
-        }
-        super::SendOutcome::Failed => -1,
-        super::SendOutcome::Closed => 2,
-        super::SendOutcome::Oom => 3,
-        super::SendOutcome::DroppedOld => {
-            unreachable!("envelope admission never evicts for a one-way submission")
-        }
+    let status = match crate::actor_native::submission_status(outcome) {
+        HewSubmitStatus::Full => HewSubmitStatus::Pending,
+        status => status,
+    };
+    if matches!(
+        status,
+        HewSubmitStatus::Accepted | HewSubmitStatus::Discarded
+    ) {
+        wait.envelope = std::ptr::null_mut();
     }
+    status as i32
 }
 
 /// Release readiness and any unpublished shallow wrapper.

@@ -1926,6 +1926,7 @@ unsafe fn consume_dropped_incoming(
 /// (`Enqueued`/`Coalesced`/`DroppedOld`), which is a different question
 /// from whether the call should report success to the caller (`Dropped`
 /// also reports success, but nothing was queued, so nothing to schedule).
+#[derive(Debug, Clone, Copy)]
 pub(crate) enum SendOutcome {
     /// Message was successfully enqueued.
     Enqueued,

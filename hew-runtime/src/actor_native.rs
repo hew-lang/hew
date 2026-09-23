@@ -212,11 +212,49 @@ pub unsafe extern "C" fn hew_actor_payload_free(payload: *mut std::ffi::c_void) 
     unsafe { crate::mem::buf_free(payload) }; // ALLOCATOR-PAIRING: GlobalAlloc
 }
 
-/// Try to transfer a generated message wrapper into its exact destination.
-/// Returns 0 for acceptance, 1 for full, 2 for closed, 3 for allocation failure,
-/// and 4 for a discard - either the sender's own newest-message policy or the
-/// destination's declared coalescing. Both 0 and 4 mean the destination owns the
-/// typed fields; every other status leaves them with the caller.
+/// A one-way submission's outcome as generated code reads it. `Accepted` and
+/// `Discarded` both mean the destination owns the typed fields; every other
+/// status leaves them with the caller.
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HewSubmitStatus {
+    /// A waiting submission found the mailbox still full.
+    Pending = -1,
+    Accepted = 0,
+    Full = 1,
+    Closed = 2,
+    Oom = 3,
+    /// The message was taken and lost by policy: the sender's own newest-message
+    /// discard, or the destination's declared coalescing or `drop_new` fallback.
+    Discarded = 4,
+}
+
+/// The sender policy code that discards the newest message on a full mailbox.
+pub const SUBMIT_DROP_NEWEST: i32 = 2;
+
+/// The one reading of a mailbox admission for every submission path. A
+/// coalescing mailbox resolves a full queue under its declared policy -
+/// replacing the message this one supersedes, or discarding it - and owns the
+/// envelope either way, so the loss reports as a discard rather than as
+/// acceptance. A refused admission is `Full`; each caller decides whether that
+/// waits, discards by the sender's policy or returns the message.
+pub(crate) fn submission_status(outcome: crate::mailbox::SendOutcome) -> HewSubmitStatus {
+    use crate::mailbox::SendOutcome;
+    match outcome {
+        SendOutcome::Enqueued => HewSubmitStatus::Accepted,
+        SendOutcome::Coalesced | SendOutcome::Dropped => HewSubmitStatus::Discarded,
+        SendOutcome::Failed => HewSubmitStatus::Full,
+        SendOutcome::Closed => HewSubmitStatus::Closed,
+        SendOutcome::Oom => HewSubmitStatus::Oom,
+        SendOutcome::DroppedOld => {
+            unreachable!("a `drop_old` coalesce fallback enqueues rather than reporting eviction")
+        }
+    }
+}
+
+/// Try to transfer a generated message wrapper into its exact destination,
+/// answering a [`HewSubmitStatus`]. A full mailbox under the sender's
+/// [`SUBMIT_DROP_NEWEST`] policy discards the message instead.
 ///
 /// # Safety
 /// `payload` is an unpublished malloc wrapper containing shallowly transferred
@@ -300,7 +338,7 @@ unsafe fn submit_native(
         unsafe { discarded_release_out.write(ptr::null_mut()) };
     }
     if payload.is_null() {
-        return 3;
+        return HewSubmitStatus::Oom as i32;
     }
     // SAFETY: the wrapper is uniquely owned until the mailbox accepts it.
     let envelope =
@@ -310,7 +348,7 @@ unsafe fn submit_native(
         unsafe {
             crate::mem::buf_free(payload); // ALLOCATOR-PAIRING: GlobalAlloc
         }
-        return 3;
+        return HewSubmitStatus::Oom as i32;
     }
     // SAFETY: attach the selected consuming callback before publication.
     unsafe { (*envelope).release_start = payload_release };
@@ -322,15 +360,9 @@ unsafe fn submit_native(
             crate::actor::try_submit_native_envelope(token, message, envelope)
         }
     };
-    // `Enqueued` is plain admission. A coalescing mailbox instead resolves the
-    // full queue under its declared policy - replacing the message this one
-    // supersedes, or discarding it - and owns the envelope either way, so the
-    // sender has nothing to release or retry. The loss is still a loss, so it
-    // reports as a discard (4) rather than as acceptance.
-    let status = match outcome {
-        crate::mailbox::SendOutcome::Enqueued => return 0,
-        crate::mailbox::SendOutcome::Coalesced | crate::mailbox::SendOutcome::Dropped => return 4,
-        crate::mailbox::SendOutcome::Failed if policy == 2 => {
+    let status = match submission_status(outcome) {
+        status @ (HewSubmitStatus::Accepted | HewSubmitStatus::Discarded) => return status as i32,
+        HewSubmitStatus::Full if policy == SUBMIT_DROP_NEWEST => {
             // SAFETY: explicit DropNewest transfers the typed payload for destruction.
             unsafe {
                 let cursor = crate::cow_envelope::release_cursor(envelope);
@@ -340,14 +372,9 @@ unsafe fn submit_native(
                     discarded_release_out.write(cursor);
                 }
             }
-            return 4;
+            return HewSubmitStatus::Discarded as i32;
         }
-        crate::mailbox::SendOutcome::Failed => 1,
-        crate::mailbox::SendOutcome::Closed => 2,
-        crate::mailbox::SendOutcome::Oom => 3,
-        crate::mailbox::SendOutcome::DroppedOld => {
-            unreachable!("a `drop_old` coalesce fallback enqueues rather than reporting eviction")
-        }
+        status => status as i32,
     };
     // SAFETY: admission failed without publishing or aliasing. The source retains
     // the typed fields; these two allocations contain no other owning resources.

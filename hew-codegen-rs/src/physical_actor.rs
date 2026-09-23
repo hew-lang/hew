@@ -6,6 +6,7 @@ use hew_mir::physical::{
     ActorId, ActorIngressAdapter, ActorOperation, SemActor, SemActorField, SemActorHandler,
     SemCoalesceFallback, SemCoalesceKeyKind, SemFailureDisplay,
 };
+use hew_runtime::actor_native::HewSubmitStatus;
 use inkwell::types::StructType;
 
 /// One pre-publication body's failure exit inside `emit_actor_spawn`.
@@ -402,6 +403,19 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             .llvm_ctx("finish the unreplied completion")?;
         Ok(())
     }
+}
+
+/// One runtime submission status as the i32 generated code compares against.
+pub(super) fn submit_status(
+    ctx: &Context,
+    status: hew_runtime::actor_native::HewSubmitStatus,
+) -> IntValue<'_> {
+    ctx.i32_type().const_int(status as i32 as u64, true)
+}
+
+/// `HewNativePeriodicHandler`: the handler's message id and its interval.
+fn periodic_handler_type(ctx: &Context) -> StructType<'_> {
+    ctx.struct_type(&[ctx.i32_type().into(), ctx.i64_type().into()], false)
 }
 
 fn message_type<'ctx>(
@@ -2149,10 +2163,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         };
         let target = TargetData::create(&self.module.target.data_layout);
         let size_ty = self.ctx.ptr_sized_int_type(&target, None);
-        let periodic_ty = self.ctx.struct_type(
-            &[self.ctx.i32_type().into(), self.ctx.i64_type().into()],
-            false,
-        );
+        let periodic_ty = periodic_handler_type(self.ctx);
         let periodic: Vec<_> = actor
             .handlers
             .iter()
@@ -2227,24 +2238,26 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         } else {
             callback("terminate")?
         };
+        use hew_runtime::internal::types::HewOverflowPolicy as Policy;
         let overflow = match actor.overflow {
-            hew_mir::physical::SemActorOverflow::Block => 0,
-            hew_mir::physical::SemActorOverflow::DropNew => 1,
-            hew_mir::physical::SemActorOverflow::DropOld => 2,
-            hew_mir::physical::SemActorOverflow::Fail => 3,
-            hew_mir::physical::SemActorOverflow::Coalesce => 4,
-        };
+            hew_mir::physical::SemActorOverflow::Block => Policy::Block,
+            hew_mir::physical::SemActorOverflow::DropNew => Policy::DropNew,
+            hew_mir::physical::SemActorOverflow::DropOld => Policy::DropOld,
+            hew_mir::physical::SemActorOverflow::Fail => Policy::Fail,
+            hew_mir::physical::SemActorOverflow::Coalesce => Policy::Coalesce,
+        } as u64;
         let (coalesce_key, coalesce_fallback) = match &actor.coalesce {
-            None => (ptr.const_null(), 1),
+            None => (ptr.const_null(), Policy::DropNew),
             Some(coalesce) => (
                 callback("coalesce_key")?,
                 match coalesce.fallback {
-                    SemCoalesceFallback::DropNew => 1,
-                    SemCoalesceFallback::DropOld => 2,
-                    SemCoalesceFallback::Fail => 3,
+                    SemCoalesceFallback::DropNew => Policy::DropNew,
+                    SemCoalesceFallback::DropOld => Policy::DropOld,
+                    SemCoalesceFallback::Fail => Policy::Fail,
                 },
             ),
         };
+        let coalesce_fallback = coalesce_fallback as u64;
         let state_release = match self.module.actor_recipes[&actor.state_ty].destroy {
             Some(action)
                 if self.module.releases.suspends(action)
@@ -2729,7 +2742,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     .i32_type()
                     .const_int(
                         if policy == SendPolicy::DropNewest {
-                            2
+                            hew_runtime::actor_native::SUBMIT_DROP_NEWEST as u64
                         } else {
                             0
                         },
@@ -2761,7 +2774,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .build_phi(self.ctx.i32_type(), "submission.outcome")
             .llvm_ctx("join submission status")?;
         outcome.add_incoming(&[
-            (&self.ctx.i32_type().const_int(3, false), oom),
+            (&submit_status(self.ctx, HewSubmitStatus::Oom), oom),
             (&status, admission_block),
         ]);
         if let Some((status, block)) = vacant {
@@ -2806,7 +2819,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .build_int_compare(
                 IntPredicate::EQ,
                 status,
-                self.ctx.i32_type().const_zero(),
+                submit_status(self.ctx, HewSubmitStatus::Accepted),
                 "submission.accepted",
             )
             .llvm_ctx("test acceptance")?;
@@ -2815,7 +2828,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .build_int_compare(
                 IntPredicate::EQ,
                 status,
-                self.ctx.i32_type().const_int(4, false),
+                submit_status(self.ctx, HewSubmitStatus::Discarded),
                 "submission.discarded",
             )
             .llvm_ctx("test explicit discard")?;
@@ -2854,7 +2867,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .build_int_compare(
                 IntPredicate::EQ,
                 status,
-                self.ctx.i32_type().const_int(2, false),
+                submit_status(self.ctx, HewSubmitStatus::Closed),
                 "submission.closed",
             )
             .llvm_ctx("classify closed destination")?;
@@ -2863,7 +2876,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .build_int_compare(
                 IntPredicate::EQ,
                 status,
-                self.ctx.i32_type().const_int(1, false),
+                submit_status(self.ctx, HewSubmitStatus::Full),
                 "submission.full",
             )
             .llvm_ctx("classify full mailbox")?;
@@ -2973,5 +2986,105 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .llvm_ctx("construct delivery status")?
             .into_struct_value()
             .into())
+    }
+}
+
+/// Where a codegen mirror of a runtime `#[repr(C)]` struct disagrees with the
+/// struct itself on the host target: each field's `(offset, size)` in
+/// declaration order, then the whole struct's size and alignment.
+#[cfg(test)]
+pub(super) fn c_mirror_mismatch(
+    mirror: StructType<'_>,
+    fields: &[(usize, usize)],
+    size: usize,
+    align: usize,
+) -> Option<String> {
+    let triple = crate::llvm::native_emission_triple();
+    let physical = physical_target_for_triple(&triple).unwrap();
+    let target = TargetData::create(&physical.data_layout);
+    if mirror.count_fields() as usize != fields.len() {
+        return Some(format!(
+            "{} mirror fields for {} runtime fields",
+            mirror.count_fields(),
+            fields.len()
+        ));
+    }
+    for (index, (offset, field_size)) in fields.iter().enumerate() {
+        let index = u32::try_from(index).unwrap();
+        let actual = (
+            target.offset_of_element(&mirror, index),
+            mirror
+                .get_field_type_at_index(index)
+                .map(|field| target.get_abi_size(&field)),
+        );
+        if actual != (Some(*offset as u64), Some(*field_size as u64)) {
+            return Some(format!(
+                "field {index}: mirror (offset, size) {actual:?}, runtime ({offset}, {field_size})"
+            ));
+        }
+    }
+    let (actual_size, actual_align) = (
+        target.get_abi_size(&mirror),
+        target.get_abi_alignment(&mirror),
+    );
+    if actual_size != size as u64 || actual_align as usize != align {
+        return Some(format!(
+            "mirror size/align {actual_size}/{actual_align}, runtime {size}/{align}"
+        ));
+    }
+    None
+}
+
+/// The size of the field `project` names, for [`c_mirror_mismatch`].
+#[cfg(test)]
+pub(super) const fn field_size<T, F>(_project: fn(&T) -> &F) -> usize {
+    std::mem::size_of::<F>()
+}
+
+#[cfg(test)]
+mod abi_tests {
+    use super::*;
+    use hew_runtime::actor::HewNativePeriodicHandler;
+    use std::mem::{align_of, offset_of, size_of};
+
+    fn fields() -> [(usize, usize); 2] {
+        [
+            (
+                offset_of!(HewNativePeriodicHandler, message),
+                field_size(|handler: &HewNativePeriodicHandler| &handler.message),
+            ),
+            (
+                offset_of!(HewNativePeriodicHandler, interval_ms),
+                field_size(|handler: &HewNativePeriodicHandler| &handler.interval_ms),
+            ),
+        ]
+    }
+
+    #[test]
+    fn periodic_handler_matches_the_runtime_c_abi() {
+        let ctx = Context::create();
+        assert_eq!(
+            c_mirror_mismatch(
+                periodic_handler_type(&ctx),
+                &fields(),
+                size_of::<HewNativePeriodicHandler>(),
+                align_of::<HewNativePeriodicHandler>(),
+            ),
+            None
+        );
+    }
+
+    /// The guard sees a reordered mirror: the interval ahead of the message id.
+    #[test]
+    fn a_reordered_periodic_handler_mirror_is_caught() {
+        let ctx = Context::create();
+        let reordered = ctx.struct_type(&[ctx.i64_type().into(), ctx.i32_type().into()], false);
+        assert!(c_mirror_mismatch(
+            reordered,
+            &fields(),
+            size_of::<HewNativePeriodicHandler>(),
+            align_of::<HewNativePeriodicHandler>(),
+        )
+        .is_some());
     }
 }

@@ -23,20 +23,46 @@ fn symbol(supervisor: &SemSupervisor, suffix: &str) -> String {
 }
 
 fn strategy_code(strategy: SemRestartStrategy) -> u64 {
-    match strategy {
-        SemRestartStrategy::OneForOne => 0,
-        SemRestartStrategy::OneForAll => 1,
-        SemRestartStrategy::RestForOne => 2,
-        SemRestartStrategy::SimpleOneForOne => 3,
-    }
+    use hew_runtime::supervisor as rt;
+    let code = match strategy {
+        SemRestartStrategy::OneForOne => rt::STRATEGY_ONE_FOR_ONE,
+        SemRestartStrategy::OneForAll => rt::STRATEGY_ONE_FOR_ALL,
+        SemRestartStrategy::RestForOne => rt::STRATEGY_REST_FOR_ONE,
+        SemRestartStrategy::SimpleOneForOne => rt::STRATEGY_SIMPLE_ONE_FOR_ONE,
+    };
+    code as u64
 }
 
 fn restart_code(policy: SemRestartPolicy) -> u64 {
-    match policy {
-        SemRestartPolicy::Permanent => 0,
-        SemRestartPolicy::Transient => 1,
-        SemRestartPolicy::Temporary => 2,
-    }
+    use hew_runtime::supervisor as rt;
+    let code = match policy {
+        SemRestartPolicy::Permanent => rt::RESTART_PERMANENT,
+        SemRestartPolicy::Transient => rt::RESTART_TRANSIENT,
+        SemRestartPolicy::Temporary => rt::RESTART_TEMPORARY,
+    };
+    code as u64
+}
+
+fn role_kind(role: &SemSupervisedRole) -> u64 {
+    let kind = match role {
+        SemSupervisedRole::Actor(_) => hew_runtime::supervisor::ROLE_KIND_ACTOR,
+        SemSupervisedRole::Supervisor(_) => hew_runtime::supervisor::ROLE_KIND_SUPERVISOR,
+    };
+    kind as u64
+}
+
+/// `HewNativeChildSpec`: restart policy, role kind, spawn adapter and name.
+fn native_child_spec_type(ctx: &Context) -> inkwell::types::StructType<'_> {
+    let ptr = ctx.ptr_type(AddressSpace::default());
+    ctx.struct_type(
+        &[
+            ctx.i32_type().into(),
+            ctx.i32_type().into(),
+            ptr.into(),
+            ptr.into(),
+        ],
+        false,
+    )
 }
 
 /// The config allocation's LLVM shape, in declaration order.
@@ -81,16 +107,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
     /// The declared children in construction order: restart policy, the
     /// adapter that produces each incarnation and the declared name.
     fn emit_supervisor_children(&self, supervisor: &SemSupervisor) -> CodegenResult<()> {
-        let ptr = self.ctx.ptr_type(AddressSpace::default());
-        let entry_ty = self.ctx.struct_type(
-            &[
-                self.ctx.i32_type().into(),
-                self.ctx.i32_type().into(),
-                ptr.into(),
-                ptr.into(),
-            ],
-            false,
-        );
+        let entry_ty = native_child_spec_type(self.ctx);
         let mut entries = Vec::new();
         for (index, child) in supervisor.children.iter().enumerate() {
             let spawn = self
@@ -121,10 +138,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                             .into(),
                         self.ctx
                             .i32_type()
-                            .const_int(
-                                u64::from(matches!(child.role, SemSupervisedRole::Supervisor(_))),
-                                false,
-                            )
+                            .const_int(role_kind(&child.role), false)
                             .into(),
                         spawn.as_global_value().as_pointer_value().into(),
                         name.into(),
@@ -508,13 +522,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                         self.ctx.i32_type().const_int(u64::from(slot), false).into(),
                         self.ctx
                             .i32_type()
-                            .const_int(
-                                u64::from(matches!(
-                                    supervisor.children[child as usize].role,
-                                    SemSupervisedRole::Supervisor(_)
-                                )),
-                                false,
-                            )
+                            .const_int(role_kind(&supervisor.children[child as usize].role), false)
                             .into(),
                     ],
                     "",
@@ -793,5 +801,71 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         role: inkwell::values::StructValue<'ctx>,
     ) -> CodegenResult<IntValue<'ctx>> {
         Ok(self.resolve_role(role)?.0)
+    }
+}
+
+#[cfg(test)]
+mod abi_tests {
+    use super::super::actor::{c_mirror_mismatch, field_size};
+    use super::*;
+    use hew_runtime::supervisor::HewNativeChildSpec;
+    use std::mem::{align_of, offset_of, size_of};
+
+    fn fields() -> [(usize, usize); 4] {
+        [
+            (
+                offset_of!(HewNativeChildSpec, restart_policy),
+                field_size(|spec: &HewNativeChildSpec| &spec.restart_policy),
+            ),
+            (
+                offset_of!(HewNativeChildSpec, role_kind),
+                field_size(|spec: &HewNativeChildSpec| &spec.role_kind),
+            ),
+            (
+                offset_of!(HewNativeChildSpec, spawn),
+                field_size(|spec: &HewNativeChildSpec| &spec.spawn),
+            ),
+            (
+                offset_of!(HewNativeChildSpec, name),
+                field_size(|spec: &HewNativeChildSpec| &spec.name),
+            ),
+        ]
+    }
+
+    #[test]
+    fn native_child_spec_matches_the_runtime_c_abi() {
+        let ctx = Context::create();
+        assert_eq!(
+            c_mirror_mismatch(
+                native_child_spec_type(&ctx),
+                &fields(),
+                size_of::<HewNativeChildSpec>(),
+                align_of::<HewNativeChildSpec>(),
+            ),
+            None
+        );
+    }
+
+    /// The guard sees a reordered mirror: the spawn adapter ahead of the role.
+    #[test]
+    fn a_reordered_child_spec_mirror_is_caught() {
+        let ctx = Context::create();
+        let ptr = ctx.ptr_type(AddressSpace::default());
+        let reordered = ctx.struct_type(
+            &[
+                ctx.i32_type().into(),
+                ptr.into(),
+                ctx.i32_type().into(),
+                ptr.into(),
+            ],
+            false,
+        );
+        assert!(c_mirror_mismatch(
+            reordered,
+            &fields(),
+            size_of::<HewNativeChildSpec>(),
+            align_of::<HewNativeChildSpec>(),
+        )
+        .is_some());
     }
 }

@@ -2148,11 +2148,13 @@ pub unsafe extern "C-unwind" fn hew_gen_coro_destroy(companion: *mut c_void) {
 //   { ptr resume_fn, ptr destroy_fn, ... spilled state ... }
 // and `coro.done(h)` is `load ptr, h /*slot 0*/; icmp eq ptr null`.
 
-/// Frame prefix `CoroSplit` writes: resume fn-ptr, destroy fn-ptr.
+/// Frame prefix `CoroSplit` writes: resume fn-ptr, destroy fn-ptr. Codegen's
+/// parity guard checks these offsets against the frames LLVM actually splits.
 #[repr(C)]
-struct CoroFramePrefix {
-    resume: Option<unsafe extern "C-unwind" fn(*mut c_void)>,
-    destroy: Option<unsafe extern "C-unwind" fn(*mut c_void)>,
+#[derive(Debug)]
+pub struct CoroFramePrefix {
+    pub resume: Option<unsafe extern "C-unwind" fn(*mut c_void)>,
+    pub destroy: Option<unsafe extern "C-unwind" fn(*mut c_void)>,
 }
 
 /// `llvm.coro.resume(handle)`: indirect-call the frame's resume fn-ptr.

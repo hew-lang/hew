@@ -12161,13 +12161,18 @@ pub unsafe extern "C" fn hew_supervisor_pool_len(sup: *mut HewSupervisor, pool_k
 // `start`. Lookup slots are indexed within each child kind; restart identities
 // preserve declaration order across both kinds.
 
+/// [`HewNativeChildSpec::role_kind`] for a declared actor child.
+pub const ROLE_KIND_ACTOR: c_int = 0;
+/// [`HewNativeChildSpec::role_kind`] for a declared supervisor child.
+pub const ROLE_KIND_SUPERVISOR: c_int = 1;
+
 /// One declared child in construction order.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct HewNativeChildSpec {
     /// [`RESTART_PERMANENT`], [`RESTART_TRANSIENT`] or [`RESTART_TEMPORARY`].
     pub restart_policy: c_int,
-    /// `0` actor, `1` supervisor.
+    /// [`ROLE_KIND_ACTOR`] or [`ROLE_KIND_SUPERVISOR`].
     pub role_kind: c_int,
     /// The adapter that produces one incarnation from the config.
     pub spawn: HewNativeChildSpawnFn,
@@ -12181,7 +12186,7 @@ fn register_native_child(s: &mut SupervisorRoster, child: &HewNativeChildSpec) -
     // throughout registration; this helper invokes no callbacks or waits.
     let invalid = crate::lifetime::local_handles::HewLocalPidId::INVALID;
     let next_identity = s.next_child_spec_identity.checked_add(1)?;
-    let index = if child.role_kind == 1 {
+    let index = if child.role_kind == ROLE_KIND_SUPERVISOR {
         let index = s.child_supervisors.len();
         s.child_supervisors.push(ptr::null_mut());
         s.child_supervisor_tokens.push(invalid);
@@ -12283,7 +12288,7 @@ pub unsafe extern "C" fn hew_supervisor_native_spawn(
         // this caller instead of the restart path's discard.
         // SAFETY: the caller supplies a writable, initially null fault slot.
         let token = unsafe { (child.spawn)(config.cast_const(), fault) };
-        if child.role_kind == 1 {
+        if child.role_kind == ROLE_KIND_SUPERVISOR {
             if let Some(pin) = crate::lifetime::local_handles::pin_current_supervisor(token) {
                 let nested = pin.supervisor();
                 // SAFETY: the adapter transferred this fresh subtree and the pin
@@ -12387,7 +12392,13 @@ pub extern "C" fn hew_supervisor_native_await_restart(
         return;
     };
     // SAFETY: the pin keeps the allocation live for the blocking wait.
-    unsafe { supervisor_restart_await_blocking(pin.supervisor(), slot, role_kind == 1) };
+    unsafe {
+        supervisor_restart_await_blocking(
+            pin.supervisor(),
+            slot,
+            role_kind == ROLE_KIND_SUPERVISOR,
+        );
+    }
 }
 
 /// Retain a stable nested owner path for another declared child projection.

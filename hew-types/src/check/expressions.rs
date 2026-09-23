@@ -3955,6 +3955,23 @@ else needs `impl Display for {rendered}`)"
                 result
             }
 
+            // An unresolved expected type carries no information for the arms,
+            // and checking a diverging first arm against it would bind it to
+            // `!` before the other arm is seen. Synthesize the join instead,
+            // exactly as `check_match_expr` does, and relate it afterwards.
+            (Expr::If { .. }, Ty::Var(_)) => {
+                let actual = self.synthesize(expr, span);
+                if matches!(actual, Ty::Error) {
+                    return actual;
+                }
+                let n = self.errors.len();
+                self.expect_type(expected, &actual, span);
+                if self.errors.len() > n {
+                    Ty::Error
+                } else {
+                    actual
+                }
+            }
             (
                 Expr::If {
                     condition,

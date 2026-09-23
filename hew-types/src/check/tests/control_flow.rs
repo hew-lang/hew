@@ -1497,3 +1497,39 @@ mod for_loop_iterable_fail_closed {
         );
     }
 }
+
+/// A diverging `if` arm contributes nothing to the join, in any position and
+/// on either side (#3390). Under a generic argument the expected type is an
+/// unresolved variable, so the arms must be joined before it is bound.
+#[test]
+fn diverging_if_arm_leaves_the_value_arm_type_in_argument_position() {
+    for source in [
+        r#"fn main() { println(if true { panic("boom") } else { 0 }); }"#,
+        r#"fn main() { println(if true { 0 } else { panic("boom") }); }"#,
+        r#"fn main() { let n = if true { panic("boom") } else { 0 }; println(n); }"#,
+    ] {
+        let output = check_source(source);
+        assert!(output.errors.is_empty(), "{source}: {:#?}", output.errors);
+    }
+
+    // Negative controls: the join still refuses unrelated arm types, and an
+    // `if` whose arms both diverge still has type `!`.
+    let mismatch = check_source(r#"fn main() { println(if true { 1 } else { "s" }); }"#);
+    assert!(
+        mismatch
+            .errors
+            .iter()
+            .any(|error| matches!(error.kind, TypeErrorKind::Mismatch { .. })),
+        "{:#?}",
+        mismatch.errors
+    );
+    let both =
+        check_source(r#"fn main() { println(if true { panic("a") } else { panic("b") }); }"#);
+    assert!(
+        both.errors.iter().any(|error| error
+            .message
+            .contains("type `!` does not implement trait `Display`")),
+        "{:#?}",
+        both.errors
+    );
+}

@@ -441,6 +441,13 @@ const PARITY_CASES: &[ParityCase] = &[
         test_name: "trap_residual",
         source_rel: "examples/sandbox-graduation/trap_residual.hew",
     },
+    ParityCase {
+        // `f"{v:?}"` over scalars, strings, tuples, records, enums, Vec,
+        // HashMap and an `impl Display` override, reusing the pinned
+        // core-acceptance fixture rather than a second copy (#3516).
+        test_name: "structural_rendering",
+        source_rel: "tests/core-acceptance/cases/structural-rendering.hew",
+    },
 ];
 
 #[derive(Debug, Clone, Copy)]

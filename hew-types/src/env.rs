@@ -103,6 +103,11 @@ pub struct Binding {
     /// `h` while leaving `h`'s other fields perfectly usable. Keyed by
     /// projection path so sibling fields stay independent.
     pub moved_places: Vec<MovedPlace>,
+    /// The first consuming use of this binding or one of its places on any
+    /// path. Unlike `moved_at`, re-initialisation and ownership restores
+    /// leave it set: an actor handler that consumes a state field and stores
+    /// a replacement still leaves the seat empty between the two.
+    pub consumed_at: Option<Span>,
     /// Where an affine resource's explicit `close` discharged its implicit
     /// scope-exit obligation. Unlike a move, discharge leaves the handle bits
     /// readable so non-consuming operations can report a closed-handle error;
@@ -513,6 +518,7 @@ impl TypeEnv {
                     is_moved: false,
                     moved_at: None,
                     moved_places: Vec::new(),
+                    consumed_at: None,
                     released_at: None,
                     read_count: 1, // synthetic bindings are always "used"
                     observing_reads: 0,
@@ -567,6 +573,7 @@ impl TypeEnv {
                     is_moved: false,
                     moved_at: None,
                     moved_places: Vec::new(),
+                    consumed_at: None,
                     released_at: None,
                     read_count: 0,
                     observing_reads: 0,
@@ -648,6 +655,7 @@ impl TypeEnv {
                     is_moved: false,
                     moved_at: None,
                     moved_places: Vec::new(),
+                    consumed_at: None,
                     released_at: None,
                     read_count: 1, // exempt from unused-variable lint, like `define`
                     observing_reads: 0,
@@ -715,6 +723,7 @@ impl TypeEnv {
             if let Some(binding) = scope.get_mut(name) {
                 binding.capture_consumption = crate::ClosureCaptureConsumption::Consumed;
                 binding.is_moved = true;
+                binding.consumed_at.get_or_insert_with(|| span.clone());
                 binding.moved_at = Some(span);
                 return true;
             }
@@ -733,6 +742,7 @@ impl TypeEnv {
         for scope in self.scopes.iter_mut().rev() {
             if let Some(binding) = scope.get_mut(name) {
                 binding.capture_consumption = crate::ClosureCaptureConsumption::Consumed;
+                binding.consumed_at.get_or_insert_with(|| span.clone());
                 if !binding.moved_places.iter().any(|m| m.path == path) {
                     binding.moved_places.push(MovedPlace {
                         path,

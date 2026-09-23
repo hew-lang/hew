@@ -1,0 +1,14 @@
+[[case]]
+id = "actor-crash-hook-consumed-state"
+intent = "A crash hook may not read a state field a handler consumes (D524); reading a field no handler consumes stays accepted."
+source = "cases/actor-crash-hook-consumed-state.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "UseAfterConsume"
+line = 29
+column = 17
+message = "`#[on(crash)]` hook reads actor state `sock`, which `swap` consumes"

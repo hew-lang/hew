@@ -1,0 +1,11 @@
+[[case]]
+id = "actor-crash-hook-live-state"
+intent = "A handler consumes and reinitializes a resource state field across repeated turns; when the consuming call faults, the crash hook reads a field no handler consumes, and terminal teardown releases only the initialized seats before restart."
+source = "cases/actor-crash-hook-live-state.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "close sock\nsock\nclose sock!\nsock!\nclose sock!!\nsock!!\nclose sock!!!\nhook sees log after 3 turns\nclose log\nclose sock\nsock\nclose log\nclose sock!\ndone\n"
+stderr = "hew: failure: UserPanic (212): detach failed\nhew: actor crash in Vault.swap (actor 1): UserPanic\n"
+exit = 0

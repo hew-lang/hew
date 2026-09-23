@@ -2090,6 +2090,38 @@ else needs `impl Display for {rendered}`)"
         Ty::Unit
     }
 
+    /// D524: an `#[on(crash)]` hook runs on the crashing incarnation's state,
+    /// and a handler that faulted between consuming a copy-less field and
+    /// storing its replacement left that seat empty. The hook may not read a
+    /// field any body of the actor consumes.
+    fn reject_crash_hook_consumed_state_read(
+        &mut self,
+        binding: crate::env::TypeBindingId,
+        span: &Span,
+    ) {
+        let Some(field) = self.crash_hook_consumed_fields.get(&binding) else {
+            return;
+        };
+        let (consumer, consumed_at) = self.actor_consumed_state[field].clone();
+        let mut error = TypeError::new(
+            TypeErrorKind::UseAfterConsume,
+            span.clone(),
+            format!(
+                "`#[on(crash)]` hook reads actor state `{field}`, which `{consumer}` consumes; \
+                 a crash before `{consumer}` stores its replacement leaves `{field}` empty"
+            ),
+        )
+        .with_note(consumed_at, format!("`{consumer}` consumes `{field}` here"))
+        .with_suggestion(
+            "an `#[on(crash)]` hook may read only state fields that no handler consumes"
+                .to_string(),
+        );
+        if let Some(source_module) = &self.current_module {
+            error = error.with_source_module(source_module.clone());
+        }
+        self.errors.push(error);
+    }
+
     pub(super) fn synthesize_identifier(&mut self, name: &str, span: &Span) -> Ty {
         self.synthesize_identifier_with_type_args(name, None, span)
     }
@@ -2201,6 +2233,9 @@ else needs `impl Display for {rendered}`)"
             // `sock = Socket { .. }` after `sock.detach()` is the re-initialisation
             // that plugs the hole, not a use of the value that left.
             let is_write_target = self.place_write_depth > 0 && self.place_base_depth == 0;
+            if !is_write_target {
+                self.reject_crash_hook_consumed_state_read(binding_id, span);
+            }
             if is_moved && deferred_init && !is_write_target {
                 self.report_error(
                     TypeErrorKind::InvalidOperation,

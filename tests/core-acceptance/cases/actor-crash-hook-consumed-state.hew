@@ -1,0 +1,37 @@
+import std.failure;
+
+#[resource]
+type Socket {
+    label: string,
+}
+
+impl Socket {
+    fn close(consume self) {}
+
+    fn detach(consume self) -> string {
+        self.label
+    }
+}
+
+actor Vault {
+    var sock: Socket,
+    var log: Socket,
+
+    receive fn swap() -> string {
+        let label = sock.detach();
+        sock = Socket { label: label + "!" };
+        label
+    }
+
+    #[on(crash)]
+    fn crashed(info: CrashInfo) -> CrashAction {
+        println(log.label);
+        println(sock.label);
+        CrashAction.Restart
+    }
+}
+
+fn main() {
+    let vault = spawn Vault(sock: Socket { label: "sock" }, log: Socket { label: "log" });
+    println(vault.swap().expect("swap"));
+}

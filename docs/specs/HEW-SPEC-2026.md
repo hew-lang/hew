@@ -5896,6 +5896,13 @@ made before the current turn's failure remain visible to the hook. A subsequent
 restart constructs fresh state from the supervisor's configuration; the hook
 does not run on that restart state. Stop hooks do not run on a crash.
 
+A handler that consumes a state field leaves that field empty until it stores
+a replacement, and a crash in between leaves it empty for the hook. An
+`#[on(crash)]` hook therefore may not read a state field that any handler,
+method or hook of the actor consumes; the compiler reports the read and names
+the consuming handler. The crashing incarnation's cleanup releases only the
+fields that are still initialized.
+
 The crash hook returns a `CrashAction`. `Restart` requests the supervisor's
 ordinary restart handling, including the child's restart policy, restart
 budget and circuit breaker; it does not restart a `temporary` child. `Kill`

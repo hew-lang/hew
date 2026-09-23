@@ -822,6 +822,11 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         builder
             .build_return(None)
             .llvm_ctx("finish actor state destruction")?;
+        if recipe.destroy.is_some_and(|action| {
+            self.module.releases.suspends(action) || self.module.releases.raises_fault(action)
+        }) {
+            self.emit_actor_state_release(actor, layout)?;
+        }
         let clone = self.llvm.add_function(
             &symbol(actor.id, "state_clone"),
             ptr.fn_type(&[ptr.into()], false),
@@ -871,6 +876,64 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 .build_return(Some(&ptr.const_null()))
                 .llvm_ctx("refuse copying non-copyable actor state")?;
         }
+        Ok(())
+    }
+
+    /// The terminal release continuation for state whose release can suspend
+    /// or fail. Like `state_drop`, it releases only the initialized seats: a
+    /// seat a faulting handler consumed holds nothing to release.
+    fn emit_actor_state_release(
+        &self,
+        actor: &SemActor,
+        layout: &PhysicalLayout,
+    ) -> CodegenResult<()> {
+        let state_repr = llvm_type(self.ctx, &layout.repr)?.into_struct_type();
+        release::custom(
+            self.ctx,
+            &self.llvm,
+            self.module,
+            &symbol(actor.id, "state_release"),
+            |values, frame, state| {
+                let builder = values.builder;
+                for (index, field) in actor.fields.iter().enumerate().rev() {
+                    let Some(action) = self.module.actor_recipes[&field.ty].destroy else {
+                        continue;
+                    };
+                    let index = u32::try_from(index)
+                        .map_err(|_| CodegenError::FailClosed("actor field exceeds u32".into()))?;
+                    let flag = state_field_initialized(self.ctx, builder, state, layout, index)?;
+                    let initialized = builder
+                        .build_load(self.ctx.bool_type(), flag, "actor.state.field.initialized")
+                        .llvm_ctx("read actor state initialization flag")?
+                        .into_int_value();
+                    let release = self
+                        .ctx
+                        .append_basic_block(values.value, "actor.state.release");
+                    let next = self
+                        .ctx
+                        .append_basic_block(values.value, "actor.state.next");
+                    builder
+                        .build_conditional_branch(initialized, release, next)
+                        .llvm_ctx("skip absent actor state field")?;
+                    builder.position_at_end(release);
+                    builder
+                        .build_store(flag, self.ctx.bool_type().const_zero())
+                        .llvm_ctx("consume actor state field initialization")?;
+                    let slot = builder
+                        .build_struct_gep(state_repr, state, index, "actor.state.field")
+                        .llvm_ctx("address initialized actor state field")?;
+                    let field_layout = self.module.target.layout(&field.ty).ok_or_else(|| {
+                        CodegenError::FailClosed("actor state field lacks its layout".into())
+                    })?;
+                    release::slot(values, frame, slot, field_layout, action)?;
+                    builder
+                        .build_unconditional_branch(next)
+                        .llvm_ctx("finish actor state field release")?;
+                    builder.position_at_end(next);
+                }
+                Ok(())
+            },
+        )?;
         Ok(())
     }
 
@@ -2187,9 +2250,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 if self.module.releases.suspends(action)
                     || self.module.releases.raises_fault(action) =>
             {
-                release::callback(self.ctx, self.llvm, self.module, layout, action)?
-                    .as_global_value()
-                    .as_pointer_value()
+                callback("state_release")?
             }
             _ => ptr.const_null(),
         };

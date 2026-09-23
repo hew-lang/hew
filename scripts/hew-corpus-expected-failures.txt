@@ -135,7 +135,7 @@ repros/p0c_method_value_failclosed.hew
 # docs/internal/ir-ladder.md's probe corpus (repros/ladder/README.md, outcome
 # column). A `reject` probe is deliberately illegal and its refusal is what the
 # citing section quotes. A `limit` or `ice` probe is a compiler defect: the
-# checker admitted the program and a later stage refused it (#3401).
+# checker admitted the program and a later stage refused it.
 repros/ladder/bytes_clone.hew
 repros/ladder/cap_move.hew
 repros/ladder/closure_mut_share.hew

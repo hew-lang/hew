@@ -2066,13 +2066,19 @@ impl SemTerminator {
         }
     }
 
+    /// The receiver a failing `var self` callee hands back, defined on this
+    /// call's unwind edge.
+    #[must_use]
+    pub fn call_handback(&self) -> Option<&ValueDef> {
+        match self {
+            Self::Call { handback, .. } => handback.as_ref(),
+            _ => None,
+        }
+    }
+
     /// Visit SSA values defined by this terminator.
     pub fn visit_results(&self, mut visit: impl FnMut(&ValueDef)) {
-        if let Self::Call {
-            handback: Some(handback),
-            ..
-        } = self
-        {
+        if let Some(handback) = self.call_handback() {
             visit(handback);
         }
         match self {

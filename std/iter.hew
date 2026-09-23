@@ -55,6 +55,7 @@ pub type Map<I, A, B> {
 impl<I, A, B> Iterator for Map<I, A, B> where I: Iterator<Item = A> {
     type Item = B;
     fn next(var self) -> Option<B> {
+
         // Advance the inner iterator in place and lift the item through `f`.
         // The receiver stays whole throughout, so a failing `f` or inner
         // `next` hands this adapter back to its caller intact.
@@ -75,6 +76,7 @@ pub type Filter<I, A> {
 impl<I, A> Iterator for Filter<I, A> where I: Iterator<Item = A> {
     type Item = A;
     fn next(var self) -> Option<A> {
+
         // Pump the inner iterator in place until `pred` accepts an item. A
         // rejected item falls out of scope at the end of its arm and is
         // released exactly once.
@@ -111,6 +113,7 @@ pub type Take<I, A> {
 impl<I, A> Iterator for Take<I, A> where I: Iterator<Item = A> {
     type Item = A;
     fn next(var self) -> Option<A> {
+
         // Once the quota is exhausted the adapter reports `None` without
         // touching the inner iterator.
         if self.remaining <= 0 {
@@ -136,6 +139,7 @@ pub type Skip<I, A> {
 impl<I, A> Iterator for Skip<I, A> where I: Iterator<Item = A> {
     type Item = A;
     fn next(var self) -> Option<A> {
+
         // The first call discards the leading `remaining` items; later calls
         // find the quota spent and yield straight from the inner iterator.
         while self.remaining > 0 {

@@ -296,6 +296,10 @@ fn map_and_set_field_mutations_publish_receiver_and_returned_value() {
     }
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one fixture walk checks the failure edge, its cleanup and the negative control together"
+)]
 fn assert_retained_sibling_cleanup(module: &SemModule, family: RuntimeCallFamily) {
     let main = module
         .functions

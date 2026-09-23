@@ -4099,9 +4099,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                         if let Some(drained) = self.drain_state_vec_seat(place, expr)? {
                             return Ok(drained);
                         }
-                        if take && self.state_field_leaves_as_copy(place, expr)? {
-                            take = false;
-                        }
+                        take = take && !self.state_field_leaves_as_copy(place, expr)?;
                         if take && self.in_var_self_receiver(place) {
                             self.state_taken.insert(place);
                         }
@@ -8414,6 +8412,10 @@ impl<'hir, 'service> Builder<'hir, 'service> {
     #[allow(
         clippy::too_many_lines,
         reason = "normal and fault continuations share one ownership boundary"
+    )]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "every user call shape shares this boundary; the handback is its unwind half"
     )]
     fn finish_user_call(
         &mut self,

@@ -6905,10 +6905,6 @@ fn apply_edge(
     clippy::too_many_arguments,
     reason = "one call boundary threading its argument, result and both edges"
 )]
-#[allow(
-    clippy::too_many_arguments,
-    reason = "every invoke-style terminator shares this transfer"
-)]
 fn call_successors(
     function: &PhysicalFunction,
     borrows: &BorrowDependents,

@@ -3838,11 +3838,6 @@ fn verify_operation_shape(
     }
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    clippy::too_many_lines,
-    reason = "direct-call verification keeps callable ABI, result arity, and operand rules together at the SIR boundary"
-)]
 /// A call to a `var self` method receives the receiver its failing callee
 /// hands back, and passes exactly that value to its unwind block.
 fn verify_call_handback(
@@ -3898,6 +3893,11 @@ fn is_var_self_receiver(signature: &crate::SemSignature, parameter: usize) -> bo
             if fields.len() == 2 && fields[1] == signature.params[0].ty)
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "direct-call verification keeps callable ABI, result arity, and operand rules together at the SIR boundary"
+)]
 fn verify_direct_call_terminator(
     function: &SemFunction,
     id: OpId,
@@ -5734,13 +5734,7 @@ fn uses_in_terminator(term: &SemTerminator) -> Vec<(ValueId, bool)> {
     };
     // A `var self` call's handback is defined on its unwind edge instead,
     // whose arguments follow the normal-edge interval.
-    let handback = match term {
-        SemTerminator::Call {
-            handback: Some(handback),
-            ..
-        } => Some(handback.id),
-        _ => None,
-    };
+    let handback = term.call_handback().map(|def| def.id);
     term.visit_operands(|slot, operand| {
         let slot = slot.0 as usize;
         let on_defining_edge = if Some(operand.value) == handback {

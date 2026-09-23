@@ -1104,10 +1104,7 @@ impl<'a> Flow<'a> {
                 Self::require_fault(id, DEAD, &state, emit);
                 // The result exists only on the normal edge and a `var self`
                 // receiver handed back by a failing callee only on the unwind.
-                let handback = match &block.terminator {
-                    SemTerminator::Call { handback, .. } => handback.as_ref().map(|def| def.id),
-                    _ => None,
-                };
+                let handback = block.terminator.call_handback().map(|def| def.id);
                 let mut returned = state.clone();
                 block.terminator.visit_results(|result| {
                     if Some(result.id) != handback {

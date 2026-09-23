@@ -310,7 +310,7 @@ fn failing_method_hands_its_receiver_back_into_the_callers_place() {
 
 #[test]
 fn a_receiver_moved_out_across_a_failing_call_is_refused() {
-    let source = r#"
+    let source = r"
         #[resource]
         type Conn { fd: i64 }
         impl Conn { fn close(consume self) {} }
@@ -328,7 +328,7 @@ fn a_receiver_moved_out_across_a_failing_call_is_refused() {
             holder.touch(2);
             holder.count
         }
-    "#;
+    ";
     let parsed = hew_parser::parse(source);
     let checked = Checker::new(ModuleRegistry::new(Vec::new())).check_program(&parsed.program);
     assert!(checked.errors.is_empty(), "{:?}", checked.errors);

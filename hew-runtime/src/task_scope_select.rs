@@ -157,10 +157,11 @@ pub unsafe extern "C" fn hew_checked_task_select_add_task(
 
 /// Register one borrowed stream receive. Readiness is observed, never taken:
 /// a pipe reports its queue, a socket stream is watched for readability, and a
-/// file or in-memory stream is ready at once because its next read never
-/// waits. A stream adapter over a socket may hold only part of its next item
-/// when the socket turns readable, so it refuses: the selecting actor traps on
-/// its own turn and its supervisor rules on the crash.
+/// regular file or in-memory stream is ready at once because its next read
+/// never waits. A stream adapter over a socket may hold only part of its next
+/// item when the socket turns readable, and a file stream over a pipe, device
+/// or terminal can wait on its next read, so both refuse: the selecting actor
+/// traps on its own turn and its supervisor rules on the crash.
 ///
 /// # Safety
 /// `selection` is the live handle from `hew_checked_task_select_new` and
@@ -186,12 +187,8 @@ pub unsafe extern "C" fn hew_checked_task_select_add_stream(
                     // selection; the waker descriptor is the selection's own.
                     readable = unsafe { start_tcp_readable(connection, selection.waker) };
                 }
-                SelectReadiness::Unsupported => {
-                    selection.refusal.get_or_insert_with(|| {
-                        "select cannot observe a line, chunk or take adapter over a \
-                         socket stream yet"
-                            .to_string()
-                    });
+                SelectReadiness::Unsupported(reason) => {
+                    selection.refusal.get_or_insert_with(|| reason.to_string());
                 }
             }
         }

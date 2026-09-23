@@ -7,7 +7,7 @@ timeout_seconds = 30
 kind = "reject"
 
 [[case.expected.diagnostics]]
-code = "E_OWN_PARTIAL_CONSUME"
-line = 37
-column = 27
-message = "cannot consume `self.handle` separately: enclosing type `Value` must remain whole"
+code = "UseAfterMove"
+line = 59
+column = 5
+message = "use of moved value `child`"

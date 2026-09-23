@@ -8065,7 +8065,9 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         // A checker-approved `#[returns_receiver]` call used only for its
         // effect carries a Read receiver even though the selected parameter
         // consumes it. Transfer the seat into the call, then publish the exact
-        // returned owner back into that same seat on the normal edge. The
+        // returned owner back into that same seat on the normal edge. Calls
+        // that produce a value, or consume a temporary without a storage seat,
+        // leave their result with the enclosing expression instead. The
         // unwind edge deliberately leaves the seat dead: the callee consumed
         // the receiver and the caller's ordinary fault cleanup must not release
         // it a second time.
@@ -8073,16 +8075,14 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             .first()
             .zip(signature.params.get(seats))
             .filter(|(receiver, parameter)| {
-                receiver.intent == IntentKind::Read
+                !value_required
+                    && receiver.intent == IntentKind::Read
                     && parameter.passing == SemParamPassing::Consume
                     && self.ty(&receiver.ty) == signature.return_ty
             })
-            .map(|(receiver, _)| {
-                self.expression_projection(receiver)?.ok_or_else(|| {
-                    "receiver-preserving consume requires one owning storage seat".to_string()
-                })
-            })
-            .transpose()?;
+            .map(|(receiver, _)| self.expression_projection(receiver))
+            .transpose()?
+            .flatten();
         let mut lowered_args =
             self.lower_user_arguments(args, &signature.params[seats..], &mut loans)?;
         if let Some(actor) = actor {

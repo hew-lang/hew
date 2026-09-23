@@ -1,0 +1,40 @@
+// supervisor_stop waits for each child's stop hooks, including one that
+// suspends, within its bounded quiescence window. A hook that outlasts the
+// window leaves the supervisor to runtime cleanup, which reclaims it once the
+// hook finishes.
+actor Worker {
+    var name: string,
+    #[on(start)]
+    fn started() { println("start " + name); }
+    #[on(stop)]
+    fn stopping() {
+        if name == "mid" { sleep(3000ms); }
+        if name == "slow" { sleep(6000ms); }
+        println("stop " + name);
+    }
+}
+
+supervisor Waits {
+    strategy: one_for_one,
+    intensity: 10 within 60s,
+    child quick: Worker(name: "quick"),
+    child mid: Worker(name: "mid"),
+}
+
+supervisor Outlasted {
+    strategy: one_for_one,
+    intensity: 10 within 60s,
+    child slow: Worker(name: "slow"),
+}
+
+fn main() {
+    let waits = spawn Waits;
+    let outlasted = spawn Outlasted;
+    supervisor_stop(waits);
+    println("stopped waits");
+    supervisor_stop(outlasted);
+    println("stopped outlasted");
+    // Exit only once the outlasting hook has finished, so the exit drain has
+    // no hook left to wait on and cleanup meets the handed-back supervisor.
+    sleep(3000ms);
+}

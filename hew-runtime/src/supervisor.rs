@@ -2660,7 +2660,18 @@ fn wait_for_pending_restart_timers(timers: &RestartTimerControl, deadline: Insta
 }
 
 fn wait_for_child_quiescent(child: *mut HewActor, deadline: Instant) -> bool {
-    while !actor_is_supervisor_quiescent(child) {
+    // A native incarnation is done only once its terminal cleanup, stop hooks
+    // included, has finished: a stop hook parked at a suspension point leaves
+    // the actor Suspended, which is not Running yet is not finished either.
+    // SAFETY: callers keep `child` live throughout their wait.
+    let completion = unsafe { (*child).native_completion.clone() };
+    let done = || {
+        completion.as_ref().map_or_else(
+            || actor_is_supervisor_quiescent(child),
+            |completion| completion.is_finished(),
+        )
+    };
+    while !done() {
         if supervisor_quiescence_expired(deadline) {
             return false;
         }
@@ -5205,6 +5216,17 @@ unsafe fn stop_supervisor_with_teardown_authority(
         return;
     }
     if !preclaimed && !claim_supervisor_teardown(sup) {
+        // Another owner holds teardown. One that handed the allocation back
+        // to canonical cleanup keeps its claim, and the caller may have taken
+        // it from the root set to get here: restore the root, or nothing
+        // reclaims it and the final actor sweep frees the self actor's
+        // borrowed state as its own.
+        // SAFETY: the caller guarantees a live allocation.
+        if unsafe { (*sup).parent.is_null() } {
+            // SAFETY: the claimed allocation stays live until canonical
+            // cleanup consumes the restored root.
+            unsafe { crate::shutdown::hew_shutdown_register_supervisor(sup) };
+        }
         return;
     }
     // SAFETY: teardown ownership was claimed above and remains unique.
@@ -6545,6 +6567,35 @@ mod tests {
         assert!(unsafe { teardown_is_claimed(sup) });
         drop(teardown);
         crate::scheduler::hew_runtime_cleanup();
+    }
+
+    #[test]
+    fn refused_stop_keeps_a_handed_back_root_for_cleanup() {
+        let _rt = crate::runtime_test_guard();
+        // SAFETY: this test owns the fresh top-level supervisor.
+        let sup = unsafe { hew_supervisor_new(STRATEGY_ONE_FOR_ONE, 1, 1) };
+        assert!(!sup.is_null());
+        // A teardown owner that ran out of time hands the allocation back to
+        // canonical cleanup as a root and keeps its claim.
+        assert!(claim_supervisor_teardown(sup));
+        // SAFETY: the claimed allocation stays live through this handback.
+        unsafe { crate::shutdown::hew_shutdown_register_supervisor(sup) };
+        // Shutdown takes each root before stopping it; the claim refuses.
+        // SAFETY: as above.
+        unsafe {
+            crate::shutdown::hew_shutdown_unregister_supervisor(sup);
+            hew_supervisor_stop(sup);
+        }
+        assert!(
+            crate::shutdown::is_supervisor_registered_for_test(sup),
+            "a refused stop must leave the handed-back root to canonical cleanup"
+        );
+        // Cleanup asserts that no supervisor control survives it.
+        crate::scheduler::hew_runtime_cleanup();
+        assert!(
+            crate::runtime::default_runtime_ptr(Ordering::Acquire).is_null(),
+            "cleanup must reclaim the handed-back supervisor and the runtime"
+        );
     }
 
     #[test]

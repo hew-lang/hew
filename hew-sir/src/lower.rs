@@ -4102,6 +4102,9 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                         if take && self.state_field_leaves_as_copy(place, expr)? {
                             take = false;
                         }
+                        if take && self.in_var_self_receiver(place) {
+                            self.state_taken.insert(place);
+                        }
                         return self.emit(
                             expr,
                             if take {
@@ -4661,7 +4664,10 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             .iter()
             .any(|state| state.state_taken != first.state_taken)
         {
-            return Err("control-flow predecessors disagree on consumed actor state fields".into());
+            return Err(
+                "control-flow predecessors disagree on consumed actor state or receiver fields"
+                    .into(),
+            );
         }
         for binding in &keys {
             if states
@@ -4953,13 +4959,18 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         let new = self.coerce_value(new, &ty, Provenance::Site(value.site))?;
         match target {
             BindingTarget::Place(place) if first_store || self.state_taken.contains(&place) => {
-                // A deferred field or a mutable field consumed earlier in this
-                // body has an empty actor-state seat. Publish the replacement
-                // without trying to release the value that left it.
-                let PlaceOrigin::ActorState { initialized, .. } =
-                    self.places[place.0 as usize].origin
-                else {
-                    return Err("a first store requires an uninitialized actor state seat".into());
+                // A deferred field, a mutable field consumed earlier in this
+                // body, or a `var self` receiver moved out earlier has an
+                // empty seat. Publish the replacement without trying to
+                // release the value that left it.
+                let initialized = match self.places[place.0 as usize].origin {
+                    PlaceOrigin::ActorState { initialized, .. } => initialized,
+                    _ if !first_store && self.in_var_self_receiver(place) => true,
+                    _ => {
+                        return Err(
+                            "a first store requires an uninitialized actor state seat".into()
+                        )
+                    }
                 };
                 self.emit_place_operation(
                     SemOpKind::StoreInit {
@@ -7817,6 +7828,34 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         )
     }
 
+    /// Whether a place is a `var self` method's receiver seat or lies beneath
+    /// it. Its method hands that seat back when it fails, so the seat must be
+    /// whole wherever the method can fail.
+    fn in_var_self_receiver(&self, place: PlaceId) -> bool {
+        let Some(binding) = self.function.var_self_receiver else {
+            return false;
+        };
+        if !self.callable.signature.hands_back_receiver() {
+            return false;
+        }
+        let Ok(BindingTarget::Place(receiver)) = self.binding_target(binding) else {
+            return false;
+        };
+        let mut current = place;
+        loop {
+            if current == receiver {
+                return true;
+            }
+            match self.places[current.0 as usize].origin {
+                PlaceOrigin::Aggregate {
+                    base: crate::PlaceBase::Place(base),
+                    ..
+                } => current = base,
+                _ => return false,
+            }
+        }
+    }
+
     /// Whether the binding this expression is rooted at was declared mutable.
     fn binding_root_is_mutable(&mut self, expression: &HirExpr) -> Result<bool, String> {
         let Some(place) = self.resolve_binding_place(expression)? else {
@@ -7844,7 +7883,8 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 if matches!(
                     self.places[place.0 as usize].origin,
                     crate::PlaceOrigin::ActorState { .. }
-                ) {
+                ) || self.in_var_self_receiver(place)
+                {
                     self.state_taken.insert(place);
                 }
                 SemOpKind::LoadTake { place }
@@ -9053,7 +9093,6 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             .copied()
             .collect();
         let mut transformed_target = None;
-        let mut seat_taken = false;
         let mut took_place = false;
         let mut taken_seat = None;
         let mut indexed_writeback = None;
@@ -9125,7 +9164,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 // updated one where the contract keeps it, and a fresh empty
                 // collection where the runtime consumed it. The seat never
                 // needs a copy of its own value and never stays uninitialized.
-                seat_taken = matches!(
+                let seat_taken = matches!(
                     self.places[projected.0 as usize].origin,
                     crate::PlaceOrigin::ActorState { .. }
                 );
@@ -9152,6 +9191,9 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             self.owned_live.remove(&moved);
             if took_place {
                 taken_seat = Some((projected, moved));
+                if self.in_var_self_receiver(projected) {
+                    self.state_taken.insert(projected);
+                }
             }
             lowered_args.insert(
                 0,

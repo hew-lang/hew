@@ -210,6 +210,19 @@ impl Builder<'_, '_> {
             return Ok(None);
         }
         let ty = self.callable.signature.params[0].ty.clone();
+        if self.dual_return.is_none()
+            && self
+                .state_taken
+                .iter()
+                .any(|place| self.in_var_self_receiver(*place))
+        {
+            return Err(
+                "a `var self` method must keep its receiver whole wherever it can fail; \
+                 `self` or one of its fields is moved out here. Call methods on the field \
+                 in place, or restore it before anything that can fail"
+                    .into(),
+            );
+        }
         if let Some(dual) = self
             .dual_return
             .filter(|dual| self.owned_live.contains_key(dual))

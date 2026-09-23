@@ -380,6 +380,7 @@ impl Builder<'_, '_> {
             provenance,
         )?;
         self.owned_live.remove(&value);
+        self.state_taken.remove(&place);
         if self.cleanup_may_fail && !self.cleanup_draining {
             self.dispatch_value_cleanup()?;
         }

@@ -14270,6 +14270,32 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
+        "native": "fn hew_remote_call_cleanup_fault( *mut HewRemoteCall, ) -> *mut HewFault"
+      },
+      "symbol": "hew_remote_call_cleanup_fault"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_remote_call_cleanup_poll( *mut HewRemoteCall, *mut HewCoroState, ) -> i32"
+      },
+      "symbol": "hew_remote_call_cleanup_poll"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
         "native": "fn hew_remote_call_free( *mut HewRemoteCall)"
       },
       "symbol": "hew_remote_call_free"

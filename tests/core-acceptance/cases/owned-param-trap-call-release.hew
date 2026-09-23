@@ -1,0 +1,74 @@
+// An owned record or tuple parameter is still whole when a call it outlives
+// traps inside a receive handler. The failed call's edge releases it exactly
+// once; the normal path releases it once at the callee's exit.
+#[resource]
+type Tok {
+    id: i64,
+}
+
+impl Tok {
+    fn close(consume self) {
+        println(f"close {self.id}");
+    }
+}
+
+type Holder {
+    names: Vec<string>,
+    token: Tok,
+}
+
+fn boom(n: i64) -> i64 {
+    if n > 0 {
+        panic("boom");
+    }
+    n
+}
+
+fn sink(consume h: Holder, n: i64) -> i64 {
+    let x = boom(n);
+    h.names.len() + x
+}
+
+fn pair(consume t: (Holder, string), n: i64) -> i64 {
+    let x = boom(n);
+    t.0.names.len() + t.1.len() + x
+}
+
+fn holder(id: i64) -> Holder {
+    var names: Vec<string> = Vec.new();
+    names.push("alpha".to_upper());
+    Holder { names: names, token: Tok { id: id } }
+}
+
+actor Worker {
+    receive fn run(id: i64, n: i64) -> i64 {
+        sink(holder(id), n)
+    }
+
+    receive fn run_pair(id: i64, n: i64) -> i64 {
+        pair((holder(id), "tag".to_upper()), n)
+    }
+}
+
+fn main() {
+    let normal = spawn Worker;
+    match normal.run(1, 0) {
+        .Ok(v) => println(f"record ok {v}"),
+        .Err(_) => println("record normal failed"),
+    }
+    let trapped = spawn Worker;
+    match trapped.run(2, 1) {
+        .Ok(v) => println(f"record unexpected {v}"),
+        .Err(_) => println("record trapped"),
+    }
+    let normal_pair = spawn Worker;
+    match normal_pair.run_pair(3, 0) {
+        .Ok(v) => println(f"tuple ok {v}"),
+        .Err(_) => println("tuple normal failed"),
+    }
+    let trapped_pair = spawn Worker;
+    match trapped_pair.run_pair(4, 1) {
+        .Ok(v) => println(f"tuple unexpected {v}"),
+        .Err(_) => println("tuple trapped"),
+    }
+}

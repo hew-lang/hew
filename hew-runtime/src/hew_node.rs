@@ -7964,7 +7964,7 @@ mod tests {
         let remote_pid = client.remote_pid;
         let send_value: u32 = 21;
         // SAFETY: remote_pid was resolved from a separate helper process over TCP.
-        let (reply, status) = unsafe {
+        let (_, status) = unsafe {
             ask_for_test(
                 &raw const remote_pid,
                 test_dispatch(),
@@ -9615,7 +9615,7 @@ mod tests {
         let remote_pid = HewRemotePid::from(test_location(remote_node_id, 1));
         // SAFETY: null data with size 0 is valid; the remote path should fail
         // immediately because no active node is installed.
-        let (reply, status) = unsafe {
+        let (_, status) = unsafe {
             ask_for_test(
                 &raw const remote_pid,
                 test_dispatch(),
@@ -11315,7 +11315,7 @@ mod tests {
 
         let target = remote_pid_for_node(&node2, actor_id);
         // SAFETY: this is a remote void ask; null payload/size are valid.
-        let (reply, status) = unsafe {
+        let (_, status) = unsafe {
             ask_for_test(
                 &raw const target,
                 inbound_test_codec(orphaned_void_ask_dispatch, 0),
@@ -11378,7 +11378,7 @@ mod tests {
 
         let target = remote_pid_for_node(&node2, actor_id);
         // SAFETY: this is a remote void ask; null payload/size are valid.
-        let (reply, status) = unsafe {
+        let (_, status) = unsafe {
             ask_for_test(
                 &raw const target,
                 inbound_test_codec(noop_dispatch, 0),
@@ -11447,7 +11447,7 @@ mod tests {
 
         let target = remote_pid_for_node(&node2, actor_id);
         // SAFETY: this is a remote void ask; null payload/size are valid.
-        let (reply, status) = unsafe {
+        let (_, status) = unsafe {
             ask_for_test(
                 &raw const target,
                 inbound_test_codec(noop_dispatch, 0),
@@ -11508,7 +11508,7 @@ mod tests {
         let saved = INBOUND_ASK_ACTIVE.swap(INBOUND_ASK_WORKER_LIMIT, Ordering::AcqRel);
         let target = remote_pid_for_node(&node2, actor_id);
         // SAFETY: this is a remote void ask; null payload/size are valid.
-        let (reply, status) = unsafe {
+        let (_, status) = unsafe {
             ask_for_test(
                 &raw const target,
                 test_dispatch(),
@@ -11599,7 +11599,7 @@ mod tests {
         let ask_start = std::time::Instant::now();
         let target = remote_pid_for_node(&node2, actor_id);
         // SAFETY: this is a remote void ask; null payload/size are valid.
-        let (reply, status) = unsafe {
+        let (_, status) = unsafe {
             ask_for_test(
                 &raw const target,
                 test_dispatch(),
@@ -11664,7 +11664,7 @@ mod tests {
 
         let target = remote_pid_for_node(&node2, actor_id);
         // SAFETY: non-void remote ask expects a u32-sized reply; an empty success must fail closed.
-        let (reply, status) = unsafe {
+        let (_, status) = unsafe {
             ask_for_test(
                 &raw const target,
                 inbound_test_codec(void_ask_probe_dispatch, 0),
@@ -11725,7 +11725,7 @@ mod tests {
         let ask_start = std::time::Instant::now();
         let target = remote_pid_for_node(&node2, actor_id);
         // SAFETY: the actor pid and null payload are valid for this remote ask probe.
-        let (reply, status) = unsafe {
+        let (_, status) = unsafe {
             ask_for_test(
                 &raw const target,
                 inbound_test_codec(blocked_ask_probe_dispatch, std::mem::size_of::<u32>()),
@@ -12386,7 +12386,7 @@ mod tests {
         let payload: u32 = 0xDEAD_BEEF;
         let target = remote_pid_for_node(&node2, actor_id);
         // SAFETY: payload is a valid u32 on the stack; its address is valid for this call.
-        let (reply, status) = unsafe {
+        let (_, status) = unsafe {
             ask_for_test(
                 &raw const target,
                 test_dispatch(),
@@ -12480,7 +12480,7 @@ mod tests {
         // which remote_reply_data_to_ptr mistook for a void success.
         let target = remote_pid_for_node(&node2, actor_id);
         // SAFETY: null payload / size-0 are valid; this is a void ask.
-        let (reply, status) = unsafe {
+        let (_, status) = unsafe {
             ask_for_test(
                 &raw const target,
                 test_dispatch(),
@@ -12551,7 +12551,7 @@ mod tests {
         let payload: u32 = 42;
         let target = remote_pid_for_node(&node2, actor_id);
         // SAFETY: payload is a valid u32; its address is valid for this call.
-        let (reply, status) = unsafe {
+        let (_, status) = unsafe {
             ask_for_test(
                 &raw const target,
                 test_dispatch(),

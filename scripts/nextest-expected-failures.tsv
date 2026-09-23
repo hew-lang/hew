@@ -1,5 +1,3 @@
 # platform<TAB>outcome<TAB>suite<TAB>test<TAB>reason
-macos	failure	hew-cli::identity_monitor_leak_oracle	cross_process_monitor_close_has_zero_leak_slope_and_no_poisoned_allocator_failure	#3373 lowers a remote actor ask; the identity contracts this fixture also needs landed
-macos	failure	hew-cli::identity_monitor_leak_oracle	identity_display_temporaries_have_zero_leak_slope_and_no_poisoned_allocator_failure	#3373 lowers a remote actor ask; the identity contracts this fixture also needs landed
 macos	failure	hew-cli::pipeline_stdlib_ownership_oracle	pipeline_owned_payload_cancellation_has_flat_leak_slope	#3455 lets the pipeline cancellation probe finish
 macos	failure	hew-cli::pipeline_stdlib_ownership_oracle	pipeline_owned_payload_lifecycle_edges_do_not_double_free	#3455 lets the pipeline cancellation probe finish

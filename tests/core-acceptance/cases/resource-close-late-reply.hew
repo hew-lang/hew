@@ -1,36 +1,80 @@
 actor Audit {
-    var count: i64 = 0,
+    var created: i64 = 0,
+    var closed: i64 = 0,
     var last: i64 = 0,
-    receive fn record(id: i64) { sleep(1ms); count += 1; last = id; }
-    receive fn receipt() -> i64 { assert(count == 1); last }
+    receive fn create(id: i64) {
+        created += 1;
+    }
+    receive fn record(id: i64) {
+        sleep(1ms);
+        closed += 1;
+        last = id;
+    }
+    // Every ticket the worker created must have closed before the worker
+    // accepted its next message.
+    receive fn receipt() -> i64 {
+        assert(created == closed);
+        closed
+    }
+    receive fn last_closed() -> i64 {
+        last
+    }
 }
+
 #[resource]
-type Ticket { audit: Audit, id: i64, }
-impl Ticket {
-    fn close(consume self) { self.audit.record(self.id).expect("audit"); }
+type Ticket {
+    audit: Audit,
+    id: i64,
 }
+
+impl Ticket {
+    fn close(consume self) {
+        self.audit.record(self.id).expect("audit");
+    }
+}
+
 actor Worker {
-    receive fn create(audit: Audit) -> Ticket { sleep(3ms); Ticket { audit: audit, id: 9 } }
+    receive fn create(audit: Audit) -> Ticket {
+        audit.create(9).expect("audit");
+        sleep(20ms);
+        Ticket { audit: audit, id: 9 }
+    }
     receive fn ready() {}
 }
+
 fn main() {
     let audit = spawn Audit;
     let worker = spawn Worker;
-    scope within 1ms {
-        let ticket = worker.create(audit).expect("created");
-        println(ticket.id);
-    } handle failure {
-        match failure {
-            .Deadline { message } => println("deadline"),
-            .Fault { message } => panic(message),
-        }
-    };
-    worker.ready().expect("ready");
-    // The worker barrier waits for late-reply cleanup. Its close may complete
-    // before the caller's deadline handler gets to print, so observe it here.
-    let closed = audit.receipt().expect("receipt");
-    assert(closed == 9);
-    println(f"closed {closed}");
+    // A deadline withdraws a request the worker has not dispatched yet, so no
+    // ticket exists on that leg. Repeat until the worker dispatched the request
+    // and the caller's deadline left the late reply with the handler.
+    var late = false;
+    var attempts = 0;
+    var closed_before = 0;
+    while !late {
+        attempts += 1;
+        assert(attempts <= 100);
+        var timed_out = false;
+        scope within 2ms {
+            let ticket = worker.create(audit).expect("created");
+            assert(ticket.id == 9);
+        } handle failure {
+            match failure {
+                .Deadline { message } => {
+                    timed_out = true;
+                },
+                .Fault { message } => panic(message),
+            }
+        };
+        worker.ready().expect("ready");
+        let closed = audit.receipt().expect("receipt");
+        late = timed_out && closed > closed_before;
+        closed_before = closed;
+    }
+    println("deadline");
+    let last = audit.last_closed().expect("last");
+    assert(last == 9);
+    println(f"closed {last}");
     println("ready");
     close(worker);
     close(audit);

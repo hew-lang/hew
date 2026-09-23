@@ -102,10 +102,6 @@ fn multi_module_program(root_src: &str, modules: &[(&str, &str)]) -> Program {
     }
 }
 
-#[allow(
-    deprecated,
-    reason = "the assertion reads the legacy static-dispatch carrier"
-)]
 fn walk_calls(expr: &HirExpr, calls: &mut Vec<CallTarget>) {
     match &expr.kind {
         HirExprKind::Call {

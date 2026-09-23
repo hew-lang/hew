@@ -516,11 +516,7 @@ def semantic_owner_shortening_findings(
         for match in run_query(ast_grep, root, pattern=pattern):
             callee = "".join(single_meta(match, "F").split())
             leaf = callee.split("::")[-1]
-            if callee.endswith("DefId::legacy_reconstruct_from_full_path"):
-                form = "def-id"
-            elif callee.endswith("NominalId::legacy_reconstruct_from_full_path"):
-                form = "nominal-id"
-            elif "CallTarget::" in callee:
+            if "CallTarget::" in callee:
                 form = "call-target"
             elif leaf in RUNTIME_RESOLUTION_SINKS:
                 form = "runtime-resolution"
@@ -675,14 +671,14 @@ def semantic_owner_shortening_findings(
             expression: SyntaxRange, visiting: set[tuple[str, int]]
         ) -> bool:
             if (
-                form in {"def-id", "call-target", "nominal-id"}
+                form == "call-target"
                 and any(
                     CANONICAL_OWNER_NAMES.fullmatch(name)
                     and range_contains(expression, item_range)
                     for name, item_range in scoped_identifiers
                 )
                 or (
-                    form in {"def-id", "call-target", "nominal-id"}
+                    form == "call-target"
                     and any(
                         range_contains(expression, literal_range)
                         and any(
@@ -1597,8 +1593,6 @@ def canonical_stage(group: str, form: str, path: str) -> str:
     """Return the stage at which the plan can actually retire this seam."""
     if group == "semantic-owner-shortening-sink" and form in {
         "registry-key",
-        "def-id",
-        "nominal-id",
         "call-target",
         "runtime-resolution",
     }:

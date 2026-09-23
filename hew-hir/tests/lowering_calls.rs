@@ -11,8 +11,6 @@ mod support;
 
 #[path = "lowering_calls/builtin_return_type_lower.rs"]
 mod builtin_return_type_lower;
-#[path = "lowering_calls/call_trait_method_static_creation_allowlist.rs"]
-mod call_trait_method_static_creation_allowlist;
 #[path = "lowering_calls/closure_capture_lower.rs"]
 mod closure_capture_lower;
 #[path = "lowering_calls/display_dispatch_lower.rs"]

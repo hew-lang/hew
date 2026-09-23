@@ -1,13 +1,3 @@
-// The verify pass walks `HirExprKind` exhaustively, which includes the
-// `#[deprecated]` `CallTraitMethodStatic` variant. The deprecation
-// enforcement is structural (allowlist test on construction sites),
-// not lint-driven.
-#![allow(
-    deprecated,
-    reason = "legacy CallTraitMethodStatic variant is allowlist-gated; \
-              see hew-hir/tests/call_trait_method_static_creation_allowlist.rs"
-)]
-
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
@@ -1302,19 +1292,12 @@ mod tests {
             },
         );
         let static_trait_receiver = unit_expr(&mut ids);
-        #[allow(
-            deprecated,
-            reason = "the verifier must continue rejecting the deprecated static carrier"
-        )]
         let static_trait = executable_expr(
             &mut ids,
             HirExprKind::CallTraitMethodStatic {
                 receiver: Box::new(static_trait_receiver),
                 target: unsupported("static trait call"),
                 receiver_type_param: "T".to_string(),
-                bound_trait: "T".to_string(),
-                declaring_trait: "T".to_string(),
-                method_name: "m".to_string(),
                 args: Vec::new(),
                 ret_ty: ResolvedTy::Unit,
             },

@@ -1,9 +1,3 @@
-#![allow(
-    deprecated,
-    reason = "legacy CallTraitMethodStatic variant is allowlist-gated; \
-              see hew-hir/tests/call_trait_method_static_creation_allowlist.rs"
-)]
-
 use hew_hir::{lower_program, HirExpr, HirExprKind, HirItem, HirStmtKind, ResolutionCtx};
 use hew_types::{module_registry::ModuleRegistry, Checker};
 

@@ -342,6 +342,10 @@ pub struct HirImplBlock {
     /// User nominal target, e.g. `"VecIter"`. Builtin nominals are rejected
     /// at lowering time with `ImplBlockShapeNotLowered`.
     pub self_type_name: String,
+    /// Checker-owned nominal identity of the impl target, as a receiver of
+    /// that type dispatches through it (`ResolvedTy::impl_receiver_instance`).
+    /// `None` when the target cannot anchor trait dispatch.
+    pub self_type: Option<hew_types::NominalId>,
     /// Outer type parameters on the impl, e.g. `["T"]` for
     /// `impl<T> Iterator for VecIter<T>`.
     pub type_params: Vec<String>,
@@ -1730,18 +1734,11 @@ pub enum HirExprKind {
     /// dispatch), this resolves to a direct call after monomorphization — the
     /// concrete impl function is determined from the substituted receiver type.
     ///
-    /// Produced from `MethodCallRewrite::StaticTraitDispatch`. MIR lowering
-    /// substitutes `receiver_type_param` via the monomorphization map, looks up
-    /// the impl method via `(concrete_receiver_ty, declaring_trait, method_name)`,
-    /// and emits an ordinary `Terminator::Call`.
-    #[deprecated(
-        note = "scheduled for removal once generic builtin dispatch (HashMap/HashSet/Vec \
-                migrated; Option/Result still pending) is fully migrated to \
-                `HirExprKind::ResolvedImplCall` which consumes \
-                `TypeCheckOutput::resolved_calls` (the structured \
-                `(ImplId, MethodTarget)` registry) directly. New construction sites are \
-                forbidden — see `call_trait_method_static_creation_allowlist` test."
-    )]
+    /// Produced from `MethodCallRewrite::StaticTraitDispatch`. HIR
+    /// monomorphisation and SIR substitute the receiver type, select the impl
+    /// through `(declaring_trait, receiver nominal, method)` identities, and
+    /// enter the ordinary direct-call boundary. The impl is unknown until the
+    /// receiver is substituted, so `ResolvedImplCall` cannot carry this call.
     CallTraitMethodStatic {
         receiver: Box<HirExpr>,
         /// Checker-selected static-trait method identity. The receiver
@@ -1750,12 +1747,6 @@ pub enum HirExprKind {
         target: hew_types::CallTarget,
         /// Type-parameter name that carries the bound (e.g. "T").
         receiver_type_param: String,
-        /// The bound trait through which the method was reached.
-        bound_trait: String,
-        /// The trait that directly declares the method (canonical identity for impl lookup).
-        declaring_trait: String,
-        /// Method name within the declaring trait.
-        method_name: String,
         args: Vec<HirExpr>,
         ret_ty: ResolvedTy,
     },
@@ -1802,7 +1793,7 @@ pub enum HirExprKind {
     /// kernel `hew_hashmap_*_layout` / `hew_hashset_*_layout` exports
     /// declared by the C0b catalog and seeded into `module_fn_names`.
     /// This is the production path for builtin generic dispatch of
-    /// HashMap/HashSet/Vec today; Option/Result migrate later.
+    /// HashMap/HashSet/Vec.
     ///
     /// LESSONS: `checker-authority` (P0) — `impl_id` + `target_symbol`
     /// come straight from the resolver's verdict; HIR never re-derives them.

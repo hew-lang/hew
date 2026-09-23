@@ -1,8 +1,3 @@
-#![allow(
-    deprecated,
-    reason = "temporary named identity reconstruction migration seam"
-)]
-
 //! Structured static-trait-dispatch lookup.
 //!
 //! `CallTraitMethodStatic` carries a checker-selected `CallTarget` containing
@@ -24,7 +19,7 @@
 use std::collections::HashMap;
 
 use crate::{node::HirItem, ItemId};
-use hew_types::{DefId, NominalId, NominalInstance, ResolvedTy};
+use hew_types::{DefId, NominalInstance};
 
 /// One impl-method entry in the structured static-dispatch registry.
 #[derive(Debug, Clone)]
@@ -61,12 +56,10 @@ pub struct TraitImplKey {
 /// by `lower_impl_block`). Inherent impls (no trait bound) do not participate
 /// in static trait dispatch and are skipped.
 ///
-/// For concrete specialised impls (empty `type_params`, non-empty
-/// `self_type_concrete_args`), the key self-type name is the mangled form
-/// incorporating the concrete args — e.g. `"Wrapper$$i64"` for
-/// `impl Describe for Wrapper<i64>`. This ensures `impl Describe for Wrapper<i64>`
-/// and `impl Describe for Wrapper<string>` produce distinct keys and never
-/// collide in the index.
+/// A concrete specialised impl (empty `type_params`, non-empty
+/// `self_type_concrete_args`) keys on its concrete args, so
+/// `impl Describe for Wrapper<i64>` and `impl Describe for Wrapper<string>`
+/// never collide in the index.
 #[must_use]
 pub fn build_trait_impl_method_index(
     items: &[HirItem],
@@ -74,14 +67,16 @@ pub fn build_trait_impl_method_index(
     let mut index: HashMap<TraitImplKey, TraitImplMethodEntry> = HashMap::new();
     for item in items {
         let HirItem::Impl(block) = item else { continue };
-        if block.trait_name.is_none() {
+        // A target with no impl-dispatch anchor can never be reached from a
+        // receiver, so it contributes no entries.
+        let (Some(_), Some(nominal)) = (&block.trait_name, &block.self_type) else {
             continue;
-        }
+        };
         // Generic impls are registered under their declaration nominal with no
         // concrete instance args. A specialised impl retains the concrete args
         // structurally instead of encoding them into a mangled string key.
         let self_type = NominalInstance {
-            nominal: NominalId::legacy_reconstruct_from_full_path(block.self_type_name.clone()),
+            nominal: nominal.clone(),
             args: if block.type_params.is_empty() {
                 block.self_type_concrete_args.clone()
             } else {
@@ -188,148 +183,9 @@ pub fn lookup_trait_impl_entry_by_id<'a, S: std::hash::BuildHasher>(
     })
 }
 
-/// Canonical impl-self-type-name + type-arg vector for a substituted
-/// receiver `ResolvedTy`. Used to drive the structured registry lookup.
-///
-/// Returns `None` for receiver shapes that cannot anchor an impl (closures,
-/// function types, unsubstituted-only types). Callers must fail-closed.
-///
-/// The returned name is the canonical nominal identifier that
-/// `HirImplBlock::self_type_name` was populated with at impl lowering —
-/// e.g. `"Wrapper"` for `Wrapper<i64>`. Primitive impls (e.g.
-/// `impl Show for i64`) anchor on the canonical builtin name as seen by
-/// the parser; this helper maps `ResolvedTy::I64` to `"i64"` etc. so the
-/// same registry serves builtin-receiver static dispatch.
-#[must_use]
-pub fn receiver_self_type_for_impl_lookup_instance(ty: &ResolvedTy) -> Option<NominalInstance> {
-    match ty {
-        ResolvedTy::Named {
-            args,
-            builtin: Some(builtin),
-            ..
-        } => {
-            // Builtin trait impls are registered from `std/builtins.hew`
-            // under checker-owned nominal identities. Select those identities
-            // from the closed builtin discriminator, never from the source
-            // leaf: a user `type HashMapIter` carries `builtin: None` and stays
-            // on the ordinary user-nominal arm below.
-            // An actor is the type of its handle, so its nominal identity is
-            // the actor declaration's own, read off the handle.
-            if let Some(instance) = ty.actor_handle_instance() {
-                return Some(instance);
-            }
-            let nominal = match builtin {
-                hew_types::BuiltinType::VecIter => "std.builtins.VecIter",
-                hew_types::BuiltinType::HashMapIter => "std.builtins.HashMapIter",
-                hew_types::BuiltinType::Generator => "Generator",
-                hew_types::BuiltinType::Vec => "Vec",
-                hew_types::BuiltinType::HashMap => "HashMap",
-                hew_types::BuiltinType::ChildRef => "ChildRef",
-                hew_types::BuiltinType::RemotePid => "RemotePid",
-                hew_types::BuiltinType::NodeId => "NodeId",
-                hew_types::BuiltinType::Location => "Location",
-                // A shipped `#[opaque]` encoding value (`json.Value`) is a
-                // declaration in its own module, so its canonical identity is
-                // that module path. The checker registers an impl written
-                // through a module binding under the same identity, and the
-                // catalogue owns the path: read it from there rather than
-                // repeating the spelling here.
-                other if other.is_encoding_value() => other.canonical_name(),
-                _ => return None,
-            };
-            Some(NominalInstance {
-                nominal: NominalId::legacy_reconstruct_from_full_path(nominal),
-                args: args.clone(),
-            })
-        }
-        ResolvedTy::Named { .. } => ty.nominal_instance(),
-        ResolvedTy::I8 => Some(NominalInstance {
-            nominal: NominalId::legacy_reconstruct_from_full_path("i8"),
-            args: Vec::new(),
-        }),
-        ResolvedTy::I16 => Some(NominalInstance {
-            nominal: NominalId::legacy_reconstruct_from_full_path("i16"),
-            args: Vec::new(),
-        }),
-        ResolvedTy::I32 => Some(NominalInstance {
-            nominal: NominalId::legacy_reconstruct_from_full_path("i32"),
-            args: Vec::new(),
-        }),
-        ResolvedTy::I64 => Some(NominalInstance {
-            nominal: NominalId::legacy_reconstruct_from_full_path("i64"),
-            args: Vec::new(),
-        }),
-        ResolvedTy::U8 => Some(NominalInstance {
-            nominal: NominalId::legacy_reconstruct_from_full_path("u8"),
-            args: Vec::new(),
-        }),
-        ResolvedTy::U16 => Some(NominalInstance {
-            nominal: NominalId::legacy_reconstruct_from_full_path("u16"),
-            args: Vec::new(),
-        }),
-        ResolvedTy::U32 => Some(NominalInstance {
-            nominal: NominalId::legacy_reconstruct_from_full_path("u32"),
-            args: Vec::new(),
-        }),
-        ResolvedTy::U64 => Some(NominalInstance {
-            nominal: NominalId::legacy_reconstruct_from_full_path("u64"),
-            args: Vec::new(),
-        }),
-        ResolvedTy::Isize => Some(NominalInstance {
-            nominal: NominalId::legacy_reconstruct_from_full_path("isize"),
-            args: Vec::new(),
-        }),
-        ResolvedTy::Usize => Some(NominalInstance {
-            nominal: NominalId::legacy_reconstruct_from_full_path("usize"),
-            args: Vec::new(),
-        }),
-        ResolvedTy::F32 => Some(NominalInstance {
-            nominal: NominalId::legacy_reconstruct_from_full_path("f32"),
-            args: Vec::new(),
-        }),
-        ResolvedTy::F64 => Some(NominalInstance {
-            nominal: NominalId::legacy_reconstruct_from_full_path("f64"),
-            args: Vec::new(),
-        }),
-        ResolvedTy::Bool => Some(NominalInstance {
-            nominal: NominalId::legacy_reconstruct_from_full_path("bool"),
-            args: Vec::new(),
-        }),
-        ResolvedTy::Char => Some(NominalInstance {
-            nominal: NominalId::legacy_reconstruct_from_full_path("char"),
-            args: Vec::new(),
-        }),
-        ResolvedTy::String => Some(NominalInstance {
-            nominal: NominalId::legacy_reconstruct_from_full_path("string"),
-            args: Vec::new(),
-        }),
-        ResolvedTy::Bytes => Some(NominalInstance {
-            nominal: NominalId::legacy_reconstruct_from_full_path("bytes"),
-            args: Vec::new(),
-        }),
-        _ => None,
-    }
-}
-
-/// Compatibility projection for MIR's legacy string-shaped static-dispatch
-/// consumer. New HIR lowering uses
-/// [`receiver_self_type_for_impl_lookup_instance`] instead.
-#[must_use]
-pub fn receiver_self_type_for_impl_lookup(ty: &ResolvedTy) -> Option<(String, Vec<ResolvedTy>)> {
-    receiver_self_type_for_impl_lookup_instance(ty).map(|instance| {
-        (
-            instance.nominal.declaration().full_path().to_string(),
-            instance.args,
-        )
-    })
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{
-        lookup_trait_impl_entry_by_id, receiver_self_type_for_impl_lookup_instance, TraitImplKey,
-        TraitImplMethodEntry,
-    };
+    use super::{lookup_trait_impl_entry_by_id, TraitImplKey, TraitImplMethodEntry};
     use hew_types::{BuiltinType, DefId, NominalId, NominalInstance, ResolvedTy};
     use std::collections::HashMap;
 
@@ -445,14 +301,15 @@ mod tests {
         );
         let user = ResolvedTy::named_user("HashMapIter", vec![ResolvedTy::I64, ResolvedTy::String]);
 
-        let builtin_instance = receiver_self_type_for_impl_lookup_instance(&builtin)
+        let builtin_instance = builtin
+            .impl_receiver_instance()
             .expect("the compiler cursor has an exact std impl identity");
         assert_eq!(
             builtin_instance.nominal.full_path(),
             "std.builtins.HashMapIter"
         );
         assert_eq!(
-            receiver_self_type_for_impl_lookup_instance(&user)
+            user.impl_receiver_instance()
                 .expect("the user nominal remains independently dispatchable")
                 .nominal
                 .full_path(),

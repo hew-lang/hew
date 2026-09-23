@@ -188,19 +188,6 @@ impl DefId {
         Self { full_path }
     }
 
-    /// Temporarily reconstruct an identity in a downstream compiler phase.
-    ///
-    /// This is the sole migration escape hatch while declaration identities are
-    /// threaded through HIR, MIR, and code generation. Remove each use by
-    /// carrying the resolver-minted [`DefId`] instead.
-    #[deprecated(
-        note = "carry the resolver-minted DefId; this temporary migration escape hatch must not mint new identity"
-    )]
-    #[must_use]
-    pub fn legacy_reconstruct_from_full_path(full_path: impl Into<String>) -> Self {
-        crate::identity::legacy_reconstruct_def_id(full_path)
-    }
-
     /// Create a fixture identity without granting production code a minting API.
     ///
     /// This seam exists only in test builds or with the explicit
@@ -242,16 +229,6 @@ impl NominalId {
     #[must_use]
     pub(crate) fn from_minted_declaration(declaration: DefId) -> Self {
         Self { declaration }
-    }
-
-    /// Temporarily reconstruct a nominal identity in a downstream compiler
-    /// phase. Remove each use by carrying the resolver-minted `NominalId`.
-    #[deprecated(
-        note = "carry the resolver-minted NominalId; this temporary migration escape hatch must not mint new identity"
-    )]
-    #[must_use]
-    pub fn legacy_reconstruct_from_full_path(full_path: impl Into<String>) -> Self {
-        crate::identity::legacy_reconstruct_nominal_id(full_path)
     }
 
     /// Create a fixture nominal identity without granting production code a

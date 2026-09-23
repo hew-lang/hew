@@ -202,19 +202,6 @@ pub(crate) fn mint_nominal_id(full_path: impl Into<String>) -> NominalId {
     NominalId::from_minted_declaration(mint_def_id(full_path))
 }
 
-/// The one migration escape hatch for downstream code that still reconstructs
-/// identities. It exists only behind the intentionally alarming public
-/// `legacy_reconstruct_from_full_path` methods on the identity types.
-#[must_use]
-pub(crate) fn legacy_reconstruct_def_id(full_path: impl Into<String>) -> DefId {
-    mint_def_id(full_path)
-}
-
-#[must_use]
-pub(crate) fn legacy_reconstruct_nominal_id(full_path: impl Into<String>) -> NominalId {
-    mint_nominal_id(full_path)
-}
-
 #[cfg(any(test, feature = "test"))]
 #[must_use]
 pub(crate) fn test_def_id(full_path: impl Into<String>) -> DefId {

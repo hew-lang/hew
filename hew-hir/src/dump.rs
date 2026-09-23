@@ -1,12 +1,3 @@
-// The dump pass renders the `#[deprecated]` `CallTraitMethodStatic`
-// variant alongside the new `ResolvedImplCall`. Allowlist test on
-// construction sites is the structural enforcement.
-#![allow(
-    deprecated,
-    reason = "legacy CallTraitMethodStatic variant is allowlist-gated; \
-              see hew-hir/tests/call_trait_method_static_creation_allowlist.rs"
-)]
-
 use std::fmt::Write as _;
 
 use crate::node::{HirBlock, HirExpr, HirExprKind, HirItem, HirModule, HirStmtKind};
@@ -949,16 +940,20 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
         }
         HirExprKind::CallTraitMethodStatic {
             receiver,
+            target,
             receiver_type_param,
-            declaring_trait,
-            method_name,
             args,
             ret_ty,
-            ..
         } => {
+            let target_label = match target {
+                hew_types::CallTarget::StaticTraitMethod { method, .. } => {
+                    method.full_path().to_string()
+                }
+                other => format!("invalid-static-target:{other:?}"),
+            };
             writeln!(
                 out,
-                "{pad}  call-static-trait {declaring_trait}::{method_name} \
+                "{pad}  call-static-trait {target_label} \
                  [receiver_param={receiver_type_param}] -> {}",
                 ret_ty.user_facing()
             )

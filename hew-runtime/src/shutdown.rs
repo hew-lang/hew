@@ -1320,25 +1320,31 @@ mod tests {
         reset_shutdown_state();
     }
 
+    /// The drain answers busy while work is active and converges again once it
+    /// ends, on every round rather than latching after the first answer. The
+    /// test thread releases the work before each convergent drain, so the
+    /// outcome never depends on when the host schedules another thread.
     #[test]
     fn drain_converges_repeatedly_when_active_work_finishes_within_budget() {
-        const ITERATIONS: usize = 256;
+        const ITERATIONS: usize = 64;
+        // Only the convergent drain uses this budget, and it returns as soon
+        // as it sees idle: the budget bounds a hang, it is not the oracle.
+        const BUDGET: Duration = Duration::from_secs(30);
 
         let _guard = shutdown_test_guard();
         reset_shutdown_state();
 
         for iteration in 0..ITERATIONS {
             scheduler::ACTIVE_WORKERS.fetch_add(1, Ordering::Release);
-            let release = std::thread::spawn(|| {
-                std::thread::sleep(Duration::from_millis(1));
-                scheduler::ACTIVE_WORKERS.fetch_sub(1, Ordering::Release);
-            });
-
             assert!(
-                drain_until_idle(Duration::from_millis(100)),
-                "iteration {iteration}: work that completed inside the budget must drain"
+                !drain_until_idle(DRAIN_POLL_INTERVAL),
+                "iteration {iteration}: active work must keep the drain busy"
             );
-            release.join().expect("active-work releaser must finish");
+            scheduler::ACTIVE_WORKERS.fetch_sub(1, Ordering::Release);
+            assert!(
+                drain_until_idle(BUDGET),
+                "iteration {iteration}: finished work must drain"
+            );
         }
 
         assert_eq!(

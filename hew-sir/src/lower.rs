@@ -3235,6 +3235,7 @@ struct ControlState {
     cleanup_may_fail: bool,
     cleanup_draining: bool,
     deferred_initialized: BTreeSet<PlaceId>,
+    state_taken: BTreeSet<PlaceId>,
 }
 
 /// The scope loans one `let` binding holds on a borrowed collection.
@@ -3444,6 +3445,8 @@ struct Builder<'hir, 'service> {
     /// the current path. The checker rejects a join whose arms disagree, so
     /// the set is exact at every fault exit and names what init must release.
     deferred_initialized: BTreeSet<PlaceId>,
+    /// Mutable actor-state seats consumed on this path and awaiting `StoreInit`.
+    state_taken: BTreeSet<PlaceId>,
     /// A stream producer body: the caller's sink it yields into and the
     /// element type each yield transfers.
     stream_sink: Option<(ValueId, ResolvedTy)>,
@@ -3581,6 +3584,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             cleanup_may_fail: false,
             cleanup_draining: false,
             deferred_initialized: BTreeSet::new(),
+            state_taken: BTreeSet::new(),
             stream_sink,
         };
         builder.bind_captures(source)?;
@@ -4437,6 +4441,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             cleanup_may_fail: self.cleanup_may_fail,
             cleanup_draining: self.cleanup_draining,
             deferred_initialized: self.deferred_initialized.clone(),
+            state_taken: self.state_taken.clone(),
         }
     }
 
@@ -4457,6 +4462,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         self.cleanup_draining = state.cleanup_draining;
         self.deferred_initialized
             .clone_from(&state.deferred_initialized);
+        self.state_taken.clone_from(&state.state_taken);
     }
 
     fn retain_bindings(
@@ -4558,6 +4564,12 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 "control-flow predecessors disagree on which deferred actor fields are initialized"
                     .into(),
             );
+        }
+        if states
+            .iter()
+            .any(|state| state.state_taken != first.state_taken)
+        {
+            return Err("control-flow predecessors disagree on consumed actor state fields".into());
         }
         for binding in &keys {
             if states
@@ -4848,7 +4860,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             lower_initial_value_transfer(self, value, "assignment value", OwnedBindingUse::Copy)?;
         let new = self.coerce_value(new, &ty, Provenance::Site(value.site))?;
         match target {
-            BindingTarget::Place(place) if first_store => {
+            BindingTarget::Place(place) if first_store || self.state_taken.contains(&place) => {
                 // A deferred field or a mutable field consumed earlier in this
                 // body has an empty actor-state seat. Publish the replacement
                 // without trying to release the value that left it.
@@ -4865,6 +4877,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     Provenance::Site(value.site),
                 )?;
                 self.owned_live.remove(&new);
+                self.state_taken.remove(&place);
                 if !initialized {
                     self.deferred_initialized.insert(place);
                 }
@@ -7741,6 +7754,12 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             let kind = if self.state_field_leaves_as_copy(place, expression)? {
                 SemOpKind::LoadCopy { place }
             } else {
+                if matches!(
+                    self.places[place.0 as usize].origin,
+                    crate::PlaceOrigin::ActorState { .. }
+                ) {
+                    self.state_taken.insert(place);
+                }
                 SemOpKind::LoadTake { place }
             };
             return self.emit(expression, kind).map(Some);

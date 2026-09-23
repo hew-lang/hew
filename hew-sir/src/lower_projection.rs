@@ -185,6 +185,7 @@ impl Builder<'_, '_> {
             provenance,
         )?;
         self.owned_live.remove(&value);
+        self.state_taken.remove(&place);
         Ok(())
     }
 

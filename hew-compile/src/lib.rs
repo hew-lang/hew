@@ -4,7 +4,7 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use hew_parser::ast::{ImportDecl, Item, Program, Spanned};
+use hew_parser::ast::{ImportDecl, Item, Program, Spanned, TypeExpr};
 use serde::{de::DeserializeOwned, Deserialize};
 
 mod host;
@@ -2152,37 +2152,28 @@ fn build_module_graph_with_diagnostics(
     // The prelude is loaded out of band, so expose only its Display impls to
     // the ordinary imported-impl path. Its other declarations retain their
     // existing compiler-owned registration.
-    let parsed_builtins = hew_parser::parse(include_str!("../../std/builtins.hew"));
-    assert!(
-        parsed_builtins.errors.is_empty(),
-        "embedded std/builtins.hew must parse: {:?}",
-        parsed_builtins.errors
+    add_embedded_impl_module(
+        &mut graph,
+        "builtins",
+        include_str!("../../std/builtins.hew"),
+        |decl| {
+            decl.trait_bound
+                .as_ref()
+                .is_some_and(|bound| bound.name == "Display")
+        },
     );
-    let builtins_id = ModuleId::new(vec!["std".to_string(), "builtins".to_string()]);
-    if !graph.modules.contains_key(&builtins_id) {
-        let display_impls = parsed_builtins
-            .program
-            .items
-            .into_iter()
-            .filter(|(item, _)| {
-                matches!(
-                    item,
-                    Item::Impl(impl_decl)
-                        if impl_decl.trait_bound.as_ref().is_some_and(|bound| bound.name == "Display")
-                )
-            })
-            .collect();
-        graph
-            .add_module(Module {
-                id: builtins_id.clone(),
-                items: display_impls,
-                imports: Vec::new(),
-                source_paths: Vec::new(),
-                doc: None,
-            })
-            .expect("std.builtins module absence was checked");
-        graph.topo_order.push(builtins_id);
-    }
+    // `Option` methods with source bodies, such as `take`, lower through the
+    // same imported-impl path; the checker-marker methods beside them stay
+    // metadata (see `lower_impl_block`).
+    add_embedded_impl_module(
+        &mut graph,
+        "option",
+        include_str!("../../std/option.hew"),
+        |decl| {
+            decl.trait_bound.is_none()
+                && matches!(&decl.target_type.0, TypeExpr::Named { name, .. } if name == "Option")
+        },
+    );
 
     rewrite_direct_stdlib_module_root(
         &mut graph,
@@ -2216,6 +2207,43 @@ fn build_module_graph_with_diagnostics(
     }
 
     Ok(graph)
+}
+
+/// Add the selected impls of an embedded `std.<name>` source as a module of
+/// their own, unless the program already imports that module.
+fn add_embedded_impl_module(
+    graph: &mut hew_parser::module::ModuleGraph,
+    name: &str,
+    source: &str,
+    keep: impl Fn(&hew_parser::ast::ImplDecl) -> bool,
+) {
+    use hew_parser::module::{Module, ModuleId};
+    let id = ModuleId::new(vec!["std".to_string(), name.to_string()]);
+    if graph.modules.contains_key(&id) {
+        return;
+    }
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "embedded std/{name}.hew must parse: {:?}",
+        parsed.errors
+    );
+    let items = parsed
+        .program
+        .items
+        .into_iter()
+        .filter(|(item, _)| matches!(item, Item::Impl(decl) if keep(decl)))
+        .collect();
+    graph
+        .add_module(Module {
+            id: id.clone(),
+            items,
+            imports: Vec::new(),
+            source_paths: Vec::new(),
+            doc: None,
+        })
+        .expect("embedded module absence was checked");
+    graph.topo_order.push(id);
 }
 
 fn check_ambiguous_module_import_bindings(

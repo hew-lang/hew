@@ -1,0 +1,14 @@
+// `take()` moves the value out of a `var` Option and leaves `None` behind,
+// on a local and on a record field alike.
+type Slot {
+    job: Option<string>,
+}
+
+fn main() {
+    var pending: Option<string> = Some("job");
+    println(pending.take().unwrap_or("none"));
+    println(pending.is_none());
+    var slot = Slot { job: Some("field") };
+    println(slot.job.take().unwrap_or("none"));
+    println(slot.job.take().unwrap_or("none"));
+}

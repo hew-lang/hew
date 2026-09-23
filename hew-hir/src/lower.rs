@@ -12442,8 +12442,14 @@ impl LowerCtx {
                         })
                 })
             });
+        // `std.option` owns `Option`'s source-bodied methods (`take`). They
+        // lower as ordinary impl methods; the checker-marker methods beside
+        // them stay metadata and are skipped below.
+        let is_std_option_impl = builtin_impl_kind == Some(BuiltinType::Option)
+            && self.current_module_name.as_deref() == Some("std.option");
         if !target_is_alias
             && !is_duration_ctor_block
+            && !is_std_option_impl
             && !is_std_iter_vec_iter_extension
             && !is_declaring_encoding_impl
             && decl.trait_bound.is_none()
@@ -12575,6 +12581,9 @@ impl LowerCtx {
         self.current_impl_self_ty = Some(resolved_impl_self_ty);
         for method in &decl.methods {
             if pub_only && !method.visibility.is_pub() {
+                continue;
+            }
+            if is_std_option_impl && Self::is_option_result_marker_method_name(&method.name) {
                 continue;
             }
             if let Some(imp) = imported {

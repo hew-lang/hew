@@ -103,32 +103,49 @@ impl Builder<'_, '_> {
         }
         let place = self.resolve_mutable_place(receiver)?;
         let provenance = Provenance::Site(expr.site);
-        let live_before_arguments = self.owned_live.keys().copied().collect();
+        let mut live_before_arguments: std::collections::HashSet<ValueId> =
+            self.owned_live.keys().copied().collect();
         let mut loans = Vec::new();
         let mut arguments = self.lower_user_arguments(args, &signature.params[1..], &mut loans)?;
 
         // Later arguments may replace this binding or one of its sibling fields.
         // Acquire its current value only after those effects have completed.
-        let selected = self.owned_projection(&place)?;
-        // An actor state seat the receiver leaves is empty until the call
-        // returns it; a failing call keeps it, and teardown skips the seat.
-        let mut taken_state_seat = false;
+        // A field beneath a state or capture seat is updated through a staged
+        // copy of the whole seat, which is published back after the call.
+        let (selected, staged_root) = match self.owned_projection(&place)? {
+            None if owns_receiver
+                && !place.projections.is_empty()
+                && matches!(
+                    self.binding_target(place.binding)?,
+                    super::BindingTarget::Place(_)
+                ) =>
+            {
+                let (leaf, staged_root) = self.stage_writable_root(&place, &provenance)?;
+                (Some(leaf), staged_root)
+            }
+            selected => (selected, None),
+        };
+        // The staged seat outlives the call; it is not a call temporary.
+        if let Some((_, staged)) = staged_root {
+            live_before_arguments.insert(staged);
+        }
+        // A taken actor state seat is empty until the call hands its receiver
+        // back, so the writeback re-publishes it rather than replacing a value.
+        let seat_taken = owns_receiver
+            && *receiver_update == hew_types::ReceiverUpdate::Replace
+            && selected.is_some_and(|selected| {
+                matches!(
+                    self.places[selected.0 as usize].origin,
+                    crate::PlaceOrigin::ActorState { .. }
+                )
+            });
         let (value, scalar_parents) = if let Some(selected) = selected {
             let root = self.place_borrow_root(selected)?;
             self.snapshot_arguments_rooted_at(root, &mut arguments, &mut loans, &provenance)?;
-            let take = owns_receiver && *receiver_update == hew_types::ReceiverUpdate::Replace;
-            taken_state_seat = take
-                && matches!(
-                    self.places[selected.0 as usize].origin,
-                    crate::PlaceOrigin::ActorState { .. }
-                );
-            if taken_state_seat {
-                self.state_taken.insert(selected);
-            }
             let value = self.emit_typed(
                 provenance.clone(),
                 &receiver_ty,
-                if take {
+                if owns_receiver && *receiver_update == hew_types::ReceiverUpdate::Replace {
                     SemOpKind::LoadTake { place: selected }
                 } else {
                     SemOpKind::LoadCopy { place: selected }
@@ -178,11 +195,13 @@ impl Builder<'_, '_> {
         let fields =
             self.emit_destructure_value(result, &dual_return_ty, shape, provenance.clone())?;
         if let Some(selected) = selected {
-            if taken_state_seat {
-                self.restore_taken_place(selected, fields[1].id, provenance)?;
-            } else {
-                self.store_projected(selected, fields[1].id, provenance)?;
-            }
+            self.publish_writable_root(
+                selected,
+                fields[1].id,
+                staged_root,
+                seat_taken,
+                &provenance,
+            )?;
         } else {
             self.replace_scalar_aggregate_leaf(
                 place.binding,

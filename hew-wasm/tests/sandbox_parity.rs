@@ -366,6 +366,12 @@ const PARITY_CASES: &[ParityCase] = &[
         source_rel: "examples/sandbox-graduation/option_some_none.hew",
     },
     ParityCase {
+        // `take()` is a `var self` std method: the value leaves the place and
+        // `None` stays behind on both engines.
+        test_name: "option_take",
+        source_rel: "examples/sandbox-graduation/option_take.hew",
+    },
+    ParityCase {
         test_name: "const_reference",
         source_rel: "examples/sandbox-graduation/const_reference.hew",
     },

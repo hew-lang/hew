@@ -1,0 +1,11 @@
+[[case]]
+id = "actor-state-option-take-crash-hook"
+intent = "A handler moves a resource out of an `Option` state field with `take()` and restores it across repeated turns; when the call on the taken value faults, the crash hook reads the field, sees `None`, and teardown releases nothing twice."
+source = "cases/actor-state-option-take-crash-hook.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "close sock\nsock\nclose sock!\nsock!\nclose sock!!\nsock!!\nclose sock!!!\nhook sees socket: false\nclose sock\nsock\nclose sock!\ndone\n"
+stderr = "hew: failure: UserPanic (212): detach failed\nhew: actor crash in Vault.swap (actor 1): UserPanic\n"
+exit = 0

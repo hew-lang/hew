@@ -1,0 +1,57 @@
+import std.failure;
+
+#[resource]
+type Socket {
+    label: string,
+}
+
+impl Socket {
+    fn close(consume self) {
+        println(f"close {self.label}");
+    }
+
+    fn detach(consume self, fail: bool) -> string {
+        if fail {
+            panic("detach failed");
+        }
+        self.label
+    }
+}
+
+actor Vault {
+    var sock: Option<Socket>,
+
+    receive fn swap(fail: bool) -> string {
+        match sock.take() {
+            .Some(s) => {
+                let label = s.detach(fail);
+                sock = Some(Socket { label: label + "!" });
+                label
+            }
+            .None => "empty",
+        }
+    }
+
+    #[on(crash)]
+    fn crashed(info: CrashInfo) -> CrashAction {
+        println(f"hook sees socket: {sock.is_some()}");
+        CrashAction.Restart
+    }
+}
+
+supervisor Group {
+    intensity: 1 within 60s,
+    child vault: Vault(sock: Some(Socket { label: "sock" })),
+}
+
+fn main() {
+    let group = spawn Group;
+    for _ in 0..3 {
+        println(group.vault.swap(false).expect("swap"));
+    }
+    let _ = group.vault.swap(true);
+    let _ = await_restart group.vault;
+    println(group.vault.swap(false).expect("fresh"));
+    close(group);
+    println("done");
+}

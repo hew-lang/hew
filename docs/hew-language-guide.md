@@ -2803,6 +2803,19 @@ fn main() -> i64 {
 
 For Option presence checks, `.is_some()`/`.is_none()` read cleanly and return `bool`. For all other unwrap needs, use `match`.
 
+### Option .take()
+
+```hew
+fn main() {
+    var pending: Option<string> = Some("job");
+    let job = pending.take();
+    println(job.unwrap_or("none"));     // job
+    println(pending.is_none());         // true
+}
+```
+
+`.take()` moves the value out of a `var` Option and leaves `None` behind. It is a write to the place, not a consume, so the binding stays usable. An actor keeps a resource it hands out this way in an `Option` field, which its `#[on(crash)]` hook may still read.
+
 ### match as a value-producing expression
 
 ```hew

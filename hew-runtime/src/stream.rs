@@ -97,10 +97,44 @@ type Item = Vec<u8>;
 
 // ── Backing traits ────────────────────────────────────────────────────────────
 
+/// How `select` observes a content stream without taking an item. Select is
+/// native-only (a wasm32 manifest reject), so wasm32 has no reader.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SelectReadiness {
+    /// The next read never waits indefinitely: a regular file or an in-memory
+    /// stream.
+    Ready,
+    /// Ready once this transport connection is readable.
+    Socket(i32),
+    /// This stream cannot report readiness without taking an item; the reason
+    /// a selection over it refuses.
+    Unsupported(&'static str),
+}
+
+/// An adapter may hold only part of its next item when its upstream turns
+/// ready, so it is observable only over an upstream whose next read never
+/// waits.
+#[cfg(not(target_arch = "wasm32"))]
+fn adapter_select_readiness(upstream: SelectReadiness) -> SelectReadiness {
+    match upstream {
+        SelectReadiness::Socket(_) => SelectReadiness::Unsupported(
+            "select cannot observe a line, chunk or take adapter over a socket stream yet",
+        ),
+        other => other,
+    }
+}
+
 trait StreamBacking: Send + std::fmt::Debug {
     /// The backing owns this transport handle; native operations only borrow it.
     fn native_connection(&self) -> Option<i32> {
         None
+    }
+
+    /// How a selection observes this backing; see [`SelectReadiness`].
+    #[cfg(not(target_arch = "wasm32"))]
+    fn select_readiness(&self) -> SelectReadiness {
+        SelectReadiness::Unsupported("select cannot observe this stream yet")
     }
 
     /// Return the next item, or `None` on EOF. Blocks until an item is available.
@@ -147,6 +181,17 @@ impl HewStream {
     #[must_use]
     pub(crate) fn pipe_core(&self) -> Option<&Arc<crate::channel_core::ChannelCore>> {
         self.channel.as_ref()
+    }
+
+    /// How a selection observes this content stream. A closed stream answers
+    /// its next read at once.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn select_readiness(&self) -> SelectReadiness {
+        if self.closed {
+            SelectReadiness::Ready
+        } else {
+            self.inner.select_readiness()
+        }
     }
 }
 
@@ -218,6 +263,11 @@ impl StreamBacking for ChannelStream {
 }
 
 impl StreamBacking for VecStream {
+    #[cfg(not(target_arch = "wasm32"))]
+    fn select_readiness(&self) -> SelectReadiness {
+        SelectReadiness::Ready
+    }
+
     fn next(&mut self) -> Option<Item> {
         self.items.pop_front()
     }
@@ -245,6 +295,24 @@ struct FileReadStream {
 }
 
 impl StreamBacking for FileReadStream {
+    /// Only a regular file answers its next read at once. A FIFO, a device or
+    /// a terminal opens like a file, but its next read can wait indefinitely.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn select_readiness(&self) -> SelectReadiness {
+        if self
+            .reader
+            .get_ref()
+            .metadata()
+            .is_ok_and(|metadata| metadata.is_file())
+        {
+            SelectReadiness::Ready
+        } else {
+            SelectReadiness::Unsupported(
+                "select cannot observe a file stream over a pipe, device or terminal",
+            )
+        }
+    }
+
     fn next(&mut self) -> Option<Item> {
         let mut buf = vec![0u8; self.chunk_size];
         match self.reader.read(&mut buf) {
@@ -317,6 +385,10 @@ const TCP_BACKING_BUF_SIZE: usize = 8192;
 impl StreamBacking for TcpStreamBacking {
     fn native_connection(&self) -> Option<i32> {
         Some(self.connection)
+    }
+
+    fn select_readiness(&self) -> SelectReadiness {
+        SelectReadiness::Socket(self.connection)
     }
 
     fn next(&mut self) -> Option<Item> {
@@ -408,6 +480,11 @@ struct LinesStream {
 }
 
 impl StreamBacking for LinesStream {
+    #[cfg(not(target_arch = "wasm32"))]
+    fn select_readiness(&self) -> SelectReadiness {
+        adapter_select_readiness(self.upstream.select_readiness())
+    }
+
     fn next(&mut self) -> Option<Item> {
         loop {
             // After a forced flush, consume the delimiter that terminated
@@ -513,6 +590,11 @@ struct ChunksStream {
 }
 
 impl StreamBacking for ChunksStream {
+    #[cfg(not(target_arch = "wasm32"))]
+    fn select_readiness(&self) -> SelectReadiness {
+        adapter_select_readiness(self.upstream.select_readiness())
+    }
+
     fn next(&mut self) -> Option<Item> {
         while self.buf.len() < self.chunk_size && !self.done {
             match self.upstream.next() {
@@ -590,6 +672,11 @@ struct TakeStream {
 }
 
 impl StreamBacking for TakeStream {
+    #[cfg(not(target_arch = "wasm32"))]
+    fn select_readiness(&self) -> SelectReadiness {
+        adapter_select_readiness(self.upstream.select_readiness())
+    }
+
     fn next(&mut self) -> Option<Item> {
         if self.remaining == 0 {
             return None;
@@ -2842,6 +2929,50 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Select treats a file stream as ready only when its next read cannot
+    /// wait: a regular file. A FIFO or a device opens the same way and refuses.
+    #[cfg(unix)]
+    #[test]
+    fn file_stream_select_readiness_follows_the_file_type() {
+        use std::os::unix::ffi::OsStrExt;
+        use std::os::unix::fs::OpenOptionsExt;
+        let readiness = |file: fs::File| {
+            FileReadStream {
+                reader: BufReader::new(file),
+                chunk_size: 4096,
+            }
+            .select_readiness()
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let regular = dir.path().join("regular.bin");
+        std::fs::write(&regular, b"data").unwrap();
+        assert_eq!(
+            readiness(fs::File::open(&regular).unwrap()),
+            SelectReadiness::Ready
+        );
+
+        let fifo = dir.path().join("fifo");
+        let fifo_path = CString::new(fifo.as_os_str().as_bytes()).unwrap();
+        // SAFETY: the path is a valid NUL-terminated string.
+        assert_eq!(unsafe { libc::mkfifo(fifo_path.as_ptr(), 0o600) }, 0);
+        // A non-blocking open does not wait for a writer to appear.
+        let reader = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(&fifo)
+            .unwrap();
+        assert_eq!(
+            readiness(reader),
+            SelectReadiness::Unsupported(
+                "select cannot observe a file stream over a pipe, device or terminal"
+            )
+        );
+        assert!(matches!(
+            readiness(fs::File::open("/dev/null").unwrap()),
+            SelectReadiness::Unsupported(_)
+        ));
     }
 
     #[test]

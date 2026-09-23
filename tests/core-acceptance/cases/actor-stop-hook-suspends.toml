@@ -1,0 +1,10 @@
+[[case]]
+id = "actor-stop-hook-suspends"
+intent = "A stop hook that sleeps and asks another actor runs to completion on live state before the next hook, the resource field closes after both, and close returns last."
+source = "cases/actor-stop-hook-suspends.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "FLUSHED 2\nsecond hook\nledger closed\nworker closed\n"
+exit = 0

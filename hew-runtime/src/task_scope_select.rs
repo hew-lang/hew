@@ -12,12 +12,15 @@ use crate::actor_native::wait_graph::{
     hew_actor_wait_edge_fault, hew_actor_wait_edge_free, hew_actor_wait_edge_pending,
     hew_actor_wait_edge_prepare, select_alternatives, HewActorWaitEdge,
 };
+use crate::async_io::{
+    hew_async_io_free, hew_async_io_status, start_tcp_readable, AsyncIoStatus, HewAsyncIo,
+};
 use crate::coro_sleep::{
     hew_coro_sleep_free, hew_coro_sleep_new, hew_coro_sleep_status, HewCoroSleep,
 };
 use crate::coro_state::CoroStatus;
 use crate::lifetime::live_actors::ActorIncarnation;
-use crate::stream::HewStream;
+use crate::stream::{HewStream, SelectReadiness};
 use crate::util::MutexExt;
 use crate::wake::{HewWaker, OwnedWaker};
 use std::ptr;
@@ -36,12 +39,15 @@ enum SelectSource {
     },
     /// An independently retained observation of a checked task handle.
     Task(HewCheckedTaskWait),
-    /// A borrowed pipe stream plus the completion order stamped when its
-    /// readiness was first observed. The selection never consumes an element.
+    /// A borrowed stream plus the completion order stamped when its readiness
+    /// was first observed. The selection never consumes an element: a pipe
+    /// reports its queue, a socket stream owns a readability watch, and a
+    /// file stream's next read never waits.
     Stream {
         stream: *mut HewStream,
         ready_order: Option<u64>,
         waker: Arc<OwnedWaker>,
+        readable: *const HewAsyncIo,
     },
 }
 
@@ -61,6 +67,12 @@ pub struct HewCheckedTaskSelect {
 
 impl Drop for HewCheckedTaskSelect {
     fn drop(&mut self) {
+        for source in &self.sources {
+            if let SelectSource::Stream { readable, .. } = source {
+                // SAFETY: the selection owns each watch, which reads nothing.
+                unsafe { hew_async_io_free(*readable) };
+            }
+        }
         // SAFETY: the selection uniquely owns this timer and all observations.
         unsafe { hew_coro_sleep_free(self.timer) };
         // SAFETY: the selection owns this optional wait registration.
@@ -143,11 +155,17 @@ pub unsafe extern "C" fn hew_checked_task_select_add_task(
     }
 }
 
-/// Register one borrowed channel receiver. Readiness is observed, never taken.
+/// Register one borrowed stream receive. Readiness is observed, never taken:
+/// a pipe reports its queue, a socket stream is watched for readability, and a
+/// regular file or in-memory stream is ready at once because its next read
+/// never waits. A stream adapter over a socket may hold only part of its next
+/// item when the socket turns readable, and a file stream over a pipe, device
+/// or terminal can wait on its next read, so both refuse: the selecting actor
+/// traps on its own turn and its supervisor rules on the crash.
 ///
 /// # Safety
 /// `selection` is the live handle from `hew_checked_task_select_new` and
-/// `receiver` is a live receiver that outlives this selection.
+/// `stream` is a live stream that outlives this selection.
 #[no_mangle]
 pub unsafe extern "C" fn hew_checked_task_select_add_stream(
     selection: *mut HewCheckedTaskSelect,
@@ -156,28 +174,32 @@ pub unsafe extern "C" fn hew_checked_task_select_add_stream(
     if selection.is_null() {
         return;
     }
+    // SAFETY: the caller owns the selection for the duration of this call.
+    let selection = unsafe { &mut *selection };
+    let mut readable = ptr::null();
     // SAFETY: the stream is a live borrowed handle per the caller's contract.
-    if !stream.is_null() && unsafe { (*stream).pipe_core() }.is_none() {
-        // A content stream (socket, file) has no observable queue yet: its
-        // readiness lives in the async I/O layer, which `select` does not
-        // register. `stream.pipe` and `stream.open` share one nominal type, so
-        // the checker cannot tell them apart; the selecting actor traps on its
-        // own turn and its supervisor rules on the crash.
-        // SAFETY: caller owns the selection for the duration of this call.
-        unsafe { &mut *selection }.refusal.get_or_insert_with(|| {
-            "select observes pipe streams only; a socket or file stream is not \
-             a select source yet"
-                .to_string()
-        });
+    if let Some(stream) = unsafe { stream.as_ref() } {
+        if stream.pipe_core().is_none() {
+            match stream.select_readiness() {
+                SelectReadiness::Ready => {}
+                SelectReadiness::Socket(connection) => {
+                    // SAFETY: the stream keeps its connection live through the
+                    // selection; the waker descriptor is the selection's own.
+                    readable = unsafe { start_tcp_readable(connection, selection.waker) };
+                }
+                SelectReadiness::Unsupported(reason) => {
+                    selection.refusal.get_or_insert_with(|| reason.to_string());
+                }
+            }
+        }
     }
-    // SAFETY: caller owns the selection for the duration of this call.
-    unsafe {
-        (*selection).sources.push(SelectSource::Stream {
-            stream,
-            ready_order: None,
-            waker: Arc::new(OwnedWaker::retain(&*(*selection).waker)),
-        });
-    }
+    selection.sources.push(SelectSource::Stream {
+        stream,
+        ready_order: None,
+        // SAFETY: the caller's retained waker descriptor is live.
+        waker: Arc::new(unsafe { OwnedWaker::retain(&*selection.waker) }),
+        readable,
+    });
 }
 
 /// Arm the selection's timer after every source has been registered.
@@ -297,6 +319,7 @@ unsafe fn poll(selection: *mut HewCheckedTaskSelect, first_completion: bool) -> 
                 stream,
                 ready_order,
                 waker,
+                readable,
             } => {
                 if let Some(order) = *ready_order {
                     order
@@ -306,15 +329,20 @@ unsafe fn poll(selection: *mut HewCheckedTaskSelect, first_completion: bool) -> 
                     }
                     // SAFETY: the stream is borrowed for the selection and
                     // the waker descriptor is live per the caller's contract.
-                    let Some(core) = (unsafe { (**stream).pipe_core() }) else {
-                        return -2;
+                    let ready = match unsafe { (**stream).pipe_core() } {
+                        Some(core) => core.poll_recv_ready(waker) != 0,
+                        None if readable.is_null() => true,
+                        None => {
+                            // SAFETY: the selection owns this live watch.
+                            let status = unsafe { hew_async_io_status(*readable) };
+                            status != AsyncIoStatus::Pending as i32
+                        }
                     };
-                    let status = core.poll_recv_ready(waker);
-                    if status == 0 {
+                    if !ready {
                         continue;
                     }
-                    // A closed or faulted channel is ready: the winning arm's
-                    // receive resolves it to `None` or to its own fault.
+                    // A closed, faulted or failed stream is ready too: the
+                    // winning arm's receive resolves it to `None` or its fault.
                     let order = COMPLETION_ORDER.fetch_add(1, Ordering::Relaxed);
                     *ready_order = Some(order);
                     order

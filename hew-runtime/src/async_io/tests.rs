@@ -440,7 +440,7 @@ fn queued_connection_deadline_wakes_before_producer_admission() {
         );
         assert_eq!(
             crate::stream_error::hew_stream_last_errno(),
-            libc::ETIMEDOUT
+            crate::transport::etimedout_errno()
         );
         assert_eq!(
             hew_async_io_cleanup_status(operation, &descriptor(&cleanup)),
@@ -975,7 +975,10 @@ fn tcp_read_timeout_is_an_io_error_and_releases_the_connection_for_reuse() {
             hew_async_io_restore_error(operation),
             AsyncIoStatus::Error as i32
         );
-        assert_eq!(crate::stream_error::take_last_errno(), libc::ETIMEDOUT);
+        assert_eq!(
+            crate::stream_error::take_last_errno(),
+            crate::transport::etimedout_errno()
+        );
         let cleanup = Arc::new(ReadySignal::default());
         if hew_async_io_cleanup_status(operation, &descriptor(&cleanup)) == 0 {
             await_ready(&cleanup);
@@ -1022,7 +1025,10 @@ fn tcp_write_timeout_reports_partial_progress_as_an_io_error() {
             hew_async_io_restore_error(operation),
             AsyncIoStatus::Error as i32
         );
-        assert_eq!(crate::stream_error::take_last_errno(), libc::ETIMEDOUT);
+        assert_eq!(
+            crate::stream_error::take_last_errno(),
+            crate::transport::etimedout_errno()
+        );
         let cleanup = Arc::new(ReadySignal::default());
         if hew_async_io_cleanup_status(operation, &descriptor(&cleanup)) == 0 {
             await_ready(&cleanup);

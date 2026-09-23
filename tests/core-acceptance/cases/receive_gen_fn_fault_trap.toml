@@ -10,5 +10,5 @@ HEW_WORKERS = "4"
 
 [case.expected]
 stdout = "1\n"
-stderr = "hew: failure: DivideByZero (202)\nhew: actor crash in Emitter.ticks (actor 1): DivideByZero\nhew: failure: UserPanic (212)\n"
+stderr = "hew: failure: DivideByZero (202)\nhew: actor crash in Emitter.ticks (actor 1): DivideByZero\nhew: failure: UserPanic (212): pipe faulted: producer actor 1 crashed while holding a sink; no more items will arrive\n"
 exit = 1

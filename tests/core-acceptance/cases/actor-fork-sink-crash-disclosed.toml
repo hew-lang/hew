@@ -7,5 +7,5 @@ timeout_seconds = 30
 
 [case.expected]
 stdout = "handler crashed\nfirst=1\n"
-stderr = "hew: failure: UserPanic (212): producer crash\nhew: secondary failure: Cancelled (-1)\nhew: actor crash in Producer.go (actor 1): UserPanic\nhew: failure: UserPanic (212)\n"
+stderr = "hew: failure: UserPanic (212): producer crash\nhew: secondary failure: Cancelled (-1)\nhew: actor crash in Producer.go (actor 1): UserPanic\nhew: failure: UserPanic (212): pipe faulted: producer actor 1 crashed while holding a sink; no more items will arrive\n"
 exit = 1

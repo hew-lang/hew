@@ -1,0 +1,24 @@
+// A pipe whose producer crashed while holding the sink faults the next read
+// after the queued items drain. The consumer here is `main`, so the trap is
+// the process failure, and it names the faulted pipe rather than a bare code.
+import std.stream;
+
+actor Producer {
+    out: stream.Sink<i64>,
+    receive fn emit(n: i64) { self.out.send(n).expect("send"); }
+    receive fn boom() { panic("producer crashed"); }
+}
+
+fn main() {
+    let (tx, rx): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(4).expect("pipe");
+    let producer = spawn Producer(out: tx);
+    producer.emit(1).expect("emit");
+    match producer.boom() {
+        .Ok(_) => println("the producer must crash"),
+        .Err(_) => println("producer crashed"),
+    }
+    for item in rx {
+        println(f"item {item}");
+    }
+    println("unreachable: a faulted pipe never reads as a clean end");
+}

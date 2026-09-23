@@ -1,0 +1,11 @@
+[[case]]
+id = "select-file-stream"
+intent = "A file stream is a select source that never waits: it beats a long timer at once, from main and from an actor turn, and reads its first chunk and then its end."
+source = "cases/select-file-stream.hew"
+fixtures = "fixtures/file-resources"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "main: file won: 23 bytes\nfile won: 23 bytes\nfile won: end of stream\n"
+exit = 0

@@ -1,0 +1,35 @@
+// A second crash while a group restart waits on a stopping sibling joins that
+// restart instead of starting another one. Every role restarts exactly once,
+// after the old incarnation's stop hook finishes, and every incarnation stops
+// before supervisor_stop returns.
+actor Worker {
+    var name: string,
+    #[on(start)]
+    fn started() { println("start " + name); }
+    #[on(stop)]
+    fn stopping() {
+        if name == "c" { sleep(1000ms); }
+        println("stop " + name);
+    }
+    receive fn boom() { panic("worker failed"); }
+}
+
+supervisor App {
+    strategy: rest_for_one,
+    intensity: 10 within 60s,
+    child a: Worker(name: "a"),
+    child b: Worker(name: "b"),
+    child c: Worker(name: "c"),
+}
+
+fn main() {
+    let app = spawn App;
+    let _ = app.b.boom();
+    // c is inside its stop hook when a fails.
+    sleep(200ms);
+    let _ = app.a.boom();
+    let _restarted = await_restart app.a;
+    println("restarted");
+    supervisor_stop(app);
+    println("stopped");
+}

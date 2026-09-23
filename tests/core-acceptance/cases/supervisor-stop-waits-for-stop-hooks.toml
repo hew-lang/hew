@@ -1,0 +1,10 @@
+[[case]]
+id = "supervisor-stop-waits-for-stop-hooks"
+intent = "supervisor_stop waits for a suspending stop hook within its quiescence window; a hook that outlasts the window hands the supervisor to runtime cleanup, which reclaims it after the hook."
+source = "cases/supervisor-stop-waits-for-stop-hooks.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "start quick\nstart mid\nstart slow\nstop quick\nstop mid\nstopped waits\nstopped outlasted\nstop slow\n"
+exit = 0

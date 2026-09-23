@@ -1039,10 +1039,20 @@ impl ChannelCore {
     /// Fail closed on an empty-and-faulted read: never a silent EOF.
     /// Named so the panic message identifies the faulted producer actor.
     fn panic_faulted(actor_id: u64) -> ! {
-        panic!(
-            "pipe faulted: producer actor {actor_id} crashed while holding a sink; \
-             no more items will arrive"
+        panic!("{}", Self::faulted_message(Some(actor_id)));
+    }
+
+    fn faulted_message(actor_id: Option<u64>) -> String {
+        let producer = actor_id.map_or_else(
+            || "producer".to_string(),
+            |id| format!("producer actor {id}"),
         );
+        format!("pipe faulted: {producer} crashed while holding a sink; no more items will arrive")
+    }
+
+    /// The diagnostic a checked receive reports once it observes the fault.
+    pub(crate) fn fault_message(&self) -> String {
+        Self::faulted_message(self.locked().fault_actor_id)
     }
 
     /// Pop one parked producer (if any) and re-enqueue its item, returning the

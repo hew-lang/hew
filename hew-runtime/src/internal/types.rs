@@ -70,16 +70,16 @@ pub type HewDispatchFn = unsafe extern "C-unwind" fn(
 /// guarantees the pair is self-consistent, but a hand-built or embedder-issued
 /// system send can under-size it.
 ///
-/// System handlers run to completion — there is no suspend point in a
-/// lifecycle signal — so unlike `HewDispatchFn` there is no continuation
-/// handle to return.
+/// Like [`HewDispatchFn`], it returns null once the signal is handled, or the
+/// continuation of a lifecycle hook that suspended, which the scheduler parks
+/// and resumes exactly as it does a suspended handler.
 pub type HewSysDispatchFn = unsafe extern "C-unwind" fn(
     ctx: *mut HewExecutionContext,
     state: *mut std::ffi::c_void,
     sys_msg: i32,
     data: *mut std::ffi::c_void,
     data_size: usize,
-);
+) -> *mut std::ffi::c_void;
 
 /// Crash handler function signature for supervised actors.
 ///

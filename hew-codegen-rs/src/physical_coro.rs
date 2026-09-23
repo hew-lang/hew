@@ -291,3 +291,129 @@ pub(super) fn lower(module: &Module<'_>, machine: &TargetMachine) -> CodegenResu
         .verify()
         .map_err(|error| CodegenError::LlvmVerify(format!("coroutine lowering: {error}")))
 }
+
+#[cfg(test)]
+mod abi_tests {
+    use super::*;
+    use hew_runtime::cont::CoroFramePrefix;
+    use inkwell::values::{AnyValue, BasicValue, InstructionOpcode};
+    use std::mem::offset_of;
+
+    /// Split one suspending coroutine and return the frame offsets its ramp
+    /// stores the `.resume` and `.destroy` outlines at.
+    fn split_prefix_offsets() -> (u64, u64) {
+        let triple = crate::llvm::native_emission_triple();
+        let machine = crate::llvm::target_machine_for_triple_with_opt_level(
+            &triple,
+            crate::llvm::OptLevel::O0,
+        )
+        .unwrap();
+        let target = machine.get_target_data();
+        let ctx = Context::create();
+        let module = ctx.create_module("frame_prefix");
+        module.set_triple(&machine.get_triple());
+        module.set_data_layout(&target.get_data_layout());
+        let pointer = ctx.ptr_type(AddressSpace::default());
+        let function =
+            module.add_function("probe", pointer.fn_type(&[pointer.into()], false), None);
+        let builder = ctx.create_builder();
+        builder.position_at_end(ctx.append_basic_block(function, "entry"));
+        let state = function.get_first_param().unwrap().into_pointer_value();
+        let frame = begin(&ctx, &module, &builder, function, state).unwrap();
+        let resumed = ctx.append_basic_block(function, "resumed");
+        let destroyed = ctx.append_basic_block(function, "destroyed");
+        frame
+            .suspend(&ctx, &module, &builder, resumed, destroyed, false)
+            .unwrap();
+        builder.position_at_end(resumed);
+        builder.build_unconditional_branch(frame.finish).unwrap();
+        builder.position_at_end(destroyed);
+        builder
+            .build_store(frame.destroying, ctx.bool_type().const_int(1, false))
+            .unwrap();
+        builder.build_unconditional_branch(frame.finish).unwrap();
+        lower(&module, &machine).unwrap();
+
+        let layout = module
+            .get_struct_type("probe.Frame")
+            .expect("CoroSplit names the switched-resume frame");
+        let outline = |suffix: &str| {
+            module
+                .get_function(&format!("probe.{suffix}"))
+                .unwrap()
+                .as_global_value()
+                .as_pointer_value()
+        };
+        let (resume, destroy) = (outline("resume"), outline("destroy"));
+        let mut slots = (None, None);
+        let ramp = module.get_function("probe").unwrap();
+        for block in ramp.get_basic_blocks() {
+            for store in block.get_instructions() {
+                if store.get_opcode() != InstructionOpcode::Store {
+                    continue;
+                }
+                let stored = store.get_operand(0).unwrap().value().unwrap();
+                let address = store.get_operand(1).unwrap().value().unwrap();
+                // Slot zero is the frame base itself; a later slot is a
+                // constant struct GEP whose last index names the field.
+                let offset = match address.as_instruction_value() {
+                    Some(gep) if gep.get_opcode() == InstructionOpcode::GetElementPtr => {
+                        let last = gep.get_num_operands() - 1;
+                        let field = gep
+                            .get_operand(last)
+                            .unwrap()
+                            .value()
+                            .unwrap()
+                            .into_int_value()
+                            .get_zero_extended_constant()
+                            .unwrap();
+                        target
+                            .offset_of_element(&layout, u32::try_from(field).unwrap())
+                            .unwrap()
+                    }
+                    _ => 0,
+                };
+                // A frame that may be elided stores `select(alloc, destroy,
+                // cleanup)`: the heap-frame arm is the destroy outline.
+                let stored = match stored.as_instruction_value() {
+                    Some(select) if select.get_opcode() == InstructionOpcode::Select => {
+                        select.get_operand(1).unwrap().value().unwrap()
+                    }
+                    _ => stored,
+                }
+                .as_any_value_enum();
+                if stored == resume.as_any_value_enum() {
+                    slots.0 = Some(offset);
+                } else if stored == destroy.as_any_value_enum() {
+                    slots.1 = Some(offset);
+                }
+            }
+        }
+        (
+            slots.0.expect("the ramp stores the resume outline"),
+            slots.1.expect("the ramp stores the destroy outline"),
+        )
+    }
+
+    /// The runtime drives continuations through `CoroFramePrefix`, so its
+    /// fields must sit exactly where LLVM's split ramp stores the outlines.
+    #[test]
+    fn split_frame_prefix_matches_the_runtime_continuation_abi() {
+        let runtime = (
+            offset_of!(CoroFramePrefix, resume) as u64,
+            offset_of!(CoroFramePrefix, destroy) as u64,
+        );
+        assert_eq!(split_prefix_offsets(), runtime);
+    }
+
+    /// A prefix that swapped its two slots would read the destroy outline as
+    /// resume; the measured frame tells the two orders apart.
+    #[test]
+    fn a_swapped_frame_prefix_is_caught() {
+        let swapped = (
+            offset_of!(CoroFramePrefix, destroy) as u64,
+            offset_of!(CoroFramePrefix, resume) as u64,
+        );
+        assert_ne!(split_prefix_offsets(), swapped);
+    }
+}

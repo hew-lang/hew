@@ -1752,20 +1752,16 @@ pub unsafe extern "C" fn hew_tcp_connect_timed(addr: *const c_char, deadline_ms:
     })
 }
 
-/// Platform-specific ETIMEDOUT errno value.
-const fn etimedout_errno() -> i32 {
-    #[cfg(target_os = "linux")]
+/// The errno a socket deadline reports: `WSAETIMEDOUT` on Windows, where the
+/// C runtime's `ETIMEDOUT` is not a socket error, and `ETIMEDOUT` elsewhere.
+pub(crate) const fn etimedout_errno() -> i32 {
+    #[cfg(windows)]
     {
-        110
+        10060
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(not(windows))]
     {
-        60
-    }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    {
-        // POSIX-defined ETIMEDOUT on most BSDs is 60. Fall back to 110.
-        60
+        libc::ETIMEDOUT
     }
 }
 

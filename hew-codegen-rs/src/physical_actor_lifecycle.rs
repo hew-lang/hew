@@ -87,7 +87,9 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             .llvm_ctx("guard notification enum tag")?;
         builder.position_at_end(invalid);
         builder
-            .build_return(None)
+            .build_return(Some(
+                &self.ctx.ptr_type(AddressSpace::default()).const_null(),
+            ))
             .llvm_ctx("ignore invalid notification enum")?;
         builder.position_at_end(accepted);
         let object = llvm_type(self.ctx, &layout.object.repr)?.into_struct_type();
@@ -189,7 +191,9 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             .llvm_ctx("decode DOWN target")?;
         builder.position_at_end(invalid);
         builder
-            .build_return(None)
+            .build_return(Some(
+                &self.ctx.ptr_type(AddressSpace::default()).const_null(),
+            ))
             .llvm_ctx("ignore invalid DOWN tag")?;
         builder.position_at_end(local);
         let slot = word(std::mem::offset_of!(HewDownMessage, slot), 64)?;
@@ -413,14 +417,16 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
 
     /// Route runtime EXIT/DOWN signals to the actor's typed lifecycle hook.
     /// The system lane is separate from application dispatch, so these hooks
-    /// cannot be forged by an ordinary actor message.
+    /// cannot be forged by an ordinary actor message. Like application
+    /// dispatch, it returns the parked continuation of a hook that suspended,
+    /// or null once the signal is handled.
     pub(super) fn emit_actor_sys_dispatch(&self, actor: &SemActor) -> CodegenResult<()> {
         let ptr = self.ctx.ptr_type(AddressSpace::default());
         let target = TargetData::create(&self.module.target.data_layout);
         let size_ty = self.ctx.ptr_sized_int_type(&target, None);
         let function = self.llvm.add_function(
             &symbol(actor.id, "sys_dispatch"),
-            self.ctx.void_type().fn_type(
+            ptr.fn_type(
                 &[
                     ptr.into(),
                     ptr.into(),
@@ -467,31 +473,23 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         builder
             .build_unconditional_branch(done)
             .llvm_ctx("ignore unknown lifecycle signal")?;
+        builder.position_at_end(exit);
         if let Some(hook) = actor.exit {
-            builder.position_at_end(exit);
-            self.emit_actor_notification_call(&builder, function, data, data_size, hook, true)?;
-            builder
-                .build_unconditional_branch(done)
-                .llvm_ctx("finish exit hook")?;
+            self.emit_actor_notification(&builder, function, actor, data, data_size, hook, true)?;
         } else {
-            builder.position_at_end(exit);
             self.emit_unhandled_actor_exit(&builder, function, data, data_size, done)?;
         }
+        builder.position_at_end(down);
         if let Some(hook) = actor.down {
-            builder.position_at_end(down);
-            self.emit_actor_notification_call(&builder, function, data, data_size, hook, false)?;
-            builder
-                .build_unconditional_branch(done)
-                .llvm_ctx("finish down hook")?;
+            self.emit_actor_notification(&builder, function, actor, data, data_size, hook, false)?;
         } else {
-            builder.position_at_end(down);
             builder
                 .build_unconditional_branch(done)
                 .llvm_ctx("ignore unhandled down")?;
         }
         builder.position_at_end(done);
         builder
-            .build_return(None)
+            .build_return(Some(&ptr.const_null()))
             .llvm_ctx("return from actor lifecycle signal")?;
         Ok(())
     }
@@ -580,10 +578,14 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         Ok(())
     }
 
-    fn emit_actor_notification_call(
+    /// Validate a runtime notification, then run its hook: synchronously, or
+    /// through a ramp whose continuation the system lane parks when it suspends.
+    #[allow(clippy::too_many_arguments, reason = "one typed lifecycle signal")]
+    fn emit_actor_notification(
         &self,
         builder: &Builder<'ctx>,
         function: FunctionValue<'ctx>,
+        actor: &SemActor,
         data: PointerValue<'ctx>,
         data_size: IntValue<'ctx>,
         hook: hew_mir::physical::CallableId,
@@ -592,10 +594,6 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         let ctx = function.get_nth_param(0).unwrap().into_pointer_value();
         let state = function.get_nth_param(1).unwrap().into_pointer_value();
         let ptr = self.ctx.ptr_type(AddressSpace::default());
-        let callable = callable(self.module, hook)?;
-        let parameter = callable.params.get(1).ok_or_else(|| {
-            CodegenError::FailClosed("lifecycle hook lacks its payload parameter".into())
-        })?;
         let required = if exit {
             std::mem::size_of::<hew_runtime::link::ExitMessage>()
         } else {
@@ -622,10 +620,174 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             .llvm_ctx("guard notification loads")?;
         builder.position_at_end(invalid);
         builder
-            .build_return(None)
+            .build_return(Some(&ptr.const_null()))
             .llvm_ctx("ignore malformed notification")?;
         builder.position_at_end(accepted);
-        let object_ty = llvm_type(self.ctx, &parameter.layout.repr)?.into_struct_type();
+        let payload = self.decode_notification(builder, function, data, hook, exit)?;
+        if callable(self.module, hook)?.is_resumable {
+            let ramp = self.emit_actor_notification_ramp(actor, hook, exit)?;
+            let handle = call_value(builder, ramp, &[state.into(), payload.into()], "hook.frame")?
+                .into_pointer_value();
+            let is_done = coro::external(
+                &self.llvm,
+                "hew_cont_done",
+                self.ctx.bool_type().fn_type(&[ptr.into()], false),
+            )?;
+            let complete =
+                call_value(builder, is_done, &[handle.into()], "hook.done")?.into_int_value();
+            let ready = self.ctx.append_basic_block(function, "hook.ready");
+            let pending = self.ctx.append_basic_block(function, "hook.pending");
+            builder
+                .build_conditional_branch(complete, ready, pending)
+                .llvm_ctx("select lifecycle hook completion")?;
+            builder.position_at_end(pending);
+            builder
+                .build_return(Some(&handle))
+                .llvm_ctx("park suspended lifecycle hook")?;
+            builder.position_at_end(ready);
+            let destroy = external_drop(self.ctx, &self.llvm, "hew_cont_destroy")?;
+            builder
+                .build_call(destroy, &[handle.into()], "")
+                .llvm_ctx("destroy completed lifecycle hook")?;
+            builder
+                .build_return(Some(&ptr.const_null()))
+                .llvm_ctx("finish completed lifecycle hook")?;
+            return Ok(());
+        }
+        let fault = builder
+            .build_alloca(ptr, "hook.fault")
+            .llvm_ctx("allocate lifecycle hook fault")?;
+        builder
+            .build_store(fault, ptr.const_null())
+            .llvm_ctx("initialize lifecycle hook fault")?;
+        let args = self.notification_args(builder, state, payload, hook, fault)?;
+        builder
+            .build_call(self.functions[&hook], &args, "hook.status")
+            .llvm_ctx("invoke lifecycle hook")?;
+        let fault_value = builder
+            .build_load(ptr, fault, "hook.fault.value")
+            .llvm_ctx("read lifecycle hook fault")?;
+        let publish = get_or_declare_external(
+            &self.llvm,
+            "hew_actor_dispatch_set_fault",
+            self.ctx
+                .void_type()
+                .fn_type(&[ptr.into(), ptr.into()], false),
+        )?;
+        builder
+            .build_call(
+                publish,
+                &[ctx.into(), fault_value.into()],
+                "hook.publish_fault",
+            )
+            .llvm_ctx("publish lifecycle hook fault")?;
+        builder
+            .build_return(Some(&ptr.const_null()))
+            .llvm_ctx("finish lifecycle hook")?;
+        Ok(())
+    }
+
+    /// A suspending EXIT/DOWN hook's continuation, shaped like a suspending
+    /// handler's: it copies the decoded notification into its own frame before
+    /// its first suspension, runs the hook and publishes its fault under the
+    /// current activation.
+    fn emit_actor_notification_ramp(
+        &self,
+        actor: &SemActor,
+        hook: hew_mir::physical::CallableId,
+        exit: bool,
+    ) -> CodegenResult<FunctionValue<'ctx>> {
+        let ptr = self.ctx.ptr_type(AddressSpace::default());
+        let ramp = self.llvm.add_function(
+            &symbol(actor.id, if exit { "exit_start" } else { "down_start" }),
+            ptr.fn_type(&[ptr.into(), ptr.into()], false),
+            Some(Linkage::Internal),
+        );
+        let builder = self.ctx.create_builder();
+        builder.position_at_end(self.ctx.append_basic_block(ramp, "entry"));
+        let new_state = coro::external(
+            &self.llvm,
+            "hew_actor_coro_state_new",
+            ptr.fn_type(&[], false),
+        )?;
+        let child = call_value(&builder, new_state, &[], "hook.invocation")?.into_pointer_value();
+        let frame = coro::begin(self.ctx, &self.llvm, &builder, ramp, child)?;
+        let fault = builder
+            .build_alloca(ptr, "hook.fault")
+            .llvm_ctx("allocate persistent lifecycle hook fault")?;
+        builder
+            .build_store(fault, ptr.const_null())
+            .llvm_ctx("initialize lifecycle hook fault")?;
+        let object_ty = self.notification_type(hook)?;
+        let payload = builder
+            .build_alloca(object_ty, "hook.notification")
+            .llvm_ctx("allocate persistent notification")?;
+        let source = builder
+            .build_load(
+                object_ty,
+                ramp.get_nth_param(1).unwrap().into_pointer_value(),
+                "hook.notification.value",
+            )
+            .llvm_ctx("read decoded notification")?;
+        builder
+            .build_store(payload, source)
+            .llvm_ctx("keep the notification across suspension")?;
+        let state = ramp.get_nth_param(0).unwrap().into_pointer_value();
+        let args = self.notification_args(&builder, state, payload, hook, fault)?;
+        suspend::invoke_child(
+            self.ctx,
+            &self.llvm,
+            &builder,
+            ramp,
+            &frame,
+            self.ramps[&hook],
+            &args,
+        )?;
+        let free_state = coro::external(
+            &self.llvm,
+            "hew_coro_state_free",
+            self.ctx.void_type().fn_type(&[ptr.into()], false),
+        )?;
+        builder
+            .build_call(free_state, &[child.into()], "")
+            .llvm_ctx("release completed lifecycle hook invocation state")?;
+        let returned_fault = builder
+            .build_load(ptr, fault, "hook.returned.fault")
+            .llvm_ctx("read completed lifecycle hook fault")?;
+        let publish = coro::external(
+            &self.llvm,
+            "hew_actor_coro_set_fault",
+            self.ctx.void_type().fn_type(&[ptr.into()], false),
+        )?;
+        builder
+            .build_call(publish, &[returned_fault.into()], "")
+            .llvm_ctx("publish lifecycle hook completion under current activation")?;
+        builder
+            .build_unconditional_branch(frame.finish)
+            .llvm_ctx("finish lifecycle hook frame")?;
+        Ok(ramp)
+    }
+
+    fn notification_type(
+        &self,
+        hook: hew_mir::physical::CallableId,
+    ) -> CodegenResult<inkwell::types::StructType<'ctx>> {
+        let parameter = callable(self.module, hook)?.params.get(1).ok_or_else(|| {
+            CodegenError::FailClosed("lifecycle hook lacks its payload parameter".into())
+        })?;
+        Ok(llvm_type(self.ctx, &parameter.layout.repr)?.into_struct_type())
+    }
+
+    /// Decode a validated runtime notification into the hook's typed payload.
+    fn decode_notification(
+        &self,
+        builder: &Builder<'ctx>,
+        function: FunctionValue<'ctx>,
+        data: PointerValue<'ctx>,
+        hook: hew_mir::physical::CallableId,
+        exit: bool,
+    ) -> CodegenResult<PointerValue<'ctx>> {
+        let object_ty = self.notification_type(hook)?;
         let payload = builder
             .build_alloca(object_ty, "note.source")
             .llvm_ctx("allocate source notification")?;
@@ -658,19 +820,24 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         } else {
             self.emit_down_payload(builder, function, data, payload, object_ty)?;
         }
-        let fault = builder
-            .build_alloca(self.ctx.ptr_type(AddressSpace::default()), "hook.fault")
-            .llvm_ctx("allocate lifecycle hook fault")?;
-        builder
-            .build_store(
-                fault,
-                self.ctx.ptr_type(AddressSpace::default()).const_null(),
-            )
-            .llvm_ctx("initialize lifecycle hook fault")?;
-        let mut args: Vec<BasicMetadataValueEnum<'ctx>> = vec![state.into()];
+        Ok(payload)
+    }
+
+    /// The hook's arguments: state, the decoded payload by its carrier, the
+    /// optional output slot and the fault slot.
+    fn notification_args(
+        &self,
+        builder: &Builder<'ctx>,
+        state: PointerValue<'ctx>,
+        payload: PointerValue<'ctx>,
+        hook: hew_mir::physical::CallableId,
+        fault: PointerValue<'ctx>,
+    ) -> CodegenResult<Vec<BasicMetadataValueEnum<'ctx>>> {
+        let callable = callable(self.module, hook)?;
         let parameter = callable.params.get(1).ok_or_else(|| {
             CodegenError::FailClosed("lifecycle hook lacks its payload parameter".into())
         })?;
+        let mut args: Vec<BasicMetadataValueEnum<'ctx>> = vec![state.into()];
         args.push(match parameter.carrier {
             ParamCarrier::Indirect => payload.into(),
             ParamCarrier::Direct => builder
@@ -689,30 +856,6 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             args.push(output.into());
         }
         args.push(fault.into());
-        builder
-            .build_call(self.functions[&hook], &args, "hook.status")
-            .llvm_ctx("invoke lifecycle hook")?;
-        let fault_value = builder
-            .build_load(
-                self.ctx.ptr_type(AddressSpace::default()),
-                fault,
-                "hook.fault.value",
-            )
-            .llvm_ctx("read lifecycle hook fault")?;
-        let publish = get_or_declare_external(
-            &self.llvm,
-            "hew_actor_dispatch_set_fault",
-            self.ctx
-                .void_type()
-                .fn_type(&[ptr.into(), ptr.into()], false),
-        )?;
-        builder
-            .build_call(
-                publish,
-                &[ctx.into(), fault_value.into()],
-                "hook.publish_fault",
-            )
-            .llvm_ctx("publish lifecycle hook fault")?;
-        Ok(())
+        Ok(args)
     }
 }

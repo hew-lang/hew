@@ -322,9 +322,10 @@ language contracts:
 - `close(sup)`, `fork close(sup)` and `closed(sup)` are decided supervisor
   forms, but native supervisor lowering has not adopted them. The current
   internal stop entry point is not the public language spelling (§5.6).
-- Native `select` realizes task, timer and pipe-stream receive sources.
-  Actor-call registration remains pending (§4.11.1). A file or socket
-  stream is not a select source yet (§6.4.5).
+- Native `select` realizes task, timer, actor-call and stream receive
+  sources. A line, chunk or take adapter over a socket stream, and a file
+  stream over a pipe, device or terminal, are not select sources yet
+  (§6.4.5).
 - Generic `frames` / `framed` codec adapters are not lowered; the `Codec`
   trait, `lines()` and the shipped codecs are separate from that gap
   (§6.4.6).
@@ -3576,7 +3577,7 @@ transfers ownership rather than creating another closer. `is` compares handle
 identity, and each method's declared receiver controls borrowing, mutation or
 consumption. The actor ownership rules of §3.9.6 still apply.
 
-`net.Listener.accept()` and `net.Connection.read()` are plain suspending
+`net.Listener.accept()` and `net.Connection.recv()` are plain suspending
 calls (§4.0): they park the calling execution context rather than blocking
 its thread, and they carry no `await`. A deadline on one of them is the
 socket's own read and write timeouts, or a deadline on the enclosing scope;
@@ -4818,6 +4819,9 @@ Then:
 | `rest_for_one`        | The crashed child and all children declared after it are restarted. |
 | `simple_one_for_one`  | A pool-oriented strategy; only the specific crashed `pool` child instance is restarted. Required for supervisors that use `pool` declarations. |
 
+A group restart stops every sibling it restarts and waits for each one's stop
+hooks and cleanup to finish before any replacement starts.
+
 ### 5.4 Restart Budget and Escalation
 
 The supervisor's `intensity: N within <window>` budget caps restarts; exceeding it escalates failure to the parent supervisor. The runtime tracks restarts in a sliding window.
@@ -5232,8 +5236,12 @@ end of data. A `send` never traps for a missing reader; it reports
 #### 6.4.5 Selection
 
 `Stream<T>` is a select source. `item from input.recv() => ...` binds
-`Option<T>` and `None` is a normal winning value (§4.11.1). A file or
-socket stream is not a select source in edition 2026 (§2.1.1).
+`Option<T>` and `None` is a normal winning value (§4.11.1). Observing a
+stream takes nothing: a losing arm leaves every element, and every byte
+of a socket, for the next receive. A regular file stream is ready at
+once, since its next read never waits. A line, chunk or take adapter over
+a socket stream, and a file stream over a pipe, device or terminal, whose
+next read can wait, are not select sources in edition 2026 (§2.1.1).
 
 #### 6.4.6 Codecs
 
@@ -5944,8 +5952,9 @@ unrecovered and the child's role is spent.
 11. A supervisor shutdown deadline belongs to its child specification (§5.1), not an invented hook argument. Current deadline limitations are listed in §2.1.1.
 
 **Compilation:** `#[on(start)]` bodies are appended to the synthesized `_init`
-function after any `init { ... }` block. `#[on(stop)]` lowers to the actor's
-C-ABI `_terminate` function pointer. `#[on(crash)]` lowers to the crash hook
+function after any `init { ... }` block. `#[on(stop)]` hooks lower to one
+resumable stop sequence that terminal cleanup runs on the live state before
+releasing it, so a stop hook may suspend. `#[on(crash)]` lowers to the crash hook
 slot used by supervisor crash routing; its `CrashAction` result selects the
 supervisor's recovery path after the crashing incarnation's cleanup.
 

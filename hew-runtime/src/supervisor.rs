@@ -579,6 +579,119 @@ struct DelayedRestartEvent {
     fault_record: u64,
 }
 
+/// One incarnation a group restart stopped and waits for.
+struct StoppedIncarnation {
+    /// The stopped actor, freed once it finishes; null for a nested
+    /// supervisor, whose own teardown frees it.
+    actor: *mut HewActor,
+    completion: Arc<crate::actor_native::NativeActorCompletion>,
+}
+
+/// A group restart waiting for the incarnations it stopped to finish their
+/// stop hooks and cleanup. The roster holds at most one: a failure while it
+/// waits joins it, so every role in the group restarts exactly once.
+struct PendingGroupRestart {
+    /// Each failure the restart answers, with the crash record it rules on.
+    failures: Vec<(RestartChildRole, FaultRecord)>,
+    stopping: Vec<StoppedIncarnation>,
+    /// Registered with every completion in `stopping`; the registrations are
+    /// weak, so this is what keeps them live.
+    waker: Arc<crate::wake::OwnedWaker>,
+}
+
+impl PendingGroupRestart {
+    fn new(sup: *mut HewSupervisor) -> Self {
+        // SAFETY: the caller keeps `sup` live; the direct id is immutable.
+        let supervisor = unsafe { (*sup).local_pid_id };
+        Self {
+            failures: Vec::new(),
+            stopping: Vec::new(),
+            waker: group_restart_waker(supervisor),
+        }
+    }
+
+    fn finished(&self) -> bool {
+        self.stopping
+            .iter()
+            .all(|stopped| stopped.completion.is_finished())
+    }
+
+    /// Free every stopped actor that has finished and keep only the ones
+    /// still stopping.
+    fn release_finished(&mut self) {
+        self.stopping.retain(|stopped| {
+            if !stopped.completion.is_finished() {
+                return true;
+            }
+            if !stopped.actor.is_null() {
+                // SAFETY: the group owns this detached, terminal incarnation.
+                unsafe { actor::hew_actor_free(stopped.actor) };
+            }
+            false
+        });
+    }
+
+    /// Give up on the restart: every record is unrecovered, and a stopped
+    /// actor that has not finished yet is freed off this thread.
+    fn abandon(mut self) {
+        for (_, record) in self.failures.drain(..) {
+            crate::exit_status::settle_supervised_fault(record, FaultRuling::Unrecovered);
+        }
+        self.release_finished();
+        spawn_deferred_restart_free(
+            self.stopping
+                .drain(..)
+                .filter(|stopped| !stopped.actor.is_null())
+                .map(|stopped| DeferredFree(stopped.actor))
+                .collect(),
+        );
+    }
+}
+
+/// A waker that signals [`HewSysMsg::GroupRestart`] to one supervisor through
+/// its stable handle, so a completion never reaches a closed supervisor.
+fn group_restart_waker(
+    supervisor: crate::lifetime::local_handles::HewLocalPidId,
+) -> Arc<crate::wake::OwnedWaker> {
+    type Target = crate::lifetime::local_handles::HewLocalPidId;
+    unsafe extern "C" fn group_restart_wake(context: *mut c_void) {
+        // SAFETY: every descriptor holder retains this allocation.
+        signal_group_restart(unsafe { *context.cast::<Target>() });
+    }
+    unsafe extern "C" fn group_restart_retain(context: *mut c_void) {
+        // SAFETY: the descriptor contract requires a live Arc reference.
+        unsafe { Arc::increment_strong_count(context.cast::<Target>()) };
+    }
+    unsafe extern "C" fn group_restart_release(context: *mut c_void) {
+        // SAFETY: consumes exactly one reference acquired by retain.
+        unsafe { Arc::decrement_strong_count(context.cast::<Target>()) };
+    }
+    let target = Arc::new(supervisor);
+    let descriptor = crate::wake::HewWaker {
+        context: Arc::as_ptr(&target).cast_mut().cast(),
+        wake: group_restart_wake,
+        retain: group_restart_retain,
+        release: group_restart_release,
+    };
+    // SAFETY: `target` keeps the allocation live during retain.
+    Arc::new(unsafe { crate::wake::OwnedWaker::retain(&descriptor) })
+}
+
+/// Ask a supervisor to look at its pending group restart again.
+fn signal_group_restart(supervisor: crate::lifetime::local_handles::HewLocalPidId) {
+    let Some(pin) = crate::lifetime::local_handles::pin_current_supervisor(supervisor) else {
+        return;
+    };
+    // SAFETY: the pin protects the self actor through mailbox admission.
+    let self_actor = unsafe { (*pin.supervisor()).self_actor };
+    if !self_actor.is_null() {
+        // SAFETY: the pin retains the target; the signal carries no payload.
+        unsafe {
+            actor::send_system_message(self_actor, HewSysMsg::GroupRestart, ptr::null_mut(), 0);
+        }
+    }
+}
+
 /// Overflow policy: drop new messages.
 const OVERFLOW_DROP_NEW: c_int = 1;
 
@@ -827,6 +940,7 @@ struct SupervisorRoster {
     child_supervisor_tokens: Vec<crate::lifetime::local_handles::HewLocalPidId>,
     child_supervisor_specs: Vec<Option<SupervisorChildSpec>>,
     retiring_children: Vec<Arc<crate::actor_native::NativeActorCompletion>>,
+    pending_group_restart: Option<PendingGroupRestart>,
     restart_times: [u64; MAX_RESTARTS_TRACK],
     restart_count: usize,
     restart_head: usize,
@@ -2460,6 +2574,20 @@ fn publish_supervisor_cancellation(sup: *mut HewSupervisor) {
         (*sup).cancelled.store(true, Ordering::Release);
         (*sup).restart_timers.cancel();
     }
+    // A pending group restart will never run. Its stopped incarnations stay
+    // with the roster until teardown frees them; its records settle now.
+    let records = {
+        // SAFETY: callers keep `sup` live; no roster reference is held here.
+        let mut roster = unsafe { &(*sup).roster }.lock_or_recover();
+        roster
+            .pending_group_restart
+            .as_mut()
+            .map(|group| std::mem::take(&mut group.failures))
+            .unwrap_or_default()
+    };
+    for (_, record) in records {
+        crate::exit_status::settle_supervised_fault(record, FaultRuling::Unrecovered);
+    }
     // Every slot now reads Dead. Release the restart barriers so a blocked
     // waiter drops its supervisor pin before teardown drains pins.
     wake_restart_waiters(sup);
@@ -2532,7 +2660,18 @@ fn wait_for_pending_restart_timers(timers: &RestartTimerControl, deadline: Insta
 }
 
 fn wait_for_child_quiescent(child: *mut HewActor, deadline: Instant) -> bool {
-    while !actor_is_supervisor_quiescent(child) {
+    // A native incarnation is done only once its terminal cleanup, stop hooks
+    // included, has finished: a stop hook parked at a suspension point leaves
+    // the actor Suspended, which is not Running yet is not finished either.
+    // SAFETY: callers keep `child` live throughout their wait.
+    let completion = unsafe { (*child).native_completion.clone() };
+    let done = || {
+        completion.as_ref().map_or_else(
+            || actor_is_supervisor_quiescent(child),
+            |completion| completion.is_finished(),
+        )
+    };
+    while !done() {
         if supervisor_quiescence_expired(deadline) {
             return false;
         }
@@ -2755,6 +2894,11 @@ unsafe fn stop_supervisor_owned(
         // SAFETY: the parent stays live until its detached children finish.
         unsafe { return_supervisor_to_runtime_cleanup(sup) };
         return;
+    }
+    // Every incarnation a pending group restart stopped has finished above.
+    let pending = s.roster.lock_or_recover().pending_group_restart.take();
+    if let Some(group) = pending {
+        group.abandon();
     }
 
     if !s.self_actor.is_null() {
@@ -3421,12 +3565,6 @@ unsafe fn restart_child_supervisor_from_spec(
         debug_assert_eq!(s.child_supervisors.len(), s.child_supervisor_specs.len());
     }
 
-    if !old_child.is_null() && old_child != new_child {
-        debug_assert_ne!(old_token, new_token);
-        retain_nested_completion(sup, old_token);
-        stop_local_supervisor(old_token, true);
-    }
-
     new_child
 }
 
@@ -3445,15 +3583,16 @@ impl RestartChildRole {
     }
 }
 
-/// Apply one restart strategy across both child kinds in declaration order.
+/// The roles one restart strategy restarts after `failed`, in declaration
+/// order; empty when `failed` itself is no longer restartable.
 ///
 /// # Safety
-/// `sup` remains live throughout the restart and its callbacks.
-unsafe fn restart_children_for_strategy(
+/// `sup` remains live throughout the roster snapshot.
+unsafe fn restart_roles_for_strategy(
     sup: *mut HewSupervisor,
     strategy: c_int,
     failed: RestartChildRole,
-) -> bool {
+) -> Vec<RestartChildRole> {
     let roles = {
         // SAFETY: the caller keeps the parent alive through the roster snapshot.
         let roster = unsafe { &(*sup).roster }.lock_or_recover();
@@ -3490,63 +3629,217 @@ unsafe fn restart_children_for_strategy(
             })
             .collect::<Vec<_>>()
     };
-    if !roles.contains(&failed) {
-        return false;
+    if roles.contains(&failed) {
+        roles
+    } else {
+        Vec::new()
     }
+}
+
+/// Apply one restart strategy across both child kinds in declaration order:
+/// stop every role the strategy restarts, then restart the group. A stopped
+/// incarnation finishes its stop hooks and cleanup on its own turn, and those
+/// may suspend, so a group with an incarnation still stopping waits in the
+/// roster and resumes through [`HewSysMsg::GroupRestart`]. A failure while a
+/// group waits joins it, and the joined group rules on every record at once.
+///
+/// # Safety
+/// `sup` remains live throughout the restart and its callbacks.
+unsafe fn restart_children_for_strategy(
+    sup: *mut HewSupervisor,
+    strategy: c_int,
+    failed: RestartChildRole,
+    record: FaultRecord,
+) -> FaultRuling {
+    // SAFETY: the caller keeps `sup` live through this snapshot.
+    if unsafe { restart_roles_for_strategy(sup, strategy, failed) }.is_empty() {
+        // SAFETY: no roster reference crosses cancellation/escalation.
+        return unsafe { group_restart_ruling(sup, false, record) };
+    }
+    // SAFETY: the caller keeps `sup` live; the guard ends with this statement.
+    let pending = unsafe { &(*sup).roster }
+        .lock_or_recover()
+        .pending_group_restart
+        .take();
+    let mut group = pending.unwrap_or_else(|| PendingGroupRestart::new(sup));
+    group.failures.push((failed, record));
+    // SAFETY: the caller keeps `sup` live through the stops and spawns.
+    let Some((restarted, mut failures)) = (unsafe { advance_group_restart(sup, strategy, group) })
+    else {
+        return FaultRuling::ArmedForRestart;
+    };
+    // This failure's record is the last; the caller settles it with the ruling.
+    failures.pop();
+    let joined = if restarted {
+        FaultRuling::Handled
+    } else {
+        FaultRuling::Unrecovered
+    };
+    for (_, joined_record) in failures {
+        crate::exit_status::settle_supervised_fault(joined_record, joined);
+    }
+    // SAFETY: no roster reference crosses cancellation/escalation.
+    unsafe { group_restart_ruling(sup, restarted, record) }
+}
+
+/// Stop every occupied role the pending group restarts, then restart the group
+/// once nothing it stopped is still finishing. Returns whether the group came
+/// back together with the failures it answered, or `None` after returning the
+/// group to the roster to wait.
+///
+/// # Safety
+/// `sup` remains live throughout the stops and the spawns.
+unsafe fn advance_group_restart(
+    sup: *mut HewSupervisor,
+    strategy: c_int,
+    mut group: PendingGroupRestart,
+) -> Option<(bool, Vec<(RestartChildRole, FaultRecord)>)> {
+    let mut roles = Vec::new();
+    let mut restartable = true;
+    for &(failed, _) in &group.failures {
+        // SAFETY: the caller keeps `sup` live through each snapshot.
+        let failed_roles = unsafe { restart_roles_for_strategy(sup, strategy, failed) };
+        restartable &= !failed_roles.is_empty();
+        for role in failed_roles {
+            if !roles.contains(&role) {
+                roles.push(role);
+            }
+        }
+    }
+    if !restartable {
+        // A failed role was spent or retired while the group waited.
+        let failures = std::mem::take(&mut group.failures);
+        group.abandon();
+        return Some((false, failures));
+    }
+    roles.sort_unstable_by_key(|role| role.identity());
     let mut deferred = Vec::new();
-    for role in &roles {
-        if *role == failed {
-            continue;
-        }
-        match *role {
-            RestartChildRole::Actor(identity) => {
-                let child = take_child_slot_by_identity(sup, identity);
-                if !child.is_null() {
-                    // SAFETY: the extracted slot owns this retiring incarnation.
-                    if let Some(completion) = unsafe { &(*child).native_completion } {
-                        retain_child_completion(sup, Arc::clone(completion));
-                    }
-                    // SAFETY: the extracted slot transfers its live actor.
-                    unsafe { actor::hew_actor_stop(child) };
-                    deferred.push(DeferredFree(child));
-                }
-            }
-            RestartChildRole::Supervisor { index, identity } => {
-                // The roster's nested pointer is a cached address, not a
-                // lifetime: the stable token is. Copy the pair, release the
-                // parent roster, then shut the child down through its pin.
-                let entry = {
-                    // SAFETY: the caller keeps the parent alive for this lookup.
-                    let roster = unsafe { &(*sup).roster }.lock_or_recover();
-                    roster
-                        .child_supervisor_specs
-                        .get(index)
-                        .and_then(Option::as_ref)
-                        .is_some_and(|spec| spec.identity == identity)
-                        .then(|| {
-                            roster
-                                .child_supervisors
-                                .get(index)
-                                .copied()
-                                .zip(roster.child_supervisor_tokens.get(index).copied())
-                        })
-                        .flatten()
-                };
-                if let Some((child, token)) = entry {
-                    if let Some(pin) = crate::lifetime::local_handles::pin_current_supervisor(token)
-                    {
-                        if pin.supervisor() == child {
-                            request_supervisor_shutdown(child);
-                        }
-                    }
-                }
-            }
-        }
+    for &role in &roles {
+        // SAFETY: the caller keeps `sup` live through each stop.
+        unsafe { stop_group_role(sup, role, &mut group, &mut deferred) };
     }
     spawn_deferred_restart_free(deferred);
+    group.release_finished();
+    if group.stopping.is_empty() {
+        // SAFETY: the caller keeps `sup` live through the spawns.
+        let restarted = unsafe { restart_group(sup, &roles) };
+        return Some((restarted, group.failures));
+    }
+    // Each completion still stopping was registered before its stop, so its
+    // finish signals this supervisor after the group is back in the roster.
+    // SAFETY: the caller keeps `sup` live for this roster update.
+    unsafe { &(*sup).roster }
+        .lock_or_recover()
+        .pending_group_restart = Some(group);
+    None
+}
+
+/// Stop the incarnation occupying one role of a group restart and hand it to
+/// the group, so no replacement starts beside it.
+///
+/// # Safety
+/// `sup` remains live throughout the stop.
+unsafe fn stop_group_role(
+    sup: *mut HewSupervisor,
+    role: RestartChildRole,
+    group: &mut PendingGroupRestart,
+    deferred: &mut Vec<DeferredFree>,
+) {
+    match role {
+        RestartChildRole::Actor(identity) => {
+            let child = take_child_slot_by_identity(sup, identity);
+            if child.is_null() {
+                return;
+            }
+            // SAFETY: the extracted slot transfers this live incarnation here.
+            match unsafe { (*child).native_completion.clone() } {
+                Some(completion) => {
+                    retain_child_completion(sup, Arc::clone(&completion));
+                    completion.wake_on_finish(&group.waker);
+                    group.stopping.push(StoppedIncarnation {
+                        actor: child,
+                        completion,
+                    });
+                }
+                // Nothing reports when this actor finishes; free it off the
+                // supervisor's turn.
+                None => deferred.push(DeferredFree(child)),
+            }
+            // SAFETY: the extracted slot transferred this live incarnation.
+            unsafe { actor::hew_actor_stop(child) };
+        }
+        RestartChildRole::Supervisor { index, identity } => {
+            // The roster's nested pointer is a cached address, not a lifetime:
+            // the stable token is. Detach the pair in one critical section.
+            let entry = {
+                // SAFETY: the caller keeps the parent alive for this update.
+                let mut guard = unsafe { &(*sup).roster }.lock_or_recover();
+                let roster = &mut *guard;
+                let current = roster
+                    .child_supervisor_specs
+                    .get(index)
+                    .and_then(Option::as_ref)
+                    .is_some_and(|spec| spec.identity == identity);
+                match roster.child_supervisors.get(index).copied() {
+                    Some(child) if current && !child.is_null() => {
+                        let token = roster.child_supervisor_tokens[index];
+                        roster.child_supervisors[index] = ptr::null_mut();
+                        roster.child_supervisor_tokens[index] =
+                            crate::lifetime::local_handles::HewLocalPidId::INVALID;
+                        Some((child, token))
+                    }
+                    _ => None,
+                }
+            };
+            let Some((child, token)) = entry else {
+                return;
+            };
+            if let Some(completion) =
+                crate::lifetime::local_handles::current_supervisor_completion(token)
+            {
+                retain_child_completion(sup, Arc::clone(&completion));
+                completion.wake_on_finish(&group.waker);
+                group.stopping.push(StoppedIncarnation {
+                    actor: ptr::null_mut(),
+                    completion,
+                });
+            }
+            stop_detached_nested_supervisor(child, token);
+        }
+    }
+}
+
+/// Stop a nested supervisor that a group restart detached from its parent's
+/// roster. The claim makes it an independent root, so a teardown that has to
+/// hand it back still reaches canonical cleanup; the stop runs off the
+/// parent's turn.
+fn stop_detached_nested_supervisor(
+    child: *mut HewSupervisor,
+    token: crate::lifetime::local_handles::HewLocalPidId,
+) {
+    // Admission closes only once runtime cleanup has joined every worker, so
+    // a supervisor turn that reaches here is always admitted.
+    let Some(teardown) = crate::lifetime::local_handles::begin_current_supervisor_teardown() else {
+        return;
+    };
+    // SAFETY: pointer and token are one entry detached under the roster lock.
+    if unsafe { claim_nested_supervisor_for_detach(child, token) } {
+        // The claim makes this path the unique owner, so the allocation stays
+        // live until the deferred stop reclaims it.
+        request_supervisor_shutdown(child);
+        // SAFETY: the claim above is the unique teardown authority.
+        unsafe { finish_claimed_supervisor(child, false, teardown, true) };
+    }
+}
+
+/// Spawn every role of a group restart; whether all of them came back.
+///
+/// # Safety
+/// `sup` remains live throughout the spawns.
+unsafe fn restart_group(sup: *mut HewSupervisor, roles: &[RestartChildRole]) -> bool {
     let mut complete = true;
     for role in roles {
-        complete &= match role {
+        complete &= match *role {
             RestartChildRole::Actor(identity) => {
                 // SAFETY: the stable identity refuses any concurrent retirement.
                 !unsafe { restart_child_from_spec_expected(sup, 0, Some(identity)) }.is_null()
@@ -3558,6 +3851,23 @@ unsafe fn restart_children_for_strategy(
         };
     }
     complete
+}
+
+/// The ruling a group restart reaches once its spawns ran: a restart that left
+/// the failed role empty stops this supervisor and escalates.
+///
+/// # Safety
+/// `sup` is live; no roster reference is held.
+unsafe fn group_restart_ruling(
+    sup: *mut HewSupervisor,
+    restarted: bool,
+    record: FaultRecord,
+) -> FaultRuling {
+    if !restarted {
+        return stop_and_maybe_escalate(sup, record);
+    }
+    notify_restart(sup);
+    FaultRuling::Handled
 }
 
 /// Restart children after checking the supervisor restart budget, and report
@@ -3641,28 +3951,17 @@ unsafe fn restart_with_budget_and_strategy(
     );
 
     // SAFETY: `failed_index` was resolved under the roster lock above and
-    // `identities` is that same snapshot.
-    let failed_child_restarted = unsafe {
+    // `identities` is that same snapshot. A restart that produced no child
+    // takes the nested supervisor path's route: stop this supervisor and
+    // escalate, so restart waiters never see a failure as a recovery.
+    unsafe {
         restart_children_for_strategy(
             sup,
             strategy,
             RestartChildRole::Actor(identities[failed_index]),
+            record,
         )
-    };
-
-    if !failed_child_restarted {
-        // The restart produced no child. Take the same route the nested
-        // supervisor path takes on its own null restart: stop this supervisor
-        // and escalate if there is a parent, so the failure is not reported to
-        // restart waiters as a successful recovery.
-        // SAFETY: caller keeps `sup` live; no roster reference is held here.
-        return stop_and_maybe_escalate(sup, record);
     }
-
-    // SAFETY: caller keeps `sup` live and notification state is independent of
-    // the roster references, all of which were dropped above.
-    notify_restart(sup);
-    FaultRuling::Handled
 }
 
 /// Restart an exhausted child supervisor subtree after checking the parent's
@@ -3762,16 +4061,9 @@ unsafe fn restart_child_supervisor_with_budget(
             identity: spec.identity,
         }
     };
-    // SAFETY: the parent dispatch retains the live supervisor across this strategy.
-    if !unsafe { restart_children_for_strategy(sup, strategy, failed) } {
-        // SAFETY: restart returned without leaving a nested-roster borrow.
-        return stop_and_maybe_escalate(sup, record);
-    }
-
-    // SAFETY: caller keeps `sup` live for notification.
-    notify_restart(sup);
-    // The subtree is alive again: the escalated record is recovered here.
-    FaultRuling::Handled
+    // SAFETY: the parent dispatch retains the live supervisor across this
+    // strategy. A restored subtree recovers the escalated record here.
+    unsafe { restart_children_for_strategy(sup, strategy, failed, record) }
 }
 
 /// Invoke a child's `#[on(crash)]` handler (if installed) and return its
@@ -4096,9 +4388,11 @@ unsafe extern "C-unwind" fn supervisor_sys_dispatch(
     sys_msg: i32,
     data: *mut c_void,
     data_size: usize,
-) {
+) -> *mut c_void {
     // SAFETY: forwards the caller's invariants unchanged to the impl.
     unsafe { supervisor_sys_dispatch_impl(ctx, state, sys_msg, data, data_size) };
+    // Supervision events run to completion.
+    ptr::null_mut()
 }
 
 /// Handle one `ChildStopped` / `ChildCrashed` system event.
@@ -4185,6 +4479,53 @@ unsafe fn dispatch_child_lifecycle_event(
             native_action,
         );
     };
+}
+
+/// Resume the pending group restart once every incarnation it stopped has
+/// finished, and rule on every record it answers.
+///
+/// # Safety
+///
+/// `sup` must be the live supervisor backing this dispatch.
+unsafe fn dispatch_group_restart(sup: *mut HewSupervisor) {
+    let group = {
+        // SAFETY: the dispatch keeps `sup` live; the guard ends in this block.
+        let mut roster = unsafe { &(*sup).roster }.lock_or_recover();
+        if !roster
+            .pending_group_restart
+            .as_ref()
+            .is_some_and(PendingGroupRestart::finished)
+        {
+            return;
+        }
+        roster.pending_group_restart.take()
+    };
+    let Some(group) = group else {
+        return;
+    };
+    crate::tracing::ensure_supervisor_trace_root();
+    // SAFETY: the dispatch keeps `sup` live through the stops and spawns; the
+    // strategy is immutable after construction.
+    let Some((restarted, failures)) =
+        (unsafe { advance_group_restart(sup, (*sup).strategy, group) })
+    else {
+        return;
+    };
+    let mut failures = failures.into_iter();
+    if let Some((_, record)) = failures.next() {
+        // SAFETY: no roster reference crosses cancellation/escalation.
+        let ruling = unsafe { group_restart_ruling(sup, restarted, record) };
+        crate::exit_status::settle_supervised_fault(record, ruling);
+    }
+    let joined = if restarted {
+        FaultRuling::Handled
+    } else {
+        FaultRuling::Unrecovered
+    };
+    for (_, record) in failures {
+        crate::exit_status::settle_supervised_fault(record, joined);
+    }
+    wake_restart_waiters(sup);
 }
 
 /// Retire only the incarnation named by a normal-stop notification.
@@ -4391,6 +4732,10 @@ unsafe fn supervisor_sys_dispatch_impl(
             crate::exit_status::settle_supervised_fault(record, ruling);
             wake_restart_waiters(sup);
         }
+        HewSysMsg::GroupRestart => {
+            // SAFETY: forwards this dispatch's live supervisor.
+            unsafe { dispatch_group_restart(sup) };
+        }
         // A supervisor's own actor is never linked or monitored by the runtime.
         HewSysMsg::Exit | HewSysMsg::Down => {}
     }
@@ -4433,6 +4778,7 @@ pub unsafe extern "C" fn hew_supervisor_new(
             child_supervisor_tokens: Vec::new(),
             child_supervisor_specs: Vec::new(),
             retiring_children: Vec::new(),
+            pending_group_restart: None,
             restart_times: [0u64; MAX_RESTARTS_TRACK],
             restart_count: 0,
             restart_head: 0,
@@ -4870,6 +5216,17 @@ unsafe fn stop_supervisor_with_teardown_authority(
         return;
     }
     if !preclaimed && !claim_supervisor_teardown(sup) {
+        // Another owner holds teardown. One that handed the allocation back
+        // to canonical cleanup keeps its claim, and the caller may have taken
+        // it from the root set to get here: restore the root, or nothing
+        // reclaims it and the final actor sweep frees the self actor's
+        // borrowed state as its own.
+        // SAFETY: the caller guarantees a live allocation.
+        if unsafe { (*sup).parent.is_null() } {
+            // SAFETY: the claimed allocation stays live until canonical
+            // cleanup consumes the restored root.
+            unsafe { crate::shutdown::hew_shutdown_register_supervisor(sup) };
+        }
         return;
     }
     // SAFETY: teardown ownership was claimed above and remains unique.
@@ -6210,6 +6567,35 @@ mod tests {
         assert!(unsafe { teardown_is_claimed(sup) });
         drop(teardown);
         crate::scheduler::hew_runtime_cleanup();
+    }
+
+    #[test]
+    fn refused_stop_keeps_a_handed_back_root_for_cleanup() {
+        let _rt = crate::runtime_test_guard();
+        // SAFETY: this test owns the fresh top-level supervisor.
+        let sup = unsafe { hew_supervisor_new(STRATEGY_ONE_FOR_ONE, 1, 1) };
+        assert!(!sup.is_null());
+        // A teardown owner that ran out of time hands the allocation back to
+        // canonical cleanup as a root and keeps its claim.
+        assert!(claim_supervisor_teardown(sup));
+        // SAFETY: the claimed allocation stays live through this handback.
+        unsafe { crate::shutdown::hew_shutdown_register_supervisor(sup) };
+        // Shutdown takes each root before stopping it; the claim refuses.
+        // SAFETY: as above.
+        unsafe {
+            crate::shutdown::hew_shutdown_unregister_supervisor(sup);
+            hew_supervisor_stop(sup);
+        }
+        assert!(
+            crate::shutdown::is_supervisor_registered_for_test(sup),
+            "a refused stop must leave the handed-back root to canonical cleanup"
+        );
+        // Cleanup asserts that no supervisor control survives it.
+        crate::scheduler::hew_runtime_cleanup();
+        assert!(
+            crate::runtime::default_runtime_ptr(Ordering::Acquire).is_null(),
+            "cleanup must reclaim the handed-back supervisor and the runtime"
+        );
     }
 
     #[test]
@@ -12161,13 +12547,18 @@ pub unsafe extern "C" fn hew_supervisor_pool_len(sup: *mut HewSupervisor, pool_k
 // `start`. Lookup slots are indexed within each child kind; restart identities
 // preserve declaration order across both kinds.
 
+/// [`HewNativeChildSpec::role_kind`] for a declared actor child.
+pub const ROLE_KIND_ACTOR: c_int = 0;
+/// [`HewNativeChildSpec::role_kind`] for a declared supervisor child.
+pub const ROLE_KIND_SUPERVISOR: c_int = 1;
+
 /// One declared child in construction order.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct HewNativeChildSpec {
     /// [`RESTART_PERMANENT`], [`RESTART_TRANSIENT`] or [`RESTART_TEMPORARY`].
     pub restart_policy: c_int,
-    /// `0` actor, `1` supervisor.
+    /// [`ROLE_KIND_ACTOR`] or [`ROLE_KIND_SUPERVISOR`].
     pub role_kind: c_int,
     /// The adapter that produces one incarnation from the config.
     pub spawn: HewNativeChildSpawnFn,
@@ -12181,7 +12572,7 @@ fn register_native_child(s: &mut SupervisorRoster, child: &HewNativeChildSpec) -
     // throughout registration; this helper invokes no callbacks or waits.
     let invalid = crate::lifetime::local_handles::HewLocalPidId::INVALID;
     let next_identity = s.next_child_spec_identity.checked_add(1)?;
-    let index = if child.role_kind == 1 {
+    let index = if child.role_kind == ROLE_KIND_SUPERVISOR {
         let index = s.child_supervisors.len();
         s.child_supervisors.push(ptr::null_mut());
         s.child_supervisor_tokens.push(invalid);
@@ -12283,7 +12674,7 @@ pub unsafe extern "C" fn hew_supervisor_native_spawn(
         // this caller instead of the restart path's discard.
         // SAFETY: the caller supplies a writable, initially null fault slot.
         let token = unsafe { (child.spawn)(config.cast_const(), fault) };
-        if child.role_kind == 1 {
+        if child.role_kind == ROLE_KIND_SUPERVISOR {
             if let Some(pin) = crate::lifetime::local_handles::pin_current_supervisor(token) {
                 let nested = pin.supervisor();
                 // SAFETY: the adapter transferred this fresh subtree and the pin
@@ -12387,7 +12778,13 @@ pub extern "C" fn hew_supervisor_native_await_restart(
         return;
     };
     // SAFETY: the pin keeps the allocation live for the blocking wait.
-    unsafe { supervisor_restart_await_blocking(pin.supervisor(), slot, role_kind == 1) };
+    unsafe {
+        supervisor_restart_await_blocking(
+            pin.supervisor(),
+            slot,
+            role_kind == ROLE_KIND_SUPERVISOR,
+        );
+    }
 }
 
 /// Retain a stable nested owner path for another declared child projection.

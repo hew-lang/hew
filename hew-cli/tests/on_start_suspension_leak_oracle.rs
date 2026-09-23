@@ -136,3 +136,99 @@ fn suspending_on_start_no_per_actor_coro_frame_leak() {
         bin_high.display()
     );
 }
+
+/// `count` actors whose `#[on(stop)]` hook suspends once before reading state,
+/// each closed in turn. Terminal cleanup drives each hook's continuation, so
+/// every frame must be destroyed once per actor.
+fn suspending_on_stop_source(count: usize) -> String {
+    use std::fmt::Write as _;
+    let actors = (0..count).fold(String::new(), |mut acc, i| {
+        let _ = writeln!(acc, "    let a{i} = spawn Slow;");
+        let _ = writeln!(acc, "    close(a{i});");
+        acc
+    });
+    format!(
+        "actor Slow {{\n\
+         \x20   var value: i64 = 1,\n\
+         \x20   #[on(stop)] fn stopping() {{\n\
+         \x20       sleep(1ms);\n\
+         \x20       println(f\"stopped {{value}}\");\n\
+         \x20   }}\n\
+         \x20   receive fn get() -> i64 {{ value }}\n\
+         }}\n\
+         \n\
+         fn main() {{\n\
+         {actors}\
+         }}\n"
+    )
+}
+
+/// `count` watchers each monitoring its own target. Closing a target delivers a
+/// DOWN whose hook suspends once; the watcher's continuation must be destroyed
+/// once per notification.
+fn suspending_on_down_source(count: usize) -> String {
+    use std::fmt::Write as _;
+    let pairs = (0..count).fold(String::new(), |mut acc, i| {
+        let _ = writeln!(acc, "    let t{i} = spawn Target;");
+        let _ = writeln!(acc, "    let w{i} = spawn Watcher;");
+        let _ = writeln!(acc, "    let m{i} = w{i}.watch(t{i}).expect(\"watch\");");
+        let _ = writeln!(acc, "    close(t{i});");
+        let _ = writeln!(
+            acc,
+            "    while w{i}.seen().expect(\"seen\") == 0 {{ sleep(1ms); }}"
+        );
+        let _ = writeln!(acc, "    m{i}.close();");
+        let _ = writeln!(acc, "    close(w{i});");
+        acc
+    });
+    format!(
+        "import std.link_monitor;\n\
+         \n\
+         actor Target {{ receive fn ping() -> i64 {{ 1 }} }}\n\
+         \n\
+         actor Watcher {{\n\
+         \x20   var downs: i64 = 0,\n\
+         \x20   receive fn watch(target: Target) -> link_monitor.MonitorRef {{\n\
+         \x20       monitor(target).expect(\"monitor\")\n\
+         \x20   }}\n\
+         \x20   receive fn seen() -> i64 {{ downs }}\n\
+         \x20   #[on(down)] fn down(_note: link_monitor.DownNotification) {{\n\
+         \x20       sleep(1ms);\n\
+         \x20       downs = downs + 1;\n\
+         \x20       println(\"down\");\n\
+         \x20   }}\n\
+         }}\n\
+         \n\
+         fn main() {{\n\
+         {pairs}\
+         }}\n"
+    )
+}
+
+/// A suspending stop hook's continuation is reclaimed once per actor.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
+#[test]
+fn suspending_on_stop_no_per_actor_coro_frame_leak() {
+    support::leak_slope::assert_frame_slope_below_tolerance_exact_lines(
+        "on_stop_suspension",
+        suspending_on_stop_source,
+        |count| count,
+    );
+}
+
+/// A suspending DOWN hook's continuation is reclaimed once per notification.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
+#[test]
+fn suspending_on_down_no_per_actor_coro_frame_leak() {
+    support::leak_slope::assert_frame_slope_below_tolerance_exact_lines(
+        "on_down_suspension",
+        suspending_on_down_source,
+        |count| count,
+    );
+}

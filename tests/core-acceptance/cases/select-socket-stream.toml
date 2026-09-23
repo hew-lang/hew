@@ -1,0 +1,10 @@
+[[case]]
+id = "select-socket-stream"
+intent = "A socket stream is a select source: an idle connection loses to a timer and to an actor call without losing a byte, a readable one wins with the bytes sent and a closed peer wins with the end of the stream."
+source = "cases/select-socket-stream.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "timer beat an idle socket\nactor call beat an idle socket: 42\nreadable socket won: 5 bytes\ntimer beat an idle socket again\nnext receive: 6 bytes\nclosed peer won: end of stream\n"
+exit = 0

@@ -6,6 +6,7 @@ use hew_mir::physical::{
     ActorId, ActorIngressAdapter, ActorOperation, SemActor, SemActorField, SemActorHandler,
     SemCoalesceFallback, SemCoalesceKeyKind, SemFailureDisplay,
 };
+use hew_runtime::actor_native::HewSubmitStatus;
 use inkwell::types::StructType;
 
 /// One pre-publication body's failure exit inside `emit_actor_spawn`.
@@ -404,6 +405,19 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
     }
 }
 
+/// One runtime submission status as the i32 generated code compares against.
+pub(super) fn submit_status(
+    ctx: &Context,
+    status: hew_runtime::actor_native::HewSubmitStatus,
+) -> IntValue<'_> {
+    ctx.i32_type().const_int(status as i32 as u64, true)
+}
+
+/// `HewNativePeriodicHandler`: the handler's message id and its interval.
+fn periodic_handler_type(ctx: &Context) -> StructType<'_> {
+    ctx.struct_type(&[ctx.i32_type().into(), ctx.i64_type().into()], false)
+}
+
 fn message_type<'ctx>(
     module: &PhysicalModule,
     ctx: &'ctx Context,
@@ -657,81 +671,75 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             }
             self.emit_actor_sys_dispatch(actor)?;
             if !actor.stop.is_empty() {
-                self.emit_actor_terminate(actor)?;
+                self.emit_actor_stop_release(actor)?;
             }
         }
         self.emit_supervisor_descriptors()
     }
 
-    /// `#[on(stop)]` hooks run in lexical order at the terminal transition
-    /// with the state still initialized. The first fault ends the sequence
-    /// and becomes the actor's retained lifecycle diagnostic.
-    fn emit_actor_terminate(&self, actor: &SemActor) -> CodegenResult<()> {
-        let ptr = self.ctx.ptr_type(AddressSpace::default());
-        let terminate = self.llvm.add_function(
-            &symbol(actor.id, "terminate"),
-            self.ctx.void_type().fn_type(&[ptr.into()], false),
-            Some(Linkage::Internal),
-        );
-        let builder = self.ctx.create_builder();
-        builder.position_at_end(self.ctx.append_basic_block(terminate, "entry"));
-        let state = terminate.get_first_param().unwrap().into_pointer_value();
-        let fault = builder
-            .build_alloca(ptr, "hook.fault")
-            .llvm_ctx("allocate stop hook fault")?;
-        builder
-            .build_store(fault, ptr.const_null())
-            .llvm_ctx("initialize stop hook fault")?;
-        let failed = self.ctx.append_basic_block(terminate, "hook.failed");
-        let done = self.ctx.append_basic_block(terminate, "done");
-        for hook in &actor.stop {
-            let status = builder
-                .build_call(
-                    self.functions[hook],
-                    &[state.into(), fault.into()],
-                    "hook.status",
-                )
-                .llvm_ctx("run stop hook")?
-                .try_as_basic_value()
-                .basic()
-                .unwrap()
-                .into_int_value();
-            let next = self.ctx.append_basic_block(terminate, "hook.next");
-            let ok = builder
-                .build_int_compare(
-                    IntPredicate::EQ,
-                    status,
-                    self.ctx.i32_type().const_zero(),
-                    "hook.ok",
-                )
-                .llvm_ctx("check stop hook outcome")?;
-            builder
-                .build_conditional_branch(ok, next, failed)
-                .llvm_ctx("continue stop hook sequence")?;
-            builder.position_at_end(next);
-        }
-        builder
-            .build_unconditional_branch(done)
-            .llvm_ctx("finish stop hooks")?;
-        builder.position_at_end(failed);
-        let returned = builder
-            .build_load(ptr, fault, "hook.returned.fault")
-            .llvm_ctx("load stop hook fault")?;
-        let publish = get_or_declare_external(
+    /// `#[on(stop)]` hooks run in lexical order on the live state after a
+    /// cooperative stop, as a resumable release continuation terminal cleanup
+    /// drives before the state release, so a hook may suspend. The first fault
+    /// ends the sequence and becomes the actor's retained lifecycle diagnostic.
+    fn emit_actor_stop_release(&self, actor: &SemActor) -> CodegenResult<()> {
+        release::custom(
+            self.ctx,
             &self.llvm,
-            "hew_actor_terminate_set_fault",
-            self.ctx.void_type().fn_type(&[ptr.into()], false),
+            self.module,
+            &symbol(actor.id, "stop_release"),
+            |values, frame, state| {
+                let builder = values.builder;
+                let (fault, status) = values.fault_sink.ok_or_else(|| {
+                    CodegenError::FailClosed("stop sequence lacks its fault slot".into())
+                })?;
+                let done = self.ctx.append_basic_block(values.value, "stop.done");
+                for hook in &actor.stop {
+                    // The release entry cleared the fault slot, and a fault
+                    // ends the sequence, so every hook starts with it empty.
+                    let args = [state.into(), fault.into()];
+                    let hook_status = if callable(self.module, *hook)?.is_resumable {
+                        suspend::invoke_child(
+                            self.ctx,
+                            &self.llvm,
+                            builder,
+                            values.value,
+                            frame,
+                            self.ramps[hook],
+                            &args,
+                        )?
+                    } else {
+                        call_value(builder, self.functions[hook], &args, "stop.hook.status")?
+                            .into_int_value()
+                    };
+                    let next = self.ctx.append_basic_block(values.value, "stop.next");
+                    let failed = self.ctx.append_basic_block(values.value, "stop.failed");
+                    let ok = builder
+                        .build_int_compare(
+                            IntPredicate::EQ,
+                            hook_status,
+                            self.ctx.i32_type().const_zero(),
+                            "stop.hook.ok",
+                        )
+                        .llvm_ctx("check stop hook outcome")?;
+                    builder
+                        .build_conditional_branch(ok, next, failed)
+                        .llvm_ctx("continue stop hook sequence")?;
+                    builder.position_at_end(failed);
+                    builder
+                        .build_store(status, hook_status)
+                        .llvm_ctx("retain stop hook failure")?;
+                    builder
+                        .build_unconditional_branch(done)
+                        .llvm_ctx("end stop hooks at the first fault")?;
+                    builder.position_at_end(next);
+                }
+                builder
+                    .build_unconditional_branch(done)
+                    .llvm_ctx("finish stop hooks")?;
+                builder.position_at_end(done);
+                Ok(())
+            },
         )?;
-        builder
-            .build_call(publish, &[returned.into()], "")
-            .llvm_ctx("retain stop hook fault")?;
-        builder
-            .build_unconditional_branch(done)
-            .llvm_ctx("finish faulted stop hooks")?;
-        builder.position_at_end(done);
-        builder
-            .build_return(None)
-            .llvm_ctx("finish actor terminate")?;
         Ok(())
     }
 
@@ -2149,10 +2157,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         };
         let target = TargetData::create(&self.module.target.data_layout);
         let size_ty = self.ctx.ptr_sized_int_type(&target, None);
-        let periodic_ty = self.ctx.struct_type(
-            &[self.ctx.i32_type().into(), self.ctx.i64_type().into()],
-            false,
-        );
+        let periodic_ty = periodic_handler_type(self.ctx);
         let periodic: Vec<_> = actor
             .handlers
             .iter()
@@ -2222,29 +2227,31 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 .map(|function| function.as_global_value().as_pointer_value())
                 .ok_or_else(|| CodegenError::FailClosed("missing actor callback".into()))
         };
-        let terminate = if actor.stop.is_empty() {
+        let stop_release = if actor.stop.is_empty() {
             ptr.const_null()
         } else {
-            callback("terminate")?
+            callback("stop_release")?
         };
+        use hew_runtime::internal::types::HewOverflowPolicy as Policy;
         let overflow = match actor.overflow {
-            hew_mir::physical::SemActorOverflow::Block => 0,
-            hew_mir::physical::SemActorOverflow::DropNew => 1,
-            hew_mir::physical::SemActorOverflow::DropOld => 2,
-            hew_mir::physical::SemActorOverflow::Fail => 3,
-            hew_mir::physical::SemActorOverflow::Coalesce => 4,
-        };
+            hew_mir::physical::SemActorOverflow::Block => Policy::Block,
+            hew_mir::physical::SemActorOverflow::DropNew => Policy::DropNew,
+            hew_mir::physical::SemActorOverflow::DropOld => Policy::DropOld,
+            hew_mir::physical::SemActorOverflow::Fail => Policy::Fail,
+            hew_mir::physical::SemActorOverflow::Coalesce => Policy::Coalesce,
+        } as u64;
         let (coalesce_key, coalesce_fallback) = match &actor.coalesce {
-            None => (ptr.const_null(), 1),
+            None => (ptr.const_null(), Policy::DropNew),
             Some(coalesce) => (
                 callback("coalesce_key")?,
                 match coalesce.fallback {
-                    SemCoalesceFallback::DropNew => 1,
-                    SemCoalesceFallback::DropOld => 2,
-                    SemCoalesceFallback::Fail => 3,
+                    SemCoalesceFallback::DropNew => Policy::DropNew,
+                    SemCoalesceFallback::DropOld => Policy::DropOld,
+                    SemCoalesceFallback::Fail => Policy::Fail,
                 },
             ),
         };
+        let coalesce_fallback = coalesce_fallback as u64;
         let state_release = match self.module.actor_recipes[&actor.state_ty].destroy {
             Some(action)
                 if self.module.releases.suspends(action)
@@ -2271,7 +2278,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     callback("dispatch")?.into(),
                     callback("state_drop")?.into(),
                     callback("state_clone")?.into(),
-                    terminate.into(),
+                    stop_release.into(),
                     self.ctx
                         .i32_type()
                         .const_int(u64::from(actor.mailbox_capacity.unwrap_or(0)), false)
@@ -2729,7 +2736,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     .i32_type()
                     .const_int(
                         if policy == SendPolicy::DropNewest {
-                            2
+                            hew_runtime::actor_native::SUBMIT_DROP_NEWEST as u64
                         } else {
                             0
                         },
@@ -2761,7 +2768,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .build_phi(self.ctx.i32_type(), "submission.outcome")
             .llvm_ctx("join submission status")?;
         outcome.add_incoming(&[
-            (&self.ctx.i32_type().const_int(3, false), oom),
+            (&submit_status(self.ctx, HewSubmitStatus::Oom), oom),
             (&status, admission_block),
         ]);
         if let Some((status, block)) = vacant {
@@ -2806,7 +2813,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .build_int_compare(
                 IntPredicate::EQ,
                 status,
-                self.ctx.i32_type().const_zero(),
+                submit_status(self.ctx, HewSubmitStatus::Accepted),
                 "submission.accepted",
             )
             .llvm_ctx("test acceptance")?;
@@ -2815,7 +2822,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .build_int_compare(
                 IntPredicate::EQ,
                 status,
-                self.ctx.i32_type().const_int(4, false),
+                submit_status(self.ctx, HewSubmitStatus::Discarded),
                 "submission.discarded",
             )
             .llvm_ctx("test explicit discard")?;
@@ -2854,7 +2861,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .build_int_compare(
                 IntPredicate::EQ,
                 status,
-                self.ctx.i32_type().const_int(2, false),
+                submit_status(self.ctx, HewSubmitStatus::Closed),
                 "submission.closed",
             )
             .llvm_ctx("classify closed destination")?;
@@ -2863,7 +2870,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .build_int_compare(
                 IntPredicate::EQ,
                 status,
-                self.ctx.i32_type().const_int(1, false),
+                submit_status(self.ctx, HewSubmitStatus::Full),
                 "submission.full",
             )
             .llvm_ctx("classify full mailbox")?;
@@ -2973,5 +2980,105 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .llvm_ctx("construct delivery status")?
             .into_struct_value()
             .into())
+    }
+}
+
+/// Where a codegen mirror of a runtime `#[repr(C)]` struct disagrees with the
+/// struct itself on the host target: each field's `(offset, size)` in
+/// declaration order, then the whole struct's size and alignment.
+#[cfg(test)]
+pub(super) fn c_mirror_mismatch(
+    mirror: StructType<'_>,
+    fields: &[(usize, usize)],
+    size: usize,
+    align: usize,
+) -> Option<String> {
+    let triple = crate::llvm::native_emission_triple();
+    let physical = physical_target_for_triple(&triple).unwrap();
+    let target = TargetData::create(&physical.data_layout);
+    if mirror.count_fields() as usize != fields.len() {
+        return Some(format!(
+            "{} mirror fields for {} runtime fields",
+            mirror.count_fields(),
+            fields.len()
+        ));
+    }
+    for (index, (offset, field_size)) in fields.iter().enumerate() {
+        let index = u32::try_from(index).unwrap();
+        let actual = (
+            target.offset_of_element(&mirror, index),
+            mirror
+                .get_field_type_at_index(index)
+                .map(|field| target.get_abi_size(&field)),
+        );
+        if actual != (Some(*offset as u64), Some(*field_size as u64)) {
+            return Some(format!(
+                "field {index}: mirror (offset, size) {actual:?}, runtime ({offset}, {field_size})"
+            ));
+        }
+    }
+    let (actual_size, actual_align) = (
+        target.get_abi_size(&mirror),
+        target.get_abi_alignment(&mirror),
+    );
+    if actual_size != size as u64 || actual_align as usize != align {
+        return Some(format!(
+            "mirror size/align {actual_size}/{actual_align}, runtime {size}/{align}"
+        ));
+    }
+    None
+}
+
+/// The size of the field `project` names, for [`c_mirror_mismatch`].
+#[cfg(test)]
+pub(super) const fn field_size<T, F>(_project: fn(&T) -> &F) -> usize {
+    std::mem::size_of::<F>()
+}
+
+#[cfg(test)]
+mod abi_tests {
+    use super::*;
+    use hew_runtime::actor::HewNativePeriodicHandler;
+    use std::mem::{align_of, offset_of, size_of};
+
+    fn fields() -> [(usize, usize); 2] {
+        [
+            (
+                offset_of!(HewNativePeriodicHandler, message),
+                field_size(|handler: &HewNativePeriodicHandler| &handler.message),
+            ),
+            (
+                offset_of!(HewNativePeriodicHandler, interval_ms),
+                field_size(|handler: &HewNativePeriodicHandler| &handler.interval_ms),
+            ),
+        ]
+    }
+
+    #[test]
+    fn periodic_handler_matches_the_runtime_c_abi() {
+        let ctx = Context::create();
+        assert_eq!(
+            c_mirror_mismatch(
+                periodic_handler_type(&ctx),
+                &fields(),
+                size_of::<HewNativePeriodicHandler>(),
+                align_of::<HewNativePeriodicHandler>(),
+            ),
+            None
+        );
+    }
+
+    /// The guard sees a reordered mirror: the interval ahead of the message id.
+    #[test]
+    fn a_reordered_periodic_handler_mirror_is_caught() {
+        let ctx = Context::create();
+        let reordered = ctx.struct_type(&[ctx.i64_type().into(), ctx.i32_type().into()], false);
+        assert!(c_mirror_mismatch(
+            reordered,
+            &fields(),
+            size_of::<HewNativePeriodicHandler>(),
+            align_of::<HewNativePeriodicHandler>(),
+        )
+        .is_some());
     }
 }

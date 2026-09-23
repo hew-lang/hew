@@ -66,6 +66,14 @@ impl NativeActorCompletion {
         super::report_checked_failure(retained.as_ref().expect("retained terminal fault"))
     }
 
+    /// Wake `waker` when this incarnation's terminal cleanup finishes. The
+    /// registration is weak, and one made after the finish never fires, so the
+    /// caller keeps the waker and checks [`Self::is_finished`] afterwards.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn wake_on_finish(&self, waker: &Arc<OwnedWaker>) {
+        self.ready.register(waker);
+    }
+
     /// Publish after the unique terminal owner has released all target state.
     pub(crate) fn finish(&self, code: i32) {
         self.code.store(code, Ordering::Relaxed);

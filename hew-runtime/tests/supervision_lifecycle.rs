@@ -246,8 +246,9 @@ unsafe extern "C-unwind" fn monitor_sys_dispatch(
     sys_msg: i32,
     data: *mut c_void,
     data_size: usize,
-) {
+) -> *mut c_void {
     MONITOR_DISPATCH_SIGNAL.record_dispatch(sys_msg, data, data_size);
+    std::ptr::null_mut()
 }
 
 unsafe extern "C-unwind" fn noop_dispatch(
@@ -657,11 +658,12 @@ fn link_delivers_exit_on_crash() {
         sys_msg: i32,
         _data: *mut c_void,
         _data_size: usize,
-    ) {
+    ) -> *mut c_void {
         if sys_msg == HewSysMsg::Exit.as_i32() {
             LINK_EXIT_RECEIVED.fetch_add(1, Ordering::SeqCst);
             LINK_EXIT_SIGNAL.record_dispatch();
         }
+        std::ptr::null_mut()
     }
 
     let _guard = TEST_LOCK
@@ -748,10 +750,11 @@ fn linked_actor_receives_exit_before_supervisor_restarts() {
         sys_msg: i32,
         _data: *mut c_void,
         _data_size: usize,
-    ) {
+    ) -> *mut c_void {
         if sys_msg == HewSysMsg::Exit.as_i32() {
             LINK_EXIT_RECEIVED.fetch_add(1, Ordering::SeqCst);
         }
+        std::ptr::null_mut()
     }
 
     let _guard = TEST_LOCK

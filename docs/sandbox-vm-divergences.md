@@ -37,7 +37,7 @@ developers; `capability` retains the operation identity for tooling.
 | Category | Meaning | Examples |
 | --- | --- | --- |
 | `native_only` | The operation requires a host capability. | Filesystem access, network sockets, remote actor calls. |
-| `not_implemented` | The browser executor has no implementation yet. | Periodic handlers, links and monitors, mailbox coalescing, per-actor heap limits, wire codecs, opaque resource close, missing library shims. |
+| `not_implemented` | The browser executor has no implementation yet. | Periodic handlers, links and monitors, per-actor heap limits, wire codecs, opaque resource close, missing library shims. |
 | `invalid_package` | The package does not satisfy the supported bytecode contract. | Missing entry point, unknown schema or opcode. |
 
 Unimplemented features are refused before the program prints output.

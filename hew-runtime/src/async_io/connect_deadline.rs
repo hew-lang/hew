@@ -30,7 +30,7 @@ unsafe extern "C" fn expired(context: *mut c_void) {
 pub(super) fn timeout_failure() -> IoFailure {
     IoFailure::from_io(
         "connect TCP",
-        &std::io::Error::from_raw_os_error(libc::ETIMEDOUT),
+        &std::io::Error::from_raw_os_error(crate::transport::etimedout_errno()),
     )
 }
 

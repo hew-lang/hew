@@ -1,0 +1,11 @@
+[[case]]
+id = "pipe-fault-main-message"
+intent = "A faulted pipe read on the main path traps with the pipe's diagnostic, not a bare UserPanic code."
+source = "cases/pipe-fault-main-message.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "producer crashed\nitem 1\n"
+stderr = "hew: failure: UserPanic (212): producer crashed\nhew: actor crash in Producer.boom (actor 1): UserPanic\nhew: failure: UserPanic (212): pipe faulted: producer actor 1 crashed while holding a sink; no more items will arrive\n"
+exit = 1

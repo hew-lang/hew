@@ -2,6 +2,7 @@
 //! as source submissions. A refused submission releases the copied field here.
 
 use super::*;
+use hew_runtime::actor_native::HewSubmitStatus;
 
 impl<'ctx> ModuleEmitter<'ctx, '_> {
     pub(in super::super) fn emit_actor_ingress_adapters(&self) -> CodegenResult<()> {
@@ -173,7 +174,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 .build_int_compare(
                     IntPredicate::EQ,
                     status,
-                    i32_ty.const_zero(),
+                    super::actor::submit_status(self.ctx, HewSubmitStatus::Accepted),
                     "ingress.accepted",
                 )
                 .llvm_ctx("classify ingress admission")?;
@@ -184,7 +185,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 .build_int_compare(
                     IntPredicate::EQ,
                     status,
-                    i32_ty.const_int(4, false),
+                    super::actor::submit_status(self.ctx, HewSubmitStatus::Discarded),
                     "ingress.discarded",
                 )
                 .llvm_ctx("classify a declared-policy discard")?;

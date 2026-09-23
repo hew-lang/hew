@@ -1,0 +1,45 @@
+// A line adapter over a socket stream is not a select source: a readable
+// socket may hold only part of the next line, so select cannot promise the
+// winning receive will not wait. The selecting actor traps with a named
+// reason on its own turn; the process survives and a sibling keeps serving.
+import std.net;
+import std.stream;
+
+actor Watcher {
+    receive fn watch(consume src: stream.Stream<string>) -> i64 {
+        select {
+            v from src.recv() => match v {
+                .Some(_) => 1,
+                .None => 0,
+            },
+            after 10s => -1,
+        }
+    }
+}
+
+actor Sibling {
+    receive fn ping(n: i64) -> i64 {
+        n + 1
+    }
+}
+
+fn main() {
+    let listener = net.listen("127.0.0.1:0").expect("listen");
+    let port = listener.local_port();
+    let client = net.connect(f"127.0.0.1:{port}").expect("connect");
+    let server = listener.accept();
+    let (input, output) = server.split();
+    let sibling = spawn Sibling();
+    let watcher = spawn Watcher();
+    match watcher.watch(input.lines()) {
+        .Ok(_) => println("select over a socket line adapter must not answer"),
+        .Err(_) => println("watcher crashed"),
+    }
+    match sibling.ping(41) {
+        .Ok(value) => println(f"sibling {value}"),
+        .Err(_) => println("sibling crashed"),
+    }
+    output.close();
+    client.close();
+    listener.close();
+}

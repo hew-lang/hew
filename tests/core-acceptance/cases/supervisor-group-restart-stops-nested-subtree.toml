@@ -1,0 +1,11 @@
+[[case]]
+id = "supervisor-group-restart-stops-nested-subtree"
+intent = "A one_for_all restart waits for a nested supervisor sibling's subtree to finish its stop hooks before the replacement subtree starts."
+source = "cases/supervisor-group-restart-stops-nested-subtree.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "start left\nstart deep\ndeep stop begins\nstop deep\nstart left\nstart deep\nrestarted\ndeep stop begins\nstop deep\nstop left\nstopped\n"
+stderr = "hew: failure: UserPanic (212): worker failed\nhew: actor crash in Worker.boom (actor 1): UserPanic\n"
+exit = 0

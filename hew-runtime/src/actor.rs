@@ -2696,6 +2696,9 @@ pub type HewNativeCrashFn =
 struct ActorSpawnConfig {
     native_crash: Option<HewNativeCrashFn>,
     native_state_release: Option<hew_cabi::value::HewValueReleaseStart>,
+    /// The generated `#[on(stop)]` sequence as a resumable continuation that
+    /// terminal cleanup runs on the live state before releasing it.
+    native_stop_release: Option<hew_cabi::value::HewValueReleaseStart>,
     rejected_state_release: *mut *mut crate::release_walker::HewReleaseCursor,
     dispatch_ownership: HewDispatchOwnership,
     /// The generated `#[on(stop)]` sequence, installed before publication so
@@ -2876,6 +2879,9 @@ fn build_spawned_actor(
                 completion
                     .cleanup
                     .set_state_release(config.native_state_release);
+                completion
+                    .cleanup
+                    .set_stop_release(config.native_stop_release);
                 std::sync::Arc::new(completion)
             }),
     })
@@ -3112,6 +3118,7 @@ pub unsafe extern "C" fn hew_actor_spawn(
         spawn_actor_internal(ActorSpawnConfig {
             native_crash: None,
             native_state_release: None,
+            native_stop_release: None,
             rejected_state_release: ptr::null_mut(),
             dispatch_ownership: HewDispatchOwnership::CopiedPayload,
             terminate_fn: None,
@@ -3181,6 +3188,7 @@ pub unsafe extern "C" fn hew_actor_spawn_opts(opts: *const HewActorOpts) -> *mut
         spawn_actor_internal(ActorSpawnConfig {
             native_crash: None,
             native_state_release: None,
+            native_stop_release: None,
             rejected_state_release: ptr::null_mut(),
             dispatch_ownership: HewDispatchOwnership::CopiedPayload,
             terminate_fn: None,
@@ -3286,6 +3294,7 @@ pub unsafe extern "C" fn hew_actor_spawn_opts_adopt(
         spawn_actor_internal(ActorSpawnConfig {
             native_crash: None,
             native_state_release: None,
+            native_stop_release: None,
             rejected_state_release: ptr::null_mut(),
             dispatch_ownership: HewDispatchOwnership::CopiedPayload,
             terminate_fn: None,
@@ -3319,8 +3328,9 @@ pub struct HewNativePeriodicHandler {
 /// State is a unique malloc allocation of `size` bytes, with initialized
 /// fields described by `state_drop` and `state_clone`. Callbacks and dispatch
 /// remain valid for the actor's lifetime. The function consumes state on every
-/// outcome. `terminate` is null or the generated `#[on(stop)]` sequence, which
-/// runs once with the initialized state at the terminal transition. `fault`
+/// outcome. `stop_release` is null or the generated `#[on(stop)]` sequence,
+/// which terminal cleanup runs once on the live state after a cooperative
+/// stop, suspending as its hooks do, before the state is released. `fault`
 /// is a writable, initially null fault slot. `periodic` points to
 /// `periodic_count` valid descriptors, or is null when the count is zero.
 #[no_mangle]
@@ -3334,7 +3344,7 @@ pub unsafe extern "C" fn hew_actor_spawn_native(
     dispatch: HewDispatchFn,
     state_drop: unsafe extern "C" fn(*mut c_void),
     state_clone: HewStateCloneFn,
-    terminate: Option<unsafe extern "C-unwind" fn(*mut c_void)>,
+    stop_release: Option<hew_cabi::value::HewValueReleaseStart>,
     capacity: i32,
     overflow: i32,
     cap_bytes: usize,
@@ -3398,9 +3408,10 @@ pub unsafe extern "C" fn hew_actor_spawn_native(
         spawn_actor_internal(ActorSpawnConfig {
             native_crash,
             native_state_release: state_release,
+            native_stop_release: stop_release,
             rejected_state_release,
             dispatch_ownership: HewDispatchOwnership::UniqueEnvelope,
-            terminate_fn: terminate,
+            terminate_fn: None,
             state_drop_fn: Some(state_drop),
             state_clone_fn: Some(state_clone),
             state,
@@ -3612,6 +3623,7 @@ pub unsafe extern "C" fn hew_actor_spawn_bounded(
         spawn_actor_internal(ActorSpawnConfig {
             native_crash: None,
             native_state_release: None,
+            native_stop_release: None,
             rejected_state_release: ptr::null_mut(),
             dispatch_ownership: HewDispatchOwnership::CopiedPayload,
             terminate_fn: None,
@@ -7310,9 +7322,10 @@ mod tests {
         sys_msg: i32,
         _data: *mut c_void,
         _size: usize,
-    ) {
+    ) -> *mut c_void {
         SYS_PROBE_LAST_KIND.store(sys_msg, Ordering::Release);
         SYS_PROBE_SEEN.fetch_add(1, Ordering::Release);
+        ptr::null_mut()
     }
 
     /// NON-VACUITY companion to
@@ -8618,6 +8631,27 @@ mod tests {
         std::ptr::null_mut()
     }
 
+    /// Holds `native_late_reply_dispatch` shut until the test has observed its
+    /// ask time out, so the reply is late by construction rather than by how
+    /// promptly the host schedules the handler thread.
+    static LATE_REPLY_GATE: (std::sync::Mutex<bool>, std::sync::Condvar) =
+        (std::sync::Mutex::new(false), std::sync::Condvar::new());
+
+    fn close_late_reply_gate() {
+        *LATE_REPLY_GATE
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = false;
+    }
+
+    fn open_late_reply_gate() {
+        *LATE_REPLY_GATE
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
+        LATE_REPLY_GATE.1.notify_all();
+    }
+
     unsafe extern "C-unwind" fn native_late_reply_dispatch(
         _ctx: *mut crate::execution_context::HewExecutionContext,
         _state: *mut c_void,
@@ -8626,7 +8660,17 @@ mod tests {
         _size: usize,
         _borrow_mode: i32,
     ) -> *mut c_void {
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        let mut open = LATE_REPLY_GATE
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        while !*open {
+            open = LATE_REPLY_GATE
+                .1
+                .wait(open)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+        drop(open);
         let ch = crate::execution_context::hew_get_reply_channel();
         if ch.is_null() {
             return std::ptr::null_mut();
@@ -11987,20 +12031,23 @@ mod tests {
             unsafe { hew_actor_spawn(std::ptr::null_mut(), 0, Some(native_late_reply_dispatch)) };
         assert!(!actor.is_null());
 
+        close_late_reply_gate();
         // SAFETY: actor is valid for the duration of the timed ask.
         let reply = unsafe { hew_actor_ask_timeout(actor, 1, ptr::null_mut(), 0, 1) };
+        open_late_reply_gate();
         assert!(
             reply.is_null(),
             "timed native asks should reject replies that only arrive after the timeout"
         );
+        // These bounds only stop a hang; each wait returns once it holds.
         assert!(
-            wait_for_condition(std::time::Duration::from_secs(1), || {
+            wait_for_condition(std::time::Duration::from_secs(30), || {
                 reply_channel::active_channel_count() == 0
             }),
             "timed-out native asks should release late-reply channels after cancellation",
         );
         assert!(
-            wait_for_condition(std::time::Duration::from_secs(1), || {
+            wait_for_condition(std::time::Duration::from_secs(30), || {
                 // SAFETY: actor remains owned by this test while waiting for dispatch to finish.
                 let state = unsafe { (*actor).actor_state.load(Ordering::Acquire) };
                 state == HewActorState::Idle as i32 || state == HewActorState::Stopped as i32
@@ -12299,8 +12346,10 @@ mod tests {
         assert!(!actor.is_null());
 
         LAST_ACTOR_ASK_ERROR.with(|c| c.set(AskError::None as i32));
-        // SAFETY: actor is valid; 1 ms deadline is too short for the 20 ms handler.
+        close_late_reply_gate();
+        // SAFETY: actor is valid; the handler cannot reply until the gate opens.
         let reply = unsafe { hew_actor_ask_timeout(actor, 1, ptr::null_mut(), 0, 1) };
+        open_late_reply_gate();
         assert!(reply.is_null(), "ask must time out");
         assert_eq!(
             hew_actor_ask_take_last_error(),
@@ -12308,9 +12357,10 @@ mod tests {
             "timed-out ask must report Timeout"
         );
 
-        // Let the late-reply dispatch finish and free the actor cleanly.
+        // Let the late-reply dispatch finish and free the actor cleanly. The
+        // bound only stops a hang; the wait returns once the channel is gone.
         assert!(
-            wait_for_condition(std::time::Duration::from_secs(1), || {
+            wait_for_condition(std::time::Duration::from_secs(30), || {
                 reply_channel::active_channel_count() == 0
             }),
             "late-reply channel must be released after cancellation",
@@ -13313,20 +13363,23 @@ mod tests {
             hew_actor_close(actor);
         }
 
-        let start = std::time::Instant::now();
+        TERMINATE_WAIT_POLL_TICKS.store(0, Ordering::Release);
         // SAFETY: actor is valid, closed, and in a terminal-safe state.
         let rc = unsafe { hew_actor_free(actor) };
-        let elapsed = start.elapsed();
 
         assert_eq!(rc, 0);
-        assert!(
-            elapsed < std::time::Duration::from_secs(1),
-            "free should complete quickly for a cooperating actor, took {elapsed:?}"
+        assert_eq!(
+            TERMINATE_WAIT_POLL_TICKS.load(Ordering::Acquire),
+            0,
+            "free must not wait on a terminate that already finished"
         );
     }
 
     #[test]
     fn terminate_long_does_not_spin() {
+        // The finisher releases terminate only after free has polled this
+        // many times, so free demonstrably waits.
+        const WAIT_TICKS: usize = 20;
         let _guard = crate::runtime_test_guard();
         // SAFETY: null state, valid dispatch.
         let actor = unsafe { hew_actor_spawn(std::ptr::null_mut(), 0, Some(noop_dispatch)) };
@@ -13339,10 +13392,15 @@ mod tests {
         a.actor_state
             .store(HewActorState::Stopped as i32, Ordering::Release);
 
+        // Each poll sleeps at least one interval, so a sleeping wait records
+        // at most one tick per interval elapsed; a busy spin records far more.
+        // Neither bound depends on how promptly the host schedules a thread.
         TERMINATE_WAIT_POLL_TICKS.store(0, Ordering::Release);
         let actor_addr = actor as usize;
         let finisher = std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(200));
+            while TERMINATE_WAIT_POLL_TICKS.load(Ordering::Acquire) < WAIT_TICKS {
+                std::thread::yield_now();
+            }
             // SAFETY: free waits for this store before reclaiming the actor.
             unsafe {
                 (*(actor_addr as *mut HewActor))
@@ -13358,17 +13416,16 @@ mod tests {
         finisher.join().unwrap();
 
         assert_eq!(rc, 0);
+        let ticks = TERMINATE_WAIT_POLL_TICKS.load(Ordering::Acquire);
         assert!(
-            elapsed >= std::time::Duration::from_millis(150),
-            "free should wait for the long terminate path, took {elapsed:?}"
+            ticks >= WAIT_TICKS,
+            "free must wait for the long terminate path, polled {ticks} times"
         );
+        let intervals = elapsed.as_nanos() / TERMINATE_WAIT_POLL_INTERVAL.as_nanos();
         assert!(
-            elapsed < std::time::Duration::from_secs(1),
-            "sleep-based polling should still finish promptly once terminate completes, took {elapsed:?}"
-        );
-        assert!(
-            TERMINATE_WAIT_POLL_TICKS.load(Ordering::Acquire) < 400,
-            "terminate wait should sleep between polls instead of busy-spinning"
+            ticks as u128 <= intervals + 1,
+            "terminate wait must sleep between polls instead of busy-spinning: \
+             {ticks} polls in {elapsed:?}"
         );
     }
 

@@ -15,36 +15,18 @@ actor Driver {
         let intake = mailbox(cache);
         match intake.update(1, 10) {
             .Ok(Delivery.Accepted) => println("accepted"),
-            .Ok(Delivery.Discarded) => {
-                println("FIRST_DISCARDED");
-                exit(41);
-            },
-            .Err(_) => {
-                println("FIRST_REFUSED");
-                exit(42);
-            },
+            .Ok(Delivery.Discarded) => println("FIRST_DISCARDED"),
+            .Err(_) => println("FIRST_REFUSED"),
         }
         match intake.update(1, 11) {
             .Ok(Delivery.Discarded) => println("superseded"),
-            .Ok(Delivery.Accepted) => {
-                println("SUPERSEDED_HIDDEN");
-                exit(43);
-            },
-            .Err(_) => {
-                println("SUPERSEDED_REFUSED");
-                exit(44);
-            },
+            .Ok(Delivery.Accepted) => println("SUPERSEDED_HIDDEN"),
+            .Err(_) => println("SUPERSEDED_REFUSED"),
         }
         match intake.update(2, 20) {
             .Ok(Delivery.Discarded) => println("dropped"),
-            .Ok(Delivery.Accepted) => {
-                println("FALLBACK_HIDDEN");
-                exit(45);
-            },
-            .Err(_) => {
-                println("FALLBACK_REFUSED");
-                exit(46);
-            },
+            .Ok(Delivery.Accepted) => println("FALLBACK_HIDDEN"),
+            .Err(_) => println("FALLBACK_REFUSED"),
         }
     }
 }

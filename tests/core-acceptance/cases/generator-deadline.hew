@@ -1,3 +1,7 @@
+// A scope deadline expires while `main` iterates a generator parked in a long
+// sleep. The generator is closed and its deferred cleanup runs, then the
+// consumer's cleanup, and the unrecovered deadline fails the process: the
+// line after the scope never prints.
 gen fn delayed() -> string {
     let label = "producer".to_upper();
     defer println(label + " cleaned");

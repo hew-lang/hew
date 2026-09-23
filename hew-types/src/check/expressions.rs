@@ -196,10 +196,10 @@ impl Checker {
             return;
         }
         match expr {
-            Expr::Scope { .. } | Expr::Race(_) => {
+            Expr::Scope { .. } | Expr::ScopeDeadline { .. } | Expr::Race(_) => {
                 self.reject_wasm_feature(span, WasmUnsupportedFeature::StructuredConcurrency);
             }
-            Expr::ForkChild { .. } => {
+            Expr::ForkChild { .. } | Expr::ForkBlock { .. } => {
                 self.reject_wasm_feature(span, WasmUnsupportedFeature::Tasks);
             }
             _ => {}

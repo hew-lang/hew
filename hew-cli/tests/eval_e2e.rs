@@ -1229,8 +1229,17 @@ fn eval_repl_load_non_root_type_errors_render_imported_filename() {
     // The import resolver canonicalizes the dep path, so the rendered
     // filename uses the canonical form — on Windows runners that expands
     // 8.3 short names (RUNNER~1) the raw tempdir path would never match.
+    // `hew-compile::display_path` (#3416) strips `canonicalize()`'s Windows
+    // extended-length `\\?\` prefix before rendering, so the expectation
+    // here strips it too rather than asserting the raw canonical form.
     let dep_canonical = dep_path.canonicalize().unwrap_or_else(|_| dep_path.clone());
-    let dep_header = format!("{}:1:", dep_canonical.display());
+    let dep_display = dep_canonical.display().to_string();
+    let dep_display = dep_display
+        .strip_prefix(r"\\?\UNC\")
+        .map(|rest| format!(r"\\{rest}"))
+        .or_else(|| dep_display.strip_prefix(r"\\?\").map(str::to_string))
+        .unwrap_or(dep_display);
+    let dep_header = format!("{dep_display}:1:");
     assert!(stderr.contains(&dep_header), "stderr: {stderr}");
     assert!(
         stderr.contains("pub fn mistyped() -> i64 { true }"),

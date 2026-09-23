@@ -1043,6 +1043,11 @@ pub fn collection_value_dependencies(
             // value. The handle's checked copy recipe is complete on its own.
             continue;
         }
+        if crate::is_identity_carrier(&ty) {
+            // A node identity, location or remote pid is fixed-width words
+            // with no owned fields: a bit copy is its complete recipe.
+            continue;
+        }
         if matches!(&ty, ResolvedTy::Named { builtin: Some(kind), .. }
             if kind.is_encoding_value())
         {

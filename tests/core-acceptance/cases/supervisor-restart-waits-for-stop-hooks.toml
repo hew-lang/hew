@@ -1,0 +1,11 @@
+[[case]]
+id = "supervisor-restart-waits-for-stop-hooks"
+intent = "A one_for_all restart waits for a stopped sibling's suspending stop hook to finish before any replacement starts."
+source = "cases/supervisor-restart-waits-for-stop-hooks.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "start left\nstart right\nstop right\nstart left\nstart right\nleft 1\nright 1\nstop left\nstop right\nstopped\n"
+stderr = "hew: failure: UserPanic (212): worker failed\nhew: actor crash in Worker.boom (actor 2): UserPanic\n"
+exit = 0

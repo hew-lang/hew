@@ -4818,6 +4818,9 @@ Then:
 | `rest_for_one`        | The crashed child and all children declared after it are restarted. |
 | `simple_one_for_one`  | A pool-oriented strategy; only the specific crashed `pool` child instance is restarted. Required for supervisors that use `pool` declarations. |
 
+A group restart stops every sibling it restarts and waits for each one's stop
+hooks and cleanup to finish before any replacement starts.
+
 ### 5.4 Restart Budget and Escalation
 
 The supervisor's `intensity: N within <window>` budget caps restarts; exceeding it escalates failure to the parent supervisor. The runtime tracks restarts in a sliding window.

@@ -1,0 +1,49 @@
+// A group restart stops every sibling and restarts the group only once each
+// stopped sibling has finished its stop hooks, including a hook that sleeps
+// and asks another actor. No replacement starts while an incarnation it
+// replaces is still stopping.
+actor Audit {
+    receive fn note(text: string) -> string { text }
+}
+
+actor Worker {
+    var name: string,
+    audit: Audit,
+    #[on(start)]
+    fn started() { println("start " + name); }
+    #[on(stop)]
+    fn stopping() {
+        sleep(2ms);
+        match audit.note("stop " + name) {
+            .Ok(text) => println(text),
+            .Err(_) => println("audit unavailable"),
+        }
+    }
+    receive fn boom() { panic("worker failed"); }
+    receive fn ping() -> i64 { 1 }
+}
+
+supervisor App(audit: Audit) {
+    strategy: one_for_all,
+    intensity: 3 within 60s,
+    child left: Worker(name: "left", audit: audit),
+    child right: Worker(name: "right", audit: audit),
+}
+
+fn main() {
+    let audit = spawn Audit;
+    let app = spawn App(audit: audit);
+    let _ = app.left.boom();
+    let replacement = await_restart app.left;
+    match replacement.ping() {
+        .Ok(value) => println(f"left {value}"),
+        .Err(_) => println("left failed"),
+    }
+    match app.right.ping() {
+        .Ok(value) => println(f"right {value}"),
+        .Err(_) => println("right failed"),
+    }
+    supervisor_stop(app);
+    println("stopped");
+    close(audit);
+}

@@ -66,6 +66,21 @@ impl NativeActorCompletion {
         super::report_checked_failure(retained.as_ref().expect("retained terminal fault"))
     }
 
+    /// Block the calling thread until this incarnation's terminal cleanup has
+    /// finished, or `deadline` passes. Returns whether it finished.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn wait_finished_until(&self, deadline: std::time::Instant) -> bool {
+        let (readiness, waker) = crate::wake::blocking::Readiness::new();
+        let waker = Arc::new(waker);
+        self.ready.register(&waker);
+        while !self.is_finished() {
+            if !readiness.wait_until(deadline) {
+                return self.is_finished();
+            }
+        }
+        true
+    }
+
     /// Publish after the unique terminal owner has released all target state.
     pub(crate) fn finish(&self, code: i32) {
         self.code.store(code, Ordering::Relaxed);

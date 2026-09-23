@@ -80,6 +80,9 @@ pub enum HewSysMsg {
     ChildSupervisorEscalated = 7,
     /// A declared supervisor incarnation finished a requested normal stop.
     ChildSupervisorStopped = 8,
+    /// Group restart handoff, sibling-stop waiter → supervisor mailbox, once
+    /// every sibling the restart stopped has finished its terminal cleanup.
+    GroupRestart = 9,
 }
 
 impl HewSysMsg {
@@ -103,6 +106,7 @@ impl HewSysMsg {
             6 => Some(Self::DelayedRestart),
             7 => Some(Self::ChildSupervisorEscalated),
             8 => Some(Self::ChildSupervisorStopped),
+            9 => Some(Self::GroupRestart),
             _ => None,
         }
     }
@@ -129,6 +133,7 @@ impl HewSysMsg {
             Self::DelayedRestart => "DelayedRestart",
             Self::ChildSupervisorEscalated => "ChildSupervisorEscalated",
             Self::ChildSupervisorStopped => "ChildSupervisorStopped",
+            Self::GroupRestart => "GroupRestart",
         }
     }
 }
@@ -203,6 +208,7 @@ mod tests {
             HewSysMsg::DelayedRestart,
             HewSysMsg::ChildSupervisorEscalated,
             HewSysMsg::ChildSupervisorStopped,
+            HewSysMsg::GroupRestart,
         ] {
             assert_eq!(HewSysMsg::from_raw(kind.as_i32()), Some(kind));
         }
@@ -216,7 +222,7 @@ mod tests {
             i32::MIN,
             -1,
             0,
-            9,
+            10,
             99,
             100,
             101,
@@ -249,6 +255,7 @@ mod tests {
                 HewSysMsg::DelayedRestart,
                 HewSysMsg::ChildSupervisorEscalated,
                 HewSysMsg::ChildSupervisorStopped,
+                HewSysMsg::GroupRestart,
             ],
             "the system message set must contain no self-stop signal"
         );

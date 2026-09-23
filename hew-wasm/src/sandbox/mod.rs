@@ -105,6 +105,7 @@ pub const REQUIRED_PARITY_TEST_NAMES: &[&str] = &[
     "method_clone",
     "regex_clone",
     "trap_residual",
+    "structural_rendering",
     "map_literal",
     "math_intrinsics",
     "trait_objects",

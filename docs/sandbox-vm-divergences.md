@@ -64,6 +64,14 @@ Browser `isize` and `usize` use 64-bit semantics to match the native parity
 reference, rather than wasm32 pointer width. Strings and owned byte arrays
 retain their Hew value semantics.
 
+Structural rendering of an `#[opaque]` handle (`f"{v:?}"` with no `Display`
+override) prints `<Name@identity>` on both engines, but the identity itself
+is not comparable: native discloses the handle's address, and the VM has no
+address to disclose for a value it does not carry as one of its own
+identity-bearing kinds. This is the one structural-rendering shape the
+native-to-VM parity harness cannot assert byte-for-byte and does not attempt
+to.
+
 ## Host differences
 
 Standard input and output belong to the embedding application. Input is

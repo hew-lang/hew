@@ -740,7 +740,7 @@ fn cmd_install(
         (None, BTreeMap::new())
     };
 
-    if m.dependencies.is_empty() && !locked {
+    if m.dependencies.is_empty() && locked_lockfile.is_none() {
         // Write an empty lockfile for consistency.
         let lf = lockfile::LockFile {
             packages: Vec::new(),
@@ -879,7 +879,7 @@ fn cmd_install(
             resolver::PackageSource::Registry {
                 registry: registry_id,
             } => {
-                if locked {
+                if locked_lockfile.is_some() {
                     let pinned = pinned_locked_registry
                         .get(&(registry_id.clone(), name.clone(), version.clone()))
                         .expect("locked registry resolution must retain its verified path");
@@ -974,18 +974,32 @@ fn cmd_install(
         }
     }
 
-    if locked {
+    if locked_lockfile.is_some() {
         println!("Used locked dependency graph");
     } else {
-        // Write the lockfile.
-        let lf = lockfile::LockFile {
+        // Skip the write when the resolved graph didn't change: `hew
+        // install` (online or `--offline`) always resolves fresh, but
+        // rewriting an already-current hew.lock on every run makes it look
+        // like a mutating command even when nothing moved (#3233). Compare
+        // structurally (both sides sorted by name, matching how
+        // `write_lockfile` orders its output) rather than by serialized
+        // bytes, so formatting alone never forces a write.
+        let mut lf = lockfile::LockFile {
             packages: lock_packages,
         };
-        if let Err(e) = lockfile::write_lockfile(&lock_path, &lf) {
+        lf.packages.sort_by(|a, b| a.name.cmp(&b.name));
+        let unchanged = lockfile::read_lockfile(&lock_path).is_ok_and(|mut existing| {
+            existing.packages.sort_by(|a, b| a.name.cmp(&b.name));
+            existing == lf
+        });
+        if unchanged {
+            println!("hew.lock is already up to date");
+        } else if let Err(e) = lockfile::write_lockfile(&lock_path, &lf) {
             eprintln!("hew install: cannot write hew.lock: {e}");
             std::process::exit(1);
+        } else {
+            println!("Wrote hew.lock");
         }
-        println!("Wrote hew.lock");
     }
 }
 
@@ -1634,6 +1648,23 @@ fn verify_registry_signature(
         .map_err(|e| format!("registry signature invalid: {e}"))
 }
 
+/// Publish a packed archive into the local registry only, under the same
+/// namespaced cache slot that `--locked` and `--offline` resolution read
+/// from (`Registry::package_slot_for`). `--local` never combines with
+/// `--registry` (`conflicts_with` in [`PkgCommand::Publish`]), so every local
+/// publish targets the default registry's identity.
+fn publish_local_package(
+    registry: &registry::Registry,
+    name: &str,
+    version: &str,
+    archive: &[u8],
+) -> std::io::Result<crate::atomic_fs::PinnedDir> {
+    let dest = registry.package_slot_for(&config::default_registry_identity(), name, version);
+    let staged = crate::atomic_fs::StagedDir::new(&dest)?;
+    tarball::unpack(archive, staged.path()).map_err(std::io::Error::other)?;
+    staged.publish_pinned(&dest)
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "CLI command handler requires many steps"
@@ -1792,12 +1823,13 @@ fn cmd_publish(
         .collect();
 
     if local {
-        let dest = registry.package_slot(&m.package.name, &m.package.version);
-        let published = crate::atomic_fs::StagedDir::new(&dest).and_then(|staged| {
-            tarball::unpack(&pack_result.data, staged.path()).map_err(std::io::Error::other)?;
-            staged.publish_pinned(&dest)
-        });
-        let published = published.unwrap_or_else(|error| {
+        let published = publish_local_package(
+            registry,
+            &m.package.name,
+            &m.package.version,
+            &pack_result.data,
+        )
+        .unwrap_or_else(|error| {
             eprintln!("hew publish: {error}");
             std::process::exit(1);
         });
@@ -3428,6 +3460,105 @@ mod tests {
         );
         stop.store(true, Ordering::Relaxed);
         writer.join().unwrap();
+    }
+
+    /// `hew publish --local` followed by `hew install --locked` with a fixed
+    /// (hand-written, checked-in-style) lockfile: the locally published
+    /// package must resolve directly from `--locked` verification, with no
+    /// registry contact and no lockfile rewrite. Regression coverage for
+    /// hew-lang/hew#3233 (`publish --local` used to write the legacy
+    /// unnamespaced layout, which `--locked`'s per-registry generation
+    /// lookup never reads).
+    #[test]
+    fn publish_local_then_install_locked_round_trips() {
+        let root = tempfile::tempdir().unwrap();
+        let registry = registry::Registry::with_root(root.path().join("registry"));
+        let registry_id = config::default_registry_identity();
+
+        // `hew publish --local`: pack a tiny package and publish it into the
+        // local registry only, exactly as `cmd_publish`'s `--local` branch does.
+        let pkg_src = tempfile::tempdir().unwrap();
+        std::fs::write(
+            pkg_src.path().join("hew.toml"),
+            "[package]\nname = \"foo\"\nversion = \"1.0.0\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            pkg_src.path().join("foo.hew"),
+            "pub fn value() -> i64 { 1 }\n",
+        )
+        .unwrap();
+        let archive = tarball::pack(pkg_src.path(), &[], &[]).unwrap();
+        let published = publish_local_package(&registry, "foo", "1.0.0", &archive.data).unwrap();
+        assert!(published.path().join("hew.toml").is_file());
+        // The publish lands in the namespaced slot `--locked` reads, not the
+        // legacy unnamespaced layout.
+        assert_eq!(
+            published.path(),
+            registry.package_dir_for(&registry_id, "foo", "1.0.0")
+        );
+
+        // `hew install --locked`: a fixed lockfile naming the just-published
+        // package and its default-registry identity.
+        let checksum = checksum::compute_dir_checksum(published.path()).unwrap();
+        let lockfile = lockfile::LockFile {
+            packages: vec![lockfile::LockedPackage {
+                name: "foo".to_string(),
+                requirement: Some("1.0.0".to_string()),
+                version: "1.0.0".to_string(),
+                checksum: Some(checksum),
+                signature: None,
+                source: "registry".to_string(),
+                registry: Some(registry_id.clone()),
+                path: None,
+            }],
+        };
+        let pinned = verify_locked_registry_packages(&lockfile, &registry)
+            .expect("--locked must resolve the locally published package directly");
+
+        let project = tempfile::tempdir().unwrap();
+        std::fs::write(
+            project.path().join("hew.toml"),
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\nfoo = \"1.0.0\"\n",
+        )
+        .unwrap();
+        let manifest = manifest::parse_manifest(&project.path().join("hew.toml")).unwrap();
+        let pinned_paths = pinned
+            .iter()
+            .map(|(identity, package)| (identity.clone(), package.path().to_path_buf()))
+            .collect();
+        let sources = resolver::RegistrySources::default_source();
+        let resolved = resolver::resolve_all_pinned_with_sources(
+            &manifest,
+            project.path(),
+            &registry,
+            &sources,
+            &pinned_paths,
+        )
+        .unwrap();
+        assert!(resolved.contains_key("foo"));
+
+        let link = project.path().join(".hew/packages/foo");
+        let verified = pinned
+            .get(&(registry_id, "foo".to_string(), "1.0.0".to_string()))
+            .unwrap();
+        replace_registry_package_copy_verified(&link, verified.path(), &verified.checksum).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(link.join("foo.hew")).unwrap(),
+            "pub fn value() -> i64 { 1 }\n"
+        );
+
+        // Negative control: the legacy unnamespaced layout (what `--local`
+        // used to write before this fix) is a different path than where
+        // `--locked` resolves from, and nothing was published there.
+        assert!(!registry
+            .package_dir("foo", "1.0.0")
+            .join("hew.toml")
+            .is_file());
+        assert_ne!(
+            registry.package_dir("foo", "1.0.0"),
+            registry.package_dir_for(&config::default_registry_identity(), "foo", "1.0.0")
+        );
     }
 
     #[test]

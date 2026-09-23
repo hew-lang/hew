@@ -2786,7 +2786,13 @@ fn main() {
 }
 ```
 
-For unwrap_or/is_ok/is_err on Result, write a tiny `match` helper inline. This is the reliable path — do not import `std.result`/`std.option`, and do not use the `.unwrap_or()` method form.
+`r.unwrap_or(fallback)`/`.is_ok()`/`.is_err()` also work directly as method
+calls on `Result`, with no import needed (`Option` has the matching
+`.is_some()`/`.is_none()`/`.expect()`/`.unwrap_or()` — see below). The
+hand-rolled `match` helper above stays useful for any other combinator:
+`std.option`/`std.result` add generic ones (`map`, `and_then`, `ok_or`,
+`ok`, `map_err`) as plain functions — `option.map(o, f)`, not `o.map(f)` —
+see "std.option / std.result — generic combinators" below.
 
 ### Option .is_some() / .is_none()
 
@@ -2801,7 +2807,32 @@ fn main() -> i64 {
 }
 ```
 
-For Option presence checks, `.is_some()`/`.is_none()` read cleanly and return `bool`. For all other unwrap needs, use `match`.
+For Option presence checks, `.is_some()`/`.is_none()` read cleanly and return `bool`.
+
+### std.option / std.result — generic combinators
+
+```hew
+import std.option;
+import std.result;
+fn main() {
+    let some_five: Option<i64> = Some(5);
+    let none_i64: Option<i64> = None;
+    println(option.unwrap_or_int(option.map(some_five, |x: i64| x * 2), 0));  // 10
+    println(option.unwrap_or_else(none_i64, || 99));                         // 99
+
+    let ok: Result<i64, string> = Ok(10);
+    match result.map(ok, |x: i64| x + 1) { .Ok(v) => println(v), .Err(_) => {} }  // 11
+}
+```
+
+`option.map`/`and_then`/`unwrap_or_else`/`ok_or` and `result.ok`/`map`/`map_err`
+are plain generic functions taking the value as their first argument, not
+`.method()` calls: the checker only lowers an inherent `impl Option<T>`/
+`impl Result<T, E>` block when every method is one of the small marker set
+(`is_some`/`is_none`/`expect`/`unwrap_or`, `is_ok`/`is_err`) it dispatches
+directly, so a `.map()`/`.and_then()` method form is not available on these
+two builtin types yet. Any other unwrap need not covered above still reads
+well as a `match`.
 
 ### Option .take()
 
@@ -3237,6 +3268,20 @@ fn main() {
 
 `std.iter` builds lazy adapters (`map`, `filter`, `take`, `skip`) over any `Iterator`; terminal helpers (`fold`, `count`, `collect`, `any`, `all`, `sum`, `sum_f64`, `product`, `product_f64`) drive an adapter chain to completion. Drive a `Vec<T>` through the lazy surface via `v.iter()` (clones elements out, `v` stays live) or `v.into_iter()` (consumes `v`).
 
+Every adapter also carries the same method surface, so a chain reads fluently
+end to end instead of nesting free-function calls after the first `.filter`
+or `.map`:
+
+```hew
+import std.iter;
+fn main() {
+    let v: Vec<i64> = [1, 2, 3, 4, 5];
+    let evens_x10 = v.into_iter().filter(|x: i64| x % 2 == 0).map(|x: i64| x * 10).collect();
+    println(evens_x10[0]);  // 20
+    println(evens_x10[1]);  // 40
+}
+```
+
 A `for` loop or index read borrows clone-free elements. In a generic body with
 unbounded `T`, the same borrowing rule holds at every instantiation. Use
 `into_iter()` to take ownership of elements, or an explicit clone with `T: Clone`.
@@ -3268,7 +3313,22 @@ fn main() {
 }
 ```
 
-`sort_ints`, `sort_strings` and `sort_floats` each return a new sorted Vec (ascending); `reverse_ints`, `reverse_strings` and `reverse_floats` each return a new reversed one. The original Vec is never modified. There is no generic `sort<T>`/`reverse<T>` yet — [the v0.6.0 migration note](migrations/v0.6.0.md) names one as the eventual replacement for this monomorphic family, but it is not implemented on this build. Integer and string sorting use iterative merge passes, so their comparison count is O(n log n); float sorting retains its total-order runtime implementation.
+`sort_ints`, `sort_strings` and `sort_floats` each return a new sorted Vec (ascending); `reverse_ints`, `reverse_strings` and `reverse_floats` each return a new reversed one. The original Vec is never modified. There is no unconditional generic `sort<T>`/`reverse<T>` yet — [the v0.6.0 migration note](migrations/v0.6.0.md) names one as the eventual replacement for this monomorphic family, but it is not implemented on this build. Integer and string sorting use iterative merge passes, so their comparison count is O(n log n); float sorting retains its total-order runtime implementation.
+
+`sort.sort_by(v, less)` sorts any `Vec<T>` today, given an explicit `less(a, b)`
+predicate (no `Ord`/`PartialOrd` trait exists yet to bound a parameterless
+generic `sort`). It has no `v.sort_by(less)` fluent method form — `Vec<T>`'s
+inherent methods are reserved for `std/builtins.hew` on this build.
+
+```hew
+import std.sort;
+fn main() {
+    var nums: Vec<i64> = Vec.new();
+    nums.push(3); nums.push(1); nums.push(2);
+    let sorted = sort.sort_by(nums, |a: i64, b: i64| a < b);
+    println(sorted[0]);  // 1
+}
+```
 
 ### std.random — pseudo-random number generation
 

@@ -389,3 +389,63 @@ fn test_reverse_floats_empty() {
     let out = sort.reverse_floats(v);
     testing.assert_eq(out.len(), 0);
 }
+
+// ── sort_by (hew-lang/hew#2933) ──────────────────────────────────────
+//
+// Generic over any `T`; there is no `v.sort_by(less)` fluent method form
+// (the checker reserves inherent `impl Vec<T> { ... }` blocks for
+// `std/builtins.hew`) — see `sort_by`'s doc comment for the compiler-gap
+// detail.
+#[test]
+fn test_sort_by_ascending_with_custom_comparator() {
+    var v: Vec<i64> = Vec.new();
+    v.push(3);
+    v.push(1);
+    v.push(2);
+    let out = sort.sort_by(v, |a: i64, b: i64| a < b);
+    testing.assert_eq(out.len(), 3);
+    testing.assert_eq(out[0], 1);
+    testing.assert_eq(out[1], 2);
+    testing.assert_eq(out[2], 3);
+}
+
+#[test]
+fn test_sort_by_descending_comparator_reverses_order() {
+    // Negative control: a `>` comparator produces the opposite order from
+    // `<`, proving the comparator (not a hardcoded ascending sort) drives
+    // the result.
+    var v: Vec<i64> = Vec.new();
+    v.push(3);
+    v.push(1);
+    v.push(2);
+    let out = sort.sort_by(v, |a: i64, b: i64| a > b);
+    testing.assert_eq(out.len(), 3);
+    testing.assert_eq(out[0], 3);
+    testing.assert_eq(out[1], 2);
+    testing.assert_eq(out[2], 1);
+}
+
+#[test]
+fn test_sort_by_does_not_mutate_original() {
+    var v: Vec<i64> = Vec.new();
+    v.push(3);
+    v.push(1);
+    v.push(2);
+    let _out = sort.sort_by(v, |a: i64, b: i64| a < b);
+    testing.assert_eq(v.len(), 3);
+    testing.assert_eq(v[0], 3);
+    testing.assert_eq(v[1], 1);
+    testing.assert_eq(v[2], 2);
+}
+
+#[test]
+fn test_sort_by_strings() {
+    var v: Vec<string> = Vec.new();
+    v.push("banana");
+    v.push("apple");
+    v.push("cherry");
+    let out = sort.sort_by(v, |a: string, b: string| a < b);
+    testing.assert_eq_str(out[0], "apple");
+    testing.assert_eq_str(out[1], "banana");
+    testing.assert_eq_str(out[2], "cherry");
+}

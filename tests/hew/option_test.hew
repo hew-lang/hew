@@ -210,3 +210,81 @@ fn test_contains_f64_none() {
     let x: Option<f64> = None;
     testing.assert_false(option.contains_f64(x, 3.5));
 }
+
+// ── Generic combinators (hew-lang/hew#2933) ──────────────────────────
+//
+// `map`/`and_then`/`unwrap_or_else`/`ok_or` are plain generic functions
+// (`option.map(opt, f)`), not `impl Option<T>` methods: the checker only
+// lowers that inherent impl block when every method is one of the
+// `is_some`/`is_none`/`expect`/`unwrap_or` markers `hew-hir` intercepts
+// directly; see the impl block's doc comment above.
+#[test]
+fn test_map_applies_f_on_some() {
+    let x: Option<i64> = Some(5);
+    let mapped = option.map(x, |v: i64| v * 2);
+    testing.assert_eq(option.unwrap_or_int(mapped, 0), 10);
+}
+
+#[test]
+fn test_map_is_none_on_none() {
+    let x: Option<i64> = None;
+    let mapped = option.map(x, |v: i64| v * 2);
+    // Negative control: mapping `None` must stay `None`, not fall through to
+    // `f`'s value.
+    testing.assert_true(option.is_none_int(mapped));
+}
+
+#[test]
+fn test_and_then_chains_on_some() {
+    let x: Option<i64> = Some(5);
+    let chained = option.and_then(x, |v: i64| if v > 0 { Some(v + 1) } else { None });
+    testing.assert_eq(option.unwrap_or_int(chained, -1), 6);
+}
+
+#[test]
+fn test_and_then_short_circuits_when_f_returns_none() {
+    let x: Option<i64> = Some(-1);
+    // Negative control: `f` itself returns `None` for a negative input.
+    let chained = option.and_then(x, |v: i64| if v > 0 { Some(v + 1) } else { None });
+    testing.assert_true(option.is_none_int(chained));
+}
+
+#[test]
+fn test_and_then_is_none_on_none() {
+    let x: Option<i64> = None;
+    let chained = option.and_then(x, |v: i64| Some(v + 1));
+    testing.assert_true(option.is_none_int(chained));
+}
+
+#[test]
+fn test_unwrap_or_else_returns_value_on_some() {
+    let x: Option<i64> = Some(7);
+    testing.assert_eq(option.unwrap_or_else(x, || 99), 7);
+}
+
+#[test]
+fn test_unwrap_or_else_runs_fallback_on_none() {
+    let x: Option<i64> = None;
+    testing.assert_eq(option.unwrap_or_else(x, || 99), 99);
+}
+
+#[test]
+fn test_ok_or_converts_some_to_ok() {
+    let x: Option<i64> = Some(5);
+    let converted: Result<i64, string> = option.ok_or(x, "missing");
+    match converted {
+        .Ok(v) => testing.assert_eq(v, 5),
+        .Err(_) => testing.assert_true(false),
+    }
+}
+
+#[test]
+fn test_ok_or_converts_none_to_err() {
+    let x: Option<i64> = None;
+    // Negative control: `None` must become `Err(err)`, not `Ok` of anything.
+    let converted: Result<i64, string> = option.ok_or(x, "missing");
+    match converted {
+        .Ok(_) => testing.assert_true(false),
+        .Err(e) => testing.assert_eq_str(e, "missing"),
+    }
+}

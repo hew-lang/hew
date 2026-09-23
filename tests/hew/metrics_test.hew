@@ -93,7 +93,9 @@ fn test_counter_ok_for_valid_name() {
         .Ok(c) => {
             c.inc();
             let scrape = observe.scrape();
-            testing.assert_true(scrape.contains("test_ok 1"));
+            // `.` renders as `_` in the Prometheus series name, so
+            // `test.try_ok` scrapes as `test_try_ok`, not `test_ok`.
+            testing.assert_true(scrape.contains("test_try_ok 1"));
         },
         .Err(_) => testing.assert_true(false),
     }

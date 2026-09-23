@@ -259,3 +259,112 @@ expect_check_failure \
     "stale package materialization" \
     'does not match hew.lock (expected acme.versioned@0.2.0'
 echo "PASS package-install version matrix"
+
+# `--offline` always resolves fresh from the cache and never hard-pins to
+# hew.lock: a path dependency's own manifest can add a new dependency
+# without the root manifest's direct requirements changing at all, and
+# `--offline` must still pick it up from the cache rather than treating the
+# (root-manifest-wise unchanged) lock as authoritative and failing to
+# resolve a package that is actually present. Regression coverage for
+# hew-lang/hew#3540's review: an earlier draft reused a lock deemed "fresh"
+# by a check that only compares the root manifest's direct requirements,
+# so a transitive dependency added under a path package went unnoticed and
+# `--offline` exited 1 for a package that was in the cache.
+baz_pkg="${TMP}/pkgs/baz-1.0.0"
+qux_pkg="${TMP}/pkgs/qux-1.0.0"
+write_package "${baz_pkg}" "acme.baz" "1.0.0" "1"
+write_package "${qux_pkg}" "acme.qux" "1.0.0" "2"
+run_in "${baz_pkg}" publish-baz "${HEW}" publish --local
+run_in "${qux_pkg}" publish-qux "${HEW}" publish --local
+
+bar_src="${TMP}/pkgs/bar-src"
+mkdir -p "${bar_src}"
+cat >"${bar_src}/hew.toml" <<EOF_MANIFEST
+[package]
+name = "bar"
+version = "0.1.0"
+edition = "2026"
+
+[dependencies]
+"acme.baz" = "1.0.0"
+EOF_MANIFEST
+cat >"${bar_src}/bar.hew" <<'EOF_SOURCE'
+import acme.baz;
+
+pub fn answer() -> i64 {
+    baz.answer()
+}
+EOF_SOURCE
+
+transitive_consumer="${TMP}/transitive-consumer"
+mkdir -p "${transitive_consumer}"
+cat >"${transitive_consumer}/hew.toml" <<EOF_MANIFEST
+[package]
+name = "transitive_consumer"
+version = "0.1.0"
+edition = "2026"
+
+[dependencies]
+bar = { version = "0.1.0", path = "../pkgs/bar-src" }
+EOF_MANIFEST
+cat >"${transitive_consumer}/main.hew" <<'EOF_SOURCE'
+import bar;
+
+fn main() {
+    println(f"{bar.answer()}");
+}
+EOF_SOURCE
+run_in "${transitive_consumer}" install-transitive-1 "${HEW}" install --offline
+assert_contains "${transitive_consumer}/hew.lock" 'name = "acme.baz"'
+assert_output "${transitive_consumer}" "1" "run-transitive-1"
+
+# bar gains a dependency on qux; the root manifest's requirement on `bar`
+# itself (a path dependency) does not change.
+cat >"${bar_src}/hew.toml" <<EOF_MANIFEST
+[package]
+name = "bar"
+version = "0.1.0"
+edition = "2026"
+
+[dependencies]
+"acme.baz" = "1.0.0"
+"acme.qux" = "1.0.0"
+EOF_MANIFEST
+run_in "${transitive_consumer}" install-transitive-2 "${HEW}" install --offline
+assert_contains "${transitive_consumer}/hew.lock" 'name = "acme.qux"'
+echo "PASS package-install offline resolves a transitive dependency added under a path package"
+
+# `--offline` must also pick up a republished package's new content rather
+# than hard-failing on a checksum recorded from a previous run: republishing
+# the same name@version locally (a routine local-development action) is not
+# the same claim `--locked` makes about reproducing a checked-in graph.
+foo_v1="${TMP}/pkgs/foo-content-v1"
+write_package "${foo_v1}" "acme.foo" "1.0.0" "7"
+run_in "${foo_v1}" publish-foo-v1 "${HEW}" publish --local
+
+foo_consumer="${TMP}/foo-consumer"
+write_consumer "${foo_consumer}" "acme.foo" "1.0.0"
+run_in "${foo_consumer}" install-foo-1 "${HEW}" install --offline
+assert_output "${foo_consumer}" "7" "run-foo-1"
+
+foo_v1_again="${TMP}/pkgs/foo-content-v1-again"
+write_package "${foo_v1_again}" "acme.foo" "1.0.0" "8"
+run_in "${foo_v1_again}" publish-foo-v1-again "${HEW}" publish --local
+run_in "${foo_consumer}" install-foo-2 "${HEW}" install --offline
+assert_output "${foo_consumer}" "8" "run-foo-2"
+echo "PASS package-install offline resolves a republished package by content"
+
+# hew-lang/hew#3233: `hew install --offline` must not unconditionally
+# rewrite an already-current hew.lock. Two offline installs in a row with
+# nothing changed leave the lockfile byte-identical.
+noop_consumer="${TMP}/noop-consumer"
+write_consumer "${noop_consumer}" "acme.baz" "1.0.0"
+run_in "${noop_consumer}" install-noop-1 "${HEW}" install --offline
+lock_before="$(cat "${noop_consumer}/hew.lock")"
+run_in "${noop_consumer}" install-noop-2 "${HEW}" install --offline
+lock_after="$(cat "${noop_consumer}/hew.lock")"
+if [[ "${lock_before}" != "${lock_after}" ]]; then
+    fail "hew.lock changed on a no-op offline install"
+fi
+assert_contains "${TMP}/logs/install-noop-2.log" "hew.lock is already up to date"
+echo "PASS package-install offline install is a no-op when nothing changed"

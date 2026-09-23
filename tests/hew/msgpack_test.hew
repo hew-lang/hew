@@ -185,7 +185,10 @@ fn test_unicode_string_field_round_trip() {
             let field = val.get_field("k").expect("get_field succeeds").expect("get_field returns a value");
             let s = field.get_string().expect("get_string succeeds");
             testing.assert_eq_str(s, "héllo");
-            testing.assert_eq(s.len(), 6);
+            // `.len()` is the Unicode scalar count (5: h, é, l, l, o);
+            // `.byte_len()` is the encoded UTF-8 byte count this case means
+            // to assert (6: 'é' is 2 bytes).
+            testing.assert_eq(s.byte_len(), 6);
             testing.assert_true(s.starts_with("h"));
             testing.assert_true(s.ends_with("llo"));
         },

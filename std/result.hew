@@ -214,3 +214,36 @@ impl<T, E> Result<T, E> {
         }
     }
 }
+
+// ── Generic combinators ────────────────────────────────────────────────
+//
+// Plain module functions (`result.map(r, f)`), not `impl` methods, for the
+// same reason as `std.option`'s combinators: the checker only lowers a
+// `impl Result<T, E> { ... }` block when every method is one of the
+// `is_ok`/`is_err`/`expect`/`unwrap_or` markers `hew-hir` intercepts
+// directly at the call site; any other method (a fluent `map`/`map_err`)
+// hits `E_HIR: impl-block shape not yet lowered` as soon as the module
+// compiles. Report by number to the owning compiler lane (hew-lang/hew#2933).
+/// Discard the `Err` value, converting to `Some` on `Ok` or `None` on `Err`.
+pub fn ok<T, E>(r: Result<T, E>) -> Option<T> {
+    match r {
+        .Ok(v) => Some(v),
+        .Err(_) => None,
+    }
+}
+
+/// Apply `f` to the contained `Ok` value, or return the `Err` unchanged.
+pub fn map<T, E, U>(r: Result<T, E>, f: fn(T) -> U) -> Result<U, E> {
+    match r {
+        .Ok(v) => Ok(f(v)),
+        .Err(e) => Err(e),
+    }
+}
+
+/// Apply `f` to the contained `Err` value, or return the `Ok` unchanged.
+pub fn map_err<T, E, F>(r: Result<T, E>, f: fn(E) -> F) -> Result<T, F> {
+    match r {
+        .Ok(v) => Ok(v),
+        .Err(e) => Err(f(e)),
+    }
+}

@@ -214,3 +214,58 @@ impl<T> Option<T> {
         taken
     }
 }
+
+// ── Generic combinators ────────────────────────────────────────────────
+//
+// These are plain module functions (`option.map(opt, f)`), not `impl`
+// methods: the checker reserves inherent `impl Option<T> { ... }` blocks for
+// a fixed marker set of methods (`is_some`/`is_none`/`expect`/`unwrap_or`,
+// handled directly in `hew-hir`'s call lowering — see the impl block above,
+// which is otherwise dead code, silently dropped at HIR lowering time). Any
+// other method name in that block, including a fluent `map`/`and_then`, hits
+// `E_HIR: impl-block shape not yet lowered: inherent impls on builtin
+// nominal types ... are reserved for the standard library` the moment the
+// module compiles — not only when the method is called. A `.map()` fluent
+// spelling on `Option<T>` needs that HIR restriction lifted or the marker
+// list extended; report by number to the owning compiler lane
+// (hew-lang/hew#2933).
+/// Apply `f` to the contained value, or return `None` unchanged.
+pub fn map<T, U>(opt: Option<T>, f: fn(T) -> U) -> Option<U> {
+    match opt {
+        .Some(v) => Some(f(v)),
+        .None => None,
+    }
+}
+
+/// Apply `f` (itself `Option`-returning) to the contained value, or return
+/// `None` unchanged. Chains a fallible lookup without nesting
+/// `Option<Option<U>>`.
+pub fn and_then<T, U>(opt: Option<T>, f: fn(T) -> Option<U>) -> Option<U> {
+    match opt {
+        .Some(v) => f(v),
+        .None => None,
+    }
+}
+
+/// Unwrap the value, or compute a fallback from `f` if `None`. Prefer this
+/// over the builtin `unwrap_or` when the fallback is expensive to build,
+/// since `f` runs only on the `None` path.
+pub fn unwrap_or_else<T>(opt: Option<T>, f: fn() -> T) -> T {
+    match opt {
+        .Some(v) => v,
+        // Braced, not a bare `f()`: the pinned tree-sitter-hew grammar
+        // (a sibling repo, not this compiler) does not yet parse a
+        // zero-argument call as a bare match-arm body.
+        .None => {
+            f()
+        },
+    }
+}
+
+/// Convert to a `Result`, using `err` as the `Err` value when `None`.
+pub fn ok_or<T, E>(opt: Option<T>, err: E) -> Result<T, E> {
+    match opt {
+        .Some(v) => Ok(v),
+        .None => Err(err),
+    }
+}

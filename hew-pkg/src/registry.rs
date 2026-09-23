@@ -327,10 +327,22 @@ impl Registry {
     /// a `hew.toml` file.  The path relative to the registry root determines
     /// the name (all but the last segment joined with dots) and version (the
     /// last segment).
+    ///
+    /// Walks both the legacy unnamespaced layout and every per-registry
+    /// namespace under `.registries/` (each treated as its own root, since
+    /// the namespace segment is a checksum, not a package-name component).
     #[must_use]
     pub fn list_packages(&self) -> Vec<InstalledPackage> {
         let mut packages = Vec::new();
         let _ = collect_packages(&self.root, &self.root, &mut packages);
+        if let Ok(entries) = std::fs::read_dir(self.root.join(".registries")) {
+            for entry in entries.flatten() {
+                let source_root = entry.path();
+                if source_root.is_dir() {
+                    let _ = collect_packages(&source_root, &source_root, &mut packages);
+                }
+            }
+        }
         packages
             .into_iter()
             .map(PinnedInstalledPackage::into_installed)
@@ -347,13 +359,21 @@ impl Registry {
         let mut packages = Vec::new();
         let _ = collect_packages(&source_root, &source_root, &mut packages);
         if include_legacy {
-            let _ = collect_packages(&self.root, &self.root, &mut packages);
-            packages.retain(|package| {
+            // The legacy walk never descends into `.registries` itself
+            // (`collect_packages` skips dot-prefixed subdirectories), so this
+            // filter only guards against a package the legacy walk's own
+            // root somehow resolves back under `.registries`. It must apply
+            // to the legacy entries alone: filtering the combined list would
+            // also discard the namespaced entries the first walk just found.
+            let mut legacy = Vec::new();
+            let _ = collect_packages(&self.root, &self.root, &mut legacy);
+            legacy.retain(|package| {
                 package
                     .path
                     .strip_prefix(self.root.join(".registries"))
                     .is_err()
             });
+            packages.extend(legacy);
         }
         packages
             .into_iter()
@@ -370,13 +390,17 @@ impl Registry {
         let mut packages = Vec::new();
         collect_packages(&source_root, &source_root, &mut packages)?;
         if include_legacy {
-            collect_packages(&self.root, &self.root, &mut packages)?;
-            packages.retain(|package| {
+            // See `list_packages_for`: the retain must scope to the legacy
+            // entries only, or it strips the namespaced entries just found.
+            let mut legacy = Vec::new();
+            collect_packages(&self.root, &self.root, &mut legacy)?;
+            legacy.retain(|package| {
                 package
                     .path
                     .strip_prefix(self.root.join(".registries"))
                     .is_err()
             });
+            packages.extend(legacy);
         }
         Ok(packages)
     }
@@ -522,6 +546,40 @@ mod tests {
         .unwrap();
         assert_eq!(reg.list_packages_for(first, false).len(), 1);
         assert!(reg.list_packages_for(second, false).is_empty());
+    }
+
+    /// A namespaced package must still be listed when `include_legacy` is
+    /// requested. Regression test: the legacy-compatibility retain filter
+    /// used to run over the combined (namespaced + legacy) list instead of
+    /// the legacy entries alone, so it discarded every namespaced entry
+    /// whenever `include_legacy` was `true` (hew-lang/hew#3233's `--offline`
+    /// symptom — `pin_offline_registry_packages` always calls with
+    /// `include_legacy: true` for the default registry).
+    #[test]
+    fn namespaced_package_is_listed_with_include_legacy() {
+        let dir = tempfile::tempdir().unwrap();
+        let reg = Registry::with_root(dir.path().to_path_buf());
+        let identity = crate::config::default_registry_identity();
+        let package = reg.package_dir_for(&identity, "foo", "1.0.0");
+        std::fs::create_dir_all(&package).unwrap();
+        std::fs::write(
+            package.join("hew.toml"),
+            "[package]\nname = \"foo\"\nversion = \"1.0.0\"\n",
+        )
+        .unwrap();
+
+        let found = reg.list_packages_for(&identity, true);
+        assert_eq!(
+            found.len(),
+            1,
+            "namespaced entry must survive the legacy merge"
+        );
+        assert_eq!(found[0].name, "foo");
+
+        let found = reg
+            .try_list_packages_for(&identity, true)
+            .expect("legacy-inclusive listing must succeed");
+        assert_eq!(found.len(), 1);
     }
 
     #[test]

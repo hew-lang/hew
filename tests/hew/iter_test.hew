@@ -535,6 +535,58 @@ fn test_let_bound_into_iter_method_chain_executes() {
     testing.assert_eq(iterator.count(), 2);
 }
 
+// ── fully fluent adapter chains (hew-lang/hew#2933) ─────────────────────
+//
+// `test_filter_map_collect_two_deep_chain_preserves_values` above predates
+// adapter method surfaces: `Filter<I, A>` had no methods of its own, so the
+// chain had to drop back to `iter.map(filtered, f)` after the first `.filter`.
+// These cases exercise the fluent spelling all the way through, with a
+// negative control (an element the filter must drop) so the assertions
+// cannot pass from a no-op filter.
+#[test]
+fn test_fully_fluent_filter_map_collect_chain() {
+    var values: Vec<i64> = Vec.new();
+    values.push(1);
+    values.push(2);
+    values.push(3);
+    values.push(4);
+    // Negative control: 1 and 3 fail `% 2 == 0` and must not survive.
+    let result = values.into_iter().filter(|value: i64| value % 2 == 0).map(|value: i64| value * 10).collect();
+    testing.assert_eq(result.len(), 2);
+    testing.assert_eq(result[0], 20);
+    testing.assert_eq(result[1], 40);
+}
+
+#[test]
+fn test_fully_fluent_chain_across_statements() {
+    var values: Vec<i64> = Vec.new();
+    values.push(1);
+    values.push(2);
+    values.push(3);
+    let cursor = values.into_iter();
+    let filtered = cursor.filter(|value: i64| value > 1);
+    let mapped = filtered.map(|value: i64| value * 100);
+    let result = mapped.collect();
+    testing.assert_eq(result.len(), 2);
+    testing.assert_eq(result[0], 200);
+    testing.assert_eq(result[1], 300);
+}
+
+#[test]
+fn test_fully_fluent_skip_take_map_chain() {
+    var values: Vec<i64> = Vec.new();
+    for i in 0 .. 10 {
+        values.push(i);
+    }
+    // Negative control: indices 0-1 (skipped) and 5-9 (past take(3)) must not
+    // appear in the result.
+    let result = values.into_iter().skip(2).take(3).map(|value: i64| value + 1).collect();
+    testing.assert_eq(result.len(), 3);
+    testing.assert_eq(result[0], 3);
+    testing.assert_eq(result[1], 4);
+    testing.assert_eq(result[2], 5);
+}
+
 fn without_terminal_claims(ledger: ClaimsLedger) -> Vec<Claim> {
     let terminal_runs = ledger.terminal_runs;
     let claims = ledger.claims.into_iter();

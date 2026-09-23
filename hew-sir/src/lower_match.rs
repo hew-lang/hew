@@ -28,8 +28,8 @@ use crate::{
     SemTerminator, SemVariantShape, ValueDef, ValueId, VariantShapeId,
 };
 use hew_hir::{
-    BindingId, HirExpr, HirLiteral, HirMatchArm, HirMatchArmBinding, HirMatchArmPredicate,
-    HirPayloadPredicate, HirPayloadVariantPredicate,
+    BindingId, HirExpr, HirExprKind, HirLiteral, HirMatchArm, HirMatchArmBinding,
+    HirMatchArmPredicate, HirPayloadPredicate, HirPayloadVariantPredicate, ResolvedRef,
 };
 use hew_types::ResolvedTy;
 
@@ -173,6 +173,25 @@ impl Builder<'_, '_> {
     ) -> Result<Option<ValueId>, String> {
         let scrutinee_ty = self.ty(&scrutinee_expr.ty);
         let shape = self.resolve_match_shape(scrutinee_expr, &scrutinee_ty, source_arms)?;
+        // A predicate-only match over a borrowed aggregate never transfers a
+        // payload. Keep the caller's owner intact while testing its fields.
+        let borrowed_predicate_only = matches!(&shape, MatchShape::Aggregate { .. })
+            && source_arms.iter().all(|arm| {
+                arm.bindings.is_empty()
+                    && arm.payload_variant_predicates.is_empty()
+                    && !matches!(arm.predicate, HirMatchArmPredicate::Binding { .. })
+            })
+            && match &scrutinee_expr.kind {
+                HirExprKind::BindingRef {
+                    resolved: ResolvedRef::Binding(binding),
+                    ..
+                } => matches!(
+                    self.binding_target(*binding)?,
+                    BindingTarget::Value(value)
+                        if self.value_own_kind(value) == Some(OwnKind::Guaranteed)
+                ),
+                _ => false,
+            };
 
         // A scrutinee that is itself a borrowed read holds a loan on the
         // collection it read. The match is what reads that loan, so it is the
@@ -186,7 +205,11 @@ impl Builder<'_, '_> {
                 self,
                 scrutinee_expr,
                 "match scrutinee",
-                shape.read(),
+                if borrowed_predicate_only {
+                    OwnedBindingUse::Probe
+                } else {
+                    shape.read()
+                },
             )?)
         };
         let mut outer_live = self.owned_live.clone();
@@ -549,6 +572,12 @@ impl Builder<'_, '_> {
                 initial_value,
                 places,
             } => {
+                if plan.borrowed
+                    && arm.bindings.is_empty()
+                    && arm.payload_variant_predicates.is_empty()
+                {
+                    return Ok(());
+                }
                 // A tuple of scalars was copied whole, and a whole-scrutinee
                 // binding names the aggregate itself: neither is taken apart.
                 if *initial_value || matches!(arm.predicate, HirMatchArmPredicate::Binding { .. }) {

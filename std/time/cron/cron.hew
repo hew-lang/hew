@@ -157,7 +157,6 @@ pub fn parse(expr: string) -> Expr {
 extern "C" {
     fn hew_cron_parse(expr: string) -> ExprHandle;
     fn hew_cron_is_valid(expr: ExprHandle) -> bool;
-    fn hew_cron_next(expr: ExprHandle, after_epoch_secs: i64, out_ts: *mut i64) -> i32;
     fn hew_cron_next_hew(expr: ExprHandle, after_epoch_secs: i64) -> CronNextResult;
     fn hew_cron_last_error() -> string;
     fn hew_cron_to_string(expr: ExprHandle) -> string;

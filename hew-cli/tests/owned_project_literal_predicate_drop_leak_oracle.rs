@@ -108,30 +108,32 @@ fn owned_project_predicate_borrow_releases_each_owner_once() {
     );
 }
 
+/// Arms that bind the resource take it out of the scrutinee, so each helper
+/// owns its argument (`consume p`); a borrowed parameter cannot give up a field.
 fn predicate_consume_source(frames: usize) -> String {
     format!(
         "#[resource] type Token {{ id: i64, }}\n\
          impl Token {{ fn close(consume self) {{ println(self.id); }} }}\n\
          type Packet {{ tag: i64, token: Token, text: string }}\n\
-         fn record_join(p: Packet) -> i64 {{\n\
+         fn record_join(consume p: Packet) -> i64 {{\n\
          \x20   match p {{\n\
          \x20       Packet {{ tag: 0, token, text: _ }} => token.id,\n\
          \x20       Packet {{ tag: _, token, text: _ }} => token.id,\n\
          \x20   }}\n\
          }}\n\
-         fn tuple_join(p: (i64, Token, string)) -> i64 {{\n\
+         fn tuple_join(consume p: (i64, Token, string)) -> i64 {{\n\
          \x20   match p {{\n\
          \x20       (0, token, _) => token.id,\n\
          \x20       (_, token, _) => token.id,\n\
          \x20   }}\n\
          }}\n\
-         fn direct_return(p: Packet) -> i64 {{\n\
+         fn direct_return(consume p: Packet) -> i64 {{\n\
          \x20   match p {{\n\
          \x20       Packet {{ tag: 0, token, text: _ }} => return token.id,\n\
          \x20       Packet {{ tag: _, token, text: _ }} => token.id,\n\
          \x20   }}\n\
          }}\n\
-         fn whole_fallback(p: Packet) -> i64 {{\n\
+         fn whole_fallback(consume p: Packet) -> i64 {{\n\
          \x20   match p {{\n\
          \x20       Packet {{ tag: 0, token, text: _ }} => token.id,\n\
          \x20       whole => whole.token.id,\n\

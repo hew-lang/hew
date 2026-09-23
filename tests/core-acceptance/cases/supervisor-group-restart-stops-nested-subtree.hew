@@ -1,0 +1,38 @@
+// A one_for_all restart stops a nested supervisor sibling and waits for its
+// whole subtree, stop hooks included, before the replacement subtree starts.
+actor Worker {
+    var name: string,
+    #[on(start)]
+    fn started() { println("start " + name); }
+    #[on(stop)]
+    fn stopping() {
+        if name == "deep" {
+            println("deep stop begins");
+            sleep(300ms);
+        }
+        println("stop " + name);
+    }
+    receive fn boom() { panic("worker failed"); }
+}
+
+supervisor Inner {
+    strategy: one_for_one,
+    intensity: 10 within 60s,
+    child deep: Worker(name: "deep"),
+}
+
+supervisor App {
+    strategy: one_for_all,
+    intensity: 10 within 60s,
+    child left: Worker(name: "left"),
+    child inner: Inner,
+}
+
+fn main() {
+    let app = spawn App;
+    let _ = app.left.boom();
+    let _restarted = await_restart app.left;
+    println("restarted");
+    supervisor_stop(app);
+    println("stopped");
+}

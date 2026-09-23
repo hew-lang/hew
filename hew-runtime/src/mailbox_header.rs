@@ -80,8 +80,8 @@ pub enum HewSysMsg {
     ChildSupervisorEscalated = 7,
     /// A declared supervisor incarnation finished a requested normal stop.
     ChildSupervisorStopped = 8,
-    /// Group restart handoff, sibling-stop waiter → supervisor mailbox, once
-    /// every sibling the restart stopped has finished its terminal cleanup.
+    /// An incarnation a pending group restart stopped has finished its
+    /// terminal cleanup, stopped incarnation → its supervisor's mailbox.
     GroupRestart = 9,
 }
 

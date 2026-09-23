@@ -194,22 +194,6 @@ pub mod blocking {
             }
         }
 
-        /// Consume one readiness notification, blocking until `deadline` at
-        /// the latest. Returns whether a notification arrived.
-        #[cfg(not(target_arch = "wasm32"))]
-        pub fn wait_until(&self, deadline: std::time::Instant) -> bool {
-            let mut pending = self.pending.lock_or_recover();
-            while !*pending {
-                let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-                if remaining.is_zero() {
-                    return false;
-                }
-                pending = self.changed.wait_timeout_or_recover(pending, remaining).0;
-            }
-            *pending = false;
-            true
-        }
-
         /// Consume an already pending notification without blocking.
         pub fn take_ready(&self) -> bool {
             std::mem::take(&mut *self.pending.lock_or_recover())

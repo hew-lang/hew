@@ -4849,17 +4849,14 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         let new = self.coerce_value(new, &ty, Provenance::Site(value.site))?;
         match target {
             BindingTarget::Place(place) if first_store => {
-                // A deferred actor field's first store (D447): the seat holds
-                // nothing to release, and from here the fault path owns it.
-                if !matches!(
-                    self.places[place.0 as usize].origin,
-                    PlaceOrigin::ActorState {
-                        initialized: false,
-                        ..
-                    }
-                ) {
+                // A deferred field or a mutable field consumed earlier in this
+                // body has an empty actor-state seat. Publish the replacement
+                // without trying to release the value that left it.
+                let PlaceOrigin::ActorState { initialized, .. } =
+                    self.places[place.0 as usize].origin
+                else {
                     return Err("a first store requires an uninitialized actor state seat".into());
-                }
+                };
                 self.emit_place_operation(
                     SemOpKind::StoreInit {
                         place,
@@ -4868,7 +4865,9 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     Provenance::Site(value.site),
                 )?;
                 self.owned_live.remove(&new);
-                self.deferred_initialized.insert(place);
+                if !initialized {
+                    self.deferred_initialized.insert(place);
+                }
                 Ok(())
             }
             BindingTarget::Place(place) => {
@@ -7648,7 +7647,14 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         if self.service.checked_facts.rows()[&TypeInstanceKey(ty)].clone
             == hew_types::CloneKind::None
         {
-            return Err("an actor state field without a copy cannot leave the state seat".into());
+            if expression.intent == IntentKind::Consume
+                && self.binding_root_is_mutable(expression)?
+            {
+                return Ok(false);
+            }
+            return Err(
+                "an actor state field without a copy must be consumed from a mutable seat".into(),
+            );
         }
         Ok(true)
     }

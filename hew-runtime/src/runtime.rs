@@ -457,10 +457,10 @@ pub(crate) unsafe fn enter(rt: &RuntimeInner) -> EnterGuard {
 /// runtime only after actors/workers are drained. No ownership or refcount is
 /// taken, so this avoids a runtime→actor→runtime cycle.
 #[cfg_attr(
-    not(test),
+    target_arch = "wasm32",
     allow(
         dead_code,
-        reason = "Stage 2 slice 1 installs + tests the choke point and its fail-closed trap; the off-dispatch producer cutovers (timer/reactor/teardown, slices 2-4) make it reachable in non-test builds"
+        reason = "the inbound remote delivery that enters an actor's runtime is native-only"
     )
 )]
 #[must_use]

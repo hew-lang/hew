@@ -12453,11 +12453,16 @@ impl LowerCtx {
             && decl.trait_bound.is_none()
             && builtin_impl_kind.is_some()
         {
-            let declared_resource_close_impl = self
-                .type_classes
-                .get(self_type_name)
-                .is_some_and(|(marker, _)| *marker == ResourceMarker::Resource)
-                && decl.methods.iter().any(|m| m.name == "close");
+            // Read the class under the checker-resolved declaration path: the
+            // source spelling is a bare leaf that a root nominal of the same
+            // name also claims in `type_classes`.
+            let declared_resource_close_impl = matches!(
+                &resolved_impl_self_ty,
+                ResolvedTy::Named { name, .. }
+                    if self.type_classes.get(name).is_some_and(|(marker, _)| {
+                        *marker == ResourceMarker::Resource
+                    })
+            ) && decl.methods.iter().any(|m| m.name == "close");
             if declared_resource_close_impl {
                 // `std/link_monitor.hew` is both the source declaration for the
                 // builtin `MonitorRef` nominal and the `#[resource]` close

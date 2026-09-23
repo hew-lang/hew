@@ -66,11 +66,23 @@ fn main() -> i64 {
         .Err(_) => { return 10; },
     };
 
-    // Each ordinary actor call waits for the unit sink handler too. With no
-    // permits, the first push is therefore the blocked request selected below;
-    // pre-filling the pipeline here would block before selection begins.
+    // Occupy Source with one checked push before selecting another. The
+    // selected request is then queued but cannot dispatch, so the timeout
+    // deterministically exercises native request withdrawal instead of racing
+    // the scheduler to decide whether the losing call has begun its handler.
     var i: i64 = 0;
     while i < __FRAMES__ {
+        let blocker = fork { source.push(item(-i - 1, f"blocker-{i}")) };
+        var attempts: i64 = 0;
+        while attempts < i + 1 {
+            match control.attempts() {
+                .Ok(value) => { attempts = value; },
+                .Err(_) => { return 11; },
+            }
+            if attempts < i + 1 {
+                sleep(1ms);
+            }
+        }
         let outcome = select {
             reply from source.push(item(i, f"cancel-owned-{i}")) => if reply.expect("ask reply") { 1 } else { -1 },
             after 1ms => 0,
@@ -79,6 +91,10 @@ fn main() -> i64 {
             return 15;
         }
         let _ = control.release();
+        match await blocker {
+            .Ok(admitted) => { if !admitted { return 12; } },
+            .Err(_) => { return 13; },
+        }
         var posts: i64 = 0;
         while posts < i + 1 {
             match control.post_sends() {

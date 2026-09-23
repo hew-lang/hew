@@ -1,0 +1,11 @@
+[[case]]
+id = "actor-state-var-self-method"
+intent = "A `var self` method on an actor state field re-publishes the seat on return; when it panics the method releases its receiver once and teardown skips the empty seat."
+source = "cases/actor-state-var-self-method.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "first 12\nsecond 14\nclose 13\nthird failed\n"
+stderr = "hew: failure: UserPanic (212): bump failed\nhew: actor crash in Holder.poke (actor 1): UserPanic\n"
+exit = 1

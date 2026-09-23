@@ -92,6 +92,7 @@ pub const REQUIRED_PARITY_TEST_NAMES: &[&str] = &[
     "struct_pattern_match",
     "option_some_none",
     "option_take",
+    "resource_field_collections",
     "const_reference",
     "logical_binary_operators",
     "bitwise_binary_operators",

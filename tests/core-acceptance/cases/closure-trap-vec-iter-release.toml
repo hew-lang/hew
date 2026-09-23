@@ -1,0 +1,11 @@
+[[case]]
+id = "closure-trap-vec-iter-release"
+intent = "A closure panic with a live `VecIter` snapshot reaches its caller's failure edge, which releases the snapshot and the vector exactly once."
+source = "cases/closure-trap-vec-iter-release.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: UserPanic (212): vec-iter-closure-trap\nhew: actor crash in VecIterCrasher.boom (actor 1): UserPanic\n"
+exit = 1

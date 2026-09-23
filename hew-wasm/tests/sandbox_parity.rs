@@ -372,6 +372,12 @@ const PARITY_CASES: &[ParityCase] = &[
         source_rel: "examples/sandbox-graduation/option_take.hew",
     },
     ParityCase {
+        // A push and an indexed write on a field of a `#[resource]` record
+        // run on a copy of the field that is assigned back through the record.
+        test_name: "resource_field_collections",
+        source_rel: "examples/sandbox-graduation/resource_field_collections.hew",
+    },
+    ParityCase {
         test_name: "const_reference",
         source_rel: "examples/sandbox-graduation/const_reference.hew",
     },

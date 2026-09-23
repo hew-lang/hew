@@ -1,0 +1,11 @@
+[[case]]
+id = "owned-param-trap-call-release"
+intent = "An owned record or tuple parameter that is still whole when a callee panics inside a receive handler is released exactly once on the failure edge, and once at the normal exit."
+source = "cases/owned-param-trap-call-release.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "close 1\nrecord ok 1\nclose 2\nrecord trapped\nclose 3\ntuple ok 4\nclose 4\ntuple trapped\n"
+stderr = "hew: failure: UserPanic (212): boom\nhew: actor crash in Worker.run (actor 2): UserPanic\nhew: failure: UserPanic (212): boom\nhew: actor crash in Worker.run_pair (actor 4): UserPanic\n"
+exit = 1

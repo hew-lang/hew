@@ -1,0 +1,46 @@
+// A resource's `close(consume self)` may take itself apart and hand its raw
+// handle field to the foreign release. The destructure binds the handle with
+// the same opaque identity the record field declares.
+#[opaque]
+type Raw {}
+
+#[resource]
+type Handle {
+    raw: Raw,
+    tag: i64,
+}
+
+impl Handle {
+    fn tag(self) -> i64 {
+        self.tag
+    }
+
+    fn close(consume self) {
+        let Handle { raw, tag } = self;
+        unsafe { hew_deque_free(raw) };
+        println(f"closed {tag}");
+    }
+}
+
+extern "C" {
+    fn hew_deque_new() -> Raw;
+    fn hew_deque_free(consume handle: Raw);
+}
+
+fn open(tag: i64) -> Handle {
+    Handle { raw: unsafe { hew_deque_new() }, tag: tag }
+}
+
+fn main() {
+    for i in 0..3 {
+        let handle = open(i);
+        if handle.tag() == 1 {
+            handle.close();
+            println("early");
+        } else {
+            println(f"kept {handle.tag()}");
+        }
+    }
+    let last = open(9);
+    last.close();
+}

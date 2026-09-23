@@ -493,6 +493,7 @@ fn verify_dyn_make(
 }
 
 /// The erased dispatch boundary agrees with every table that reaches it.
+/// With no realized table there is no erasure, so the call never executes.
 pub(super) fn verify_dyn_call(
     module: &PhysicalModule,
     function: &PhysicalFunction,
@@ -514,13 +515,11 @@ pub(super) fn verify_dyn_call(
             "physical dynamic dispatch requires a trait-object receiver",
         ));
     }
-    let mut reached = 0usize;
     for table in module
         .vtables
         .iter()
         .filter(|table| table.dyn_ty == receiver_storage.ty)
     {
-        reached += 1;
         let published = table
             .slots
             .iter()
@@ -537,11 +536,6 @@ pub(super) fn verify_dyn_call(
                 table.concrete_ty.user_facing()
             )));
         }
-    }
-    if reached == 0 {
-        return Err(PhysicalError::new(
-            "physical dynamic dispatch has no realized dispatch table",
-        ));
     }
     if args.len() != signature.params.len() {
         return Err(PhysicalError::new(

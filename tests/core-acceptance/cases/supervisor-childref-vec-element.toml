@@ -1,0 +1,10 @@
+[[case]]
+id = "supervisor-childref-vec-element"
+intent = "Supervised roles stored in a `Vec<ChildRef<A>>` keep their identity and answer asks through the element."
+source = "cases/supervisor-childref-vec-element.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "total 25\nlen 3\n"
+exit = 0

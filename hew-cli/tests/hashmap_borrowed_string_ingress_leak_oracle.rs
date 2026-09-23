@@ -58,37 +58,43 @@ use support::{describe_output, require_codegen};
 
 /// The reported repro plus its siblings, run once under the poisoned allocator.
 ///
-/// `bump` is the exact reduced shape from the field report: a `string`
-/// parameter used first as a `get` key and then as an `insert` key. The input
-/// repeats `coffee`, so both the vacant path (the map moves the key in) and the
-/// overwrite path (the runtime keeps the stored key and codegen releases the
-/// caller's duplicate) execute. `store_value` and `add_member` cover the
-/// `HashMap` VALUE and `HashSet` ELEMENT positions of the same MOVE ingress.
+/// `bump` is the reduced shape from the field report: a `string` parameter
+/// used first as a `get` key and then as an `insert` key. A `var` parameter is
+/// the callee's own copy, so each helper returns its collection and the caller
+/// rebinds it; the inserted key then outlives the caller temporary it was
+/// borrowed from. The input repeats `coffee`, so both the vacant path (the map
+/// moves the key in) and the overwrite path (the runtime keeps the stored key
+/// and codegen releases the caller's duplicate) execute. `store_value` and
+/// `add_member` cover the `HashMap` VALUE and `HashSet` ELEMENT positions of
+/// the same MOVE ingress.
 const BORROWED_STRING_INGRESS_SOURCE: &str = "\
-fn bump(var counts: HashMap<string, i64>, category: string) {\n\
+fn bump(var counts: HashMap<string, i64>, category: string) -> HashMap<string, i64> {\n\
 \x20   let next = match counts.get(category) { .Some(old) => old + 1, .None => 1 };\n\
 \x20   counts.insert(category, next);\n\
+\x20   counts\n\
 }\n\
 \n\
-fn store_value(var labels: HashMap<i64, string>, id: i64, label: string) {\n\
+fn store_value(var labels: HashMap<i64, string>, id: i64, label: string) -> HashMap<i64, string> {\n\
 \x20   labels.insert(id, label);\n\
+\x20   labels\n\
 }\n\
 \n\
-fn add_member(var members: HashSet<string>, name: string) {\n\
+fn add_member(var members: HashSet<string>, name: string) -> HashSet<string> {\n\
 \x20   members.insert(name);\n\
+\x20   members\n\
 }\n\
 \n\
 fn main() {\n\
 \x20   var counts: HashMap<string, i64> = HashMap.new();\n\
 \x20   for raw in \" coffee , rent , coffee \".split(\",\") {\n\
-\x20   \x20   bump(counts, raw.trim());\n\
+\x20   \x20   counts = bump(counts, raw.trim());\n\
 \x20   }\n\
 \x20   var labels: HashMap<i64, string> = HashMap.new();\n\
 \x20   var members: HashSet<string> = HashSet.new();\n\
-\x20   store_value(labels, 1, \"label\".to_upper());\n\
-\x20   store_value(labels, 1, \"relabel\".to_upper());\n\
-\x20   add_member(members, \"member\".to_upper());\n\
-\x20   add_member(members, \"member\".to_upper());\n\
+\x20   labels = store_value(labels, 1, \"label\".to_upper());\n\
+\x20   labels = store_value(labels, 1, \"relabel\".to_upper());\n\
+\x20   members = add_member(members, \"member\".to_upper());\n\
+\x20   members = add_member(members, \"member\".to_upper());\n\
 \x20   let coffee = match counts.get(\"coffee\") { .Some(n) => n, .None => -1 };\n\
 \x20   let label = match labels.get(1) { .Some(s) => s, .None => \"absent\" };\n\
 \x20   print(f\"{coffee}|{counts.len()}|{label}|{members.len()}\");\n\
@@ -104,27 +110,30 @@ const BORROWED_STRING_INGRESS_EXPECTED: &str = "2|2|RELABEL|1";
 ///
 /// Each `run_cycle()` builds a FRESH heap key (`"key".to_upper()`), passes it
 /// through a `string` parameter into a map insert and a set insert, and returns
-/// the summed lengths so nothing can be elided. Both collections drop at the end
-/// of the cycle, releasing the retained counts; the caller's own counts drop
-/// with the parameters' source temps. Zero per-iteration retention. An
-/// unbalanced retain holds one buffer per iteration and grows the node count
-/// with `frames`.
+/// the summed lengths so nothing can be elided. Each helper returns its
+/// collection, so the inserts are visible to the cycle. Both collections drop
+/// at the end of the cycle, releasing the retained counts; the caller's own
+/// counts drop with the parameters' source temps. Zero per-iteration
+/// retention. An unbalanced retain holds one buffer per iteration and grows
+/// the node count with `frames`.
 fn borrowed_ingress_loop_source(frames: usize) -> String {
     format!(
-        "fn store_key(var counts: HashMap<string, i64>, key: string, amount: i64) {{\n\
+        "fn store_key(var counts: HashMap<string, i64>, key: string, amount: i64) -> HashMap<string, i64> {{\n\
          \x20   counts.insert(key, amount);\n\
+         \x20   counts\n\
          }}\n\
          \n\
-         fn store_member(var members: HashSet<string>, name: string) {{\n\
+         fn store_member(var members: HashSet<string>, name: string) -> HashSet<string> {{\n\
          \x20   members.insert(name);\n\
+         \x20   members\n\
          }}\n\
          \n\
          fn run_cycle() -> i64 {{\n\
          \x20   var counts: HashMap<string, i64> = HashMap.new();\n\
          \x20   var members: HashSet<string> = HashSet.new();\n\
-         \x20   store_key(counts, \"key\".to_upper(), 1);\n\
-         \x20   store_key(counts, \"key\".to_upper(), 2);\n\
-         \x20   store_member(members, \"member\".to_upper());\n\
+         \x20   counts = store_key(counts, \"key\".to_upper(), 1);\n\
+         \x20   counts = store_key(counts, \"key\".to_upper(), 2);\n\
+         \x20   members = store_member(members, \"member\".to_upper());\n\
          \x20   counts.len() + members.len()\n\
          }}\n\
          \n\

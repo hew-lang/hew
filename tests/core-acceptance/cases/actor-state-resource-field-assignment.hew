@@ -1,0 +1,42 @@
+// A handler assigns the fields of a `#[resource]` actor state field in place.
+// The seat is whole again after each assignment, so a later panic in the same
+// handler leaves one complete resource for teardown to close.
+#[resource]
+type Conn {
+    fd: i64,
+    tag: string,
+}
+
+impl Conn {
+    fn close(consume self) {
+        println(f"close {self.tag} {self.fd}");
+    }
+}
+
+actor Holder {
+    var conn: Conn = Conn { fd: 10, tag: "start" },
+
+    receive fn poke(step: i64) -> i64 {
+        conn.fd = conn.fd + step;
+        conn.tag = f"step{step}";
+        if step == 3 {
+            panic("poke failed");
+        }
+        conn.fd
+    }
+}
+
+fn main() {
+    let holder = spawn Holder();
+    match holder.poke(1) {
+        .Ok(value) => println(f"first {value}"),
+        .Err(_) => println("first failed"),
+    }
+    match holder.poke(2) {
+        .Ok(value) => println(f"second {value}"),
+        .Err(_) => println("second failed"),
+    }
+    // The failed ask is not printed: teardown closes the resource on the
+    // actor's own thread, so it would race a line printed here.
+    let _ = holder.poke(3);
+}

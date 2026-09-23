@@ -1,0 +1,37 @@
+// A closure that panics while it holds a fresh `VecIter` snapshot returns a
+// failure status to its caller, whose failure edge releases the snapshot and
+// the vector once before the actor's crash propagates.
+actor VecIterCrasher {
+    receive fn boom() {
+        let root = Rc.new(41);
+        var values: Vec<Rc<i64>> = Vec.new();
+        values.push(root);
+
+        let crash = |incoming: VecIter<Rc<i64>>| {
+            let _ = incoming;
+            panic("vec-iter-closure-trap");
+            let _ = 0;
+        };
+        crash(values.iter());
+        let moved = values;
+        sleep(1ms);
+        let _ = moved.len();
+    }
+}
+
+actor VecIterProbe {
+    receive fn ping() -> i64 {
+        0
+    }
+}
+
+fn main() -> i64 {
+    let crasher = spawn VecIterCrasher;
+    let probe = spawn VecIterProbe;
+    let _ = crasher.boom();
+    sleep(300ms);
+    match probe.ping() {
+        .Ok(value) => value,
+        .Err(_) => 1,
+    }
+}

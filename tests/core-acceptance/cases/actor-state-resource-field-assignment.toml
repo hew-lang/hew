@@ -1,0 +1,11 @@
+[[case]]
+id = "actor-state-resource-field-assignment"
+intent = "A handler assigns `#[resource]` actor state fields in place; after a later panic in the same handler, teardown closes the one complete resource exactly once."
+source = "cases/actor-state-resource-field-assignment.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "first 11\nsecond 13\nclose step3 16\n"
+stderr = "hew: failure: UserPanic (212): poke failed\nhew: actor crash in Holder.poke (actor 1): UserPanic\n"
+exit = 1

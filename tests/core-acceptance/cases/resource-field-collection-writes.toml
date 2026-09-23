@@ -1,0 +1,11 @@
+[[case]]
+id = "resource-field-collection-writes"
+intent = "Collection fields beneath a `#[resource]` record push and take indexed writes in place through a local and an enclosing record; a faulting indexed write leaves the resource whole, so it closes once with its previous contents."
+source = "cases/resource-field-collection-writes.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "pair Z 2 1\nlocal C B\nclose 1 2 C\nclose 1 2 A\nclose 2 2 Z\n"
+stderr = "hew: failure: IndexOutOfBounds (205)\n"
+exit = 1

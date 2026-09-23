@@ -2517,7 +2517,9 @@ fn verify_indirect_call(
 /// The slot index is the checker's, so the verifier's job is to prove the
 /// erased boundary is the one each published implementation of that trait
 /// object was admitted under: the same receiver transfer, the same argument
-/// ABI and the same result.
+/// ABI and the same result. A trait object with no published table has no
+/// erasure in the program, so no value ever reaches the dispatch; the call
+/// is well formed and never executes.
 fn verify_dyn_call(
     terminator: &SemTerminator,
     types: &HashMap<ValueId, ResolvedTy>,
@@ -2554,9 +2556,7 @@ fn verify_dyn_call(
     }
     let context = context
         .ok_or_else(|| "dynamic dispatch requires its module's dispatch tables".to_string())?;
-    let mut reachable = 0usize;
     for table in context.vtables_for(ty) {
-        reachable += 1;
         let published = table
             .slots
             .iter()
@@ -2580,12 +2580,6 @@ fn verify_dyn_call(
                 table.concrete_ty.user_facing()
             ));
         }
-    }
-    if reachable == 0 {
-        return Err(format!(
-            "`{}` has no published dispatch table",
-            ty.user_facing()
-        ));
     }
     if args.len() != signature.params.len() {
         return Err("dynamic dispatch argument count differs from its signature".to_string());

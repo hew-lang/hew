@@ -1,0 +1,38 @@
+// Collection fields beneath a `#[resource]` record change in place through a
+// local and through an enclosing record. An indexed write that faults leaves
+// the resource whole, so it closes once with the contents it had.
+#[resource]
+type Conn {
+    fd: i64,
+    items: Vec<string>,
+}
+
+impl Conn {
+    fn close(consume self) {
+        println(f"close {self.fd} {self.items.len()} {self.items[0]}");
+    }
+}
+
+type Pair {
+    conn: Conn,
+    uses: i64,
+}
+
+fn fill(at: i64) {
+    var local = Conn { fd: 1, items: Vec.new() };
+    local.items.push("a".to_upper());
+    local.items.push("b".to_upper());
+    local.items[at] = "c".to_upper();
+    println(f"local {local.items[0]} {local.items[1]}");
+}
+
+fn main() {
+    var pair = Pair { conn: Conn { fd: 2, items: Vec.new() }, uses: 0 };
+    pair.conn.items.push("x".to_upper());
+    pair.conn.items.push("y".to_upper());
+    pair.conn.items[0] = "z".to_upper();
+    pair.uses = pair.uses + 1;
+    println(f"pair {pair.conn.items[0]} {pair.conn.items.len()} {pair.uses}");
+    fill(0);
+    fill(5);
+}

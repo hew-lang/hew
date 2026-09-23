@@ -1,0 +1,10 @@
+[[case]]
+id = "dyn-trait-without-implementors"
+intent = "Dispatch through a trait object whose trait has no implementor compiles and the empty collection runs no dispatch."
+source = "cases/dyn-trait-without-implementors.hew"
+suites = ["acceptance"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "drawn 0\n"
+exit = 0

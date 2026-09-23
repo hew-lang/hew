@@ -1,0 +1,10 @@
+[[case]]
+id = "returns_receiver_consuming_result"
+intent = "A consuming `#[returns_receiver]` builder adopts a child released by destructuring and the result owner closes the tree exactly once."
+source = "../vertical-slice/accept/returns_receiver_consuming_result.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "built\n"
+exit = 0

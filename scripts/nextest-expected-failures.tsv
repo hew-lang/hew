@@ -21,15 +21,7 @@ linux,macos,windows,freebsd	failure	hew-cli::distributed_two_process_e2e	remote_
 linux,macos,windows,freebsd	failure	hew-cli::distributed_two_process_e2e	remote_monitor_setup_after_drop_returns_typed_partition	feat/remote-pid-final-path gives hew_node_id_display a verified ownership-SIR operation contract
 linux,macos,windows,freebsd	failure	hew-cli::distributed_two_process_e2e	repeated_cross_node_monitor_close_keeps_tables_empty	feat/remote-pid-final-path gives hew_node_id_display a verified ownership-SIR operation contract
 linux,macos,windows,freebsd	failure	hew-cli::distributed_two_process_e2e	wire_cbor_cross_process_round_trip	feat/remote-pid-final-path gives hew_node_id_display a verified ownership-SIR operation contract
-macos	failure	hew-cli::enum_resource_variant_leak_oracle	resource_record_enum_payload_closes_exactly_once	#3426 a resource's close(consume self) cannot release its own raw-handle field
-macos	failure	hew-cli::hashmap_borrowed_string_ingress_leak_oracle	borrowed_string_collection_ingress_does_not_double_free	#3445 copies a borrowed string into the map
 macos	failure	hew-cli::identity_monitor_leak_oracle	cross_process_monitor_close_has_zero_leak_slope_and_no_poisoned_allocator_failure	#3373 lowers a remote actor ask; the identity contracts this fixture also needs landed
 macos	failure	hew-cli::identity_monitor_leak_oracle	identity_display_temporaries_have_zero_leak_slope_and_no_poisoned_allocator_failure	#3373 lowers a remote actor ask; the identity contracts this fixture also needs landed
-macos	failure	hew-cli::match_resource_result_handoff_leak_oracle	resource_result_match_handoffs_drop_every_payload_exactly_once	#3426 releases a resource's own raw-handle field from its close
-macos	failure	hew-cli::owned_project_literal_predicate_drop_leak_oracle	owned_project_predicate_borrow_leak_slope_is_flat	#3427 stops a wildcard-only arm reading as a consume
-macos	failure	hew-cli::owned_project_literal_predicate_drop_leak_oracle	owned_project_predicate_borrow_releases_each_owner_once	#3427 stops a wildcard-only arm reading as a consume
-macos	failure	hew-cli::owned_project_literal_predicate_drop_leak_oracle	owned_project_predicate_consume_leak_slope_is_flat	#3427 stops a wildcard-only arm reading as a consume
-macos	failure	hew-cli::owned_project_literal_predicate_drop_leak_oracle	owned_project_predicate_consume_releases_each_owner_once	#3427 stops a wildcard-only arm reading as a consume
 macos	failure	hew-cli::pipeline_stdlib_ownership_oracle	pipeline_owned_payload_cancellation_has_flat_leak_slope	#3455 lets the pipeline cancellation probe finish
 macos	failure	hew-cli::pipeline_stdlib_ownership_oracle	pipeline_owned_payload_lifecycle_edges_do_not_double_free	#3455 lets the pipeline cancellation probe finish
-macos	failure	hew-cli::vec_iter_closure_unwind_leak_oracle	temporary_vec_iter_closure_trap_invokes_guarded_cleanup_without_leak	#3449 emits a closure call in a guarded region as an invoke

@@ -1006,7 +1006,7 @@ pub fn collection_value_dependencies(
         if !seen.insert(ty.clone()) {
             continue;
         }
-        facts
+        let fact = facts
             .get(&hew_types::TypeInstanceKey(ty.clone()))
             .ok_or_else(|| {
                 format!(
@@ -1014,6 +1014,13 @@ pub fn collection_value_dependencies(
                     ty.user_facing()
                 )
             })?;
+        // A bit-copyable component carries no ownership obligation, so there
+        // is nothing to describe. This covers the fixed-width compiler
+        // carriers (`ChildRef<A>`, `NodeId`) whose source fields are not
+        // constructible and so have no aggregate shape.
+        if fact.class == hew_types::ValueClass::BitCopy {
+            continue;
+        }
         // Collections can own affine components. The selected operation's
         // copy/borrow/move contract determines whether a copy is required;
         // merely storing a component does not require one.

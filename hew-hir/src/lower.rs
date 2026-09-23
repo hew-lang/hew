@@ -14726,7 +14726,7 @@ impl LowerCtx {
                 let mut planned_fields = Vec::with_capacity(plan.fields.len());
                 for field in plan.fields {
                     let field_ty = match ResolvedTy::from_ty(&field.ty) {
-                        Ok(ty) => ty,
+                        Ok(ty) => self.qualify_current_module_record_ty(ty),
                         Err(err) => {
                             let _ = self.lower_expr(value_expr, IntentKind::Consume);
                             self.diagnostics.push(HirDiagnostic::new(
@@ -15006,7 +15006,7 @@ impl LowerCtx {
             Vec::with_capacity(plan.fields.len());
         for field in plan.fields {
             let field_ty = match ResolvedTy::from_ty(&field.ty) {
-                Ok(ty) => ty,
+                Ok(ty) => self.qualify_current_module_record_ty(ty),
                 Err(err) => {
                     self.diagnostics.push(HirDiagnostic::new(
                         HirDiagnosticKind::CheckerBoundaryViolation {

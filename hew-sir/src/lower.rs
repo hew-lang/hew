@@ -62,6 +62,7 @@ use hew_types::{
     CallTarget, DefId, EntryExitAction, ResolvedTy, TypeCheckOutput, TypeFactService,
     TypeInstanceKey,
 };
+use writable::WritableRoot;
 
 use crate::ownership::{
     AggregateFieldRecipe, Binding, BytesLiteralId, OwnKind, StringLiteralId, TypeFactTable,
@@ -4939,9 +4940,9 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 Provenance::Site(value.site),
             )?;
             let provenance = Provenance::Site(target.site);
-            let (root, staged_root) = self.stage_writable_root(&path.base, &provenance)?;
+            let (container, root) = self.stage_indexed_base(&path.base, &provenance)?;
             let (old, writeback) =
-                self.acquire_indexed_path(path, root, staged_root, false, &provenance)?;
+                self.acquire_indexed_path(path, container, root, false, &provenance)?;
             if self.owned_live.contains_key(&old) {
                 self.emit_destroy(old)?;
             }
@@ -4959,6 +4960,9 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         let provenance = Provenance::Site(target.site);
         if let Some(projected) = self.owned_projection(&place)? {
             return self.store_projected(projected, replacement, provenance);
+        }
+        if let Some(root) = self.whole_owner_root(&place)? {
+            return self.assign_through_whole_owner(root, &place, replacement, provenance);
         }
         if let BindingTarget::Place(root) = self.binding_target(place.binding)? {
             if !place.projections.is_empty() {
@@ -8944,14 +8948,17 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             })
             .copied()
             .collect();
-        let mut transformed_projection = None;
-        let mut transformed_root = None;
+        let mut transformed_target = None;
         let mut seat_taken = false;
         let mut taken_seat = None;
         let mut indexed_writeback = None;
         if let Some(place) = &transformed_place {
             let provenance = Provenance::Site(expr.site);
-            let (projected, staged_root) = self.stage_writable_root(place, &provenance)?;
+            let whole_owner = self.whole_owner_root(place)?;
+            let (projected, staged_root) = match whole_owner {
+                Some(root) => (root, None),
+                None => self.stage_writable_root(place, &provenance)?,
+            };
             // A transform takes its receiver, which a live element loan of the
             // same owner forbids. Refusing here names the source construct
             // instead of leaving it to the ownership verifier.
@@ -8971,15 +8978,43 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     );
                 }
             }
-            transformed_projection = Some(projected);
             let receiver_ty = self.ty(&args[0].ty);
+            // A whole owner is never taken apart across the call: the call
+            // mutates a copy of its field, which is assigned back after it.
+            let (current, target) = match whole_owner {
+                Some(root) => (
+                    Some(self.copy_through_whole_owner(root, place, &provenance)?),
+                    WritableRoot::WholeOwner {
+                        root,
+                        base: place.clone(),
+                    },
+                ),
+                None => (
+                    None,
+                    WritableRoot::Place {
+                        leaf: projected,
+                        staged_root,
+                        taken: false,
+                    },
+                ),
+            };
             let source = if let Some(path) = indexed_path.take() {
+                let container = match current {
+                    Some(copy) => copy,
+                    None => self.emit_typed(
+                        provenance.clone(),
+                        &place.leaf_ty,
+                        SemOpKind::LoadCopy { place: projected },
+                    )?,
+                };
                 let (source, writeback) =
-                    self.acquire_indexed_path(path, projected, staged_root, true, &provenance)?;
+                    self.acquire_indexed_path(path, container, target, true, &provenance)?;
                 indexed_writeback = Some(writeback);
                 source
+            } else if let Some(copy) = current {
+                transformed_target = Some(target);
+                copy
             } else {
-                transformed_root = staged_root;
                 // A state seat leaves by take, and the call publishes a
                 // receiver back into it on every edge the call owns: the
                 // updated one where the contract keeps it, and a fresh empty
@@ -8989,6 +9024,11 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     self.places[projected.0 as usize].origin,
                     crate::PlaceOrigin::ActorState { .. }
                 );
+                transformed_target = Some(WritableRoot::Place {
+                    leaf: projected,
+                    staged_root,
+                    taken: seat_taken,
+                });
                 self.emit_typed(
                     provenance.clone(),
                     &receiver_ty,
@@ -9233,11 +9273,9 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                         &Provenance::Site(expr.site),
                     )?;
                 } else {
-                    self.publish_writable_root(
-                        transformed_projection.ok_or("runtime transform has no source place")?,
+                    self.publish_writable(
+                        transformed_target.ok_or("runtime transform has no source place")?,
                         results[0].id,
-                        transformed_root,
-                        seat_taken,
                         &Provenance::Site(expr.site),
                     )?;
                 }
@@ -9251,14 +9289,8 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                         continuation,
                         &Provenance::Site(expr.site),
                     )?;
-                } else if let Some(projected) = transformed_projection {
-                    self.publish_writable_root(
-                        projected,
-                        continuation,
-                        transformed_root,
-                        seat_taken,
-                        &Provenance::Site(expr.site),
-                    )?;
+                } else if let Some(target) = transformed_target {
+                    self.publish_writable(target, continuation, &Provenance::Site(expr.site))?;
                 } else {
                     // A prelowered receiver belongs to an enclosing writable path.
                     self.dispatch_runtime_release(receiver_release.as_ref())?;

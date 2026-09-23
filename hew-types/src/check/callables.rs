@@ -125,7 +125,13 @@ impl Checker {
         {
             return;
         }
-        self.env.mark_place_moved(root, path, span.clone());
+        // A binder over the whole scrutinee (`whole => ...`) takes the root
+        // itself, not a strict sub-place of it.
+        if path.is_empty() {
+            self.env.mark_moved(root, span.clone());
+        } else {
+            self.env.mark_place_moved(root, path, span.clone());
+        }
     }
 
     pub(super) fn infer_lambda_result(&mut self, body: &Spanned<Expr>) -> Ty {

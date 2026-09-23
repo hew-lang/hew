@@ -1,0 +1,10 @@
+[[case]]
+id = "resource-close-destructure-self"
+intent = "A resource close that destructures `self` releases its raw handle field; explicit and scope-exit closes each run exactly once."
+source = "cases/resource-close-destructure-self.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "kept 0\nclosed 0\nclosed 1\nearly\nkept 2\nclosed 2\nclosed 9\n"
+exit = 0

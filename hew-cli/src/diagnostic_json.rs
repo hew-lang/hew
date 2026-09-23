@@ -268,6 +268,31 @@ pub(crate) fn coded_message_diagnostic(
     }
 }
 
+/// Build a [`JsonDiagnostic`] from a coded, channel-classified message that
+/// carries its own span and source text (`E_SIR_UNSUPPORTED`, #3384). Falls
+/// back to [`coded_message_diagnostic`]'s zero span when the span does not
+/// index `source` — the same fail-closed rule
+/// [`crate::diagnostic::render_codegen_emit_error`] uses for text rendering,
+/// so JSON never reports a caret against the wrong file.
+pub(crate) fn coded_span_diagnostic(
+    code: &str,
+    message: &str,
+    channel: DiagChannel,
+    source: &str,
+    filename: &str,
+    span: &Range<usize>,
+) -> JsonDiagnostic {
+    if span.start >= source.len() {
+        return coded_message_diagnostic(code, message, channel);
+    }
+    let end = span.end.min(source.len());
+    JsonDiagnostic {
+        span: JsonSpan::from_range(source, &(span.start..end)),
+        file: filename.to_string(),
+        ..coded_message_diagnostic(code, message, channel)
+    }
+}
+
 /// Build a [`JsonDiagnostic`] from a coded frontend message that carries its
 /// own span and source text (today, only `E_MODULE_NOT_FOUND`, which locates
 /// the offending `import`). Falls back to [`coded_message_diagnostic`]'s zero

@@ -3,6 +3,7 @@ mod support;
 use std::fs;
 use std::process::Command;
 
+use serde_json::Value;
 use support::{describe_output, hew_binary, require_codegen, strip_ansi};
 
 fn write_fixture(source: &str) -> (tempfile::TempDir, std::path::PathBuf) {
@@ -148,9 +149,9 @@ fn check_werror_still_promotes_frontend_warnings() {
 
 #[test]
 fn check_no_typecheck_skips_hir_mir_gates() {
-    // The self-aliasing functional-update is a MIR gate failure under a full
-    // check (see `check_fails_on_mir_gate_before_ok`); under `--no-typecheck`
-    // the gate is skipped, so the same fixture passes.
+    // The fixture fails a full `hew check` (a mutable-receiver requirement,
+    // checker-level); under `--no-typecheck` that gate is skipped, so the
+    // same source passes without reaching any deep-gate diagnostic.
     let (_dir, path) = write_fixture(
         "type VHolder { items: Vec<i64>, tag: string }\n\
          fn main() {\n\
@@ -331,5 +332,242 @@ fn check_rejects_invalid_module_const_arithmetic_without_nyi_or_artifact() {
     assert!(
         !dir.path().join("main").exists(),
         "failed `hew check` must not emit a native artifact"
+    );
+}
+
+// ── E_SIR_UNSUPPORTED source-span rendering (#3384) ─────────────────────────
+
+/// A limitation the SIR ownership pass refuses (`E_SIR_UNSUPPORTED`) must
+/// render with the same `file:line:col` and source excerpt as any other
+/// diagnostic, not a bare internal-symbol line.
+///
+/// The fixture is `tests/vertical-slice/reject/hashmap_get_unclonable_opaque_value.hew`,
+/// inlined so this regression does not depend on that corpus file's continued
+/// existence: `HashMap::get` hands a loan of a no-clone value, and consuming
+/// that loan hits the consume wall inside SIR body lowering.
+#[test]
+fn check_sir_unsupported_renders_with_source_span() {
+    let (_dir, path) = write_fixture(
+        "#[resource]\n\
+         type Tok {\n\
+         \x20\x20\x20\x20id: i64,\n\
+         }\n\
+         \n\
+         impl Tok {\n\
+         \x20\x20\x20\x20fn close(consume self) {\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20println(f\"close {self.id}\");\n\
+         \x20\x20\x20\x20}\n\
+         }\n\
+         \n\
+         fn main() {\n\
+         \x20\x20\x20\x20var m: HashMap<string, Tok> = HashMap.new();\n\
+         \x20\x20\x20\x20m.insert(\"a\", Tok { id: 1 });\n\
+         \x20\x20\x20\x20match m.get(\"a\") {\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20Option.Some(t) => t.close(),\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20Option.None => println(\"none\"),\n\
+         \x20\x20\x20\x20}\n\
+         }\n",
+    );
+
+    let output = run_check(&["check", path.to_str().unwrap()]);
+    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+
+    assert!(!output.status.success(), "{}", describe_output(&output));
+    assert!(
+        stderr.contains("E_SIR_UNSUPPORTED"),
+        "expected the live consume-wall limitation to report E_SIR_UNSUPPORTED; got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("compiler limitation:"),
+        "E_SIR_UNSUPPORTED must render on the Limitation channel; got:\n{stderr}"
+    );
+    // The header must name the fixture file and a real line:col, not a bare
+    // internal line with no location.
+    let file_name = path.file_name().unwrap().to_str().unwrap();
+    assert!(
+        stderr.lines().any(|line| {
+            line.contains(file_name) && line.contains(':') && line.contains("E_SIR_UNSUPPORTED")
+        }),
+        "expected a `{file_name}:<line>:<col>: ... E_SIR_UNSUPPORTED` header; got:\n{stderr}"
+    );
+    // A source excerpt with a caret underline, the same shape every other
+    // diagnostic renders — this is the fixture's own declaring line, not
+    // a Rust `{:?}` payload.
+    assert!(
+        stderr.contains("fn main()"),
+        "expected the declaring function's source line in the excerpt; got:\n{stderr}"
+    );
+    assert!(
+        stderr.lines().any(|line| line
+            .split_once('|')
+            .is_some_and(|(_, marker)| marker.trim_start().starts_with('^'))),
+        "expected a caret underline against the fixture source; got:\n{stderr}"
+    );
+}
+
+/// Same limitation as [`check_sir_unsupported_renders_with_source_span`], but
+/// raised inside a root-file actor's `receive fn` body instead of a free
+/// `fn main`.
+///
+/// Actor handler bodies never populate HIR's `functions_by_item` table (they
+/// live inside `HirActorDecl`, not the free-function item list), so a naive
+/// re-derivation of source origin through that table always misses them.
+/// `SemCallable::source_origin` is set once, correctly, at construction for
+/// every callable shape including actor members; this pins that the span
+/// path reads that stored fact rather than reconstructing it.
+#[test]
+fn check_sir_unsupported_renders_with_source_span_for_actor_handler() {
+    let (_dir, path) = write_fixture(
+        "#[resource]\n\
+         type Tok {\n\
+         \x20\x20\x20\x20id: i64,\n\
+         }\n\
+         \n\
+         impl Tok {\n\
+         \x20\x20\x20\x20fn close(consume self) {\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20println(f\"close {self.id}\");\n\
+         \x20\x20\x20\x20}\n\
+         }\n\
+         \n\
+         actor Holder {\n\
+         \x20\x20\x20\x20var m: HashMap<string, Tok>,\n\
+         \n\
+         \x20\x20\x20\x20receive fn poke() {\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20match m.get(\"a\") {\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20Option.Some(t) => t.close(),\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20Option.None => println(\"none\"),\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20}\n\
+         \x20\x20\x20\x20}\n\
+         }\n\
+         \n\
+         fn main() {\n\
+         \x20\x20\x20\x20let h = spawn Holder(m: HashMap.new());\n\
+         \x20\x20\x20\x20let _ = h.poke();\n\
+         }\n",
+    );
+
+    let output = run_check(&["check", path.to_str().unwrap()]);
+    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+
+    assert!(!output.status.success(), "{}", describe_output(&output));
+    assert!(
+        stderr.contains("E_SIR_UNSUPPORTED"),
+        "expected the actor handler's consume-wall limitation to report E_SIR_UNSUPPORTED; got:\n{stderr}"
+    );
+    let file_name = path.file_name().unwrap().to_str().unwrap();
+    assert!(
+        stderr.lines().any(|line| {
+            line.contains(file_name) && line.contains(':') && line.contains("E_SIR_UNSUPPORTED")
+        }),
+        "expected a `{file_name}:<line>:<col>: ... E_SIR_UNSUPPORTED` header for the actor handler; got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("match m.get"),
+        "expected the handler body's own source line in the excerpt, not a bare line; got:\n{stderr}"
+    );
+    assert!(
+        stderr.lines().any(|line| line
+            .split_once('|')
+            .is_some_and(|(_, marker)| marker.trim_start().starts_with('^'))),
+        "expected a caret underline against the fixture source; got:\n{stderr}"
+    );
+}
+
+/// Same limitation as [`check_sir_unsupported_renders_with_source_span`],
+/// through `--format json`: the JSON diagnostic must carry the fixture's
+/// real file and a non-zero span, not the zero span a spanless limitation
+/// falls back to.
+#[test]
+fn check_sir_unsupported_renders_with_source_span_json() {
+    let (_dir, path) = write_fixture(
+        "#[resource]\n\
+         type Tok {\n\
+         \x20\x20\x20\x20id: i64,\n\
+         }\n\
+         \n\
+         impl Tok {\n\
+         \x20\x20\x20\x20fn close(consume self) {\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20println(f\"close {self.id}\");\n\
+         \x20\x20\x20\x20}\n\
+         }\n\
+         \n\
+         fn main() {\n\
+         \x20\x20\x20\x20var m: HashMap<string, Tok> = HashMap.new();\n\
+         \x20\x20\x20\x20m.insert(\"a\", Tok { id: 1 });\n\
+         \x20\x20\x20\x20match m.get(\"a\") {\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20Option.Some(t) => t.close(),\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20Option.None => println(\"none\"),\n\
+         \x20\x20\x20\x20}\n\
+         }\n",
+    );
+
+    let output = Command::new(hew_binary())
+        .args(["check", "--format", "json", path.to_str().unwrap()])
+        .output()
+        .expect("hew binary must run");
+    assert!(!output.status.success(), "{}", describe_output(&output));
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let diagnostics: Vec<Value> = serde_json::from_str(&stdout).unwrap_or_else(|error| {
+        panic!("stdout must be a parseable JSON array; parse error: {error}\nstdout:\n{stdout}")
+    });
+    let diagnostic = diagnostics
+        .iter()
+        .find(|d| d["code"] == "E_SIR_UNSUPPORTED")
+        .unwrap_or_else(|| panic!("expected an E_SIR_UNSUPPORTED diagnostic; got:\n{stdout}"));
+
+    assert_eq!(diagnostic["channel"], "limitation");
+    assert_eq!(diagnostic["file"], path.to_str().unwrap());
+    assert!(
+        diagnostic["span"]["start_line"].as_u64().unwrap() > 0,
+        "expected a real start_line, not the zero-span fallback; got:\n{stdout}"
+    );
+    assert!(
+        diagnostic["span"]["start_col"].as_u64().unwrap() > 0,
+        "expected a real start_col, not the zero-span fallback; got:\n{stdout}"
+    );
+}
+
+/// Negative control for #3384: the or-pattern, fixed-size array parameter,
+/// and functional-record-update-spread constructs the issue names as
+/// formerly triggering `E_SIR_UNSUPPORTED` all compile cleanly today,
+/// confirming the positive test above targets a genuinely live limitation
+/// rather than a stale trigger.
+#[test]
+fn check_former_sir_unsupported_triggers_now_compile() {
+    let (_dir, path) = write_fixture(
+        "fn classify(x: i64) -> string {\n\
+         \x20\x20\x20\x20match x {\n\
+         \x20\x20\x20\x20\x20\x20\x20\x201 | 2 | 3 => \"small\",\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20_ => \"large\",\n\
+         \x20\x20\x20\x20}\n\
+         }\n\
+         \n\
+         fn sum_first_three(values: [i64; 3]) -> i64 {\n\
+         \x20\x20\x20\x20values[0] + values[1] + values[2]\n\
+         }\n\
+         \n\
+         type Point { x: i64, y: i64 }\n\
+         \n\
+         fn main() {\n\
+         \x20\x20\x20\x20println(classify(2));\n\
+         \x20\x20\x20\x20println(sum_first_three([1, 2, 3]));\n\
+         \x20\x20\x20\x20let p = Point { x: 1, y: 2 };\n\
+         \x20\x20\x20\x20let q = Point { x: 3, ..p };\n\
+         \x20\x20\x20\x20println(q.x + q.y);\n\
+         }\n",
+    );
+
+    let output = run_check(&["check", path.to_str().unwrap()]);
+    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+
+    assert!(
+        output.status.success(),
+        "or-pattern, fixed-size array parameter and record-update spread must all check cleanly now\n{}",
+        describe_output(&output),
+    );
+    assert!(
+        !stderr.contains("E_SIR_UNSUPPORTED"),
+        "none of these constructs should trigger the SIR consume-wall limitation; got:\n{stderr}"
     );
 }

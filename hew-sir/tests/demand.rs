@@ -468,7 +468,7 @@ fn every_callable_demand_lowers_stranded_bodies_and_names_refused_headers() {
         "an unreached body outside the surface must report why: {:#?}",
         every.statuses
     );
-    let SirLoweringStatus::Unsupported { reason } = status_of(&every, "refused_header") else {
+    let SirLoweringStatus::Unsupported { reason, .. } = status_of(&every, "refused_header") else {
         panic!(
             "a refused header must surface its refusal under every-callable demand: {:#?}",
             every.statuses

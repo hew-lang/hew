@@ -1012,7 +1012,7 @@ fn guard_cannot_consume_a_candidate_binding() {
     );
     assert!(
         lowered.statuses.iter().any(|status| status.name == "drive"
-            && matches!(&status.status, SirLoweringStatus::Unsupported { reason }
+            && matches!(&status.status, SirLoweringStatus::Unsupported { reason, .. }
                 if reason.contains("E_OWN_GUARD_CONSUME") && reason.contains("`values`"))),
         "{:#?}",
         lowered.statuses
@@ -1071,6 +1071,6 @@ fn text_wire_names_cannot_discard_another_field() {
     "#,
     );
     assert!(lowered.statuses.iter().any(|status| matches!(&status.status,
-        SirLoweringStatus::Unsupported { reason } if reason.contains("wire JSON field name `same` is ambiguous")
+        SirLoweringStatus::Unsupported { reason, .. } if reason.contains("wire JSON field name `same` is ambiguous")
     )));
 }

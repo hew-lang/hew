@@ -315,3 +315,54 @@ fn non_root_unreachable_code_warning_rendered_with_dep_filename() {
         "stderr must mention the warning; got:\n{stderr}"
     );
 }
+
+// ── E_SIR_UNSUPPORTED cross-module safety (#3384) ───────────────────────────
+
+/// A SIR lowering refusal (`E_SIR_UNSUPPORTED`) attributed to a function
+/// declared in an imported, non-root module must render as a bare line, not
+/// a caret against the root file's unrelated text.
+///
+/// `SirLoweringStatus::Unsupported` only attaches a span for a
+/// `FunctionSourceOrigin::RootUnit` declaration; a byte range indexes the
+/// file it was parsed from, and the CLI renders it against the root source
+/// only. Negative control for the root-unit-only span rule the positive
+/// span tests in `check_deep_gates_e2e` rely on.
+#[test]
+fn cross_module_sir_unsupported_renders_without_a_caret() {
+    let fixture = write_fixture(&[
+        ("main.hew", "import \"dep.hew\";\n\nfn main() {\n    var m: HashMap<string, Tok> = HashMap.new();\n    m.insert(\"a\", Tok { id: 1 });\n    use_tok(m);\n}\n"),
+        (
+            "dep.hew",
+            "#[resource]\ntype Tok {\n    id: i64,\n}\n\nimpl Tok {\n    fn close(consume self) {\n        println(f\"close {self.id}\");\n    }\n}\n\npub fn use_tok(m: HashMap<string, Tok>) {\n    match m.get(\"a\") {\n        Option.Some(t) => t.close(),\n        Option.None => println(\"none\"),\n    }\n}\n",
+        ),
+    ]);
+    let main_path = fixture.path().join("main.hew");
+
+    let output = Command::new(hew_binary())
+        .args(["check", main_path.to_str().unwrap()])
+        .current_dir(fixture.path())
+        .output()
+        .expect("hew binary must run");
+
+    assert!(
+        !output.status.success(),
+        "expected the consume-wall limitation to reject the program"
+    );
+    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+    assert!(
+        stderr.contains("E_SIR_UNSUPPORTED"),
+        "expected the foreign-module consume-wall limitation to report E_SIR_UNSUPPORTED; got:\n{stderr}"
+    );
+    // No caret line: a foreign-origin span would index dep.hew's bytes but
+    // render against main.hew's text, so the renderer must stay spanless.
+    assert!(
+        !stderr.lines().any(|line| line
+            .split_once('|')
+            .is_some_and(|(_, marker)| marker.trim_start().starts_with('^'))),
+        "a foreign-module limitation must not render a caret against the root file; got:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("dep.hew:") && !stderr.contains("main.hew:"),
+        "a foreign-module limitation must render as a bare line, not a false file:line:col header; got:\n{stderr}"
+    );
+}

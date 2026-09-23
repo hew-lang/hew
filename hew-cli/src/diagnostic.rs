@@ -142,12 +142,30 @@ pub(crate) fn codegen_channel(
     }
 }
 
+/// The stable code for a codegen-emit failure, classified the same three ways
+/// as [`codegen_channel`] (#3189): `LlvmVerify`/`FailClosed`/`FailClosedAt`
+/// are the compiler disagreeing with the LLVM module it built, `Unsupported`/
+/// `UnsupportedAt` are a legal Hew construct this backend does not lower yet,
+/// and the rest are the build environment. None of the three is "not yet
+/// implemented" — that code names a different thing (a source construct HIR
+/// itself refuses) and previously swallowed all three classes here alike.
+#[must_use]
+pub(crate) fn codegen_error_code(error: &hew_codegen_rs::CodegenError) -> &'static str {
+    use hew_types::error::DiagChannel;
+    match codegen_channel(error) {
+        DiagChannel::Internal => "E_CODEGEN_FAIL_CLOSED",
+        DiagChannel::Limitation => "E_CODEGEN_UNSUPPORTED",
+        DiagChannel::User => "E_CODEGEN_ENV",
+    }
+}
+
 /// Render a codegen-emit error (`emit_module` failure path).
 ///
 /// FAIL-CLOSED RENDER RULE: renders a `^^^` caret only when the error carries a
 /// source span, `source_path` can be read, and the span's start byte is within
 /// that source's length.  Any of those conditions failing degrades to a bare
-/// `E_NOT_YET_IMPLEMENTED:` plain-line — never a caret against the wrong source.
+/// plain-line carrying the same [`codegen_error_code`] — never a caret against
+/// the wrong source.
 ///
 /// CROSS-MODULE SAFETY: the span is attached upstream ONLY for a function
 /// carrying `SourceOrigin::RootUnit`, so it provably indexes the root source
@@ -159,6 +177,7 @@ pub(crate) fn render_codegen_emit_error(
     source_path: Option<&std::path::Path>,
 ) {
     let prefix = codegen_channel(error).prefix();
+    let code = codegen_error_code(error);
     if let Some((span_start, span_end)) = error.span() {
         if let Some(path) = source_path {
             if let Ok(text) = std::fs::read_to_string(path) {
@@ -171,7 +190,7 @@ pub(crate) fn render_codegen_emit_error(
                         &text,
                         filename,
                         &span,
-                        &format!("{prefix}{error}"),
+                        &format!("{prefix}{code}: {error}"),
                         &[],
                         &[],
                     );
@@ -180,7 +199,60 @@ pub(crate) fn render_codegen_emit_error(
             }
         }
     }
-    emit_plain_diagnostic_line(&format!("{prefix}E_NOT_YET_IMPLEMENTED: {error}"));
+    emit_plain_diagnostic_line(&format!("{prefix}{code}: {error}"));
+}
+
+/// Render a `hew_compile::SessionError::Unsupported` diagnostic
+/// (`E_SIR_UNSUPPORTED`, #3384).
+///
+/// Same fail-closed render rule as [`render_codegen_emit_error`]: a caret
+/// renders only when the error carries a span, `source` is non-empty, and the
+/// span's start byte indexes it. Anything else degrades to a bare
+/// `E_SIR_UNSUPPORTED:` plain line — a limitation whose producer could not
+/// attribute a declaration is still reported, just without a location.
+pub(crate) fn render_unsupported_error(
+    message: &str,
+    span: Option<&Range<usize>>,
+    source: &str,
+    filename: &str,
+) -> hew_types::error::DiagChannel {
+    let channel = hew_types::error::DiagChannel::Limitation;
+    let prefix = channel.prefix();
+    if let Some(span) = span {
+        if span.start < source.len() {
+            if crate::diagnostic_json::json_output_active() {
+                crate::diagnostic_json::push_json_diagnostic(
+                    crate::diagnostic_json::coded_span_diagnostic(
+                        "E_SIR_UNSUPPORTED",
+                        message,
+                        channel,
+                        source,
+                        filename,
+                        span,
+                    ),
+                );
+            } else {
+                let end = span.end.min(source.len());
+                render_diagnostic(
+                    source,
+                    filename,
+                    &(span.start..end),
+                    &format!("{prefix}E_SIR_UNSUPPORTED: {message}"),
+                    &[],
+                    &[],
+                );
+            }
+            return channel;
+        }
+    }
+    if crate::diagnostic_json::json_output_active() {
+        crate::diagnostic_json::push_json_diagnostic(
+            crate::diagnostic_json::coded_message_diagnostic("E_SIR_UNSUPPORTED", message, channel),
+        );
+    } else {
+        emit_plain_diagnostic_line(&format!("{prefix}E_SIR_UNSUPPORTED: {message}"));
+    }
+    channel
 }
 
 // ANSI colour helpers

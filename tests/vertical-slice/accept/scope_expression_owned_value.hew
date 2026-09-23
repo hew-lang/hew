@@ -1,0 +1,15 @@
+// Accept fixture for D527: a `scope { .. }` expression yielding an owned
+// heap value (a `string` produced by an awaited fork) transfers cleanly to
+// the binding with no leak or double free (checked under `make core-safety`).
+
+fn make() -> string {
+    "owned-value"
+}
+
+fn main() {
+    let r = scope {
+        let a = fork make();
+        await a
+    };
+    println(r);
+}

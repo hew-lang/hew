@@ -1,0 +1,30 @@
+// Accept fixture for D527: `scope { .. }` is a value-producing expression.
+//
+// The scope's tail expression supplies its value, but only after every task
+// forked inside the scope has joined. `total` proves the awaited tail value;
+// `unawaited` proves the scope still drains a fork that nothing ever awaits
+// before it yields (the print in `slow` lands before "after scope").
+
+fn square(n: i64) -> i64 { n * n }
+
+fn slow() -> i64 {
+    sleep(20ms);
+    println("slow done");
+    9
+}
+
+fn main() {
+    let total = scope {
+        let a = fork square(3);
+        let b = fork square(4);
+        (await a) + (await b)
+    };
+    println(f"total={total}");
+
+    let unawaited = scope {
+        fork slow();
+        1
+    };
+    println("after scope");
+    println(f"unawaited={unawaited}");
+}

@@ -1,0 +1,13 @@
+[[case]]
+id = "scope_expression_owned_value"
+intent = "A `scope { .. }` expression yielding an owned heap value transfers cleanly with no leak or double free."
+source = "../vertical-slice/accept/scope_expression_owned_value.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "owned-value\n"
+exit = 0

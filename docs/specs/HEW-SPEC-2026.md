@@ -3576,7 +3576,7 @@ transfers ownership rather than creating another closer. `is` compares handle
 identity, and each method's declared receiver controls borrowing, mutation or
 consumption. The actor ownership rules of §3.9.6 still apply.
 
-`net.Listener.accept()` and `net.Connection.read()` are plain suspending
+`net.Listener.accept()` and `net.Connection.recv()` are plain suspending
 calls (§4.0): they park the calling execution context rather than blocking
 its thread, and they carry no `await`. A deadline on one of them is the
 socket's own read and write timeouts, or a deadline on the enclosing scope;

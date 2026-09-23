@@ -2499,6 +2499,27 @@ fn wasm_scope_with_fork_child_rejected_before_codegen() {
 }
 
 #[test]
+fn wasm_scope_deadline_rejected_before_codegen() {
+    // A deadline scope and a fork block need the same task-scope substrate
+    // as a plain scope; without the check they reached the wasm32 link step
+    // and failed there with unresolved `hew_checked_scope_*` symbols.
+    let output = typecheck_inline_wasm(
+        r"
+        fn main() {
+            let value = scope within 50ms { 1 } handle failure { 2 };
+            println(value);
+        }
+        ",
+    );
+    let count = platform_limitation_error_count(&output, "Structured concurrency scopes");
+    assert!(
+        count >= 1,
+        "expected a deadline scope to be rejected on WASM, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
 fn wasm_tcp_networking_surface_rejected_before_codegen() {
     let output = typecheck_inline_wasm(
         r#"

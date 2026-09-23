@@ -1,0 +1,138 @@
+// Every suspending family under a scope deadline, from `main` and from an
+// ordinary helper: an actor call, a pipe receive, a socket receive, a socket
+// stream receive and a listener accept. Each completes inside a generous
+// deadline and reports its typed deadline when nothing can arrive; owned
+// values cross both edges.
+import std.net;
+import std.stream;
+
+actor Echo {
+    receive fn slow(label: string) -> string { sleep(1s); label }
+    receive fn quick(label: string) -> string { label + "!" }
+}
+
+fn call_within(echo: Echo, label: string, slow: bool, limit: duration) -> string {
+    scope within limit {
+        let reply = if slow { echo.slow(label) } else { echo.quick(label) };
+        match reply { .Ok(text) => text, .Err(_) => "failed" }
+    } handle failure {
+        match failure { .Deadline { message } => "deadline", .Fault { message } => "fault" }
+    }
+}
+
+fn pipe_within(input: Stream<string>, limit: duration) -> string {
+    scope within limit {
+        match input.recv() { .Some(text) => text, .None => "closed" }
+    } handle failure {
+        match failure { .Deadline { message } => "deadline", .Fault { message } => "fault" }
+    }
+}
+
+fn socket_within(conn: net.Connection, limit: duration) -> string {
+    scope within limit {
+        match conn.recv() { .Some(data) => f"{data.len()} bytes", .None => "eof" }
+    } handle failure {
+        match failure { .Deadline { message } => "deadline", .Fault { message } => "fault" }
+    }
+}
+
+fn socket_stream_within(input: Stream<bytes>, limit: duration) -> string {
+    scope within limit {
+        match input.recv() { .Some(data) => f"{data.len()} bytes", .None => "eof" }
+    } handle failure {
+        match failure { .Deadline { message } => "deadline", .Fault { message } => "fault" }
+    }
+}
+
+fn accept_within(listener: net.Listener, limit: duration) -> string {
+    scope within limit {
+        let conn = listener.accept();
+        conn.close();
+        "accepted"
+    } handle failure {
+        match failure { .Deadline { message } => "deadline", .Fault { message } => "fault" }
+    }
+}
+
+fn main() {
+    let echo = spawn Echo;
+    println(f"helper call: {call_within(echo, "hello", false, 10s)}");
+    let inline_call = scope within 10s {
+        match echo.quick("main") { .Ok(text) => text, .Err(_) => "failed" }
+    } handle failure {
+        match failure { .Deadline { message } => "deadline", .Fault { message } => "fault" }
+    };
+    println(f"main call: {inline_call}");
+    println(f"helper call: {call_within(echo, "late", true, 20ms)}");
+    let late_call = scope within 20ms {
+        match echo.slow("late") { .Ok(text) => text, .Err(_) => "failed" }
+    } handle failure {
+        match failure { .Deadline { message } => "deadline", .Fault { message } => "fault" }
+    };
+    println(f"main call: {late_call}");
+
+    let (output, input): (Sink<string>, Stream<string>) = stream.pipe(2).expect("pipe");
+    output.send("first").expect("send");
+    output.send("second").expect("send");
+    println(f"helper pipe: {pipe_within(input, 10s)}");
+    let inline_pipe = scope within 10s {
+        match input.recv() { .Some(text) => text, .None => "closed" }
+    } handle failure {
+        match failure { .Deadline { message } => "deadline", .Fault { message } => "fault" }
+    };
+    println(f"main pipe: {inline_pipe}");
+    println(f"helper pipe: {pipe_within(input, 20ms)}");
+    let empty_pipe = scope within 20ms {
+        match input.recv() { .Some(text) => text, .None => "closed" }
+    } handle failure {
+        match failure { .Deadline { message } => "deadline", .Fault { message } => "fault" }
+    };
+    println(f"main pipe: {empty_pipe}");
+
+    let listener = net.listen("127.0.0.1:0").expect("listen");
+    let port = listener.local_port();
+    let client = net.connect(f"127.0.0.1:{port}").expect("connect");
+    println(f"helper accept: {accept_within(listener, 10s)}");
+    let second = net.connect(f"127.0.0.1:{port}").expect("connect");
+    let server = scope within 10s {
+        listener.accept()
+    } handle failure {
+        panic("the accept deadline expired")
+    };
+    println("main accept: accepted");
+    println(f"helper accept: {accept_within(listener, 20ms)}");
+    let idle_accept = scope within 20ms {
+        let conn = listener.accept();
+        conn.close();
+        "accepted"
+    } handle failure {
+        match failure { .Deadline { message } => "deadline", .Fault { message } => "fault" }
+    };
+    println(f"main accept: {idle_accept}");
+
+    second.send(b"ping").expect("send");
+    println(f"helper socket: {socket_within(server, 10s)}");
+    println(f"helper socket: {socket_within(server, 20ms)}");
+    let idle_socket = scope within 20ms {
+        match server.recv() { .Some(data) => f"{data.len()} bytes", .None => "eof" }
+    } handle failure {
+        match failure { .Deadline { message } => "deadline", .Fault { message } => "fault" }
+    };
+    println(f"main socket: {idle_socket}");
+
+    let (reader, writer) = server.split();
+    second.send(b"pong!").expect("send");
+    println(f"helper socket stream: {socket_stream_within(reader, 10s)}");
+    let idle_stream = scope within 20ms {
+        match reader.recv() { .Some(data) => f"{data.len()} bytes", .None => "eof" }
+    } handle failure {
+        match failure { .Deadline { message } => "deadline", .Fault { message } => "fault" }
+    };
+    println(f"main socket stream: {idle_stream}");
+    println(f"helper socket stream: {socket_stream_within(reader, 20ms)}");
+    writer.close();
+    client.close();
+    second.close();
+    listener.close();
+    close(echo);
+}

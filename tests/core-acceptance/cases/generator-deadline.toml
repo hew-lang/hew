@@ -1,0 +1,11 @@
+[[case]]
+id = "generator-deadline"
+intent = "An expired scope deadline closes the generator the scope was iterating, runs both cleanups and fails the process with the deadline."
+source = "cases/generator-deadline.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "PRODUCER\nPRODUCER cleaned\nCONSUMER cleaned\n"
+stderr = "hew: failure: Deadline (-2)\n"
+exit = 1

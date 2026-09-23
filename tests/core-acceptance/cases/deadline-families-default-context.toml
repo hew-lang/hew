@@ -1,0 +1,10 @@
+[[case]]
+id = "deadline-families-default-context"
+intent = "An actor call, a pipe receive, a socket receive, a socket stream receive and a listener accept each complete or report the scope deadline, from `main` and from an ordinary helper."
+source = "cases/deadline-families-default-context.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "helper call: hello!\nmain call: main!\nhelper call: deadline\nmain call: deadline\nhelper pipe: first\nmain pipe: second\nhelper pipe: deadline\nmain pipe: deadline\nhelper accept: accepted\nmain accept: accepted\nhelper accept: deadline\nmain accept: deadline\nhelper socket: 4 bytes\nhelper socket: deadline\nmain socket: deadline\nhelper socket stream: 5 bytes\nmain socket stream: deadline\nhelper socket stream: deadline\n"
+exit = 0

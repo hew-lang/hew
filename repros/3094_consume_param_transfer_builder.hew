@@ -11,8 +11,7 @@
 // double-free or leak of a transferred child is a live abort, not a
 // type-check-only claim.
 //
-// Expected after #3094 is fixed: clean check, clean run, exit 0. The corpus
-// ratchet keeps this source failing until it can return to the accept suite.
+// Expected: clean check, clean run, exit 0.
 #[opaque]
 type Handle {
 }
@@ -52,8 +51,11 @@ impl Value {
             hew_json_free(self.handle)
         };
     }
+    // Destructuring hands the handle out without running `close`, so the
+    // parent array adopts a live child.
     fn release(consume self) -> Handle {
-        self.handle
+        let Value { handle } = self;
+        handle
     }
 }
 

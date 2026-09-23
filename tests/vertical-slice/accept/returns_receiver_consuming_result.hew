@@ -31,8 +31,11 @@ impl Value {
             hew_json_free(self.handle)
         };
     }
+    // Destructuring hands the handle out without running `close`, so the
+    // parent array adopts a live child.
     fn release(consume self) -> Handle {
-        self.handle
+        let Value { handle } = self;
+        handle
     }
 }
 

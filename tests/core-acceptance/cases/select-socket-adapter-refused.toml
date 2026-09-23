@@ -1,0 +1,11 @@
+[[case]]
+id = "select-socket-adapter-refused"
+intent = "Select over a line adapter on a socket stream traps the selecting actor with a named reason; the process survives and a sibling actor keeps serving."
+source = "cases/select-socket-adapter-refused.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "watcher crashed\nsibling 42\n"
+stderr = "hew: failure: UserPanic (212): select cannot observe a line, chunk or take adapter over a socket stream yet\nhew: actor crash in Watcher.watch (actor 2): UserPanic\n"
+exit = 1

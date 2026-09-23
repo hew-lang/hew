@@ -34,6 +34,21 @@ pub unsafe extern "C" fn hew_async_tcp_read(
     unsafe { start(connection, AsyncIoAction::Read { deadline: None }, waker) }
 }
 
+/// Watch a connection until a read would make progress, reading nothing. A
+/// selection observes a socket stream this way, so a losing arm leaves every
+/// byte for the stream's next receive.
+///
+/// # Safety
+/// `connection` is a live transport handle kept alive across the pending wait.
+/// `waker` is null or a borrowed valid `HewWaker`; its context is retained.
+pub(crate) unsafe fn start_tcp_readable(
+    connection: i32,
+    waker: *const HewWaker,
+) -> *const HewAsyncIo {
+    // SAFETY: the caller supplies the borrowed handle and readiness descriptor.
+    unsafe { start(connection, AsyncIoAction::Readable, waker) }
+}
+
 /// Start a one-shot nonblocking accept. The operation owns the newly accepted
 /// connection until `hew_async_io_take_handle` transfers it to the resume edge.
 /// An untaken or late connection is closed when its owning result is discarded.

@@ -322,9 +322,9 @@ language contracts:
 - `close(sup)`, `fork close(sup)` and `closed(sup)` are decided supervisor
   forms, but native supervisor lowering has not adopted them. The current
   internal stop entry point is not the public language spelling (§5.6).
-- Native `select` realizes task, timer and pipe-stream receive sources.
-  Actor-call registration remains pending (§4.11.1). A file or socket
-  stream is not a select source yet (§6.4.5).
+- Native `select` realizes task, timer, actor-call and stream receive
+  sources. A line, chunk or take adapter over a socket stream is not a
+  select source yet (§6.4.5).
 - Generic `frames` / `framed` codec adapters are not lowered; the `Codec`
   trait, `lines()` and the shipped codecs are separate from that gap
   (§6.4.6).
@@ -5232,8 +5232,11 @@ end of data. A `send` never traps for a missing reader; it reports
 #### 6.4.5 Selection
 
 `Stream<T>` is a select source. `item from input.recv() => ...` binds
-`Option<T>` and `None` is a normal winning value (§4.11.1). A file or
-socket stream is not a select source in edition 2026 (§2.1.1).
+`Option<T>` and `None` is a normal winning value (§4.11.1). Observing a
+stream takes nothing: a losing arm leaves every element, and every byte
+of a socket, for the next receive. A file stream is ready at once, since
+its next read never waits. A line, chunk or take adapter over a socket
+stream is not a select source in edition 2026 (§2.1.1).
 
 #### 6.4.6 Codecs
 

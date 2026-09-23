@@ -17,7 +17,12 @@ use super::{
 /// The owned operation decides which readiness can make progress.
 #[derive(Clone)]
 pub(crate) enum AsyncIoAction {
-    Read { deadline: Option<Instant> },
+    Read {
+        deadline: Option<Instant>,
+    },
+    /// Completes once a read would make progress, consuming nothing: a
+    /// selection's watch on a socket stream it must not read.
+    Readable,
     Accept,
     Write(Arc<Mutex<WriteProgress>>),
 }
@@ -41,7 +46,7 @@ impl AsyncIoAction {
 
     fn configure_timeout(&mut self, handle: i32) -> Result<(), IoFailure> {
         let write = matches!(self, Self::Write(_));
-        if matches!(self, Self::Accept) {
+        if matches!(self, Self::Accept | Self::Readable) {
             return Ok(());
         }
         let timeout = crate::transport::tcp_conn_timeout_result(handle, write)
@@ -54,7 +59,7 @@ impl AsyncIoAction {
                 progress.timeout = timeout;
                 progress.deadline = deadline;
             }
-            Self::Accept => {}
+            Self::Accept | Self::Readable => {}
         }
         Ok(())
     }
@@ -63,14 +68,14 @@ impl AsyncIoAction {
         match self {
             Self::Read { deadline } => *deadline,
             Self::Write(progress) => progress.lock_or_recover().deadline,
-            Self::Accept => None,
+            Self::Accept | Self::Readable => None,
         }
     }
 
     pub(super) fn interest(&self) -> i32 {
         match self {
             Self::Write(_) => HEW_IO_WRITE,
-            Self::Read { .. } | Self::Accept => HEW_IO_READ,
+            Self::Read { .. } | Self::Readable | Self::Accept => HEW_IO_READ,
         }
     }
 }
@@ -274,6 +279,9 @@ pub(super) fn handle_ready(
             return;
         };
         result
+    } else if matches!(action, AsyncIoAction::Readable) {
+        // Data, end of stream or an error: the reader's next read will not wait.
+        Ok(IoValue::Count(0))
     } else if matches!(action, AsyncIoAction::Accept) {
         match crate::transport::tcp_listener_accept_nonblocking_result(handle) {
             Ok(crate::transport::AcceptOutcome::Accepted(connection)) => {

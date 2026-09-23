@@ -1,0 +1,49 @@
+// A file stream is a select source whose next read never waits, so it beats a
+// long timer at once, in an actor turn as on the main path. The winning arm
+// reads the file's first chunk and the next selection sees the end of it.
+import std.stream;
+
+actor Watcher {
+    receive fn watch(consume src: stream.Stream<bytes>) -> string {
+        let first = select {
+            v from src.recv() => match v {
+                .Some(chunk) => f"file won: {chunk.len()} bytes",
+                .None => "file won: empty",
+            },
+            after 10s => "timer beat a file",
+        };
+        let second = select {
+            v from src.recv() => match v {
+                .Some(chunk) => f"file won again: {chunk.len()} bytes",
+                .None => "file won: end of stream",
+            },
+            after 10s => "timer beat a finished file",
+        };
+        f"{first}\n{second}"
+    }
+}
+
+fn open() -> stream.Stream<bytes> {
+    match stream.open("resource-read.bin") {
+        .Ok(handle) => handle,
+        .Err(error) => panic(error),
+    }
+}
+
+fn main() {
+    let source = open();
+    select {
+        v from source.recv() => match v {
+            .Some(chunk) => println(f"main: file won: {chunk.len()} bytes"),
+            .None => println("main: file won: empty"),
+        },
+        after 10s => println("main: timer beat a file"),
+    }
+    source.close();
+    let watcher = spawn Watcher();
+    match watcher.watch(open()) {
+        .Ok(report) => println(report),
+        .Err(_) => println("watcher crashed"),
+    }
+    close(watcher);
+}

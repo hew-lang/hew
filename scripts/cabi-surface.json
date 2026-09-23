@@ -11416,19 +11416,6 @@
       "availability": [
         "native"
       ],
-      "classification": "non-declarable",
-      "extent": "length-or-count",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_node_api_ask_location( *const HewRemotePid, *const c_void, i32, *mut c_void, usize, u64, usize, ) -> *mut c_void"
-      },
-      "symbol": "hew_node_api_ask_location"
-    },
-    {
-      "availability": [
-        "native"
-      ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "nul-terminated",
@@ -11632,19 +11619,6 @@
         "native": "fn hew_node_api_unregister( *const c_char) -> c_int"
       },
       "symbol": "hew_node_api_unregister"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable",
-      "extent": "not-applicable",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_node_ask_take_last_error() -> i32"
-      },
-      "symbol": "hew_node_ask_take_last_error"
     },
     {
       "availability": [

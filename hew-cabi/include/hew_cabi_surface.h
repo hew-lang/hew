@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1611u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1609u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 24u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1611] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1609] = {
     {"hew_actor_ask",
      "{\"native\": \"fn hew_actor_ask( *mut HewActor, i32, *mut c_void, usize, "
      ") -> *mut c_void\"}",
@@ -4344,11 +4344,6 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1611] = {
      "c_int\"}",
      "native", "stable", "nul-terminated", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_node_api_ask_location",
-     "{\"native\": \"fn hew_node_api_ask_location( *const HewRemotePid, *const "
-     "c_void, i32, *mut c_void, usize, u64, usize, ) -> *mut c_void\"}",
-     "native", "non-declarable", "not-applicable", "length-or-count",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_node_api_connect",
      "{\"native\": \"fn hew_node_api_connect( *const c_char) -> c_int\"}",
      "native", "stable", "nul-terminated", "no-in-signature-extent",
@@ -4421,10 +4416,6 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1611] = {
     {"hew_node_api_unregister",
      "{\"native\": \"fn hew_node_api_unregister( *const c_char) -> c_int\"}",
      "native", "stable", "nul-terminated", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_node_ask_take_last_error",
-     "{\"native\": \"fn hew_node_ask_take_last_error() -> i32\"}", "native",
-     "stable", "not-applicable", "not-applicable",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_node_connect",
      "{\"native\": \"fn hew_node_connect( *mut HewNode, *const c_char) -> "

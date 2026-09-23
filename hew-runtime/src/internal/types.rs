@@ -367,10 +367,10 @@ pub enum HewError {
 
 /// Typed failure reason for an ask (local or remote).
 ///
-/// Written to a thread-local slot whenever `hew_node_api_ask` or
-/// `hew_actor_ask` / `hew_actor_ask_timeout` returns `NULL`.
-/// Remote callers retrieve the discriminant via `hew_node_ask_take_last_error`.
-/// Local callers retrieve it via `hew_actor_ask_take_last_error`.
+/// Written to a thread-local slot whenever `hew_actor_ask` /
+/// `hew_actor_ask_timeout` returns `NULL`, and retrieved via
+/// `hew_actor_ask_take_last_error`. A remote call returns it from
+/// `hew_remote_call_take`.
 ///
 /// Values are stable across releases; do not reorder or reuse.
 ///

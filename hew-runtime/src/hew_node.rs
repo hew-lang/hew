@@ -9,7 +9,6 @@
 
 use crate::lifetime::{PoisonSafe, PoisonSafeRw};
 use crate::util::{CondvarExt, MutexExt};
-use std::cell::Cell;
 use std::collections::HashMap;
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
 use std::ptr;
@@ -586,42 +585,6 @@ static INBOUND_ASK_FEATURE_FLAGS_CAPTURE_HOOK: std::sync::LazyLock<TestGate> =
 /// `internal::types` so that WASM targets, which cannot import `hew_node`,
 /// can also use the type.
 pub use crate::internal::types::AskError;
-
-thread_local! {
-    static LAST_ASK_ERROR: Cell<i32> = const { Cell::new(AskError::None as i32) };
-}
-
-/// Write `err` to the thread-local slot and return `ptr::null_mut()`.
-///
-/// Using a helper keeps every NULL-return site in `hew_node_api_ask`
-/// a single expression and prevents accidentally forgetting the annotation.
-#[inline]
-fn ask_null(err: AskError) -> *mut c_void {
-    LAST_ASK_ERROR.with(|cell| cell.set(err as i32));
-    ptr::null_mut()
-}
-
-/// Read and clear the last ask-error discriminant for the current thread.
-///
-/// Returns one of the [`AskError`] values as an `i32`.  The slot is reset to
-/// `AskError::None` (0) after each call, so repeated calls without an
-/// intervening failed ask return 0.
-///
-/// This function is intended for use immediately after `hew_node_api_ask`
-/// returns `NULL` to distinguish the failure reason.  For direct local asks
-/// via `hew_actor_ask` / `hew_actor_ask_timeout`, use
-/// `hew_actor_ask_take_last_error` instead.
-///
-/// When the local delegation path in `hew_node_api_ask` is taken, actor-level
-/// errors are bridged into this slot automatically.
-#[no_mangle]
-pub extern "C" fn hew_node_ask_take_last_error() -> i32 {
-    LAST_ASK_ERROR.with(|cell| {
-        let v = cell.get();
-        cell.set(AskError::None as i32);
-        v
-    })
-}
 
 // ---------------------------------------------------------------------------
 // Reply routing table for distributed ask/reply
@@ -6174,10 +6137,9 @@ enum RemoteAskSetupResult {
 }
 
 /// Set up an outbound remote ask: serialize the request, register a pending
-/// reply slot (woken through `waker` for a coroutine call) and send the ask
-/// envelope over the mesh. Returns the `(request_id, pending)` pair on a
-/// successful submit, or a typed [`AskError`] on any setup failure. The
-/// blocking and coroutine entry points share this submit state machine.
+/// reply slot woken through `waker` and send the ask envelope over the mesh.
+/// Returns the `(request_id, pending)` pair on a successful submit, or a typed
+/// [`AskError`] on any setup failure.
 ///
 /// # Safety
 ///
@@ -6194,7 +6156,7 @@ fn setup_remote_ask(
     msg_type: i32,
     data: *mut c_void,
     size: usize,
-    waker: Option<crate::wake::OwnedWaker>,
+    waker: crate::wake::OwnedWaker,
 ) -> RemoteAskSetupResult {
     with_current_node_read(|guard| {
         let node_ptr = *guard as *mut HewNode;
@@ -6283,7 +6245,7 @@ fn setup_remote_ask(
 
         let connection = ConnectionKey::new(node.conn_mgr.cast_const(), conn_id);
         let (request_id, pending) =
-            reply_table().register_with_waker(connection, waker, PendingReplyKind::Ask);
+            reply_table().register_with_waker(connection, Some(waker), PendingReplyKind::Ask);
 
         // Encode the ask envelope with request_id and source_node_id over the
         // SERIALIZED request bytes.
@@ -6354,8 +6316,7 @@ fn setup_remote_ask(
 }
 
 /// Materialise a completed [`ReplyOutcome`] into this node's address space:
-/// the void sentinel, or a sized-block value the caller owns. Shared by the
-/// blocking and coroutine calls.
+/// the void sentinel, or a sized-block value the caller owns.
 fn remote_reply_value(
     dispatch: *const c_void,
     msg_type: i32,
@@ -6393,128 +6354,6 @@ fn remote_reply_value(
         return Err(AskError::PayloadSizeMismatch);
     }
     Ok(value)
-}
-
-/// The blocking caller's pointer-or-null form of [`remote_reply_value`],
-/// recording the exact [`AskError`] in the node ask-error slot.
-fn finish_remote_ask_outcome(
-    dispatch: *const c_void,
-    msg_type: i32,
-    reply_size: usize,
-    reply: &ReplyOutcome,
-) -> *mut c_void {
-    match remote_reply_value(dispatch, msg_type, reply_size, reply) {
-        Ok(value) => {
-            LAST_ASK_ERROR.with(|cell| cell.set(AskError::None as i32));
-            value
-        }
-        Err(error) => ask_null(error),
-    }
-}
-
-/// Perform a blocking ask against a PID, handling local and remote actors.
-///
-/// If the PID targets the local node, delegates to `hew_actor_ask`.
-/// If remote, sends the message with a `request_id` over the mesh and
-/// blocks until the reply arrives (or times out).
-///
-/// Returns a `malloc`'d reply buffer on success. Remote failures return
-/// `NULL` instead of fabricating a zero/default reply value. Successful
-/// remote asks for `void` (`reply_size == 0`) return a non-null internal
-/// sentinel pointer. Successful empty replies for non-void asks fail closed
-/// with `NULL`. The caller must `free` only heap-allocated non-null reply
-/// buffers.
-///
-/// # Safety
-///
-/// - `pid` must be a valid actor PID.
-/// - `data` must point to at least `size` readable bytes, or be null when
-///   `size` is 0.
-#[no_mangle]
-pub unsafe extern "C" fn hew_node_api_ask_location(
-    target: *const HewRemotePid,
-    dispatch: *const c_void,
-    msg_type: i32,
-    data: *mut c_void,
-    size: usize,
-    timeout_ms: u64,
-    reply_size: usize,
-) -> *mut c_void {
-    if target.is_null() {
-        return ask_null(AskError::StaleRef);
-    }
-    // SAFETY: caller guarantees `target` is readable.
-    let Ok(target) = Location::try_from(unsafe { *target }) else {
-        return ask_null(AskError::StaleRef);
-    };
-    let Some(route) = with_current_node_read(|guard| {
-        let node = *guard as *const HewNode;
-        if node.is_null() {
-            return None;
-        }
-        // SAFETY: current-node read lock pins the node.
-        Some(unsafe { routing::hew_routing_lookup_location((*node).routing_table, target) })
-    }) else {
-        return ask_null(AskError::NodeNotRunning);
-    };
-
-    // Local path: delegate to the by-ID ask (which packs a reply channel).
-    if let routing::LocationRoute::Local { actor_id } = route {
-        if crate::lifetime::live_actors::get_actor_ptr_by_id(actor_id).is_none() {
-            return ask_null(AskError::StaleRef);
-        }
-        // SAFETY: data/size are caller-validated; local actor ask is safe here.
-        let result = unsafe { crate::actor::hew_actor_ask_by_id(actor_id, msg_type, data, size) };
-        if result.is_null() {
-            // Bridge the actor-level error discriminant into the node error slot
-            // so callers of hew_node_api_ask see a consistent error regardless
-            // of whether the ask went local or remote.
-            let local_err = crate::actor::actor_ask_take_last_error_raw();
-            LAST_ASK_ERROR.with(|c| c.set(local_err));
-        }
-        return result;
-    }
-
-    // Remote path: send message over mesh with request_id, block on the reply.
-    // `dispatch` keys both the request encode and the reply decode `(dispatch,
-    // msg_type)` — it is THIS node's local dispatch global for the ask's
-    // statically-known target actor type (supplied by codegen).
-    let (request_id, pending) = match setup_remote_ask(target, dispatch, msg_type, data, size, None)
-    {
-        RemoteAskSetupResult::Ok(pair) => pair,
-        RemoteAskSetupResult::Error(e) => return ask_null(e),
-    };
-
-    // Block until the reply arrives or the caller-supplied timeout elapses.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
-    let mut outcome_guard = pending
-        .outcome
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    while outcome_guard.is_none() {
-        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-        if remaining.is_zero() {
-            // Timeout — remove the pending entry and return the null failure sentinel.
-            reply_table().remove(request_id);
-            return ask_null(AskError::Timeout);
-        }
-        let (new_guard, wait_result) = pending
-            .cond
-            .wait_timeout_or_recover(outcome_guard, remaining);
-        outcome_guard = new_guard;
-        if wait_result.timed_out() && outcome_guard.is_none() {
-            reply_table().remove(request_id);
-            return ask_null(AskError::Timeout);
-        }
-    }
-
-    let reply = outcome_guard.take().unwrap_or(ReplyOutcome {
-        status: ReplyStatus::Failed,
-        data: Vec::new(),
-        ask_error: AskError::ConnectionDropped,
-    });
-    drop(outcome_guard);
-    finish_remote_ask_outcome(dispatch, msg_type, reply_size, &reply)
 }
 
 /// One coroutine remote ask, from its encoded submission to the decoded reply.
@@ -6594,14 +6433,7 @@ pub unsafe extern "C" fn hew_remote_call_new(
     // SAFETY: caller guarantees `target` is null or readable.
     let pending = match unsafe { target.as_ref() }.map(|target| Location::try_from(*target)) {
         Some(Ok(target)) => {
-            match setup_remote_ask(
-                target,
-                dispatch,
-                msg_type,
-                request,
-                request_size,
-                Some(owned),
-            ) {
+            match setup_remote_ask(target, dispatch, msg_type, request, request_size, owned) {
                 RemoteAskSetupResult::Ok((_, pending)) => Ok(pending),
                 RemoteAskSetupResult::Error(error) => Err(error),
             }
@@ -7277,6 +7109,43 @@ mod tests {
             );
         }
         key
+    }
+
+    /// Drive one coroutine remote call to its outcome on this thread: the
+    /// taken reply bytes and the `AskError` tag.
+    unsafe fn ask_for_test(
+        target: *const HewRemotePid,
+        dispatch: *const c_void,
+        msg_type: i32,
+        data: *mut c_void,
+        size: usize,
+        timeout_ms: u64,
+        reply_size: usize,
+    ) -> (Vec<u8>, i32) {
+        let (readiness, waker) = crate::wake::blocking::Readiness::new();
+        // SAFETY: the caller's request satisfies the call; the waker is live.
+        let call = unsafe {
+            hew_remote_call_new(
+                target,
+                dispatch,
+                msg_type,
+                data,
+                size,
+                reply_size,
+                timeout_ms,
+                waker.descriptor(),
+            )
+        };
+        // SAFETY: this thread exclusively drives the live call.
+        while unsafe { hew_remote_call_poll(call) } == -1 {
+            readiness.wait();
+        }
+        let mut reply = vec![0_u8; reply_size];
+        // SAFETY: the call is ready and `reply` holds its reply size.
+        let status = unsafe { hew_remote_call_take(call, reply.as_mut_ptr().cast()) };
+        // SAFETY: the call is released once after its take.
+        unsafe { hew_remote_call_free(call) };
+        (reply, status)
     }
 
     /// A `u32` owns nothing, so releasing it is a no-op.
@@ -8050,8 +7919,8 @@ mod tests {
         let remote_pid = client.remote_pid;
         let send_value: u32 = 21;
         // SAFETY: remote_pid was resolved from a separate helper process over TCP.
-        let reply_ptr = unsafe {
-            hew_node_api_ask_location(
+        let (reply, status) = unsafe {
+            ask_for_test(
                 &raw const remote_pid,
                 test_dispatch(),
                 TWO_PROCESS_REGISTRY_MSG_TYPE,
@@ -8067,16 +7936,16 @@ mod tests {
                 std::mem::size_of::<u32>(),
             )
         };
-        assert!(!reply_ptr.is_null(), "two-process echo ask returned null");
-        // SAFETY: reply_ptr came from hew_node_api_ask's sized-block allocation; valid for u32 read.
-        let reply_value = unsafe { *(reply_ptr.cast::<u32>()) };
-        // SAFETY: reply_ptr came from the sized-block allocator and is our responsibility to free.
-        unsafe { crate::mem::buf_free(reply_ptr) };
+        assert!(
+            status == AskError::None as i32,
+            "two-process echo ask returned null"
+        );
+        let reply_value = u32::from_ne_bytes(reply[..4].try_into().expect("u32 reply"));
         assert_eq!(
             reply_value, 42,
             "two-process echo-double ask must return 42"
         );
-        assert_eq!(hew_node_ask_take_last_error(), AskError::None as i32);
+        assert_eq!(status, AskError::None as i32);
         // SAFETY: node is owned by this helper process.
         unsafe {
             assert_eq!(hew_node_stop(node.as_ptr()), 0);
@@ -8095,8 +7964,8 @@ mod tests {
         let remote_pid = client.remote_pid;
         let send_value: u32 = 21;
         // SAFETY: remote_pid was resolved from a separate helper process over TCP.
-        let reply_ptr = unsafe {
-            hew_node_api_ask_location(
+        let (reply, status) = unsafe {
+            ask_for_test(
                 &raw const remote_pid,
                 test_dispatch(),
                 TWO_PROCESS_REGISTRY_MSG_TYPE,
@@ -8113,10 +7982,10 @@ mod tests {
         // load-independent. The ask's own timeout is the hang ceiling; a genuine
         // never-resolving ask is caught by nextest's slow-timeout, not a window.
         assert!(
-            reply_ptr.is_null(),
+            status != AskError::None as i32,
             "timeout ask unexpectedly returned a reply"
         );
-        assert_eq!(hew_node_ask_take_last_error(), AskError::Timeout as i32);
+        assert_eq!(status, AskError::Timeout as i32);
         // SAFETY: node is owned by this helper process.
         unsafe {
             assert_eq!(hew_node_stop(node.as_ptr()), 0);
@@ -9746,8 +9615,8 @@ mod tests {
         let remote_pid = HewRemotePid::from(test_location(remote_node_id, 1));
         // SAFETY: null data with size 0 is valid; the remote path should fail
         // immediately because no active node is installed.
-        let reply = unsafe {
-            hew_node_api_ask_location(
+        let (reply, status) = unsafe {
+            ask_for_test(
                 &raw const remote_pid,
                 test_dispatch(),
                 7,
@@ -9758,67 +9627,11 @@ mod tests {
             )
         };
 
-        assert!(reply.is_null());
+        assert_ne!(status, AskError::None as i32);
         assert_eq!(
-            hew_node_ask_take_last_error(),
+            status,
             AskError::NodeNotRunning as i32,
             "ask with no active node should report NodeNotRunning"
-        );
-    }
-
-    /// After a successful ask the error slot must be cleared to `None`.
-    #[test]
-    fn ask_error_slot_cleared_after_successful_local_ask() {
-        let _guard = crate::runtime_test_guard();
-
-        // Poison the slot with a stale error, then perform a local ask.
-        LAST_ASK_ERROR.with(|c| c.set(AskError::Timeout as i32));
-
-        // Perform a local ask — force local path by leaving CURRENT_NODE at 0.
-        // hew_actor_ask_by_id is the local delegate; we verify the slot is NOT
-        // cleared by the local path (it goes through a different function).
-        // What we check here is that a successful remote reply clears the slot.
-        // Build a fake ReplyOutcome with Success and non-empty data and inject
-        // it directly through the reply table to exercise the success path without
-        // needing a live network.
-        let key = ConnectionKey {
-            conn_mgr: 99,
-            conn_id: 42,
-        };
-        let (id, pending) = reply_table().register(key);
-        reply_table().complete(id, vec![0xAAu8, 0xBBu8, 0xCCu8, 0xDDu8]);
-        // Drain the outcome directly as the success branch of hew_node_api_ask would.
-        let mut g = pending
-            .outcome
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let outcome = g.take().unwrap();
-        drop(g);
-        assert_eq!(outcome.status, ReplyStatus::Success);
-        // Simulate the success branch clearing the slot.
-        LAST_ASK_ERROR.with(|c| c.set(AskError::None as i32));
-        assert_eq!(
-            hew_node_ask_take_last_error(),
-            AskError::None as i32,
-            "success path should leave error slot as None"
-        );
-    }
-
-    /// `hew_node_ask_take_last_error` must reset the slot to None (0) after reading.
-    #[test]
-    fn ask_take_error_resets_slot() {
-        LAST_ASK_ERROR.with(|c| c.set(AskError::Timeout as i32));
-        let first = hew_node_ask_take_last_error();
-        let second = hew_node_ask_take_last_error();
-        assert_eq!(
-            first,
-            AskError::Timeout as i32,
-            "first take should return Timeout"
-        );
-        assert_eq!(
-            second,
-            AskError::None as i32,
-            "second take should return None after reset"
         );
     }
 
@@ -11296,8 +11109,8 @@ mod tests {
 
         let target = remote_pid_for_node(&node2, actor_id);
         // SAFETY: this is a remote void ask; null payload/size are valid and no reply buffer is expected.
-        let reply_ptr = unsafe {
-            hew_node_api_ask_location(
+        let (reply, status) = unsafe {
+            ask_for_test(
                 &raw const target,
                 inbound_test_codec(void_ask_probe_dispatch, 0),
                 1,
@@ -11307,9 +11120,9 @@ mod tests {
                 0,
             )
         };
-        assert_eq!(reply_ptr, remote_void_reply_sentinel());
+        assert!(status == AskError::None as i32 && reply.is_empty());
         assert_eq!(
-            hew_node_ask_take_last_error(),
+            status,
             AskError::None as i32,
             "successful void ask must leave the error slot cleared"
         );
@@ -11371,8 +11184,8 @@ mod tests {
         let send_value: u32 = 21;
         let target = remote_pid_for_node(&node2, actor_id);
         // SAFETY: send_value is a valid u32 on the stack; reply is sized-block-allocated, freed below.
-        let reply_ptr = unsafe {
-            hew_node_api_ask_location(
+        let (reply, status) = unsafe {
+            ask_for_test(
                 &raw const target,
                 test_dispatch(),
                 1,
@@ -11384,18 +11197,15 @@ mod tests {
         };
 
         assert!(
-            !reply_ptr.is_null(),
+            status == AskError::None as i32,
             "remote ask should return a non-null reply"
         );
-        // SAFETY: reply_ptr came from hew_node_api_ask's sized-block allocation; valid for u32 read.
-        let reply_value = unsafe { *(reply_ptr.cast::<u32>()) };
+        let reply_value = u32::from_ne_bytes(reply[..4].try_into().expect("u32 reply"));
         assert_eq!(
             reply_value,
             send_value * 2,
             "echo-double should return 21 * 2 = 42"
         );
-        // SAFETY: reply_ptr came from the sized-block allocator and is our responsibility to free.
-        unsafe { crate::mem::buf_free(reply_ptr) };
 
         // SAFETY: actor and nodes were allocated in this test and are valid.
         unsafe {
@@ -11505,8 +11315,8 @@ mod tests {
 
         let target = remote_pid_for_node(&node2, actor_id);
         // SAFETY: this is a remote void ask; null payload/size are valid.
-        let reply_ptr = unsafe {
-            hew_node_api_ask_location(
+        let (reply, status) = unsafe {
+            ask_for_test(
                 &raw const target,
                 inbound_test_codec(orphaned_void_ask_dispatch, 0),
                 1,
@@ -11516,10 +11326,10 @@ mod tests {
                 0,
             )
         };
-        let err = hew_node_ask_take_last_error();
+        let err = status;
 
         assert!(
-            reply_ptr.is_null(),
+            status != AskError::None as i32,
             "orphaned inbound void ask must not return the void-success sentinel"
         );
         assert_eq!(
@@ -11568,8 +11378,8 @@ mod tests {
 
         let target = remote_pid_for_node(&node2, actor_id);
         // SAFETY: this is a remote void ask; null payload/size are valid.
-        let reply_ptr = unsafe {
-            hew_node_api_ask_location(
+        let (reply, status) = unsafe {
+            ask_for_test(
                 &raw const target,
                 inbound_test_codec(noop_dispatch, 0),
                 1,
@@ -11579,10 +11389,10 @@ mod tests {
                 0,
             )
         };
-        let err = hew_node_ask_take_last_error();
+        let err = status;
 
         assert!(
-            reply_ptr.is_null(),
+            status != AskError::None as i32,
             "inbound ask to a stopped actor must not return the void-success sentinel"
         );
         assert_eq!(
@@ -11637,8 +11447,8 @@ mod tests {
 
         let target = remote_pid_for_node(&node2, actor_id);
         // SAFETY: this is a remote void ask; null payload/size are valid.
-        let reply_ptr = unsafe {
-            hew_node_api_ask_location(
+        let (reply, status) = unsafe {
+            ask_for_test(
                 &raw const target,
                 inbound_test_codec(noop_dispatch, 0),
                 1,
@@ -11648,10 +11458,10 @@ mod tests {
                 0,
             )
         };
-        let err = hew_node_ask_take_last_error();
+        let err = status;
 
         assert!(
-            reply_ptr.is_null(),
+            status != AskError::None as i32,
             "full-mailbox remote ask must return null"
         );
         assert_eq!(
@@ -11698,8 +11508,8 @@ mod tests {
         let saved = INBOUND_ASK_ACTIVE.swap(INBOUND_ASK_WORKER_LIMIT, Ordering::AcqRel);
         let target = remote_pid_for_node(&node2, actor_id);
         // SAFETY: this is a remote void ask; null payload/size are valid.
-        let reply_ptr = unsafe {
-            hew_node_api_ask_location(
+        let (reply, status) = unsafe {
+            ask_for_test(
                 &raw const target,
                 test_dispatch(),
                 1,
@@ -11709,11 +11519,11 @@ mod tests {
                 0,
             )
         };
-        let err = hew_node_ask_take_last_error();
+        let err = status;
         INBOUND_ASK_ACTIVE.store(saved, Ordering::Release);
 
         assert!(
-            reply_ptr.is_null(),
+            status != AskError::None as i32,
             "worker-limit rejection must not return the void-success sentinel"
         );
         assert_eq!(
@@ -11789,8 +11599,8 @@ mod tests {
         let ask_start = std::time::Instant::now();
         let target = remote_pid_for_node(&node2, actor_id);
         // SAFETY: this is a remote void ask; null payload/size are valid.
-        let reply_ptr = unsafe {
-            hew_node_api_ask_location(
+        let (reply, status) = unsafe {
+            ask_for_test(
                 &raw const target,
                 test_dispatch(),
                 1,
@@ -11800,11 +11610,11 @@ mod tests {
                 0,
             )
         };
-        let err = hew_node_ask_take_last_error();
+        let err = status;
         INBOUND_ASK_ACTIVE.store(saved, Ordering::Release);
 
         assert!(
-            reply_ptr.is_null(),
+            status != AskError::None as i32,
             "pre-rejection peer fallback must return null instead of a void-success sentinel"
         );
         assert_eq!(
@@ -11854,8 +11664,8 @@ mod tests {
 
         let target = remote_pid_for_node(&node2, actor_id);
         // SAFETY: non-void remote ask expects a u32-sized reply; an empty success must fail closed.
-        let reply_ptr = unsafe {
-            hew_node_api_ask_location(
+        let (reply, status) = unsafe {
+            ask_for_test(
                 &raw const target,
                 inbound_test_codec(void_ask_probe_dispatch, 0),
                 1,
@@ -11866,11 +11676,11 @@ mod tests {
             )
         };
         assert!(
-            reply_ptr.is_null(),
+            status != AskError::None as i32,
             "non-void remote ask should return null on an empty reply payload"
         );
         assert_eq!(
-            hew_node_ask_take_last_error(),
+            status,
             AskError::PayloadSizeMismatch as i32,
             "empty reply to non-void ask should report PayloadSizeMismatch"
         );
@@ -11915,8 +11725,8 @@ mod tests {
         let ask_start = std::time::Instant::now();
         let target = remote_pid_for_node(&node2, actor_id);
         // SAFETY: the actor pid and null payload are valid for this remote ask probe.
-        let reply_ptr = unsafe {
-            hew_node_api_ask_location(
+        let (reply, status) = unsafe {
+            ask_for_test(
                 &raw const target,
                 inbound_test_codec(blocked_ask_probe_dispatch, std::mem::size_of::<u32>()),
                 1,
@@ -11926,9 +11736,12 @@ mod tests {
                 std::mem::size_of::<u32>(),
             )
         };
-        let err = hew_node_ask_take_last_error();
+        let err = status;
 
-        assert!(reply_ptr.is_null(), "timed-out remote ask must return null");
+        assert!(
+            status != AskError::None as i32,
+            "timed-out remote ask must return null"
+        );
         assert_eq!(
             err,
             AskError::Timeout as i32,
@@ -12040,7 +11853,7 @@ mod tests {
         let target = remote_pid_for_node(&node2, actor_id);
         // SAFETY: the actor pid and null payload are valid for this remote ask probe.
         let ask_handle = thread::spawn(move || unsafe {
-            let ptr = hew_node_api_ask_location(
+            let (_, err) = ask_for_test(
                 &raw const target,
                 inbound_test_codec(blocked_ask_probe_dispatch, std::mem::size_of::<u32>()),
                 1,
@@ -12049,8 +11862,7 @@ mod tests {
                 TEST_REMOTE_ASK_TIMEOUT_MS,
                 std::mem::size_of::<u32>(),
             );
-            let err = hew_node_ask_take_last_error();
-            (ptr as usize, err)
+            (usize::from(err == AskError::None as i32), err)
         });
 
         let pending_seen = (0..100).any(|_| {
@@ -12075,12 +11887,8 @@ mod tests {
         unsafe {
             assert_eq!(hew_node_stop(node1.as_ptr()), 0);
         }
-        let (reply_raw, ask_err) = ask_handle.join().expect("ask thread panicked");
-        let reply_ptr = reply_raw as *mut c_void;
-        assert!(
-            reply_ptr.is_null(),
-            "stopped node should fail pending remote asks"
-        );
+        let (replied, ask_err) = ask_handle.join().expect("ask thread panicked");
+        assert!(replied == 0, "stopped node should fail pending remote asks");
         assert_eq!(
             ask_err,
             AskError::ConnectionDropped as i32,
@@ -12149,7 +11957,7 @@ mod tests {
         let target = remote_pid_for_node(&node2, actor_id);
         // SAFETY: the actor pid and null payload are valid for this remote ask probe.
         let ask_handle = thread::spawn(move || unsafe {
-            let ptr = hew_node_api_ask_location(
+            let (_, err) = ask_for_test(
                 &raw const target,
                 inbound_test_codec(blocked_ask_probe_dispatch, std::mem::size_of::<u32>()),
                 1,
@@ -12158,8 +11966,7 @@ mod tests {
                 TEST_REMOTE_ASK_TIMEOUT_MS,
                 std::mem::size_of::<u32>(),
             );
-            let err = hew_node_ask_take_last_error();
-            (ptr as usize, err)
+            (usize::from(err == AskError::None as i32), err)
         });
 
         let pending_seen = (0..100).any(|_| {
@@ -12188,10 +11995,9 @@ mod tests {
                 0
             );
         }
-        let (reply_raw, ask_err) = ask_handle.join().expect("ask thread panicked");
-        let reply_ptr = reply_raw as *mut c_void;
+        let (replied, ask_err) = ask_handle.join().expect("ask thread panicked");
         assert!(
-            reply_ptr.is_null(),
+            replied == 0,
             "connection drop should fail the pending remote ask"
         );
         assert_eq!(
@@ -12259,7 +12065,7 @@ mod tests {
         let target = remote_pid_for_node(&node2, actor_id);
         // SAFETY: the actor pid and null payload are valid for this remote ask probe.
         let ask_handle = thread::spawn(move || unsafe {
-            let ptr = hew_node_api_ask_location(
+            let (_, err) = ask_for_test(
                 &raw const target,
                 inbound_test_codec(blocked_ask_probe_dispatch, std::mem::size_of::<u32>()),
                 1,
@@ -12268,8 +12074,7 @@ mod tests {
                 TEST_REMOTE_ASK_TIMEOUT_MS,
                 std::mem::size_of::<u32>(),
             );
-            let err = hew_node_ask_take_last_error();
-            (ptr as usize, err)
+            (usize::from(err == AskError::None as i32), err)
         });
 
         let pending_seen = (0..100).any(|_| {
@@ -12296,10 +12101,9 @@ mod tests {
         let dead_declared = std::time::Instant::now();
         fail_remote_asks_for_node(331);
 
-        let (reply_raw, ask_err) = ask_handle.join().expect("ask thread panicked");
-        let reply_ptr = reply_raw as *mut c_void;
+        let (replied, ask_err) = ask_handle.join().expect("ask thread panicked");
         assert!(
-            reply_ptr.is_null(),
+            replied == 0,
             "SWIM-DEAD must fail the pending remote ask (no fabricated reply)"
         );
         // The teeth: the exact Partition discriminant (14), distinct from
@@ -12582,8 +12386,8 @@ mod tests {
         let payload: u32 = 0xDEAD_BEEF;
         let target = remote_pid_for_node(&node2, actor_id);
         // SAFETY: payload is a valid u32 on the stack; its address is valid for this call.
-        let reply_ptr = unsafe {
-            hew_node_api_ask_location(
+        let (reply, status) = unsafe {
+            ask_for_test(
                 &raw const target,
                 test_dispatch(),
                 1,
@@ -12593,9 +12397,7 @@ mod tests {
                 std::mem::size_of::<u32>(),
             )
         };
-        assert!(!reply_ptr.is_null(), "remote ask must succeed");
-        // SAFETY: reply came from hew_reply's sized-block allocation; we own it after the ask.
-        unsafe { crate::mem::buf_free(reply_ptr) };
+        assert!(status == AskError::None as i32, "remote ask must succeed");
 
         // After the ask completes the handler thread exits, dropping InboundAskGuard.
         // Give it a brief moment to drain.
@@ -12678,8 +12480,8 @@ mod tests {
         // which remote_reply_data_to_ptr mistook for a void success.
         let target = remote_pid_for_node(&node2, actor_id);
         // SAFETY: null payload / size-0 are valid; this is a void ask.
-        let reply_ptr = unsafe {
-            hew_node_api_ask_location(
+        let (reply, status) = unsafe {
+            ask_for_test(
                 &raw const target,
                 test_dispatch(),
                 1,
@@ -12689,13 +12491,13 @@ mod tests {
                 0,
             )
         };
-        let err = hew_node_ask_take_last_error();
+        let err = status;
 
         // Restore before any assertions so the teardown path is clean.
         INBOUND_ASK_ACTIVE.store(saved, Ordering::Release);
 
         assert!(
-            reply_ptr.is_null(),
+            status != AskError::None as i32,
             "over-limit void ask must return null (got non-null = false success)"
         );
         assert_eq!(
@@ -12749,8 +12551,8 @@ mod tests {
         let payload: u32 = 42;
         let target = remote_pid_for_node(&node2, actor_id);
         // SAFETY: payload is a valid u32; its address is valid for this call.
-        let reply_ptr = unsafe {
-            hew_node_api_ask_location(
+        let (reply, status) = unsafe {
+            ask_for_test(
                 &raw const target,
                 test_dispatch(),
                 1,
@@ -12760,12 +12562,12 @@ mod tests {
                 std::mem::size_of::<u32>(),
             )
         };
-        let err = hew_node_ask_take_last_error();
+        let err = status;
 
         INBOUND_ASK_ACTIVE.store(saved, Ordering::Release);
 
         assert!(
-            reply_ptr.is_null(),
+            status != AskError::None as i32,
             "over-limit non-void ask must return null"
         );
         assert_eq!(

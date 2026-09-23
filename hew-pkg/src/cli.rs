@@ -736,32 +736,6 @@ fn cmd_install(
             }
         };
         (Some(lf), pinned)
-    } else if offline {
-        // `--offline` is cache-scoped, not lock-mutating: an existing, fresh
-        // lock is reused as the pin set (like `--locked`) instead of being
-        // silently re-resolved and rewritten on every run. A missing or
-        // stale lock (no lock yet, or the manifest changed) falls through to
-        // a fresh cache-only resolution, which still writes hew.lock below.
-        match lockfile::read_lockfile(&lock_path) {
-            Ok(lf)
-                if lockfile::validate_lockfile(&lf).is_ok()
-                    && !lockfile::is_lock_stale_for_registries(
-                        &lf,
-                        &m,
-                        registry_sources.default_registry(),
-                        registry_sources.named(),
-                    ) =>
-            {
-                match verify_locked_registry_packages(&lf, registry) {
-                    Ok(pinned) => (Some(lf), pinned),
-                    Err(error) => {
-                        eprintln!("hew install: {error}");
-                        std::process::exit(1);
-                    }
-                }
-            }
-            _ => (None, BTreeMap::new()),
-        }
     } else {
         (None, BTreeMap::new())
     };
@@ -1003,15 +977,29 @@ fn cmd_install(
     if locked_lockfile.is_some() {
         println!("Used locked dependency graph");
     } else {
-        // Write the lockfile.
-        let lf = lockfile::LockFile {
+        // Skip the write when the resolved graph didn't change: `hew
+        // install` (online or `--offline`) always resolves fresh, but
+        // rewriting an already-current hew.lock on every run makes it look
+        // like a mutating command even when nothing moved (#3233). Compare
+        // structurally (both sides sorted by name, matching how
+        // `write_lockfile` orders its output) rather than by serialized
+        // bytes, so formatting alone never forces a write.
+        let mut lf = lockfile::LockFile {
             packages: lock_packages,
         };
-        if let Err(e) = lockfile::write_lockfile(&lock_path, &lf) {
+        lf.packages.sort_by(|a, b| a.name.cmp(&b.name));
+        let unchanged = lockfile::read_lockfile(&lock_path).is_ok_and(|mut existing| {
+            existing.packages.sort_by(|a, b| a.name.cmp(&b.name));
+            existing == lf
+        });
+        if unchanged {
+            println!("hew.lock is already up to date");
+        } else if let Err(e) = lockfile::write_lockfile(&lock_path, &lf) {
             eprintln!("hew install: cannot write hew.lock: {e}");
             std::process::exit(1);
+        } else {
+            println!("Wrote hew.lock");
         }
-        println!("Wrote hew.lock");
     }
 }
 

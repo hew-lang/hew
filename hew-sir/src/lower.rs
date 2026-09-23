@@ -3945,6 +3945,31 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         Ok(None)
     }
 
+    /// A match that only probes a copy-less state field reads it through a
+    /// loan; the seat keeps its owner and the match ends the loan.
+    fn probe_state_field(
+        &mut self,
+        expr: &HirExpr,
+        ty: &ResolvedTy,
+    ) -> Result<Option<ValueId>, String> {
+        let Some(place) = self.expression_projection(expr)? else {
+            return Ok(None);
+        };
+        if !matches!(
+            self.places[place.0 as usize].origin,
+            crate::PlaceOrigin::ActorState { .. }
+        ) {
+            return Ok(None);
+        }
+        let value = self.emit_typed(
+            Provenance::Site(expr.site),
+            ty,
+            SemOpKind::LoadBorrow { place },
+        )?;
+        self.scope_loans.push(value);
+        Ok(Some(value))
+    }
+
     fn lower_owned_transfer(
         &mut self,
         expr: &HirExpr,
@@ -3966,13 +3991,13 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             .get(&TypeInstanceKey(ty.clone()))
             .is_some_and(|row| row.clone == hew_types::CloneKind::None);
         if own == OwnKind::Owned {
-            let movable = self
-                .service
-                .checked_facts
-                .rows()
-                .get(&TypeInstanceKey(ty.clone()))
-                .is_some_and(|row| row.clone == hew_types::CloneKind::None);
+            let movable = movable_owner;
             if movable {
+                if binding_use == OwnedBindingUse::Probe {
+                    if let Some(value) = self.probe_state_field(expr, &ty)? {
+                        return Ok(value);
+                    }
+                }
                 if let Some(value) = self.lower_consuming_projection(expr)? {
                     return Ok(value);
                 }

@@ -3218,6 +3218,10 @@ enum Result<T, E> {
 }
 ```
 
+`opt.take()` returns the current value of an `Option<T>` place and leaves
+`None` in it. It mutates the place instead of consuming it, so like any
+`var self` method it needs a `var` binding, field or actor state field.
+
 User-authored functions may return `Result<T, E>` or `Option<T>` and use `?`
 for propagation. Any error type `E` may be used with `Result<T, E>`. Each module defines its own structured error enum, as demonstrated by the canonical `std.fs.IoError`:
 
@@ -5900,8 +5904,10 @@ A handler that consumes a state field leaves that field empty until it stores
 a replacement, and a crash in between leaves it empty for the hook. An
 `#[on(crash)]` hook therefore may not read a state field that any handler,
 method or hook of the actor consumes; the compiler reports the read and names
-the consuming handler. The crashing incarnation's cleanup releases only the
-fields that are still initialized.
+the consuming handler. A field the hook must inspect is held as an `Option`
+and moved out with `take()`, which leaves `None` in the field rather than
+consuming it. The crashing incarnation's cleanup releases only the fields that
+are still initialized.
 
 The crash hook returns a `CrashAction`. `Restart` requests the supervisor's
 ordinary restart handling, including the child's restart policy, restart

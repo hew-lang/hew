@@ -207,4 +207,10 @@ impl<T> Option<T> {
             .None => fallback,
         }
     }
+    /// Move the value out of this place and leave `None` behind.
+    fn take(var self) -> Option<T> {
+        let taken = self;
+        self = None;
+        taken
+    }
 }

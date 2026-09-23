@@ -2112,10 +2112,10 @@ else needs `impl Display for {rendered}`)"
             ),
         )
         .with_note(consumed_at, format!("`{consumer}` consumes `{field}` here"))
-        .with_suggestion(
-            "an `#[on(crash)]` hook may read only state fields that no handler consumes"
-                .to_string(),
-        );
+        .with_suggestion(format!(
+            "hold `{field}` as an `Option` and move it out with `{field}.take()`, which leaves \
+             `None` in the field instead of consuming it"
+        ));
         if let Some(source_module) = &self.current_module {
             error = error.with_source_module(source_module.clone());
         }

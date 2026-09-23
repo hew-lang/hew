@@ -1,0 +1,21 @@
+[[case]]
+id = "option-take-immutable"
+intent = "`take()` writes its receiver, so it is refused on a `let` binding and on a temporary."
+source = "cases/option-take-immutable.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "MutabilityError"
+line = 3
+column = 17
+message = "method `take` on `Option` requires a mutable binding receiver"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "MutabilityError"
+line = 5
+column = 18
+message = "method `take` on `Option` requires a mutable binding receiver"

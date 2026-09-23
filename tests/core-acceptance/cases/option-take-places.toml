@@ -1,0 +1,10 @@
+[[case]]
+id = "option-take-places"
+intent = "`take()` moves the value out of a `var` Option local, record field, actor state field and field beneath a state field, and leaves `None` in the place."
+source = "cases/option-take-places.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "ada\ntrue\ntrue\ngrace\nlin\ntrue\n1\na\nnone\nc\nbob\nnone\n"
+exit = 0

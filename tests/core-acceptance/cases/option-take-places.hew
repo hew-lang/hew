@@ -1,0 +1,43 @@
+type Holder {
+    name: Option<string>,
+    count: i64,
+}
+
+actor Keeper {
+    var slot: Option<string>,
+    var h: Holder,
+
+    receive fn grab() -> string {
+        slot.take().unwrap_or("none")
+    }
+
+    receive fn grab_name() -> string {
+        h.name.take().unwrap_or("none")
+    }
+
+    receive fn put(v: string) {
+        slot = Some(v);
+    }
+}
+
+fn main() {
+    var name: Option<string> = Some("ada");
+    println(name.take().unwrap_or("none"));
+    println(name.is_none());
+    println(name.take().is_none());
+    name = Some("grace");
+    println(name.take().unwrap_or("none"));
+
+    var h = Holder { name: Some("lin"), count: 1 };
+    println(h.name.take().unwrap_or("none"));
+    println(h.name.is_none());
+    println(h.count);
+
+    let k = spawn Keeper(slot: Some("a"), h: Holder { name: Some("bob"), count: 2 });
+    println(k.grab().expect("grab"));
+    println(k.grab().expect("grab"));
+    k.put("c").expect("put");
+    println(k.grab().expect("grab"));
+    println(k.grab_name().expect("grab name"));
+    println(k.grab_name().expect("grab name"));
+}

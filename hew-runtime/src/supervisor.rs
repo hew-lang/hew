@@ -3565,6 +3565,18 @@ unsafe fn restart_child_supervisor_from_spec(
         debug_assert_eq!(s.child_supervisors.len(), s.child_supervisor_specs.len());
     }
 
+    // `old_token` and `new_token` are always distinct here: `local_pid_id` is
+    // minted fresh per `hew_supervisor_new` and never reset or reused, so a
+    // pointer comparison is the wrong identity check — an allocator (observed
+    // on Windows and macOS) can hand the freed `old_child` block straight
+    // back out to `new_child`, making `old_child == new_child` true for two
+    // genuinely different incarnations. The only real question here is
+    // whether there was a previous child to retire at all.
+    if !old_child.is_null() {
+        retain_nested_completion(sup, old_token);
+        stop_local_supervisor(old_token, true);
+    }
+
     new_child
 }
 

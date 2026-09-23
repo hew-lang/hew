@@ -1,0 +1,34 @@
+// A catch-all arm that binds the whole scrutinee takes the parameter the
+// function owns; a sibling arm takes only one field of it.
+#[resource]
+type Token {
+    id: i64,
+}
+
+impl Token {
+    fn close(consume self) {
+        println(f"close {self.id}");
+    }
+}
+
+type Packet {
+    tag: i64,
+    token: Token,
+    text: string,
+}
+
+fn token_or_whole(consume p: Packet) -> i64 {
+    match p {
+        Packet { tag: 0, token, text: _ } => token.id,
+        whole => whole.token.id + whole.text.len(),
+    }
+}
+
+fn packet(tag: i64, id: i64) -> Packet {
+    Packet { tag: tag, token: Token { id: id }, text: "pay" + "load" }
+}
+
+fn main() {
+    println(token_or_whole(packet(0, 1)));
+    println(token_or_whole(packet(5, 2)));
+}

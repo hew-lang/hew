@@ -1,0 +1,20 @@
+// A trait object type with no implementor in the program has no dispatch
+// table. Its values cannot exist, so a dispatch through one never runs, but
+// the program still compiles.
+trait Drawable {
+    fn draw(val: Self) -> string;
+}
+
+fn render_all(consume items: Vec<dyn Drawable>) -> i64 {
+    var drawn = 0;
+    for item in items.into_iter() {
+        println(item.draw());
+        drawn = drawn + 1;
+    }
+    drawn
+}
+
+fn main() {
+    let items: Vec<dyn Drawable> = Vec.new();
+    println(f"drawn {render_all(items)}");
+}

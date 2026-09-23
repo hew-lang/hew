@@ -2564,6 +2564,9 @@ impl Checker {
                     for pb in &mut arm.payload_bindings {
                         pb.ty = self.finalize_type_for_handoff(&pb.ty);
                     }
+                    for nested in &mut arm.payload_variant_patterns {
+                        self.finalize_payload_variant_pattern(nested);
+                    }
                     (k, arm)
                 })
                 .collect(),

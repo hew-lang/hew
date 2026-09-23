@@ -2449,6 +2449,21 @@ impl Checker {
         self.normalize_for_use(ty).materialize_literal_defaults()
     }
 
+    /// Finalize every type a nested constructor pattern carries, so its
+    /// payload compares equal to the scrutinee field it tests.
+    pub(super) fn finalize_payload_variant_pattern(&self, pattern: &mut PayloadVariantPattern) {
+        pattern.payload_ty = self.finalize_type_for_handoff(&pattern.payload_ty);
+        for binding in &mut pattern.bindings {
+            binding.ty = self.finalize_type_for_handoff(&binding.ty);
+        }
+        for literal in &mut pattern.literals {
+            literal.ty = self.finalize_type_for_handoff(&literal.ty);
+        }
+        for nested in &mut pattern.nested {
+            self.finalize_payload_variant_pattern(nested);
+        }
+    }
+
     /// Recursively replace a proven nominal presentation alias with the
     /// checker-owned source identity.  This is deliberately narrower than a
     /// leaf-name rewrite: `canonical_nominal_name` preserves same-leaf user

@@ -94,18 +94,56 @@ impl Checker {
         }
     }
 
-    /// Index reads lend affine elements; aliases preserve the same loan.
+    /// Index reads and `get` lend affine elements; aliases preserve the same
+    /// loan.
     pub(super) fn collection_borrow_origin(&self, expr: &Expr, span: &Span) -> Option<Span> {
         let key = super::SpanKey::in_module(span, self.current_module_idx);
         let ty = self.expr_types.get(&key).map(|ty| self.subst.resolve(ty))?;
         if !self.place_read_transfers_ownership(&ty) {
             return None;
         }
-        if self.borrowed_element_index_reads.contains(&key) {
+        if self.borrowed_element_index_reads.contains(&key)
+            || self.borrowed_element_option_reads.contains(&key)
+        {
             return Some(span.clone());
         }
         let (root, _) = self.expr_place(expr)?;
         self.env.lookup_ref(&root)?.collection_borrow.clone()
+    }
+
+    /// Bind a pattern against its scrutinee. A scrutinee that is a collection
+    /// loan lends the same loan to every binder that would otherwise own its
+    /// value: binding reads through the loan and takes nothing out of the
+    /// place, while a later consuming use of a binder is refused as a
+    /// consumption of the loan.
+    pub(super) fn bind_scrutinee_pattern(
+        &mut self,
+        pattern: &Spanned<hew_parser::ast::Pattern>,
+        ty: &Ty,
+        is_mutable: bool,
+        place: Option<(String, crate::env::PlacePath)>,
+        loan: Option<Span>,
+    ) {
+        self.pattern_place = if loan.is_some() { None } else { place };
+        self.bind_pattern(&pattern.0, ty, is_mutable, &pattern.1);
+        self.pattern_place = None;
+        let Some(loan) = loan else {
+            return;
+        };
+        let key = super::SpanKey::in_module(&pattern.1, self.current_module_idx);
+        for name in self
+            .pattern_bound_names
+            .get(&key)
+            .cloned()
+            .unwrap_or_default()
+        {
+            let owned = self.env.lookup_ref(&name).is_some_and(|binding| {
+                self.place_read_transfers_ownership(&self.subst.resolve(&binding.ty))
+            });
+            if owned {
+                self.env.set_collection_borrow(&name, Some(loan.clone()));
+            }
+        }
     }
 
     /// A pattern binder takes one field out of the place it destructures.
@@ -561,6 +599,23 @@ impl Checker {
                 "E_OWN_CONSUME_BORROWED: cannot consume an indexed collection borrow".to_string(),
             );
             return true;
+        }
+        if let Expr::MethodCall { method, .. } = expr {
+            if self.collection_borrow_origin(expr, span).is_some() {
+                self.report_error_with_suggestions(
+                    TypeErrorKind::OwnConsumeBorrowed,
+                    span,
+                    format!(
+                        "E_OWN_CONSUME_BORROWED: `{method}` lends a value its collection keeps, \
+                         and this use takes ownership of it"
+                    ),
+                    vec![
+                        "move the value out with `remove`, or read it where the collection lends it"
+                            .to_string(),
+                    ],
+                );
+                return true;
+            }
         }
         let Some((root, path)) = self.expr_place(expr) else {
             return false;

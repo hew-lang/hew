@@ -1331,3 +1331,54 @@ fn reassigning_a_closure_binding_still_rejects_a_different_shape() {
         output.errors
     );
 }
+
+/// A collection loan is decided at check time (#3503): `get` over a value with
+/// no copy operation lends the slot the map keeps, so every shape that takes
+/// ownership of the loan is refused here rather than at the SIR verifier, and
+/// every shape that only reads through it stays accepted.
+#[test]
+fn collection_loans_refuse_ownership_transfers_at_check() {
+    let declarations = r"
+        #[resource]
+        type Token { id: i64 }
+        impl Token { fn close(consume self) {} }
+        type Label { text: string }
+    ";
+    let refused = [
+        // Returning the loan as an owned value, directly and through a binding.
+        "fn lookup(values: HashMap<string, Token>) -> Option<Token> { values.get(\"live\") }",
+        "fn lookup(values: HashMap<string, Token>) -> Option<Token> { let r = values.get(\"live\"); r }",
+        // A pattern binder under the loan inherits it.
+        "fn lookup(values: HashMap<string, Token>) -> Token { match values.get(\"live\") { .Some(t) => t, .None => Token { id: 0 } } }",
+        "fn drain(values: HashMap<string, Token>) { if let .Some(t) = values.get(\"live\") { t.close(); } }",
+        "fn drain(values: HashMap<string, Token>) { let r = values.get(\"live\"); match r { .Some(t) => t.close(), .None => {} } }",
+        // A borrowed-element loop lends each element the same way.
+        "fn drain(values: Vec<Token>) { for t in values { t.close(); } }",
+    ];
+    for shape in refused {
+        let output = check_source(&format!("{declarations} {shape} fn main() {{}}"));
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|error| error.kind == TypeErrorKind::OwnConsumeBorrowed),
+            "{shape}: {:#?}",
+            output.errors
+        );
+    }
+    let accepted = [
+        // Reads through the loan.
+        "fn peek(values: HashMap<string, Token>) -> i64 { match values.get(\"live\") { .Some(t) => t.id, .None => 0 } }",
+        "fn peek(values: HashMap<string, Token>) -> i64 { let r = values.get(\"live\"); if let .Some(t) = r { return t.id; } 0 }",
+        "fn peek(values: Vec<Token>) -> i64 { var total = 0; for t in values { total += t.id; } total }",
+        // A cloneable value is copied out, so returning it owns a copy.
+        "fn lookup(values: HashMap<string, Label>) -> Option<Label> { values.get(\"live\") }",
+        "fn lookup(values: HashMap<string, string>) -> Option<string> { values.get(\"live\") }",
+        // The owning removal moves the value out.
+        "fn take(consume values: HashMap<string, Token>) -> Option<Token> { var m = values; m.remove(\"live\") }",
+    ];
+    for shape in accepted {
+        let output = check_source(&format!("{declarations} {shape} fn main() {{}}"));
+        assert!(output.errors.is_empty(), "{shape}: {:#?}", output.errors);
+    }
+}

@@ -1,13 +1,13 @@
 [[case]]
 id = "hashmap_get_unclonable_opaque_value"
-intent = "The fixture is refused, and the refusal names this diagnostic."
+intent = "Consuming a get loan over a value with no clone is refused at check time."
 source = "../vertical-slice/reject/hashmap_get_unclonable_opaque_value.hew"
 suites = ["acceptance"]
 timeout_seconds = 30
 kind = "reject"
 
 [[case.expected.diagnostics]]
-code = "E_SIR_UNSUPPORTED"
-line = 16
-column = 1
-message = "is borrowed here"
+code = "E_OWN_CONSUME_BORROWED"
+line = 20
+column = 27
+message = "E_OWN_CONSUME_BORROWED: cannot consume borrowed collection element `t`"

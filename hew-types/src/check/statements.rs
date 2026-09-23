@@ -784,8 +784,7 @@ impl Checker {
             }
             Stmt::Match { scrutinee, arms } => {
                 let scr_ty = self.synthesize(&scrutinee.0, &scrutinee.1);
-                let place = self.expr_place(&scrutinee.0);
-                self.check_match_expr(&scr_ty, place.as_ref(), arms, span, expected)
+                self.check_match_expr(&scr_ty, scrutinee, arms, span, expected)
             }
             Stmt::Expression((expr, es)) => self.synthesize_discarded_expression(expr, es),
             Stmt::Return(value) => {
@@ -1368,10 +1367,14 @@ impl Checker {
                     // not introduce a phantom binding (which would otherwise warn
                     // "unused variable `None`" and shadow the variant constructor).
                     if !identifier_is_unit_variant {
-                        self.pattern_place =
-                            value.as_ref().and_then(|(expr, _)| self.expr_place(expr));
-                        self.bind_pattern(&pattern.0, &val_ty, false, &pattern.1);
-                        self.pattern_place = None;
+                        let place = value.as_ref().and_then(|(expr, _)| self.expr_place(expr));
+                        self.bind_scrutinee_pattern(
+                            pattern,
+                            &val_ty,
+                            false,
+                            place,
+                            collection_borrow.clone(),
+                        );
                     }
                     if maybe_refutable_kind.is_some() && else_block.is_some() {
                         // Record the success arm after binding so payload
@@ -2106,7 +2109,13 @@ impl Checker {
                 };
                 self.env.push_scope();
                 self.in_for_binding = true;
-                self.bind_pattern(&pattern.0, &elem_ty, true, &pattern.1);
+                // Each element of a borrowed-element loop is a loan of the slot
+                // the sequence still owns (D432).
+                let loan = self
+                    .borrowed_element_for_loops
+                    .contains(&SpanKey::in_module(&iterable.1, self.current_module_idx))
+                    .then(|| iterable.1.clone());
+                self.bind_scrutinee_pattern(pattern, &elem_ty, true, None, loan);
                 self.in_for_binding = false;
                 if let Some(lbl) = label {
                     self.loop_labels.push(lbl.clone());
@@ -2225,8 +2234,7 @@ impl Checker {
             }
             Stmt::Match { scrutinee, arms } => {
                 let scr_ty = self.synthesize(&scrutinee.0, &scrutinee.1);
-                let place = self.expr_place(&scrutinee.0);
-                self.check_match_stmt(&scr_ty, place.as_ref(), arms, span);
+                self.check_match_stmt(&scr_ty, scrutinee, arms, span);
             }
             Stmt::Defer(expr) => {
                 let ownership = self.env.ownership_snapshot();
@@ -2255,19 +2263,25 @@ impl Checker {
     pub(super) fn check_match_stmt(
         &mut self,
         scrutinee_ty: &Ty,
-        scrutinee_place: Option<&(String, crate::env::PlacePath)>,
+        scrutinee: &Spanned<Expr>,
         arms: &[MatchArm],
         span: &Span,
     ) {
+        let scrutinee_place = self.expr_place(&scrutinee.0);
+        let scrutinee_loan = self.collection_borrow_origin(&scrutinee.0, &scrutinee.1);
         let ownership_entry = self.env.ownership_snapshot();
         let mut fall_through = ownership_entry.clone();
         let mut arm_exits = Vec::with_capacity(arms.len());
         for arm in arms {
             self.env.push_scope();
             self.env.restore_ownership(&fall_through);
-            self.pattern_place = scrutinee_place.cloned();
-            self.bind_pattern(&arm.pattern.0, scrutinee_ty, false, &arm.pattern.1);
-            self.pattern_place = None;
+            self.bind_scrutinee_pattern(
+                &arm.pattern,
+                scrutinee_ty,
+                false,
+                scrutinee_place.clone(),
+                scrutinee_loan.clone(),
+            );
             self.record_arm_resolution(&arm.pattern.0, &arm.pattern.1, scrutinee_ty);
 
             let mut guard_diverges = false;

@@ -338,7 +338,7 @@ fn check_rejects_invalid_module_const_arithmetic_without_nyi_or_artifact() {
 // ── E_SIR_UNSUPPORTED source-span rendering (#3384) ─────────────────────────
 
 /// A limitation the SIR ownership pass refuses (`E_SIR_UNSUPPORTED`) must
-/// render with the same file:line:col and source excerpt as any other
+/// render with the same `file:line:col` and source excerpt as any other
 /// diagnostic, not a bare internal-symbol line.
 ///
 /// The fixture is `tests/vertical-slice/reject/hashmap_get_unclonable_opaque_value.hew`,

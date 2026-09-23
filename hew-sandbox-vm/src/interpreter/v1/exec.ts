@@ -2518,19 +2518,92 @@ class ExecutorV1 {
           const full =
             actor.layout.mailbox_capacity !== undefined &&
             actor.mailbox.length >= actor.layout.mailbox_capacity;
-          if (full) {
-            if (operation.policy === "drop_newest") {
+          // The destination's declaration answers a full queue before the
+          // sender's policy: a coalescing mailbox supersedes the queued
+          // message with the same key, then its fallback or a declared
+          // `drop_new` / `drop_old` resolves the rest. Either loss reports a
+          // discard; only a declaration that refuses reaches the sender.
+          // A discard completes in this turn unless an authored close
+          // suspends: the sender keeps its turn, as it does natively.
+          const discard = (value: VmValue, report: VmValue) => {
+            let settled = false;
+            let waiting = false;
+            this.closeValueAsync(
+              value,
+              this.pipeFault(act),
+              (fault) => {
+                act.fault ??= fault;
+                settled = true;
+                if (waiting) finish(report);
+                else this.completeShim(act, term, report);
+              },
+              act.context.actor,
+            );
+            if (!settled) {
+              waiting = true;
               parked = true;
               this.running = false;
-              this.closeValueAsync(
-                payload,
-                this.pipeFault(act),
-                (fault) => {
-                  act.fault ??= fault;
-                  finish(accepted(true));
-                },
-                act.context.actor,
+            }
+          };
+          let declared = full ? actor.layout.overflow : null;
+          const coalesce = actor.layout.coalesce;
+          if (declared === "coalesce" && coalesce) {
+            const key = coalesce.keys.find(
+              (key) => key.message === handler.message_id,
+            );
+            const queued = key
+              ? actor.mailbox.findIndex(
+                  (message) =>
+                    !message.reply &&
+                    message.handler.message_id === handler.message_id &&
+                    equals(
+                      message.payload[key.param]!,
+                      payload.fields[key.param]!,
+                    ),
+                )
+              : -1;
+            if (queued >= 0) {
+              const superseded = actor.mailbox[queued]!;
+              actor.mailbox[queued] = {
+                ...superseded,
+                payload: payload.fields,
+              };
+              discard(
+                { kind: "record", typeId: "", fields: superseded.payload },
+                accepted(true),
               );
+              return;
+            }
+            declared = coalesce.fallback;
+          }
+          if (declared === "drop_new") {
+            discard(payload, accepted(true));
+            return;
+          }
+          // A queued completion call owes its caller a reply, so `drop_old`
+          // evicts only a one-way message and refuses when there is none.
+          const oldest =
+            declared === "drop_old"
+              ? actor.mailbox.findIndex((message) => !message.reply)
+              : -1;
+          if (oldest >= 0) {
+            const [evicted] = actor.mailbox.splice(oldest, 1);
+            actor.mailbox.push({
+              handler,
+              payload: payload.fields,
+              reply: false,
+              complete: (_value, _error, drained) => drained?.(null),
+            });
+            this.dispatchActor(actor);
+            discard(
+              { kind: "record", typeId: "", fields: evicted!.payload },
+              accepted(false),
+            );
+            return;
+          }
+          if (full) {
+            if (operation.policy === "drop_newest") {
+              discard(payload, accepted(true));
               return;
             }
             if (operation.policy === "reject") {
@@ -2538,7 +2611,7 @@ class ExecutorV1 {
               return;
             }
             // The checker already resolved declaration defaults and explicit
-            // overrides. Coalescing is refused by admission until implemented.
+            // overrides; the declaration's own resolution happened above.
             if (operation.policy !== "wait")
               throw new Error("submission has no admitted policy");
             parked = true;

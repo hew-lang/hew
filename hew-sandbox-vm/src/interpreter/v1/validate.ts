@@ -138,7 +138,6 @@ function capabilityMessage(capability: string, native: boolean): string {
     Set: "This set operation",
     "actor.periodic": "Periodic actor handlers",
     "actor.local_observation": "Actor links and monitors",
-    "actor.mailbox.coalesce": "Mailbox coalescing",
     "actor.heap_limit": "Per-actor heap limits",
     "actor.ingress_adapter": "Actor ingress adapters",
     "wire.codec": "Wire encoding",
@@ -209,7 +208,6 @@ export function admitPackage(pkg: PackageV1): SandboxRejection | null {
       return unavailable("actor.periodic");
     if (actor.exit != null || actor.down != null)
       return unavailable("actor.local_observation");
-    if (actor.coalesce != null) return unavailable("actor.mailbox.coalesce");
     if (actor.max_heap_bytes != null) return unavailable("actor.heap_limit");
   }
 

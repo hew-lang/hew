@@ -894,6 +894,11 @@ fn a_close_observer_recovers_complete_actor_cleanup_faults() {
 }
 
 #[test]
+fn a_declared_coalescing_loss_reports_a_discard() {
+    assert_native_manifest("mailbox_declared_loss_visible");
+}
+
+#[test]
 fn a_cancelled_unadmitted_call_closes_its_payload_before_recovery() {
     let trace = execute(include_str!(
         "../../tests/core-acceptance/cases/resource-close-pending-ask.hew"
@@ -1236,8 +1241,12 @@ fn main() {
     assert_eq!(stdout(&trace), "main owner closed\nactor owner closed\n");
 }
 
+/// The destination's declaration answers a full queue before the sender's
+/// `on_full`: a refusing `fail` leaves an explicit wait to park for each
+/// slot, while `drop_old` evicts the queued message and `drop_new` discards
+/// the arriving one, exactly as a native single-worker run does.
 #[test]
-fn checked_wait_policy_overrides_the_destination_overflow_declaration() {
+fn a_declared_overflow_answers_a_full_queue_before_an_explicit_wait() {
     let source = r#"
 actor Worker {
     mailbox 1 overflow OVERFLOW,
@@ -1258,9 +1267,13 @@ fn main() {
     close(driver);
 }
 "#;
-    for overflow in ["fail", "drop_old", "drop_new"] {
+    for (overflow, handled) in [
+        ("fail", "0\n1\n2\n"),
+        ("drop_old", "2\n"),
+        ("drop_new", "0\n"),
+    ] {
         let trace = execute(&source.replace("OVERFLOW", overflow));
-        assert_eq!(stdout(&trace), "0\n1\n2\n");
+        assert_eq!(stdout(&trace), handled, "{overflow}");
         assert_eq!(trace["final_state"]["exit_code"], 0);
     }
 }

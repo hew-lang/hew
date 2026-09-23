@@ -3595,6 +3595,12 @@ pub struct Checker {
     /// walk, the root surface, import registration), and a refused path is
     /// refused on every one of them.
     pub(super) reported_declaration_collisions: std::collections::HashSet<String>,
+    /// Bare or root-qualified names a nominal is also reachable by, keyed to
+    /// the occurrence that claims them. These are namespace claims, not
+    /// declaration spellings: the identity table never resolves them, and
+    /// they exist so two declarations sharing one namespace name are reported
+    /// as a duplicate definition.
+    pub(super) nominal_namespace_claims: HashMap<String, crate::identity::DeclarationOccurrence>,
     /// Bare record/type-decl names that genuinely collide across modules
     /// (2+ distinct declaring package/file-import modules share the bare name,
     /// after re-export subsumption). Mirrors the HIR/MIR authoritative
@@ -4174,6 +4180,7 @@ impl Checker {
             extern_table: crate::extern_table::ExternTable::new(),
             contractless_extern_occurrences: std::collections::HashMap::new(),
             reported_declaration_collisions: std::collections::HashSet::new(),
+            nominal_namespace_claims: HashMap::new(),
             cross_module_colliding_record_names: HashSet::new(),
             current_module_idx: 0,
             local_type_defs: HashSet::new(),

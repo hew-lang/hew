@@ -43,8 +43,7 @@ impl Checker {
                 // file that declares it.
                 let lookup_key = self.trait_ref_lookup_key(trait_name);
                 let declaring_trait = self
-                    .identity
-                    .declaration_by_path(&lookup_key)
+                    .lookup_declaration(&lookup_key)
                     .map_or(lookup_key, |declaration| {
                         declaration.full_path().to_string()
                     });
@@ -1544,8 +1543,7 @@ impl Checker {
         {
             CallTarget::Runtime(family)
         } else {
-            self.identity
-                .declaration_by_path(&source_declaration)
+            self.lookup_declaration(&source_declaration)
                 .cloned()
                 .map_or_else(
                     || CallTarget::Builtin {
@@ -1719,8 +1717,7 @@ impl Checker {
             .or_else(|| self.actor_protocol_descriptors.get(&name))
             .ok_or_else(|| format!("actor `{canonical}` has no receive protocol"))?;
         let actor = self
-            .identity
-            .declaration_by_path(&canonical)
+            .lookup_declaration(&canonical)
             .cloned()
             .ok_or_else(|| format!("actor `{canonical}` has no declaration identity"))?;
         let endpoint = |name: &str| -> Result<ResolvedActorEndpoint, String> {
@@ -1735,8 +1732,7 @@ impl Checker {
                 ));
             }
             let handler = self
-                .identity
-                .declaration_by_path(&format!("{canonical}::{name}"))
+                .lookup_declaration(&format!("{canonical}::{name}"))
                 .cloned()
                 .ok_or_else(|| {
                     format!("handler `{canonical}::{name}` has no declaration identity")

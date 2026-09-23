@@ -756,15 +756,27 @@ fn peer_files_with_divergent_same_named_types_conflict_on_one_symbol() {
     );
 }
 
-/// Control: ONE declaration (in the peer file) reached through both
-/// assembly routes mints one file-backed nominal identity and therefore
-/// one contract — no self-conflict.
+/// A declaration has one render (#3239). The frontend never builds this
+/// graph - importing a peer file directly is `E_PEER_IMPORT` - so a peer file
+/// walked a second time as its own module is an internal defect: the identity
+/// table refuses the second spelling and names both, and the one declaration
+/// still yields one contract rather than a self-conflict.
 #[test]
-fn one_peer_declaration_through_two_routes_resolves_one_contract() {
+fn one_peer_declaration_through_two_routes_is_refused_naming_both_spellings() {
     let output = check_peer_assembled_extern(false);
     assert!(
-        output.errors.is_empty(),
-        "one declaration, two routes, one identity; errors: {:#?}",
+        output.errors.iter().any(|error| error
+            .message
+            .contains("declaration `pkg.Tok` was offered a second spelling `pkg.aaa.Tok`")),
+        "{:#?}",
+        output.errors
+    );
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|error| error.message.contains("conflicting declarations")),
+        "{:#?}",
         output.errors
     );
 }

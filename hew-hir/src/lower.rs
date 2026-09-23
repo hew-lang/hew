@@ -5463,13 +5463,9 @@ pub fn lower_program_with_mono_cap(
 
 /// Whether an inherent impl block's receiver names `declaration`.
 ///
-/// `HirImplBlock::self_type_name` is the checker's resolved receiver spelling,
-/// and one declaration answers to more than one: a peer file of a directory
-/// module is reachable as `pkg.Response` and, when the file is importable in
-/// its own right, as `pkg.file.Response`. Which spelling reaches the impl
-/// depends on the import route the program took, so the comparison resolves
-/// through the identity table rather than matching the declaration's own
-/// render.
+/// `HirImplBlock::self_type_name` is the checker's resolved receiver spelling.
+/// The comparison resolves it through the identity table, which carries one
+/// canonical render per declaration, rather than matching text.
 fn impl_receiver_is(
     identity: &hew_types::IdentityView,
     impl_block: &crate::node::HirImplBlock,

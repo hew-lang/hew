@@ -862,8 +862,7 @@ impl Checker {
     /// collisions with builtins or inlined functions from other modules.
     pub(super) fn check_function_as(&mut self, fd: &FnDecl, fn_name: &str) {
         let body = self
-            .identity
-            .declaration_by_path(fn_name)
+            .lookup_declaration(fn_name)
             .cloned()
             .or_else(|| self.impl_method_declaration_ids.get(fn_name).cloned())
             .map(|id| {
@@ -2325,8 +2324,7 @@ impl Checker {
         let prev_function = self.current_function.take();
         self.current_function = Some(qualified_name.clone());
         let effect_body = self
-            .identity
-            .declaration_by_path(&qualified_name)
+            .lookup_declaration(&qualified_name)
             .cloned()
             .map(super::effects::EffectBody::Declaration);
         let previous_effect_body =

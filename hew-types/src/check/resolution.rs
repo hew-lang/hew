@@ -2552,7 +2552,7 @@ impl Checker {
                 }
             },
         );
-        if let Some(declaration) = self.identity.declaration_by_path(&local) {
+        if let Some(declaration) = self.lookup_declaration(&local) {
             if self.type_aliases.contains_key(declaration.full_path()) {
                 return Some(declaration.full_path().to_string());
             }
@@ -2564,7 +2564,7 @@ impl Checker {
                 self.current_module_idx,
                 name.to_string(),
             ))
-            .and_then(|source| self.identity.declaration_by_path(source))
+            .and_then(|source| self.lookup_declaration(source))
             .filter(|declaration| self.type_aliases.contains_key(declaration.full_path()))
             .map(|declaration| declaration.full_path().to_string())
     }

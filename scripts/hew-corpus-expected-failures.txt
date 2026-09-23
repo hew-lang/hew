@@ -60,10 +60,6 @@
 # operation contract on the final path yet
 examples/distributed/kv_client.hew E_SIR_UNSUPPORTED
 
-# internal-channel (#3401): a `dyn Drawable` parameter reaches SIR verification
-# with no published dispatch table
-examples/multifile/01_shapes/shapes/shapes.hew E_SIR_VERIFY
-
 # deferred-nyi: multifile compilation is not implemented (requires multi-file resolve)
 examples/multifile/02_geometry/geo/area.hew
 examples/multifile/02_geometry/geo/distance.hew
@@ -131,7 +127,6 @@ docs/repros/final-core/own-generic-identity-transfer.hew
 
 # repro-wip: open bug reproduction cases
 repros/03_hashmap_string_vec_value.hew
-repros/3094_consume_param_transfer_builder.hew
 repros/p0a_hashmap_string_vec_value.hew
 repros/p0c_method_value_failclosed.hew
 
@@ -152,8 +147,6 @@ repros/ladder/resource_early_close.hew
 repros/ladder/resource_keep.hew E_SIR_UNSUPPORTED
 repros/ladder/resource_send2.hew
 repros/ladder/state_reinit.hew E_SIR_UNSUPPORTED
-repros/ladder/state_resource_mut.hew E_SIR_VERIFY
-repros/ladder/state_resource_trait.hew E_SIR_VERIFY
 
 # ── tests/core-acceptance/ ──────────────────────────────────────────────────────
 
@@ -270,15 +263,6 @@ tests/vertical-slice/accept/identity_aggregates.hew
 tests/vertical-slice/accept/link_monitor_value_monitor.hew E_SIR_UNSUPPORTED
 tests/vertical-slice/accept/link_monitor_value_monitor_in_actor.hew E_SIR_UNSUPPORTED
 tests/vertical-slice/accept/link_monitor_value_result.hew E_SIR_UNSUPPORTED
-
-# known defect (#3094): a `#[resource]` disposer cannot consume its own handle
-# field. Routing around the refusal compiles and then segfaults, so the refusal
-# is fail-closed protection, not stale pedantry.
-tests/vertical-slice/accept/returns_receiver_consuming_result.hew
-
-# internal-channel (#3401): accept fixtures the checker admits and SIR
-# verification then refuses
-tests/vertical-slice/accept/supervisor_childref_value_flow_states.hew E_SIR_VERIFY
 
 # ── tools/ ──────────────────────────────────────────────────────────────────────
 

@@ -63,19 +63,19 @@ a later stage refused it.
 | `let_index_assign.hew`     | accept  | §2.1 (L1210)                                                       |
 | `let_map_insert.hew`       | accept  | §2.1 (L1204)                                                       |
 | `let_state_push.hew`       | accept  | §1.3.6 (L600); §2.1 (L1204); §11 (L2711)                           |
-| `linear_actor_field.hew`   | limit   | §1.3.6 (L689); §1.6 (L997); §11 (L2730)                            |
+| `linear_actor_field.hew`   | accept  | §1.3.6 (L689); §1.6 (L997); §11 (L2730)                            |
 | `mutate_let.hew`           | accept  | §2.1 (L1203); §11 (L2711)                                          |
 | `rc_clone.hew`             | accept  | §2.1 (L1218); §11 (L2713)                                          |
 | `res_param_borrow.hew`     | accept  | §2.1 (L1118)                                                       |
-| `res_param_consume.hew`    | limit   | §1.6 (L996); §2.1 (L1120); §4.2 (L1446); §11 (L2728)               |
+| `res_param_consume.hew`    | reject  | §1.6 (L996); §2.1 (L1120); §4.2 (L1446); §11 (L2728)               |
 | `resource_early_close.hew` | reject  | §2.1 (L1104); §4.2 (L1419); §11 (L2710)                            |
 | `resource_keep.hew`        | limit   | §5.6 (L1936); §11 (L2733)                                          |
 | `resource_send.hew`        | accept  | §11 (L2714)                                                        |
 | `resource_send2.hew`       | reject  | §2.1 (L1179)                                                       |
 | `state_alias.hew`          | accept  | §11 (L2735)                                                        |
 | `state_reinit.hew`         | limit   | §1.3.6 (L667); §11 (L2744)                                         |
-| `state_resource_mut.hew`   | ice     | §1.3.6 (L611)                                                      |
-| `state_resource_trait.hew` | ice     | §1.3.6 (L610); §1.6 (L995); §11 (L2744)                            |
+| `state_resource_mut.hew`   | accept  | §1.3.6 (L611)                                                      |
+| `state_resource_trait.hew` | accept  | §1.3.6 (L610); §1.6 (L995); §11 (L2744)                            |
 | `temp_close.hew`           | accept  | §1.3.4 (L449); §11 (L2736)                                         |
 | `vec_rc_weak.hew`          | accept  | §1.1 (L183); §3 (L1339); §11 (L2720)                               |
 | `vec_resource.hew`         | ice     | §1.1 (L183); §2.1 (L1105); §11 (L2712)                             |

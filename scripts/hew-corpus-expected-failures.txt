@@ -135,7 +135,6 @@ repros/ladder/lambda_send_twice.hew E_SEND_RESULT_DROPPED
 repros/ladder/let_field_mut.hew
 repros/ladder/res_param_consume.hew
 repros/ladder/resource_early_close.hew
-repros/ladder/resource_keep.hew E_SIR_UNSUPPORTED
 repros/ladder/resource_send2.hew
 repros/ladder/state_reinit.hew E_SIR_UNSUPPORTED
 
@@ -245,13 +244,11 @@ tests/pkg-import/two_module_same_generic_valueclass_accept.hew
 
 # final-path-limitation: accept fixtures whose programs the final path cannot
 # lower yet
-tests/vertical-slice/accept/actor_state_field_reinit.hew E_SIR_UNSUPPORTED
 
 # known defect (#3404): `Node.id()` returns the builtin `NodeId` and
 # `RemotePid<T>.node_id()` the one std/builtins.hew declares, so comparing them
 # reads as `expected NodeId, found NodeId`
 tests/vertical-slice/accept/identity_aggregates.hew
-tests/vertical-slice/accept/link_monitor_value_monitor_in_actor.hew E_SIR_UNSUPPORTED
 
 # ── tools/ ──────────────────────────────────────────────────────────────────────
 

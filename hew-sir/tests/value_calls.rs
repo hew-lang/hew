@@ -63,6 +63,7 @@ fn selected_call(capability: ValueCapability) -> SemModule {
                 result,
                 normal,
                 unwind,
+                ..
             } = &block.terminator
             {
                 if *callee != target {
@@ -345,7 +346,7 @@ fn selected_equality_keeps_user_method_fault_cleanup() {
     let cleanup_blocks = cleanup_region(main, failure);
     assert!(cleanup_blocks
         .iter()
-        .any(|block| matches!(block.terminator, SemTerminator::ResumeUnwind)));
+        .any(|block| matches!(block.terminator, SemTerminator::ResumeUnwind { .. })));
     for name in ["left", "right"] {
         let hew_sir::BindingTarget::Place(owner) = main
             .bindings

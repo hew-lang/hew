@@ -396,7 +396,11 @@ fn allocated_closure() -> hew_sir::SemModule {
                 },
             )
         },
-        block(6, vec![end(), destroy(1)], SemTerminator::ResumeUnwind),
+        block(
+            6,
+            vec![end(), destroy(1)],
+            SemTerminator::ResumeUnwind { handback: None },
+        ),
         SemBlock {
             terminator_provenance: hew_sir::Provenance::Synthesized,
             args: vec![arg(9, ResolvedTy::I64)],
@@ -411,7 +415,7 @@ fn allocated_closure() -> hew_sir::SemModule {
                 },
             )
         },
-        block(8, vec![], SemTerminator::ResumeUnwind),
+        block(8, vec![], SemTerminator::ResumeUnwind { handback: None }),
     ];
     normalize(&mut module);
     check_module(&module).unwrap();

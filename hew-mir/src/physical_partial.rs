@@ -586,11 +586,16 @@ pub(super) fn verify_trap_cleanup_refinement(
                 return Err(invalid());
             }
             let block = blocks.get(&site.0).ok_or_else(invalid)?;
+            // Besides releases, only the moves that hand a failing `var self`
+            // method's receiver back run here.
             if let Some(operation) = block.ops[site.1..].iter().find(|operation| {
                 !certified(operation)
                     && !matches!(
                         operation,
-                        PhysicalOp::EndBorrow { .. } | PhysicalOp::TaskScopeClose { .. }
+                        PhysicalOp::EndBorrow { .. }
+                            | PhysicalOp::TaskScopeClose { .. }
+                            | PhysicalOp::Transfer { .. }
+                            | PhysicalOp::AggregateDestructure { .. }
                     )
             }) {
                 return Err(PhysicalError::new(format!(
@@ -600,7 +605,7 @@ pub(super) fn verify_trap_cleanup_refinement(
             pending.push((site, true));
             match &block.terminator {
                 PhysicalTerminator::Trap(_)
-                | PhysicalTerminator::PropagateFault
+                | PhysicalTerminator::PropagateFault { .. }
                 | PhysicalTerminator::EnterDefer { .. }
                 | PhysicalTerminator::FinishDefer { .. }
                 | PhysicalTerminator::CheckedRaiseFault { .. }

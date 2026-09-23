@@ -91,6 +91,7 @@ pub const REQUIRED_PARITY_TEST_NAMES: &[&str] = &[
     "struct_functional_update",
     "struct_pattern_match",
     "option_some_none",
+    "var_self_fault_defer",
     "option_take",
     "resource_field_collections",
     "const_reference",

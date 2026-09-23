@@ -1,0 +1,63 @@
+#[resource]
+type Conn {
+    fd: i64,
+}
+
+impl Conn {
+    fn close(consume self) {
+        println(f"close conn {self.fd}");
+    }
+
+    fn bump(var self, fail: bool) {
+        self.fd = self.fd + 1;
+        if fail {
+            panic("bump failed");
+        }
+    }
+
+    fn bump_then_drop(var self) {
+        let guard = Guard { id: self.fd };
+        self.fd = self.fd + 10;
+    }
+}
+
+#[resource]
+type Guard {
+    id: i64,
+}
+
+impl Guard {
+    fn close(consume self) {
+        println(f"close guard {self.id}");
+        panic("guard close failed");
+    }
+}
+
+actor Worker {
+    receive fn run() {
+        var c = Conn { fd: 1 };
+        defer println(f"defer sees fd {c.fd}");
+        c.bump(true);
+        println("unreachable");
+    }
+
+    receive fn cleanup_fault() {
+        var c = Conn { fd: 100 };
+        defer println(f"defer sees fd {c.fd}");
+        c.bump_then_drop();
+        println("unreachable");
+    }
+}
+
+fn main() {
+    let w = spawn Worker;
+    match w.run() {
+        .Ok(_) => println("unexpected"),
+        .Err(_) => println("run faulted"),
+    }
+    let v = spawn Worker;
+    match v.cleanup_fault() {
+        .Ok(_) => println("unexpected"),
+        .Err(_) => println("cleanup faulted"),
+    }
+}

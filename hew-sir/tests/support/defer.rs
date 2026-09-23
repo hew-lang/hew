@@ -222,6 +222,7 @@ pub fn module(failing: bool) -> SemModule {
                     result: CallResult::Unit,
                     normal: Some(edge(6)),
                     unwind: CallUnwind::Cleanup(edge(7)),
+                    handback: None,
                 }
             } else {
                 SemTerminator::Goto(edge(7))
@@ -299,7 +300,7 @@ pub fn module(failing: bool) -> SemModule {
         block(
             14,
             vec![op(SemOpKind::EndLifetime { place: PlaceId(1) })],
-            SemTerminator::ResumeUnwind,
+            SemTerminator::ResumeUnwind { handback: None },
         ),
         block(
             15,

@@ -195,6 +195,9 @@ interface Activation {
   result: CallResult;
   normal: Edge | undefined;
   unwind: Edge | null;
+  /// Where the caller binds the receiver a failing `var self` method hands
+  /// back on the unwind edge.
+  handback?: ValueDef | null;
 }
 
 /// Ends the run. The status is already recorded on the trace.
@@ -1187,6 +1190,7 @@ class ExecutorV1 {
           term.normal,
           term.unwind,
         );
+        this.current.handback = term.handback ?? null;
         return;
       }
       case "indirect.call": {
@@ -1365,7 +1369,10 @@ class ExecutorV1 {
         return;
       }
       case "resume_unwind":
-        this.resumeUnwind(act);
+        this.resumeUnwind(
+          act,
+          term.handback ? this.boundary(act, term.handback) : null,
+        );
         return;
 
       case "suspend":
@@ -1651,7 +1658,7 @@ class ExecutorV1 {
     this.takeEdge(act, unwind);
   }
 
-  private resumeUnwind(act: Activation): void {
+  private resumeUnwind(act: Activation, handback: VmValue | null): void {
     const fault = act.fault;
     if (!fault) {
       throw new Error(`${act.fn.name}: resume_unwind with no pending fault`);
@@ -1666,6 +1673,16 @@ class ExecutorV1 {
       throw new Error(
         `${act.fn.name}: unwound into a call that names no unwind edge`,
       );
+    }
+    // A failing `var self` method hands its receiver back, defined on the
+    // unwind edge like a result on the normal edge.
+    if ((handback === null) !== !act.handback) {
+      throw new Error(
+        `${act.fn.name}: receiver handback disagrees with its call`,
+      );
+    }
+    if (handback !== null && act.handback) {
+      this.define(caller, act.handback.value, handback);
     }
     caller.fault = fault;
     this.current = caller;

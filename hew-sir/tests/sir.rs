@@ -60,6 +60,7 @@ fn call(
             args: normal_args,
         }),
         unwind: CallUnwind::NotApplicable,
+        handback: None,
     }
 }
 

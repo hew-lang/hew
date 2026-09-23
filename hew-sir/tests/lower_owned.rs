@@ -53,7 +53,7 @@ fn cleanup_has_lifetime(path: &[&hew_sir::SemBlock], place: hew_sir::PlaceId) ->
 fn cleanup_ends_with_resume(path: &[&hew_sir::SemBlock]) -> bool {
     matches!(
         path.last().map(|block| &block.terminator),
-        Some(SemTerminator::ResumeUnwind)
+        Some(SemTerminator::ResumeUnwind { .. })
     )
 }
 
@@ -411,7 +411,7 @@ fn owned_string_and_bytes_calls_copy_borrows_and_clean_both_exits() {
     assert!(use_values
         .blocks
         .iter()
-        .any(|block| matches!(block.terminator, SemTerminator::ResumeUnwind)));
+        .any(|block| matches!(block.terminator, SemTerminator::ResumeUnwind { .. })));
     assert!(use_values
         .blocks
         .iter()

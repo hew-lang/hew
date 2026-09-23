@@ -51,11 +51,16 @@ impl Builder<'_, '_> {
         if self.terminal_linear_receiver().is_some() {
             self.emit_place_operation(SemOpKind::FinishLinearReceiver, Provenance::Synthesized)?;
         }
+        let outer_dual_return = self.dual_return.take();
+        if self.callable.signature.hands_back_receiver() {
+            self.dual_return = value.as_ref().map(|result| result.operand.value);
+        }
         self.finish_recovery_scopes(0, &preserved)?;
         self.finish_task_scopes(0, false)?;
         self.end_loans_since(0)?;
         self.destroy_live_since(&preserved)?;
         self.drain_scopes(0, true)?;
+        self.dual_return = outer_dual_return;
         if let Some(result) = &value {
             self.owned_live.remove(&result.operand.value);
         }
@@ -164,6 +169,11 @@ impl Builder<'_, '_> {
             .as_ref()
             .map(|b| b.preserved.clone())
             .unwrap_or_default();
+        let handback = if boundary.is_none() {
+            self.take_fault_handback()?
+        } else {
+            None
+        };
         self.destroy_live_since(&preserved)?;
         self.drain_scopes(boundary.as_ref().map_or(0, |b| b.floor), false)?;
         if boundary.is_none() {
@@ -178,13 +188,60 @@ impl Builder<'_, '_> {
                 self.deferred_initialized.remove(&place);
             }
         }
-        self.set_terminator(boundary.map_or(SemTerminator::ResumeUnwind, |body| {
-            SemTerminator::Goto(edge(body.finish))
-        }))?;
+        self.set_terminator(
+            boundary.map_or(SemTerminator::ResumeUnwind { handback }, |body| {
+                SemTerminator::Goto(edge(body.finish))
+            }),
+        )?;
         let terminal = self.current;
         self.restore_control_state(&saved);
         self.current = terminal;
         Ok(())
+    }
+
+    /// A `var self` method mutates its caller's place rather than consuming
+    /// it. When it fails, it hands the receiver, as last written, back to the
+    /// caller instead of releasing it, so the caller's place is never empty.
+    fn take_fault_handback(&mut self) -> Result<Option<crate::BoundaryOperand>, String> {
+        let Some(binding) = self.function.var_self_receiver else {
+            return Ok(None);
+        };
+        if !self.callable.signature.hands_back_receiver() {
+            return Ok(None);
+        }
+        let ty = self.callable.signature.params[0].ty.clone();
+        if let Some(dual) = self
+            .dual_return
+            .filter(|dual| self.owned_live.contains_key(dual))
+        {
+            let dual_ty = self.callable.signature.return_ty.clone();
+            let fields = self.emit_destructure_value(
+                dual,
+                &dual_ty,
+                crate::AggregateShapeRef::Tuple,
+                Provenance::Synthesized,
+            )?;
+            self.owned_live.remove(&fields[1].id);
+            return Ok(Some(crate::BoundaryOperand {
+                operand: crate::Operand {
+                    value: fields[1].id,
+                },
+                decision: crate::BoundaryDecision::Move,
+            }));
+        }
+        let value = match self.binding_target(binding)? {
+            super::BindingTarget::Place(place) => {
+                self.emit_typed(Provenance::Synthesized, &ty, SemOpKind::LoadTake { place })?
+            }
+            super::BindingTarget::Value(value) => value,
+        };
+        if self.owned_live.remove(&value).is_none() {
+            return Err("a `var self` receiver must be whole where its method can fail".into());
+        }
+        Ok(Some(crate::BoundaryOperand {
+            operand: crate::Operand { value },
+            decision: crate::BoundaryDecision::Move,
+        }))
     }
 
     pub(super) fn finish_checked_fault(&mut self, kind: crate::TrapKind) -> Result<(), String> {

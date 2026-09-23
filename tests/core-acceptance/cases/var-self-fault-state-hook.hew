@@ -1,0 +1,50 @@
+import std.failure;
+
+#[resource]
+type Conn {
+    fd: i64,
+    items: Vec<string>,
+}
+
+impl Conn {
+    fn close(consume self) {
+        println(f"close {self.fd}");
+    }
+
+    fn bump(var self, fail: bool) {
+        self.fd = self.fd + 1;
+        if fail {
+            panic("bump failed");
+        }
+    }
+}
+
+actor Holder {
+    var conn: Conn,
+
+    receive fn poke(fail: bool) -> i64 {
+        conn.bump(fail);
+        conn.fd
+    }
+
+    #[on(crash)]
+    fn crashed(info: CrashInfo) -> CrashAction {
+        println(f"hook sees {conn.items[0]} fd {conn.fd}");
+        CrashAction.Restart
+    }
+}
+
+supervisor Group {
+    intensity: 1 within 60s,
+    child holder: Holder(conn: Conn { fd: 1, items: ["item"] }),
+}
+
+fn main() {
+    let group = spawn Group;
+    println(group.holder.poke(false).expect("poke"));
+    let _ = group.holder.poke(true);
+    let _ = await_restart group.holder;
+    println(group.holder.poke(false).expect("fresh"));
+    close(group);
+    println("done");
+}

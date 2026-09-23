@@ -539,7 +539,17 @@ fn dump_term(out: &mut String, module: &SemModule, term: &SemTerminator) {
             )
             .expect("write to String");
         }
-        SemTerminator::ResumeUnwind => writeln!(out, "    resume_unwind").expect("write to String"),
+        SemTerminator::ResumeUnwind { handback: None } => {
+            writeln!(out, "    resume_unwind").expect("write to String");
+        }
+        SemTerminator::ResumeUnwind {
+            handback: Some(handback),
+        } => writeln!(
+            out,
+            "    resume_unwind handback {}",
+            boundary_operand(handback)
+        )
+        .expect("write to String"),
         SemTerminator::Unreachable => writeln!(out, "    unreachable").expect("write to String"),
     }
 }
@@ -674,6 +684,21 @@ fn dump_call_terminator(out: &mut String, module: &SemModule, term: &SemTerminat
         _ => unreachable!("call formatter requires a call terminator"),
     };
     dump_call(out, &target, args, result, normal, unwind);
+    if let SemTerminator::Call {
+        handback: Some(handback),
+        ..
+    } = term
+    {
+        // The receiver a failing `var self` callee returns on the unwind edge.
+        out.pop();
+        writeln!(
+            out,
+            " handback %{}: {}",
+            handback.id.0,
+            handback.ty.user_facing()
+        )
+        .expect("write to String");
+    }
 }
 
 fn dump_suspend(

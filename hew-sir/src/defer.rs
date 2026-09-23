@@ -132,7 +132,7 @@ pub(crate) fn plan(function: &SemFunction) -> Result<Plan, &'static str> {
                 // function never returns control, so it owes no finish.
                 SemTerminator::Unreachable => diverged = true,
                 SemTerminator::Return { .. }
-                | SemTerminator::ResumeUnwind
+                | SemTerminator::ResumeUnwind { .. }
                 | SemTerminator::Trap { .. }
                 | SemTerminator::Suspend { .. } => {
                     return Err("defer body escapes without its matching finish");

@@ -381,7 +381,14 @@ export type TermV1 =
       ty: string;
     })
   | (TermBase & { op: "unreachable" })
-  | (TermBase & CallShape & { op: "call"; callee: number })
+  | (TermBase &
+      CallShape & {
+        op: "call";
+        callee: number;
+        /// The receiver a failing `var self` callee hands back, defined on the
+        /// unwind edge.
+        handback?: ValueDef | null;
+      })
   | (TermBase & CallShape & { op: "indirect.call"; callee: BoundaryOperand })
   | (TermBase &
       CallShape & { op: "dyn.call"; receiver: BoundaryOperand; slot: number })
@@ -420,7 +427,7 @@ export type TermV1 =
   | (TermBase & { op: "trap"; trap: TrapName })
   | (TermBase & { op: "checked_raise"; trap: TrapName; cleanup: Edge })
   | (TermBase & { op: "cleanup.dispatch"; normal: Edge; fault: Edge })
-  | (TermBase & { op: "resume_unwind" })
+  | (TermBase & { op: "resume_unwind"; handback?: BoundaryOperand | null })
   | (TermBase & { op: "enter_defer"; defer: number; park: number; body: Edge })
   | (TermBase & { op: "finish_defer"; defer: number; park: number; next: Edge })
   | (TermBase & {

@@ -219,7 +219,7 @@ pub(super) fn edges(term: &PhysicalTerminator) -> Vec<&PhysicalEdge> {
         } => std::iter::once(normal).chain(failure).collect(),
         PhysicalTerminator::ExternCall { normal, .. } => vec![normal],
         PhysicalTerminator::Return { .. }
-        | PhysicalTerminator::PropagateFault
+        | PhysicalTerminator::PropagateFault { .. }
         | PhysicalTerminator::Trap(_)
         | PhysicalTerminator::Unreachable => vec![],
     }
@@ -562,7 +562,7 @@ pub(super) fn verify_regions(function: &PhysicalFunction) -> Result<Plan, Physic
                 // never returns control, so it owes no finish.
                 PhysicalTerminator::Unreachable => diverged = true,
                 PhysicalTerminator::Return { .. }
-                | PhysicalTerminator::PropagateFault
+                | PhysicalTerminator::PropagateFault { .. }
                 | PhysicalTerminator::Trap(_) => {
                     return Err(PhysicalError::new(
                         "physical defer body escapes its matching finish",
@@ -783,6 +783,9 @@ pub(super) fn successors(
                 return Err(PhysicalError::new(
                     "physical defer entry skips the top action or overwrites a live park",
                 ));
+            }
+            for dependency in &pending.dependencies {
+                super::initialized(function, &state, *dependency, block, "defer dependency")?;
             }
             let scope = pending.scope;
             state.defers.pending.pop();

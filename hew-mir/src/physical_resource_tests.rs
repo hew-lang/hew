@@ -30,7 +30,7 @@ fn stream_owner() -> (SemModule, ResolvedTy) {
     }];
     for (id, terminator) in [
         (1, SemTerminator::Return { value: None }),
-        (2, SemTerminator::ResumeUnwind),
+        (2, SemTerminator::ResumeUnwind { handback: None }),
     ] {
         module.functions[0].blocks.push(hew_sir::SemBlock {
             terminator_provenance: hew_sir::Provenance::Synthesized,

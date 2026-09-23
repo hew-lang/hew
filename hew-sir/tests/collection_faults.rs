@@ -82,7 +82,7 @@ fn collection_callback_failures_end_in_existing_fault_propagation() {
             assert!(
                 matches!(
                     cleanup_terminal(function, edge.target).terminator,
-                    SemTerminator::ResumeUnwind
+                    SemTerminator::ResumeUnwind { .. }
                 ),
                 "{family:?}"
             );

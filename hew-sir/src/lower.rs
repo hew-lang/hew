@@ -2827,7 +2827,8 @@ fn generic_template_signature(function: &HirFn) -> Result<SemSignature, String> 
                 } else {
                     SemParamPassing::ReadOnly
                 },
-                caller_visible_projection: false,
+                // Instances keep this only where the receiver is owned.
+                caller_visible_projection: function.var_self_receiver == Some(parameter.id),
             })
             .collect(),
         return_ty: function.return_ty.clone(),
@@ -2879,7 +2880,10 @@ fn callable_signature_with_substitution(
             } else {
                 SemParamPassing::ReadOnly
             },
-            caller_visible_projection: false,
+            // An owned `var self` receiver returns to its caller on both
+            // edges: in the dual return, and handed back when the call fails.
+            caller_visible_projection: function.var_self_receiver == Some(parameter.id)
+                && OwnKind::of_class(row.class) == OwnKind::Owned,
         });
     }
     let return_ty = substitution.apply(&function.return_ty);
@@ -3224,7 +3228,20 @@ enum PreparedCallee {
     },
 }
 
+/// Where a failing `var self` call's handed-back receiver goes on its unwind
+/// edge: back into the caller's place, or released when the call worked on a
+/// staged copy that the place never published.
+pub(super) struct FaultHandback {
+    pub ty: ResolvedTy,
+    pub writeback: Option<PlaceId>,
+    pub provenance: Provenance,
+}
+
 impl PreparedCallee {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one terminator constructor for every prepared callee shape"
+    )]
     fn invoke(
         self,
         id: OpId,
@@ -3233,6 +3250,7 @@ impl PreparedCallee {
         result: CallResult,
         normal: Option<Edge>,
         unwind: CallUnwind,
+        handback: Option<ValueDef>,
     ) -> SemTerminator {
         match self {
             Self::Direct(callee) => SemTerminator::Call {
@@ -3242,6 +3260,7 @@ impl PreparedCallee {
                 result,
                 normal,
                 unwind,
+                handback,
             },
             Self::Indirect(callee) => SemTerminator::IndirectCall {
                 id,
@@ -3493,6 +3512,10 @@ struct Builder<'hir, 'service> {
     /// A stream producer body: the caller's sink it yields into and the
     /// element type each yield transfers.
     stream_sink: Option<(ValueId, ResolvedTy)>,
+    /// A `var self` method's dual return while its exit cleanup runs. The
+    /// receiver has already moved into it, so a failing cleanup hands the
+    /// receiver back out of it.
+    dual_return: Option<ValueId>,
 }
 
 impl<'hir, 'service> Builder<'hir, 'service> {
@@ -3629,6 +3652,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             deferred_initialized: BTreeSet::new(),
             state_taken: BTreeSet::new(),
             stream_sink,
+            dual_return: None,
         };
         builder.bind_captures(source)?;
         builder.bind_actor_state(source)?;
@@ -8041,6 +8065,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             &loans,
             &live_before_arguments,
             value_required,
+            None,
         )
     }
 
@@ -8201,6 +8226,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             &loans,
             &live_before_arguments,
             value_required,
+            None,
         )?;
         if let Some(place) = receiver_writeback {
             let value = result.ok_or_else(|| {
@@ -8278,6 +8304,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             &loans,
             &live_before_arguments,
             value_required,
+            None,
         )
     }
 
@@ -8356,6 +8383,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         loans: &[ValueId],
         live_before_arguments: &std::collections::HashSet<ValueId>,
         value_required: bool,
+        handback: Option<FaultHandback>,
     ) -> Result<Option<ValueId>, String> {
         for argument in &lowered_args {
             if argument.decision == crate::BoundaryDecision::Move {
@@ -8412,23 +8440,52 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             )
         };
         let normal_block = normal.as_ref().map(|edge| edge.target);
-        let unwind = self.new_block(Vec::new());
+        let handback_def = handback.as_ref().map(|handback| ValueDef {
+            id: self.fresh_value(),
+            ty: handback.ty.clone(),
+            own: OwnKind::Owned,
+        });
+        let returned_receiver = handback_def.as_ref().map(|def| BlockArg {
+            value: self.fresh_value(),
+            ty: def.ty.clone(),
+            own: OwnKind::Owned,
+        });
+        let unwind = self.new_block(returned_receiver.iter().cloned().collect());
         let id = OpId(self.ops);
         self.ops += 1;
-        self.set_terminator(callee.invoke(
-            id,
-            signature,
-            lowered_args,
-            result,
-            normal,
-            CallUnwind::Cleanup(Edge {
-                target: unwind,
-                args: vec![],
-            }),
-        ))?;
+        self.set_terminator(
+            callee.invoke(
+                id,
+                signature,
+                lowered_args,
+                result,
+                normal,
+                CallUnwind::Cleanup(Edge {
+                    target: unwind,
+                    args: handback_def
+                        .iter()
+                        .map(|def| Operand { value: def.id })
+                        .collect(),
+                }),
+                handback_def,
+            ),
+        )?;
         self.current = unwind;
         self.owned_live = live_at_call.clone();
         self.end_call_loans(loans)?;
+        if let (Some(handback), Some(receiver)) = (handback, returned_receiver) {
+            self.owned_live.insert(receiver.value, receiver.ty);
+            // The call took the receiver's place, so the handed-back value
+            // re-initializes it. A field beneath a staged seat returns into
+            // the staged copy, which the fault exit releases; the seat keeps
+            // what it held before the call.
+            match handback.writeback {
+                Some(place) => {
+                    self.restore_taken_place(place, receiver.value, handback.provenance)?;
+                }
+                None => self.emit_destroy(receiver.value)?,
+            }
+        }
         self.finish_fault_exit()?;
         let Some(normal_block) = normal_block else {
             self.current = self.new_block(Vec::new());
@@ -8997,6 +9054,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             .collect();
         let mut transformed_target = None;
         let mut seat_taken = false;
+        let mut took_place = false;
         let mut taken_seat = None;
         let mut indexed_writeback = None;
         if let Some(place) = &transformed_place {
@@ -9071,6 +9129,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     self.places[projected.0 as usize].origin,
                     crate::PlaceOrigin::ActorState { .. }
                 );
+                took_place = true;
                 transformed_target = Some(WritableRoot::Place {
                     leaf: projected,
                     staged_root,
@@ -9091,7 +9150,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 },
             )?;
             self.owned_live.remove(&moved);
-            if seat_taken {
+            if took_place {
                 taken_seat = Some((projected, moved));
             }
             lowered_args.insert(
@@ -9246,16 +9305,21 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         if let (Some(failure), Some(block)) = (failure, failure_block) {
             self.current = block;
             self.owned_live = live_on_failure;
-            // Where the contract keeps the receiver on this edge, the seat is
-            // re-published here and the actor's teardown releases the field
-            // once. Where the runtime consumed and released it instead, the
-            // seat keeps the empty carrier the take left in it: nothing but
-            // releases may run on a failure edge, and the actor's release
-            // reads that carrier as an empty collection.
+            // Where the contract keeps the receiver on this edge, the place
+            // the call took is re-published here, so a failing mutation
+            // leaves its target whole: an actor's teardown releases the field
+            // once, and a `var self` method hands its receiver back. Where the
+            // runtime consumed and released it instead, a state seat keeps the
+            // empty carrier the take left in it: nothing but releases may run
+            // on a failure edge, and the actor's release reads that carrier as
+            // an empty collection.
             if let Some((place, value)) = taken_seat {
                 if contract.preserves_inputs_on_failure() {
                     self.restore_taken_place(place, value, Provenance::Site(expr.site))?;
-                } else {
+                } else if matches!(
+                    self.places[place.0 as usize].origin,
+                    crate::PlaceOrigin::ActorState { .. }
+                ) {
                     self.require_empty_carrier_seat(place)?;
                 }
             }

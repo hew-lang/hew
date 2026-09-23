@@ -1,0 +1,23 @@
+// A `var self` method that fails leaves its receiver, as last written, in the
+// caller's variable, where a pending defer still reads it.
+type Counter {
+    n: i64,
+    label: string,
+}
+
+impl Counter {
+    fn bump(var self, fail: bool) {
+        self.n = self.n + 1;
+        if fail {
+            panic("bump failed");
+        }
+    }
+}
+
+fn main() {
+    var c = Counter { n: 1, label: "count" };
+    defer println(f"{c.label} {c.n}");
+    c.bump(false);
+    c.bump(true);
+    println("unreachable");
+}

@@ -384,7 +384,7 @@ fn map_lookup_borrows_a_field_and_preserves_the_fault_after_ending_its_loan() {
     );
     assert!(matches!(
         cleanup.last().unwrap().terminator,
-        SemTerminator::ResumeUnwind
+        SemTerminator::ResumeUnwind { .. }
     ));
 
     let fault_id = fault.id;

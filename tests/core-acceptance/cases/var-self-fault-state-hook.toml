@@ -1,0 +1,11 @@
+[[case]]
+id = "var-self-fault-state-hook"
+intent = "A `var self` method that panics hands its receiver, as last written, back to the actor state field it came from; the crash hook reads that field and teardown closes the resource once."
+source = "cases/var-self-fault-state-hook.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "2\nhook sees item fd 3\nclose 3\n2\nclose 2\ndone\n"
+stderr = "hew: failure: UserPanic (212): bump failed\nhew: actor crash in Holder.poke (actor 1): UserPanic\n"
+exit = 0

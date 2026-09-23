@@ -128,14 +128,14 @@ pub fn module(task_count: u32, has_timeout: bool) -> SemModule {
                 id: BlockId(2),
                 args: vec![],
                 ops: vec![],
-                terminator: SemTerminator::ResumeUnwind,
+                terminator: SemTerminator::ResumeUnwind { handback: None },
             },
             SemBlock {
                 terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(3),
                 args: vec![],
                 ops: vec![],
-                terminator: SemTerminator::ResumeUnwind,
+                terminator: SemTerminator::ResumeUnwind { handback: None },
             },
         ],
     };

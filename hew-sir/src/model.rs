@@ -362,6 +362,17 @@ pub struct SemSignature {
     pub return_ty: ResolvedTy,
 }
 
+impl SemSignature {
+    /// A `var self` method: its first parameter is a consumed receiver its
+    /// caller sees again, in the dual return and handed back when it fails.
+    #[must_use]
+    pub fn hands_back_receiver(&self) -> bool {
+        self.params.first().is_some_and(|param| {
+            param.caller_visible_projection && param.passing == SemParamPassing::Consume
+        })
+    }
+}
+
 /// Body-free semantic header for one generic HIR definition.
 ///
 /// SIR never retains an abstract generic function body: every
@@ -1844,6 +1855,10 @@ pub enum SemTerminator {
         result: CallResult,
         normal: Option<Edge>,
         unwind: CallUnwind,
+        /// The `var self` receiver a failing callee hands back, defined only
+        /// on the unwind edge. Present exactly when the callee's fault exits
+        /// return their receiver instead of releasing it.
+        handback: Option<ValueDef>,
     },
     /// Invoke an evaluated callable value through its exact semantic signature.
     /// The callee is the first boundary operand, followed by source arguments.
@@ -1959,8 +1974,11 @@ pub enum SemTerminator {
         unwind: Edge,
     },
     /// Continue unwinding after an invoke cleanup block has discharged its
-    /// obligations.
-    ResumeUnwind,
+    /// obligations. A `var self` method hands its receiver, as last written,
+    /// back to the caller instead of releasing it.
+    ResumeUnwind {
+        handback: Option<BoundaryOperand>,
+    },
     /// A semantically unreachable CFG endpoint.
     ///
     /// Raw MIR preserves this as its own semantic endpoint, and LLVM lowers it
@@ -1988,7 +2006,10 @@ impl SemTerminator {
     pub fn visit_boundary_operands(&self, mut visit: impl FnMut(OperandSlot, &BoundaryOperand)) {
         match self {
             Self::Panic { message, .. } => visit(OperandSlot(0), message),
-            Self::Return { value: Some(value) } => visit(OperandSlot(0), value),
+            Self::Return { value: Some(value) }
+            | Self::ResumeUnwind {
+                handback: Some(value),
+            } => visit(OperandSlot(0), value),
             Self::Call { args, .. }
             | Self::WireCodec { args, .. }
             | Self::RtCall { args, .. }
@@ -2040,13 +2061,20 @@ impl SemTerminator {
             | Self::SwitchVariant { .. }
             | Self::CheckedBinary { .. }
             | Self::Trap { .. }
-            | Self::ResumeUnwind
+            | Self::ResumeUnwind { handback: None }
             | Self::Unreachable => {}
         }
     }
 
     /// Visit SSA values defined by this terminator.
     pub fn visit_results(&self, mut visit: impl FnMut(&ValueDef)) {
+        if let Self::Call {
+            handback: Some(handback),
+            ..
+        } = self
+        {
+            visit(handback);
+        }
         match self {
             Self::Call {
                 result: CallResult::Value(result),
@@ -2138,7 +2166,7 @@ impl SemTerminator {
                 result: CallResult::Unit | CallResult::Never,
                 ..
             }
-            | Self::ResumeUnwind
+            | Self::ResumeUnwind { .. }
             | Self::Unreachable => {}
         }
     }
@@ -2200,7 +2228,10 @@ impl SemTerminator {
                     );
                 });
             }
-            Self::Return { value: Some(value) } => visit(OperandSlot(0), &value.operand),
+            Self::Return { value: Some(value) }
+            | Self::ResumeUnwind {
+                handback: Some(value),
+            } => visit(OperandSlot(0), &value.operand),
             Self::Branch {
                 condition,
                 then_target,
@@ -2308,7 +2339,7 @@ impl SemTerminator {
             }
             Self::Return { value: None }
             | Self::Trap { .. }
-            | Self::ResumeUnwind
+            | Self::ResumeUnwind { handback: None }
             | Self::Unreachable => {}
         }
     }
@@ -2366,7 +2397,10 @@ impl SemTerminator {
                     );
                 });
             }
-            Self::Return { value: Some(value) } => visit(OperandSlot(0), &mut value.operand),
+            Self::Return { value: Some(value) }
+            | Self::ResumeUnwind {
+                handback: Some(value),
+            } => visit(OperandSlot(0), &mut value.operand),
             Self::Branch {
                 condition,
                 then_target,
@@ -2474,7 +2508,7 @@ impl SemTerminator {
             }
             Self::Return { value: None }
             | Self::Trap { .. }
-            | Self::ResumeUnwind
+            | Self::ResumeUnwind { handback: None }
             | Self::Unreachable => {}
         }
     }
@@ -2501,7 +2535,10 @@ impl SemTerminator {
                 visit(SuccessorSlot(0), normal);
                 visit(SuccessorSlot(1), fault);
             }
-            Self::Return { .. } | Self::Trap { .. } | Self::ResumeUnwind | Self::Unreachable => {}
+            Self::Return { .. }
+            | Self::Trap { .. }
+            | Self::ResumeUnwind { .. }
+            | Self::Unreachable => {}
             Self::EnterDefer { body: edge, .. }
             | Self::FinishDefer { next: edge, .. }
             | Self::CheckedRaiseFault { cleanup: edge, .. }
@@ -2598,7 +2635,10 @@ impl SemTerminator {
                 visit(SuccessorSlot(0), normal);
                 visit(SuccessorSlot(1), fault);
             }
-            Self::Return { .. } | Self::Trap { .. } | Self::ResumeUnwind | Self::Unreachable => {}
+            Self::Return { .. }
+            | Self::Trap { .. }
+            | Self::ResumeUnwind { .. }
+            | Self::Unreachable => {}
             Self::EnterDefer { body: edge, .. }
             | Self::FinishDefer { next: edge, .. }
             | Self::CheckedRaiseFault { cleanup: edge, .. }
@@ -2760,7 +2800,7 @@ impl SemTerminator {
             | Self::Goto(_)
             | Self::Panic { .. }
             | Self::Trap { .. }
-            | Self::ResumeUnwind
+            | Self::ResumeUnwind { .. }
             | Self::Unreachable => None,
         }
     }
@@ -2846,7 +2886,7 @@ impl SemTerminator {
             | Self::Goto(_)
             | Self::Panic { .. }
             | Self::Trap { .. }
-            | Self::ResumeUnwind
+            | Self::ResumeUnwind { .. }
             | Self::Unreachable => None,
         }
     }
@@ -2960,7 +3000,7 @@ impl SemTerminator {
             | Self::CleanupDispatch { .. }
             | Self::RecoverFault { .. } => "cleanup edge operand",
             Self::Trap { .. } => "trap terminator operand",
-            Self::ResumeUnwind => "resume-unwind terminator operand",
+            Self::ResumeUnwind { .. } => "resume-unwind receiver handback",
             Self::Unreachable => "unreachable terminator operand",
         }
     }

@@ -431,8 +431,15 @@ impl<'m> Walker<'m> {
                 | SemTerminator::Branch { .. }
                 | SemTerminator::Panic { .. }
                 | SemTerminator::Trap { .. }
-                | SemTerminator::ResumeUnwind
+                | SemTerminator::ResumeUnwind { .. }
                 | SemTerminator::Unreachable => {}
+            }
+            if let SemTerminator::Call {
+                handback: Some(handback),
+                ..
+            } = &block.terminator
+            {
+                self.value_types.insert(handback.id, handback.ty.clone());
             }
         }
     }
@@ -1431,15 +1438,22 @@ impl<'m> Walker<'m> {
                 result,
                 normal,
                 unwind,
+                handback,
                 ..
-            } => serde_json::json!({
-                "op": "call",
-                "callee": self.function_id(*callee)?,
-                "args": boundaries(args),
-                "result": call_result(result),
-                "normal": normal.as_ref().map(encode_edge),
-                "unwind": encode_unwind(unwind),
-            }),
+            } => {
+                let mut term = serde_json::json!({
+                    "op": "call",
+                    "callee": self.function_id(*callee)?,
+                    "args": boundaries(args),
+                    "result": call_result(result),
+                    "normal": normal.as_ref().map(encode_edge),
+                    "unwind": encode_unwind(unwind),
+                });
+                if let Some(handback) = handback {
+                    term["handback"] = value_def(handback);
+                }
+                term
+            }
             SemTerminator::IndirectCall {
                 callee,
                 args,
@@ -1545,7 +1559,13 @@ impl<'m> Walker<'m> {
                 "normal": encode_edge(normal),
                 "fault": encode_edge(fault),
             }),
-            SemTerminator::ResumeUnwind => serde_json::json!({ "op": "resume_unwind" }),
+            SemTerminator::ResumeUnwind { handback } => {
+                let mut term = serde_json::json!({ "op": "resume_unwind" });
+                if let Some(handback) = handback {
+                    term["handback"] = boundary(handback);
+                }
+                term
+            }
             SemTerminator::EnterDefer { defer, park, body } => serde_json::json!({
                 "op": "enter_defer",
                 "defer": defer.0,

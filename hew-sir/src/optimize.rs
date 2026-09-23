@@ -144,7 +144,7 @@ fn canonicalize_verified_function(
             | SemTerminator::CheckedRaiseFault { .. }
             | SemTerminator::Panic { .. }
             | SemTerminator::Suspend { .. }
-            | SemTerminator::ResumeUnwind
+            | SemTerminator::ResumeUnwind { .. }
             | SemTerminator::Unreachable => None,
         };
         if let Some(edge) = selected {

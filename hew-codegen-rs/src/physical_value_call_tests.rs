@@ -63,6 +63,7 @@ fn selected_calls(source: &str, triple: &str) -> PhysicalModule {
                 result,
                 normal,
                 unwind,
+                ..
             } = &block.terminator
             {
                 let Some((ty, capability)) = targets.get(callee) else {

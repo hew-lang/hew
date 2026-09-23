@@ -277,7 +277,7 @@ fn certified_fault_cleanup_drains_tasks_without_admitting_ordinary_continuation(
         ops: vec![PhysicalOp::TaskScopeClose {
             scope: TaskScopeId(0),
         }],
-        terminator: PhysicalTerminator::PropagateFault,
+        terminator: PhysicalTerminator::PropagateFault { handback: None },
     });
     // Scope ancestry and fault availability have separate physical analyses.
     // This refinement must retain its incoming-fault obligation across a drain.

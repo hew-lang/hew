@@ -1,0 +1,39 @@
+// Stop hooks may suspend. The first hook sleeps and then asks another actor,
+// still reading live state; the second hook runs after it, and the resource
+// field closes only once both hooks finish, before `close` returns.
+actor Audit {
+    receive fn record(note: string) -> string { note.to_upper() }
+}
+
+#[resource]
+type Ledger { name: string, }
+impl Ledger {
+    fn close(consume self) { println(f"{self.name} closed"); }
+}
+
+actor Worker {
+    audit: Audit,
+    ledger: Ledger,
+    var count: i64 = 0,
+    receive fn bump() -> i64 { count = count + 1; count }
+    #[on(stop)]
+    fn flush() {
+        sleep(1ms);
+        match audit.record(f"flushed {count}") {
+            .Ok(text) => println(text),
+            .Err(_) => println("audit unavailable"),
+        }
+    }
+    #[on(stop)]
+    fn after() { println("second hook"); }
+}
+
+fn main() {
+    let audit = spawn Audit;
+    let worker = spawn Worker(audit: audit, ledger: Ledger { name: "ledger" });
+    worker.bump().expect("bump");
+    worker.bump().expect("bump");
+    close(worker);
+    println("worker closed");
+    close(audit);
+}

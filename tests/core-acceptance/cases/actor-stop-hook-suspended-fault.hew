@@ -1,0 +1,31 @@
+// A stop hook that faults after suspending ends the hook sequence exactly as
+// a synchronous fault does: the next hook is skipped, the resource field still
+// closes once, and the closing observer receives the retained diagnostic.
+#[resource]
+type Ledger { name: string, }
+impl Ledger {
+    fn close(consume self) { println(f"{self.name} closed"); }
+}
+
+actor Keeper {
+    ledger: Ledger,
+    #[on(stop)]
+    fn stopping() {
+        sleep(1ms);
+        println("stop resumed");
+        panic("goodbye failed after suspending");
+    }
+    #[on(stop)]
+    fn never() { println("unreachable hook"); }
+    receive fn ping() -> i64 { 1 }
+}
+
+fn main() {
+    let keeper = spawn Keeper(ledger: Ledger { name: "ledger" });
+    match keeper.ping() {
+        .Ok(value) => println(value),
+        .Err(_) => panic("ping failed"),
+    }
+    close(keeper);
+    println("unreachable");
+}

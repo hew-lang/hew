@@ -17,13 +17,25 @@ struct Inbox {
 // SAFETY: each pointer transfers an exclusive cursor, consumed by one activation.
 unsafe impl Send for Inbox {}
 
+/// What the current release driver consumes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Releasing {
+    /// A discarded message payload.
+    Payload,
+    /// The `#[on(stop)]` sequence, run on the live state.
+    Stop,
+    /// The actor state itself.
+    State,
+}
+
 #[derive(Debug)]
 struct Work {
     state: *mut HewCoroState,
     driver: Option<Box<ReleaseDriver>>,
+    stop_started: bool,
     state_started: bool,
     state_done: bool,
-    payload: bool,
+    releasing: Releasing,
     fault: *mut HewFault,
 }
 // SAFETY: the actor activation serializes execution; child wake targets retain
@@ -35,12 +47,20 @@ pub(crate) struct Cleanup {
     inbox: Mutex<Inbox>,
     work: Mutex<Option<Box<Work>>>,
     state_release: AtomicPtr<c_void>,
+    stop_release: AtomicPtr<c_void>,
     terminal: AtomicI32,
 }
 
 impl Cleanup {
     pub(crate) fn set_state_release(&self, callback: Option<HewValueReleaseStart>) {
         self.state_release.store(
+            callback.map_or(ptr::null_mut(), |f| f as *mut c_void),
+            Ordering::Release,
+        );
+    }
+
+    pub(crate) fn set_stop_release(&self, callback: Option<HewValueReleaseStart>) {
+        self.stop_release.store(
             callback.map_or(ptr::null_mut(), |f| f as *mut c_void),
             Ordering::Release,
         );
@@ -80,6 +100,7 @@ impl Cleanup {
 
     pub(crate) fn needs_terminal_cleanup(&self) -> bool {
         !self.state_release.load(Ordering::Acquire).is_null()
+            || !self.stop_release.load(Ordering::Acquire).is_null()
             || self.inbox.lock_or_recover().owners != 0
     }
 
@@ -138,9 +159,10 @@ pub(crate) unsafe fn drive_actor_cleanup(actor: &HewActor) -> bool {
         Box::new(Work {
             state,
             driver: None,
+            stop_started: false,
             state_started: false,
             state_done: false,
-            payload: false,
+            releasing: Releasing::State,
             fault: ptr::null_mut(),
         })
     });
@@ -169,15 +191,15 @@ pub(crate) unsafe fn drive_actor_cleanup(actor: &HewActor) -> bool {
             work.fault =
                 unsafe { crate::fault::hew_fault_combine(work.fault, driver.take_fault()) };
             work.driver = None;
-            if work.payload {
-                cleanup.retire_without_release();
-            } else {
-                work.state_done = true;
+            match work.releasing {
+                Releasing::Payload => cleanup.retire_without_release(),
+                Releasing::Stop => {}
+                Releasing::State => work.state_done = true,
             }
         }
         let cursor = cleanup.inbox.lock_or_recover().pending.pop_front();
         if let Some(cursor) = cursor {
-            work.payload = true;
+            work.releasing = Releasing::Payload;
             work.driver = Some(ReleaseDriver::new(cursor));
             continue;
         }
@@ -189,9 +211,30 @@ pub(crate) unsafe fn drive_actor_cleanup(actor: &HewActor) -> bool {
             pending = true;
             break;
         }
+        // Stop hooks run on the live state after a cooperative stop and before
+        // its release; a crash skips them. They may suspend like any release.
+        if !work.stop_started {
+            work.stop_started = true;
+            let start = cleanup.stop_release.load(Ordering::Acquire);
+            if terminal == HewActorState::Stopped as i32
+                && !start.is_null()
+                && !actor.state.is_null()
+            {
+                // SAFETY: this pointer was installed from the exact callback type.
+                let start =
+                    unsafe { std::mem::transmute::<*mut c_void, HewValueReleaseStart>(start) };
+                // SAFETY: the hooks borrow the state, which stays with the actor.
+                let cursor = unsafe {
+                    HewReleaseCursor::payload(actor.state, actor.state_size, start, false)
+                };
+                work.releasing = Releasing::Stop;
+                work.driver = Some(ReleaseDriver::new(cursor));
+                continue;
+            }
+        }
         if !work.state_started {
             work.state_started = true;
-            work.payload = false;
+            work.releasing = Releasing::State;
             let start = cleanup.state_release.load(Ordering::Acquire);
             if !actor.state_drop_consumed.swap(true, Ordering::AcqRel)
                 && !actor.state_drop_borrowed.load(Ordering::Acquire)

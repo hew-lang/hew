@@ -671,81 +671,75 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             }
             self.emit_actor_sys_dispatch(actor)?;
             if !actor.stop.is_empty() {
-                self.emit_actor_terminate(actor)?;
+                self.emit_actor_stop_release(actor)?;
             }
         }
         self.emit_supervisor_descriptors()
     }
 
-    /// `#[on(stop)]` hooks run in lexical order at the terminal transition
-    /// with the state still initialized. The first fault ends the sequence
-    /// and becomes the actor's retained lifecycle diagnostic.
-    fn emit_actor_terminate(&self, actor: &SemActor) -> CodegenResult<()> {
-        let ptr = self.ctx.ptr_type(AddressSpace::default());
-        let terminate = self.llvm.add_function(
-            &symbol(actor.id, "terminate"),
-            self.ctx.void_type().fn_type(&[ptr.into()], false),
-            Some(Linkage::Internal),
-        );
-        let builder = self.ctx.create_builder();
-        builder.position_at_end(self.ctx.append_basic_block(terminate, "entry"));
-        let state = terminate.get_first_param().unwrap().into_pointer_value();
-        let fault = builder
-            .build_alloca(ptr, "hook.fault")
-            .llvm_ctx("allocate stop hook fault")?;
-        builder
-            .build_store(fault, ptr.const_null())
-            .llvm_ctx("initialize stop hook fault")?;
-        let failed = self.ctx.append_basic_block(terminate, "hook.failed");
-        let done = self.ctx.append_basic_block(terminate, "done");
-        for hook in &actor.stop {
-            let status = builder
-                .build_call(
-                    self.functions[hook],
-                    &[state.into(), fault.into()],
-                    "hook.status",
-                )
-                .llvm_ctx("run stop hook")?
-                .try_as_basic_value()
-                .basic()
-                .unwrap()
-                .into_int_value();
-            let next = self.ctx.append_basic_block(terminate, "hook.next");
-            let ok = builder
-                .build_int_compare(
-                    IntPredicate::EQ,
-                    status,
-                    self.ctx.i32_type().const_zero(),
-                    "hook.ok",
-                )
-                .llvm_ctx("check stop hook outcome")?;
-            builder
-                .build_conditional_branch(ok, next, failed)
-                .llvm_ctx("continue stop hook sequence")?;
-            builder.position_at_end(next);
-        }
-        builder
-            .build_unconditional_branch(done)
-            .llvm_ctx("finish stop hooks")?;
-        builder.position_at_end(failed);
-        let returned = builder
-            .build_load(ptr, fault, "hook.returned.fault")
-            .llvm_ctx("load stop hook fault")?;
-        let publish = get_or_declare_external(
+    /// `#[on(stop)]` hooks run in lexical order on the live state after a
+    /// cooperative stop, as a resumable release continuation terminal cleanup
+    /// drives before the state release, so a hook may suspend. The first fault
+    /// ends the sequence and becomes the actor's retained lifecycle diagnostic.
+    fn emit_actor_stop_release(&self, actor: &SemActor) -> CodegenResult<()> {
+        release::custom(
+            self.ctx,
             &self.llvm,
-            "hew_actor_terminate_set_fault",
-            self.ctx.void_type().fn_type(&[ptr.into()], false),
+            self.module,
+            &symbol(actor.id, "stop_release"),
+            |values, frame, state| {
+                let builder = values.builder;
+                let (fault, status) = values.fault_sink.ok_or_else(|| {
+                    CodegenError::FailClosed("stop sequence lacks its fault slot".into())
+                })?;
+                let done = self.ctx.append_basic_block(values.value, "stop.done");
+                for hook in &actor.stop {
+                    // The release entry cleared the fault slot, and a fault
+                    // ends the sequence, so every hook starts with it empty.
+                    let args = [state.into(), fault.into()];
+                    let hook_status = if callable(self.module, *hook)?.is_resumable {
+                        suspend::invoke_child(
+                            self.ctx,
+                            &self.llvm,
+                            builder,
+                            values.value,
+                            frame,
+                            self.ramps[hook],
+                            &args,
+                        )?
+                    } else {
+                        call_value(builder, self.functions[hook], &args, "stop.hook.status")?
+                            .into_int_value()
+                    };
+                    let next = self.ctx.append_basic_block(values.value, "stop.next");
+                    let failed = self.ctx.append_basic_block(values.value, "stop.failed");
+                    let ok = builder
+                        .build_int_compare(
+                            IntPredicate::EQ,
+                            hook_status,
+                            self.ctx.i32_type().const_zero(),
+                            "stop.hook.ok",
+                        )
+                        .llvm_ctx("check stop hook outcome")?;
+                    builder
+                        .build_conditional_branch(ok, next, failed)
+                        .llvm_ctx("continue stop hook sequence")?;
+                    builder.position_at_end(failed);
+                    builder
+                        .build_store(status, hook_status)
+                        .llvm_ctx("retain stop hook failure")?;
+                    builder
+                        .build_unconditional_branch(done)
+                        .llvm_ctx("end stop hooks at the first fault")?;
+                    builder.position_at_end(next);
+                }
+                builder
+                    .build_unconditional_branch(done)
+                    .llvm_ctx("finish stop hooks")?;
+                builder.position_at_end(done);
+                Ok(())
+            },
         )?;
-        builder
-            .build_call(publish, &[returned.into()], "")
-            .llvm_ctx("retain stop hook fault")?;
-        builder
-            .build_unconditional_branch(done)
-            .llvm_ctx("finish faulted stop hooks")?;
-        builder.position_at_end(done);
-        builder
-            .build_return(None)
-            .llvm_ctx("finish actor terminate")?;
         Ok(())
     }
 
@@ -2233,10 +2227,10 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 .map(|function| function.as_global_value().as_pointer_value())
                 .ok_or_else(|| CodegenError::FailClosed("missing actor callback".into()))
         };
-        let terminate = if actor.stop.is_empty() {
+        let stop_release = if actor.stop.is_empty() {
             ptr.const_null()
         } else {
-            callback("terminate")?
+            callback("stop_release")?
         };
         use hew_runtime::internal::types::HewOverflowPolicy as Policy;
         let overflow = match actor.overflow {
@@ -2284,7 +2278,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     callback("dispatch")?.into(),
                     callback("state_drop")?.into(),
                     callback("state_clone")?.into(),
-                    terminate.into(),
+                    stop_release.into(),
                     self.ctx
                         .i32_type()
                         .const_int(u64::from(actor.mailbox_capacity.unwrap_or(0)), false)

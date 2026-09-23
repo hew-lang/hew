@@ -2696,6 +2696,9 @@ pub type HewNativeCrashFn =
 struct ActorSpawnConfig {
     native_crash: Option<HewNativeCrashFn>,
     native_state_release: Option<hew_cabi::value::HewValueReleaseStart>,
+    /// The generated `#[on(stop)]` sequence as a resumable continuation that
+    /// terminal cleanup runs on the live state before releasing it.
+    native_stop_release: Option<hew_cabi::value::HewValueReleaseStart>,
     rejected_state_release: *mut *mut crate::release_walker::HewReleaseCursor,
     dispatch_ownership: HewDispatchOwnership,
     /// The generated `#[on(stop)]` sequence, installed before publication so
@@ -2876,6 +2879,9 @@ fn build_spawned_actor(
                 completion
                     .cleanup
                     .set_state_release(config.native_state_release);
+                completion
+                    .cleanup
+                    .set_stop_release(config.native_stop_release);
                 std::sync::Arc::new(completion)
             }),
     })
@@ -3112,6 +3118,7 @@ pub unsafe extern "C" fn hew_actor_spawn(
         spawn_actor_internal(ActorSpawnConfig {
             native_crash: None,
             native_state_release: None,
+            native_stop_release: None,
             rejected_state_release: ptr::null_mut(),
             dispatch_ownership: HewDispatchOwnership::CopiedPayload,
             terminate_fn: None,
@@ -3181,6 +3188,7 @@ pub unsafe extern "C" fn hew_actor_spawn_opts(opts: *const HewActorOpts) -> *mut
         spawn_actor_internal(ActorSpawnConfig {
             native_crash: None,
             native_state_release: None,
+            native_stop_release: None,
             rejected_state_release: ptr::null_mut(),
             dispatch_ownership: HewDispatchOwnership::CopiedPayload,
             terminate_fn: None,
@@ -3286,6 +3294,7 @@ pub unsafe extern "C" fn hew_actor_spawn_opts_adopt(
         spawn_actor_internal(ActorSpawnConfig {
             native_crash: None,
             native_state_release: None,
+            native_stop_release: None,
             rejected_state_release: ptr::null_mut(),
             dispatch_ownership: HewDispatchOwnership::CopiedPayload,
             terminate_fn: None,
@@ -3319,8 +3328,9 @@ pub struct HewNativePeriodicHandler {
 /// State is a unique malloc allocation of `size` bytes, with initialized
 /// fields described by `state_drop` and `state_clone`. Callbacks and dispatch
 /// remain valid for the actor's lifetime. The function consumes state on every
-/// outcome. `terminate` is null or the generated `#[on(stop)]` sequence, which
-/// runs once with the initialized state at the terminal transition. `fault`
+/// outcome. `stop_release` is null or the generated `#[on(stop)]` sequence,
+/// which terminal cleanup runs once on the live state after a cooperative
+/// stop, suspending as its hooks do, before the state is released. `fault`
 /// is a writable, initially null fault slot. `periodic` points to
 /// `periodic_count` valid descriptors, or is null when the count is zero.
 #[no_mangle]
@@ -3334,7 +3344,7 @@ pub unsafe extern "C" fn hew_actor_spawn_native(
     dispatch: HewDispatchFn,
     state_drop: unsafe extern "C" fn(*mut c_void),
     state_clone: HewStateCloneFn,
-    terminate: Option<unsafe extern "C-unwind" fn(*mut c_void)>,
+    stop_release: Option<hew_cabi::value::HewValueReleaseStart>,
     capacity: i32,
     overflow: i32,
     cap_bytes: usize,
@@ -3398,9 +3408,10 @@ pub unsafe extern "C" fn hew_actor_spawn_native(
         spawn_actor_internal(ActorSpawnConfig {
             native_crash,
             native_state_release: state_release,
+            native_stop_release: stop_release,
             rejected_state_release,
             dispatch_ownership: HewDispatchOwnership::UniqueEnvelope,
-            terminate_fn: terminate,
+            terminate_fn: None,
             state_drop_fn: Some(state_drop),
             state_clone_fn: Some(state_clone),
             state,
@@ -3612,6 +3623,7 @@ pub unsafe extern "C" fn hew_actor_spawn_bounded(
         spawn_actor_internal(ActorSpawnConfig {
             native_crash: None,
             native_state_release: None,
+            native_stop_release: None,
             rejected_state_release: ptr::null_mut(),
             dispatch_ownership: HewDispatchOwnership::CopiedPayload,
             terminate_fn: None,

@@ -621,13 +621,13 @@ pub(super) fn verify_callables(module: &PhysicalModule) -> Result<(), PhysicalEr
             )));
         }
     }
-    // Spawn invokes init and start through its caller's continuation. Other
+    // Spawn invokes init and start through its caller's continuation, and
+    // terminal cleanup drives stop hooks as a resumable release. Other
     // lifecycle callbacks still use the runtime's synchronous callback ABI.
     for actor in &module.actors {
         if actor
-            .stop
+            .crash
             .iter()
-            .chain(&actor.crash)
             .chain(&actor.exit)
             .chain(&actor.down)
             .any(|body| expected.contains(body))

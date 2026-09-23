@@ -490,15 +490,15 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1599] = {
     {"hew_actor_spawn_native",
      "{\"native\": \"fn hew_actor_spawn_native( *mut c_void, usize, "
      "HewDispatchFn, unsafe extern \\\"C\\\" fn(*mut c_void), HewStateCloneFn, "
-     "Option<unsafe extern \\\"C-unwind\\\" fn(*mut c_void)>, i32, i32, usize, "
-     "*const HewNativePeriodicHandler, usize, Option<HewSysDispatchFn>, "
+     "Option<hew_cabi::value::HewValueReleaseStart>, i32, i32, usize, *const "
+     "HewNativePeriodicHandler, usize, Option<HewSysDispatchFn>, "
      "Option<HewNativeCrashFn>, *mut *mut HewFault, "
      "Option<mailbox::HewCoalesceKeyFn>, i32, "
      "Option<hew_cabi::value::HewValueReleaseStart>, *mut *mut "
      "HewReleaseCursor, ) -> HewLocalPidId\", \"wasm32-wasip1\": \"fn "
      "hew_actor_spawn_native( *mut c_void, usize, HewDispatchFn, unsafe extern "
-     "\\\"C\\\" fn(*mut c_void), HewStateCloneFn, Option<unsafe extern "
-     "\\\"C-unwind\\\" fn(*mut c_void)>, i32, i32, usize, *const "
+     "\\\"C\\\" fn(*mut c_void), HewStateCloneFn, "
+     "Option<hew_cabi::value::HewValueReleaseStart>, i32, i32, usize, *const "
      "HewNativePeriodicHandler, usize, Option<HewSysDispatchFn>, "
      "Option<HewNativeCrashFn>, *mut *mut HewFault, "
      "Option<mailbox::HewCoalesceKeyFn>, i32, "
@@ -564,11 +564,6 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1599] = {
      "HewReleaseCursor, ) -> i32\"}",
      "native,wasm32-wasip1", "non-declarable", "not-applicable",
      "length-or-count", HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_actor_terminate_set_fault",
-     "{\"native\": \"fn hew_actor_terminate_set_fault( *mut HewFault)\", "
-     "\"wasm32-wasip1\": \"fn hew_actor_terminate_set_fault( *mut HewFault)\"}",
-     "native,wasm32-wasip1", "non-declarable", "not-applicable",
-     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_actor_trap",
      "{\"native\": \"fn hew_actor_trap( *mut HewActor, i32)\"}", "native",
      "non-declarable", "not-applicable", "no-in-signature-extent",
@@ -6011,6 +6006,13 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1599] = {
      "*mut usize, ) -> i64\", \"wasm32-wasip1\": \"fn hew_stream_next_view( "
      "*mut HewStream, *mut *mut u8, *mut usize, ) -> i64\"}",
      "native,wasm32-wasip1", "stable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_stream_operation_fault_native",
+     "{\"native\": \"fn hew_stream_operation_fault_native( *mut "
+     "HewNativeStream, ) -> *mut HewFault\", \"wasm32-wasip1\": \"fn "
+     "hew_stream_operation_fault_native( *mut HewNativeStream, ) -> *mut "
+     "HewFault\"}",
+     "native,wasm32-wasip1", "non-declarable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_stream_operation_free_native",
      "{\"native\": \"fn hew_stream_operation_free_native( *mut "

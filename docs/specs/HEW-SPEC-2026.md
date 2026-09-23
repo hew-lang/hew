@@ -5947,8 +5947,9 @@ unrecovered and the child's role is spent.
 11. A supervisor shutdown deadline belongs to its child specification (§5.1), not an invented hook argument. Current deadline limitations are listed in §2.1.1.
 
 **Compilation:** `#[on(start)]` bodies are appended to the synthesized `_init`
-function after any `init { ... }` block. `#[on(stop)]` lowers to the actor's
-C-ABI `_terminate` function pointer. `#[on(crash)]` lowers to the crash hook
+function after any `init { ... }` block. `#[on(stop)]` hooks lower to one
+resumable stop sequence that terminal cleanup runs on the live state before
+releasing it, so a stop hook may suspend. `#[on(crash)]` lowers to the crash hook
 slot used by supervisor crash routing; its `CrashAction` result selects the
 supervisor's recovery path after the crashing incarnation's cleanup.
 

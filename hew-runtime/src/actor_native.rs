@@ -104,23 +104,6 @@ pub unsafe extern "C" fn hew_actor_coro_set_fault(fault: *mut HewFault) {
     unsafe { hew_actor_dispatch_set_fault(context, fault) };
 }
 
-/// Retain a `#[on(stop)]` fault as the actor's lifecycle diagnostic. The
-/// terminal completion publishes its code to every termination observer.
-///
-/// # Safety
-/// The current context is the terminate activation installed by
-/// `call_terminate_fn`. `fault` is an owned logical fault, relinquished here.
-#[no_mangle]
-pub unsafe extern "C" fn hew_actor_terminate_set_fault(fault: *mut HewFault) {
-    // SAFETY: the generated terminate sequence relinquishes one owned fault.
-    let fault = unsafe { Box::from_raw(fault) };
-    let context = crate::execution_context::current_context();
-    // SAFETY: the terminate activation retains its actor and context.
-    let actor = unsafe { &*(*context).actor };
-    let code = report_actor_failure(actor, *fault);
-    crate::trap_code::stamp_current_actor_error_code(code);
-}
-
 /// Request cooperative cleanup while preserving the scheduler's strict turn.
 ///
 /// # Safety

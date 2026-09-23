@@ -2088,13 +2088,12 @@ impl<'a> InstanceService<'a> {
         site: hew_hir::SiteId,
         substitution: &TypeSubstitution,
     ) -> Result<SemCallable, String> {
-        let self_type = hew_hir::dispatch::receiver_self_type_for_impl_lookup_instance(receiver_ty)
-            .ok_or_else(|| {
-                format!(
-                    "static trait receiver `{}` cannot anchor an implementation",
-                    receiver_ty.user_facing()
-                )
-            })?;
+        let self_type = receiver_ty.impl_receiver_instance().ok_or_else(|| {
+            format!(
+                "static trait receiver `{}` cannot anchor an implementation",
+                receiver_ty.user_facing()
+            )
+        })?;
         let entry = hew_hir::dispatch::lookup_trait_impl_entry_by_id(
             &self.table.trait_impls,
             declaring_trait,
@@ -3267,10 +3266,6 @@ struct VariantBranch {
 /// read-only in the initial slice. A unit expression in `return` instead
 /// transfers control to the caller; HIR marks that transfer `Consume`, which
 /// is harmless for `Unit` but must not be rechecked as an ordinary operand use.
-#[allow(
-    deprecated,
-    reason = "a trait method reached through a where-clause bound is not builtin-generic dispatch, so `ResolvedImplCall` does not carry it; these arms read the node, they do not construct one"
-)]
 fn lower_initial_unit_return(builder: &mut Builder<'_, '_>, expr: &HirExpr) -> Result<(), String> {
     let ty = builder.ty(&expr.ty);
     if !matches!(expr.intent, IntentKind::Read | IntentKind::Consume) || ty != ResolvedTy::Unit {
@@ -5085,10 +5080,6 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         clippy::too_many_lines,
         reason = "effect-position dispatch keeps control flow and cleanup together"
     )]
-    #[allow(
-        deprecated,
-        reason = "a trait method reached through a where-clause bound is not builtin-generic dispatch, so `ResolvedImplCall` does not carry it; these arms read the node, they do not construct one"
-    )]
     fn lower_discarded_expr(&mut self, expr: &HirExpr) -> Result<(), String> {
         // A statement whose value is discarded reaches several lowerings that
         // do not go through `lower_expr_inner`, so stamp its source point here
@@ -5419,10 +5410,6 @@ impl<'hir, 'service> Builder<'hir, 'service> {
     #[allow(
         clippy::too_many_lines,
         reason = "the closed initial HIR-to-SIR expression mapping remains intentionally local"
-    )]
-    #[allow(
-        deprecated,
-        reason = "a trait method reached through a where-clause bound is not builtin-generic dispatch, so `ResolvedImplCall` does not carry it; these arms read the node, they do not construct one"
     )]
     fn lower_expr_inner(
         &mut self,
@@ -8097,10 +8084,6 @@ impl<'hir, 'service> Builder<'hir, 'service> {
     /// Once the implementation is selected the receiver is simply its first
     /// parameter, so the call enters the same argument transfer and call
     /// boundary as any other direct call.
-    #[allow(
-        deprecated,
-        reason = "a trait method reached through a where-clause bound is not builtin-generic dispatch, so `ResolvedImplCall` does not carry it; this arm reads the node, it does not construct one"
-    )]
     fn lower_static_trait_call(
         &mut self,
         expr: &HirExpr,
@@ -8367,10 +8350,6 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         Ok(())
     }
 
-    #[allow(
-        deprecated,
-        reason = "a trait method reached through a where-clause bound is not builtin-generic dispatch, so `ResolvedImplCall` does not carry it; these arms read the node, they do not construct one"
-    )]
     fn lower_call(
         &mut self,
         expr: &HirExpr,

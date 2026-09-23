@@ -1,16 +1,3 @@
-// `HirExprKind::CallTraitMethodStatic` is `#[deprecated]` pending its
-// retirement. This file is both the sole construction site
-// (`lower_method_call`) and the home of multiple exhaustive
-// `HirExprKind` walkers that legitimately destructure the deprecated
-// variant. The structural enforcement that no NEW construction sites
-// appear lives in `tests/call_trait_method_static_creation_allowlist.rs`;
-// the deprecation lint would just create noise here.
-#![allow(
-    deprecated,
-    reason = "legacy CallTraitMethodStatic variant is allowlist-gated; \
-              see tests/call_trait_method_static_creation_allowlist.rs"
-)]
-
 use std::{
     collections::{HashMap, HashSet},
     sync::Arc,
@@ -6262,9 +6249,7 @@ fn closure_under_substitution(
                 continue;
             };
             // Canonical nominal instance for impl lookup.
-            let Some(self_type) =
-                crate::dispatch::receiver_self_type_for_impl_lookup_instance(concrete_ty)
-            else {
+            let Some(self_type) = concrete_ty.impl_receiver_instance() else {
                 continue;
             };
             let type_args = self_type.args.clone();
@@ -10919,27 +10904,16 @@ impl LowerCtx {
         }
     }
 
-    /// Single construction site for the deprecated, allowlist-gated
-    /// [`HirExprKind::CallTraitMethodStatic`]. Both the
-    /// `MethodCallRewrite::StaticTraitDispatch` arm of `lower_method_call`
-    /// and the abstract-`T` arm of `lower_display_dispatch` route through
-    /// here so the variant keeps exactly one producer (enforced by
-    /// `tests/call_trait_method_static_creation_allowlist.rs`). MIR
-    /// resolves the concrete callee from `(declaring_trait, <substituted
-    /// receiver>, method_name)` per monomorphisation and fails closed when
-    /// no impl is registered.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "static dispatch preserves every checker-authored identity carrier explicitly"
-    )]
+    /// Build a [`HirExprKind::CallTraitMethodStatic`] for the
+    /// `MethodCallRewrite::StaticTraitDispatch` arm of `lower_method_call` and
+    /// the abstract-`T` arm of `lower_display_dispatch`. SIR selects the
+    /// concrete callee from the target identities and the substituted
+    /// receiver, and fails closed when no impl is registered.
     fn make_static_trait_dispatch_call(
         &mut self,
         receiver: HirExpr,
         target: hew_types::CallTarget,
         receiver_type_param: String,
-        bound_trait: String,
-        declaring_trait: String,
-        method_name: String,
         args: Vec<HirExpr>,
         ret_ty: ResolvedTy,
         span: &Span,
@@ -10951,9 +10925,6 @@ impl LowerCtx {
             receiver: Box::new(receiver),
             target,
             receiver_type_param,
-            bound_trait,
-            declaring_trait,
-            method_name,
             args,
             ret_ty,
         }
@@ -10989,26 +10960,20 @@ impl LowerCtx {
     }
 
     /// Emit a `Display::fmt` static trait-dispatch over an abstract type
-    /// parameter `type_param_name` (#1565). `bound_trait` and
-    /// `declaring_trait` are both the `Display` lang-item trait; the concrete
-    /// `Display` impl is selected per monomorphisation by MIR, which fails
-    /// closed if no impl is registered. Result is always `string`.
+    /// parameter `type_param_name` (#1565). The concrete `Display` impl is
+    /// selected per monomorphisation, which fails closed if no impl is
+    /// registered. Result is always `string`.
     fn build_display_static_dispatch(
         &mut self,
         value: HirExpr,
         target: hew_types::CallTarget,
-        declaring_trait: String,
         type_param_name: String,
-        method_name: String,
         span: Span,
     ) -> HirExpr {
         let kind = self.make_static_trait_dispatch_call(
             value,
             target,
             type_param_name,
-            declaring_trait.clone(),
-            declaring_trait,
-            method_name,
             Vec::new(),
             ResolvedTy::String,
             &span,
@@ -11096,7 +11061,6 @@ impl LowerCtx {
                 "f-string display dispatch: malformed display lang-item",
             );
         };
-        let display_trait_name = display_binding.trait_name.clone();
         let Some((display_trait, display_method)) = self.lang_items.display_method_identity()
         else {
             self.diagnostics.push(HirDiagnostic::new(
@@ -11192,9 +11156,7 @@ impl LowerCtx {
                     return self.build_display_static_dispatch(
                         value,
                         display_target,
-                        display_trait_name,
                         type_param_name,
-                        method_name,
                         span,
                     );
                 }
@@ -11209,14 +11171,7 @@ impl LowerCtx {
                 // monomorphisation (#1565); the concrete type is never
                 // re-derived here.
                 let type_param_name = name.clone();
-                self.build_display_static_dispatch(
-                    value,
-                    display_target,
-                    display_trait_name,
-                    type_param_name,
-                    method_name,
-                    span,
-                )
+                self.build_display_static_dispatch(value, display_target, type_param_name, span)
             }
             _ => {
                 // Same invariant as the named-type arm: the checker should
@@ -12608,14 +12563,14 @@ impl LowerCtx {
                         .map_or_else(|| name.clone(), |local| format!("{module}.{local}"))
                 },
             ),
-            _ => {
-                crate::dispatch::receiver_self_type_for_impl_lookup_instance(&resolved_impl_self_ty)
-                    .map_or_else(
-                        || base_symbol_self_name.to_string(),
-                        |instance| instance.nominal.declaration().full_path().to_string(),
-                    )
-            }
+            _ => resolved_impl_self_ty.impl_receiver_instance().map_or_else(
+                || base_symbol_self_name.to_string(),
+                |instance| instance.nominal.declaration().full_path().to_string(),
+            ),
         };
+        let impl_self_nominal = resolved_impl_self_ty
+            .impl_receiver_instance()
+            .map(|instance| instance.nominal);
         let prior_self_ty = self.current_impl_self_ty.take();
         self.current_impl_self_ty = Some(resolved_impl_self_ty);
         for method in &decl.methods {
@@ -12834,6 +12789,7 @@ impl LowerCtx {
             node: self.ids.node(),
             trait_name: decl.trait_bound.as_ref().map(|b| b.name.clone()),
             self_type_name: hir_impl_self_type_name,
+            self_type: impl_self_nominal,
             type_params,
             self_type_concrete_args,
             type_aliases,
@@ -22790,7 +22746,7 @@ impl LowerCtx {
         method: &str,
     ) -> Option<hew_types::DefId> {
         let self_ty = self_ty?;
-        let instance = crate::dispatch::receiver_self_type_for_impl_lookup_instance(self_ty)?;
+        let instance = self_ty.impl_receiver_instance()?;
         Some(hew_types::default_impl_method_declaration(
             declaring_trait,
             &instance,
@@ -26515,9 +26471,7 @@ impl LowerCtx {
                 // concrete call.
                 if receiver_type_param == "Self" {
                     if let Some(self_ty) = self.current_impl_self_ty.clone() {
-                        if let Some(self_type) =
-                            crate::dispatch::receiver_self_type_for_impl_lookup_instance(&self_ty)
-                        {
+                        if let Some(self_type) = self_ty.impl_receiver_instance() {
                             let c_symbol = crate::node::HirImplBlock::method_symbol(
                                 self_type.nominal.declaration().full_path(),
                                 &method_name,
@@ -26653,9 +26607,6 @@ impl LowerCtx {
                         lowered_receiver,
                         target,
                         receiver_type_param,
-                        bound_trait,
-                        declaring_trait,
-                        method_name,
                         lowered_args,
                         ret_ty.clone(),
                         &span,

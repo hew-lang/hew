@@ -41,15 +41,6 @@
 //! an origin type-param name on some *unrelated* declaration must not be
 //! flagged abstract, so the domain is built from the walked fn's own params.
 
-// The layout-mono walker visits the `#[deprecated]` `CallTraitMethodStatic`
-// variant exhaustively (same justification as `lower.rs`).
-// Construction sites are allowlist-gated by the test below.
-#![allow(
-    deprecated,
-    reason = "legacy CallTraitMethodStatic variant is allowlist-gated; \
-              see hew-hir/tests/call_trait_method_static_creation_allowlist.rs"
-)]
-
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 

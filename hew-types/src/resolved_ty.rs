@@ -430,6 +430,76 @@ impl ResolvedTy {
         }
     }
 
+    /// The nominal instance a trait impl for this type is registered under,
+    /// and the one a receiver of this type dispatches through.
+    ///
+    /// Builtin receivers select their identity from the closed builtin
+    /// discriminator, never from the source leaf: a user `type HashMapIter`
+    /// carries `builtin: None` and stays on the ordinary user-nominal arm.
+    /// Primitives anchor on their keyword spelling, which is how
+    /// `impl Show for i64` names them. Returns `None` for shapes that cannot
+    /// anchor an impl (closures, function types, type parameters).
+    #[must_use]
+    pub fn impl_receiver_instance(&self) -> Option<NominalInstance> {
+        let primitive = |name: &str| {
+            Some(NominalInstance {
+                nominal: crate::identity::mint_nominal_id(name),
+                args: Vec::new(),
+            })
+        };
+        match self {
+            Self::Named {
+                args,
+                builtin: Some(builtin),
+                ..
+            } => {
+                // An actor is the type of its handle, so its nominal identity
+                // is the actor declaration's own, read off the handle.
+                if let Some(instance) = self.actor_handle_instance() {
+                    return Some(instance);
+                }
+                let nominal = match builtin {
+                    BuiltinType::VecIter => "std.builtins.VecIter",
+                    BuiltinType::HashMapIter => "std.builtins.HashMapIter",
+                    BuiltinType::Generator => "Generator",
+                    BuiltinType::Vec => "Vec",
+                    BuiltinType::HashMap => "HashMap",
+                    BuiltinType::ChildRef => "ChildRef",
+                    BuiltinType::RemotePid => "RemotePid",
+                    BuiltinType::NodeId => "NodeId",
+                    BuiltinType::Location => "Location",
+                    // A shipped `#[opaque]` encoding value (`json.Value`) is a
+                    // declaration in its own module; the catalogue owns that
+                    // module path.
+                    other if other.is_encoding_value() => other.canonical_name(),
+                    _ => return None,
+                };
+                Some(NominalInstance {
+                    nominal: crate::identity::mint_nominal_id(nominal),
+                    args: args.clone(),
+                })
+            }
+            Self::Named { .. } => self.nominal_instance(),
+            Self::I8 => primitive("i8"),
+            Self::I16 => primitive("i16"),
+            Self::I32 => primitive("i32"),
+            Self::I64 => primitive("i64"),
+            Self::U8 => primitive("u8"),
+            Self::U16 => primitive("u16"),
+            Self::U32 => primitive("u32"),
+            Self::U64 => primitive("u64"),
+            Self::Isize => primitive("isize"),
+            Self::Usize => primitive("usize"),
+            Self::F32 => primitive("f32"),
+            Self::F64 => primitive("f64"),
+            Self::Bool => primitive("bool"),
+            Self::Char => primitive("char"),
+            Self::String => primitive("string"),
+            Self::Bytes => primitive("bytes"),
+            _ => None,
+        }
+    }
+
     /// Returns whether this type carries the checker-stamped builtin identity.
     #[must_use]
     pub fn is_builtin(&self, expected: BuiltinType) -> bool {

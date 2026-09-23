@@ -315,6 +315,7 @@ impl Session {
                             message: format!(
                                 "exported source declaration at {span:?} has no checked identity"
                             ),
+                            span: Some(span.clone()),
                         }),
                 )
             })
@@ -347,6 +348,7 @@ impl Session {
                     .map(ToString::to_string)
                     .collect::<Vec<_>>()
                     .join("; "),
+                span: None,
             }
         })?;
         let diagnostics = hew_sir::verify_module(&sir.module);
@@ -374,6 +376,7 @@ impl Session {
                         message: format!(
                             "selected declaration {declaration:?} has no semantic callable"
                         ),
+                        span: None,
                     })?
                     .id;
                 require_semantic_body(&sir.module, &body_index, callable)?;
@@ -449,6 +452,10 @@ pub enum SessionError {
     Unsupported {
         callable: Option<hew_sir::CallableId>,
         message: String,
+        /// The provoking construct's span, when SIR could attribute one
+        /// (#3384). `None` for a session-level refusal with no declaration
+        /// of its own (a missing entry, an unresolved root).
+        span: Option<Range<usize>>,
     },
 }
 
@@ -479,10 +486,11 @@ fn require_complete_semantics(
         return Err(SessionError::Unsupported {
             callable: None,
             message: "the selected process entry has no semantic callable".to_string(),
+            span: None,
         });
     }
     for (callable, status) in &sir.callable_statuses {
-        if let hew_sir::SirLoweringStatus::Unsupported { reason } = status {
+        if let hew_sir::SirLoweringStatus::Unsupported { reason, span } = status {
             let name = sir
                 .module
                 .callable(*callable)
@@ -490,6 +498,7 @@ fn require_complete_semantics(
             return Err(SessionError::Unsupported {
                 callable: Some(*callable),
                 message: format!("semantic lowering of `{name}` is not implemented: {reason}"),
+                span: span.clone(),
             });
         }
     }
@@ -532,6 +541,7 @@ fn require_semantic_body(
         return Err(SessionError::Unsupported {
             callable: Some(callable),
             message: format!("required semantic callable `{name}` has no body"),
+            span: None,
         });
     }
     Ok(())
@@ -626,10 +636,11 @@ mod session_completion_tests {
             .unwrap();
         *status = hew_sir::SirLoweringStatus::Unsupported {
             reason: "deliberate incomplete lowering".to_string(),
+            span: None,
         };
         assert!(matches!(
             require_complete_semantics(&sir, true),
-            Err(SessionError::Unsupported { callable: Some(id), message })
+            Err(SessionError::Unsupported { callable: Some(id), message, .. })
                 if id == entry && message.contains("deliberate incomplete lowering")
         ));
     }
@@ -1484,6 +1495,22 @@ fn resolve_imports_internal(
     Ok(())
 }
 
+/// Strip Windows' extended-length verbatim prefix (`\\?\`, or `\\?\UNC\` for
+/// a UNC share) from a path's rendered form (#3416).
+///
+/// `Path::canonicalize()` returns this form on Windows so a map key dedupes
+/// reliably against symlinks and relative spellings, but a user never typed
+/// it and a diagnostic must not show it. This only ever changes the display
+/// string a caller renders; the canonical path itself remains the identity
+/// key everywhere it is used for routing or lookup.
+fn display_path(path: &Path) -> String {
+    let text = path.display().to_string();
+    text.strip_prefix(r"\\?\UNC\")
+        .map(|rest| format!(r"\\{rest}"))
+        .or_else(|| text.strip_prefix(r"\\?\").map(str::to_string))
+        .unwrap_or(text)
+}
+
 fn build_module_source_map(program: &Program, documents: &DocumentSet) -> ModuleSourceMap {
     let Some(ref module_graph) = program.module_graph else {
         return ModuleSourceMap::new();
@@ -1501,19 +1528,21 @@ fn build_module_source_map(program: &Program, documents: &DocumentSet) -> Module
             continue;
         };
         if let Ok(text) = read_source(documents, path) {
-            map.insert(mod_id.path.join("."), (text, path.display().to_string()));
+            map.insert(mod_id.path.join("."), (text, display_path(path)));
         }
         // Per-file routing entries (rc1-F1 stage C): a directory module's
         // item spans are file-relative offsets, so the checker routes a
         // diagnostic on a peer-file item by the file's own path token. Every
-        // source file of every module resolves under that token.
+        // source file of every module resolves under that token. The map key
+        // stays the canonical spelling (identity, joined against elsewhere);
+        // only the rendered label is stripped.
         for path in &module.source_paths {
             let key = path.display().to_string();
             if map.contains_key(&key) {
                 continue;
             }
             if let Ok(text) = read_source(documents, path) {
-                map.insert(key.clone(), (text, key));
+                map.insert(key, (text, display_path(path)));
             }
         }
     }
@@ -3626,8 +3655,8 @@ fn load_dependencies(dir: &Path) -> Result<Option<Vec<String>>, FrontendFailure>
 mod tests {
     use super::{
         build_module_graph, check_file, check_file_with_state, check_program, checker_search_paths,
-        hir_diagnostics_to_frontend, load_dependencies, load_lockfile, load_package_name,
-        parse_source, retain_user_facing_diagnostics, run_document_frontend,
+        display_path, hir_diagnostics_to_frontend, load_dependencies, load_lockfile,
+        load_package_name, parse_source, retain_user_facing_diagnostics, run_document_frontend,
         run_file_frontend_to_typecheck, run_file_frontend_to_typecheck_for_migration,
         run_source_frontend, DiagnosticPolicy, DocumentSet, FrontendDiagnostic,
         FrontendDiagnosticKind, FrontendOptions, ImportResolutionContext, Session, SessionTarget,
@@ -3646,6 +3675,26 @@ mod tests {
     fn write_lockfile(dir: &Path, content: &str) {
         let mut file = File::create(dir.join("hew.lock")).expect("create hew.lock");
         file.write_all(content.as_bytes()).expect("write hew.lock");
+    }
+
+    /// A diagnostic label must name the file the way the user did, never
+    /// `canonicalize()`'s Windows extended-length verbatim form (#3416).
+    #[test]
+    fn display_path_strips_windows_verbatim_prefix() {
+        assert_eq!(
+            display_path(Path::new(r"\\?\D:\a\hew\hew\tests\token.hew")),
+            r"D:\a\hew\hew\tests\token.hew",
+        );
+        assert_eq!(
+            display_path(Path::new(r"\\?\UNC\server\share\token.hew")),
+            r"\\server\share\token.hew",
+        );
+        // Negative control: a path never canonicalized on Windows, and every
+        // POSIX path, must render unchanged.
+        assert_eq!(
+            display_path(Path::new("/a/hew/tests/token.hew")),
+            "/a/hew/tests/token.hew",
+        );
     }
 
     /// An unsaved buffer checks against its saved siblings: the driver reads

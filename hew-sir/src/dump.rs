@@ -21,7 +21,7 @@ pub fn dump_lowering(lowered: &LoweredModule) -> String {
         );
     }
     for source in &lowered.statuses {
-        let SirLoweringStatus::Unsupported { reason } = &source.status else {
+        let SirLoweringStatus::Unsupported { reason, .. } = &source.status else {
             continue;
         };
         writeln!(out, "; fn {}", source.name).expect("write to String");
@@ -30,7 +30,7 @@ pub fn dump_lowering(lowered: &LoweredModule) -> String {
     // Concrete generic instances have no HIR declaration of their own, so
     // their failures are only visible through the callable table.
     for (callable, status) in &lowered.callable_statuses {
-        let SirLoweringStatus::Unsupported { reason } = status else {
+        let SirLoweringStatus::Unsupported { reason, .. } = status else {
             continue;
         };
         let Some(header) = lowered.module.callable(*callable) else {

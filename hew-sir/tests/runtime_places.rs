@@ -528,7 +528,7 @@ fn malformed_mutable_places_cannot_bypass_root_or_projection_checks() {
             .unwrap()
             .status;
         assert!(
-            matches!(status, SirLoweringStatus::Unsupported { reason } if reason.contains(expected)),
+            matches!(status, SirLoweringStatus::Unsupported { reason, .. } if reason.contains(expected)),
             "{expected}: {status:?}"
         );
     }

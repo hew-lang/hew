@@ -6,6 +6,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::fmt;
 use std::ops::Range;
 
+use hew_parser::ast::Span;
+
 #[path = "lower_projection.rs"]
 mod projection;
 #[path = "lower_writable.rs"]
@@ -88,6 +90,12 @@ pub enum SirLoweringStatus {
     },
     Unsupported {
         reason: String,
+        /// The declaring function's extent, when one is known. A diagnostic
+        /// renders this as its provoking construct's span (#3384); it is the
+        /// enclosing declaration, not the exact expression that refused,
+        /// since refusal reasons form deep inside body lowering with no span
+        /// of their own to report.
+        span: Option<Span>,
     },
     /// The declaration has an admitted SIR callable header but the entry
     /// closure never reached it, so no body was attempted.
@@ -1913,7 +1921,31 @@ impl<'a> InstanceService<'a> {
             }
             Err(reason) => {
                 self.states[index] = CallableState::Failed;
-                self.statuses[index] = Some(SirLoweringStatus::Unsupported { reason });
+                // Body lowering has no span of its own to report (#3384): the
+                // refusal reason is a `String` built deep inside `Builder`,
+                // with no source location threaded alongside it. The
+                // declaring function's own span is the coarsest attribution
+                // available without threading a span through every fallible
+                // lowering step, so it stands in as the diagnostic's span.
+                //
+                // Restricted to the root compilation unit, matching the same
+                // cross-module safety rule `hew-codegen-rs::CodegenError`
+                // already uses: a byte range only ever indexes the file it
+                // was parsed from, and the CLI renders it against the root
+                // source. A foreign-module function's span would index the
+                // wrong file, so it stays spanless rather than render a caret
+                // against unrelated text.
+                let span = self
+                    .callable(callable)
+                    .and_then(|meta| self.table.functions_by_item.get(&meta.function))
+                    .filter(|function| {
+                        matches!(
+                            function_source_origin(self.module, function),
+                            FunctionSourceOrigin::RootUnit
+                        )
+                    })
+                    .map(|function| function.span.clone());
+                self.statuses[index] = Some(SirLoweringStatus::Unsupported { reason, span });
             }
         }
     }
@@ -2446,6 +2478,12 @@ impl<'a> InstanceService<'a> {
             SirLoweringStatus::NotReached,
             |reason| SirLoweringStatus::Unsupported {
                 reason: reason.clone(),
+                // Same root-unit-only rule as the body-lowering site above.
+                span: matches!(
+                    function_source_origin(self.module, function),
+                    FunctionSourceOrigin::RootUnit
+                )
+                .then(|| function.span.clone()),
             },
         )
     }

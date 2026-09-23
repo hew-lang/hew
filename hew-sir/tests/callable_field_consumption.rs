@@ -204,7 +204,7 @@ fn assert_refused(source: &str, function: &str, code: &str) {
     ));
     let lowered = lower_module_with_demand(&hir.module, &checked, SirLoweringDemand::EveryCallable);
     assert!(lowered.statuses.iter().any(|status| {
-        status.name == function && matches!(&status.status, SirLoweringStatus::Unsupported { reason } if reason.contains(code))
+        status.name == function && matches!(&status.status, SirLoweringStatus::Unsupported { reason, .. } if reason.contains(code))
     }), "{:?}", lowered.statuses);
     assert!(
         !lowered

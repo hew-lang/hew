@@ -901,7 +901,7 @@ fn functional_update_refuses_to_transfer_a_non_copyable_field_from_a_borrowed_ba
     assert!(
         matches!(
             &status.status,
-            SirLoweringStatus::Unsupported { reason } if reason.contains("E_OWN_CONSUME_BORROWED")
+            SirLoweringStatus::Unsupported { reason, .. } if reason.contains("E_OWN_CONSUME_BORROWED")
         ),
         "a borrowed base cannot give up its closure field: {:#?}",
         status.status

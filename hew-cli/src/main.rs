@@ -176,11 +176,9 @@ fn lower_program_to_semantics(
         error @ hew_compile::SessionError::Semantic(_) => {
             emit_semantic_error("E_SIR_VERIFY", &error.to_string(), DiagChannel::Internal)
         }
-        error @ hew_compile::SessionError::Unsupported { .. } => emit_semantic_error(
-            "E_SIR_UNSUPPORTED",
-            &error.to_string(),
-            DiagChannel::Limitation,
-        ),
+        hew_compile::SessionError::Unsupported { message, span, .. } => {
+            diagnostic::render_unsupported_error(&message, span.as_ref(), source, label)
+        }
     })
 }
 
@@ -478,8 +476,11 @@ fn compile_native_binary_with_paths(
         false,
     )?;
     let obj = artefacts.native_obj_path.as_deref().ok_or_else(|| {
-        eprintln!("E_NOT_YET_IMPLEMENTED: native codegen did not produce an object");
-        DiagChannel::User
+        emit_semantic_error(
+            "E_CODEGEN_ARTEFACT_MISSING",
+            "native codegen did not produce an object",
+            DiagChannel::Internal,
+        )
     })?;
     link_native_object_with_hew_lib_and_extra(
         obj,
@@ -585,8 +586,11 @@ pub(crate) fn compile_native_from_program_with_paths(
     match emit_target {
         CompileEmitTarget::Native => {
             let obj = artefacts.native_obj_path.as_deref().ok_or_else(|| {
-                eprintln!("E_NOT_YET_IMPLEMENTED: native codegen did not produce an object");
-                DiagChannel::User
+                emit_semantic_error(
+                    "E_CODEGEN_ARTEFACT_MISSING",
+                    "native codegen did not produce an object",
+                    DiagChannel::Internal,
+                )
             })?;
             link_native_object_with_hew_lib_and_extra(
                 obj,
@@ -597,8 +601,11 @@ pub(crate) fn compile_native_from_program_with_paths(
         }
         CompileEmitTarget::Wasm => {
             let obj = artefacts.wasm_obj_path.as_deref().ok_or_else(|| {
-                eprintln!("E_NOT_YET_IMPLEMENTED: WASM codegen did not produce an object");
-                DiagChannel::User
+                emit_semantic_error(
+                    "E_CODEGEN_ARTEFACT_MISSING",
+                    "WASM codegen did not produce an object",
+                    DiagChannel::Internal,
+                )
             })?;
             let obj_str = obj.to_str().ok_or_else(|| {
                 eprintln!("Error: WASM object path is not valid UTF-8");
@@ -712,13 +719,19 @@ fn link_wasm_module_for_target(
     target: &target::TargetSpec,
 ) -> Result<(), DiagChannel> {
     let object = artefacts.wasm_obj_path.as_deref().ok_or_else(|| {
-        eprintln!("E_NOT_YET_IMPLEMENTED: physical codegen did not produce a WASM object");
-        DiagChannel::Limitation
+        emit_semantic_error(
+            "E_CODEGEN_ARTEFACT_MISSING",
+            "physical codegen did not produce a WASM object",
+            DiagChannel::Internal,
+        )
     })?;
     if target.is_wasm_freestanding() {
         let linked = artefacts.wasm_path.as_deref().ok_or_else(|| {
-            eprintln!("E_NOT_YET_IMPLEMENTED: freestanding WASM link produced no module");
-            DiagChannel::Limitation
+            emit_semantic_error(
+                "E_CODEGEN_ARTEFACT_MISSING",
+                "freestanding WASM link produced no module",
+                DiagChannel::Internal,
+            )
         })?;
         if linked != output_path {
             std::fs::rename(linked, output_path).map_err(|error| {
@@ -816,8 +829,11 @@ fn compile_build_binary_with_hew_lib(
         return Ok(());
     }
     let object = artefacts.native_obj_path.as_deref().ok_or_else(|| {
-        eprintln!("E_NOT_YET_IMPLEMENTED: physical codegen did not produce a native object");
-        DiagChannel::Limitation
+        emit_semantic_error(
+            "E_CODEGEN_ARTEFACT_MISSING",
+            "physical codegen did not produce a native object",
+            DiagChannel::Internal,
+        )
     })?;
     let auto_libs = native_link::build_native_link_libs(&native_pkg_dirs).map_err(|error| {
         eprintln!("Error: {error}");
@@ -928,8 +944,11 @@ fn emit_obj_only(
         CompileEmitTarget::Wasm => artefacts.wasm_obj_path,
     }
     .ok_or_else(|| {
-        eprintln!("E_NOT_YET_IMPLEMENTED: codegen did not produce an object");
-        DiagChannel::User
+        emit_semantic_error(
+            "E_CODEGEN_ARTEFACT_MISSING",
+            "codegen did not produce an object",
+            DiagChannel::Internal,
+        )
     })?;
 
     // Codegen writes `<out_dir>/<stem>.o` (or `.wasm.o`); rename to the
@@ -1386,8 +1405,11 @@ fn compile_temp_wasi_module(
             None,
         )?;
         let obj = artefacts.wasm_obj_path.as_deref().ok_or_else(|| {
-            eprintln!("E_NOT_YET_IMPLEMENTED: WASM codegen did not produce an object");
-            DiagChannel::User
+            emit_semantic_error(
+                "E_CODEGEN_ARTEFACT_MISSING",
+                "WASM codegen did not produce an object",
+                DiagChannel::Internal,
+            )
         })?;
         let obj_str = obj.to_str().ok_or_else(|| {
             eprintln!("Error: WASM object path is not valid UTF-8");

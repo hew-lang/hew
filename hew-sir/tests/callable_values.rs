@@ -540,7 +540,7 @@ fn mixed_borrowed_and_replaced_parameters_are_not_silently_joined() {
                 .unwrap()
                 .status;
             assert!(
-                matches!(status, hew_sir::SirLoweringStatus::Unsupported { reason } if reason == "lexical place identity changed across a control-flow edge"),
+                matches!(status, hew_sir::SirLoweringStatus::Unsupported { reason, .. } if reason == "lexical place identity changed across a control-flow edge"),
                 "{body}: {status:?}"
             );
         }

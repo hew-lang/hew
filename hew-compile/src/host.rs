@@ -20,6 +20,7 @@ impl Session {
         let unsupported = |message: String| SessionError::Unsupported {
             callable: None,
             message,
+            span: None,
         };
         let (ordinal, span) = program
             .items

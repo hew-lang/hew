@@ -68,7 +68,7 @@ fn scalar_literal_predicates_cannot_change_the_checked_width_or_kind() {
         assert!(
             lowered.callable_statuses.iter().any(|(_, status)| matches!(
                 status,
-                SirLoweringStatus::Unsupported { reason }
+                SirLoweringStatus::Unsupported { reason, .. }
                     if reason.contains("scalar match") || reason.contains("literal match")
             )),
             "{:?}",

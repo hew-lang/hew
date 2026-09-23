@@ -83,7 +83,7 @@ fn generic_trait_method_requires_its_checked_instantiation() {
         assert!(
             lowered.callable_statuses.iter().any(|(_, status)| matches!(
                 status,
-                SirLoweringStatus::Unsupported { reason }
+                SirLoweringStatus::Unsupported { reason, .. }
                     if reason.contains("requires 1 checker-resolved method type argument(s)")
             )),
             "{:?}",

@@ -4452,28 +4452,7 @@ fn verify_structural_glue(module: &PhysicalModule) -> Result<(), PhysicalError> 
 
 fn verify_physical_module(module: &PhysicalModule) -> Result<(), PhysicalError> {
     capability::verify(module)?;
-    for actor in &module.actors {
-        for handler in &actor.handlers {
-            if let Some(codec) = &handler.codec {
-                if codec.params.len() != handler.params.len()
-                    || codec
-                        .params
-                        .iter()
-                        .zip(&handler.params)
-                        .any(|(plan, ty)| &plan.ty != ty)
-                    || codec.reply.as_ref().map(|plan| &plan.ty)
-                        != (handler.return_ty != ResolvedTy::Unit).then_some(&handler.return_ty)
-                {
-                    return Err(PhysicalError::new(
-                        "actor codec differs from its handler signature",
-                    ));
-                }
-                for plan in codec.params.iter().chain(codec.reply.iter()) {
-                    wire::verify_wire_plan(module, plan)?;
-                }
-            }
-        }
-    }
+    wire::verify_actor_codecs(module)?;
     verify_resources(module)?;
     if module.target.triple.is_empty() || module.target.data_layout.is_empty() {
         return Err(PhysicalError::new(

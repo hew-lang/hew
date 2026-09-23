@@ -297,15 +297,8 @@ fn wire_actor_emits_target_walked_ctor_section() {
     assert_actor_codec_ctor_sections("#[wire] type Ping { seq: i64 @1 }\nactor Echo { receive fn handle(msg: Ping) -> i64 { msg.seq } }\nfn main() {}\n");
 }
 
-/// Both processes discover the thunks through real startup registration. The
-/// linker wrappers observe that registration and forward it to the runtime.
 #[cfg(target_os = "linux")]
-#[test]
-fn wire_actor_registration_transports_request_and_reply_between_processes() {
-    support::require_codegen();
-    let dir = workspace();
-    let shim = dir.path().join("codec_probe.c");
-    std::fs::write(&shim, r#"
+const ACTOR_CODEC_PROBE: &str = r#"
 #include <assert.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -369,7 +362,17 @@ int32_t codec_probe(void) {
     assert(fclose(file) == 0);
     return 0;
 }
-"#).expect("write codec probe");
+"#;
+
+/// Both processes discover the thunks through real startup registration. The
+/// linker wrappers observe that registration and forward it to the runtime.
+#[cfg(target_os = "linux")]
+#[test]
+fn wire_actor_registration_transports_request_and_reply_between_processes() {
+    support::require_codegen();
+    let dir = workspace();
+    let shim = dir.path().join("codec_probe.c");
+    std::fs::write(&shim, ACTOR_CODEC_PROBE).expect("write codec probe");
     let object = dir.path().join("codec_probe.o");
     let compile = Command::new("cc")
         .args(["-c", "-std=c11", "-Wall", "-Wextra", "-Werror"])

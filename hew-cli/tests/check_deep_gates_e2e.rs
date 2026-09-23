@@ -341,31 +341,41 @@ fn check_rejects_invalid_module_const_arithmetic_without_nyi_or_artifact() {
 /// render with the same `file:line:col` and source excerpt as any other
 /// diagnostic, not a bare internal-symbol line.
 ///
-/// The fixture is `tests/vertical-slice/reject/hashmap_get_unclonable_opaque_value.hew`,
-/// inlined so this regression does not depend on that corpus file's continued
-/// existence: `HashMap::get` hands a loan of a no-clone value, and consuming
-/// that loan hits the consume wall inside SIR body lowering.
+/// #3538's fixture (consuming a `HashMap::get` loan) now compiles clean --
+/// the checker resolves it to `E_OWN_CONSUME_BORROWED` before SIR ever sees
+/// it. This fixture keeps the same shape (a `#[resource]` held beneath a
+/// no-clone owner) but hits a limitation SIR still refuses on this branch:
+/// mutating a `Vec<T>` field in place beneath an owner with no independent
+/// clone.
 #[test]
 fn check_sir_unsupported_renders_with_source_span() {
     let (_dir, path) = write_fixture(
         "#[resource]\n\
-         type Tok {\n\
+         type Item {\n\
          \x20\x20\x20\x20id: i64,\n\
          }\n\
          \n\
-         impl Tok {\n\
+         impl Item {\n\
          \x20\x20\x20\x20fn close(consume self) {\n\
          \x20\x20\x20\x20\x20\x20\x20\x20println(f\"close {self.id}\");\n\
          \x20\x20\x20\x20}\n\
          }\n\
          \n\
-         fn main() {\n\
-         \x20\x20\x20\x20var m: HashMap<string, Tok> = HashMap.new();\n\
-         \x20\x20\x20\x20m.insert(\"a\", Tok { id: 1 });\n\
-         \x20\x20\x20\x20match m.get(\"a\") {\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20Option.Some(t) => t.close(),\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20Option.None => println(\"none\"),\n\
+         #[resource]\n\
+         type Pool {\n\
+         \x20\x20\x20\x20items: [Item],\n\
+         }\n\
+         \n\
+         impl Pool {\n\
+         \x20\x20\x20\x20fn close(consume self) {\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20println(\"close pool\");\n\
          \x20\x20\x20\x20}\n\
+         }\n\
+         \n\
+         fn main() {\n\
+         \x20\x20\x20\x20var pool = Pool { items: [] };\n\
+         \x20\x20\x20\x20let item = Item { id: 1 };\n\
+         \x20\x20\x20\x20pool.items.push(item);\n\
          }\n",
     );
 
@@ -375,7 +385,7 @@ fn check_sir_unsupported_renders_with_source_span() {
     assert!(!output.status.success(), "{}", describe_output(&output));
     assert!(
         stderr.contains("E_SIR_UNSUPPORTED"),
-        "expected the live consume-wall limitation to report E_SIR_UNSUPPORTED; got:\n{stderr}"
+        "expected the live vec-mutation limitation to report E_SIR_UNSUPPORTED; got:\n{stderr}"
     );
     assert!(
         stderr.contains("compiler limitation:"),
@@ -419,29 +429,38 @@ fn check_sir_unsupported_renders_with_source_span() {
 fn check_sir_unsupported_renders_with_source_span_for_actor_handler() {
     let (_dir, path) = write_fixture(
         "#[resource]\n\
-         type Tok {\n\
+         type Item {\n\
          \x20\x20\x20\x20id: i64,\n\
          }\n\
          \n\
-         impl Tok {\n\
+         impl Item {\n\
          \x20\x20\x20\x20fn close(consume self) {\n\
          \x20\x20\x20\x20\x20\x20\x20\x20println(f\"close {self.id}\");\n\
          \x20\x20\x20\x20}\n\
          }\n\
          \n\
+         #[resource]\n\
+         type Pool {\n\
+         \x20\x20\x20\x20items: [Item],\n\
+         }\n\
+         \n\
+         impl Pool {\n\
+         \x20\x20\x20\x20fn close(consume self) {\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20println(\"close pool\");\n\
+         \x20\x20\x20\x20}\n\
+         }\n\
+         \n\
          actor Holder {\n\
-         \x20\x20\x20\x20var m: HashMap<string, Tok>,\n\
+         \x20\x20\x20\x20var pool: Pool,\n\
          \n\
          \x20\x20\x20\x20receive fn poke() {\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20match m.get(\"a\") {\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20Option.Some(t) => t.close(),\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20Option.None => println(\"none\"),\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20}\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20let item = Item { id: 1 };\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20pool.items.push(item);\n\
          \x20\x20\x20\x20}\n\
          }\n\
          \n\
          fn main() {\n\
-         \x20\x20\x20\x20let h = spawn Holder(m: HashMap.new());\n\
+         \x20\x20\x20\x20let h = spawn Holder(pool: Pool { items: [] });\n\
          \x20\x20\x20\x20let _ = h.poke();\n\
          }\n",
     );
@@ -452,7 +471,7 @@ fn check_sir_unsupported_renders_with_source_span_for_actor_handler() {
     assert!(!output.status.success(), "{}", describe_output(&output));
     assert!(
         stderr.contains("E_SIR_UNSUPPORTED"),
-        "expected the actor handler's consume-wall limitation to report E_SIR_UNSUPPORTED; got:\n{stderr}"
+        "expected the actor handler's vec-mutation limitation to report E_SIR_UNSUPPORTED; got:\n{stderr}"
     );
     let file_name = path.file_name().unwrap().to_str().unwrap();
     assert!(
@@ -462,7 +481,7 @@ fn check_sir_unsupported_renders_with_source_span_for_actor_handler() {
         "expected a `{file_name}:<line>:<col>: ... E_SIR_UNSUPPORTED` header for the actor handler; got:\n{stderr}"
     );
     assert!(
-        stderr.contains("match m.get"),
+        stderr.contains("let item = Item { id: 1 };"),
         "expected the handler body's own source line in the excerpt, not a bare line; got:\n{stderr}"
     );
     assert!(
@@ -481,23 +500,31 @@ fn check_sir_unsupported_renders_with_source_span_for_actor_handler() {
 fn check_sir_unsupported_renders_with_source_span_json() {
     let (_dir, path) = write_fixture(
         "#[resource]\n\
-         type Tok {\n\
+         type Item {\n\
          \x20\x20\x20\x20id: i64,\n\
          }\n\
          \n\
-         impl Tok {\n\
+         impl Item {\n\
          \x20\x20\x20\x20fn close(consume self) {\n\
          \x20\x20\x20\x20\x20\x20\x20\x20println(f\"close {self.id}\");\n\
          \x20\x20\x20\x20}\n\
          }\n\
          \n\
-         fn main() {\n\
-         \x20\x20\x20\x20var m: HashMap<string, Tok> = HashMap.new();\n\
-         \x20\x20\x20\x20m.insert(\"a\", Tok { id: 1 });\n\
-         \x20\x20\x20\x20match m.get(\"a\") {\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20Option.Some(t) => t.close(),\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20Option.None => println(\"none\"),\n\
+         #[resource]\n\
+         type Pool {\n\
+         \x20\x20\x20\x20items: [Item],\n\
+         }\n\
+         \n\
+         impl Pool {\n\
+         \x20\x20\x20\x20fn close(consume self) {\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20println(\"close pool\");\n\
          \x20\x20\x20\x20}\n\
+         }\n\
+         \n\
+         fn main() {\n\
+         \x20\x20\x20\x20var pool = Pool { items: [] };\n\
+         \x20\x20\x20\x20let item = Item { id: 1 };\n\
+         \x20\x20\x20\x20pool.items.push(item);\n\
          }\n",
     );
 

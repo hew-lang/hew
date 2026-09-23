@@ -459,8 +459,9 @@ impl ResolvedTy {
                     return Some(instance);
                 }
                 let nominal = match builtin {
-                    BuiltinType::VecIter => "std.builtins.VecIter",
-                    BuiltinType::HashMapIter => "std.builtins.HashMapIter",
+                    BuiltinType::VecIter | BuiltinType::HashMapIter => {
+                        return self.nominal_instance();
+                    }
                     BuiltinType::Generator => "Generator",
                     BuiltinType::Vec => "Vec",
                     BuiltinType::HashMap => "HashMap",

@@ -4194,10 +4194,9 @@ An actor handle names an actor wherever it lives; a lookup through the node regi
 returns one for a peer. From an actor handler, `peer.ask(msg, timeout_ms)`
 lowers to the cross-node suspending remote-ask path and returns
 `Result<T.Reply, ActorError>` on resume; match `Ok`/`Err` instead of assuming a
-reply. A same-node lookup can still return a handle that routes through the
-remote path, and the local-mailbox bridge for that path is scoped to fail
-closed as `ActorError.RoutingFailed`; use a direct actor call when both actors
-are intentionally local.
+reply. A same-node lookup returns a handle to the local actor: its send, ask,
+link and monitor reach that actor directly, with the results a peer would give,
+and a handle from an earlier node session is stale.
 
 A remote call addresses the one receive fn whose parameter is the actor's
 `ActorMsg.Msg` and whose result is its `ActorMsg.Reply`. Both cross the node

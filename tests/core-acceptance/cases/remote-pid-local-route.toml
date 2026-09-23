@@ -1,0 +1,10 @@
+[[case]]
+id = "remote-pid-local-route"
+intent = "A RemotePid of an actor on this node routes send, ask, monitor and link through the local call path with the results a peer gives, a send to a stopped actor is refused, and every pid from an earlier node session is stale."
+source = "cases/remote-pid-local-route.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "teal\ndown 1\ndead\nsend to stopped stale\nlink 0\nlinker alive\nsend stale\ndead\nmonitor stale\nlink 1\n"
+exit = 0

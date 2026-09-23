@@ -223,17 +223,22 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .into_pointer_value();
             return release::drain_cursor(&self.value_emitter(), frame, cursor);
         }
-        if name == "hew_actor_call_free" {
-            let frame = self.frame.as_ref().ok_or_else(|| {
-                CodegenError::FailClosed("actor-call cleanup lacks continuation".into())
-            })?;
-            release::drain_operation(
-                &self.value_emitter(),
-                frame,
-                handle,
+        let cleanup = match name {
+            "hew_actor_call_free" => Some((
                 "hew_actor_call_cleanup_poll",
                 "hew_actor_call_cleanup_fault",
-            )?;
+            )),
+            "hew_remote_call_free" => Some((
+                "hew_remote_call_cleanup_poll",
+                "hew_remote_call_cleanup_fault",
+            )),
+            _ => None,
+        };
+        if let Some((poll, fault)) = cleanup {
+            let frame = self.frame.as_ref().ok_or_else(|| {
+                CodegenError::FailClosed("call cleanup lacks continuation".into())
+            })?;
+            release::drain_operation(&self.value_emitter(), frame, handle, poll, fault)?;
         }
         let pointer = self.ctx.ptr_type(AddressSpace::default());
         let free = coro::external(

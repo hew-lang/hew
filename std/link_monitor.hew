@@ -12,7 +12,7 @@ import std.failure.{CrashKind};
 pub enum MonitorError {
     /// No distributed node runtime is active.
     NodeNotRunning,
-    /// The supplied pid is local or otherwise not a valid remote target.
+    /// No actor is observing, or the supplied pid is not a valid target.
     InvalidTarget,
     /// The route to the monitored peer is unavailable or the peer is suspect.
     Partition,

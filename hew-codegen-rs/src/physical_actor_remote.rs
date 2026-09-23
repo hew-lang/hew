@@ -1,5 +1,5 @@
-//! `RemotePid` send and ask: the message is encoded by the target actor's
-//! registered codec and released before the caller can park.
+//! `RemotePid` send and ask: the message moves into the runtime, which encodes
+//! it for a peer or delivers its fields to an actor on this node.
 
 use super::*;
 use hew_mir::physical::RemoteObservationKind;
@@ -25,8 +25,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .ok_or_else(|| CodegenError::FailClosed("remote call lacks its codec key".into()))
     }
 
-    /// Move the message into a stack wrapper the codec reads, returning the
-    /// wrapper and its size. The runtime only borrows it.
+    /// Move the message into a stack wrapper, returning the wrapper and its
+    /// size. The runtime takes the wrapper's fields and leaves its bytes.
     fn remote_request(
         &self,
         handler: &SemActorHandler,
@@ -60,25 +60,6 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             wrapper,
             size_ty.const_int(target.get_abi_size(&wrapper_ty), false),
         ))
-    }
-
-    /// The encoded bytes carry the message; its owners are released here.
-    fn release_remote_request(
-        &self,
-        actor: ActorId,
-        message: u32,
-        wrapper: PointerValue<'ctx>,
-    ) -> CodegenResult<()> {
-        let drop = self
-            .llvm
-            .get_function(&message_symbol(actor, message))
-            .ok_or_else(|| {
-                CodegenError::FailClosed("remote request lacks its destructor".into())
-            })?;
-        self.builder
-            .build_call(drop, &[wrapper.into()], "")
-            .llvm_ctx("release encoded remote request")?;
-        Ok(())
     }
 
     #[expect(
@@ -161,7 +142,6 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             "remote.operation",
         )?
         .into_pointer_value();
-        self.release_remote_request(actor, message, wrapper)?;
 
         let poll = self.ctx.append_basic_block(self.value, "remote.poll");
         let inspect = self.ctx.append_basic_block(self.value, "remote.inspect");
@@ -299,7 +279,6 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             ],
             "remote.send.status",
         )?;
-        self.release_remote_request(actor, message, wrapper)?;
         self.store(result, status)?;
         self.emit_result_edge(Some(result), normal)
     }

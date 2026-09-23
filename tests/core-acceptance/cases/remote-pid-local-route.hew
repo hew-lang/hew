@@ -1,0 +1,246 @@
+// A RemotePid naming an actor on this node routes locally: send, ask, monitor
+// and link reach the actor through the local call path with the results a
+// peer would give, and a pid from an earlier node session is stale. The
+// two-process fixture covers a linked crash, whose report names actor ids.
+import std.os;
+
+import std.link_monitor.{DownNotification, DownReason, DownTarget, MonitorError, MonitorRef, PartitionPolicy,};
+
+extern "C" {
+    fn hew_actor_self_stop();
+}
+
+#[wire]
+type Entry {
+    key: string @1,
+    val: string @2,
+}
+
+#[wire]
+enum StoreReq {
+    Put(Entry),
+    Get(string),
+    Stop,
+}
+
+#[wire]
+enum StoreResp {
+    Ack,
+    Value(string),
+}
+
+actor Store {
+    var entries: HashMap<string, string>,
+    receive fn handle(req: StoreReq) -> StoreResp {
+        match req {
+            StoreReq.Put(entry) => {
+                entries.insert(entry.key, entry.val);
+                StoreResp.Ack
+            },
+            StoreReq.Get(key) => match entries.get(key) {
+                .Some(val) => StoreResp.Value(val),
+                .None => StoreResp.Value(""),
+            },
+            StoreReq.Stop => {
+                unsafe {
+                    hew_actor_self_stop()
+                };
+                StoreResp.Ack
+            },
+        }
+    }
+}
+
+impl ActorMsg for Store {
+    type Msg = StoreReq;
+    type Reply = StoreResp;
+}
+
+// The held registration is read through a borrow, so the seat keeps it live.
+fn setup_code(setup: Result<MonitorRef, MonitorError>) -> i64 {
+    match setup {
+        .Ok(_) => 0,
+        .Err(MonitorError.StaleRef) => 1,
+        .Err(_) => 2,
+    }
+}
+
+actor Watcher {
+    var active: Result<MonitorRef, MonitorError>,
+    var outcome: i64 = 0,
+    // 0 = registered, 1 = stale, 2 = refused otherwise.
+    receive fn arm(target: RemotePid<Store>) -> i64 {
+        active = monitor(target);
+        setup_code(active)
+    }
+    // 0 = waiting, 1 = the DOWN names the remote location and a clean exit.
+    receive fn outcome() -> i64 {
+        outcome
+    }
+    #[on(down)]
+    fn on_down(note: DownNotification) {
+        outcome = match note.target {
+            DownTarget.Remote(_) => match note.reason {
+                DownReason.Exited => 1,
+                _ => 2,
+            },
+            DownTarget.Local(_) => 3,
+        };
+    }
+}
+
+actor Linker {
+    // 0 = linked, 1 = Dead, 2 = Partition, 3 = NoContext.
+    receive fn link_to(target: RemotePid<Store>) -> i64 {
+        match link_remote(target, PartitionPolicy.MonitorLost) {
+            .Ok(_) => 0,
+            .Err(LinkError.Dead) => 1,
+            .Err(LinkError.Partition) => 2,
+            .Err(LinkError.NoContext) => 3,
+        }
+    }
+    receive fn ping() -> i64 {
+        7
+    }
+}
+
+fn config() -> NodeConfig {
+    NodeConfig {
+        bind: "127.0.0.1:0",
+        transport: "tcp",
+        key: f"{os.temp_dir()}/hew-remote-pid-local-route-{os.pid()}.key",
+        trust: "pinned",
+        peers: Vec.new(),
+        seeds: Vec.new(),
+    }
+}
+
+fn lookup(name: string) -> Option<RemotePid<Store>> {
+    let found: Result<RemotePid<Store>, LookupError> = Node.lookup(name);
+    match found {
+        .Ok(pid) => Some(pid),
+        .Err(_) => None,
+    }
+}
+
+fn get(target: RemotePid<Store>, key: string) -> string {
+    match target.ask(StoreReq.Get(key), 2000) {
+        .Ok(StoreResp.Value(val)) => val,
+        .Ok(StoreResp.Ack) => "ack",
+        .Err(ActorError.Dead) => "dead",
+        .Err(_) => "error",
+    }
+}
+
+fn main() -> i64 {
+    match Node.start(config()) {
+        .Ok(_) => {},
+        .Err(_) => return 1,
+    }
+    let store = spawn Store(entries: HashMap.new());
+    if Node.register("store", store) != 0 {
+        return 2;
+    }
+    let target = match lookup("store") {
+        .Some(pid) => pid,
+        .None => return 3,
+    };
+
+    // The message's owned fields move into the local actor.
+    match target.send(StoreReq.Put(Entry { key: "colour", val: "teal" })) {
+        .Ok(_) => {},
+        .Err(_) => return 4,
+    }
+    println(get(target, "colour"));
+
+    // A clean exit reaches a monitor as the DOWN of a remote location.
+    let watcher = spawn Watcher(active: Err(MonitorError.NodeNotRunning));
+    match watcher.arm(target) {
+        .Ok(0) => {},
+        .Ok(_) => return 5,
+        .Err(_) => return 6,
+    }
+    match target.ask(StoreReq.Stop, 2000) {
+        .Ok(_) => {},
+        .Err(_) => return 7,
+    }
+    var outcome: i64 = 0;
+    for _ in 0..200 {
+        outcome = match watcher.outcome() {
+            .Ok(value) => value,
+            .Err(_) => -1,
+        };
+        if outcome != 0 {
+            break;
+        }
+        sleep(10ms);
+    }
+    println(f"down {outcome}");
+    // The stopped actor answers as a dead one, and a send to it is refused.
+    println(get(target, "colour"));
+    match target.send(StoreReq.Get("colour")) {
+        .Err(SendError.StaleRef) => println("send to stopped stale"),
+        .Err(_) => println("send to stopped error"),
+        .Ok(_) => println("send to stopped delivered"),
+    }
+
+    // A MonitorLost link to a local target leaves the linker running when
+    // the target exits.
+    let partner = spawn Store(entries: HashMap.new());
+    if Node.register("partner", partner) != 0 {
+        return 8;
+    }
+    let partner_pid = match lookup("partner") {
+        .Some(pid) => pid,
+        .None => return 9,
+    };
+    let linker = spawn Linker;
+    match linker.link_to(partner_pid) {
+        .Ok(status) => println(f"link {status}"),
+        .Err(_) => return 10,
+    }
+    match partner_pid.ask(StoreReq.Stop, 2000) {
+        .Ok(_) => {},
+        .Err(_) => return 11,
+    }
+    sleep(100ms);
+    match linker.ping() {
+        .Ok(_) => println("linker alive"),
+        .Err(_) => println("linker gone"),
+    }
+
+    // A new session makes every pid from the earlier one stale.
+    let live = spawn Store(entries: HashMap.new());
+    if Node.register("live", live) != 0 {
+        return 12;
+    }
+    let old = match lookup("live") {
+        .Some(pid) => pid,
+        .None => return 13,
+    };
+    Node.shutdown();
+    match Node.start(config()) {
+        .Ok(_) => {},
+        .Err(_) => return 14,
+    }
+    match old.send(StoreReq.Get("colour")) {
+        .Err(SendError.StaleRef) => println("send stale"),
+        .Err(_) => println("send error"),
+        .Ok(_) => println("send delivered"),
+    }
+    println(get(old, "colour"));
+    let late_watcher = spawn Watcher(active: Err(MonitorError.NodeNotRunning));
+    match late_watcher.arm(old) {
+        .Ok(0) => println("monitor registered"),
+        .Ok(1) => println("monitor stale"),
+        .Ok(_) => println("monitor refused"),
+        .Err(_) => return 15,
+    }
+    let late_linker = spawn Linker;
+    match late_linker.link_to(old) {
+        .Ok(status) => println(f"link {status}"),
+        .Err(_) => return 16,
+    }
+    Node.shutdown();
+    0
+}

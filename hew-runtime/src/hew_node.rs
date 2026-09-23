@@ -1508,10 +1508,36 @@ unsafe fn deliver_inbound_send(target_actor_id: u64, msg_type: i32, data: *mut u
         ));
         return;
     };
-    if !request.submit(target_actor_id, msg_type) {
+    if !request
+        .submit(target_actor_id, msg_type)
+        .is_some_and(submission_delivered)
+    {
         set_last_error(format!(
             "cross-node send dropped: target actor {target_actor_id} refused msg_type={msg_type}"
         ));
+    }
+}
+
+/// Whether a native submission status leaves the fields with the destination.
+fn submission_delivered(status: i32) -> bool {
+    status == crate::actor_native::HewSubmitStatus::Accepted as i32
+        || status == crate::actor_native::HewSubmitStatus::Discarded as i32
+}
+
+/// Release the fields of a request wrapper that did not move into an actor.
+///
+/// # Safety
+/// `request` is null or a wrapper of the member registered under
+/// `(dispatch, msg_type)` whose fields are still owned by the caller.
+unsafe fn release_request(dispatch: *const c_void, msg_type: i32, request: *mut c_void) {
+    if request.is_null() {
+        return;
+    }
+    if let Some(drop) =
+        crate::xnode_serial::lookup_request(dispatch, msg_type).and_then(|codec| codec.drop)
+    {
+        // SAFETY: the caller still owns the wrapper's fields.
+        unsafe { drop(request) };
     }
 }
 
@@ -1539,6 +1565,34 @@ impl InboundRequest {
         })
     }
 
+    /// Move a caller's request wrapper into an owned copy for a local target;
+    /// the caller's wrapper keeps only its bytes. `None` leaves the fields
+    /// with the caller.
+    ///
+    /// # Safety
+    /// `wrapper` holds `size` readable bytes of the codec's member wrapper.
+    unsafe fn adopt(
+        codec: crate::xnode_serial::ThunkPair,
+        wrapper: *const c_void,
+        size: usize,
+    ) -> Option<Self> {
+        let drop = codec.drop?;
+        if wrapper.is_null() {
+            return None;
+        }
+        let copy = crate::mem::buf_try_alloc(size);
+        if copy.is_null() {
+            return None;
+        }
+        // SAFETY: both buffers hold the wrapper's size.
+        unsafe { ptr::copy_nonoverlapping(wrapper.cast::<u8>(), copy.cast::<u8>(), size) };
+        Some(Self {
+            wrapper: copy,
+            size,
+            drop,
+        })
+    }
+
     /// Enter the target's runtime and resolve its local handle, keeping the
     /// target pinned while the handle is read.
     fn target(
@@ -1558,15 +1612,16 @@ impl InboundRequest {
     }
 
     /// Submit a one-way message, keeping the fields when admission refuses.
-    fn submit(self, actor_id: u64, msg_type: i32) -> bool {
-        let Some((_runtime, token)) = Self::target(actor_id) else {
-            return false;
-        };
+    /// Returns the native submission status, or `None` when no live actor
+    /// holds the id.
+    fn submit(self, actor_id: u64, msg_type: i32) -> Option<i32> {
+        use crate::actor_native::HewSubmitStatus;
+        let (_runtime, token) = Self::target(actor_id)?;
         // The runtime frees a refused wrapper's bytes and leaves its fields
         // with the sender, so it takes a shallow copy of this one.
         let copy = crate::mem::buf_try_alloc(self.size);
         if copy.is_null() {
-            return false;
+            return Some(HewSubmitStatus::Oom as i32);
         }
         // SAFETY: both buffers hold the decoded wrapper's size.
         unsafe {
@@ -1585,14 +1640,13 @@ impl InboundRequest {
                 ptr::null_mut(),
             )
         };
-        let accepted = matches!(status, 0 | 4);
-        if accepted {
+        if submission_delivered(status) {
             // The destination owns the fields; only the shell remains.
             // SAFETY: the shell came from the decode allocation.
             unsafe { crate::mem::buf_free(self.wrapper) };
             std::mem::forget(self);
         }
-        accepted
+        Some(status)
     }
 
     /// Complete an ask against the local actor and encode its reply. The
@@ -2794,23 +2848,21 @@ pub unsafe extern "C" fn hew_node_lookup_location(
     0
 }
 
-/// Send a message to an exact target location.
+/// Send a message wrapper to an exact target location, consuming its fields.
 ///
 /// `dispatch` is the TARGET actor TYPE's dispatch function pointer, keying the
-/// cross-node serialize codec `(dispatch, msg_type)` on the remote path. Unused
-/// on the local path. May be null for a local-only send.
+/// member's codec `(dispatch, msg_type)`. A target on this node receives the
+/// wrapper's fields directly; any other target receives the encoded bytes and
+/// the fields are released here.
 ///
 /// # Safety
 ///
 /// - `node` must be valid.
 /// - `target` must point to a valid `HewRemotePid`.
-/// - `payload` must be valid for `payload_len` bytes, or null when len is 0.
+/// - `payload` must be the member's wrapper, valid for `payload_len` bytes, or
+///   null when len is 0. Its fields transfer to this call.
 /// - `dispatch` is an opaque codec key, never dereferenced.
 #[no_mangle]
-#[allow(
-    clippy::too_many_lines,
-    reason = "function coordinates exact routing, serialization, and transport ownership"
-)]
 pub unsafe extern "C" fn hew_node_send_location(
     node: *mut HewNode,
     target: *const HewRemotePid,
@@ -2818,6 +2870,40 @@ pub unsafe extern "C" fn hew_node_send_location(
     msg_type: i32,
     payload: *const u8,
     payload_len: usize,
+) -> c_int {
+    let mut moved = false;
+    // SAFETY: forwards this function's contract.
+    let status = unsafe {
+        send_location(
+            node,
+            target,
+            dispatch,
+            msg_type,
+            payload,
+            payload_len,
+            &mut moved,
+        )
+    };
+    if !moved {
+        // SAFETY: the fields did not move into a local actor.
+        unsafe { release_request(dispatch, msg_type, payload.cast_mut().cast()) };
+    }
+    status
+}
+
+/// Route one send; `moved` reports that a local target took the fields.
+#[allow(
+    clippy::too_many_lines,
+    reason = "function coordinates exact routing, serialization, and transport ownership"
+)]
+unsafe fn send_location(
+    node: *mut HewNode,
+    target: *const HewRemotePid,
+    dispatch: *const c_void,
+    msg_type: i32,
+    payload: *const u8,
+    payload_len: usize,
+    moved: &mut bool,
 ) -> c_int {
     if node.is_null() || target.is_null() || (payload.is_null() && payload_len > 0) {
         return -1;
@@ -2835,49 +2921,60 @@ pub unsafe extern "C" fn hew_node_send_location(
     };
 
     // SAFETY: routing table belongs to the running node.
-    let (target_pid, target_node_id, conn_id) =
-        match unsafe { routing::hew_routing_lookup_location(node.routing_table, target) } {
-            routing::LocationRoute::Local { actor_id } => {
-                if crate::lifetime::live_actors::get_actor_ptr_by_id(actor_id).is_none() {
-                    set_last_error("remote send refused: target actor slot is stale");
-                    return HEW_ERR_STALE_REF;
-                }
-                (actor_id, node.route_slot, None)
-            }
-            routing::LocationRoute::Remote {
-                actor_id,
-                route_slot,
-                conn,
-            } => (actor_id, route_slot, Some(conn)),
-            routing::LocationRoute::Partition => {
-                set_last_error("remote send refused: target identity has no live connection");
-                return -1;
-            }
-            routing::LocationRoute::StaleRef => {
-                set_last_error("remote send refused: target Location is stale");
+    let (target_node_id, conn_id) = match unsafe {
+        routing::hew_routing_lookup_location(node.routing_table, target)
+    } {
+        routing::LocationRoute::Local { actor_id } => {
+            if crate::lifetime::live_actors::get_actor_ptr_by_id(actor_id).is_none() {
+                set_last_error("remote send refused: target actor slot is stale");
                 return HEW_ERR_STALE_REF;
             }
-        };
-
-    if conn_id.is_none() {
-        // SAFETY: actor send API handles null payload when len is 0.
-        return unsafe {
-            crate::actor::hew_actor_send_by_id(
-                target_pid,
-                dispatch,
-                msg_type,
-                payload.cast_mut().cast::<c_void>(),
-                payload_len,
-            )
-        };
-    }
+            // This node owns the target: its fields move into the actor's
+            // mailbox with the delivery a peer gives an inbound frame.
+            // SAFETY: the payload is the member's wrapper (caller contract).
+            let request =
+                crate::xnode_serial::lookup_request(dispatch, msg_type).and_then(|codec| unsafe {
+                    InboundRequest::adopt(codec, payload.cast(), payload_len)
+                });
+            let Some(request) = request else {
+                set_last_error("remote send dropped: the local target has no request codec");
+                return 0;
+            };
+            *moved = true;
+            return match request.submit(actor_id, msg_type) {
+                Some(status) if submission_delivered(status) => 0,
+                // A target that is gone or closing reports its stale
+                // address, as this node's own send path always has.
+                None => HEW_ERR_STALE_REF,
+                Some(status) if status == crate::actor_native::HewSubmitStatus::Closed as i32 => {
+                    set_last_error("remote send refused: target actor is gone");
+                    HEW_ERR_STALE_REF
+                }
+                // A full mailbox drops the message, as on a peer.
+                Some(_) => {
+                    set_last_error(format!(
+                        "remote send dropped: target actor {actor_id} refused msg_type={msg_type}"
+                    ));
+                    0
+                }
+            };
+        }
+        routing::LocationRoute::Remote {
+            route_slot, conn, ..
+        } => (route_slot, conn),
+        routing::LocationRoute::Partition => {
+            set_last_error("remote send refused: target identity has no live connection");
+            return -1;
+        }
+        routing::LocationRoute::StaleRef => {
+            set_last_error("remote send refused: target Location is stale");
+            return HEW_ERR_STALE_REF;
+        }
+    };
 
     if node.conn_mgr.is_null() {
         return -1;
     }
-    let Some(conn_id) = conn_id else {
-        return -1;
-    };
 
     // Quarantine consult: under a Quarantine policy, a buried peer that has not
     // rejoined at a strictly higher incarnation fails closed here — before any
@@ -2980,6 +3077,8 @@ pub unsafe extern "C" fn hew_node_api_send_location(
     with_current_node_read(|guard| {
         let node = *guard as *mut HewNode;
         if node.is_null() {
+            // SAFETY: the fields transfer to this call on every outcome.
+            unsafe { release_request(dispatch, msg_type, payload.cast_mut().cast()) };
             return -1;
         }
         // SAFETY: the current-node read lock pins `node`; remaining arguments
@@ -3340,26 +3439,97 @@ pub extern "C" fn hew_dist_setup_race_kind() -> i64 {
     }
 }
 
-/// Encode a `CTRL_MONITOR_*` control frame and send it on the connection routing
-/// to `target_pid`'s node. Returns 0 on a successful send, -1 otherwise (no
+/// A notice from the observation protocol for the node that owns `recipient`.
+enum ObservationNotice {
+    Demonitor(crate::envelope::MonitorReqPayload),
+    Unlink(crate::envelope::LinkReqPayload),
+    MonitorDown(crate::envelope::MonitorDownPayload),
+    LinkDown(crate::envelope::MonitorDownPayload),
+}
+
+/// Deliver an observation notice to the node that owns `recipient`: this node
+/// applies its own notice as its connection reader would, and any other node
+/// receives the encoded control frame. Returns 0 on delivery, -1 otherwise (no
 /// route, no manager, encode failure). Never panics; logs via `set_last_error`.
 ///
 /// # Safety
 ///
 /// `node` must be a valid running `HewNode` pointer.
-unsafe fn send_monitor_control_frame(
+unsafe fn send_observation_notice(
     node: &HewNode,
-    target: Location,
-    ctrl_kind: u64,
-    payload: Vec<u8>,
+    recipient: Location,
+    notice: ObservationNotice,
 ) -> c_int {
+    if node.routing_table.is_null() {
+        set_last_error("observation notice: node has no routing table");
+        return -1;
+    }
+    // SAFETY: the routing table is valid while the node is running.
+    match unsafe { routing::hew_routing_lookup_location(node.routing_table, recipient) } {
+        routing::LocationRoute::Local { .. } => {
+            apply_observation_notice(notice);
+            return 0;
+        }
+        routing::LocationRoute::Remote { .. } => {}
+        routing::LocationRoute::Partition => {
+            set_last_error("observation notice: recipient identity is partitioned");
+            return -1;
+        }
+        routing::LocationRoute::StaleRef => {
+            set_last_error("observation notice: recipient Location is stale");
+            return HEW_ERR_STALE_REF;
+        }
+    }
+    let encoded = match &notice {
+        ObservationNotice::Demonitor(payload) => {
+            crate::envelope::encode_monitor_req_payload(payload)
+                .map(|bytes| (crate::envelope::CTRL_DEMONITOR, bytes))
+        }
+        ObservationNotice::Unlink(payload) => crate::envelope::encode_link_req_payload(payload)
+            .map(|bytes| (crate::envelope::CTRL_UNLINK, bytes)),
+        ObservationNotice::MonitorDown(payload) => {
+            crate::envelope::encode_monitor_down_payload(payload)
+                .map(|bytes| (crate::envelope::CTRL_MONITOR_DOWN, bytes))
+        }
+        ObservationNotice::LinkDown(payload) => {
+            crate::envelope::encode_monitor_down_payload(payload)
+                .map(|bytes| (crate::envelope::CTRL_LINK_DOWN, bytes))
+        }
+    };
+    let (ctrl_kind, payload) = match encoded {
+        Ok(encoded) => encoded,
+        Err(err) => {
+            set_last_error(format!("observation notice payload encode failure: {err}"));
+            return -1;
+        }
+    };
     // SAFETY: inherited node/routing validity from the caller.
-    let conn_id = match unsafe { resolve_monitor_connection(node, target) } {
+    let conn_id = match unsafe { resolve_monitor_connection(node, recipient) } {
         Ok(conn_id) => conn_id,
         Err(error) => return error,
     };
     // SAFETY: node pins the manager for this call.
     unsafe { send_control_frame_on_connection(node.conn_mgr, conn_id, ctrl_kind, payload) }
+}
+
+/// Apply a notice this node addressed to itself.
+fn apply_observation_notice(notice: ObservationNotice) {
+    match notice {
+        ObservationNotice::Demonitor(payload) => {
+            if let Some(rt) = crate::runtime::rt_current_opt() {
+                rt.monitors.remove_remote_watcher(
+                    payload.target.slot(),
+                    payload.watcher,
+                    payload.ref_id,
+                );
+            }
+        }
+        ObservationNotice::Unlink(payload) => handle_inbound_unlink(&payload),
+        ObservationNotice::MonitorDown(payload) => handle_inbound_monitor_down(&payload),
+        ObservationNotice::LinkDown(payload) => {
+            handle_inbound_link_down(payload.ref_id, payload.target, payload.reason);
+        }
+    }
 }
 
 fn local_actor_location(node: &HewNode, actor_id: u64) -> Option<crate::node_identity::Location> {
@@ -3379,6 +3549,56 @@ fn current_node_accepts_observations() -> Option<bool> {
         }
         // SAFETY: the current-node read lock pins the node.
         Some(unsafe { (*node).state.load(Ordering::Acquire) == NODE_STATE_RUNNING })
+    })
+}
+
+/// Send a peer the acknowledged monitor setup request for `target`.
+fn monitor_setup_request(
+    watcher: Location,
+    ref_id: u64,
+    target: Location,
+) -> Option<Result<(u64, Arc<PendingReply>), SetupSendError>> {
+    with_current_node_read(|guard| {
+        if *guard == 0 {
+            set_last_error("hew_node_monitor_location: no current node");
+            return None;
+        }
+        let node = *guard as *const HewNode;
+        // SAFETY: read lock pins the current node pointer for this call.
+        let node_ref = unsafe { &*node };
+        // SAFETY: node_ref pins the routing table and manager for this call.
+        let conn_id = match unsafe { resolve_monitor_connection(node_ref, target) } {
+            Ok(conn_id) => conn_id,
+            Err(HEW_ERR_STALE_REF) => return Some(Err(SetupSendError::StaleRef)),
+            Err(_) => return Some(Err(SetupSendError::Send)),
+        };
+        // SAFETY: the current-node read lock pins this manager for the lookup.
+        let Some(publication_token) = (unsafe {
+            connection::hew_connmgr_publication_token_for_target(node_ref.conn_mgr, conn_id, target)
+        }) else {
+            return Some(Err(SetupSendError::Send));
+        };
+        // SAFETY: node_ref pins the manager/connection while the frame is encoded
+        // and copied into the transport.
+        Some(unsafe {
+            send_acknowledged_setup(
+                node_ref.conn_mgr,
+                conn_id,
+                publication_token,
+                crate::envelope::CTRL_MONITOR_REQ,
+                RemoteSetupKind::Monitor,
+                |setup_id| {
+                    crate::envelope::encode_monitor_req_payload(
+                        &crate::envelope::MonitorReqPayload {
+                            watcher,
+                            ref_id,
+                            target,
+                            setup_id,
+                        },
+                    )
+                },
+            )
+        })
     })
 }
 
@@ -3443,12 +3663,6 @@ pub unsafe extern "C" fn hew_node_monitor_location(
         set_last_error("hew_node_monitor_location: no active node");
         return MONITOR_ERR_NODE_NOT_RUNNING;
     };
-    if matches!(target_route, routing::LocationRoute::Local { .. }) {
-        // Not a remote target — the cross-node route does not apply. The checker
-        // routes only RemotePid receivers here, but guard fail-closed anyway.
-        set_last_error("hew_node_monitor_location: target is not on a remote node");
-        return MONITOR_ERR_INVALID_TARGET;
-    }
     if matches!(target_route, routing::LocationRoute::StaleRef) {
         set_last_error("hew_node_monitor_location: target Location is stale");
         return MONITOR_ERR_STALE_REF;
@@ -3485,51 +3699,31 @@ pub unsafe extern "C" fn hew_node_monitor_location(
         return MONITOR_ERR_LOCAL_SHUTDOWN;
     }
 
-    let setup = with_current_node_read(|guard| {
-        if *guard == 0 {
-            set_last_error("hew_node_monitor_location: no current node");
-            return None;
-        }
-        let node = *guard as *const HewNode;
-        // SAFETY: read lock pins the current node pointer for this call.
-        let node_ref = unsafe { &*node };
-        // SAFETY: node_ref pins the routing table and manager for this call.
-        let conn_id = match unsafe { resolve_monitor_connection(node_ref, target) } {
-            Ok(conn_id) => conn_id,
-            Err(HEW_ERR_STALE_REF) => return Some(Err(SetupSendError::StaleRef)),
-            Err(_) => return Some(Err(SetupSendError::Send)),
-        };
-        // SAFETY: the current-node read lock pins this manager for the lookup.
-        let Some(publication_token) = (unsafe {
-            connection::hew_connmgr_publication_token_for_target(node_ref.conn_mgr, conn_id, target)
-        }) else {
-            return Some(Err(SetupSendError::Send));
-        };
-        // SAFETY: node_ref pins the manager/connection while the frame is encoded
-        // and copied into the transport.
-        Some(unsafe {
-            send_acknowledged_setup(
-                node_ref.conn_mgr,
-                conn_id,
-                publication_token,
-                crate::envelope::CTRL_MONITOR_REQ,
-                RemoteSetupKind::Monitor,
-                |setup_id| {
-                    crate::envelope::encode_monitor_req_payload(
-                        &crate::envelope::MonitorReqPayload {
-                            watcher,
-                            ref_id,
-                            target,
-                            setup_id,
-                        },
-                    )
-                },
-            )
+    let setup = if let routing::LocationRoute::Local { actor_id } = target_route {
+        // This node owns the target: register its watcher as this node's
+        // connection reader would for a peer's request.
+        Some(Ok(
+            match rt
+                .monitors
+                .register_remote_watcher(actor_id, watcher, ref_id)
+            {
+                crate::monitor::RemoteWatcherSetup::Registered => {
+                    crate::envelope::SETUP_STATUS_ACCEPTED
+                }
+                crate::monitor::RemoteWatcherSetup::TargetGone => {
+                    crate::envelope::SETUP_STATUS_TARGET_GONE
+                }
+            },
+        ))
+    } else {
+        monitor_setup_request(watcher, ref_id, target).map(|sent| {
+            sent.map(|(setup_id, pending)| {
+                wait_for_setup_result(setup_id, &pending, ref_id, target)
+            })
         })
-    });
+    };
     match setup {
-        Some(Ok((setup_id, pending))) => {
-            let status = wait_for_setup_result(setup_id, &pending, ref_id, target);
+        Some(Ok(status)) => {
             match status {
                 crate::envelope::SETUP_STATUS_ACCEPTED => {}
                 crate::envelope::SETUP_STATUS_RESOURCE_EXHAUSTED => {
@@ -3569,6 +3763,96 @@ pub unsafe extern "C" fn hew_node_monitor_location(
             MONITOR_ERR_LOCAL_SHUTDOWN
         }
     }
+}
+
+/// Send a peer the acknowledged link setup request for `target`.
+fn link_setup_request(
+    linker: Location,
+    ref_id: u64,
+    target: Location,
+    policy_tag: u8,
+) -> Option<Result<(u64, Arc<PendingReply>), SetupSendError>> {
+    with_current_node_read(|guard| {
+        if *guard == 0 {
+            set_last_error("hew_node_link_remote_location: no current node");
+            return None;
+        }
+        let node = *guard as *const HewNode;
+        // SAFETY: read lock pins the current node pointer for this call.
+        let node_ref = unsafe { &*node };
+        // SAFETY: node_ref pins the routing table and manager for this call.
+        let conn_id = match unsafe { resolve_monitor_connection(node_ref, target) } {
+            Ok(conn_id) => conn_id,
+            Err(HEW_ERR_STALE_REF) => return Some(Err(SetupSendError::StaleRef)),
+            Err(_) => return Some(Err(SetupSendError::Send)),
+        };
+        // SAFETY: the current-node read lock pins this manager for the lookup.
+        let Some(publication_token) = (unsafe {
+            connection::hew_connmgr_publication_token_for_target(node_ref.conn_mgr, conn_id, target)
+        }) else {
+            return Some(Err(SetupSendError::Send));
+        };
+        // SAFETY: node_ref pins the manager/connection while the frame is encoded
+        // and copied into the transport.
+        Some(unsafe {
+            send_acknowledged_setup(
+                node_ref.conn_mgr,
+                conn_id,
+                publication_token,
+                crate::envelope::CTRL_LINK_REQ,
+                RemoteSetupKind::Link,
+                |setup_id| {
+                    crate::envelope::encode_link_req_payload(&crate::envelope::LinkReqPayload {
+                        linker,
+                        ref_id,
+                        target,
+                        policy_tag,
+                        // Original request: the receiver reciprocates with a reverse request so
+                        // the link is bidirectional (the linker's death also crashes the target).
+                        reciprocate: 1,
+                        setup_id,
+                    })
+                },
+            )
+        })
+    })
+}
+
+/// Complete both directions of a link whose target this node owns, as this
+/// node's connection reader completes a peer's original and reverse requests.
+fn link_local_target(
+    rt: &crate::runtime::RuntimeInner,
+    payload: &crate::envelope::LinkReqPayload,
+    target_actor_id: u64,
+    linker_actor_id: u64,
+) -> u8 {
+    let Some(reverse_ref) = rt.monitors.next_observation_id() else {
+        set_last_error("hew_node_link_remote_location: observation id space exhausted");
+        return crate::envelope::SETUP_STATUS_RESOURCE_EXHAUSTED;
+    };
+    rt.monitors.register_link_watcher_with_id(
+        reverse_ref,
+        payload.linker,
+        target_actor_id,
+        payload.policy_tag,
+    );
+    if rt
+        .monitors
+        .register_remote_link_watcher(target_actor_id, payload.linker, payload.ref_id)
+        == crate::monitor::RemoteWatcherSetup::TargetGone
+    {
+        rt.monitors.remove_remote_observation(reverse_ref);
+        return crate::envelope::SETUP_STATUS_TARGET_GONE;
+    }
+    if rt
+        .monitors
+        .register_remote_link_watcher(linker_actor_id, payload.target, reverse_ref)
+        == crate::monitor::RemoteWatcherSetup::TargetGone
+    {
+        rollback_inbound_link_setup(payload, reverse_ref);
+        return crate::envelope::SETUP_STATUS_TARGET_GONE;
+    }
+    crate::envelope::SETUP_STATUS_ACCEPTED
 }
 
 /// `link_remote(RemotePid<T>, PartitionPolicy)` → establish a cross-node link
@@ -3643,10 +3927,6 @@ pub unsafe extern "C" fn hew_node_link_remote_location(
         set_last_error("hew_node_link_remote_location: no active node");
         return LINK_ERR_NODE_NOT_RUNNING;
     };
-    if matches!(target_route, routing::LocationRoute::Local { .. }) {
-        set_last_error("hew_node_link_remote_location: target is not on a remote node");
-        return LINK_ERR_INVALID_TARGET;
-    }
     if matches!(target_route, routing::LocationRoute::StaleRef) {
         set_last_error("hew_node_link_remote_location: target Location is stale");
         return LINK_ERR_STALE_REF;
@@ -3693,53 +3973,29 @@ pub unsafe extern "C" fn hew_node_link_remote_location(
         return LINK_ERR_STALE_REF;
     };
 
-    let setup = with_current_node_read(|guard| {
-        if *guard == 0 {
-            set_last_error("hew_node_link_remote_location: no current node");
-            return None;
-        }
-        let node = *guard as *const HewNode;
-        // SAFETY: read lock pins the current node pointer for this call.
-        let node_ref = unsafe { &*node };
-        // SAFETY: node_ref pins the routing table and manager for this call.
-        let conn_id = match unsafe { resolve_monitor_connection(node_ref, target) } {
-            Ok(conn_id) => conn_id,
-            Err(HEW_ERR_STALE_REF) => return Some(Err(SetupSendError::StaleRef)),
-            Err(_) => return Some(Err(SetupSendError::Send)),
-        };
-        // SAFETY: the current-node read lock pins this manager for the lookup.
-        let Some(publication_token) = (unsafe {
-            connection::hew_connmgr_publication_token_for_target(node_ref.conn_mgr, conn_id, target)
-        }) else {
-            return Some(Err(SetupSendError::Send));
-        };
-        // SAFETY: node_ref pins the manager/connection while the frame is encoded
-        // and copied into the transport.
-        Some(unsafe {
-            send_acknowledged_setup(
-                node_ref.conn_mgr,
-                conn_id,
-                publication_token,
-                crate::envelope::CTRL_LINK_REQ,
-                RemoteSetupKind::Link,
-                |setup_id| {
-                    crate::envelope::encode_link_req_payload(&crate::envelope::LinkReqPayload {
-                        linker,
-                        ref_id,
-                        target,
-                        policy_tag,
-                        // Original request: the receiver reciprocates with a reverse request so
-                        // the link is bidirectional (the linker's death also crashes the target).
-                        reciprocate: 1,
-                        setup_id,
-                    })
-                },
-            )
+    let setup = if let routing::LocationRoute::Local { actor_id } = target_route {
+        Some(Ok(link_local_target(
+            rt,
+            &crate::envelope::LinkReqPayload {
+                linker,
+                ref_id,
+                target,
+                policy_tag,
+                reciprocate: 1,
+                setup_id: 0,
+            },
+            actor_id,
+            local_actor_id,
+        )))
+    } else {
+        link_setup_request(linker, ref_id, target, policy_tag).map(|sent| {
+            sent.map(|(setup_id, pending)| {
+                wait_for_setup_result(setup_id, &pending, ref_id, target)
+            })
         })
-    });
+    };
     match setup {
-        Some(Ok((setup_id, pending))) => {
-            let status = wait_for_setup_result(setup_id, &pending, ref_id, target);
+        Some(Ok(status)) => {
             match status {
                 crate::envelope::SETUP_STATUS_ACCEPTED => {}
                 crate::envelope::SETUP_STATUS_RESOURCE_EXHAUSTED => {
@@ -3801,19 +4057,12 @@ pub(crate) fn send_remote_demonitor(ref_id: u64, target: Location, watcher_actor
         set_last_error("remote demonitor: exact watcher Location is unavailable");
         return;
     };
-    let payload =
-        match crate::envelope::encode_monitor_req_payload(&crate::envelope::MonitorReqPayload {
-            watcher,
-            ref_id,
-            target,
-            setup_id: 0,
-        }) {
-            Ok(payload) => payload,
-            Err(err) => {
-                set_last_error(format!("remote demonitor payload encode failure: {err}"));
-                return;
-            }
-        };
+    let notice = ObservationNotice::Demonitor(crate::envelope::MonitorReqPayload {
+        watcher,
+        ref_id,
+        target,
+        setup_id: 0,
+    });
     with_current_node_read(|guard| {
         if *guard == 0 {
             return;
@@ -3822,9 +4071,7 @@ pub(crate) fn send_remote_demonitor(ref_id: u64, target: Location, watcher_actor
         // SAFETY: read lock pins the current node pointer for this call.
         let node_ref = unsafe { &*node };
         // SAFETY: node_ref is valid for this call.
-        let _ = unsafe {
-            send_monitor_control_frame(node_ref, target, crate::envelope::CTRL_DEMONITOR, payload)
-        };
+        let _ = unsafe { send_observation_notice(node_ref, target, notice) };
     });
 }
 
@@ -3895,36 +4142,24 @@ pub(crate) fn fan_out_remote_monitor_down(
             return;
         };
         for watcher in watchers {
-            let payload = match crate::envelope::encode_monitor_down_payload(
-                &crate::envelope::MonitorDownPayload {
-                    ref_id: watcher.ref_id,
-                    target,
-                    reason,
-                    crash_kind: crash_kind.cast_signed(),
-                },
-            ) {
-                Ok(payload) => payload,
-                Err(err) => {
-                    set_last_error(format!(
-                        "monitor down fan-out: payload encode failure: {err}"
-                    ));
-                    continue;
-                }
+            let payload = crate::envelope::MonitorDownPayload {
+                ref_id: watcher.ref_id,
+                target,
+                reason,
+                crash_kind: crash_kind.cast_signed(),
             };
-            // A LINK watcher receives CTRL_LINK_DOWN (its node crashes the local
+            // A LINK watcher receives a link down (its node crashes the local
             // linked actor via the mailbox EXIT cascade); a MONITOR watcher
-            // receives CTRL_MONITOR_DOWN (its node queues mailbox DOWN). The wire
+            // receives a monitor down (its node queues mailbox DOWN). The
             // payload is identical; only the system-message kind and terminal
             // policy diverge.
-            let ctrl_kind = if watcher.is_link {
-                crate::envelope::CTRL_LINK_DOWN
+            let notice = if watcher.is_link {
+                ObservationNotice::LinkDown(payload)
             } else {
-                crate::envelope::CTRL_MONITOR_DOWN
+                ObservationNotice::MonitorDown(payload)
             };
             // SAFETY: node_ref is valid for this call.
-            let _ = unsafe {
-                send_monitor_control_frame(node_ref, watcher.watcher, ctrl_kind, payload)
-            };
+            let _ = unsafe { send_observation_notice(node_ref, watcher.watcher, notice) };
         }
     });
 }
@@ -4204,16 +4439,10 @@ fn send_link_unlink_frame(
     recipient: Location,
     unlink: &crate::envelope::LinkReqPayload,
 ) {
-    let bytes = match crate::envelope::encode_link_req_payload(unlink) {
-        Ok(bytes) => bytes,
-        Err(err) => {
-            set_last_error(format!("link cleanup payload encode failure: {err}"));
-            return;
-        }
-    };
     // SAFETY: the current-node read lock held by the caller pins `node`.
-    let _ =
-        unsafe { send_monitor_control_frame(node, recipient, crate::envelope::CTRL_UNLINK, bytes) };
+    let _ = unsafe {
+        send_observation_notice(node, recipient, ObservationNotice::Unlink(unlink.clone()))
+    };
 }
 
 fn complete_inbound_link_setup(
@@ -4280,6 +4509,27 @@ pub(crate) fn handle_inbound_unlink(payload: &crate::envelope::LinkReqPayload) {
     };
     rt.monitors
         .remove_remote_watcher(payload.target.slot(), payload.linker, payload.ref_id);
+}
+
+/// Handle an inbound `CTRL_MONITOR_DOWN`: a node owning an actor we monitor
+/// reports its terminal state. Queue the DOWN for a monitor this node holds.
+pub(crate) fn handle_inbound_monitor_down(payload: &crate::envelope::MonitorDownPayload) {
+    let Some(rt) = crate::runtime::rt_current_opt() else {
+        set_last_error("handle_inbound_monitor_down: no runtime installed");
+        return;
+    };
+    if let Some(down) = rt
+        .monitors
+        .deliver_monitor_to_ref(payload.ref_id, payload.target)
+    {
+        rt.monitors.enqueue_down(
+            down.watcher_actor_id,
+            down.monitor_id,
+            down.target,
+            payload.reason,
+            payload.crash_kind.cast_unsigned(),
+        );
+    }
 }
 
 /// Handle an inbound `CTRL_LINK_DOWN`: a node owning an actor we LINK
@@ -6133,6 +6383,8 @@ fn decode_hex(s: &str) -> Option<Vec<u8>> {
 
 enum RemoteAskSetupResult {
     Ok((u64, Arc<PendingReply>)),
+    /// This node owns the target actor.
+    Local(u64),
     Error(AskError),
 }
 
@@ -6182,8 +6434,8 @@ fn setup_remote_ask(
             routing::LocationRoute::StaleRef => {
                 return RemoteAskSetupResult::Error(AskError::StaleRef);
             }
-            routing::LocationRoute::Local { .. } => {
-                return RemoteAskSetupResult::Error(AskError::RoutingFailed);
+            routing::LocationRoute::Local { actor_id } => {
+                return RemoteAskSetupResult::Local(actor_id);
             }
         };
 
@@ -6356,14 +6608,23 @@ fn remote_reply_value(
     Ok(value)
 }
 
-/// One coroutine remote ask, from its encoded submission to the decoded reply.
-/// The operation owns the pending registration and the deadline until freed.
+/// Where a remote call's reply comes from.
+enum RemoteCallRoute {
+    /// A peer owns the target: the pending registration of the encoded ask.
+    Wire(Arc<PendingReply>),
+    /// This node owns the target: the local actor call carrying the request.
+    Local(*mut crate::actor_call_native::HewActorCall),
+    Failed(AskError),
+}
+
+/// One coroutine remote ask, from its submission to the reply. The operation
+/// owns its route and the deadline until freed.
 #[expect(
     missing_debug_implementations,
     reason = "an opaque generated-code operation; its pending reply has no Debug"
 )]
 pub struct HewRemoteCall {
-    pending: Result<Arc<PendingReply>, AskError>,
+    route: RemoteCallRoute,
     timer: *mut crate::coro_sleep::HewCoroSleep,
     timed_out: bool,
     dispatch: *const c_void,
@@ -6373,8 +6634,13 @@ pub struct HewRemoteCall {
 
 impl HewRemoteCall {
     fn ready(&mut self) -> bool {
-        let Ok(pending) = &self.pending else {
-            return true;
+        let pending = match &self.route {
+            RemoteCallRoute::Wire(pending) => pending,
+            RemoteCallRoute::Local(call) => {
+                // SAFETY: the operation exclusively drives its live local call.
+                return unsafe { crate::actor_call_native::hew_actor_call_poll(*call) } != -1;
+            }
+            RemoteCallRoute::Failed(_) => return true,
         };
         if self.timed_out
             || pending
@@ -6398,24 +6664,33 @@ impl HewRemoteCall {
 
 impl Drop for HewRemoteCall {
     fn drop(&mut self) {
-        if let Ok(pending) = &self.pending {
+        match &self.route {
             // A late reply finds no registration and is dropped.
-            reply_table().remove(pending.request_id);
+            RemoteCallRoute::Wire(pending) => {
+                reply_table().remove(pending.request_id);
+            }
+            // SAFETY: generated code drained the call's cleanup before freeing.
+            RemoteCallRoute::Local(call) => unsafe {
+                crate::actor_call_native::hew_actor_call_free(*call);
+            },
+            RemoteCallRoute::Failed(_) => {}
         }
         // SAFETY: the operation uniquely owns its timer, released once here.
         unsafe { crate::coro_sleep::hew_coro_sleep_free(self.timer) };
     }
 }
 
-/// Encode `request` with the target actor's registered codec and submit it
-/// to the peer that owns `target`. Setup failures are latched as the call's
-/// outcome, so the caller always polls, takes and frees the operation.
+/// Submit `request` to the actor at `target`, consuming its fields. A peer
+/// receives the bytes of the target actor's registered codec; an actor on this
+/// node receives the fields through the local call path, as the peer's inbound
+/// ask would deliver them. Setup failures are latched as the call's outcome,
+/// so the caller always polls, takes, drains and frees the operation.
 ///
 /// # Safety
 ///
 /// - `target` must be null or a readable carried location.
 /// - `request` must hold `request_size` readable bytes of the member's message
-///   wrapper; the caller keeps and releases it after this returns.
+///   wrapper; its fields transfer to this call and the caller keeps the bytes.
 /// - `waker` must be a live descriptor.
 #[no_mangle]
 pub unsafe extern "C" fn hew_remote_call_new(
@@ -6430,19 +6705,38 @@ pub unsafe extern "C" fn hew_remote_call_new(
 ) -> *mut HewRemoteCall {
     // SAFETY: the caller supplies a live descriptor.
     let owned = unsafe { crate::wake::OwnedWaker::retain(&*waker) };
-    // SAFETY: caller guarantees `target` is null or readable.
-    let pending = match unsafe { target.as_ref() }.map(|target| Location::try_from(*target)) {
-        Some(Ok(target)) => {
-            match setup_remote_ask(target, dispatch, msg_type, request, request_size, owned) {
-                RemoteAskSetupResult::Ok((_, pending)) => Ok(pending),
-                RemoteAskSetupResult::Error(error) => Err(error),
-            }
-        }
-        _ => Err(AskError::StaleRef),
-    };
     let deadline_ns = i64::try_from(u128::from(timeout_ms) * 1_000_000).unwrap_or(i64::MAX);
+    // SAFETY: caller guarantees `target` is null or readable.
+    let setup = match unsafe { target.as_ref() }.map(|target| Location::try_from(*target)) {
+        Some(Ok(target)) => {
+            setup_remote_ask(target, dispatch, msg_type, request, request_size, owned)
+        }
+        _ => RemoteAskSetupResult::Error(AskError::StaleRef),
+    };
+    let route = match setup {
+        RemoteAskSetupResult::Ok((_, pending)) => RemoteCallRoute::Wire(pending),
+        RemoteAskSetupResult::Error(error) => RemoteCallRoute::Failed(error),
+        RemoteAskSetupResult::Local(actor_id) => {
+            // SAFETY: forwards the request and waker contracts.
+            return unsafe {
+                start_local_call(
+                    actor_id,
+                    dispatch,
+                    msg_type,
+                    request,
+                    request_size,
+                    reply_size,
+                    deadline_ns,
+                    waker,
+                )
+            };
+        }
+    };
+    // The peer holds the encoded bytes; the fields are released here.
+    // SAFETY: the caller transferred the request's fields.
+    unsafe { release_request(dispatch, msg_type, request) };
     Box::into_raw(Box::new(HewRemoteCall {
-        pending,
+        route,
         // SAFETY: the descriptor is live; the timer retains its own reference.
         timer: unsafe { crate::coro_sleep::hew_coro_sleep_new(deadline_ns, waker) },
         timed_out: false,
@@ -6450,6 +6744,76 @@ pub unsafe extern "C" fn hew_remote_call_new(
         msg_type,
         reply_size,
     }))
+}
+
+/// Start the call to an actor this node owns on the local call path, with the
+/// admission a peer gives an inbound ask: a full mailbox refuses the request
+/// and a missing actor has stopped. The local call carries the deadline.
+///
+/// # Safety
+/// As [`hew_remote_call_new`].
+#[expect(
+    clippy::too_many_arguments,
+    reason = "forwards the complete remote call contract"
+)]
+unsafe fn start_local_call(
+    actor_id: u64,
+    dispatch: *const c_void,
+    msg_type: i32,
+    request: *mut c_void,
+    request_size: usize,
+    reply_size: usize,
+    deadline_ns: i64,
+    waker: *const crate::wake::HewWaker,
+) -> *mut HewRemoteCall {
+    let operation = |route| {
+        Box::into_raw(Box::new(HewRemoteCall {
+            route,
+            timer: ptr::null_mut(),
+            timed_out: false,
+            dispatch,
+            msg_type,
+            reply_size,
+        }))
+    };
+    let reply_drop = crate::xnode_serial::lookup_reply(dispatch, msg_type).map(|codec| codec.drop);
+    // SAFETY: the request is the member's wrapper (caller contract).
+    let adopted = crate::xnode_serial::lookup_request(dispatch, msg_type)
+        .and_then(|codec| unsafe { InboundRequest::adopt(codec, request, request_size) });
+    let Some(adopted) = adopted else {
+        // SAFETY: the fields did not move.
+        unsafe { release_request(dispatch, msg_type, request) };
+        return operation(RemoteCallRoute::Failed(AskError::DecodeFailure));
+    };
+    let Some(reply_drop) = reply_drop else {
+        return operation(RemoteCallRoute::Failed(AskError::DecodeFailure));
+    };
+    let request = adopted;
+    let Some((_runtime, token)) = InboundRequest::target(actor_id) else {
+        return operation(RemoteCallRoute::Failed(AskError::ActorStopped));
+    };
+    let (wrapper, size, drop) = (request.wrapper, request.size, request.drop);
+    std::mem::forget(request);
+    // SAFETY: the call owns the wrapper and its fields on every outcome, and
+    // the waker descriptor is live.
+    let call = unsafe {
+        crate::actor_call_native::hew_actor_call_new(
+            token,
+            msg_type,
+            wrapper,
+            size,
+            drop,
+            reply_size,
+            reply_drop,
+            waker,
+            deadline_ns,
+            1,
+            1,
+            None,
+            None,
+        )
+    };
+    operation(RemoteCallRoute::Local(call))
 }
 
 /// Observe a remote call without taking its outcome: `-1` while the reply is
@@ -6479,10 +6843,12 @@ pub unsafe extern "C" fn hew_remote_call_take(
 ) -> i32 {
     // SAFETY: the caller exclusively drives this live operation.
     let operation = unsafe { &mut *operation };
-    let pending = match &operation.pending {
-        Ok(_) if operation.timed_out => return AskError::Timeout as i32,
-        Ok(pending) => pending,
-        Err(error) => return *error as i32,
+    let pending = match &operation.route {
+        RemoteCallRoute::Wire(_) if operation.timed_out => return AskError::Timeout as i32,
+        RemoteCallRoute::Wire(pending) => pending,
+        // SAFETY: the local call is ready and `output` holds its reply.
+        RemoteCallRoute::Local(call) => return unsafe { take_local_call(*call, output) },
+        RemoteCallRoute::Failed(error) => return *error as i32,
     };
     let Some(reply) = pending
         .outcome
@@ -6514,6 +6880,74 @@ pub unsafe extern "C" fn hew_remote_call_take(
             AskError::None as i32
         }
         Err(error) => error as i32,
+    }
+}
+
+/// Take a ready local call's reply into `output`. A refused request comes back
+/// as its envelope, whose release drops its fields.
+///
+/// # Safety
+/// `call` is ready and untaken; `output` is writable for its reply.
+unsafe fn take_local_call(
+    call: *mut crate::actor_call_native::HewActorCall,
+    output: *mut c_void,
+) -> i32 {
+    // SAFETY: the caller exclusively drives the ready call.
+    let status = unsafe { crate::actor_call_native::hew_actor_call_poll(call) };
+    if status < 0 {
+        return AskError::ActorStopped as i32;
+    }
+    let output = if output.is_null() {
+        ptr::NonNull::<u8>::dangling().as_ptr().cast()
+    } else {
+        output
+    };
+    let mut rejected = ptr::null_mut();
+    // SAFETY: the call is ready and untaken; the output holds its reply.
+    let status =
+        unsafe { crate::actor_call_native::hew_actor_call_take(call, output, &raw mut rejected) };
+    if !rejected.is_null() {
+        // SAFETY: the refused envelope is released once with its fields.
+        unsafe { crate::mailbox::hew_msg_envelope_release(rejected) };
+    }
+    status
+}
+
+/// Drain the owners a completed or cancelled local call abandoned; a call a
+/// peer answers has none. As [`crate::actor_call_native::hew_actor_call_cleanup_poll`].
+///
+/// # Safety
+/// The operation and parent invocation remain live until this returns complete.
+#[no_mangle]
+pub unsafe extern "C" fn hew_remote_call_cleanup_poll(
+    operation: *mut HewRemoteCall,
+    parent: *mut crate::coro_state::HewCoroState,
+) -> i32 {
+    // SAFETY: generated cleanup exclusively owns this live operation.
+    match unsafe { &(*operation).route } {
+        // SAFETY: forwards the cleanup contract to the local call.
+        RemoteCallRoute::Local(call) => unsafe {
+            crate::actor_call_native::hew_actor_call_cleanup_poll(*call, parent)
+        },
+        RemoteCallRoute::Wire(_) | RemoteCallRoute::Failed(_) => 1,
+    }
+}
+
+/// Transfer the completed cleanup diagnostic, if any.
+///
+/// # Safety
+/// The operation's cleanup has completed and this fault is taken at most once.
+#[no_mangle]
+pub unsafe extern "C" fn hew_remote_call_cleanup_fault(
+    operation: *mut HewRemoteCall,
+) -> *mut crate::fault::HewFault {
+    // SAFETY: generated cleanup exclusively owns this live operation.
+    match unsafe { &(*operation).route } {
+        // SAFETY: forwards the cleanup contract to the local call.
+        RemoteCallRoute::Local(call) => unsafe {
+            crate::actor_call_native::hew_actor_call_cleanup_fault(*call)
+        },
+        RemoteCallRoute::Wire(_) | RemoteCallRoute::Failed(_) => ptr::null_mut(),
     }
 }
 
@@ -9904,7 +10338,7 @@ mod tests {
         let (id, pending) =
             reply_table().register_with_waker(key, Some(waker), PendingReplyKind::Ask);
         let call = Box::into_raw(Box::new(HewRemoteCall {
-            pending: Ok(pending),
+            route: RemoteCallRoute::Wire(pending),
             timer,
             timed_out: false,
             dispatch: test_dispatch(),

@@ -1783,6 +1783,111 @@ fn scenario_link_remote_non_crashlinked(kv: RemotePid<KeyValue>) -> i64 {
     }
 }
 
+// A RemotePid naming an actor on the client's own node routes locally while a
+// peer is connected: send, ask, monitor and link reach the local actor with the
+// results a peer gives, and the peer's actor stays reachable alongside.
+fn scenario_local_route(kv: RemotePid<KeyValue>) -> i64 {
+    let local_store: HashMap<string, string> = HashMap.new();
+    Node.register("kv-local", spawn KeyValue(store: local_store));
+    let local = match lookup_with_retry("kv-local") {
+        Result.Ok(pid) => pid,
+        Result.Err(_) => {
+            println("FAIL local_route local-lookup-unresolved");
+            return 1;
+        },
+    };
+    match local.send(KvReq.Put(KvPut { key: "colour", val: "teal" })) {
+        Result.Ok(_) => {},
+        Result.Err(_) => {
+            println("FAIL local_route local-send");
+            return 2;
+        },
+    }
+    match local.ask(KvReq.GetKey("colour"), 3000) {
+        Result.Ok(KvResp.Value(v)) => println(f"PASS local_route local-ask={v}"),
+        Result.Ok(_) => {
+            println("FAIL local_route local-ask-shape");
+            return 3;
+        },
+        Result.Err(_) => {
+            println("FAIL local_route local-ask");
+            return 4;
+        },
+    }
+    match kv.ask(KvReq.GetKey("colour"), 3000) {
+        Result.Ok(KvResp.Value(v)) => println(f"PASS local_route peer-ask=[{v}]"),
+        Result.Ok(_) => {
+            println("FAIL local_route peer-ask-shape");
+            return 5;
+        },
+        Result.Err(_) => {
+            println("FAIL local_route peer-ask");
+            return 6;
+        },
+    }
+
+    let probe = spawn MonitorProbe(active_monitor: Err(MonitorError.NodeNotRunning));
+    match probe.arm(local, 0) {
+        Result.Ok(0) => {},
+        _ => {
+            println("FAIL local_route monitor-arm");
+            return 7;
+        },
+    }
+    var down: i64 = 100;
+    for _ in 0..100 {
+        down = match probe.status() {
+            Result.Ok(value) => value,
+            Result.Err(_) => -100,
+        };
+        if down != 100 {
+            break;
+        }
+        sleep(20ms);
+    }
+    if down != 6 {
+        println(f"FAIL local_route monitor-down={down}");
+        return 8;
+    }
+    println("PASS local_route monitor-down=exited");
+
+    let doomed_store: HashMap<string, string> = HashMap.new();
+    Node.register("kv-doomed", spawn KeyValue(store: doomed_store));
+    let doomed = match lookup_with_retry("kv-doomed") {
+        Result.Ok(pid) => pid,
+        Result.Err(_) => {
+            println("FAIL local_route doomed-lookup-unresolved");
+            return 9;
+        },
+    };
+    let linker = spawn Linker(policy_sel: 0);
+    match linker.link_go(doomed) {
+        Result.Ok(id) if id != 0 => {},
+        _ => {
+            println("FAIL local_route link-register");
+            return 10;
+        },
+    }
+    let _ = doomed.send(KvReq.CrashSelf);
+    var linker_alive = true;
+    for _ in 0..100 {
+        linker_alive = match linker.ping() {
+            Result.Ok(_) => true,
+            Result.Err(_) => false,
+        };
+        if !linker_alive {
+            break;
+        }
+        sleep(20ms);
+    }
+    if linker_alive {
+        println("FAIL local_route linker-survived");
+        return 11;
+    }
+    println("PASS local_route link-crash");
+    0
+}
+
 fn scenario_linker_local_crash() -> i64 {
     let linker = spawn Linker(policy_sel: 0);
     match linker.crash_local() {
@@ -2151,6 +2256,8 @@ fn run_client(port: string, scenario: string) -> i64 {
                     scenario_remote_ask(kv)
                 } else if scenario == "linker_local_crash" {
                     scenario_linker_local_crash()
+                } else if scenario == "local_route" {
+                    scenario_local_route(kv)
                 } else {
                     if scenario == "remote_monitor_clean_exit" {
                         scenario_remote_monitor_clean_exit(kv)

@@ -1000,6 +1000,33 @@ fn remote_ask_round_trip_returns_exact_values() {
     );
 }
 
+/// A `RemotePid` of the client's own actor routes locally beside a live peer:
+/// its send, ask, monitor DOWN and linked crash match what a peer delivers.
+#[test]
+fn remote_pid_on_own_node_routes_locally() {
+    // The linked crash leaves the client exiting nonzero.
+    let stdout = run_link_cascade_scenario(
+        "local_route",
+        1,
+        StderrExpectation::ExactOneCrashIn("Linker"),
+    );
+    for expected in [
+        "PASS local_route local-ask=teal",
+        "PASS local_route peer-ask=[]",
+        "PASS local_route monitor-down=exited",
+        "PASS local_route link-crash",
+    ] {
+        assert!(
+            stdout.contains(expected),
+            "expected `{expected}`; client stdout:\n{stdout}"
+        );
+    }
+    assert!(
+        !stdout.contains("FAIL "),
+        "client reported a FAIL on the local-route scenario; client stdout:\n{stdout}"
+    );
+}
+
 /// A valid v2 Noise handshake admits the key-derived peer identity and carries a
 /// typed request/reply round trip; a validly encoded but unpinned peer credential
 /// must remain unroutable with no legacy handshake fallback.

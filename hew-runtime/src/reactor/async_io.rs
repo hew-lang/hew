@@ -390,7 +390,7 @@ pub(super) fn expire_deadlines(poller: *mut HewIoPoller) {
         unregister_fd(poller, fd);
         operation.complete(Err(IoFailure::from_io(
             "TCP I/O timeout",
-            &io::Error::from_raw_os_error(libc::ETIMEDOUT),
+            &io::Error::from_raw_os_error(crate::transport::etimedout_errno()),
         )));
     }
 }

@@ -278,10 +278,6 @@ git merge-base --is-ancestor "origin/release/${release_tag}" HEAD
 2. Before creating the signed tag, publish the candidate playground image from
    the exact reviewed playground commit that introduced the candidate contract:
 
-   **Native candidate exception:** omit this step while the native compiler
-   does not emit sandbox programs; a playground image is outside that
-   candidate's scope.
-
    ```bash
    PLAYGROUND_CONTRACT_REF=21be84bb97436436b640f2acd09fb6dd2e0fbf94
    PLAYGROUND_REF=<exact-reviewed-40-character-playground-sha>
@@ -365,13 +361,8 @@ git merge-base --is-ancestor "origin/release/${release_tag}" HEAD
    `scripts/publish-release-image.sh publish` manually from that same exact clean
    playground checkout. Reconfirm the new digest and update the version-scoped
    lock before rerunning the assertion; never dispatch a mutable remote branch.
-   Omit this playground verification for a native candidate without sandbox
-   compiler emission.
 7. Only after both independent publication arms are green, pin the candidate and cut over the banner in
    `hew.sh` and `hew.run`.
-   For a native candidate without sandbox compiler emission, update native
-   download information only after the archive workflow and npm publication
-   pass; leave the playground version unchanged.
 8. Rebuild Android from the tagged candidate and verify its artifact.
 
 Homebrew's optional tap update includes prerelease tags and is separate from
@@ -452,8 +443,7 @@ macOS release notes:
 - [ ] Author blog post at `hew-lang/hew.sh/src/content/blog/<YYYY>/<MM>/release-v<XYZ>.md` — required for any release with breaking changes; recommended for all minor releases.
 - [ ] Verify `release.yml` downstream jobs completed:
   - Homebrew formula update (`hew-lang/homebrew-hew`)
-  - Playground image verification (`hew-lang/playground`), except for a
-    native candidate without sandbox compiler emission
+  - Playground image verification (`hew-lang/playground`)
   - VS Code extension version sync (`hew-lang/vscode-hew`)
 - [ ] If any downstream job failed (e.g. missing secret), re-trigger manually after fixing.
 - [ ] Verify the live `hew --version` on a freshly-installed binary matches the tagged version.

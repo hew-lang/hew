@@ -1617,13 +1617,7 @@ jobs:
   playground:
     needs: release
     runs-on: ubuntu-24.04
-    # This native candidate ships the compiler while its CLI WASI emitter is
-    # still unfinished. Keep the existing playground image until a candidate's
-    # capability contract supports it; the browser analysis/sandbox packages
-    # publish separately. The tag comparison below is still a moved pin, not a
-    # capability check: it must move again (or become a capability check) at
-    # the next candidate that still lacks WASI emission.
-    if: ${{ !cancelled() && needs.release.result == 'success' && (github.event.inputs.tag || github.ref_name) != 'v0.6.0-rc4' }}
+    if: ${{ !cancelled() && needs.release.result == 'success' }}
     timeout-minutes: 15
     permissions:
       contents: read

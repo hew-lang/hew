@@ -1,0 +1,58 @@
+import std.failure;
+
+// Collection fields beneath copy-less actor state change in place: a
+// `#[resource]` field and a record that holds one. When an indexed write
+// faults, each seat still holds its whole value, so the crash hook reads
+// them and teardown closes each resource once.
+#[resource]
+type Conn {
+    fd: i64,
+    items: Vec<string>,
+}
+
+impl Conn {
+    fn close(consume self) {
+        println(f"close {self.fd} {self.items.len()}");
+    }
+}
+
+type Tally {
+    conn: Conn,
+    names: Vec<string>,
+    count: i64,
+}
+
+actor Holder {
+    var conn: Conn = Conn { fd: 1, items: Vec.new() },
+    var tally: Tally = Tally { conn: Conn { fd: 2, items: Vec.new() }, names: Vec.new(), count: 0 },
+
+    receive fn add(name: string, at: i64) -> i64 {
+        tally.count = tally.count + 1;
+        tally.names.push(name.to_upper());
+        tally.names[0] = f"first{tally.count}";
+        conn.items.push(name);
+        conn.items[at] = f"set{at}";
+        conn.items.len()
+    }
+
+    #[on(crash)]
+    fn crashed(info: CrashInfo) -> CrashAction {
+        println(f"hook sees {conn.items.len()} {conn.items[0]} {tally.names[0]} {tally.count}");
+        CrashAction.Restart
+    }
+}
+
+fn main() {
+    let holder = spawn Holder();
+    match holder.add("a", 0) {
+        .Ok(n) => println(f"first {n}"),
+        .Err(_) => println("first failed"),
+    }
+    match holder.add("b", 1) {
+        .Ok(n) => println(f"second {n}"),
+        .Err(_) => println("second failed"),
+    }
+    // The failed ask is not printed: the hook and teardown run on the
+    // actor's own thread, so a line printed here would race them.
+    let _ = holder.add("c", 9);
+}

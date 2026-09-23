@@ -102,13 +102,6 @@ impl Builder<'_, '_> {
         replacement: ValueId,
         provenance: Provenance,
     ) -> Result<(), String> {
-        if place
-            .projections
-            .iter()
-            .any(|(_, shape, _)| self.is_marked_record(*shape))
-        {
-            return self.assign_through_marked_record(root, place, replacement, provenance);
-        }
         let root_ty = place.root_ty.clone();
         let value = self.emit_typed(
             provenance.clone(),
@@ -142,29 +135,125 @@ impl Builder<'_, '_> {
                 != hew_types::DeclarationMarker::None)
     }
 
-    /// Assign a field beneath an ownership-marked record. The record keeps one
-    /// owner, so it has no field places: the seat is taken whole, each level
-    /// is taken apart and rebuilt around the replacement, and the rebuilt
-    /// value re-initializes the seat. Nothing between the take and the store
-    /// can fault. The replaced value is released only once the owner is whole
-    /// again, so a faulting release leaves a complete record for cleanup.
-    fn assign_through_marked_record(
+    /// The seat a field write must go through whole. An ownership-marked
+    /// record on the path keeps one owner, so it has no field places, and a
+    /// state seat without a copy cannot be staged as one. Either way the seat
+    /// is changed only by [`Self::assign_through_whole_owner`], so it is whole
+    /// at every point a fault can reach.
+    pub(super) fn whole_owner_root(
+        &mut self,
+        place: &BindingPlace,
+    ) -> Result<Option<PlaceId>, String> {
+        if place.projections.is_empty() {
+            return Ok(None);
+        }
+        let super::BindingTarget::Place(root) = self.binding_target(place.binding)? else {
+            return Ok(None);
+        };
+        let origin = self.places[root.0 as usize].origin;
+        let marked = place
+            .projections
+            .iter()
+            .any(|(_, shape, _)| self.is_marked_record(*shape));
+        let copyless_seat = !matches!(origin, PlaceOrigin::Local)
+            && self
+                .service
+                .checked_facts
+                .rows()
+                .get(&hew_types::TypeInstanceKey(place.root_ty.clone()))
+                .is_none_or(|facts| facts.clone == hew_types::CloneKind::None);
+        if !marked && !copyless_seat {
+            return Ok(None);
+        }
+        match origin {
+            PlaceOrigin::Local | PlaceOrigin::ActorState { .. } => Ok(Some(root)),
+            _ => Err(
+                "writing a field of a captured record that has no copy or keeps one whole \
+                 owner is not implemented"
+                    .into(),
+            ),
+        }
+    }
+
+    /// An owned copy of the field `place` names beneath a whole owner, read
+    /// through aggregate loans that end before this returns. A mutation runs
+    /// on the copy, so a fault leaves the owner as it was.
+    pub(super) fn copy_through_whole_owner(
+        &mut self,
+        root: PlaceId,
+        place: &BindingPlace,
+        provenance: &Provenance,
+    ) -> Result<ValueId, String> {
+        if self
+            .service
+            .checked_facts
+            .rows()
+            .get(&hew_types::TypeInstanceKey(place.leaf_ty.clone()))
+            .is_none_or(|facts| facts.clone == hew_types::CloneKind::None)
+        {
+            return Err(format!(
+                "mutating a `{}` in place beneath an owner that has no copy or keeps one whole \
+                 owner is not implemented",
+                place.leaf_ty.user_facing()
+            ));
+        }
+        let mut loans = vec![self.emit_typed(
+            provenance.clone(),
+            &place.root_ty,
+            SemOpKind::LoadBorrow { place: root },
+        )?];
+        let field_tys = place
+            .projections
+            .iter()
+            .skip(1)
+            .map(|(ty, _, _)| ty)
+            .chain(std::iter::once(&place.leaf_ty))
+            .cloned()
+            .collect::<Vec<_>>();
+        for ((_, shape, field), ty) in place.projections.iter().zip(field_tys) {
+            let aggregate = Operand {
+                value: *loans.last().expect("a loan roots the projection"),
+            };
+            let field = u32::try_from(*field).map_err(|_| "aggregate field exceeds u32")?;
+            loans.push(self.emit_typed(
+                provenance.clone(),
+                &ty,
+                SemOpKind::AggregateProjectBorrow {
+                    shape: *shape,
+                    aggregate,
+                    field,
+                },
+            )?);
+        }
+        let leaf = *loans.last().expect("a loan names the leaf");
+        let copy = self.emit_typed(
+            provenance.clone(),
+            &place.leaf_ty,
+            SemOpKind::CopyValue {
+                source: Operand { value: leaf },
+            },
+        )?;
+        self.end_call_loans(&loans)?;
+        Ok(copy)
+    }
+
+    /// Assign a field beneath a whole owner. The seat is taken whole, each
+    /// level is taken apart and rebuilt around the replacement, and the
+    /// rebuilt value re-initializes the seat. Nothing between the take and
+    /// the store can fault. The replaced value is released only once the
+    /// owner is whole again, so a faulting release leaves a complete owner
+    /// for cleanup.
+    pub(super) fn assign_through_whole_owner(
         &mut self,
         root: PlaceId,
         place: &BindingPlace,
         replacement: ValueId,
         provenance: Provenance,
     ) -> Result<(), String> {
-        let state_seat = match self.places[root.0 as usize].origin {
-            PlaceOrigin::Local => false,
-            PlaceOrigin::ActorState { .. } => true,
-            _ => {
-                return Err(
-                    "assigning a field of a captured `#[resource]` record is not implemented"
-                        .into(),
-                )
-            }
-        };
+        let state_seat = matches!(
+            self.places[root.0 as usize].origin,
+            PlaceOrigin::ActorState { .. }
+        );
         let mut value = self.emit_typed(
             provenance.clone(),
             &place.root_ty,

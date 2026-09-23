@@ -1,0 +1,11 @@
+[[case]]
+id = "actor-state-resource-collection-writes"
+intent = "Collection fields beneath copy-less actor state, a `#[resource]` field and a record holding one, push and take indexed writes in place; after a faulting indexed write the crash hook reads each whole seat and teardown closes each resource once."
+source = "cases/actor-state-resource-collection-writes.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "first 1\nsecond 2\nhook sees 3 set0 first3 3\nclose 2 0\nclose 1 3\n"
+stderr = "hew: failure: IndexOutOfBounds (205)\nhew: actor crash in Holder.add (actor 1): IndexOutOfBounds\n"
+exit = 1

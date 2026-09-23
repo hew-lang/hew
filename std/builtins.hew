@@ -1127,9 +1127,6 @@ pub fn sleep(d: duration) {}
 /// ```
 pub fn sleep_until(target: instant) {}
 
-/// Legacy declaration; use the built-in `close(actor)` lifecycle operation.
-pub fn stop(target: dyn Display) {}
-
 /// Terminate the program immediately with the given exit code.
 ///
 /// This function never returns and does not run scope cleanup. Return from

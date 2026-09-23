@@ -1,0 +1,13 @@
+[[case]]
+id = "actor_stop_handler_reserved"
+intent = "A receive handler named stop is refused because stop is the handle's own lifecycle method."
+source = "../vertical-slice/reject/actor_stop_handler_reserved.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "InvalidOperation"
+line = 5
+column = 5
+message = "E_RESERVED_HANDLER_NAME: `stop` is the actor handle's own lifecycle method"

@@ -8,10 +8,6 @@
 import std.stream;
 import std.testing;
 
-extern "C" {
-    fn hew_actor_self_stop();
-}
-
 actor StateProducer {
     out: stream.Sink<i64>,
 
@@ -24,7 +20,7 @@ actor StateProducer {
     }
 
     receive fn quit() {
-        unsafe { hew_actor_self_stop() };
+        self.stop();
     }
 }
 

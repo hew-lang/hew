@@ -14,10 +14,6 @@ import std.os;
 
 import std.stream.{Sink, Stream};
 
-extern "C" {
-    fn hew_actor_self_stop();
-}
-
 actor ServerReader {
     let input: Stream<bytes>,
     let sink: Sink<bytes>,
@@ -40,9 +36,7 @@ actor ServerReader {
         }
         println(f"[{name}] closed");
         sink.finish();
-        unsafe {
-            hew_actor_self_stop()
-        };
+        self.stop();
     }
 }
 

@@ -7822,6 +7822,25 @@ impl Checker {
                 } else {
                     crate::BuiltinType::ActorHandle
                 };
+                // `stop` is the actor handle's own lifecycle method
+                // (HEW-SPEC-2026 §2.1): it requests a graceful stop and
+                // returns at once, so `self.stop()` lets the current handler
+                // finish before `#[on(stop)]` runs. A supervisor's lifecycle
+                // is `close`, which tears its tree down.
+                let supervisor = matches!(
+                    resolved.as_actor_handle(),
+                    Some(Ty::Named { name, .. }) if self.supervisor_children.contains_key(name)
+                );
+                if method == "stop" && resolved.as_actor_handle().is_some() && !supervisor {
+                    if !self.check_arity(args, 0, "`stop`", span) {
+                        return Ty::Error;
+                    }
+                    self.actor_delivery_calls.insert(
+                        SpanKey::in_module(span, self.current_module_idx),
+                        crate::actor_delivery::ActorDeliveryCall::Stop,
+                    );
+                    return Ty::Unit;
+                }
                 // A user handler named `send` is actor dispatch; otherwise
                 // `send` resolves through the reference type's own method.
                 let has_user_send_handler = if method == "send" {

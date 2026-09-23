@@ -2296,6 +2296,16 @@ impl Checker {
         rf: &ReceiveFnDecl,
         fields: &[FieldDecl],
     ) {
+        if rf.name == "stop" {
+            self.report_error_with_suggestions(
+                TypeErrorKind::InvalidOperation,
+                &rf.span,
+                "E_RESERVED_HANDLER_NAME: `stop` is the actor handle's own lifecycle \
+                 method, so no receive handler can take its name"
+                    .to_string(),
+                vec!["rename the handler, or call `self.stop()` to stop the actor".to_string()],
+            );
+        }
         // Validate #[every(duration)] attribute if present.
         self.validate_every_attribute(rf);
         self.actor_handler_state_guards.insert(

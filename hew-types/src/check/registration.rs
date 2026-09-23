@@ -1152,7 +1152,6 @@ impl Checker {
             }],
             Ty::Unit,
         );
-        self.register_builtin_fn("stop", vec![Ty::Var(TypeVar::fresh())], Ty::Unit);
         // `close(actor)` requests a cooperative stop and waits for terminal
         // cleanup; `closed(actor)` waits without requesting. Both are ordinary
         // calls, so `fork close(actor)` is the non-waiting request.

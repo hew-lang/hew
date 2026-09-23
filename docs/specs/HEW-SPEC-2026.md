@@ -99,6 +99,16 @@ starts the same operation concurrently and returns a `Task<()>`; it does not
 remove the task's cleanup obligation. These calls return unit and are
 idempotent for an actor that is already terminal (§4.10).
 
+`pid.stop()` requests the same cooperative stop without waiting, and returns
+unit; it is idempotent on an actor that has already stopped or crashed.
+Inside the actor, `self.stop()` is not divergence: the handler's remaining
+synchronous statements run and a reply it returns without suspending is
+delivered, then `#[on(stop)]` runs and the actor stops. A suspension after the
+request cancels the rest of the turn. Messages sent after the request fail
+with `SendError`. `stop` is a reserved handler name: `receive fn stop()` is
+`E_RESERVED_HANDLER_NAME`, whose fix-it renames the handler or calls
+`self.stop()`.
+
 Inside a named actor body, bare `self` is the actor's own handle, so
 `registry.register(self)` passes that identity. `self.field` still accesses
 actor state. `this` is not a receiver token.

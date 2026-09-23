@@ -16663,7 +16663,9 @@ impl LowerCtx {
                     Vec::new(),
                 ),
                 (
-                    ActorDeliveryCall::Close | ActorDeliveryCall::AwaitClosed,
+                    ActorDeliveryCall::Close
+                    | ActorDeliveryCall::AwaitClosed
+                    | ActorDeliveryCall::Stop,
                     Expr::MethodCall { receiver, args, .. },
                 ) if args.is_empty() => (self.lower_expr(receiver, IntentKind::Read), Vec::new()),
                 // `view(actor)` derives its admission from the destination's
@@ -16735,6 +16737,42 @@ impl LowerCtx {
                         args: Vec::new(),
                         operation: ActorDeliveryCall::Submit { policy },
                     },
+                    span,
+                };
+            }
+            // `pid.stop()` is the stop request alone: the same request
+            // `close` makes, with the handle it yields discarded, so the call
+            // is `()` and nothing waits.
+            if let ActorDeliveryCall::Stop = operation {
+                let request = HirExpr {
+                    node: self.ids.node(),
+                    site,
+                    ty: receiver.ty.clone(),
+                    intent: IntentKind::Read,
+                    kind: HirExprKind::ActorDelivery {
+                        receiver: Box::new(receiver),
+                        args,
+                        operation: ActorDeliveryCall::Close,
+                    },
+                    span: span.clone(),
+                };
+                return HirExpr {
+                    node: self.ids.node(),
+                    site: self.ids.site(),
+                    ty,
+                    intent,
+                    kind: HirExprKind::Block(HirBlock {
+                        node: self.ids.node(),
+                        scope: self.ids.scope(),
+                        statements: vec![HirStmt {
+                            node: self.ids.node(),
+                            kind: HirStmtKind::Expr(request),
+                            span: span.clone(),
+                        }],
+                        tail: None,
+                        ty: ResolvedTy::Unit,
+                        span: span.clone(),
+                    }),
                     span,
                 };
             }

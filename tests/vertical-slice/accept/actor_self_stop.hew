@@ -1,0 +1,45 @@
+// `self.stop()` requests a graceful stop from inside the actor (HEW-SPEC-2026
+// §2.1). It is `()`, not divergence: the rest of the handler's synchronous
+// work runs and its reply publishes, then `#[on(stop)]` runs once and later
+// sends fail. From outside, `pid.stop()` makes the same request and is
+// idempotent.
+actor Worker {
+    var handled: i64 = 0,
+    receive fn finish(n: i64) -> i64 {
+        handled += 1;
+        self.stop();
+        println("after stop");
+        n + handled
+    }
+    #[on(stop)]
+    fn stopping() {
+        println(f"stopping after {handled}");
+    }
+}
+
+actor Idle {
+    receive fn ping() {}
+    #[on(stop)]
+    fn stopping() {
+        println("idle stopping");
+    }
+}
+
+fn main() {
+    let worker = spawn Worker;
+    let reply = worker.finish(41);
+    // Waiting for the terminal state orders the stop hook's line first.
+    closed(worker);
+    match reply {
+        .Ok(value) => println(f"reply {value}"),
+        .Err(_) => println("reply lost"),
+    }
+    match worker.finish(1) {
+        .Ok(_) => println("late send delivered"),
+        .Err(_) => println("late send refused"),
+    }
+    let idle = spawn Idle;
+    idle.stop();
+    idle.stop();
+    closed(idle);
+}

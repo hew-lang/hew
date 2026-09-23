@@ -1,0 +1,10 @@
+[[case]]
+id = "actor_self_stop"
+intent = "self.stop() lets the handler finish and reply, runs the stop hook once, refuses later sends, and pid.stop() is idempotent."
+source = "../vertical-slice/accept/actor_self_stop.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "after stop\nstopping after 1\nreply 42\nlate send refused\nidle stopping\n"
+exit = 0

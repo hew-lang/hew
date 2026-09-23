@@ -703,3 +703,57 @@ fn an_undeclared_closed_keeps_the_handle_builtin_arity() {
         output.errors
     );
 }
+
+/// `stop` is the actor handle's own lifecycle method (#3193): `self.stop()`
+/// inside the actor and `pid.stop()` outside it both type as `()`, while a
+/// receive handler can no longer take the name and the retired free function
+/// is gone.
+#[test]
+fn actor_stop_is_a_handle_method_and_a_reserved_handler_name() {
+    let accepted = check_source(
+        "actor Worker {\n\
+             receive fn work() { self.stop(); println(\"after\"); }\n\
+             #[on(stop)]\n\
+             fn stop() {}\n\
+         }\n\
+         fn main() {\n\
+             let worker = spawn Worker;\n\
+             let _sent = worker.work();\n\
+             let unit: () = worker.stop();\n\
+             let _ = unit;\n\
+         }",
+    );
+    assert!(accepted.errors.is_empty(), "{:?}", accepted.errors);
+
+    let reserved = check_source(
+        "actor Worker { receive fn stop() {} }\n\
+         fn main() { let _worker = spawn Worker; }",
+    );
+    assert!(
+        reserved
+            .errors
+            .iter()
+            .any(|error| error.message.contains("E_RESERVED_HANDLER_NAME")),
+        "{:?}",
+        reserved.errors
+    );
+
+    for (source, expected) in [
+        (
+            "actor Worker { receive fn ping() {} }\n\
+             fn main() { let worker = spawn Worker; worker.stop(1); }",
+            "argument",
+        ),
+        ("fn main() { stop(1); }", "undefined function `stop`"),
+    ] {
+        let output = check_source(source);
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|error| error.message.contains(expected)),
+            "{source}: {:?}",
+            output.errors
+        );
+    }
+}

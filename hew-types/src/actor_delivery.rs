@@ -108,6 +108,9 @@ pub fn dropped_delivery_outcome(ty: &Ty) -> Option<&'static str> {
 pub enum ActorDeliveryCall {
     Close,
     AwaitClosed,
+    /// `pid.stop()`: request a graceful stop without waiting. HIR lowers it
+    /// to the same request `close` makes and discards the returned handle.
+    Stop,
     Policy {
         policy: SendPolicy,
     },

@@ -1,0 +1,45 @@
+// A `#[resource]` record keeps one owner while its fields change: a local
+// binding, a `var self` method and an enclosing record all assign in place,
+// and each resource closes once with its final contents.
+#[resource]
+type Conn {
+    fd: i64,
+    name: string,
+}
+
+impl Conn {
+    fn close(consume self) {
+        println(f"close {self.name} {self.fd}");
+    }
+
+    fn bump(var self) {
+        self.fd = self.fd + 1;
+    }
+
+    fn rename(var self, name: string) {
+        self.name = name;
+    }
+}
+
+type Pair {
+    conn: Conn,
+    uses: i64,
+}
+
+fn main() {
+    var local = Conn { fd: 10, name: "local".to_upper() };
+    local.fd = local.fd + 5;
+    local.name = "renamed".to_upper();
+    println(f"local {local.name} {local.fd}");
+
+    var method = Conn { fd: 20, name: "method".to_upper() };
+    method.bump();
+    method.bump();
+    method.rename("moved".to_upper());
+    println(f"method {method.name} {method.fd}");
+
+    var pair = Pair { conn: Conn { fd: 30, name: "pair".to_upper() }, uses: 0 };
+    pair.conn.fd = 31;
+    pair.uses = pair.uses + 1;
+    println(f"pair {pair.conn.fd} {pair.uses}");
+}

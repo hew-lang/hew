@@ -1,0 +1,10 @@
+[[case]]
+id = "resource-field-assignment"
+intent = "Fields of a `#[resource]` record assign in place through a local, a `var self` method and an enclosing record; each replaced value and each resource is released exactly once."
+source = "cases/resource-field-assignment.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "local RENAMED 15\nmethod MOVED 22\npair 31 1\nclose PAIR 31\nclose MOVED 22\nclose RENAMED 15\n"
+exit = 0

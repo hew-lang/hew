@@ -110,13 +110,25 @@ impl Builder<'_, '_> {
         // Later arguments may replace this binding or one of its sibling fields.
         // Acquire its current value only after those effects have completed.
         let selected = self.owned_projection(&place)?;
+        // An actor state seat the receiver leaves is empty until the call
+        // returns it; a failing call keeps it, and teardown skips the seat.
+        let mut taken_state_seat = false;
         let (value, scalar_parents) = if let Some(selected) = selected {
             let root = self.place_borrow_root(selected)?;
             self.snapshot_arguments_rooted_at(root, &mut arguments, &mut loans, &provenance)?;
+            let take = owns_receiver && *receiver_update == hew_types::ReceiverUpdate::Replace;
+            taken_state_seat = take
+                && matches!(
+                    self.places[selected.0 as usize].origin,
+                    crate::PlaceOrigin::ActorState { .. }
+                );
+            if taken_state_seat {
+                self.state_taken.insert(selected);
+            }
             let value = self.emit_typed(
                 provenance.clone(),
                 &receiver_ty,
-                if owns_receiver && *receiver_update == hew_types::ReceiverUpdate::Replace {
+                if take {
                     SemOpKind::LoadTake { place: selected }
                 } else {
                     SemOpKind::LoadCopy { place: selected }
@@ -166,7 +178,11 @@ impl Builder<'_, '_> {
         let fields =
             self.emit_destructure_value(result, &dual_return_ty, shape, provenance.clone())?;
         if let Some(selected) = selected {
-            self.store_projected(selected, fields[1].id, provenance)?;
+            if taken_state_seat {
+                self.restore_taken_place(selected, fields[1].id, provenance)?;
+            } else {
+                self.store_projected(selected, fields[1].id, provenance)?;
+            }
         } else {
             self.replace_scalar_aggregate_leaf(
                 place.binding,

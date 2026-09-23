@@ -30,11 +30,11 @@ impl Builder<'_, '_> {
         // use aggregate loans, rather than inventing independently owned field
         // places beneath the resource. An enclosing ordinary record may still
         // partition the resource itself alongside its other fields.
-        if place.projections.iter().any(|(_, shape, _)| {
-            matches!(shape, AggregateShapeRef::Record(id)
-                if self.service.aggregate_shapes[id.0 as usize].marker
-                    != hew_types::DeclarationMarker::None)
-        }) {
+        if place
+            .projections
+            .iter()
+            .any(|(_, shape, _)| self.is_marked_record(*shape))
+        {
             return Ok(None);
         }
         let target = self.binding_target(place.binding)?;
@@ -102,6 +102,13 @@ impl Builder<'_, '_> {
         replacement: ValueId,
         provenance: Provenance,
     ) -> Result<(), String> {
+        if place
+            .projections
+            .iter()
+            .any(|(_, shape, _)| self.is_marked_record(*shape))
+        {
+            return self.assign_through_marked_record(root, place, replacement, provenance);
+        }
         let root_ty = place.root_ty.clone();
         let value = self.emit_typed(
             provenance.clone(),
@@ -127,6 +134,86 @@ impl Builder<'_, '_> {
         )?;
         self.store_projected(leaf, replacement, provenance.clone())?;
         self.store_projected(root, value, provenance)
+    }
+
+    fn is_marked_record(&self, shape: AggregateShapeRef) -> bool {
+        matches!(shape, AggregateShapeRef::Record(id)
+            if self.service.aggregate_shapes[id.0 as usize].marker
+                != hew_types::DeclarationMarker::None)
+    }
+
+    /// Assign a field beneath an ownership-marked record. The record keeps one
+    /// owner, so it has no field places: the seat is taken whole, each level
+    /// is taken apart and rebuilt around the replacement, and the rebuilt
+    /// value re-initializes the seat. Nothing between the take and the store
+    /// can fault. The replaced value is released only once the owner is whole
+    /// again, so a faulting release leaves a complete record for cleanup.
+    fn assign_through_marked_record(
+        &mut self,
+        root: PlaceId,
+        place: &BindingPlace,
+        replacement: ValueId,
+        provenance: Provenance,
+    ) -> Result<(), String> {
+        let state_seat = match self.places[root.0 as usize].origin {
+            PlaceOrigin::Local => false,
+            PlaceOrigin::ActorState { .. } => true,
+            _ => {
+                return Err(
+                    "assigning a field of a captured `#[resource]` record is not implemented"
+                        .into(),
+                )
+            }
+        };
+        let mut value = self.emit_typed(
+            provenance.clone(),
+            &place.root_ty,
+            SemOpKind::LoadTake { place: root },
+        )?;
+        if state_seat {
+            self.state_taken.insert(root);
+        }
+        let mut levels = Vec::with_capacity(place.projections.len());
+        for (ty, shape, index) in &place.projections {
+            let fields = self.emit_destructure_value(value, ty, *shape, provenance.clone())?;
+            value = fields[*index].id;
+            levels.push((ty, *shape, *index, fields));
+        }
+        let replaced = value;
+        let mut rebuilt = replacement;
+        for (ty, shape, index, fields) in levels.into_iter().rev() {
+            let fields = fields
+                .into_iter()
+                .enumerate()
+                .map(|(at, field)| Operand {
+                    value: if at == index { rebuilt } else { field.id },
+                })
+                .collect::<Vec<_>>();
+            for field in &fields {
+                self.owned_live.remove(&field.value);
+            }
+            rebuilt = self.emit_typed(
+                provenance.clone(),
+                ty,
+                SemOpKind::AggregateMake { shape, fields },
+            )?;
+        }
+        if state_seat {
+            self.restore_taken_place(root, rebuilt, provenance)?;
+        } else {
+            self.emit_place_operation(
+                SemOpKind::StoreInit {
+                    place: root,
+                    value: Operand { value: rebuilt },
+                },
+                provenance,
+            )?;
+            self.owned_live.remove(&rebuilt);
+        }
+        if self.owned_live.contains_key(&replaced) {
+            self.emit_destroy(replaced)?;
+        }
+        Ok(())
     }
 
     pub(super) fn value_projection_place(

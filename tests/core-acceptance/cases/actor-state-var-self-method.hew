@@ -1,0 +1,59 @@
+// A `var self` method called on an actor state field takes the seat for the
+// call and re-publishes it when the call returns. When the method panics, the
+// method releases the receiver it owns and the actor's teardown skips the
+// empty seat, so the resource closes exactly once.
+#[resource]
+type Conn {
+    fd: i64,
+}
+
+impl Conn {
+    fn close(consume self) {
+        println(f"close {self.fd}");
+    }
+
+    fn bump(var self, fail: bool) {
+        self.fd = self.fd + 1;
+        if fail {
+            panic("bump failed");
+        }
+    }
+}
+
+type Counter {
+    hits: i64,
+    label: string,
+}
+
+impl Counter {
+    fn hit(var self) {
+        self.hits = self.hits + 1;
+    }
+}
+
+actor Holder {
+    var conn: Conn = Conn { fd: 10 },
+    var counter: Counter = Counter { hits: 0, label: "hits" },
+
+    receive fn poke(fail: bool) -> i64 {
+        counter.hit();
+        conn.bump(fail);
+        conn.fd + counter.hits
+    }
+}
+
+fn main() {
+    let holder = spawn Holder();
+    match holder.poke(false) {
+        .Ok(value) => println(f"first {value}"),
+        .Err(_) => println("first failed"),
+    }
+    match holder.poke(false) {
+        .Ok(value) => println(f"second {value}"),
+        .Err(_) => println("second failed"),
+    }
+    match holder.poke(true) {
+        .Ok(value) => println(f"third {value}"),
+        .Err(_) => println("third failed"),
+    }
+}

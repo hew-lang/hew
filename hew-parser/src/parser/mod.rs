@@ -768,6 +768,8 @@ pub enum ParseDiagnosticKind {
     NoAsyncFn,
     /// Retired `async gen fn` syntax; generators infer suspension too.
     NoAsyncGen,
+    /// Retired `for await` syntax; `for` waits per item on its own.
+    ForAwait,
     /// A record literal named more than one `..base`.
     DuplicateRecordBase,
     /// Every other error not yet assigned a structured variant.
@@ -790,6 +792,7 @@ impl ParseDiagnosticKind {
             Self::ClosurePipeSyntax => "ClosurePipeSyntax",
             Self::NoAsyncFn => "E_NO_ASYNC_FN",
             Self::NoAsyncGen => "E_NO_ASYNC_GEN",
+            Self::ForAwait => "E_FOR_AWAIT",
             Self::DuplicateRecordBase => "E_RECORD_ONE_BASE",
             Self::Other => "Other",
         }

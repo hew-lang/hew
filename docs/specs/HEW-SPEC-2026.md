@@ -4701,8 +4701,8 @@ pulling from a generator you own is a call into your own frame, and it carries
 the generator's inferred suspension effect like any other call (§4.0). The
 pull that crosses an actor boundary is written the same way:
 `for x in pid.stream()` waits per item with no marker on the loop. There is no
-`for await` spelling; `await` after `for` is an ordinary parse error where the
-pattern belongs.
+`for await` spelling; `for await` is `E_FOR_AWAIT` (User) with a fix-it that
+deletes `await`.
 
 Generator construction snapshots every captured value into a heap-owned
 environment before the body ramp reaches its first `yield`. Bit-copy values and
@@ -6218,11 +6218,9 @@ replacement rather than a bare parse error.
 carrying the `var` fix-it, not a parse cascade. Mutable bindings are `var`
 (§3.2).
 
-**Current lexer limitation.** Some words intended as ordinary or contextual
-identifiers remain reserved by the lexer, including `try`, `catch`, `default`,
-`emit` and `pool`. This does not reinstate their retired constructs.
 `send` has no keyword role, `this` has no receiver role, and neither `join` nor
-`for await` is a language construct. Parser diagnostics for old spellings do
+`for await` is a language construct. `for await` is `E_FOR_AWAIT` (User) with
+a fix-it that deletes `await` (§4.12). Parser diagnostics for old spellings do
 not make them recommended alternatives.
 
 ### 12.1 Built-in Numeric Types

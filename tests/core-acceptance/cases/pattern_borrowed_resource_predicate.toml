@@ -1,0 +1,12 @@
+[[case]]
+id = "pattern_borrowed_resource_predicate"
+intent = "A predicate-only match borrows a resource-bearing record and leaves its owner live for the caller."
+source = "cases/pattern_borrowed_resource_predicate.hew"
+suites = ["acceptance"]
+kind = "run"
+timeout_seconds = 30
+
+[case.expected]
+stdout = "result 1, token 1\nclosed 1\nresult 2, token 2\nclosed 2\n3\n"
+stderr = ""
+exit = 0

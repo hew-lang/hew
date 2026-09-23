@@ -38,6 +38,47 @@ fn symbol(actor: ActorId, suffix: &str) -> String {
     format!("__hew_actor_{}_{}", actor.0, suffix)
 }
 
+/// Actor state carries one persistent initialization byte per top-level field
+/// after its target layout. The runtime owns the allocation as opaque storage;
+/// generated handlers and callbacks are the sole readers and writers.
+pub(super) fn state_allocation_size(
+    layout: &PhysicalLayout,
+    field_count: usize,
+) -> CodegenResult<u64> {
+    layout
+        .size
+        .checked_add(
+            u64::try_from(field_count).map_err(|_| {
+                CodegenError::FailClosed("actor state field count exceeds u64".into())
+            })?,
+        )
+        .ok_or_else(|| CodegenError::FailClosed("actor state allocation size overflow".into()))
+}
+
+pub(super) fn state_field_initialized<'ctx>(
+    ctx: &'ctx Context,
+    builder: &Builder<'ctx>,
+    state: PointerValue<'ctx>,
+    layout: &PhysicalLayout,
+    field: u32,
+) -> CodegenResult<PointerValue<'ctx>> {
+    let offset = layout
+        .size
+        .checked_add(u64::from(field))
+        .ok_or_else(|| CodegenError::FailClosed("actor state flag offset overflow".into()))?;
+    // SAFETY: actor state allocations reserve one byte for every declared
+    // field after the target-realized state value.
+    unsafe {
+        builder.build_gep(
+            ctx.i8_type(),
+            state,
+            &[ctx.i64_type().const_int(offset, false)],
+            "actor.state.initialized",
+        )
+    }
+    .llvm_ctx("address actor state initialization flag")
+}
+
 fn message_symbol(actor: ActorId, message: u32) -> String {
     symbol(actor, &format!("message_{message}_drop"))
 }
@@ -713,33 +754,79 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         );
         let builder = self.ctx.create_builder();
         builder.position_at_end(self.ctx.append_basic_block(drop, "entry"));
-        if let Some(action) = recipe.destroy {
-            let loaded = builder
-                .build_load(
-                    llvm_type(self.ctx, &layout.repr)?,
-                    drop.get_first_param().unwrap().into_pointer_value(),
-                    "actor.state",
-                )
-                .llvm_ctx("load initialized actor state")?;
-            // The terminal sequence releases `#[resource]` state fields in
-            // reverse declaration order (spec 9 item 9). A field whose `close`
-            // fails records here so its siblings are still released, and the
-            // fault leaves once the state owns nothing.
+        if recipe.destroy.is_some() {
+            let state = drop.get_first_param().unwrap().into_pointer_value();
+            let state_repr = llvm_type(self.ctx, &layout.repr)?.into_struct_type();
+            // The terminal sequence releases initialized fields in reverse
+            // declaration order. A consuming handler clears its field's
+            // persistent bit before the call, so a faulting call cannot make
+            // teardown read or release the transferred value again.
             let record = crate::physical::glue_fault_record(self.ctx, &builder)?;
-            ValueEmitter {
-                module: self.module,
-                ctx: self.ctx,
-                llvm: &self.llvm,
-                builder: &builder,
-                value: drop,
-                fault_sink: Some(record),
+            for (index, field) in actor.fields.iter().enumerate().rev() {
+                let Some(action) = self.module.actor_recipes[&field.ty].destroy else {
+                    continue;
+                };
+                let index = u32::try_from(index)
+                    .map_err(|_| CodegenError::FailClosed("actor field exceeds u32".into()))?;
+                let flag = state_field_initialized(self.ctx, &builder, state, layout, index)?;
+                let initialized = builder
+                    .build_load(self.ctx.bool_type(), flag, "actor.state.field.initialized")
+                    .llvm_ctx("read actor state initialization flag")?
+                    .into_int_value();
+                let release = self.ctx.append_basic_block(drop, "actor.state.release");
+                let next = self.ctx.append_basic_block(drop, "actor.state.next");
+                let present = builder
+                    .build_int_compare(
+                        IntPredicate::NE,
+                        initialized,
+                        self.ctx.bool_type().const_zero(),
+                        "actor.state.field.present",
+                    )
+                    .llvm_ctx("test actor state field initialization")?;
+                builder
+                    .build_conditional_branch(present, release, next)
+                    .llvm_ctx("skip absent actor state field")?;
+                builder.position_at_end(release);
+                builder
+                    .build_store(flag, self.ctx.bool_type().const_zero())
+                    .llvm_ctx("consume actor state field initialization")?;
+                let slot = builder
+                    .build_struct_gep(state_repr, state, index, "actor.state.field")
+                    .llvm_ctx("address initialized actor state field")?;
+                let field_layout = self.module.target.layout(&field.ty).ok_or_else(|| {
+                    CodegenError::FailClosed("actor state field lacks its layout".into())
+                })?;
+                let loaded = builder
+                    .build_load(
+                        llvm_type(self.ctx, &field_layout.repr)?,
+                        slot,
+                        "actor.state.field.value",
+                    )
+                    .llvm_ctx("load initialized actor state field")?;
+                ValueEmitter {
+                    module: self.module,
+                    ctx: self.ctx,
+                    llvm: &self.llvm,
+                    builder: &builder,
+                    value: drop,
+                    fault_sink: Some(record),
+                }
+                .destroy_loaded_value(loaded, field_layout, action)?;
+                builder
+                    .build_unconditional_branch(next)
+                    .llvm_ctx("finish actor state field release")?;
+                builder.position_at_end(next);
             }
-            .destroy_loaded_value(loaded, layout, action)?;
             crate::physical::raise_glue_fault_record(self.ctx, &self.llvm, &builder, drop, record)?;
         }
         builder
             .build_return(None)
             .llvm_ctx("finish actor state destruction")?;
+        if recipe.destroy.is_some_and(|action| {
+            self.module.releases.suspends(action) || self.module.releases.raises_fault(action)
+        }) {
+            self.emit_actor_state_release(actor, layout)?;
+        }
         let clone = self.llvm.add_function(
             &symbol(actor.id, "state_clone"),
             ptr.fn_type(&[ptr.into()], false),
@@ -763,10 +850,24 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 fault_sink: None,
             }
             .clone_loaded_value(loaded, layout, action)?;
-            let allocation = allocate(self.module, self.ctx, &self.llvm, &builder, layout.size)?;
+            let allocation = allocate(
+                self.module,
+                self.ctx,
+                &self.llvm,
+                &builder,
+                state_allocation_size(layout, actor.fields.len())?,
+            )?;
             builder
                 .build_store(allocation, copied)
                 .llvm_ctx("initialize independent actor snapshot")?;
+            for index in 0..actor.fields.len() {
+                let index = u32::try_from(index)
+                    .map_err(|_| CodegenError::FailClosed("actor field exceeds u32".into()))?;
+                let flag = state_field_initialized(self.ctx, &builder, allocation, layout, index)?;
+                builder
+                    .build_store(flag, self.ctx.bool_type().const_int(1, false))
+                    .llvm_ctx("initialize actor snapshot field")?;
+            }
             builder
                 .build_return(Some(&allocation))
                 .llvm_ctx("return actor state snapshot")?;
@@ -775,6 +876,64 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 .build_return(Some(&ptr.const_null()))
                 .llvm_ctx("refuse copying non-copyable actor state")?;
         }
+        Ok(())
+    }
+
+    /// The terminal release continuation for state whose release can suspend
+    /// or fail. Like `state_drop`, it releases only the initialized seats: a
+    /// seat a faulting handler consumed holds nothing to release.
+    fn emit_actor_state_release(
+        &self,
+        actor: &SemActor,
+        layout: &PhysicalLayout,
+    ) -> CodegenResult<()> {
+        let state_repr = llvm_type(self.ctx, &layout.repr)?.into_struct_type();
+        release::custom(
+            self.ctx,
+            &self.llvm,
+            self.module,
+            &symbol(actor.id, "state_release"),
+            |values, frame, state| {
+                let builder = values.builder;
+                for (index, field) in actor.fields.iter().enumerate().rev() {
+                    let Some(action) = self.module.actor_recipes[&field.ty].destroy else {
+                        continue;
+                    };
+                    let index = u32::try_from(index)
+                        .map_err(|_| CodegenError::FailClosed("actor field exceeds u32".into()))?;
+                    let flag = state_field_initialized(self.ctx, builder, state, layout, index)?;
+                    let initialized = builder
+                        .build_load(self.ctx.bool_type(), flag, "actor.state.field.initialized")
+                        .llvm_ctx("read actor state initialization flag")?
+                        .into_int_value();
+                    let release = self
+                        .ctx
+                        .append_basic_block(values.value, "actor.state.release");
+                    let next = self
+                        .ctx
+                        .append_basic_block(values.value, "actor.state.next");
+                    builder
+                        .build_conditional_branch(initialized, release, next)
+                        .llvm_ctx("skip absent actor state field")?;
+                    builder.position_at_end(release);
+                    builder
+                        .build_store(flag, self.ctx.bool_type().const_zero())
+                        .llvm_ctx("consume actor state field initialization")?;
+                    let slot = builder
+                        .build_struct_gep(state_repr, state, index, "actor.state.field")
+                        .llvm_ctx("address initialized actor state field")?;
+                    let field_layout = self.module.target.layout(&field.ty).ok_or_else(|| {
+                        CodegenError::FailClosed("actor state field lacks its layout".into())
+                    })?;
+                    release::slot(values, frame, slot, field_layout, action)?;
+                    builder
+                        .build_unconditional_branch(next)
+                        .llvm_ctx("finish actor state field release")?;
+                    builder.position_at_end(next);
+                }
+                Ok(())
+            },
+        )?;
         Ok(())
     }
 
@@ -1750,8 +1909,23 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .target
             .layout(&actor.state_ty)
             .ok_or_else(|| CodegenError::FailClosed("missing actor state layout".into()))?;
-        let state = allocate(self.module, self.ctx, self.llvm, &self.builder, layout.size)?;
+        let allocation_size = state_allocation_size(layout, actor.fields.len())?;
+        let state = allocate(
+            self.module,
+            self.ctx,
+            self.llvm,
+            &self.builder,
+            allocation_size,
+        )?;
         let state_repr = llvm_type(self.ctx, &layout.repr)?.into_struct_type();
+        for index in 0..actor.fields.len() {
+            let index = u32::try_from(index)
+                .map_err(|_| CodegenError::FailClosed("actor field exceeds u32".into()))?;
+            let flag = state_field_initialized(self.ctx, &self.builder, state, layout, index)?;
+            self.builder
+                .build_store(flag, self.ctx.bool_type().const_zero())
+                .llvm_ctx("initialize empty actor state seat")?;
+        }
         // Deferred fields (D447) receive their value inside init; the spawn
         // operands cover the remaining fields in declaration order.
         let spawn_fields: Vec<(u32, &SemActorField)> = actor
@@ -1778,6 +1952,10 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             self.builder
                 .build_store(field, self.load(*source, "spawn.value")?)
                 .llvm_ctx("initialize actor field")?;
+            let flag = state_field_initialized(self.ctx, &self.builder, state, layout, *index)?;
+            self.builder
+                .build_store(flag, self.ctx.bool_type().const_int(1, false))
+                .llvm_ctx("publish spawn-supplied actor field")?;
         }
         let ptr = self.ctx.ptr_type(AddressSpace::default());
         // Init and then `#[on(start)]` run before publication; a fault in
@@ -1891,15 +2069,71 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                                 "spawn.field.value",
                             )
                             .llvm_ctx("load spawn-supplied actor field")?;
+                        let flag = state_field_initialized(
+                            self.ctx,
+                            &self.builder,
+                            state,
+                            layout,
+                            *index,
+                        )?;
+                        self.builder
+                            .build_store(flag, self.ctx.bool_type().const_zero())
+                            .llvm_ctx("consume failed actor init field")?;
                         self.release_loaded(loaded, field_layout, action)?;
                     }
                 } else {
-                    if let Some(action) = self.module.actor_recipes[&actor.state_ty].destroy {
+                    for (index, field) in actor.fields.iter().enumerate().rev() {
+                        let Some(action) = self.module.actor_recipes[&field.ty].destroy else {
+                            continue;
+                        };
+                        let index = u32::try_from(index).map_err(|_| {
+                            CodegenError::FailClosed("actor field exceeds u32".into())
+                        })?;
+                        let flag =
+                            state_field_initialized(self.ctx, &self.builder, state, layout, index)?;
+                        let present = self
+                            .builder
+                            .build_load(
+                                self.ctx.bool_type(),
+                                flag,
+                                "spawn.failed.field.initialized",
+                            )
+                            .llvm_ctx("read failed actor field initialization")?
+                            .into_int_value();
+                        let release = self
+                            .ctx
+                            .append_basic_block(self.value, "spawn.failed.field.release");
+                        let next = self
+                            .ctx
+                            .append_basic_block(self.value, "spawn.failed.field.next");
+                        self.builder
+                            .build_conditional_branch(present, release, next)
+                            .llvm_ctx("skip absent failed actor field")?;
+                        self.builder.position_at_end(release);
+                        self.builder
+                            .build_store(flag, self.ctx.bool_type().const_zero())
+                            .llvm_ctx("consume failed actor field")?;
+                        let slot = self
+                            .builder
+                            .build_struct_gep(state_repr, state, index, "spawn.failed.field")
+                            .llvm_ctx("address failed actor field")?;
+                        let field_layout =
+                            self.module.target.layout(&field.ty).ok_or_else(|| {
+                                CodegenError::FailClosed("actor field lacks its layout".into())
+                            })?;
                         let loaded = self
                             .builder
-                            .build_load(state_repr, state, "spawn.failed.state")
-                            .llvm_ctx("take unpublished actor state")?;
-                        self.release_loaded(loaded, layout, action)?;
+                            .build_load(
+                                llvm_type(self.ctx, &field_layout.repr)?,
+                                slot,
+                                "spawn.failed.field.value",
+                            )
+                            .llvm_ctx("load failed actor field")?;
+                        self.release_loaded(loaded, field_layout, action)?;
+                        self.builder
+                            .build_unconditional_branch(next)
+                            .llvm_ctx("finish failed actor field release")?;
+                        self.builder.position_at_end(next);
                     }
                 }
                 self.builder
@@ -2016,9 +2250,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 if self.module.releases.suspends(action)
                     || self.module.releases.raises_fault(action) =>
             {
-                release::callback(self.ctx, self.llvm, self.module, layout, action)?
-                    .as_global_value()
-                    .as_pointer_value()
+                callback("state_release")?
             }
             _ => ptr.const_null(),
         };
@@ -2035,7 +2267,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 spawn,
                 &[
                     state.into(),
-                    size_ty.const_int(layout.size, false).into(),
+                    size_ty.const_int(allocation_size, false).into(),
                     callback("dispatch")?.into(),
                     callback("state_drop")?.into(),
                     callback("state_clone")?.into(),

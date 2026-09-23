@@ -1,0 +1,9 @@
+fn main() {
+    var values: Vec<i64> = Vec.new();
+    values.push(10);
+    values.push(20);
+    let iterator: VecIter<i64> = values.into_iter();
+    var total = 0;
+    for value in iterator { total = total + value; }
+    println(total);
+}

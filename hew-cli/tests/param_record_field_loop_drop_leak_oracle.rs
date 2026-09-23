@@ -267,11 +267,9 @@ fn main() {
 }
 "#;
 
-/// Element-level mutation of the iterated field through the SHARED handle:
-/// `push` mid-loop extends the live view (the appended element is visited),
-/// `clear` ends it (the next length probe reads 0). Every `next` re-loads the
-/// handle from the cursor and clones the element out, so neither operation
-/// can leave the cursor holding a stale buffer pointer.
+/// Element-level mutation of the source field preserves the cursor's logical
+/// snapshot. `push` and `clear` detach the source through COW; the cursor still
+/// visits the two elements present when iteration began.
 const ITERATED_FIELD_PUSH_CLEAR_SOURCE: &str = r#"
 type Holder {
     items: Vec<i64>,
@@ -290,7 +288,7 @@ fn main() {
         if seen == 1 {
             holder.items.push(7);
         }
-        if seen == 3 {
+        if seen == 2 {
             holder.items.clear();
         }
     }
@@ -298,10 +296,8 @@ fn main() {
 }
 "#;
 
-/// Index assignment INTO the iterated field (`holder.items[1] = 9`) is an
-/// in-place element store through the shared handle — bounds-checked, no
-/// handle replacement — so the cursor observes the new element on the next
-/// clone-out: a live view, not a stale read.
+/// Index assignment into the source field (`holder.items[1] = 9`) detaches it
+/// through COW, so the active cursor keeps its point-in-time logical value.
 const ITERATED_FIELD_INDEX_SET_SOURCE: &str = r#"
 type Holder {
     items: Vec<i64>,
@@ -389,7 +385,7 @@ fn projection_store_mid_loop_replaces_the_field_without_corrupting_the_cursor() 
     ignore = "the poisoned allocator contract is macOS-only; a host that cannot run it must record a SKIP, never a silent pass"
 )]
 #[test]
-fn iterated_field_push_and_clear_run_as_live_view() {
+fn iterated_field_push_and_clear_preserve_the_cursor_snapshot() {
     require_codegen();
 
     let dir = tempfile::Builder::new()
@@ -404,9 +400,9 @@ fn iterated_field_push_and_clear_run_as_live_view() {
     let output = run_under_malloc_scribble(&bin);
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
-        "seen=3 total=49 len=0\n",
-        "a mid-loop push must extend the live view (the appended 7 is visited) \
-         and a mid-loop clear must end it at the next length probe"
+        "seen=2 total=42 len=0\n",
+        "the cursor must visit the two values in its entry snapshot while the \
+         source field independently reflects its push and clear"
     );
     assert_eq!(
         measure_leaks_exact(&bin),
@@ -421,7 +417,7 @@ fn iterated_field_push_and_clear_run_as_live_view() {
     ignore = "the poisoned allocator contract is macOS-only; a host that cannot run it must record a SKIP, never a silent pass"
 )]
 #[test]
-fn iterated_field_index_set_runs_in_place() {
+fn iterated_field_index_set_preserves_the_cursor_snapshot() {
     require_codegen();
 
     let dir = tempfile::Builder::new()
@@ -436,9 +432,9 @@ fn iterated_field_index_set_runs_in_place() {
     let output = run_under_malloc_scribble(&bin);
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
-        "seen=2 total=49\n",
-        "an in-place element store into the iterated field must be observed by \
-         the cursor's next clone-out (40 then the stored 9)"
+        "seen=2 total=42\n",
+        "the cursor must retain its entry snapshot (40 then 2) while the source \
+         field receives the independent element update"
     );
     assert_eq!(measure_leaks_exact(&bin), (0, 0));
 }

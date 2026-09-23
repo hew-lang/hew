@@ -1,0 +1,11 @@
+[[case]]
+id = "actor-state-resource-reinit-fault"
+intent = "A resource state seat is consumed and reinitialized on success; when the consuming call faults, terminal actor teardown skips the transferred seat and releases the remaining state exactly once."
+source = "cases/actor-state-resource-reinit-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "open\nfault observed\n"
+stderr = "hew: failure: UserPanic (212): detach failed\nhew: actor crash in Vault.swap (actor 1): UserPanic\n"
+exit = 1

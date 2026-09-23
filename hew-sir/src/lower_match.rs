@@ -28,8 +28,8 @@ use crate::{
     SemTerminator, SemVariantShape, ValueDef, ValueId, VariantShapeId,
 };
 use hew_hir::{
-    BindingId, HirExpr, HirLiteral, HirMatchArm, HirMatchArmBinding, HirMatchArmPredicate,
-    HirPayloadPredicate, HirPayloadVariantPredicate,
+    BindingId, HirExpr, HirExprKind, HirLiteral, HirMatchArm, HirMatchArmBinding,
+    HirMatchArmPredicate, HirPayloadPredicate, HirPayloadVariantPredicate, ResolvedRef,
 };
 use hew_types::ResolvedTy;
 
@@ -173,6 +173,25 @@ impl Builder<'_, '_> {
     ) -> Result<Option<ValueId>, String> {
         let scrutinee_ty = self.ty(&scrutinee_expr.ty);
         let shape = self.resolve_match_shape(scrutinee_expr, &scrutinee_ty, source_arms)?;
+        // A predicate-only match over a borrowed aggregate never transfers a
+        // payload. Keep the caller's owner intact while testing its fields.
+        let borrowed_predicate_only = matches!(&shape, MatchShape::Aggregate { .. })
+            && source_arms.iter().all(|arm| {
+                arm.bindings.is_empty()
+                    && arm.payload_variant_predicates.is_empty()
+                    && !matches!(arm.predicate, HirMatchArmPredicate::Binding { .. })
+            })
+            && match &scrutinee_expr.kind {
+                HirExprKind::BindingRef {
+                    resolved: ResolvedRef::Binding(binding),
+                    ..
+                } => matches!(
+                    self.binding_target(*binding)?,
+                    BindingTarget::Value(value)
+                        if self.value_own_kind(value) == Some(OwnKind::Guaranteed)
+                ),
+                _ => false,
+            };
 
         // A scrutinee that is itself a borrowed read holds a loan on the
         // collection it read. The match is what reads that loan, so it is the
@@ -186,7 +205,11 @@ impl Builder<'_, '_> {
                 self,
                 scrutinee_expr,
                 "match scrutinee",
-                shape.read(),
+                if borrowed_predicate_only {
+                    OwnedBindingUse::Probe
+                } else {
+                    shape.read()
+                },
             )?)
         };
         let mut outer_live = self.owned_live.clone();
@@ -333,6 +356,7 @@ impl Builder<'_, '_> {
                 &mut failures,
             )?;
 
+            let mut guard_diverged = false;
             if let Some(guard) = &arm.guard {
                 // A guard runs with the candidate's names bound. What it
                 // allocates and what it borrows belong to the guard, not to the
@@ -340,43 +364,57 @@ impl Builder<'_, '_> {
                 let guard_live = self.owned_live.clone();
                 let guard_loans = self.argument_receiver_loans.len();
                 let guard_bindings = self.bindings.keys().copied().collect();
-                let condition = self.lower_read_operand(guard, "match guard")?.value;
-                self.cleanup_match_candidate(&guard_live, guard_loans, &guard_bindings)?;
-                failures.push(self.branch_candidate_test(condition)?);
+                let condition = if let hew_hir::HirExprKind::Block(block) = &guard.kind {
+                    self.lower_scoped_block(block, OwnedBindingUse::Copy)?
+                        .map(|operand| operand.value)
+                } else {
+                    Some(self.lower_read_operand(guard, "match guard")?.value)
+                };
+                if let Some(condition) = condition {
+                    self.cleanup_match_candidate(&guard_live, guard_loans, &guard_bindings)?;
+                    failures.push(self.branch_candidate_test(condition)?);
+                } else {
+                    // A guard that leaves the function has no false edge and
+                    // its arm body is unreachable. Pattern failures recorded
+                    // above still continue to later candidates.
+                    guard_diverged = true;
+                }
             }
 
-            self.end_loans_since(plan.outer_loans)?;
-            self.select_match_candidate(plan, arm, &fields)?;
-            self.acquire_selected_match_bindings(&plan.outer_bindings)?;
-            let result = self.lower_selected_body(&arm.body, &plan.result_ty)?;
-            if self.is_open() {
-                for value in plan.outer_live.keys() {
-                    if !self.owned_live.contains_key(value) {
-                        return Err(format!(
-                            "match arm {arm_index} consumes an outer non-binding owner"
-                        ));
+            if !guard_diverged {
+                self.end_loans_since(plan.outer_loans)?;
+                self.select_match_candidate(plan, arm, &fields)?;
+                self.acquire_selected_match_bindings(&plan.outer_bindings)?;
+                let result = self.lower_selected_body(&arm.body, &plan.result_ty)?;
+                if self.is_open() {
+                    for value in plan.outer_live.keys() {
+                        if !self.owned_live.contains_key(value) {
+                            return Err(format!(
+                                "match arm {arm_index} consumes an outer non-binding owner"
+                            ));
+                        }
                     }
-                }
-                // The selected result survives candidate cleanup, but must
-                // still be released if closing another owner fails.
-                let mut protected_live = plan.outer_live.clone();
-                if let Some(result) = &result {
-                    if let Some(ty) = self.owned_live.get(&result.value) {
-                        protected_live.insert(result.value, ty.clone());
+                    // The selected result survives candidate cleanup, but must
+                    // still be released if closing another owner fails.
+                    let mut protected_live = plan.outer_live.clone();
+                    if let Some(result) = &result {
+                        if let Some(ty) = self.owned_live.get(&result.value) {
+                            protected_live.insert(result.value, ty.clone());
+                        }
                     }
+                    self.cleanup_match_candidate(
+                        &protected_live,
+                        plan.outer_loans,
+                        &plan.outer_bindings,
+                    )?;
+                    if let Some(result) = &result {
+                        self.owned_live.remove(&result.value);
+                    }
+                    exits.push(MatchExit {
+                        state: self.control_state(),
+                        result,
+                    });
                 }
-                self.cleanup_match_candidate(
-                    &protected_live,
-                    plan.outer_loans,
-                    &plan.outer_bindings,
-                )?;
-                if let Some(result) = &result {
-                    self.owned_live.remove(&result.value);
-                }
-                exits.push(MatchExit {
-                    state: self.control_state(),
-                    result,
-                });
             }
 
             if failures.is_empty() {
@@ -534,6 +572,12 @@ impl Builder<'_, '_> {
                 initial_value,
                 places,
             } => {
+                if plan.borrowed
+                    && arm.bindings.is_empty()
+                    && arm.payload_variant_predicates.is_empty()
+                {
+                    return Ok(());
+                }
                 // A tuple of scalars was copied whole, and a whole-scrutinee
                 // binding names the aggregate itself: neither is taken apart.
                 if *initial_value || matches!(arm.predicate, HirMatchArmPredicate::Binding { .. }) {
@@ -671,6 +715,7 @@ impl Builder<'_, '_> {
         arms: &[HirMatchArm],
     ) -> Result<MatchShape, String> {
         if scrutinee_ty.is_integer()
+            || scrutinee_ty.is_float()
             || matches!(
                 scrutinee_ty,
                 ResolvedTy::Bool | ResolvedTy::Char | ResolvedTy::String
@@ -1089,13 +1134,14 @@ impl Builder<'_, '_> {
         let constant =
             match literal {
                 HirLiteral::Integer(value) if ty.is_integer() => SemOpKind::ConstInteger(*value),
+                HirLiteral::Float(value) if ty.is_float() => SemOpKind::ConstFloat(*value),
                 HirLiteral::Bool(value) if *ty == ResolvedTy::Bool => SemOpKind::ConstBool(*value),
                 HirLiteral::Char(value) if *ty == ResolvedTy::Char => SemOpKind::ConstChar(*value),
                 HirLiteral::String(value) if *ty == ResolvedTy::String => {
                     SemOpKind::ConstStr(self.service.intern_string(value))
                 }
                 _ => return Err(
-                    "literal match requires an exact integer, boolean, character or string literal"
+                    "literal match requires an exact integer, float, boolean, character or string literal"
                         .into(),
                 ),
             };

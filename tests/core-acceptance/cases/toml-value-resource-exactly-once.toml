@@ -1,0 +1,10 @@
+[[case]]
+id = "toml-value-resource-exactly-once"
+intent = "TOML fluent receiver writeback, parse success and failure, child ownership, and early-return cleanup compose without losing or duplicating an owner."
+source = "../vertical-slice/accept/toml_value_resource_exactly_once.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "8\n14\n"
+exit = 0

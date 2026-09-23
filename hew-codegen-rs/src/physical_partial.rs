@@ -142,11 +142,25 @@ pub(super) fn allocate_flags<'ctx>(
     module: &ModuleEmitter<'ctx, '_>,
     function: &PhysicalFunction,
     builder: &Builder<'ctx>,
+    slots: &[PointerValue<'ctx>],
 ) -> CodegenResult<BTreeMap<StorageId, PointerValue<'ctx>>> {
     let mut flags = BTreeMap::new();
     for projection in function.place_storage.values() {
         for leaf in &projection.leaves {
             if let Entry::Vacant(entry) = flags.entry(leaf.storage) {
+                if let StorageOrigin::ActorState { state, field, .. } =
+                    function.storage[leaf.storage.0 as usize].origin
+                {
+                    let layout = &function.storage[state.0 as usize].layout;
+                    entry.insert(super::actor::state_field_initialized(
+                        module.ctx,
+                        builder,
+                        slots[state.0 as usize],
+                        layout,
+                        field,
+                    )?);
+                    continue;
+                }
                 let flag = builder
                     .build_alloca(
                         module.ctx.bool_type(),
@@ -165,6 +179,20 @@ pub(super) fn allocate_flags<'ctx>(
                     .llvm_ctx("initialize aggregate leaf state")?;
                 entry.insert(flag);
             }
+        }
+    }
+    for storage in &function.storage {
+        let StorageOrigin::ActorState { state, field, .. } = storage.origin else {
+            continue;
+        };
+        if let Entry::Vacant(entry) = flags.entry(storage.id) {
+            entry.insert(super::actor::state_field_initialized(
+                module.ctx,
+                builder,
+                slots[state.0 as usize],
+                &function.storage[state.0 as usize].layout,
+                field,
+            )?);
         }
     }
     Ok(flags)
@@ -196,6 +224,17 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         id: StorageId,
         initialized: bool,
     ) -> CodegenResult<()> {
+        if matches!(self.storage(id)?.origin, StorageOrigin::ActorState { .. }) {
+            self.builder
+                .build_store(
+                    self.place_flag(id)?,
+                    self.ctx
+                        .bool_type()
+                        .const_int(u64::from(initialized), false),
+                )
+                .llvm_ctx("publish actor state field initialization")?;
+            return Ok(());
+        }
         if let Some(projection) = self.function.place_storage.get(&id) {
             for leaf in &projection.leaves {
                 self.builder

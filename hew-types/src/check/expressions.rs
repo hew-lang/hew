@@ -1639,7 +1639,14 @@ else needs `impl Display for {rendered}`)"
             return false;
         };
         let mut parent = self.subst.resolve(&binding.ty);
-        for field in path {
+        for (depth, field) in path.iter().enumerate() {
+            if depth == 0 && self.resource_close_owns_self_field(root, &parent) {
+                let Some(selected) = self.project_named_field(&parent, field) else {
+                    return false;
+                };
+                parent = self.subst.resolve(&selected);
+                continue;
+            }
             let Some(selected) = self.independent_record_or_tuple_field(&parent, field) else {
                 self.report_error_with_suggestions(
                     TypeErrorKind::OwnPartialConsume,
@@ -1656,6 +1663,52 @@ else needs `impl Display for {rendered}`)"
             parent = self.subst.resolve(&selected);
         }
         false
+    }
+
+    /// A resource destructor owns its receiver and may transfer one field to
+    /// the external release operation. Close-body cleanup retains every field
+    /// it does not move out. This exception is deliberately narrower than an
+    /// arbitrary consuming method: it requires the registered inherent
+    /// `close(consume self)` contract and the lexical receiver binding.
+    fn resource_close_owns_self_field(&self, root: &str, parent: &Ty) -> bool {
+        if root != "self" {
+            return false;
+        }
+        let Some(function) = self.current_function.as_ref() else {
+            return false;
+        };
+        let Some(signature) = self.fn_sigs.get(function) else {
+            return false;
+        };
+        if !signature.consumes_receiver
+            || !signature
+                .impl_method
+                .as_ref()
+                .is_some_and(|method| method.is_inherent && method.name == "close")
+        {
+            return false;
+        }
+        matches!(parent, Ty::Named { name, .. } if self.registry.is_resource(name))
+    }
+
+    fn project_named_field(&self, parent: &Ty, field: &str) -> Option<Ty> {
+        let Ty::Named { name, args, .. } = parent else {
+            return None;
+        };
+        let definition = self.type_defs.get(name)?;
+        if definition.type_params.len() != args.len() {
+            return None;
+        }
+        let substitutions = definition
+            .type_params
+            .iter()
+            .cloned()
+            .zip(args.iter().cloned())
+            .collect();
+        definition
+            .fields
+            .get(field)
+            .map(|ty| ty.substitute_named_params_parallel(&substitutions))
     }
 
     fn independent_record_or_tuple_field(&self, parent: &Ty, field: &str) -> Option<Ty> {
@@ -2037,6 +2090,38 @@ else needs `impl Display for {rendered}`)"
         Ty::Unit
     }
 
+    /// D524: an `#[on(crash)]` hook runs on the crashing incarnation's state,
+    /// and a handler that faulted between consuming a copy-less field and
+    /// storing its replacement left that seat empty. The hook may not read a
+    /// field any body of the actor consumes.
+    fn reject_crash_hook_consumed_state_read(
+        &mut self,
+        binding: crate::env::TypeBindingId,
+        span: &Span,
+    ) {
+        let Some(field) = self.crash_hook_consumed_fields.get(&binding) else {
+            return;
+        };
+        let (consumer, consumed_at) = self.actor_consumed_state[field].clone();
+        let mut error = TypeError::new(
+            TypeErrorKind::UseAfterConsume,
+            span.clone(),
+            format!(
+                "`#[on(crash)]` hook reads actor state `{field}`, which `{consumer}` consumes; \
+                 a crash before `{consumer}` stores its replacement leaves `{field}` empty"
+            ),
+        )
+        .with_note(consumed_at, format!("`{consumer}` consumes `{field}` here"))
+        .with_suggestion(
+            "an `#[on(crash)]` hook may read only state fields that no handler consumes"
+                .to_string(),
+        );
+        if let Some(source_module) = &self.current_module {
+            error = error.with_source_module(source_module.clone());
+        }
+        self.errors.push(error);
+    }
+
     pub(super) fn synthesize_identifier(&mut self, name: &str, span: &Span) -> Ty {
         self.synthesize_identifier_with_type_args(name, None, span)
     }
@@ -2148,6 +2233,9 @@ else needs `impl Display for {rendered}`)"
             // `sock = Socket { .. }` after `sock.detach()` is the re-initialisation
             // that plugs the hole, not a use of the value that left.
             let is_write_target = self.place_write_depth > 0 && self.place_base_depth == 0;
+            if !is_write_target {
+                self.reject_crash_hook_consumed_state_read(binding_id, span);
+            }
             if is_moved && deferred_init && !is_write_target {
                 self.report_error(
                     TypeErrorKind::InvalidOperation,
@@ -9308,6 +9396,19 @@ else needs `impl Display for {rendered}`)"
                 .zip(resolved_type_args.iter().cloned())
                 .collect();
             self.check_spawn_constructor_args(&name, args, Some(&type_subst));
+            if let Some(expected_args) = self.actor_spawn_args.get(&name).cloned() {
+                for (argument, required) in expected_args {
+                    if required && !args.iter().any(|(provided, _)| provided == &argument) {
+                        self.report_error(
+                            TypeErrorKind::MissingActorSpawnArgument,
+                            span,
+                            format!(
+                                "actor `{name}` requires an initialized spawn value for `{argument}`"
+                            ),
+                        );
+                    }
+                }
+            }
             resolved_type_args = resolved_type_args
                 .iter()
                 .map(|argument| self.subst.resolve(argument))

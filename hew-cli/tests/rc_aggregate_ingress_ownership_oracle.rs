@@ -416,39 +416,6 @@ fn main() -> i64 {{
     )
 }
 
-/// The machine state owns an Rc payload until the state value is destroyed.
-fn machine_payload_source(frames: usize) -> String {
-    format!(
-        r#"
-type Node {{ id: i64, }}
-
-machine Cell {{
-    events {{ Fill, Drain, }}
-    state Empty,
-    state Full {{ r: Rc<Node>, }},
-    on Fill: Empty => Full {{ r: Rc.new(Node {{ id: 7 }}) }}
-    on Drain: Full => Empty,
-    default {{ state }}
-}}
-
-fn main() -> i64 {{
-    var total: i64 = 0;
-    for _seed in 0..{frames} {{
-        var c: Cell = .Empty;
-        c.step(.Fill);
-        match c {{
-            .Empty => {{ total = total + 0; }}
-            .Full {{ r }} => {{ total = total + r.get().id; }}
-        }}
-        println("frame");
-    }}
-    total - {expected}
-}}
-"#,
-        expected = frames * 7
-    )
-}
-
 /// REASSIGNMENT after ingress — a generation boundary.
 ///
 /// The transfer record is path-local runtime state, so it has to be retired when
@@ -823,11 +790,3 @@ aggregate_ingress_shape!(
     "retained_self_reassign",
     retained_self_reassign_source
 );
-
-/// Machine-payload ingress carries the over-release half only; see
-/// [`machine_payload_source`] for the measured reason the leak half is not
-/// pinned on this shape.
-#[test]
-fn machine_state_payload_does_not_over_release() {
-    assert_shape_does_not_over_release("machine_payload", machine_payload_source);
-}

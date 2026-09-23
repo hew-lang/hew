@@ -729,6 +729,8 @@ pub enum TypeErrorKind {
     InvalidSend,
     /// Operation not supported for this type
     InvalidOperation,
+    /// An actor spawn omitted a required state field or `init` parameter.
+    MissingActorSpawnArgument,
     /// An ordering operator (`<`/`<=`/`>`/`>=`) on a record, enum, tuple, or
     /// `Option`/`Result` with no user `impl Ord`/`impl PartialOrd` for the
     /// type (D26 as amended by D340). Legal Hew — a derived lexicographic
@@ -1486,6 +1488,7 @@ impl TypeErrorKind {
             Self::PathKindMismatch => "E_PATH_KIND_MISMATCH",
             Self::InvalidSend => "InvalidSend",
             Self::InvalidOperation => "InvalidOperation",
+            Self::MissingActorSpawnArgument => "MissingActorSpawnArgument",
             Self::DerivedOrdUnavailable { .. } => "E_LIMIT_DERIVED_ORD",
             Self::ConstInitializer => "E_CONST_INITIALIZER",
             Self::WireOptionalFieldRequiresOption => "E_WIRE_OPTIONAL_REQUIRES_OPTION",

@@ -3322,6 +3322,11 @@ pub struct Checker {
     ///
     /// Used by the supervisor checker (S-B) to validate `wired_to:` type compatibility.
     pub(super) actor_init_params: HashMap<String, Vec<ActorInitParamInfo>>,
+    /// Spawn argument names and whether each one is required, keyed by the
+    /// actor declaration identity. State fields with defaults are optional;
+    /// fields initialized by `init` are absent; explicit `init` parameters
+    /// are always required.
+    pub(super) actor_spawn_args: HashMap<String, Vec<(String, bool)>>,
     /// When set, records the scope depth at which a lambda was entered.
     /// Variable lookups from scopes below this depth are captures.
     pub(super) lambda_capture_depth: Option<usize>,
@@ -3629,6 +3634,15 @@ pub struct Checker {
     /// may only be assigned inside `init`; handlers and methods must declare
     /// the field with `var` to write it).
     pub(super) current_actor_fields: Vec<ActorFieldInfo>,
+    /// State fields of the current actor that some handler, method or hook
+    /// consumes, with that body's name and first consume site (D524). The
+    /// seat is empty from the consume until its replacement is stored, so a
+    /// fault in between leaves nothing for `#[on(crash)]` to read.
+    pub(super) actor_consumed_state: HashMap<String, (String, Span)>,
+    /// While checking an `#[on(crash)]` body: the hook's bindings of those
+    /// consumed fields, keyed by binding identity so a parameter or local that
+    /// shadows a field is never mistaken for it.
+    pub(super) crash_hook_consumed_fields: HashMap<TypeBindingId, String>,
     /// Nesting depth of "this expression is the BASE of a projection, not a
     /// whole-value use".
     ///
@@ -4115,6 +4129,7 @@ impl Checker {
             select_sources: HashMap::new(),
             closure_escape_facts: HashMap::new(),
             actor_init_params: HashMap::new(),
+            actor_spawn_args: HashMap::new(),
             lambda_capture_depth: None,
             lambda_captures: Vec::new(),
             lambda_capture_facts: Vec::new(),
@@ -4166,6 +4181,8 @@ impl Checker {
             current_self_binding_ty: None,
             current_actor_type: None,
             current_actor_fields: Vec::new(),
+            actor_consumed_state: HashMap::new(),
+            crash_hook_consumed_fields: HashMap::new(),
             place_base_depth: 0,
             place_write_depth: 0,
             pattern_place: None,

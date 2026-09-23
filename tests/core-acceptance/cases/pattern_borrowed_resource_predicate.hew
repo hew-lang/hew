@@ -1,0 +1,28 @@
+#[resource]
+type Token { id: i64 }
+
+impl Token {
+    fn close(consume self) { println(f"closed {self.id}"); }
+}
+
+type Packet { tag: string, token: Token }
+
+fn classify(packet: Packet) -> i64 {
+    match packet {
+        Packet { tag: "hit", token: _ } => 1,
+        Packet { tag: _, token: _ } => 2,
+    }
+}
+
+fn sample(tag: string, id: i64) -> i64 {
+    let packet = Packet { tag: tag, token: Token { id: id } };
+    let result = classify(packet);
+    println(f"result {result}, token {packet.token.id}");
+    result
+}
+
+fn main() {
+    let first = sample("hit", 1);
+    let second = sample("miss", 2);
+    println(first + second);
+}

@@ -2375,6 +2375,13 @@ branches and loops; mutation or draining is refused when the compiler cannot
 prove the loan has ended. HashMap `get` similarly borrows clone-free values;
 `remove` transfers a value out.
 
+Plain iteration over a concrete copyable `Vec`, `HashMap`, or `HashSet` reads a
+point-in-time logical snapshot. Mutating the source collection during the loop
+is permitted, but copy-on-write detaches that mutation: replacement, element
+assignment, insertion, removal, `push`, and `clear` do not change the active
+cursor. This snapshot contract is distinct from the clone-free generic path
+above, whose element loans keep their source borrowed.
+
 #### 3.8.2 Type-Erased Dispatch with `dyn Trait`
 
 Single-trait `dyn Trait` dispatch is implemented. A concrete value whose type
@@ -5888,6 +5895,13 @@ that state's cleanup. Completed changes from earlier turns and valid changes
 made before the current turn's failure remain visible to the hook. A subsequent
 restart constructs fresh state from the supervisor's configuration; the hook
 does not run on that restart state. Stop hooks do not run on a crash.
+
+A handler that consumes a state field leaves that field empty until it stores
+a replacement, and a crash in between leaves it empty for the hook. An
+`#[on(crash)]` hook therefore may not read a state field that any handler,
+method or hook of the actor consumes; the compiler reports the read and names
+the consuming handler. The crashing incarnation's cleanup releases only the
+fields that are still initialized.
 
 The crash hook returns a `CrashAction`. `Restart` requests the supervisor's
 ordinary restart handling, including the child's restart policy, restart

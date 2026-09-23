@@ -1,0 +1,34 @@
+#[resource]
+type Socket {
+    label: string,
+}
+
+impl Socket {
+    fn close(consume self) {}
+
+    fn detach(consume self, fail: bool) -> string {
+        if fail {
+            panic("detach failed");
+        }
+        self.label
+    }
+}
+
+actor Vault {
+    var sock: Socket,
+
+    receive fn swap(fail: bool) -> string {
+        let label = sock.detach(fail);
+        sock = Socket { label: label + "!" };
+        label
+    }
+}
+
+fn main() {
+    let vault = spawn Vault(sock: Socket { label: "open" });
+    println(vault.swap(false).expect("first swap"));
+    match vault.swap(true) {
+        .Ok(_) => println("unexpected"),
+        .Err(_) => println("fault observed"),
+    }
+}

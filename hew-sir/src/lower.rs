@@ -3114,7 +3114,10 @@ fn lower_initial_value_transfer(
         require_initial_value_transfer(expr.intent, &ty, context)?;
         return builder.lower_expr(expr);
     }
-    if !matches!(expr.intent, IntentKind::Read | IntentKind::Consume) {
+    if !matches!(
+        expr.intent,
+        IntentKind::Read | IntentKind::Consume | IntentKind::Capture
+    ) {
         return Err(format!(
             "{context}: HIR {:?} intent cannot transfer `{}` in the owned SIR slice",
             expr.intent,
@@ -3231,6 +3234,7 @@ struct ControlState {
     cleanup_may_fail: bool,
     cleanup_draining: bool,
     deferred_initialized: BTreeSet<PlaceId>,
+    state_taken: BTreeSet<PlaceId>,
 }
 
 /// The scope loans one `let` binding holds on a borrowed collection.
@@ -3436,6 +3440,8 @@ struct Builder<'hir, 'service> {
     /// the current path. The checker rejects a join whose arms disagree, so
     /// the set is exact at every fault exit and names what init must release.
     deferred_initialized: BTreeSet<PlaceId>,
+    /// Mutable actor-state seats consumed on this path and awaiting `StoreInit`.
+    state_taken: BTreeSet<PlaceId>,
     /// A stream producer body: the caller's sink it yields into and the
     /// element type each yield transfers.
     stream_sink: Option<(ValueId, ResolvedTy)>,
@@ -3573,6 +3579,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             cleanup_may_fail: false,
             cleanup_draining: false,
             deferred_initialized: BTreeSet::new(),
+            state_taken: BTreeSet::new(),
             stream_sink,
         };
         builder.bind_captures(source)?;
@@ -4429,6 +4436,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             cleanup_may_fail: self.cleanup_may_fail,
             cleanup_draining: self.cleanup_draining,
             deferred_initialized: self.deferred_initialized.clone(),
+            state_taken: self.state_taken.clone(),
         }
     }
 
@@ -4449,6 +4457,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         self.cleanup_draining = state.cleanup_draining;
         self.deferred_initialized
             .clone_from(&state.deferred_initialized);
+        self.state_taken.clone_from(&state.state_taken);
     }
 
     fn retain_bindings(
@@ -4550,6 +4559,12 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 "control-flow predecessors disagree on which deferred actor fields are initialized"
                     .into(),
             );
+        }
+        if states
+            .iter()
+            .any(|state| state.state_taken != first.state_taken)
+        {
+            return Err("control-flow predecessors disagree on consumed actor state fields".into());
         }
         for binding in &keys {
             if states
@@ -4840,18 +4855,15 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             lower_initial_value_transfer(self, value, "assignment value", OwnedBindingUse::Copy)?;
         let new = self.coerce_value(new, &ty, Provenance::Site(value.site))?;
         match target {
-            BindingTarget::Place(place) if first_store => {
-                // A deferred actor field's first store (D447): the seat holds
-                // nothing to release, and from here the fault path owns it.
-                if !matches!(
-                    self.places[place.0 as usize].origin,
-                    PlaceOrigin::ActorState {
-                        initialized: false,
-                        ..
-                    }
-                ) {
+            BindingTarget::Place(place) if first_store || self.state_taken.contains(&place) => {
+                // A deferred field or a mutable field consumed earlier in this
+                // body has an empty actor-state seat. Publish the replacement
+                // without trying to release the value that left it.
+                let PlaceOrigin::ActorState { initialized, .. } =
+                    self.places[place.0 as usize].origin
+                else {
                     return Err("a first store requires an uninitialized actor state seat".into());
-                }
+                };
                 self.emit_place_operation(
                     SemOpKind::StoreInit {
                         place,
@@ -4860,7 +4872,10 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     Provenance::Site(value.site),
                 )?;
                 self.owned_live.remove(&new);
-                self.deferred_initialized.insert(place);
+                self.state_taken.remove(&place);
+                if !initialized {
+                    self.deferred_initialized.insert(place);
+                }
                 Ok(())
             }
             BindingTarget::Place(place) => {
@@ -7632,7 +7647,14 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         if self.service.checked_facts.rows()[&TypeInstanceKey(ty)].clone
             == hew_types::CloneKind::None
         {
-            return Err("an actor state field without a copy cannot leave the state seat".into());
+            if expression.intent == IntentKind::Consume
+                && self.binding_root_is_mutable(expression)?
+            {
+                return Ok(false);
+            }
+            return Err(
+                "an actor state field without a copy must be consumed from a mutable seat".into(),
+            );
         }
         Ok(true)
     }
@@ -7719,6 +7741,12 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             let kind = if self.state_field_leaves_as_copy(place, expression)? {
                 SemOpKind::LoadCopy { place }
             } else {
+                if matches!(
+                    self.places[place.0 as usize].origin,
+                    crate::PlaceOrigin::ActorState { .. }
+                ) {
+                    self.state_taken.insert(place);
+                }
                 SemOpKind::LoadTake { place }
             };
             return self.emit(expression, kind).map(Some);
@@ -8046,6 +8074,27 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         if signature.return_ty != result_ty {
             signature.return_ty = result_ty.clone();
         }
+        // A checker-approved `#[returns_receiver]` call used only for its
+        // effect carries a Read receiver even though the selected parameter
+        // consumes it. Transfer the seat into the call, then publish the exact
+        // returned owner back into that same seat on the normal edge. Calls
+        // that produce a value, or consume a temporary without a storage seat,
+        // leave their result with the enclosing expression instead. The
+        // unwind edge deliberately leaves the seat dead: the callee consumed
+        // the receiver and the caller's ordinary fault cleanup must not release
+        // it a second time.
+        let receiver_writeback = args
+            .first()
+            .zip(signature.params.get(seats))
+            .filter(|(receiver, parameter)| {
+                !value_required
+                    && receiver.intent == IntentKind::Read
+                    && parameter.passing == SemParamPassing::Consume
+                    && self.ty(&receiver.ty) == signature.return_ty
+            })
+            .map(|(receiver, _)| self.expression_projection(receiver))
+            .transpose()?
+            .flatten();
         let mut lowered_args =
             self.lower_user_arguments(args, &signature.params[seats..], &mut loans)?;
         if let Some(actor) = actor {
@@ -8069,14 +8118,29 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 },
             );
         }
-        self.finish_user_call(
+        let result = self.finish_user_call(
             callee,
             signature,
             lowered_args,
             &loans,
             &live_before_arguments,
             value_required,
-        )
+        )?;
+        if let Some(place) = receiver_writeback {
+            let value = result.ok_or_else(|| {
+                "receiver-preserving consume did not return its receiver owner".to_string()
+            })?;
+            self.emit_place_operation(
+                SemOpKind::StoreInit {
+                    place,
+                    value: Operand { value },
+                },
+                Provenance::Site(expr.site),
+            )?;
+            self.owned_live.remove(&value);
+            return Ok(None);
+        }
+        Ok(result)
     }
 
     /// Lower a trait-method call reached through a where-clause bound.

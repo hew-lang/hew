@@ -2852,7 +2852,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             ),
             None => Vec::new(),
         };
-        let place_flags = partial::allocate_flags(module, function, &builder)?;
+        let place_flags = partial::allocate_flags(module, function, &builder, &slots)?;
         let active_fault = builder
             .build_alloca(ctx.ptr_type(AddressSpace::default()), "active.fault")
             .llvm_ctx("allocate active fault")?;

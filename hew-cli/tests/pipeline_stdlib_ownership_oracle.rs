@@ -11,7 +11,7 @@ mod support;
 use support::leak_slope::{
     assert_frame_slope_below_tolerance_exact_lines, compile_to_native, run_under_malloc_scribble,
 };
-use support::{describe_output, require_codegen};
+use support::{describe_output, require_codegen, run_bounded_command};
 
 fn source_with_frames(template: &str, frames: usize) -> String {
     template.replace("__FRAMES__", &frames.to_string())
@@ -65,17 +65,24 @@ fn main() -> i64 {
         .Ok(value) => value,
         .Err(_) => { return 10; },
     };
-    match source.push(item(-2, "cancel-seed-one")) {
-        .Ok(admitted) => { if !admitted { return 11; } },
-        .Err(_) => { return 12; },
-    }
-    match source.push(item(-1, "cancel-seed-two")) {
-        .Ok(admitted) => { if !admitted { return 13; } },
-        .Err(_) => { return 14; },
-    }
 
+    // Occupy Source with one checked push before selecting another. The
+    // selected request is then queued but cannot dispatch, so the timeout
+    // deterministically exercises native request withdrawal instead of racing
+    // the scheduler to decide whether the losing call has begun its handler.
     var i: i64 = 0;
     while i < __FRAMES__ {
+        let blocker = fork { source.push(item(-i - 1, f"blocker-{i}")) };
+        var attempts: i64 = 0;
+        while attempts < i + 1 {
+            match control.attempts() {
+                .Ok(value) => { attempts = value; },
+                .Err(_) => { return 11; },
+            }
+            if attempts < i + 1 {
+                sleep(1ms);
+            }
+        }
         let outcome = select {
             reply from source.push(item(i, f"cancel-owned-{i}")) => if reply.expect("ask reply") { 1 } else { -1 },
             after 1ms => 0,
@@ -84,13 +91,17 @@ fn main() -> i64 {
             return 15;
         }
         let _ = control.release();
+        match await blocker {
+            .Ok(admitted) => { if !admitted { return 12; } },
+            .Err(_) => { return 13; },
+        }
         var posts: i64 = 0;
-        while posts < i + 3 {
+        while posts < i + 1 {
             match control.post_sends() {
                 .Ok(value) => { posts = value; },
                 .Err(_) => { return 16; },
             }
-            if posts < i + 3 {
+            if posts < i + 1 {
                 sleep(1ms);
             }
         }
@@ -98,9 +109,7 @@ fn main() -> i64 {
         i = i + 1;
     }
 
-    let _ = control.release();
-    let _ = control.release();
-    match source.shutdown(__FRAMES__ + 2) {
+    match source.shutdown(__FRAMES__) {
         .Ok(drained) => if drained { 0 } else { 17 },
         .Err(_) => 18,
     }
@@ -181,6 +190,29 @@ fn pipeline_owned_payload_normal_has_flat_leak_slope() {
         "pipeline_owned_normal",
         normal_source,
         expected_lines,
+    );
+}
+
+#[test]
+fn pipeline_owned_payload_cancellation_completes() {
+    require_codegen();
+    let dir = tempfile::Builder::new()
+        .prefix("pipeline-owned-cancellation-")
+        .tempdir()
+        .expect("tempdir");
+    let bin = compile_to_native(&cancellation_source(4), dir.path(), "cancellation");
+    let output = run_bounded_command(
+        std::process::Command::new(bin),
+        "pipeline owned payload cancellation",
+    );
+    assert!(
+        output.status.success(),
+        "pipeline cancellation must complete successfully:\n{}",
+        describe_output(&output)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "cancelled\ncancelled\ncancelled\ncancelled\n"
     );
 }
 

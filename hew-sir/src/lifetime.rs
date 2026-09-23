@@ -1827,11 +1827,16 @@ impl<'a> Flow<'a> {
         let (_, OwnerRoot::Value(owner)) = self.places[index] else {
             unreachable!("only capture places have no local or aggregate selection")
         };
-        self.access(block, owner, false, state, emit);
         // A deferred actor seat's first store needs a dead seat; every other
         // access needs a live one (D447).
         let initializing =
             matches!(kind, SemOpKind::StoreInit { .. }) && self.state_places.contains(&place);
+        // StoreInit addresses the exclusive state receiver without reading its
+        // complete contents. Calling `access` here would require the very seat
+        // this operation is restoring to already be live.
+        if !initializing {
+            self.access(block, owner, false, state, emit);
+        }
         let expected = if initializing { DEAD } else { LIVE };
         if state.places[index] != expected {
             emit(Violation {

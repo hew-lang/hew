@@ -262,9 +262,6 @@ tests/pkg-import/two_module_same_generic_valueclass_accept.hew
 # final-path-limitation: accept fixtures whose programs the final path cannot
 # lower yet
 tests/vertical-slice/accept/actor_state_field_reinit.hew E_SIR_UNSUPPORTED
-tests/vertical-slice/accept/branch_join_diverging_guard.hew E_SIR_UNSUPPORTED
-tests/vertical-slice/accept/hashmap_for_in_call.hew E_SIR_UNSUPPORTED
-tests/vertical-slice/accept/hashset_for_in_call.hew E_SIR_UNSUPPORTED
 
 # known defect (#3404): `Node.id()` returns the builtin `NodeId` and
 # `RemotePid<T>.node_id()` the one std/builtins.hew declares, so comparing them
@@ -273,7 +270,6 @@ tests/vertical-slice/accept/identity_aggregates.hew
 tests/vertical-slice/accept/link_monitor_value_monitor.hew E_SIR_UNSUPPORTED
 tests/vertical-slice/accept/link_monitor_value_monitor_in_actor.hew E_SIR_UNSUPPORTED
 tests/vertical-slice/accept/link_monitor_value_result.hew E_SIR_UNSUPPORTED
-tests/vertical-slice/accept/match_float_literal_arm.hew E_SIR_UNSUPPORTED
 
 # known defect (#3094): a `#[resource]` disposer cannot consume its own handle
 # field. Routing around the refusal compiles and then segfaults, so the refusal
@@ -283,8 +279,6 @@ tests/vertical-slice/accept/returns_receiver_consuming_result.hew
 # internal-channel (#3401): accept fixtures the checker admits and SIR
 # verification then refuses
 tests/vertical-slice/accept/supervisor_childref_value_flow_states.hew E_SIR_VERIFY
-tests/vertical-slice/accept/toml_value_resource_exactly_once.hew E_SIR_VERIFY
-tests/vertical-slice/accept/vec_into_iter_typeck.hew E_SIR_UNSUPPORTED
 
 # ── tools/ ──────────────────────────────────────────────────────────────────────
 

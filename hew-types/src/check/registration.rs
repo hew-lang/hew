@@ -4927,7 +4927,22 @@ impl Checker {
                 .collect()
         });
         self.actor_deferred_fields
-            .insert(identity.to_string(), deferred);
+            .insert(identity.to_string(), deferred.clone());
+        let mut spawn_args = ad
+            .fields
+            .iter()
+            .filter(|field| !deferred.contains(&field.name))
+            .map(|field| (field.name.clone(), field.default.is_none()))
+            .collect::<Vec<_>>();
+        if let Some(init) = &ad.init {
+            spawn_args.extend(
+                init.params
+                    .iter()
+                    .map(|parameter| (parameter.name.clone(), true)),
+            );
+        }
+        self.actor_spawn_args
+            .insert(identity.to_string(), spawn_args);
         self.record_type_def_inference_holes(identity, hole_vars);
     }
 

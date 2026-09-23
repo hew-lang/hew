@@ -1170,6 +1170,7 @@ impl Checker {
                     .insert(SpanKey::in_module(&field.ty.1, self.current_module_idx));
             }
         }
+        let prev_consumed_state = std::mem::take(&mut self.actor_consumed_state);
         let prev_actor_fields = std::mem::replace(
             &mut self.current_actor_fields,
             ad.fields
@@ -1222,6 +1223,7 @@ impl Checker {
         }
         self.current_actor_type = prev_actor_type;
         self.current_actor_fields = prev_actor_fields;
+        self.actor_consumed_state = prev_consumed_state;
     }
 
     fn check_actor_field_defaults(&mut self, ad: &ActorDecl) {
@@ -1241,6 +1243,9 @@ impl Checker {
     fn check_actor_methods(&mut self, ad: &ActorDecl, identity: &str) {
         let mut on_start_seen: Option<Span> = None;
         let mut on_down_seen: Option<Span> = None;
+        // The crash hook is checked after every other body so that it sees
+        // each state field any of them consumes (D524).
+        let mut crash_hooks = Vec::new();
         for method in &ad.methods {
             let hook_attrs: Vec<_> = method
                 .attributes
@@ -1253,7 +1258,7 @@ impl Checker {
                 self.bind_actor_fields(&ad.fields);
                 let qualified = format!("{identity}::{}", method.name);
                 self.check_function_as(method, &qualified);
-                self.reject_unplugged_actor_state_fields(&ad.fields);
+                self.reject_unplugged_actor_state_fields(&ad.fields, Some(&method.name));
                 self.env.pop_scope();
                 continue;
             }
@@ -1311,7 +1316,7 @@ impl Checker {
             // crash takes a `CrashInfo` parameter and returns `CrashAction`.
             match hook_kind_str {
                 "crash" => {
-                    self.check_crash_hook(&ad.name, method, &ad.fields);
+                    crash_hooks.push(method);
                     continue;
                 }
                 "exit" => {
@@ -1329,6 +1334,9 @@ impl Checker {
             // scope (bare names) and have no parameters beyond `self`.
             let display_kind = format!("on({hook_kind_str})");
             self.check_lifecycle_hook(&ad.name, method, &display_kind, &ad.fields);
+        }
+        for hook in crash_hooks {
+            self.check_crash_hook(&ad.name, hook, &ad.fields);
         }
     }
 
@@ -1421,7 +1429,19 @@ impl Checker {
     ///
     /// Call sites run this AFTER popping any parameter scope, so a parameter
     /// that shadows a field name cannot be mistaken for the field.
-    pub(super) fn reject_unplugged_actor_state_fields(&mut self, fields: &[FieldDecl]) {
+    ///
+    /// `consumer` names the body for D524: every field it consumed on any
+    /// path, even one it re-initialised, is recorded for the crash-hook read
+    /// rule. A field whose type has a copy path leaves its seat as a copy and
+    /// is never emptied, so only copy-less fields are recorded.
+    pub(super) fn reject_unplugged_actor_state_fields(
+        &mut self,
+        fields: &[FieldDecl],
+        consumer: Option<&str>,
+    ) {
+        if let Some(consumer) = consumer {
+            self.record_consumed_actor_state(fields, consumer);
+        }
         for field in fields {
             let Some(binding) = self.env.lookup_ref(&field.name) else {
                 continue;
@@ -1463,6 +1483,26 @@ impl Checker {
                 error = error.with_source_module(source_module.clone());
             }
             self.errors.push(error);
+        }
+    }
+
+    fn record_consumed_actor_state(&mut self, fields: &[FieldDecl], consumer: &str) {
+        for field in fields {
+            let Some(consumed_at) = self
+                .env
+                .lookup_ref(&field.name)
+                .and_then(|binding| binding.consumed_at.clone())
+            else {
+                continue;
+            };
+            let ty = self.resolve_type_expr(&field.ty);
+            if matches!(self.element_value_facts(&ty), Ok((_, clone)) if clone != crate::CloneKind::None)
+            {
+                continue;
+            }
+            self.actor_consumed_state
+                .entry(field.name.clone())
+                .or_insert_with(|| (consumer.to_string(), consumed_at));
         }
     }
 
@@ -1623,7 +1663,7 @@ impl Checker {
 
         self.current_function = prev_function;
         self.env.pop_scope(); // params scope
-        self.reject_unplugged_actor_state_fields(fields);
+        self.reject_unplugged_actor_state_fields(fields, Some("init"));
         self.env.pop_scope(); // fields scope
     }
 
@@ -1726,7 +1766,7 @@ impl Checker {
         self.in_actor_handler_context = prev_actor_handler_context;
 
         self.current_function = prev_function;
-        self.reject_unplugged_actor_state_fields(fields);
+        self.reject_unplugged_actor_state_fields(fields, Some(&hook.name));
         self.env.pop_scope();
     }
 
@@ -1888,6 +1928,14 @@ impl Checker {
         // name is intentionally permitted — same precedent as `init` and
         // receive fn parameters (HEW-SPEC-2026 §9.1.1).
         self.bind_actor_fields(fields);
+        self.crash_hook_consumed_fields = fields
+            .iter()
+            .filter(|field| self.actor_consumed_state.contains_key(&field.name))
+            .filter_map(|field| {
+                let binding = self.env.lookup_ref(&field.name)?;
+                Some((binding.id, field.name.clone()))
+            })
+            .collect();
         if let Some(p) = hook.params.first() {
             let pty = self.resolve_type_expr(&p.ty);
             self.env
@@ -1902,11 +1950,12 @@ impl Checker {
         // now return `Restart`/`Escalate`/`Kill` (or `panic(...)`) freely. The
         // standard return-type checking against `current_return_type` covers it.
         let _body_ty = self.check_block(&hook.body, None);
+        self.crash_hook_consumed_fields.clear();
         self.current_return_type = None;
         self.in_actor_handler_context = prev_actor_handler_context;
 
         self.current_function = prev_function;
-        self.reject_unplugged_actor_state_fields(fields);
+        self.reject_unplugged_actor_state_fields(fields, None);
         self.env.pop_scope();
     }
 
@@ -2002,7 +2051,7 @@ impl Checker {
         self.in_actor_handler_context = prev_actor_handler_context;
 
         self.current_function = prev_function;
-        self.reject_unplugged_actor_state_fields(fields);
+        self.reject_unplugged_actor_state_fields(fields, Some(&hook.name));
         self.env.pop_scope();
     }
 
@@ -2078,7 +2127,7 @@ impl Checker {
         self.current_return_type = None;
         self.in_actor_handler_context = prev_actor_handler_context;
         self.current_function = prev_function;
-        self.reject_unplugged_actor_state_fields(fields);
+        self.reject_unplugged_actor_state_fields(fields, Some(&hook.name));
         self.env.pop_scope();
     }
 
@@ -2413,7 +2462,7 @@ impl Checker {
             self.generic_ctx.pop();
         }
         self.env.pop_scope(); // params scope
-        self.reject_unplugged_actor_state_fields(fields);
+        self.reject_unplugged_actor_state_fields(fields, Some(&rf.name));
         self.env.pop_scope(); // fields scope
     }
 

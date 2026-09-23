@@ -167,6 +167,19 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         Ok(())
     }
 
+    /// A failed receive or send traps with the runtime's diagnostic - the
+    /// faulted pipe or the I/O error - rather than a bare code.
+    fn initialize_stream_fault(&self, request: PointerValue<'ctx>) -> CodegenResult<()> {
+        let pointer = self.ctx.ptr_type(AddressSpace::default());
+        let fault = coro::external(
+            self.llvm,
+            "hew_stream_operation_fault_native",
+            pointer.fn_type(&[pointer.into()], false),
+        )?;
+        let fault = suspend::call_value(&self.builder, fault, &[request.into()], "stream.fault")?;
+        self.store_active_fault(fault, HEW_TRAP_USER_PANIC)
+    }
+
     fn finish_stream(
         &self,
         request: PointerValue<'ctx>,
@@ -387,7 +400,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         self.emit_edge(cancel)?;
         self.builder.position_at_end(failed);
         self.finish_stream(request, waker, cancelled)?;
-        self.initialize_active_fault(HEW_TRAP_USER_PANIC)?;
+        self.initialize_stream_fault(request)?;
         self.free_handle("hew_stream_operation_free_native", request)?;
         self.emit_edge(unwind)
     }
@@ -610,7 +623,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         self.emit_edge(cancel)?;
         self.builder.position_at_end(failed);
         self.finish_stream(request, waker, cancelled)?;
-        self.initialize_active_fault(HEW_TRAP_USER_PANIC)?;
+        self.initialize_stream_fault(request)?;
         self.free_handle("hew_stream_operation_free_native", request)?;
         self.emit_edge(unwind)
     }

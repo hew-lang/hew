@@ -225,6 +225,32 @@ pub unsafe extern "C" fn hew_stream_read_poll_native(operation: *mut HewNativeSt
     status
 }
 
+/// The fault a receive or send reports after its poll answered failure (3):
+/// the faulted pipe or the I/O error, never a bare code.
+///
+/// # Safety
+/// Operation is a live operation whose last poll reported failure.
+#[no_mangle]
+pub unsafe extern "C" fn hew_stream_operation_fault_native(
+    operation: *mut HewNativeStream,
+) -> *mut crate::fault::HewFault {
+    // SAFETY: the caller lends the live operation.
+    let message = match unsafe { &(*operation).backing } {
+        Backing::Pipe(core) => core.fault_message(),
+        #[cfg(not(target_arch = "wasm32"))]
+        Backing::Io(io) => {
+            // SAFETY: the operation owns this live async request.
+            unsafe { async_io::failure_message(*io) }
+                .unwrap_or_else(|| "stream I/O failed".to_string())
+        }
+        Backing::Finished => "stream operation on a finished stream".to_string(),
+    };
+    Box::into_raw(Box::new(crate::fault::HewFault::with_message(
+        crate::internal::types::HEW_TRAP_USER_PANIC,
+        message,
+    )))
+}
+
 /// Transfer one ready element after the producer is quiescent.
 ///
 /// # Safety

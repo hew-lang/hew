@@ -416,6 +416,19 @@ pub(crate) unsafe fn take_stream_item(operation: *const HewAsyncIo) -> (i32, Opt
     (if item.is_some() { 1 } else { 2 }, item)
 }
 
+/// The diagnostic a failed operation carries, for the caller's trap report.
+///
+/// # Safety
+/// `operation` is null or a live operation reference.
+pub(crate) unsafe fn failure_message(operation: *const HewAsyncIo) -> Option<String> {
+    // SAFETY: the caller lends a live operation reference, or null.
+    let operation = unsafe { operation.as_ref() }?;
+    match &*operation.state.lock_or_recover() {
+        State::Ready(Err(failure)) => Some(failure.message.clone()),
+        _ => None,
+    }
+}
+
 /// Transfer a count from a completed write. The output is untouched on failure.
 ///
 /// # Safety

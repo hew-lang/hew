@@ -71,10 +71,8 @@ whole internode wire — frame and body — CDDL-described.
 
 The body shapes (the `wire-body` rule and its parts):
 
-- A **`#[wire]` type** (or any cross-node `Serializable` record) encodes
-  as a CBOR **map keyed by the unsigned `@N` field tags** — `cbor_field_key`
-  uses the explicit `@N` from the wire layout, or a 1-based positional
-  fallback for layout-less records. Keys are emitted in canonical
+- A **`#[wire]` type** encodes as a CBOR **map keyed by the unsigned `@N`
+  field tags** from its wire layout. Keys are emitted in canonical
   (ascending) order. Forward-compatible: a decoder tolerates unknown keys
   but tolerates an absent known key only when checked field metadata marks it
   `optional`. Required fields use the failing selector.
@@ -102,11 +100,10 @@ absence or a present null, and emits the key for `Some`. A required bare `T`
 always emits its key and rejects both absence and null. Unknown tags remain
 tolerated. The compiler carries this choice as `WireFieldPresence`; text
 descriptors repeat it explicitly and the runtime rejects descriptors where it
-is missing. Edition-2026 plain Serializable records are the only compatibility
-bridge: because they have no `optional` field surface, codegen records every
-field as explicitly required rather than guessing from its type. The bridge is
-obsolete when plain records carry checked presence metadata; at that point a
-missing entry becomes a compiler error.
+is missing. A plain record has no wire layout and never crosses a node: a
+remote actor message or reply must be a scalar, a collection of portable
+values, or a `#[wire]` type, and the checker refuses anything else at the
+remote call.
 
 ### Tag-stability asymmetry — explicit `@N` vs ordinal
 
@@ -142,8 +139,8 @@ body is the sole internode body format.
 
 [wire-body-test]: ../../hew-runtime/tests/wire_body_cddl_conformance.rs
 
-A cross-node payload whose type is **neither `#[wire]` nor otherwise
-`Serializable`** has no registered codec, so `encode_payload` fails closed
+A cross-node payload for an actor that registered no codec for its target
+member has none to select, so `encode_payload` fails closed
 (returns null, `*out_len = 0`) rather than sending raw bytes — the
 fail-closed posture extends to "no codec for this type", not just malformed
 input.

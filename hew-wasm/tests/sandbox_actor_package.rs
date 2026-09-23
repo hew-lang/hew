@@ -911,6 +911,37 @@ fn a_late_owned_reply_drains_before_the_next_actor_turn() {
     let trace = execute(source);
     assert_eq!(stdout(&trace), "deadline\nclosed 9\nready\n");
     assert_eq!(trace["final_state"]["exit_code"], 0);
+    // The virtual clock lets the worker dispatch before the deadline, so the
+    // first attempt takes the late-reply leg: the ticket is created, the
+    // caller times out, and its close reaches the audit before the worker's
+    // next turn.
+    let received: Vec<String> = trace["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|event| event["message"] == "actor.receive")
+        .map(|event| {
+            let text: serde_json::Value =
+                serde_json::from_str(event["text"].as_str().unwrap()).unwrap();
+            format!(
+                "{}.{}",
+                text["actor_id"].as_str().unwrap(),
+                text["handler"].as_str().unwrap()
+            )
+        })
+        .collect();
+    assert_eq!(
+        received,
+        [
+            "actor:a2.create",
+            "actor:a1.create",
+            "actor:a1.record",
+            "actor:a2.ready",
+            "actor:a1.receipt",
+            "actor:a1.last_closed",
+        ],
+        "{trace:#}"
+    );
 
     let definitions = &source[..source.find("fn main()").unwrap()];
     let selection = format!(
@@ -923,7 +954,8 @@ fn main() {{
         after 1ms => println("timeout"),
     }}
     worker.ready().expect("ready");
-    let closed = audit.receipt().expect("receipt");
+    assert(audit.receipt().expect("receipt") == 1);
+    let closed = audit.last_closed().expect("last");
     assert(closed == 9);
     println(f"closed {{closed}}");
     println("ready");

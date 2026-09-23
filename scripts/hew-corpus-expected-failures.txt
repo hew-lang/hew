@@ -247,9 +247,11 @@ tests/pkg-import/two_module_same_generic_valueclass_accept.hew
 # lower yet
 tests/vertical-slice/accept/actor_state_field_reinit.hew E_SIR_UNSUPPORTED
 
-tests/vertical-slice/accept/link_monitor_value_monitor.hew E_SIR_UNSUPPORTED
+# known defect (#3404): `Node.id()` returns the builtin `NodeId` and
+# `RemotePid<T>.node_id()` the one std/builtins.hew declares, so comparing them
+# reads as `expected NodeId, found NodeId`
+tests/vertical-slice/accept/identity_aggregates.hew
 tests/vertical-slice/accept/link_monitor_value_monitor_in_actor.hew E_SIR_UNSUPPORTED
-tests/vertical-slice/accept/link_monitor_value_result.hew E_SIR_UNSUPPORTED
 
 # ── tools/ ──────────────────────────────────────────────────────────────────────
 

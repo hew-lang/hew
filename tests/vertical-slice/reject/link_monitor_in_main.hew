@@ -1,0 +1,13 @@
+// Reject fixture: a direct link() or monitor() in main is
+// E_ACTOR_CONTEXT_REQUIRED (HEW-SPEC-2026 §5.7.1). main receives no DOWN or
+// linked exit, so the subscription would have no reader. The same call reached
+// through a free function returns Err(LinkError.NoContext) at run time; see
+// accept/link_monitor_value_result.hew.
+actor Child {
+    receive fn ping() {}
+}
+
+fn main() {
+    let child = spawn Child;
+    let _ = monitor(child);
+}

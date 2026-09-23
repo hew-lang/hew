@@ -4985,12 +4985,10 @@ time deliberately — the execution context is dynamic (§4.2), and a static
 link. Neither form succeeds silently, which is the property that matters: a
 subscription with no reader is always reported.
 
-> **Implementation status.** Today `LinkError` carries ten variants and names
-> the missing context `NoCurrentActor`, `monitor` returns
-> `Result<MonitorRef, MonitorError>`, and a `link` reached through a free
-> function called from `main` succeeds and prints. The `Dead` arm is never
-> produced until dead-target resolution lands (§5.6). Tracked in
-> hew-lang/hew#3255.
+> **Implementation status.** Local pids follow this rule. `monitor` on a
+> `RemotePid` still returns `Result<MonitorRef, MonitorError>`, whose variants
+> the distributed runtime produces. The `Dead` arm is never produced until
+> dead-target resolution lands (§5.6). Tracked in hew-lang/hew#3255.
 
 ### 5.8 Process Exit Status (normative)
 

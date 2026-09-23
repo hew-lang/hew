@@ -1775,14 +1775,23 @@ impl Checker {
         }
 
         if matches!(func_name.as_str(), "link" | "monitor")
-            && self.current_function.as_deref() == Some("main")
-            && self.user_call_target_for_declared_fn(&func_name).is_none()
+            && self
+                .current_function
+                .as_deref()
+                .and_then(|function| self.root_owned_fn_leaf(function))
+                == Some("main")
+            && !self.declares_function(&func_name)
         {
             self.report_error(
                 TypeErrorKind::InvalidOperation,
                 span,
                 format!("E_ACTOR_CONTEXT_REQUIRED: `{func_name}` requires an actor context; main cannot receive actor notifications"),
             );
+            // The arguments are still ordinary uses of their bindings.
+            for arg in args {
+                let (expr, arg_span) = arg.expr();
+                self.synthesize(expr, arg_span);
+            }
             return Ty::Error;
         }
 

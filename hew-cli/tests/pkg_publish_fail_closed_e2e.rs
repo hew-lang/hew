@@ -101,8 +101,15 @@ fn write_named_registry_token(home: &Path, registry_name: &str, token: &str) {
 
 /// Path the local registry would use if (and only if) a local publish wrote it.
 fn local_package_dir(home: &Path) -> PathBuf {
-    hew_pkg::registry::Registry::with_root(home.join(".hew").join("packages"))
-        .package_dir(PKG_NAME, PKG_VERSION)
+    // `hew publish --local` writes into the namespaced default-registry
+    // slot (the one `--locked`/`--offline` resolution reads), not the
+    // legacy unnamespaced layout `package_dir` returns — see
+    // `publish_local_package` in `hew-pkg/src/cli.rs` (hew-lang/hew#3233).
+    hew_pkg::registry::Registry::with_root(home.join(".hew").join("packages")).package_dir_for(
+        &hew_pkg::config::default_registry_identity(),
+        PKG_NAME,
+        PKG_VERSION,
+    )
 }
 
 fn publish_command(project: &Path, home: &Path, args: &[&str]) -> Command {

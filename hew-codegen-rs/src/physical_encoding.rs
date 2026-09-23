@@ -6,7 +6,7 @@ use hew_types::{RuntimeCReturn, RuntimeCallFamily, RuntimeResultEffect};
 use inkwell::attributes::{Attribute, AttributeLoc};
 use inkwell::types::AnyType;
 
-impl FunctionEmitter<'_, '_> {
+impl<'ctx> FunctionEmitter<'_, 'ctx> {
     pub(super) fn emit_direct_runtime_call(
         &self,
         family: RuntimeCallFamily,
@@ -48,6 +48,19 @@ impl FunctionEmitter<'_, '_> {
                 }
             })
             .collect::<CodegenResult<Vec<_>>>()?;
+        if let (RuntimeCReturn::Storage, false, Some(result)) =
+            (row.c_return, updated_receiver, result)
+        {
+            // A C struct result travels by the target's C convention (x8 sret
+            // on AAPCS64 for a 32-byte `HewLocation`), which a first-class
+            // LLVM aggregate return does not follow.
+            let result_abi = self
+                .module
+                .target
+                .extern_result_abi(&self.storage(result)?.ty)
+                .map_err(|error| CodegenError::FailClosed(error.to_string()))?;
+            return self.emit_c_call(row.symbol, &values, transfers, Some(result), &result_abi);
+        }
         let parameters = values
             .iter()
             .map(|value| value.get_type().into())
@@ -160,6 +173,21 @@ impl FunctionEmitter<'_, '_> {
                 }
             })
             .collect::<CodegenResult<Vec<_>>>()?;
+        self.emit_c_call(symbol, &values, transfers, result, result_abi)?;
+        self.emit_result_edge(result, normal)
+    }
+
+    /// Call a C symbol with prepared arguments, initializing `result` under
+    /// the target-classified result ABI. Moved arguments discharge their
+    /// obligation at the call.
+    fn emit_c_call(
+        &self,
+        symbol: &str,
+        values: &[BasicValueEnum<'ctx>],
+        transfers: &[ArgumentTransfer],
+        result: Option<StorageId>,
+        result_abi: &PhysicalExternResultAbi,
+    ) -> CodegenResult<()> {
         let mut parameters = values
             .iter()
             .map(|value| value.get_type().into())
@@ -256,6 +284,6 @@ impl FunctionEmitter<'_, '_> {
         } else {
             self.runtime_call_void(function, &arguments, "extern.call")?;
         }
-        self.emit_result_edge(result, normal)
+        Ok(())
     }
 }

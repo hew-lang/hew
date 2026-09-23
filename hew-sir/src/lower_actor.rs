@@ -495,6 +495,12 @@ impl InstanceService<'_> {
                     ))
                 }
             };
+            let codec = row
+                .codec
+                .as_ref()
+                .map(|plan| self.resolve_actor_codec(plan))
+                .transpose()?
+                .flatten();
             self.actors[id.0 as usize]
                 .handlers
                 .push(crate::SemActorHandler {
@@ -507,6 +513,7 @@ impl InstanceService<'_> {
                     return_ty,
                     stream,
                     failure_display,
+                    codec,
                 });
         }
         Ok(())

@@ -15,6 +15,8 @@ mod writable;
 
 #[path = "lower_actor.rs"]
 mod actor;
+#[path = "lower_actor_codec.rs"]
+mod actor_codec;
 
 #[path = "lower_supervisor.rs"]
 mod supervisor;
@@ -1489,6 +1491,10 @@ impl<'a> InstanceService<'a> {
         let Ok(entry) = self.admit_monomorphic(&declaration) else {
             return;
         };
+        if let Err(reason) = self.request_actor_codec_roots() {
+            self.record_callable_result(entry, Err(reason));
+            return;
+        }
         let result_plan = self
             .table
             .entry_exit_plan

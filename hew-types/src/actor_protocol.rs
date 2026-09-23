@@ -80,6 +80,31 @@ pub struct ActorHandlerDescriptor {
     /// `fails` clause, and for an error type whose rendering the checker
     /// cannot name — those handlers stay refused through a view.
     pub failure_display: Option<ReceiveFailureDisplay>,
+    /// Checked portable payload schemas; absent when this protocol has no codec.
+    pub codec: Option<ActorCodecPlan>,
+}
+
+/// A portable request and its reply, selected before HIR lowering.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActorCodecPlan {
+    pub params: Vec<ActorCodecValue>,
+    /// Unit completion carries no payload.
+    pub reply: Option<ActorCodecValue>,
+}
+
+/// The checked value identity and its portable field selections.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActorCodecValue {
+    pub ty: ResolvedTy,
+    pub fields: Option<Vec<ActorCodecField>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActorCodecField {
+    pub name: String,
+    /// Absent for a plain record until its protocol encoding is selected.
+    pub tag: Option<u32>,
+    pub value: ActorCodecValue,
 }
 
 /// How one `fails` handler's declared error becomes fault text.
@@ -185,6 +210,7 @@ impl ActorProtocolDescriptor {
                 return_ty: spec.return_ty.clone(),
                 symbol: spec.symbol.clone(),
                 failure_display: None,
+                codec: None,
             });
         }
         Ok(Self {
@@ -229,6 +255,7 @@ impl ActorProtocolDescriptor {
                 return_ty: spec.return_ty.clone(),
                 symbol: spec.symbol.clone(),
                 failure_display: None,
+                codec: None,
             });
         }
         Ok(Self {

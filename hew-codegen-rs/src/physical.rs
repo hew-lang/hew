@@ -6,6 +6,8 @@
 
 #[path = "physical_actor.rs"]
 mod actor;
+#[path = "physical_actor_codec.rs"]
+mod actor_codec;
 
 #[path = "physical_supervisor.rs"]
 mod supervisor;
@@ -2229,6 +2231,7 @@ fn build_module_with_host<'ctx>(
     emitter.emit_callable_descriptors()?;
     emitter.value_callbacks = emitter.emit_selected_value_callbacks()?;
     emitter.emit_actor_descriptors()?;
+    emitter.emit_actor_codec_registration()?;
     emitter.emit_actor_ingress_adapters()?;
     emitter.emit_functions()?;
     emitter.emit_entry()?;

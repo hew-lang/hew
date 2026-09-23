@@ -82,6 +82,14 @@ pub struct SemActorHandler {
     /// How this handler's declared failure renders when a one-way submission
     /// leaves it with no caller. `None` when the handler cannot fail.
     pub failure_display: Option<SemFailureDisplay>,
+    pub codec: Option<SemActorCodec>,
+}
+
+/// Portable actor values selected by the checker and resolved to SIR shapes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SemActorCodec {
+    pub params: Vec<std::sync::Arc<crate::SemWirePlan>>,
+    pub reply: Option<std::sync::Arc<crate::SemWirePlan>>,
 }
 
 impl SemActorHandler {

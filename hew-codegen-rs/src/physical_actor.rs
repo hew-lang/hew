@@ -418,7 +418,7 @@ fn periodic_handler_type(ctx: &Context) -> StructType<'_> {
     ctx.struct_type(&[ctx.i32_type().into(), ctx.i64_type().into()], false)
 }
 
-fn message_type<'ctx>(
+pub(super) fn message_type<'ctx>(
     module: &PhysicalModule,
     ctx: &'ctx Context,
     handler: &SemActorHandler,

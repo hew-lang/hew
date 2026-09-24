@@ -1,0 +1,28 @@
+[[case]]
+id = "wire-bound-impl-obligation-refused"
+intent = "A Hash and Eq impl bounded by T: Serializable does not apply to Key<Plain>, so a map keyed by it is refused at check time."
+source = "cases/wire-bound-impl-obligation-refused.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "BoundsNotSatisfied"
+line = 25
+column = 16
+message = "`Key<Plain>` does not satisfy the required bounds for `Map.len`"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "BoundsNotSatisfied"
+line = 24
+column = 17
+message = "`Key<Plain>` does not satisfy the required bounds for `Map` (Hash + Eq)"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "BoundsNotSatisfied"
+line = 24
+column = 44
+message = "`Key<Plain>` does not satisfy the required bounds for `Map` (Hash + Eq)"

@@ -20,6 +20,17 @@ impl Checker {
         type_args: Option<&[Spanned<hew_parser::ast::TypeExpr>]>,
         span: &Span,
     ) -> Ty {
+        // A facade codec is a compiler operation selected per call site by
+        // its value type; it has no body to take the address of.
+        if self.wire_codec_intrinsic(signature_key).is_some() {
+            self.report_error_with_suggestions(
+                TypeErrorKind::InvalidOperation,
+                span,
+                format!("`{signature_key}` is a compiler codec and cannot be used as a value"),
+                vec!["call it directly, or wrap the call in a closure".to_string()],
+            );
+            return Ty::Error;
+        }
         let sig = self.fn_sigs[signature_key].clone();
         if sig
             .param_ownership

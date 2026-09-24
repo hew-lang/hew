@@ -55,6 +55,7 @@ mod patterns;
 mod registration;
 pub use registration::intrinsic_floor_modules;
 mod resolution;
+mod serializable;
 mod statements;
 #[cfg(test)]
 mod tests;
@@ -739,6 +740,7 @@ impl Checker {
             .collect();
         TypeFactContext::new(rendered, self.registry.clone(), self.type_defs.clone())
             .with_aliases(self.type_aliases.clone())
+            .with_wire_types(self.wire_layouts.keys().cloned().collect())
             .with_impl_methods(
                 self.trait_impl_method_declaration_ids.clone(),
                 self.trait_impl_method_binders.clone(),
@@ -2161,6 +2163,7 @@ impl Checker {
         // but before unresolved-hole reporting so concrete bound failures stay
         // specific and unresolved holes remain authoritative.
         self.drain_deferred_bound_checks();
+        self.drain_deferred_wire_codecs();
 
         // Semantic lint sweep. Runs after inference + defaulting have settled
         // so each lint can trust fully-resolved expression types. Findings are

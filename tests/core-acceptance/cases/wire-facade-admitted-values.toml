@@ -1,0 +1,20 @@
+[[case]]
+id = "wire-facade-admitted-values"
+intent = "The generic wire facade round-trips a bare #[wire] type, settles a literal collection's element type before recording its codec, lowers a codec imported by name and admits a Serializable-bounded type parameter."
+source = "cases/wire-facade-admitted-values.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = """
+{"name":"svc","ports":[80,443],"tag":null}
+svc 2
+[1,2,3]
+2
+- a
+- b
+[{"name":"x","ports":[],"tag":"t"}]
+[true,false]
+"""
+stderr = ""
+exit = 0

@@ -1,0 +1,28 @@
+[[case]]
+id = "wire-facade-unsettled-refused"
+intent = "A facade decode whose value type never settles and a facade codec used as a function value are check-time errors; the annotated decode beside them is accepted."
+source = "cases/wire-facade-unsettled-refused.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "InvalidOperation"
+line = 12
+column = 19
+message = "is a compiler codec and cannot be used as a value"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "InferenceFailed"
+line = 11
+column = 20
+message = "cannot infer the value type of this wire codec call"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "InferenceFailed"
+line = 11
+column = 9
+message = "cannot infer type for local binding `_unknown`"

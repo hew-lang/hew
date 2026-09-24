@@ -63,32 +63,26 @@
 //! trait is required by this wire codec surface.
 
 /// Encode any admitted `Serializable` value as binary CBOR.
-pub fn encode<T: Serializable>(value: T) -> bytes {
-    panic("compiler wire intrinsic")
-}
+#[intrinsic("wire.encode")]
+pub fn encode<T: Serializable>(value: T) -> bytes {}
 
 /// Decode trusted binary CBOR as `T`. Malformed binary input follows the same
 /// trap-on-failure contract as `Type.decode(bytes)`.
-pub fn decode<T: Serializable>(data: bytes) -> T {
-    panic("compiler wire intrinsic")
-}
+#[intrinsic("wire.decode")]
+pub fn decode<T: Serializable>(data: bytes) -> T {}
 
 /// Serialize any admitted `Serializable` value as JSON text.
-pub fn to_json<T: Serializable>(value: T) -> string {
-    panic("compiler wire intrinsic")
-}
+#[intrinsic("wire.to_json")]
+pub fn to_json<T: Serializable>(value: T) -> string {}
 
 /// Parse JSON text as `T`, preserving typed parse failures in `Result`.
-pub fn from_json<T: Serializable>(text: string) -> Result<T, string> {
-    panic("compiler wire intrinsic")
-}
+#[intrinsic("wire.from_json")]
+pub fn from_json<T: Serializable>(text: string) -> Result<T, string> {}
 
 /// Serialize any admitted `Serializable` value as YAML text.
-pub fn to_yaml<T: Serializable>(value: T) -> string {
-    panic("compiler wire intrinsic")
-}
+#[intrinsic("wire.to_yaml")]
+pub fn to_yaml<T: Serializable>(value: T) -> string {}
 
 /// Parse YAML text as `T`, preserving typed parse failures in `Result`.
-pub fn from_yaml<T: Serializable>(text: string) -> Result<T, string> {
-    panic("compiler wire intrinsic")
-}
+#[intrinsic("wire.from_yaml")]
+pub fn from_yaml<T: Serializable>(text: string) -> Result<T, string> {}

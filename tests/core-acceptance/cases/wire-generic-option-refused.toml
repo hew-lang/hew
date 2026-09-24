@@ -1,0 +1,14 @@
+[[case]]
+id = "wire-generic-option-refused"
+intent = "A Serializable-bounded type parameter wrapped in Option is refused where it is written, because the parameter may itself be an Option; Vec<T> beside it is admitted."
+source = "cases/wire-generic-option-refused.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "BoundsNotSatisfied"
+line = 15
+column = 5
+message = "type `Vec<Option<T>>` does not implement trait `Serializable`"

@@ -1,6 +1,6 @@
 // Reject: presence metadata does not make Option<Option<T>> representable.
 // The outer None and Some(None) still collapse to the same null/omitted shape,
-// so the optional-field encoder must fail closed before emitting a codec.
+// so the declaration is refused at check time before any codec exists.
 #[wire]
 type NestedOptional {
     value: Option<Option<i64>> @1 optional,

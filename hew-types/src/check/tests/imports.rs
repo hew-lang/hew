@@ -3045,7 +3045,7 @@ fn local_type_shadows_import_alias_in_member_position() {
 fn aliased_member_matches_qualified_member_type() {
     // The aliased member (`item: Tag`) and the qualified member
     // (`item: myapp.mod_a.Payload`) must resolve to the SAME stored field type, so
-    // every member-derived fact (Send/Copy/Frozen markers, serializable set) is
+    // every member-derived fact (Send/Copy/Frozen markers) is
     // identical regardless of which spelling the user wrote (Risk #1).
     let payload = make_pub_struct("Payload", "code");
     let import = make_user_import(

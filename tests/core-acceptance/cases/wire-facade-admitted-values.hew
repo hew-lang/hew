@@ -1,0 +1,35 @@
+// The generic wire facade encodes and decodes a bare `#[wire]` type, a literal
+// collection whose element type settles only after defaulting, a codec
+// imported by name and a type parameter bounded by `Serializable`.
+import std.encoding.wire;
+import std.encoding.wire.{to_yaml};
+
+#[wire]
+type Config {
+    name: string @1,
+    ports: Vec<i64> @2,
+    tag: Option<string> @3,
+}
+
+fn show<T: Serializable>(values: Vec<T>) -> string {
+    wire.to_json(values)
+}
+
+fn main() {
+    let config = Config { name: "svc", ports: [80, 443], tag: None };
+    let text = wire.to_json(config);
+    println(text);
+    match wire.from_json<Config>(text) {
+        .Ok(back) => println(f"{back.name} {back.ports.len()}"),
+        .Err(reason) => println(f"decode failed: {reason}"),
+    }
+
+    println(wire.to_json([1, 2, 3]));
+    let packed = wire.encode([4, 5]);
+    let unpacked: Vec<i64> = wire.decode(packed);
+    println(f"{unpacked.len()}");
+
+    print(to_yaml(["a", "b"]));
+    println(show([Config { name: "x", ports: [], tag: Some("t") }]));
+    println(show([true, false]));
+}

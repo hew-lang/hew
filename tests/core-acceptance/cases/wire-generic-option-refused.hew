@@ -1,0 +1,22 @@
+// A type parameter bounded by `Serializable` may itself be an `Option`, so
+// wrapping it in another `Option` is refused where it is written; `Vec<T>`
+// beside it is admitted.
+import std.encoding.wire;
+
+fn save_any<T: Serializable>(value: T) -> string {
+    wire.to_json(value)
+}
+
+fn save_all<T: Serializable>(value: T) -> string {
+    save_any([value])
+}
+
+fn save_maybe<T: Serializable>(value: T) -> string {
+    save_any([Some(value)])
+}
+
+fn main() {
+    let inner: Option<i64> = None;
+    println(save_all(inner));
+    println(save_maybe(inner));
+}

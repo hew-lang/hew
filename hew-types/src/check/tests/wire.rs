@@ -189,6 +189,235 @@ fn generic_wire_facade_admits_owned_key_and_element_shapes() {
     );
 }
 
+fn check_wire_program(source: &str) -> TypeCheckOutput {
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "source must parse: {:?}",
+        parsed.errors
+    );
+    Checker::new(test_registry()).check_program(&parsed.program)
+}
+
+fn generic_codec_value_types(output: &TypeCheckOutput) -> Vec<String> {
+    let mut types: Vec<String> = output
+        .method_call_rewrites
+        .values()
+        .filter_map(|rewrite| match rewrite {
+            MethodCallRewrite::GenericWireCodec { value_ty, .. } => {
+                Some(value_ty.user_facing().to_string())
+            }
+            _ => None,
+        })
+        .collect();
+    types.sort();
+    types
+}
+
+#[test]
+fn generic_wire_facade_admits_bare_wire_type() {
+    let output = check_wire_program(
+        r#"
+        import std.encoding.wire;
+
+        #[wire]
+        type Config { name: string @1, port: i64 @2 }
+
+        fn main() {
+            let c = Config { name: "svc", port: 80 };
+            let _text = wire.to_json(c);
+            let _back = wire.from_json<Config>("{}");
+        }
+        "#,
+    );
+    assert!(
+        output.errors.is_empty(),
+        "a #[wire] type is Serializable: {:#?}",
+        output.errors
+    );
+    assert_eq!(generic_codec_value_types(&output), ["Config", "Config"]);
+}
+
+#[test]
+fn generic_wire_facade_records_literal_value_type_after_defaulting() {
+    let output = check_wire_program(
+        r"
+        import std.encoding.wire;
+
+        fn main() {
+            let _text = wire.to_json([1, 2, 3]);
+        }
+        ",
+    );
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    assert_eq!(generic_codec_value_types(&output), ["Vec<i64>"]);
+}
+
+#[test]
+fn generic_wire_facade_named_import_records_codec_rewrite() {
+    let output = check_wire_program(
+        r"
+        import std.encoding.wire.{to_json};
+
+        fn main() {
+            let _text = to_json([true]);
+        }
+        ",
+    );
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    assert_eq!(generic_codec_value_types(&output), ["Vec<bool>"]);
+}
+
+#[test]
+fn generic_wire_facade_refuses_values_without_a_codec() {
+    for (value_ty, value) in [
+        ("Plain", "Plain { a: 1 }"),
+        ("Vec<Plain>", "[Plain { a: 1 }]"),
+        ("(i64, string)", r#"(1, "a")"#),
+        ("Option<Option<i64>>", "Some(Some(1))"),
+        ("Outer", "Outer { p: Plain { a: 1 } }"),
+        ("Tree", "Tree { v: 1, kids: [] }"),
+        ("Handle", "Handle { fd: 3 }"),
+    ] {
+        let output = check_wire_program(&format!(
+            r"
+            import std.encoding.wire;
+
+            type Plain {{ a: i64 }}
+
+            #[wire]
+            type Outer {{ p: Plain @1 }}
+
+            #[wire]
+            type Tree {{ v: i64 @1, kids: Vec<Tree> @2 }}
+
+            #[resource]
+            type Handle {{ fd: i64 }}
+
+            impl Handle {{
+                fn close(consume self) {{}}
+            }}
+
+            fn main() {{
+                let v: {value_ty} = {value};
+                let _text = wire.to_json(v);
+            }}
+            "
+        ));
+        assert!(
+            output.errors.iter().any(|error| {
+                error.kind == TypeErrorKind::BoundsNotSatisfied
+                    && error.message.contains(&format!(
+                        "type `{value_ty}` does not implement trait `Serializable`"
+                    ))
+            }),
+            "`{value_ty}` has no codec and must be refused at check time: {:#?}",
+            output.errors
+        );
+    }
+}
+
+#[test]
+fn generic_wire_facade_bounded_type_param_is_serializable() {
+    let output = check_wire_program(
+        r"
+        import std.encoding.wire;
+
+        fn show<T: Serializable>(values: Vec<T>) -> string {
+            wire.to_json(values)
+        }
+
+        fn show_any<T>(values: Vec<T>) -> string {
+            wire.to_json(values)
+        }
+
+        fn main() {}
+        ",
+    );
+    assert_eq!(output.errors.len(), 1, "{:#?}", output.errors);
+    assert!(
+        output.errors[0]
+            .message
+            .contains("type `Vec<T>` does not implement trait `Serializable`"),
+        "only the unbounded parameter is refused: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn generic_wire_decode_without_a_value_type_is_refused() {
+    let output = check_wire_program(
+        r#"
+        import std.encoding.wire;
+
+        fn main() {
+            let _r = wire.from_json("[1]");
+        }
+        "#,
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.kind == TypeErrorKind::InferenceFailed
+                && error.message.contains("wire codec call")),
+        "an unsettled codec value type is a check-time error: {:#?}",
+        output.errors
+    );
+    assert!(generic_codec_value_types(&output).is_empty());
+}
+
+#[test]
+fn generic_wire_codec_is_not_a_function_value() {
+    let output = check_wire_program(
+        r"
+        import std.encoding.wire;
+
+        fn main() {
+            let _f = wire.to_json;
+        }
+        ",
+    );
+    assert!(
+        output.errors.iter().any(|error| error
+            .message
+            .contains("is a compiler codec and cannot be used as a value")),
+        "{:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn plain_type_has_no_codec_methods() {
+    let output = check_wire_program(
+        r#"
+        type Plain { a: i64, b: string }
+
+        fn main() {
+            let p = Plain { a: 1, b: "x" };
+            let _text = p.to_json();
+            let _back = Plain.from_json("{}");
+        }
+        "#,
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.message.contains("no method `to_json` on `Plain`")),
+        "{:#?}",
+        output.errors
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.span.start > 0 && error.message.contains("from_json")),
+        "a plain type has no static codec either: {:#?}",
+        output.errors
+    );
+}
+
 #[test]
 fn wire_from_json_returns_result_self_string() {
     // A `#[wire]` type's `from_json`/`from_yaml` static parsers are fallible

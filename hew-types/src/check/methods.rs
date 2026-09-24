@@ -7,7 +7,7 @@ use crate::builtin_names::BuiltinNamedType;
 use crate::check::calls::SignatureArgApplication;
 use crate::check::dispatch::resolve_method_call;
 use crate::check::types::GenericCallee;
-use crate::check::types::{BareActorResolution, DeferredBuiltinCloneAdmission};
+use crate::check::types::{BareActorResolution, DeferredBuiltinCloneAdmission, DeferredWireCodec};
 use crate::method_resolution::{
     collect_method_sigs_for_receiver, instantiate_stdlib_method_sig, lookup_builtin_method_sig,
     lookup_named_method_sig as shared_lookup_named_method_sig,
@@ -2708,47 +2708,29 @@ impl Checker {
             .collect()
     }
 
-    fn serializable_failure_reason(&self, ty: &Ty) -> String {
-        let mut missing = Vec::new();
-        if !self.registry.implements_marker(ty, MarkerTrait::Encode) {
-            missing.push("Encode");
-        }
-        if !self.registry.implements_marker(ty, MarkerTrait::Decode) {
-            missing.push("Decode");
-        }
-        if missing.is_empty() && self.contains_bytes_collection_key(ty, &mut HashSet::new()) {
-            "an owned `bytes` map key or set element has no complete insertion ownership \
-             protocol yet: duplicate insertion cannot release the caller-owned value; use \
-             `string` or a supported fixed-width key"
-                .to_string()
-        } else if missing.is_empty() {
-            "it is outside the current Serializable codec subset (including only \
-             collection key/element layouts with a complete encode, decode, clone, and drop path)"
-                .to_string()
-        } else {
-            format!("missing required marker trait(s): {}", missing.join(" + "))
-        }
+    /// The codec direction of a `std.encoding.wire` facade declaration,
+    /// selected by its intrinsic key.
+    pub(super) fn wire_codec_intrinsic(&self, signature_key: &str) -> Option<WireCodecDirection> {
+        Some(match self.intrinsic_key_for_signature(signature_key)? {
+            "wire.encode" => WireCodecDirection::Encode,
+            "wire.decode" => WireCodecDirection::Decode,
+            "wire.to_json" => WireCodecDirection::ToJson,
+            "wire.from_json" => WireCodecDirection::FromJson,
+            "wire.to_yaml" => WireCodecDirection::ToYaml,
+            "wire.from_yaml" => WireCodecDirection::FromYaml,
+            _ => return None,
+        })
     }
 
     pub(super) fn record_generic_wire_codec_rewrite(
         &mut self,
-        canonical_owner: &str,
-        method: &str,
+        signature_key: &str,
         params: &[Ty],
         return_type: &Ty,
         span: &Span,
     ) -> bool {
-        if canonical_owner != "std.encoding.wire" {
+        let Some(direction) = self.wire_codec_intrinsic(signature_key) else {
             return false;
-        }
-        let direction = match method {
-            "encode" => WireCodecDirection::Encode,
-            "decode" => WireCodecDirection::Decode,
-            "to_json" => WireCodecDirection::ToJson,
-            "from_json" => WireCodecDirection::FromJson,
-            "to_yaml" => WireCodecDirection::ToYaml,
-            "from_yaml" => WireCodecDirection::FromYaml,
-            _ => return false,
         };
         let value_source = if direction.is_serialize() {
             params.first().cloned()
@@ -2757,72 +2739,64 @@ impl Checker {
         } else {
             result_ok_payload(return_type)
         };
-        if let Some(value_source) = value_source.map(|ty| self.subst.resolve(&ty)) {
-            if let Ok(value_ty) = ResolvedTy::from_ty(&value_source) {
-                self.record_method_call_rewrite(
-                    span,
-                    MethodCallRewrite::GenericWireCodec {
-                        direction,
-                        value_ty,
-                    },
-                );
-            }
+        let Some(value_source) = value_source.map(|ty| self.subst.resolve(&ty)) else {
+            return true;
+        };
+        match ResolvedTy::from_ty(&value_source) {
+            Ok(value_ty) => self.record_method_call_rewrite(
+                span,
+                MethodCallRewrite::GenericWireCodec {
+                    direction,
+                    value_ty,
+                },
+            ),
+            // `wire.to_json([1, 2, 3])`: the element type settles only when
+            // literal defaulting runs, after the body is checked.
+            Err(_) => self.deferred_wire_codecs.push(DeferredWireCodec {
+                key: SpanKey::in_module(span, self.current_module_idx),
+                span: span.clone(),
+                source_module: self.current_module.clone(),
+                direction,
+                value_ty: value_source,
+            }),
         }
         true
     }
 
-    fn contains_bytes_collection_key(&self, ty: &Ty, visiting: &mut HashSet<String>) -> bool {
-        match ty {
-            Ty::Named {
-                builtin: Some(BuiltinType::HashMap),
-                args,
-                ..
-            } => {
-                matches!(args.first(), Some(Ty::Bytes))
-                    || args
-                        .iter()
-                        .any(|arg| self.contains_bytes_collection_key(arg, visiting))
+    /// Record each deferred facade call now that its value type has settled.
+    /// A call whose type never settles is refused here: without a recorded
+    /// rewrite the call has no codec to lower to.
+    pub(super) fn drain_deferred_wire_codecs(&mut self) {
+        for entry in std::mem::take(&mut self.deferred_wire_codecs) {
+            let value_ty = self
+                .subst
+                .resolve(&entry.value_ty)
+                .materialize_literal_defaults();
+            if let Ok(value_ty) = ResolvedTy::from_ty(&value_ty) {
+                self.method_call_rewrites.insert(
+                    entry.key,
+                    MethodCallRewrite::GenericWireCodec {
+                        direction: entry.direction,
+                        value_ty,
+                    },
+                );
+                continue;
             }
-            Ty::Named {
-                builtin: Some(BuiltinType::HashSet),
-                args,
-                ..
-            } => {
-                matches!(args.first(), Some(Ty::Bytes))
-                    || args
-                        .iter()
-                        .any(|arg| self.contains_bytes_collection_key(arg, visiting))
+            // An errored operand already carries its own diagnostic.
+            if value_ty.contains_error() {
+                continue;
             }
-            Ty::Named {
-                builtin: Some(_),
-                args,
-                ..
-            } => args
-                .iter()
-                .any(|arg| self.contains_bytes_collection_key(arg, visiting)),
-            Ty::Named {
-                name,
-                builtin: None,
-                ..
-            } => {
-                if !visiting.insert(name.clone()) {
-                    return false;
-                }
-                let found = self.registry.member_types(name).is_some_and(|members| {
-                    members
-                        .iter()
-                        .any(|member| self.contains_bytes_collection_key(member, visiting))
-                });
-                visiting.remove(name);
-                found
-            }
-            Ty::Tuple(items) => items
-                .iter()
-                .any(|item| self.contains_bytes_collection_key(item, visiting)),
-            Ty::Array(item, _) | Ty::Slice(item) => {
-                self.contains_bytes_collection_key(item, visiting)
-            }
-            _ => false,
+            self.errors.push(TypeError {
+                severity: crate::error::Severity::Error,
+                kind: TypeErrorKind::InferenceFailed,
+                span: entry.span,
+                message: "cannot infer the value type of this wire codec call".to_string(),
+                notes: vec![],
+                suggestions: vec![
+                    "name the type, for example `wire.from_json<Config>(text)`".to_string()
+                ],
+                source_module: entry.source_module,
+            });
         }
     }
 
@@ -2832,9 +2806,9 @@ impl Checker {
             span,
             format!(
                 "remote actor message type `{}` must implement Serializable before it can \
-                 cross a RemotePid boundary; {}",
-                ty.user_facing(),
-                self.serializable_failure_reason(ty)
+                 cross a RemotePid boundary; only scalars, collections of serializable \
+                 values and `#[wire]` types have a wire encoding",
+                ty.user_facing()
             ),
         );
     }
@@ -2844,10 +2818,7 @@ impl Checker {
         if matches!(resolved, Ty::Var(_) | Ty::Error) {
             return true;
         }
-        if self
-            .registry
-            .implements_marker(&resolved, MarkerTrait::Serializable)
-        {
+        if self.satisfies_serializable(&resolved) {
             true
         } else {
             self.report_nonserializable_remote_actor_msg(&resolved, span);
@@ -6921,8 +6892,7 @@ impl Checker {
                         Some(GenericCallee::Function { key: &key }),
                     );
                     if self.record_generic_wire_codec_rewrite(
-                        &canonical_owner,
-                        method,
+                        &key,
                         &applied_sig.params,
                         &applied_sig.return_type,
                         span,

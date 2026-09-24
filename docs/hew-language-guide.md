@@ -3786,7 +3786,10 @@ wire behaviour, so `hew wire check` rejects the change in either direction.
 `e.to_json()` and `TypeName.from_json(text)` round-trip a wire type through
 JSON; the latter is a call on the type name itself rather than a source
 spelling. Bare values that implement `Serializable`, including admitted
-`HashMap` and `HashSet` shapes, use the generic `std.encoding.wire` facade:
+`HashMap` and `HashSet` shapes, use the generic `std.encoding.wire` facade.
+A value is `Serializable` when it is a scalar, a `#[wire]` type, or a `Vec`,
+`HashMap`, `HashSet` or `Option` of serializable values; a plain type, a
+tuple or a resource is refused where the facade is called:
 
 ```hew
 import std.encoding.wire;

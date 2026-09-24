@@ -41,11 +41,8 @@ pub enum MarkerTrait {
     Decode,
     /// Can be serialized to bytes
     Encode,
-    /// Can cross a remote actor boundary as a Hew value payload.
-    ///
-    /// This is a compile-time floor only: current remote-send lowering still
-    /// wraps raw in-memory ABI bytes in a CBOR envelope, and structural
-    /// Hew-value encoding is a later slice.
+    /// Has a wire codec. The checker decides it from the checked `#[wire]`
+    /// layouts (`check/serializable.rs`); the registry never admits it.
     Serializable,
     /// Owns an operating-system or runtime resource whose drop closes it.
     /// Design contract D3 (@resource) in v0.5. Applies to Duplex, Stream, Sink.
@@ -169,12 +166,6 @@ pub struct TraitRegistry {
     /// the `Resource` marker is always false regardless of field types (a record
     /// wrapping a resource field is not itself an OS/runtime resource).
     records: HashSet<String>,
-    /// Named types admitted to the initial `Serializable` subset.
-    ///
-    /// The value stores every field / variant-payload member that must itself
-    /// be serializable. Registration deliberately includes records, enums, and
-    /// wire-marked types, but not ordinary plain structs.
-    serializable_members: HashMap<String, Vec<Ty>>,
     /// Names of types declared with the `#[resource]` marker.
     ///
     /// A `#[resource]` type's inherent `close(self)` is BOTH the implicit-drop
@@ -237,7 +228,7 @@ impl TraitRegistry {
     ///
     /// Marker derivation for a `Ty::Named` keys every name-indexed table on the
     /// type's `name` string: `type_fields` (the structural Send/Copy/… member
-    /// set), `serializable_members`, `negative_impls`, and
+    /// set), `negative_impls`, and
     /// the `records` / `actors` / `handle_types` / `drop_types` membership sets.
     /// The bare name is last-write-wins across modules: two imported packages
     /// that each export a `Reply` collide on the single `"Reply"` key, so the
@@ -257,10 +248,6 @@ impl TraitRegistry {
         }
         if let Some(fields) = self.type_fields.get(bare).cloned() {
             self.type_fields.insert(qualified.to_string(), fields);
-        }
-        if let Some(members) = self.serializable_members.get(bare).cloned() {
-            self.serializable_members
-                .insert(qualified.to_string(), members);
         }
         if let Some(negatives) = self.negative_impls.get(bare).cloned() {
             self.negative_impls.insert(qualified.to_string(), negatives);
@@ -292,7 +279,6 @@ impl TraitRegistry {
     /// about which spelling names the declaration.
     pub(crate) fn remove_type_marker_key(&mut self, name: &str) {
         self.type_fields.remove(name);
-        self.serializable_members.remove(name);
         self.negative_impls.remove(name);
         self.records.remove(name);
         self.actors.remove(name);
@@ -332,120 +318,6 @@ impl TraitRegistry {
     /// Must be called in addition to `register_type` for every `record` decl.
     pub fn register_record_type(&mut self, name: String) {
         self.records.insert(name);
-    }
-
-    /// Register a named type as part of the accepted `Serializable` subset.
-    pub fn register_serializable_type(&mut self, name: String, member_types: Vec<Ty>) {
-        self.serializable_members.insert(name, member_types);
-    }
-
-    /// Look up `Serializable` members by canonical declaration identity.
-    fn serializable_members_any(&self, name: &str) -> Option<&Vec<Ty>> {
-        self.serializable_members.get(name)
-    }
-
-    fn has_encode_decode(&self, ty: &Ty) -> bool {
-        self.implements_marker(ty, MarkerTrait::Encode)
-            && self.implements_marker(ty, MarkerTrait::Decode)
-    }
-
-    /// Wire reconstruction uses the ordinary selected Hash/Eq callbacks and
-    /// value cloning, so key admission follows those same capabilities.
-    fn is_wire_hash_key(&self, ty: &Ty, visiting: &mut HashSet<String>) -> bool {
-        self.implements_marker(ty, MarkerTrait::Hash)
-            && self.implements_marker(ty, MarkerTrait::Eq)
-            && self.implements_marker(ty, MarkerTrait::Clone)
-            && self.implements_serializable_inner(ty, visiting)
-    }
-
-    fn implements_serializable_inner(&self, ty: &Ty, visiting: &mut HashSet<String>) -> bool {
-        match ty {
-            Ty::Var(_) | Ty::Error => true,
-            _ if !self.has_encode_decode(ty) => false,
-            Ty::I8
-            | Ty::I16
-            | Ty::I32
-            | Ty::I64
-            | Ty::IntLiteral
-            | Ty::U8
-            | Ty::U16
-            | Ty::U32
-            | Ty::U64
-            | Ty::Isize
-            | Ty::Usize
-            | Ty::F32
-            | Ty::F64
-            | Ty::FloatLiteral
-            | Ty::Bool
-            | Ty::Char
-            | Ty::Duration
-            | Ty::Unit
-            | Ty::Never
-            | Ty::String
-            | Ty::Bytes => true,
-            Ty::Tuple(elems) => elems
-                .iter()
-                .all(|elem| self.implements_serializable_inner(elem, visiting)),
-            Ty::Array(inner, _) => self.implements_serializable_inner(inner, visiting),
-            Ty::Named {
-                name,
-                args,
-                builtin,
-            } => {
-                if let Some(negatives) = self.negative_impls.get(name) {
-                    if negatives.contains(&MarkerTrait::Serializable) {
-                        return false;
-                    }
-                }
-                match builtin {
-                    Some(BuiltinType::Option | BuiltinType::Result) => {
-                        return args
-                            .iter()
-                            .all(|arg| self.implements_serializable_inner(arg, visiting));
-                    }
-                    Some(BuiltinType::Vec) => {
-                        return args.len() == 1
-                            && self.implements_serializable_inner(&args[0], visiting);
-                    }
-                    Some(BuiltinType::HashMap) => {
-                        return args.len() == 2
-                            && self.is_wire_hash_key(&args[0], visiting)
-                            && self.implements_serializable_inner(&args[1], visiting);
-                    }
-                    Some(BuiltinType::HashSet) => {
-                        return args.len() == 1 && self.is_wire_hash_key(&args[0], visiting);
-                    }
-                    _ => {}
-                }
-                let Some(members) = self.serializable_members_any(name).cloned() else {
-                    return false;
-                };
-                if !visiting.insert(name.clone()) {
-                    return false;
-                }
-                let ok = members
-                    .iter()
-                    .all(|member| self.implements_serializable_inner(member, visiting));
-                visiting.remove(name);
-                ok
-            }
-            Ty::Slice(_)
-            | Ty::CancellationToken
-            | Ty::Function { .. }
-            | Ty::Closure { .. }
-            | Ty::Pointer { .. }
-            | Ty::Borrow { .. }
-            | Ty::TraitObject { .. }
-            | Ty::Task(_)
-            | Ty::AssocType { .. } => false,
-        }
-    }
-
-    /// Check whether a type is admitted by the current `Serializable` subset.
-    #[must_use]
-    pub fn is_serializable(&self, ty: &Ty) -> bool {
-        let mut visiting = HashSet::new();
-        self.implements_serializable_inner(ty, &mut visiting)
     }
 
     /// Register an actor type.
@@ -637,8 +509,10 @@ impl TraitRegistry {
         {
             return true;
         }
+        // `Serializable` needs the checked wire layouts, which the checker
+        // owns (`check/serializable.rs`); the registry never admits it.
         if marker == MarkerTrait::Serializable {
-            return self.is_serializable(ty);
+            return false;
         }
         if marker == MarkerTrait::Resource {
             // Only resource types are Resource; primitives are NOT.
@@ -889,8 +763,7 @@ impl TraitRegistry {
                     };
                 }
                 // Option<T> and Result<T,E>: pure value-type generic builtins.
-                // All markers derive structurally from type arguments — same rule as
-                // `implements_serializable_inner` at line ~473 which already had this arm.
+                // All markers derive structurally from type arguments.
                 // Resource uses ANY (not all): if any type argument is a built-in resource
                 // handle (Duplex, ActorFn, CancellationToken), the wrapper MAY hold one and
                 // must be treated as a resource too. Note: user `#[resource]` types (e.g.
@@ -1308,59 +1181,6 @@ mod tests {
     }
 
     #[test]
-    fn test_serializable_marker_uses_encode_decode_and_subset() {
-        let mut registry = TraitRegistry::new();
-        assert!(registry.is_serializable(&Ty::I64));
-        assert!(registry.is_serializable(&Ty::String));
-        assert!(registry.is_serializable(&Ty::Bytes));
-        assert!(registry.is_serializable(&Ty::Tuple(vec![Ty::I64, Ty::Bool])));
-        assert!(registry.is_serializable(&Ty::Array(Box::new(Ty::I64), 4)));
-
-        let ping = Ty::Named {
-            builtin: None,
-            name: "Ping".to_string(),
-            args: vec![],
-        };
-        registry.register_type("Ping".to_string(), vec![Ty::I64]);
-        registry.register_record_type("Ping".to_string());
-        registry.register_serializable_type("Ping".to_string(), vec![Ty::I64]);
-        assert!(registry.is_serializable(&ping));
-
-        let plain = Ty::Named {
-            builtin: None,
-            name: "Plain".to_string(),
-            args: vec![],
-        };
-        registry.register_type("Plain".to_string(), vec![Ty::I64]);
-        assert!(!registry.is_serializable(&plain));
-
-        let fn_ty = Ty::Function {
-            capabilities: crate::CallableCapabilities::default(),
-            params: vec![Ty::I64],
-            ret: Box::new(Ty::I64),
-        };
-        assert!(!registry.is_send(&fn_ty));
-        assert!(!registry.is_serializable(&fn_ty));
-
-        let bad = Ty::Named {
-            builtin: None,
-            name: "Bad".to_string(),
-            args: vec![],
-        };
-        registry.register_type("Bad".to_string(), vec![fn_ty]);
-        registry.register_record_type("Bad".to_string());
-        registry.register_serializable_type(
-            "Bad".to_string(),
-            vec![Ty::Function {
-                capabilities: crate::CallableCapabilities::default(),
-                params: vec![Ty::I64],
-                ret: Box::new(Ty::I64),
-            }],
-        );
-        assert!(!registry.is_serializable(&bad));
-    }
-
-    #[test]
     fn test_primitives_are_sync() {
         let registry = TraitRegistry::new();
         assert!(registry.is_sync(&Ty::I32));
@@ -1564,101 +1384,6 @@ mod tests {
         };
         assert!(!registry.implements_marker(&closure, MarkerTrait::Copy));
         assert!(registry.implements_marker(&closure, MarkerTrait::Clone));
-    }
-
-    #[test]
-    fn collection_payloads_are_serializable_when_members_are() {
-        let registry = TraitRegistry::new();
-        let vec_i64 = Ty::Named {
-            builtin: Some(BuiltinType::Vec),
-            name: "Vec".to_string(),
-            args: vec![Ty::I64],
-        };
-        assert!(registry.is_serializable(&vec_i64));
-        let map_str_i64 = Ty::Named {
-            builtin: Some(BuiltinType::HashMap),
-            name: "HashMap".to_string(),
-            args: vec![Ty::String, Ty::I64],
-        };
-        assert!(registry.is_serializable(&map_str_i64));
-        let set_string = Ty::Named {
-            builtin: Some(BuiltinType::HashSet),
-            name: "HashSet".to_string(),
-            args: vec![Ty::String],
-        };
-        assert!(registry.is_serializable(&set_string));
-    }
-
-    #[test]
-    fn collection_payloads_reject_non_serializable_members() {
-        let registry = TraitRegistry::new();
-        let pointer = Ty::Pointer {
-            pointee: Box::new(Ty::I64),
-            is_mutable: false,
-        };
-        let map = Ty::Named {
-            builtin: Some(BuiltinType::HashMap),
-            name: "HashMap".to_string(),
-            args: vec![Ty::String, pointer],
-        };
-        assert!(!registry.is_serializable(&map));
-    }
-
-    #[test]
-    fn collection_serializable_admission_composes_value_capabilities() {
-        let mut registry = TraitRegistry::new();
-        registry.register_type("Key".to_string(), vec![Ty::I64]);
-        registry.register_record_type("Key".to_string());
-        registry.register_serializable_type("Key".to_string(), vec![Ty::I64]);
-        let record_key = Ty::Named {
-            builtin: None,
-            name: "Key".to_string(),
-            args: vec![],
-        };
-        let record_map = Ty::Named {
-            builtin: Some(BuiltinType::HashMap),
-            name: "HashMap".to_string(),
-            args: vec![record_key.clone(), Ty::String],
-        };
-        let record_set = Ty::Named {
-            builtin: Some(BuiltinType::HashSet),
-            name: "HashSet".to_string(),
-            args: vec![record_key],
-        };
-        assert!(registry.is_serializable(&record_map));
-        assert!(registry.is_serializable(&record_set));
-
-        // Managed byte keys use the same retain/release recipe as ordinary
-        // collection insertion, including duplicate insertion and overwrite.
-        let bytes_map = Ty::Named {
-            builtin: Some(BuiltinType::HashMap),
-            name: "HashMap".to_string(),
-            args: vec![Ty::Bytes, Ty::String],
-        };
-        let bytes_set = Ty::Named {
-            builtin: Some(BuiltinType::HashSet),
-            name: "HashSet".to_string(),
-            args: vec![Ty::Bytes],
-        };
-        assert!(registry.is_serializable(&bytes_map));
-        assert!(registry.is_serializable(&bytes_set));
-
-        let vec_bytes = Ty::Named {
-            builtin: Some(BuiltinType::Vec),
-            name: "Vec".to_string(),
-            args: vec![Ty::Bytes],
-        };
-        let nested_vec = Ty::Named {
-            builtin: Some(BuiltinType::Vec),
-            name: "Vec".to_string(),
-            args: vec![Ty::Named {
-                builtin: Some(BuiltinType::Vec),
-                name: "Vec".to_string(),
-                args: vec![Ty::I64],
-            }],
-        };
-        assert!(registry.is_serializable(&vec_bytes));
-        assert!(registry.is_serializable(&nested_vec));
     }
 
     /// RI-01: the `TraitRegistry` is the single source of truth for the

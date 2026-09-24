@@ -1,0 +1,35 @@
+[[case]]
+id = "wire-facade-no-codec-refused"
+intent = "A plain type inside a collection, a resource and a tuple fail the facade's Serializable bound at the call, and a plain type has no per-type codec method; nothing reaches lowering."
+source = "cases/wire-facade-no-codec-refused.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "BoundsNotSatisfied"
+line = 22
+column = 13
+message = "type `Vec<Plain>` does not implement trait `Serializable`"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "BoundsNotSatisfied"
+line = 24
+column = 13
+message = "type `Handle` does not implement trait `Serializable`"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "BoundsNotSatisfied"
+line = 25
+column = 13
+message = "type `(i64, string)` does not implement trait `Serializable`"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "UndefinedMethod"
+line = 27
+column = 13
+message = "no method `to_json` on `Plain`"

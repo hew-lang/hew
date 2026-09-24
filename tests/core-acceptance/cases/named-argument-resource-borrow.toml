@@ -1,0 +1,10 @@
+[[case]]
+id = "named-argument-resource-borrow"
+intent = "A resource argument passed by name to a borrowing parameter stays owned by the caller and is closed exactly once."
+source = "cases/named-argument-resource-borrow.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "inspect HELD 2\nafter HELD\nclose HELD\n"
+exit = 0

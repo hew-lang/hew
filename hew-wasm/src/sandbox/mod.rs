@@ -43,6 +43,7 @@ pub const REQUIRED_PARITY_TEST_NAMES: &[&str] = &[
     "hello_world",
     "fibonacci",
     "function_composition",
+    "named_arguments",
     "pattern_matching",
     "collections",
     "record_types",

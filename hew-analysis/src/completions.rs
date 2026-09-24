@@ -63,6 +63,12 @@ pub fn complete(
     // Snippet completions for control-flow keywords.
     items.extend(keyword_snippets());
 
+    if let Some(tc) = type_output {
+        items.extend(crate::signature_help::named_argument_completions(
+            source, tc, offset,
+        ));
+    }
+
     // Add identifiers from AST items.
     for (item, _span) in &parse_result.program.items {
         if let Some((name, kind)) = item_name_and_kind(item) {

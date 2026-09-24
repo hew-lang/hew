@@ -1,0 +1,10 @@
+[[case]]
+id = "named-arguments-bind-by-name"
+intent = "Named arguments bind by parameter name on functions, generic functions, methods, var self methods, trait methods through a bound, a trait object and a concrete type, and module functions, while evaluating in source order."
+source = "cases/named-arguments-bind-by-name.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "7\n7\n7\neval end\neval start\n2..9\nb\n[h:1]\n6\n19\n19\n19\n***ab\n"
+exit = 0

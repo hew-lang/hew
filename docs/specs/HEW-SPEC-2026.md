@@ -6733,6 +6733,52 @@ inside `std/`. A program that names one outside the standard library gets
 - `#[on(upgrade)]` is no longer a hook kind. Hot code upgrade is refused
   permanently, so the hook list stops holding a place for it (§9.1.2).
 
+### 12.7 Calls and named arguments
+
+A call may name its arguments with the callee's parameter names. Positional
+arguments come first, then named ones in any order:
+
+```hew
+fn connect(host: string, port: i64, timeout_ms: i64, retry: bool) -> string {
+    f"{host}:{port} timeout={timeout_ms} retry={retry}"
+}
+
+fn main() {
+    println(connect("db.local", 5432, timeout_ms: 5000, retry: true));
+    println(connect(host: "db.local", port: 5432, retry: false, timeout_ms: 250));
+    println(connect("db.local", 5432, 5000, true));
+}
+```
+
+**Binding and evaluation (normative).** Each argument binds to the parameter
+it names; a positional argument binds to the parameter at its position. The
+arguments are evaluated left to right as written, after the receiver of a
+method call, and then passed in parameter order. When a later argument
+faults, the owners that earlier arguments produced are released. Every
+parameter must be supplied exactly once: a name is a label and never makes a
+parameter optional.
+
+| Refusal | Code |
+| --- | --- |
+| A positional argument after a named one | parse error |
+| A name that matches no parameter | `E_NAMED_ARG_UNKNOWN` |
+| A parameter supplied twice, by name or by name after position | `E_NAMED_ARG_DUPLICATE` |
+| A call that names arguments and leaves parameters unsupplied | `E_NAMED_ARG_MISSING` |
+| A name on a callee whose parameters carry none | `E_NAMED_ARG_UNNAMED_CALLEE` |
+
+**Callees.** Free and module functions, generic functions, `extern` functions
+with named parameters, inherent methods, `var self` methods, trait methods
+(through a bound, a `dyn` object or the concrete type) and actor
+`receive fn` calls accept names. Closures and function values do not,
+because a function type carries no parameter names; nor do tuple-record and
+tuple-variant constructors, or builtin methods whose parameters are
+positional. `self` is never named.
+
+**Names are part of the API.** An `impl` of a trait method keeps the trait's
+parameter names (`E_IMPL_PARAM_NAME_MISMATCH`), so a named call binds alike
+through the trait and on the concrete type. Renaming a parameter is a
+breaking change for callers that name it.
+
 ---
 
 ## 13. Self-Hosting Roadmap

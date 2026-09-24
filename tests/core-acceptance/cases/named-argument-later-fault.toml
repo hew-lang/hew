@@ -1,0 +1,11 @@
+[[case]]
+id = "named-argument-later-fault"
+intent = "A fault in a later named argument releases the owned value an earlier named argument produced, exactly once, before unwinding."
+source = "cases/named-argument-later-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "make first\nclose FIRST\n"
+stderr = "hew: failure: DivideByZero (202)\n"
+exit = 1

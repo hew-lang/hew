@@ -1,0 +1,59 @@
+// Named arguments bind to the parameter they name and evaluate in the order
+// written, on functions, methods, trait objects and actor handlers alike.
+fn sub(a: i64, b: i64) -> i64 {
+    a - b
+}
+
+fn trace(label: string, value: i64) -> i64 {
+    println(f"eval {label}");
+    value
+}
+
+fn span(start: i64, end: i64) -> string {
+    f"{start}..{end}"
+}
+
+type Card {
+    h: i64,
+}
+
+impl Card {
+    fn describe(self, prefix: string, suffix: string) -> string {
+        f"{prefix}h:{self.h}{suffix}"
+    }
+}
+
+trait Shape {
+    fn scaled(self, factor: i64, offset: i64) -> i64;
+}
+
+type Square {
+    side: i64,
+}
+
+impl Shape for Square {
+    fn scaled(self, factor: i64, offset: i64) -> i64 {
+        self.side * factor - offset
+    }
+}
+
+fn through_dyn(shape: dyn Shape) -> i64 {
+    shape.scaled(offset: 1, factor: 10)
+}
+
+actor Journal {
+    receive fn pair(first: string, second: string) -> string {
+        f"{first}/{second}"
+    }
+}
+
+fn main() {
+    println(sub(b: 3, a: 10));
+    println(span(end: trace("end", 9), start: trace("start", 2)));
+    let card = Card { h: 1 };
+    println(card.describe(suffix: "]", prefix: "["));
+    println(through_dyn(Square { side: 2 }));
+    let journal = spawn Journal;
+    println(journal.pair(second: "b", first: "a").expect("pair"));
+    close(journal);
+}

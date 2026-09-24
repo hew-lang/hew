@@ -192,6 +192,7 @@ fn synth_call_with_item_callee(name: &str, item_id: u32) -> HirExpr {
             target: hew_types::CallTarget::IndirectFunctionValue,
             callee: Box::new(callee),
             args: Vec::new(),
+            evaluation_order: Vec::new(),
         },
         span: dummy_span(),
     }
@@ -221,6 +222,7 @@ fn synth_call_with_unresolved_callable_callee(name: &str) -> HirExpr {
             target: hew_types::CallTarget::IndirectFunctionValue,
             callee: Box::new(callee),
             args: Vec::new(),
+            evaluation_order: Vec::new(),
         },
         span: dummy_span(),
     }
@@ -252,6 +254,7 @@ fn synth_user_call(name: &str, item_id: u32, declaration: &str) -> HirExpr {
             target: hew_types::CallTarget::User(hew_types::DefId::for_test(declaration)),
             callee: Box::new(callee),
             args: Vec::new(),
+            evaluation_order: Vec::new(),
         },
         span: dummy_span(),
     }
@@ -477,6 +480,7 @@ fn binding_callee_does_not_emit_indirect_call_unsupported() {
             target: hew_types::CallTarget::IndirectFunctionValue,
             callee: Box::new(callee),
             args: Vec::new(),
+            evaluation_order: Vec::new(),
         },
         span: dummy_span(),
     };

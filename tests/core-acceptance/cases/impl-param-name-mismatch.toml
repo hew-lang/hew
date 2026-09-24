@@ -1,0 +1,14 @@
+[[case]]
+id = "impl-param-name-mismatch"
+intent = "An impl method that renames a trait parameter is refused at the impl, naming both spellings."
+source = "cases/impl-param-name-mismatch.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "E_IMPL_PARAM_NAME_MISMATCH"
+line = 10
+column = 8
+message = "names parameter `ratio` where trait `Shape` names it `factor`"

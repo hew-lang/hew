@@ -191,6 +191,7 @@ fn assert_refused(source: &str, function: &str, code: &str) {
         target,
         callee,
         args,
+        ..
     } = &mut tail.kind
     else {
         panic!("guard fixture tail must be a call");

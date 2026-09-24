@@ -1,0 +1,26 @@
+// Every parameter is supplied exactly once, by a name the callee declares,
+// and only a callee whose parameters carry names accepts one.
+import std.misc.log;
+
+enum Reading {
+    Level(i64),
+    Idle,
+}
+
+type Pair(i64, i64);
+
+fn sub(a: i64, b: i64) -> i64 { a - b }
+
+fn main() {
+    let twice = |x: i64, y: i64| x + y;
+    var seen: Vec<i64> = [];
+    println(sub(a: 1, a: 2));
+    println(sub(1, a: 2));
+    println(sub(c: 1, b: 2));
+    println(sub(b: 2));
+    println(twice(y: 1, x: 5));
+    let _: Reading = .Level(value: 3);
+    let _ = Pair(left: 1, right: 2);
+    seen.push(value: 1);
+    log.info("started", user: 3);
+}

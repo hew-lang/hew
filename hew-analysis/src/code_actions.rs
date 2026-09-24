@@ -183,7 +183,7 @@ pub fn build_code_actions(source: &str, diagnostics: &[DiagnosticInfo]) -> Vec<C
 
 // ── Private helpers ──────────────────────────────────────────────────
 
-/// The edit behind a `replace `X` with `Y`` bare-variant fix-it.
+/// The edit behind a bare-variant fix-it (``replace `X` with `Y` ``).
 fn bare_variant_fix(source: &str, diag: &DiagnosticInfo) -> Option<RenameEdit> {
     let (name, replacement) = diag.suggestions.iter().find_map(|suggestion| {
         let rest = suggestion.strip_prefix("replace `")?;

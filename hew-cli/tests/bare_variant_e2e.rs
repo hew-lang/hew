@@ -543,18 +543,20 @@ fn copy_tree(from: &Path, to: &Path) {
 #[test]
 fn prelude_impl_diagnostics_name_the_selected_std_file() {
     let dir = tempdir();
-    let std_copy = dir.path().join("std");
+    let std_copy = dir.path().join("selected").join("std");
     copy_tree(&repo_root().join("std"), &std_copy);
     let option = std_copy.join("option.hew");
     let source = std::fs::read_to_string(&option).expect("read std option");
     assert!(source.contains("self = .None;"), "fixture anchor moved");
     std::fs::write(&option, source.replace("self = .None;", "self = None;"))
         .expect("break std option copy");
-    let user = write_source(dir.path(), "user.hew", "fn main() {\n    println(1);\n}\n");
+    let project = dir.path().join("project");
+    std::fs::create_dir(&project).expect("create project directory");
+    let user = write_source(&project, "user.hew", "fn main() {\n    println(1);\n}\n");
 
     let output = hew_command()
         .args(["check", user.to_str().expect("UTF-8 path")])
-        .current_dir(dir.path())
+        .current_dir(&project)
         .env("HEW_STD", &std_copy)
         .output()
         .expect("hew check must run");
@@ -629,4 +631,110 @@ fn main() {
         2,
         "the bare `Shut` and `Ajar` inside the machine are not refused:\n{rendered}"
     );
+}
+
+/// Every bare builtin variant is refused on the same footing as a user
+/// variant, and the fix-it names the contextual form where the expected type
+/// selects the enum and the qualified form where nothing does.
+#[test]
+fn bare_builtin_variants_are_rejected_in_every_expression_position() {
+    let dir = tempdir();
+    let (ok, rendered) = check(dir.path(), "bare_builtins.hew", BARE_BUILTINS);
+    assert!(!ok, "bare builtin variants must not compile:\n{rendered}");
+    for (site, fix) in [
+        ("bare_builtins.hew:8:16", "replace `Err` with `.Err`"),
+        ("bare_builtins.hew:10:5", "replace `Ok` with `.Ok`"),
+        (
+            "bare_builtins.hew:18:20",
+            "replace `Some` with `Option.Some`",
+        ),
+        ("bare_builtins.hew:19:34", "replace `None` with `.None`"),
+        ("bare_builtins.hew:20:23", "replace `Some` with `.Some`"),
+        ("bare_builtins.hew:25:42", "replace `Some` with `.Some`"),
+        ("bare_builtins.hew:26:18", "replace `Red` with `Colour.Red`"),
+    ] {
+        let at = rendered
+            .find(&format!("{site}: error: E_BARE_VARIANT_EXPR"))
+            .unwrap_or_else(|| panic!("missing refusal at {site}:\n{rendered}"));
+        let help = rendered[at..]
+            .lines()
+            .find(|line| line.trim_start().starts_with("= help:"))
+            .unwrap_or_default();
+        assert!(
+            help.contains(fix),
+            "the refusal at {site} must offer `{fix}`, got `{help}`"
+        );
+    }
+    assert_eq!(
+        rendered.matches("error: E_BARE_VARIANT_EXPR").count(),
+        7,
+        "only the seven bare sites may be refused:\n{rendered}"
+    );
+}
+
+/// The dotted and qualified spellings compile and run in the same positions.
+#[test]
+fn dotted_builtin_variants_run_in_every_expression_position() {
+    let dir = tempdir();
+    let path = write_source(dir.path(), "dotted_builtins.hew", DOTTED_BUILTINS);
+    let output = run_hew_in(dir.path(), &["run", path.to_str().expect("UTF-8 path")]);
+    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "dotted builtin variants must compile and run:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("E_BARE_VARIANT_EXPR"),
+        "no dotted spelling may report the rule:\n{stderr}"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "1 0 2 2 3\nhalved\nlooking\ntrue true true 7\nAjar\nkept 9\n"
+    );
+}
+
+/// The migrator rewrites every bare builtin to the checker's fix-it, the
+/// result type-checks, and a second pass changes nothing.
+#[test]
+fn migrate_rewrites_bare_builtin_variants_and_is_idempotent() {
+    let dir = tempdir();
+    let path = write_source(dir.path(), "bare_builtins.hew", BARE_BUILTINS);
+    let source = path.to_str().expect("UTF-8 path").to_string();
+
+    let first = run_hew_in(dir.path(), &["fmt", "--migrate", &source]);
+    assert!(
+        first.status.success(),
+        "migration must succeed on bare builtin variants:\n{}",
+        strip_ansi(&String::from_utf8_lossy(&first.stderr))
+    );
+    let once = std::fs::read_to_string(&path).expect("migrated source must be readable");
+    for expected in [
+        "return .Err(\"odd\");",
+        "    .Ok(n / 2)\n",
+        "let inferred = Option.Some(1);",
+        "let annotated: Option<i64> = .None;",
+        "show(.Some(2))",
+        "-> Option<i64> {\n        .Some(n)\n    };",
+        "let colour = Colour.Red;",
+    ] {
+        assert!(
+            once.contains(expected),
+            "migration must produce `{expected}`:\n{once}"
+        );
+    }
+
+    let recheck = run_hew_in(dir.path(), &["check", &source]);
+    assert!(
+        recheck.status.success(),
+        "the migrated source must type-check:\n{}",
+        strip_ansi(&String::from_utf8_lossy(&recheck.stderr))
+    );
+
+    let second = run_hew_in(dir.path(), &["fmt", "--migrate", &source]);
+    assert!(
+        second.status.success(),
+        "a second migration pass must succeed"
+    );
+    let twice = std::fs::read_to_string(&path).expect("migrated source must be readable");
+    assert_eq!(once, twice, "migration must be idempotent");
 }

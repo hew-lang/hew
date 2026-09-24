@@ -149,17 +149,10 @@ impl Parser<'_> {
             // next statement, so a `.Ok(x)` tail on the next line is its own
             // expression. Using the block's value needs parentheses.
             if self.peek_opens_statement_block() {
-                let Some(expr) = self.parse_statement_block_expr() else {
-                    continue;
-                };
-                if self.peek() == Some(&Token::RightBrace) {
-                    trailing_expr = Some(Box::new(expr));
+                if let Some(tail) = self.parse_statement_block(&mut stmts) {
+                    trailing_expr = Some(Box::new(tail));
                     break;
                 }
-                self.refuse_statement_block_continuation();
-                self.eat(&Token::Semicolon);
-                let span = expr.1.clone();
-                stmts.push((Stmt::Expression(expr), span));
                 continue;
             }
 
@@ -241,12 +234,22 @@ impl Parser<'_> {
     }
 
     /// Parse the block-like expression that opens a statement, without the
-    /// postfix and infix continuations an operand would take.
-    fn parse_statement_block_expr(&mut self) -> Option<Spanned<Expr>> {
+    /// postfix and infix continuations an operand would take. It is returned
+    /// when it ends the enclosing block (its tail) and pushed onto `stmts`
+    /// otherwise.
+    fn parse_statement_block(&mut self, stmts: &mut Vec<Spanned<Stmt>>) -> Option<Spanned<Expr>> {
         self.statement_block.set(true);
         let expr = self.parse_expr();
         self.statement_block.set(false);
-        expr
+        let expr = expr?;
+        if self.peek() == Some(&Token::RightBrace) {
+            return Some(expr);
+        }
+        self.refuse_statement_block_continuation();
+        self.eat(&Token::Semicolon);
+        let span = expr.1.clone();
+        stmts.push((Stmt::Expression(expr), span));
+        None
     }
 
     /// A statement-start block cannot be an operand. Name the fix when the

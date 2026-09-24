@@ -1036,15 +1036,10 @@ impl Checker {
             .map(|param| param.name.clone());
         let prev_var_self_receiver =
             std::mem::replace(&mut self.var_self_receiver, var_self_receiver);
-        let machine_body_owner = matches!(
-            fd.origin,
-            hew_parser::ast::DeclarationOrigin::MachineStep
-                | hew_parser::ast::DeclarationOrigin::MachineCompanion
-        )
-        .then(|| fn_name.split_once("::").map(|(owner, _)| owner.to_string()))
-        .flatten();
-        let prev_machine_body_owner =
-            std::mem::replace(&mut self.machine_body_owner, machine_body_owner);
+        let prev_machine_body_owner = std::mem::replace(
+            &mut self.machine_body_owner,
+            machine_body_owner(fd, fn_name),
+        );
 
         // Use the return type from the already-registered fn signature so that
         // TypeExpr::Infer (-> _) reuses the same Ty::Var that call sites see.
@@ -2766,11 +2761,12 @@ impl Checker {
                 // on the same authoritative identity every other trait-reference
                 // site does — never the bare spelling in isolation.
                 let trait_is_local = self.trait_ref_is_local(&tb.name);
-                // hew-compile injects one source-less std.builtins node that
-                // contains only the embedded prelude's Display impls. A user
-                // module retains a source path and cannot claim this authority.
-                let is_embedded_builtins_impl = self.current_item_source.is_none()
-                    && self.checking_canonical_stdlib_source("std.builtins");
+                // hew-compile loads the prelude's Display impls as the
+                // std.builtins module from the shipped source. A user module
+                // named std.builtins is not a canonical stdlib source and
+                // cannot claim this authority.
+                let is_embedded_builtins_impl =
+                    self.checking_canonical_stdlib_source("std.builtins");
                 if !type_is_local && !trait_is_local && !is_embedded_builtins_impl {
                     self.warnings.push(TypeError {
                         severity: crate::error::Severity::Warning,
@@ -2964,6 +2960,17 @@ fn is_canonical_lifecycle_source_type(ty: &Ty, source_identity: &str) -> bool {
             builtin: None,
         } if args.is_empty() && name == source_identity
     )
+}
+
+/// The machine whose generated body `fd` is, if any.
+fn machine_body_owner(fd: &FnDecl, fn_name: &str) -> Option<String> {
+    matches!(
+        fd.origin,
+        hew_parser::ast::DeclarationOrigin::MachineStep
+            | hew_parser::ast::DeclarationOrigin::MachineCompanion
+    )
+    .then(|| fn_name.split_once("::").map(|(owner, _)| owner.to_string()))
+    .flatten()
 }
 
 #[cfg(test)]

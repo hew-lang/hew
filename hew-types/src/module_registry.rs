@@ -162,118 +162,26 @@ fn compiler_stdlib_root_impl(
     find_enclosing_hew_root(manifest_dir)
 }
 
-/// Build the stdlib search-path list, applying exclusive precedence tiers.
+/// The standard-library root every `std.*` module resolves from: the parent
+/// of `HEW_STD` when it names an existing directory, and otherwise the
+/// toolchain's own shipped std ([`compiler_stdlib_root`]).
 ///
-/// Each tier is tried in order; if a tier produces at least one valid path,
-/// that tier's result is returned immediately — lower tiers are not consulted.
-///
-/// **Tier 1 — explicit override (env vars):**
-/// If `HEWPATH` (colon-separated; each entry is the parent of `std/`) or
-/// `HEW_STD` (points directly at a `std/` directory) is set, only those paths
-/// are returned.  All other sources are ignored.
-///
-/// **Tier 2 — in-worktree (developing Hew itself):**
-/// Walk up from `source_hint` (if provided) or from cwd, looking for an
-/// enclosing Hew checkout root (a directory that contains `std/builtins.hew`).
-/// If found, only that root is returned.  This fixes the cross-worktree
-/// contamination: a file inside worktree-A resolves std from A only, even
-/// when the binary was built in a sibling worktree-B.
-///
-/// **Tier 3 — installed / external project:**
-/// FHS (`<exe>/../share/hew`), XDG (`~/.local/share/hew/std` parent),
-/// `~/.hew`, `/usr/local/share/hew`, `/usr/share/hew`, and the dev-build
-/// fallback (two levels above the binary for `cargo run`-style invocations).
-/// Multiple roots are allowed here; the first match wins at module-load time.
+/// No directory beside the source, no working directory and no project
+/// layout participates, so a `std/` a program happens to sit next to cannot
+/// replace the standard library. A Hew checkout's own binary finds the
+/// checkout's `std/` as its shipped std; any other std is selected with
+/// `HEW_STD`.
 #[must_use]
-pub fn build_module_search_paths_for(source_hint: Option<&std::path::Path>) -> Vec<PathBuf> {
-    // --- Tier 1: explicit env-var override ---
-    let mut tier1: Vec<PathBuf> = Vec::new();
-
-    if let Ok(hewpath) = std::env::var("HEWPATH") {
-        for p in hewpath.split(':') {
-            let path = PathBuf::from(p);
-            if path.exists() {
-                tier1.push(path);
-            }
+pub fn stdlib_search_paths() -> Vec<PathBuf> {
+    if let Some(std_dir) = std::env::var_os("HEW_STD").map(PathBuf::from) {
+        if std_dir.is_dir() {
+            return std_dir
+                .parent()
+                .map(|root| vec![root.canonicalize().unwrap_or_else(|_| root.to_path_buf())])
+                .unwrap_or_default();
         }
     }
-
-    if let Ok(hew_std) = std::env::var("HEW_STD") {
-        let std_path = PathBuf::from(&hew_std);
-        if std_path.exists() {
-            if let Some(parent) = std_path.parent() {
-                let parent = parent.to_path_buf();
-                if !tier1.contains(&parent) {
-                    tier1.push(parent);
-                }
-            }
-        }
-    }
-
-    if !tier1.is_empty() {
-        return tier1;
-    }
-
-    // --- Tier 2: enclosing Hew checkout (in-worktree dev) ---
-    //
-    // Walk up from source_hint first, then cwd.  Using source_hint ensures the
-    // file being compiled determines which worktree's std/ is used, not the
-    // process cwd (which could be a different worktree or an external dir).
-    let tier2_probe = source_hint.and_then(find_enclosing_hew_root).or_else(|| {
-        std::env::current_dir()
-            .ok()
-            .and_then(|cwd| find_enclosing_hew_root(&cwd))
-    });
-
-    if let Some(root) = tier2_probe {
-        return vec![root];
-    }
-
-    // --- Tier 3: installed binary / external project ---
-    let mut tier3: Vec<PathBuf> = Vec::new();
-
-    // Compiler-owned installed or development layout. This resolver is also
-    // the sole source of stdlib authority inside `ModuleRegistry`.
-    if let Some(root) = compiler_stdlib_root() {
-        tier3.push(root);
-    }
-
-    // XDG: ~/.local/share/hew
-    if let Some(home) = std::env::var_os("HOME") {
-        let xdg_hew = PathBuf::from(home).join(".local/share/hew");
-        if xdg_hew.join("std").exists() && !tier3.contains(&xdg_hew) {
-            tier3.push(xdg_hew);
-        }
-    }
-
-    // ~/.hew
-    if let Some(home) = std::env::var_os("HOME") {
-        let dot_hew = PathBuf::from(home).join(".hew");
-        if dot_hew.join("std").exists() && !tier3.contains(&dot_hew) {
-            tier3.push(dot_hew);
-        }
-    }
-
-    // System-wide FHS locations
-    for prefix in &["/usr/local/share/hew", "/usr/share/hew"] {
-        let p = PathBuf::from(prefix);
-        if p.join("std").exists() && !tier3.contains(&p) {
-            tier3.push(p);
-        }
-    }
-
-    tier3
-}
-
-/// Build the default module search-path list used by both the CLI and LSP.
-///
-/// This is a context-free wrapper around [`build_module_search_paths_for`]
-/// with no source hint.  Callers that have a source file path should prefer
-/// [`build_module_search_paths_for`] so that tier-2 (in-worktree) resolution
-/// can anchor to the correct Hew checkout.
-#[must_use]
-pub fn build_module_search_paths() -> Vec<PathBuf> {
-    build_module_search_paths_for(None)
+    compiler_stdlib_root().into_iter().collect()
 }
 
 /// Return the canonical dotted stdlib owner for an exact shipped source file.
@@ -285,40 +193,38 @@ pub fn build_module_search_paths() -> Vec<PathBuf> {
 pub fn canonical_stdlib_module_for_source(source_file: &std::path::Path) -> Option<String> {
     let input_canonical = std::fs::canonicalize(source_file).ok()?;
 
-    build_module_search_paths_for(Some(source_file))
-        .into_iter()
-        .find_map(|root| {
-            let root_canonical = std::fs::canonicalize(root).ok()?;
-            let relative = input_canonical.strip_prefix(&root_canonical).ok()?;
-            if relative
-                .extension()
-                .is_none_or(|extension| extension != "hew")
-                || relative
-                    .components()
-                    .next()
-                    .is_none_or(|component| component.as_os_str() != "std")
-            {
-                return None;
-            }
+    stdlib_search_paths().into_iter().find_map(|root| {
+        let root_canonical = std::fs::canonicalize(root).ok()?;
+        let relative = input_canonical.strip_prefix(&root_canonical).ok()?;
+        if relative
+            .extension()
+            .is_none_or(|extension| extension != "hew")
+            || relative
+                .components()
+                .next()
+                .is_none_or(|component| component.as_os_str() != "std")
+        {
+            return None;
+        }
 
-            let parent = relative.parent()?;
-            let parent_name = parent.file_name()?.to_str()?;
-            let primary = root_canonical
-                .join(parent)
-                .join(format!("{parent_name}.hew"));
-            let module_path = if primary.is_file() {
-                parent.to_path_buf()
-            } else {
-                relative.with_extension("")
-            };
-            let dotted = module_path
-                .iter()
-                .map(|component| component.to_str())
-                .collect::<Option<Vec<_>>>()?
-                .join(".");
+        let parent = relative.parent()?;
+        let parent_name = parent.file_name()?.to_str()?;
+        let primary = root_canonical
+            .join(parent)
+            .join(format!("{parent_name}.hew"));
+        let module_path = if primary.is_file() {
+            parent.to_path_buf()
+        } else {
+            relative.with_extension("")
+        };
+        let dotted = module_path
+            .iter()
+            .map(|component| component.to_str())
+            .collect::<Option<Vec<_>>>()?
+            .join(".");
 
-            is_canonical_stdlib_module_source(&input_canonical, &dotted).then_some(dotted)
-        })
+        is_canonical_stdlib_module_source(&input_canonical, &dotted).then_some(dotted)
+    })
 }
 
 /// Whether `source_file` is the canonical source selected for `dotted_module`
@@ -332,11 +238,7 @@ pub fn is_canonical_stdlib_module_source(
     source_file: &std::path::Path,
     dotted_module: &str,
 ) -> bool {
-    canonical_stdlib_module_source_in_roots(
-        source_file,
-        dotted_module,
-        &build_module_search_paths_for(Some(source_file)),
-    )
+    canonical_stdlib_module_source_in_roots(source_file, dotted_module, &stdlib_search_paths())
 }
 
 /// Does this path spell the shipped source of `dotted_module`?
@@ -2319,54 +2221,10 @@ mod tests {
         );
     }
 
-    /// HEWPATH set → tier-1 returns exactly those paths, no dev/cwd leakage.
+    /// `HEW_STD` selects the standard-library root: its parent is the one
+    /// search root, and no other tree appears.
     #[test]
-    fn tier1_hewpath_returns_only_hewpath_entries() {
-        let tree_a = TestHewTree::new("sp-hewpath-a");
-        let tree_b = TestHewTree::new("sp-hewpath-b");
-
-        // Set HEWPATH to tree_a only.
-        let prev_hewpath = std::env::var("HEWPATH").ok();
-        let prev_hew_std = std::env::var("HEW_STD").ok();
-        // SAFETY: test process is single-threaded for env mutation; cargo test
-        // runs each test fn sequentially within a thread.
-        unsafe {
-            std::env::set_var("HEWPATH", tree_a.root().to_str().unwrap());
-            std::env::remove_var("HEW_STD");
-        }
-
-        let paths = build_module_search_paths_for(Some(tree_b.root()));
-
-        // Restore env.
-        // SAFETY: same single-threaded env-mutation guarantee as the set above.
-        unsafe {
-            match prev_hewpath {
-                Some(v) => std::env::set_var("HEWPATH", v),
-                None => std::env::remove_var("HEWPATH"),
-            }
-            match prev_hew_std {
-                Some(v) => std::env::set_var("HEW_STD", v),
-                None => std::env::remove_var("HEW_STD"),
-            }
-        }
-
-        // Must contain exactly tree_a (canonicalized comparison).
-        let canon_a = tree_a.root().canonicalize().unwrap();
-        let canon_b = tree_b.root().canonicalize().unwrap();
-        let got_canon: Vec<_> = paths.iter().filter_map(|p| p.canonicalize().ok()).collect();
-        assert!(
-            got_canon.contains(&canon_a),
-            "HEWPATH entry should appear in result"
-        );
-        assert!(
-            !got_canon.contains(&canon_b),
-            "source_hint tree must not leak in when HEWPATH is set"
-        );
-    }
-
-    /// `HEW_STD` set → tier-1 returns parent of that std/, no other sources.
-    #[test]
-    fn tier1_hew_std_returns_only_hew_std_parent() {
+    fn hew_std_selects_the_only_stdlib_root() {
         let tree_a = TestHewTree::new("sp-hew-std-a");
         let tree_b = TestHewTree::new("sp-hew-std-b");
         let std_a = tree_a.root().join("std");
@@ -2379,7 +2237,7 @@ mod tests {
             std::env::set_var("HEW_STD", std_a.to_str().unwrap());
         }
 
-        let paths = build_module_search_paths_for(Some(tree_b.root()));
+        let paths = stdlib_search_paths();
 
         // SAFETY: same single-threaded env-mutation guarantee as the set above.
         unsafe {
@@ -2406,58 +2264,37 @@ mod tests {
         );
     }
 
-    /// In-worktree (tier-2): source hint inside a Hew checkout resolves to
-    /// that checkout's root only — a sibling checkout with a different std/ must
-    /// not appear.  This is the contamination-repro oracle.
+    /// Without `HEW_STD`, the standard-library root is the toolchain's own
+    /// std, whatever tree the working directory or a source sits in: a
+    /// lookalike checkout never becomes the root.
     #[test]
-    fn tier2_source_inside_worktree_resolves_own_root_only() {
-        let tree_a = TestHewTree::new("sp-worktree-a");
-        let tree_b = TestHewTree::new("sp-worktree-b");
-
-        // Write a dummy source file inside tree_a.
-        let src_dir = tree_a.root().join("src");
-        fs::create_dir_all(&src_dir).unwrap();
-        let src_file = src_dir.join("main.hew");
-        fs::write(&src_file, "// dummy\n").unwrap();
-
-        let prev_hewpath = std::env::var("HEWPATH").ok();
+    fn stdlib_root_without_hew_std_is_the_toolchains_own() {
+        let lookalike = TestHewTree::new("sp-lookalike");
         let prev_hew_std = std::env::var("HEW_STD").ok();
         // SAFETY: test process is single-threaded for env mutation.
         unsafe {
-            std::env::remove_var("HEWPATH");
             std::env::remove_var("HEW_STD");
         }
 
-        // Pass a source hint pointing inside tree_a.
-        let paths = build_module_search_paths_for(Some(&src_file));
+        let paths = stdlib_search_paths();
 
         // SAFETY: same single-threaded env-mutation guarantee as the set above.
         unsafe {
-            match prev_hewpath {
-                Some(v) => std::env::set_var("HEWPATH", v),
-                None => std::env::remove_var("HEWPATH"),
-            }
-            match prev_hew_std {
-                Some(v) => std::env::set_var("HEW_STD", v),
-                None => std::env::remove_var("HEW_STD"),
+            if let Some(v) = prev_hew_std {
+                std::env::set_var("HEW_STD", v);
             }
         }
 
         assert_eq!(
-            paths.len(),
-            1,
-            "tier-2 must return exactly one root, got: {paths:?}"
+            paths,
+            compiler_stdlib_root().into_iter().collect::<Vec<_>>()
         );
-        let canon_result = paths[0].canonicalize().unwrap();
-        let canon_a = tree_a.root().canonicalize().unwrap();
-        let canon_b = tree_b.root().canonicalize().unwrap();
-        assert_eq!(
-            canon_result, canon_a,
-            "source inside tree_a must resolve to tree_a root"
-        );
-        assert_ne!(
-            canon_result, canon_b,
-            "tree_b must never appear when source is inside tree_a"
+        let canon_lookalike = lookalike.root().canonicalize().unwrap();
+        assert!(
+            paths
+                .iter()
+                .all(|path| path.canonicalize().ok() != Some(canon_lookalike.clone())),
+            "a lookalike checkout must not be the std root: {paths:?}"
         );
     }
 
@@ -2562,7 +2399,7 @@ mod tests {
             std::env::remove_var("HEW_STD");
         }
 
-        let paths = build_module_search_paths_for(Some(&external));
+        let paths = stdlib_search_paths();
 
         // Restore env and clean up temp dir.
         // SAFETY: same single-threaded env-mutation guarantee as the set above.

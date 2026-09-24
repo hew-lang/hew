@@ -1423,29 +1423,19 @@ A working example is at
 
 #### 3.5.2 Module search-path resolution
 
-For imports outside the current source tree, Hew builds an ordered search-path
-list and uses the first matching module root. The search order is:
+Every `std.*` module, including the implicit prelude, resolves from one
+standard-library root:
 
-1. In-worktree root — the enclosing Hew checkout root (identified by containing `std/builtins.hew`), when the source file being compiled is inside a checkout. This tier ensures that stdlib resolution is always scoped to the checkout that owns the file.
-2. `HEWPATH` — a colon-separated list of module roots, where each entry is the
-   parent directory that contains `std/`
-3. `HEW_STD` — a direct path to the `std/` directory; Hew uses its parent as the
-   module root
-4. The installed FHS-style location `<prefix>/share/hew` relative to the `hew`
-   binary
-5. XDG user data: `~/.local/share/hew`
-6. User home dotdir: `~/.hew`
-7. System paths: `/usr/local/share/hew`, `/usr/share/hew`
-8. A development fallback to the repo root when `std/` exists two levels above
-   the binary
+1. `HEW_STD` — a direct path to a `std/` directory; Hew uses its parent as the
+   root.
+2. Otherwise the toolchain's own shipped std: `<prefix>/share/hew` beside an
+   installed `hew` binary, or the checkout a development binary was built
+   from.
 
-`HEWPATH` and `HEW_STD` are the supported user overrides. `hew.toml` does not
-configure module search paths.
-
-> **Scope note:** `HEWPATH` affects stdlib module resolution. User-module
-> file-import paths use `HEW_STD` and `.hew/packages` instead; they are not
-> governed by `HEWPATH`. Unification of `HEWPATH` across both stdlib and
-> user-module file imports is planned for a future edition.
+A `std/` directory beside the source file, in the working directory or in a
+project is never the standard library, so a program cannot replace
+`Option`, `Result` or any other std module by sitting next to a lookalike.
+`HEW_STD` is the one supported override. `hew.toml` does not configure it.
 
 For stdlib discovery, the recommended workflow is to generate docs for the
 stdlib tree itself:
@@ -6437,11 +6427,15 @@ The methods `.try_to_i8()`, `.try_to_i16()`, `.try_to_i32()`, `.try_to_i64()`, `
 > statements `if`, `if let`, `match`, `for`, `while`, `loop` and `defer`. What
 > follows starts the next statement, so a contextual variant tail such as
 > `.Ok(x)` on the next line is its own expression. Only a `handle` clause still
-> attaches. To call a method on the value or use it as an operand at statement
-> start, parenthesize it: `(unsafe { f() }) != 0`. A method call or operator
-> written directly after the `}` is refused with `E_BLOCK_STATEMENT_OPERAND`
-> and that fix-it. The same forms in operand position (`let n = { s }.len();`)
-> are ordinary expressions.
+> attaches. To use the value as an operand at statement start, parenthesize it:
+> `(unsafe { f() }) != 0`. Written directly after the `}`, a method call or a
+> binary-only operator on any line, or on the same line any token that would
+> continue an expression (`-`, `*`, `|`, `(`, `[`, `..`), is refused with
+> `E_BLOCK_STATEMENT_OPERAND` and that fix-it. A block-like statement that is
+> not the block's tail and has no `;` must have type `()`; a value it would
+> drop is `E_BLOCK_STATEMENT_VALUE`, fixed by parenthesizing or by
+> `let _ = …`. The same forms in operand position (`let n = { s }.len();`) are
+> ordinary expressions.
 
 ### 12.3 Duration Literals
 

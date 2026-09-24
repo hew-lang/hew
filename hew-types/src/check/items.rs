@@ -2762,15 +2762,17 @@ impl Checker {
                 // site does — never the bare spelling in isolation.
                 let trait_is_local = self.trait_ref_is_local(&tb.name);
                 // hew-compile loads the prelude's Display impls as the
-                // std.builtins module: from the running compiler's own shipped
-                // source, or source-less from the compiled-in text for an
-                // analysis with no search path. A project, cwd or `HEW_STD`
-                // copy of std/builtins.hew holds no such authority.
+                // std.builtins module, from the standard-library root every
+                // `std` module resolves from (the toolchain's std or
+                // `HEW_STD`), or source-less from the compiled-in text for an
+                // analysis with no search path. A lookalike module has neither.
                 let is_embedded_builtins_impl = self
                     .checking_canonical_stdlib_source("std.builtins")
                     && self.current_item_source.as_ref().is_none_or(|source| {
-                        self.module_registry
-                            .source_has_stdlib_authority(source, "std.builtins")
+                        crate::module_registry::is_canonical_stdlib_module_source(
+                            source,
+                            "std.builtins",
+                        )
                     });
                 if !type_is_local && !trait_is_local && !is_embedded_builtins_impl {
                     self.warnings.push(TypeError {
@@ -2876,8 +2878,7 @@ impl Checker {
     /// is below the stdlib root owned by the running compiler installation.
     fn intrinsic_type_is_local_to_builtin_surface(&self, type_name: &str) -> bool {
         self.current_item_source.as_ref().is_some_and(|source| {
-            self.module_registry
-                .source_has_stdlib_authority(source, "std.builtins")
+            crate::module_registry::is_canonical_stdlib_module_source(source, "std.builtins")
         }) && (Ty::from_name(type_name).is_some()
             || self
                 .resolved_builtin_type(type_name)

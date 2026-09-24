@@ -180,7 +180,14 @@ impl Checker {
         (is_identity || nested_identity).then_some(root)
     }
 
-    fn synthesize_discarded_expression(&mut self, expr: &Expr, span: &Span) -> Ty {
+    /// `stmt_span` is the whole statement's span; it reaches past the
+    /// expression's own span when a `;` ends the statement.
+    fn synthesize_discarded_expression(
+        &mut self,
+        expr: &Expr,
+        span: &Span,
+        stmt_span: &Span,
+    ) -> Ty {
         let root = Self::method_chain_root_binding(expr).map(str::to_string);
         // Probing the move state is bookkeeping, not a use: `lookup` would
         // count a read the source never wrote and hide a genuinely unused
@@ -210,12 +217,56 @@ impl Checker {
                 ],
             );
         }
+        if stmt_span.end <= span.end {
+            self.refuse_discarded_block_value(expr, &ty, span);
+        }
         if !root_was_moved {
             if let Some(root) = self.preserve_discarded_receiver_identity_chain(expr, span) {
                 self.env.unmark_moved(&root);
             }
         }
         ty
+    }
+
+    /// A block-like form at statement start ends the statement at its `}`
+    /// (HEW-SPEC-2026 §12.2), so a value it produces there is dropped. Without
+    /// a `;` that says so, refuse a value other than `()`: the source most
+    /// likely meant the block as an operand (`unsafe { f() } - 1` written
+    /// across a line break).
+    fn refuse_discarded_block_value(&mut self, expr: &Expr, ty: &Ty, span: &Span) {
+        let block_like = match expr {
+            Expr::Handle { operand, .. } => &operand.0,
+            other => other,
+        };
+        if !matches!(
+            block_like,
+            Expr::Block(_)
+                | Expr::UnsafeBlock(_)
+                | Expr::Scope { .. }
+                | Expr::ScopeDeadline { .. }
+                | Expr::Select { .. }
+                | Expr::Race(_)
+                | Expr::GenBlock { .. }
+        ) {
+            return;
+        }
+        let ty = self.subst.resolve(ty);
+        if matches!(ty, Ty::Unit | Ty::Never | Ty::Error | Ty::Var(_)) {
+            return;
+        }
+        self.report_error_with_suggestions(
+            TypeErrorKind::BlockStatementValue,
+            span,
+            format!(
+                "E_BLOCK_STATEMENT_VALUE: this block ends its statement, so its `{}` value is \
+                 dropped",
+                ty.user_facing()
+            ),
+            vec![
+                "wrap the block in parentheses to use its value in an expression".to_string(),
+                "discard the value deliberately with `let _ = <block>;`".to_string(),
+            ],
+        );
     }
 
     fn iterator_trait_item_ty(&mut self, iter_ty: &Ty, span: &Span) -> Option<Ty> {
@@ -419,7 +470,7 @@ impl Checker {
             | Stmt::Break { .. }
             | Stmt::Continue { .. } => self.check_stmt_as_expr(stmt, span, expected),
             Stmt::Expression((expr, es)) => {
-                let expr_ty = self.synthesize_discarded_expression(expr, es);
+                let expr_ty = self.synthesize_discarded_expression(expr, es, span);
                 if matches!(expr_ty, Ty::Never) {
                     Ty::Never
                 } else {
@@ -786,7 +837,7 @@ impl Checker {
                 let scr_ty = self.synthesize(&scrutinee.0, &scrutinee.1);
                 self.check_match_expr(&scr_ty, scrutinee, arms, span, expected)
             }
-            Stmt::Expression((expr, es)) => self.synthesize_discarded_expression(expr, es),
+            Stmt::Expression((expr, es)) => self.synthesize_discarded_expression(expr, es, span),
             Stmt::Return(value) => {
                 self.check_return_operand(value.as_ref(), span);
                 Ty::Never
@@ -1766,7 +1817,7 @@ impl Checker {
                         }
                     }
                 }
-                self.synthesize_discarded_expression(expr, es);
+                self.synthesize_discarded_expression(expr, es, span);
                 if let Some(previous) = outer_mutation {
                     self.env.end_mutation(previous);
                 }

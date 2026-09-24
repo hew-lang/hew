@@ -1619,7 +1619,7 @@ mod module_body_diagnostic_envelope {
             parse_result.errors
         );
         let mut checker = crate::Checker::new(crate::module_registry::ModuleRegistry::new(
-            crate::module_registry::build_module_search_paths(),
+            crate::module_registry::stdlib_search_paths(),
         ));
         let tco = checker.check_program(&parse_result.program);
         // `i` in `i = i + 1` must appear in assign_target_shapes

@@ -135,6 +135,9 @@ impl Parser<'_> {
                     trailing_expr = Some(Box::new(expr));
                     break;
                 }
+                if is_value_bearing {
+                    self.refuse_statement_block_continuation();
+                }
                 stmts.push(stmt);
                 while self.peek() == Some(&Token::Semicolon) {
                     let span = self.peek_span();
@@ -246,41 +249,67 @@ impl Parser<'_> {
             return Some(expr);
         }
         self.refuse_statement_block_continuation();
-        self.eat(&Token::Semicolon);
-        let span = expr.1.clone();
+        // A `;` that ends the statement belongs to its span: the checker reads
+        // it as the source discarding the block's value on purpose.
+        let end = if self.eat(&Token::Semicolon) {
+            self.last_token_end
+        } else {
+            expr.1.end
+        };
+        let span = expr.1.start..end;
         stmts.push((Stmt::Expression(expr), span));
         None
     }
 
-    /// A statement-start block cannot be an operand. Name the fix when the
-    /// source plainly meant one: a method call (`{ s }.len()`) or a binary
-    /// operator (`unsafe { f() } != 0`).
+    /// A statement-start block is not an operand. Refuse what plainly meant
+    /// one: a method call (`{ s }.len()`) or a binary-only operator on any
+    /// line, and on the block's own line any token that would continue an
+    /// expression (`unsafe { f() } - 1`, `{ g }(4)`, `{ v }[0]`). A token that
+    /// can start an expression on the next line starts the next statement.
     fn refuse_statement_block_continuation(&mut self) {
-        let continues = match self.peek() {
-            Some(Token::Dot) => matches!(
-                self.peek_at(self.pos + 1),
-                Some(Token::Identifier(name)) if name.starts_with(|c: char| c.is_lowercase() || c == '_')
-            ),
+        let binary_only = matches!(
+            self.peek(),
             Some(
                 Token::As
-                | Token::EqualEqual
-                | Token::NotEqual
-                | Token::Less
-                | Token::LessEqual
-                | Token::Greater
-                | Token::GreaterEqual
-                | Token::AmpAmp
-                | Token::PipePipe
-                | Token::QuestionQuestion
-                | Token::Question
-                | Token::Plus
-                | Token::Slash
-                | Token::Percent
-                | Token::Caret,
-            ) => true,
-            _ => false,
-        };
-        if continues {
+                    | Token::Is
+                    | Token::EqualEqual
+                    | Token::NotEqual
+                    | Token::Less
+                    | Token::LessEqual
+                    | Token::Greater
+                    | Token::GreaterEqual
+                    | Token::AmpAmp
+                    | Token::PipePipe
+                    | Token::QuestionQuestion
+                    | Token::Question
+                    | Token::Plus
+                    | Token::Slash
+                    | Token::Percent
+                    | Token::Caret
+                    | Token::Ampersand
+                    | Token::LessLess
+                    | Token::GreaterGreater
+            )
+        );
+        let method_call = self.peek() == Some(&Token::Dot)
+            && matches!(
+                self.peek_at(self.pos + 1),
+                Some(Token::Identifier(name)) if name.starts_with(|c: char| c.is_lowercase() || c == '_')
+            );
+        let same_line_continuation = self.peek_on_same_line()
+            && matches!(
+                self.peek(),
+                Some(
+                    Token::Minus
+                        | Token::Star
+                        | Token::Pipe
+                        | Token::LeftParen
+                        | Token::LeftBracket
+                        | Token::DotDot
+                        | Token::DotDotEqual
+                )
+            );
+        if binary_only || method_call || same_line_continuation {
             self.error_with_hint(
                 "E_BLOCK_STATEMENT_OPERAND: a block at the start of a statement ends at its `}` \
                  and is not an operand"

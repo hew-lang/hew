@@ -3332,13 +3332,13 @@ fn project_local_std_builtins_source_cannot_claim_intrinsic_coherence() {
 
     if std::env::var_os(CHILD_MARKER).is_some() {
         let attacker_root = std::env::current_dir().expect("attacker cwd is available");
-        let search_paths = crate::module_registry::build_module_search_paths_for(None);
-        assert_eq!(
+        let search_paths = crate::module_registry::stdlib_search_paths();
+        assert!(
             search_paths
-                .first()
-                .and_then(|path| path.canonicalize().ok()),
-            attacker_root.canonicalize().ok(),
-            "production module discovery must select the attacker's std root"
+                .iter()
+                .all(|path| path.canonicalize().ok() != attacker_root.canonicalize().ok()),
+            "production module discovery must not select the attacker's cwd std: \
+             {search_paths:?}"
         );
         let compiler_root = crate::module_registry::compiler_stdlib_root()
             .expect("test executable must resolve its compiler-owned development stdlib");

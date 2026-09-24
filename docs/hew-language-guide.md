@@ -51,10 +51,10 @@ a prerequisite.
 
 The `--` separator is mandatory when passing program arguments — everything before `--` is parsed as `hew run` options, and everything after is forwarded to your program as `os.args()`. Without `--`, unrecognised flags produce a usage error.
 
-**Working inside the Hew source checkout?** An in-checkout compiler can resolve
-the repository's `std/` through the development fallback. Set `HEWPATH` or
-`HEW_STD` when selecting an alternate installation or when another directory
-layout would otherwise be ambiguous. See
+**Working inside the Hew source checkout?** A compiler built from a checkout
+uses that checkout's `std/` as its shipped std. Set `HEW_STD` to select any
+other standard library; a `std/` beside the source or in the current directory
+is never used. See
 [Module search paths & stdlib discovery](../README.md#module-search-paths--stdlib-discovery)
 for the documented resolver precedence.
 
@@ -323,7 +323,7 @@ fn grade(n: i64) -> string {
 
 Use if/else as an expression to produce a value; the last expression of each block is its value. An `if` used as an expression needs an `else`, and every branch must produce the same type.
 
-A block-like form that starts a statement — a block, `unsafe { }`, `scope`, `select`, `race`, `fork { }`, `gen { }`, `if`, `match`, a loop or `defer` — ends the statement at its closing `}`. A `.Ok(value)` on the next line is therefore the function's tail, not a method call on the block. To use such a block as an operand at the start of a statement, parenthesize it: `(unsafe { f() }) != 0`; without the parentheses the compiler reports `E_BLOCK_STATEMENT_OPERAND`.
+A block-like form that starts a statement — a block, `unsafe { }`, `scope`, `select`, `race`, `fork { }`, `gen { }`, `if`, `match`, a loop or `defer` — ends the statement at its closing `}`. A `.Ok(value)` on the next line is therefore the function's tail, not a method call on the block. To use such a block as an operand at the start of a statement, parenthesize it: `(unsafe { f() }) != 0`; without the parentheses the compiler reports `E_BLOCK_STATEMENT_OPERAND`. A block statement that is not the tail and has no `;` must produce `()`: a value it would drop is `E_BLOCK_STATEMENT_VALUE`, so `unsafe { f() }` followed by `- 1` on the next line fails instead of quietly returning `-1`.
 
 ### match on literals with wildcard
 

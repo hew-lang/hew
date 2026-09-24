@@ -5958,6 +5958,12 @@ fn statement_block_operands_need_parentheses() {
         "{ s }.len();",
         "unsafe { g() }.abs()",
         "unsafe { g() } != 0",
+        "unsafe { 7 } - 1",
+        "unsafe { dbl }(4)",
+        "{ vv }[0]",
+        "scope { 7 } * 2",
+        "if c { 1 } else { 2 } - 5",
+        "{ s }\n.len()",
     ] {
         let (_, errors) = statement_block_body(refused);
         assert!(
@@ -5977,6 +5983,8 @@ fn statement_block_operands_need_parentheses() {
         "let n = { s }.len();\nn",
         "{\"a\": 1, \"b\": 2}.len()",
         "scope { work() } handle failure { 0 }",
+        "if stop { work(); }\n[1]",
+        "unsafe { work(); }\n(a, b)",
     ] {
         let (_, errors) = statement_block_body(accepted);
         assert!(errors.is_empty(), "`{accepted}` must parse: {errors:?}");

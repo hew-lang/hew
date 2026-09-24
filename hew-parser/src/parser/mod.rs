@@ -709,6 +709,10 @@ pub struct Parser<'src> {
     /// statement start: the form ends at its `}`, with no postfix or infix
     /// continuation. Taken on entry, so nested expressions parse normally.
     pub(crate) statement_block: Cell<bool>,
+    /// The source the tokens were lexed from, and the byte offset their spans
+    /// carry, so a rule can ask whether two tokens share a line.
+    pub(crate) source: &'src str,
+    pub(crate) source_offset: usize,
     /// End byte of the most recently consumed token (absolute).
     ///
     /// For a full-program parse this starts at 0.  For an f-string sub-parser

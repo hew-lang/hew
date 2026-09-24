@@ -102,11 +102,27 @@ impl<'src> Parser<'src> {
             no_struct_literal: Rc::new(Cell::new(false)),
             block_arm_body: Rc::new(Cell::new(false)),
             statement_block: Cell::new(false),
+            source,
+            source_offset: offset,
             last_token_end: offset,
         }
     }
 
     // ── Helpers ──
+    /// Whether the current token starts on the same line the previous token
+    /// ends on.
+    pub(crate) fn peek_on_same_line(&self) -> bool {
+        let (Some((_, previous)), Some((_, next))) = (
+            self.tokens.get(self.pos.wrapping_sub(1)),
+            self.tokens.get(self.pos),
+        ) else {
+            return false;
+        };
+        self.source
+            .get(previous.end - self.source_offset..next.start - self.source_offset)
+            .is_some_and(|between| !between.contains('\n'))
+    }
+
     pub(crate) fn peek(&self) -> Option<&Token<'src>> {
         self.tokens.get(self.pos).map(|(t, _)| t)
     }

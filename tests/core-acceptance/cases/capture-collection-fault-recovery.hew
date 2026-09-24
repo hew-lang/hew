@@ -1,0 +1,54 @@
+type Key {
+    label: string,
+    divisor: i64,
+}
+
+impl Hash for Key {
+    fn hash(self) -> i64 {
+        self.label.len() / self.divisor
+    }
+}
+
+fn main() {
+    let counts: HashMap<Key, i64> = HashMap.new();
+    var add = capture(var counts) |label: string, divisor: i64| -> i64 {
+        counts.insert(Key { label: label, divisor: divisor }, divisor);
+        counts.len()
+    };
+    println(add("a", 1));
+    println(add("bb", 1));
+    let failed = scope {
+        add("ccc", 0)
+    } handle failure {
+        println("insert faulted");
+        -1
+    };
+    println(failed);
+    // The closure kept its map through the fault; the outer binding was
+    // only ever the snapshot the capture copied.
+    println(add("dddd", 1));
+    println(counts.len());
+
+    let names: HashSet<string> = HashSet.new();
+    var edit = move capture(var names) |name: string, keep: bool| -> i64 {
+        if keep {
+            names.insert(name);
+        } else {
+            names.remove(name);
+        }
+        names.len()
+    };
+    println(edit("a", true));
+    println(edit("b", true));
+    println(edit("a", false));
+
+    let totals: HashMap<string, i64> = HashMap.new();
+    var tally = capture(var totals) |word: string| -> i64 {
+        totals.insert(word, 1);
+        totals.remove("skip");
+        totals.len()
+    };
+    println(tally("x"));
+    println(tally("y"));
+    println(tally("x"));
+}

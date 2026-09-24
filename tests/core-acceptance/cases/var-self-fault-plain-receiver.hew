@@ -1,0 +1,77 @@
+import std.failure;
+
+type Point {
+    x: i64,
+    y: i64,
+}
+
+impl Point {
+    fn bump(var self, fail: bool) {
+        self.x = self.x + 1;
+        if fail {
+            panic("bump failed");
+        }
+    }
+}
+
+type Rect {
+    origin: Point,
+    label: string,
+}
+
+actor Worker {
+    receive fn local() {
+        var p = Point { x: 1, y: 2 };
+        defer println(f"defer sees x {p.x}");
+        p.bump(false);
+        p.bump(true);
+        println("unreachable");
+    }
+
+    receive fn field() {
+        var r = Rect { origin: Point { x: 10, y: 0 }, label: "rect" };
+        defer println(f"defer sees {r.label} {r.origin.x}");
+        r.origin.bump(true);
+        println("unreachable");
+    }
+}
+
+actor Holder {
+    var p: Point,
+
+    receive fn poke(fail: bool) -> i64 {
+        p.bump(fail);
+        p.x
+    }
+
+    #[on(crash)]
+    fn crashed(info: CrashInfo) -> CrashAction {
+        println(f"hook sees x {p.x}");
+        CrashAction.Restart
+    }
+}
+
+supervisor Group {
+    intensity: 1 within 60s,
+    child holder: Holder(p: Point { x: 1, y: 0 }),
+}
+
+fn main() {
+    let local = spawn Worker;
+    match local.local() {
+        .Ok(_) => println("unexpected"),
+        .Err(_) => println("local faulted"),
+    }
+    let field = spawn Worker;
+    match field.field() {
+        .Ok(_) => println("unexpected"),
+        .Err(_) => println("field faulted"),
+    }
+    let group = spawn Group;
+    println(group.holder.poke(false).expect("poke"));
+    let _ = group.holder.poke(true);
+    let _ = await_restart group.holder;
+    println(group.holder.poke(false).expect("fresh"));
+    close(group);
+    println("done");
+}

@@ -586,8 +586,8 @@ pub(super) fn verify_trap_cleanup_refinement(
                 return Err(invalid());
             }
             let block = blocks.get(&site.0).ok_or_else(invalid)?;
-            // Besides releases, only the moves that hand a failing `var self`
-            // method's receiver back run here.
+            // Besides releases, only the moves and plain copies that hand a
+            // failing `var self` method's receiver back run here.
             if let Some(operation) = block.ops[site.1..].iter().find(|operation| {
                 !certified(operation)
                     && !matches!(
@@ -596,6 +596,10 @@ pub(super) fn verify_trap_cleanup_refinement(
                             | PhysicalOp::TaskScopeClose { .. }
                             | PhysicalOp::Transfer { .. }
                             | PhysicalOp::AggregateDestructure { .. }
+                            | PhysicalOp::Clone {
+                                action: super::CloneAction::Bitwise,
+                                ..
+                            }
                     )
             }) {
                 return Err(PhysicalError::new(format!(

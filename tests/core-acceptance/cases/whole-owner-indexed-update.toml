@@ -1,0 +1,11 @@
+[[case]]
+id = "whole-owner-indexed-update"
+intent = "Indexed updates beneath an actor state field and a private mutable capture publish through the owner; a failing indexed update leaves the state field whole for the crash hook, with the earlier update kept."
+source = "cases/whole-owner-indexed-update.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "poked 5 7 renamed\nhook sees poked 1 99 renamed\ncaptured 1 11 2\ncaptured 2 21 3\n"
+stderr = "hew: failure: IndexOutOfBounds (205)\nhew: actor crash in Keeper.out_of_bounds (actor 1): IndexOutOfBounds\n"
+exit = 0

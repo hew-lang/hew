@@ -1,0 +1,10 @@
+[[case]]
+id = "var-self-defer-plain-receiver"
+intent = "A `var self` method on a plain record whose body defers a read of `self` compiles; on the normal edge and on a checked, panic or bounds fault the defer sees the receiver as last written, and a recovering caller reads the receiver the method handed back."
+source = "cases/var-self-defer-plain-receiver.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "bump defer sees 2\n2\npanic defer sees 3\n3\nindex defer sees 4\n24\npanic defer sees 5\npanic recovered at x 5\n-1\nindex defer sees 6\nindex recovered at x 6\n-1\n6 2\n"
+exit = 0

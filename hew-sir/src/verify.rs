@@ -2154,8 +2154,7 @@ fn substitute_template_signature(
                     } else {
                         SemParamPassing::ReadOnly
                     },
-                    caller_visible_projection: parameter.caller_visible_projection
-                        && own == crate::OwnKind::Owned,
+                    caller_visible_projection: parameter.caller_visible_projection,
                 })
             })
             .collect::<Result<Vec<_>, String>>()?,
@@ -2281,7 +2280,9 @@ fn verify_capture_operation(
         SemOpKind::LoadCopy { place } => (*place, None, false, false),
         SemOpKind::LoadTake { place } => (*place, None, false, true),
         SemOpKind::LoadBorrow { place } => (*place, None, true, false),
-        SemOpKind::StoreAssign { place, value } => (*place, Some(value), false, false),
+        SemOpKind::StoreAssign { place, value } | SemOpKind::StoreInit { place, value } => {
+            (*place, Some(value), false, false)
+        }
         _ => return None,
     };
     Some((|| {
@@ -2326,11 +2327,18 @@ fn verify_capture_operation(
                 );
             }
         } else if takes {
-            if capabilities.call != hew_types::CallableCallMode::Once
-                || field.consumption != hew_types::ClosureCaptureConsumption::Consumed
-            {
+            // A call-once body may consume its field. A body with private
+            // mutable access may take the field for one mutation and must
+            // re-initialize it before it exits; the lifetime rules own that.
+            let consumes = capabilities.call == hew_types::CallableCallMode::Once
+                && field.consumption == hew_types::ClosureCaptureConsumption::Consumed;
+            let mutates = field.access == hew_types::ClosureCaptureAccess::Var
+                && capabilities.call != hew_types::CallableCallMode::Read;
+            if !consumes && !mutates {
                 return Err(
-                    "taking a capture requires a consuming field in a call-once body".to_string(),
+                    "taking a capture requires a consuming field in a call-once body or \
+                     private mutable access"
+                        .to_string(),
                 );
             }
         } else if facts
@@ -3865,7 +3873,7 @@ fn verify_call_handback(
         (None, None) => true,
         (Some(receiver), Some(handback)) => {
             handback.ty == receiver.ty
-                && handback.own == OwnKind::Owned
+                && handback.own == receiver_handback_own(receiver)
                 && matches!(carried, [only] if only.value == handback.id)
         }
         _ => false,
@@ -3883,12 +3891,24 @@ fn verify_call_handback(
     }
 }
 
-/// An owned `var self` receiver: the first parameter, consumed, and handed
-/// back to the caller in the second field of the dual return. Its callee
-/// also hands it back when the call fails.
+/// A consumed receiver comes back owned; a copied one owns nothing.
+fn receiver_handback_own(receiver: &crate::SemAbiParam) -> OwnKind {
+    if receiver.passing == SemParamPassing::Consume {
+        OwnKind::Owned
+    } else {
+        OwnKind::None
+    }
+}
+
+/// A `var self` receiver: the first parameter, consumed when it owns and
+/// copied otherwise, and handed back to the caller in the second field of
+/// the dual return. Its callee also hands it back when the call fails.
 fn is_var_self_receiver(signature: &crate::SemSignature, parameter: usize) -> bool {
     parameter == 0
-        && signature.params[0].passing == SemParamPassing::Consume
+        && matches!(
+            signature.params[0].passing,
+            SemParamPassing::Consume | SemParamPassing::ReadOnly
+        )
         && matches!(&signature.return_ty, ResolvedTy::Tuple(fields)
             if fields.len() == 2 && fields[1] == signature.params[0].ty)
 }
@@ -4666,7 +4686,8 @@ fn failure_cfg_matches_exit(
             return false;
         };
         // Releases, the re-publication of a seat a call took and handed back
-        // on this edge, and the moves that hand a failing `var self` method's
+        // on this edge, the rebuilding of an owner opened around it, and the
+        // moves and plain copies that hand a failing `var self` method's
         // receiver back. Nothing else runs on a failure edge.
         if block.ops.iter().any(|op| {
             !matches!(
@@ -4678,7 +4699,8 @@ fn failure_cfg_matches_exit(
                     | SemOpKind::StoreInit { .. }
                     | SemOpKind::LoadTake { .. }
                     | SemOpKind::Destructure { .. }
-            )
+                    | SemOpKind::AggregateMake { .. }
+            ) && !crate::lifetime::is_plain_copy(op)
         }) {
             return false;
         }
@@ -5336,7 +5358,12 @@ fn verify_terminator_shape(
             let agrees = match (receiver, handback) {
                 (None, None) => true,
                 (Some(receiver), Some(handback)) => {
-                    handback.decision == crate::BoundaryDecision::Move
+                    handback.decision
+                        == if receiver_handback_own(receiver) == OwnKind::Owned {
+                            crate::BoundaryDecision::Move
+                        } else {
+                            crate::BoundaryDecision::Copy
+                        }
                         && types.get(&handback.operand.value) == Some(&receiver.ty)
                 }
                 _ => false,

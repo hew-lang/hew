@@ -209,8 +209,18 @@ impl Builder<'_, '_> {
         if !self.callable.signature.hands_back_receiver() {
             return Ok(None);
         }
-        let ty = self.callable.signature.params[0].ty.clone();
-        if self.dual_return.is_none()
+        let receiver = &self.callable.signature.params[0];
+        let ty = receiver.ty.clone();
+        // An owning receiver was consumed and moves back out; a plain one was
+        // copied in and is copied back out.
+        let owned = receiver.passing == crate::SemParamPassing::Consume;
+        let decision = if owned {
+            crate::BoundaryDecision::Move
+        } else {
+            crate::BoundaryDecision::Copy
+        };
+        if owned
+            && self.dual_return.is_none()
             && self
                 .state_taken
                 .iter()
@@ -225,7 +235,7 @@ impl Builder<'_, '_> {
         }
         if let Some(dual) = self
             .dual_return
-            .filter(|dual| self.owned_live.contains_key(dual))
+            .filter(|dual| !owned || self.owned_live.contains_key(dual))
         {
             let dual_ty = self.callable.signature.return_ty.clone();
             let fields = self.emit_destructure_value(
@@ -239,21 +249,29 @@ impl Builder<'_, '_> {
                 operand: crate::Operand {
                     value: fields[1].id,
                 },
-                decision: crate::BoundaryDecision::Move,
+                decision,
             }));
         }
+        // A copied receiver stays in its place, where the defers this fault
+        // still runs read it.
         let value = match self.binding_target(binding)? {
-            super::BindingTarget::Place(place) => {
-                self.emit_typed(Provenance::Synthesized, &ty, SemOpKind::LoadTake { place })?
-            }
+            super::BindingTarget::Place(place) => self.emit_typed(
+                Provenance::Synthesized,
+                &ty,
+                if owned {
+                    SemOpKind::LoadTake { place }
+                } else {
+                    SemOpKind::LoadCopy { place }
+                },
+            )?,
             super::BindingTarget::Value(value) => value,
         };
-        if self.owned_live.remove(&value).is_none() {
+        if owned && self.owned_live.remove(&value).is_none() {
             return Err("a `var self` receiver must be whole where its method can fail".into());
         }
         Ok(Some(crate::BoundaryOperand {
             operand: crate::Operand { value },
-            decision: crate::BoundaryDecision::Move,
+            decision,
         }))
     }
 

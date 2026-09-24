@@ -1,0 +1,67 @@
+import std.failure;
+
+#[resource]
+type Conn {
+    fd: i64,
+}
+
+impl Conn {
+    fn close(consume self) {
+        println(f"close {self.fd}");
+    }
+
+    fn bump(var self, fail: bool) {
+        self.fd = self.fd + 1;
+        if fail {
+            panic("bump failed");
+        }
+    }
+}
+
+type Counter {
+    n: i64,
+    label: string,
+}
+
+impl Counter {
+    fn bump(var self) {
+        self.n = self.n + 1;
+    }
+}
+
+type Outer {
+    counter: Counter,
+    conn: Conn,
+    tag: string,
+}
+
+actor Holder {
+    var outer: Outer,
+
+    receive fn poke(fail: bool) -> i64 {
+        outer.counter.bump();
+        outer.conn.bump(fail);
+        outer.conn.fd
+    }
+
+    #[on(crash)]
+    fn crashed(info: CrashInfo) -> CrashAction {
+        println(f"hook sees {outer.tag} {outer.counter.label} {outer.counter.n} fd {outer.conn.fd}");
+        CrashAction.Restart
+    }
+}
+
+supervisor Group {
+    intensity: 1 within 60s,
+    child holder: Holder(outer: Outer { counter: Counter { n: 0, label: "count" }, conn: Conn { fd: 1 }, tag: "outer" }),
+}
+
+fn main() {
+    let group = spawn Group;
+    println(group.holder.poke(false).expect("poke"));
+    let _ = group.holder.poke(true);
+    let _ = await_restart group.holder;
+    println(group.holder.poke(false).expect("fresh"));
+    close(group);
+    println("done");
+}

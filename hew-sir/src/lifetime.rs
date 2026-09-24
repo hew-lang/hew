@@ -350,18 +350,26 @@ fn mark_trap(state: &mut State) {
     };
 }
 
-/// Releases, and the moves that hand a failing `var self` method's receiver
-/// back to its caller.
-fn is_cleanup(kind: &SemOpKind) -> bool {
+/// Releases, and the moves and plain copies that hand a failing `var self`
+/// method's receiver back to its caller.
+fn is_cleanup(op: &crate::SemOp) -> bool {
     matches!(
-        kind,
+        op.kind,
         SemOpKind::EndBorrow { .. }
             | SemOpKind::TaskScopeClose { .. }
             | SemOpKind::DestroyValue { .. }
             | SemOpKind::EndLifetime { .. }
             | SemOpKind::LoadTake { .. }
             | SemOpKind::Destructure { .. }
-    )
+    ) || is_plain_copy(op)
+}
+
+/// A copy of a place that owns nothing: it cannot fail, so a fault edge may
+/// hand a plain `var self` receiver back with it and leave the place for the
+/// defers that still read it.
+pub(crate) fn is_plain_copy(op: &crate::SemOp) -> bool {
+    matches!((&op.kind, op.results.as_slice()),
+        (SemOpKind::LoadCopy { .. }, [copy]) if copy.own == OwnKind::None)
 }
 
 /// A least fixed point admits only cleanup suffixes with a finite trap exit.
@@ -417,7 +425,7 @@ pub(crate) fn cleanup_suffixes(function: &SemFunction) -> BTreeMap<BlockId, usiz
                 let start = block
                     .ops
                     .iter()
-                    .rposition(|op| !is_cleanup(&op.kind))
+                    .rposition(|op| !is_cleanup(op))
                     .map_or(0, |index| index + 1);
                 suffixes.insert(block.id, start);
             }
@@ -457,8 +465,12 @@ struct Flow<'a> {
     /// because init releases what it initialized before the fault leaves.
     deferred_places: BTreeSet<crate::PlaceId>,
     /// Every actor state seat. A seat a handler took is re-published with
-    /// `StoreInit`; a capture is never taken and keeps the live-store rule.
+    /// `StoreInit`.
     state_places: BTreeSet<crate::PlaceId>,
+    /// Captures of a body that borrows its environment. A mutation may take
+    /// one and re-initializes it with `StoreInit`; the environment keeps the
+    /// field, so it is whole again at every exit.
+    borrowed_captures: BTreeSet<crate::PlaceId>,
     projections: &'a crate::PlacePlan,
     place_indices: BTreeMap<crate::PlaceId, usize>,
 }
@@ -662,6 +674,17 @@ impl<'a> Flow<'a> {
             .filter(|place| matches!(place.origin, crate::PlaceOrigin::ActorState { .. }))
             .map(|place| place.id)
             .collect();
+        let borrowed_captures = function
+            .places
+            .iter()
+            .filter(|place| {
+                matches!(place.origin, crate::PlaceOrigin::Capture { environment, .. }
+                if function.params.iter().any(|param| {
+                    param.value == environment && param.own != OwnKind::Owned
+                }))
+            })
+            .map(|place| place.id)
+            .collect();
         Self {
             defers: crate::defer::plan(function).unwrap_or_default(),
             fault_releases,
@@ -700,6 +723,7 @@ impl<'a> Flow<'a> {
             places,
             deferred_places,
             state_places,
+            borrowed_captures,
             place_indices,
             projections,
         }
@@ -1350,6 +1374,17 @@ impl<'a> Flow<'a> {
                     }
                 }
             }
+            for place in &self.borrowed_captures {
+                if state.places[self.place_indices[place]] != LIVE {
+                    emit(Violation {
+                        linear_obligation: false,
+                        block: id,
+                        value: None,
+                        place: Some(*place),
+                        reason: "capture field is not re-initialized at this exit",
+                    });
+                }
+            }
         }
         for (index, &value) in self.values.iter().enumerate() {
             if state.values[index] & LIVE != 0 {
@@ -1837,18 +1872,18 @@ impl<'a> Flow<'a> {
             }
             return;
         }
-        // Capture semantics remain unchanged: assignment requires a live
-        // private mutable capture; it cannot restore a consumed capture.
+        // Assignment requires a live private mutable capture; `StoreInit`
+        // re-initializes one a mutation took.
         let Some(&index) = self.place_indices.get(&place) else {
             return;
         };
         let (_, OwnerRoot::Value(owner)) = self.places[index] else {
             unreachable!("only capture places have no local or aggregate selection")
         };
-        // A deferred actor seat's first store needs a dead seat; every other
-        // access needs a live one (D447).
-        let initializing =
-            matches!(kind, SemOpKind::StoreInit { .. }) && self.state_places.contains(&place);
+        // A deferred actor seat's first store, and the re-initialization of a
+        // taken seat or capture, need a dead seat; every other access needs a
+        // live one (D447).
+        let initializing = matches!(kind, SemOpKind::StoreInit { .. });
         // StoreInit addresses the exclusive state receiver without reading its
         // complete contents. Calling `access` here would require the very seat
         // this operation is restoring to already be live.
@@ -1863,7 +1898,7 @@ impl<'a> Flow<'a> {
                 block,
                 value: Some(owner),
                 reason: if initializing {
-                    "actor state field is already initialized on an incoming path"
+                    "actor state field or capture is already initialized on an incoming path"
                 } else if self.deferred_places.contains(&place) {
                     "actor state field is not initialized on every incoming path"
                 } else {

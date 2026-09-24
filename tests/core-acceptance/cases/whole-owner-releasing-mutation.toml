@@ -1,0 +1,13 @@
+[[case]]
+id = "whole-owner-releasing-mutation"
+intent = "Inserting into a map of resources held by a resource is refused, and the refusal names the reason: the insert can release the map when it fails, and without a copy of the map the resource could not be left whole."
+source = "cases/whole-owner-releasing-mutation.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "E_SIR_UNSUPPORTED"
+line = 23
+column = 1
+message = "for an operation that can release the collection when it fails"

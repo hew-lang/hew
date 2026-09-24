@@ -1,0 +1,24 @@
+// A closure's private map and set change on every call: inserts and removes on
+// a mutable capture update the closure's own collection, which each later call
+// sees, while the binding it was captured from keeps its snapshot.
+fn main() {
+    let counts: HashMap<string, i64> = HashMap.new();
+    var tally = capture(var counts) |word: string| -> i64 {
+        counts.insert(word, 1);
+        counts.remove("skip");
+        counts.len()
+    };
+    println(tally("a"));
+    println(tally("b"));
+    println(tally("a"));
+    println(counts.len());
+    let seen: HashSet<string> = HashSet.new();
+    var mark = move capture(var seen) |name: string| -> bool {
+        let fresh = !seen.contains(name);
+        seen.insert(name);
+        fresh
+    };
+    println(mark("x"));
+    println(mark("y"));
+    println(mark("x"));
+}

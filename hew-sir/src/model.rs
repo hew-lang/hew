@@ -363,12 +363,17 @@ pub struct SemSignature {
 }
 
 impl SemSignature {
-    /// A `var self` method: its first parameter is a consumed receiver its
-    /// caller sees again, in the dual return and handed back when it fails.
+    /// A `var self` method: its first parameter is a receiver its caller sees
+    /// again, in the dual return and handed back when it fails. An owning
+    /// receiver is consumed and a plain one copied, so both come back whole.
     #[must_use]
     pub fn hands_back_receiver(&self) -> bool {
         self.params.first().is_some_and(|param| {
-            param.caller_visible_projection && param.passing == SemParamPassing::Consume
+            param.caller_visible_projection
+                && matches!(
+                    param.passing,
+                    SemParamPassing::Consume | SemParamPassing::ReadOnly
+                )
         })
     }
 }

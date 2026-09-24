@@ -1,5 +1,6 @@
 // A `var self` method that fails leaves its receiver, as last written, in the
-// caller's variable, where a pending defer still reads it.
+// caller's variable, capture or field, where a pending defer still reads it.
+// A defer in the method itself reads the receiver on either exit.
 type Counter {
     n: i64,
     label: string,
@@ -14,10 +15,36 @@ impl Counter {
     }
 }
 
+type Point {
+    x: i64,
+    y: i64,
+}
+
+impl Point {
+    fn shift(var self, fail: bool) {
+        defer println(f"shift {self.x}");
+        self.x = self.x + 1;
+        if fail {
+            panic("shift failed");
+        }
+    }
+}
+
+type Shape {
+    origin: Point,
+    name: string,
+}
+
 fn main() {
     var c = Counter { n: 1, label: "count" };
     defer println(f"{c.label} {c.n}");
     c.bump(false);
-    c.bump(true);
+    let shape = Shape { origin: Point { x: 10, y: 0 }, name: "shape" };
+    var step = capture(var shape) |fail: bool| {
+        defer println(f"{shape.name} {shape.origin.x}");
+        shape.origin.shift(fail);
+    };
+    step(false);
+    step(true);
     println("unreachable");
 }

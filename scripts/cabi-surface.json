@@ -948,14 +948,16 @@
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_actor_self_token() -> usize"
+        "native": "fn hew_actor_self_token() -> usize",
+        "wasm32-wasip1": "fn hew_actor_self_token() -> usize"
       },
       "symbol": "hew_actor_self_token"
     },

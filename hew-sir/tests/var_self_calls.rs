@@ -2,8 +2,8 @@
 
 use hew_hir::{lower_program_host_target, ResolutionCtx};
 use hew_sir::{
-    lower_module, verify_module, BindingTarget, CallUnwind, SemModule, SemOpKind, SemTerminator,
-    SirLoweringStatus,
+    lower_module, verify_module, BindingTarget, BoundaryDecision, CallUnwind, OwnKind, SemModule,
+    SemOpKind, SemTerminator, SirLoweringStatus,
 };
 use hew_types::{module_registry::ModuleRegistry, Checker};
 
@@ -163,9 +163,10 @@ fn argument_alias_and_nested_mutation_precede_the_receiver_take() {
             .iter()
             .any(|op| matches!(op.kind, SemOpKind::LoadTake { place } if place == receiver)));
         let normal = &main.blocks[normal.as_ref().expect("returning call").target.0 as usize];
-        assert!(normal.ops.iter().any(
-            |op| matches!(op.kind, SemOpKind::StoreAssign { place, .. } if place == receiver)
-        ));
+        assert!(normal
+            .ops
+            .iter()
+            .any(|op| matches!(op.kind, SemOpKind::StoreInit { place, .. } if place == receiver)));
         let cleanup = cleanup_region(main, unwind.target);
         assert!(cleanup
             .iter()
@@ -525,4 +526,271 @@ fn returning_self_as_the_method_result_preserves_an_independent_receiver() {
         }
     "#,
     );
+}
+
+#[test]
+fn a_plain_receiver_is_copied_back_into_its_place_when_the_method_fails() {
+    let module = lower(
+        r"
+        type Point { x: i64, y: i64 }
+        trait Bump { fn bump(var self, divisor: i64) -> i64; }
+        impl Bump for Point {
+            fn bump(var self, divisor: i64) -> i64 {
+                self.x = self.x + 1;
+                8 / divisor
+            }
+        }
+        fn main() -> i64 {
+            var point = Point { x: 1, y: 2 };
+            point.bump(0) + point.x
+        }
+    ",
+    );
+    let main = module
+        .functions
+        .iter()
+        .find(|f| f.declaration.full_path() == "main")
+        .unwrap();
+    let BindingTarget::Place(receiver) = main
+        .bindings
+        .iter()
+        .find(|binding| binding.name == "point")
+        .unwrap()
+        .target
+    else {
+        panic!("a mutable binding has canonical local storage")
+    };
+    let (unwind, handback) = main
+        .blocks
+        .iter()
+        .find_map(|block| match &block.terminator {
+            SemTerminator::Call {
+                unwind: CallUnwind::Cleanup(unwind),
+                handback: Some(handback),
+                ..
+            } => Some((unwind.clone(), handback.clone())),
+            _ => None,
+        })
+        .expect("the plain `var self` call receives its handed-back receiver");
+    assert_eq!(handback.own, OwnKind::None);
+    let failure = &main.blocks[unwind.target.0 as usize];
+    let returned = failure.args[0].value;
+    assert!(failure.ops.iter().any(|op| matches!(&op.kind,
+        SemOpKind::StoreInit { place, value } if *place == receiver && value.value == returned)));
+
+    let method = module
+        .functions
+        .iter()
+        .find(|f| f.declaration.full_path().ends_with("bump"))
+        .unwrap();
+    assert!(method
+        .blocks
+        .iter()
+        .filter_map(|block| match &block.terminator {
+            SemTerminator::ResumeUnwind { handback } => Some(handback),
+            _ => None,
+        })
+        .all(|handback| handback
+            .as_ref()
+            .is_some_and(|handback| handback.decision == BoundaryDecision::Copy)));
+
+    // A plain receiver is never handed back as an owner.
+    let mut owned_call = module.clone();
+    for block in owned_call.functions.iter_mut().flat_map(|f| &mut f.blocks) {
+        if let SemTerminator::Call {
+            handback: Some(handback),
+            ..
+        } = &mut block.terminator
+        {
+            handback.own = OwnKind::Owned;
+        }
+    }
+    assert!(verify_module(&owned_call).iter().any(|diagnostic| matches!(
+        &diagnostic.kind,
+        hew_sir::SirDiagnosticKind::InvalidOperation { reason, .. }
+            if reason.contains("must carry exactly the `var self` receiver")
+    )));
+    let mut moved_exit = module;
+    for block in moved_exit
+        .functions
+        .iter_mut()
+        .filter(|f| f.declaration.full_path().ends_with("bump"))
+        .flat_map(|f| &mut f.blocks)
+    {
+        if let SemTerminator::ResumeUnwind {
+            handback: Some(handback),
+        } = &mut block.terminator
+        {
+            handback.decision = BoundaryDecision::Move;
+        }
+    }
+    assert!(verify_module(&moved_exit).iter().any(|diagnostic| matches!(
+        &diagnostic.kind,
+        hew_sir::SirDiagnosticKind::InvalidTerminator { reason }
+            if reason.contains("hands back exactly the `var self` receiver")
+    )));
+}
+
+#[test]
+fn fields_beneath_a_whole_owner_are_mutated_in_place() {
+    let module = lower(
+        r#"
+        type Meta { tag: string, count: i64 }
+        trait Retag { fn retag(var self, tag: string); }
+        impl Retag for Meta {
+            fn retag(var self, tag: string) { self.tag = tag; self.count = self.count + 1; }
+        }
+        #[resource]
+        type Pool { ids: [i64], meta: Meta }
+        impl Pool {
+            fn close(consume self) { println(self.meta.tag); }
+        }
+        fn main() -> i64 {
+            var pool = Pool { ids: [], meta: Meta { tag: "new", count: 0 } };
+            pool.ids.push(1);
+            pool.meta.retag("pushed");
+            pool.meta.count
+        }
+    "#,
+    );
+    let main = module
+        .functions
+        .iter()
+        .find(|f| f.declaration.full_path() == "main")
+        .unwrap();
+    let BindingTarget::Place(pool) = main
+        .bindings
+        .iter()
+        .find(|binding| binding.name == "pool")
+        .unwrap()
+        .target
+    else {
+        panic!("a resource binding has canonical local storage")
+    };
+    let ops = || main.blocks.iter().flat_map(|block| &block.ops);
+    // The owner is taken and re-initialized around each mutation; neither it
+    // nor the mutated field is ever copied.
+    assert!(!ops().any(|op| matches!(op.kind, SemOpKind::LoadCopy { place } if place == pool)));
+    assert!(!ops()
+        .any(|op| matches!(op.kind, SemOpKind::CopyValue { .. })
+            && op.results[0].own == OwnKind::Owned));
+    assert_eq!(
+        ops()
+            .filter(|op| matches!(op.kind, SemOpKind::LoadTake { place } if place == pool))
+            .count(),
+        2
+    );
+    // The `var self` call closes the owner around the handed-back field.
+    let unwind = main
+        .blocks
+        .iter()
+        .find_map(|block| match &block.terminator {
+            SemTerminator::Call {
+                unwind: CallUnwind::Cleanup(unwind),
+                handback: Some(_),
+                ..
+            } => Some(unwind.target),
+            _ => None,
+        })
+        .expect("the field's `var self` call receives its handed-back receiver");
+    let failure = &main.blocks[unwind.0 as usize];
+    assert!(failure
+        .ops
+        .iter()
+        .any(|op| matches!(op.kind, SemOpKind::AggregateMake { .. })));
+    assert!(failure
+        .ops
+        .iter()
+        .any(|op| matches!(op.kind, SemOpKind::StoreInit { place, .. } if place == pool)));
+}
+
+#[test]
+fn a_plain_receiver_is_copied_back_before_its_defers_read_it() {
+    let module = lower(
+        r#"
+        type Point { x: i64, y: i64 }
+        trait Bump { fn bump(var self) -> i64; }
+        impl Bump for Point {
+            fn bump(var self) -> i64 {
+                defer println(f"{self.x}");
+                self.x = self.x + 1;
+                self.x
+            }
+        }
+        fn main() -> i64 {
+            var point = Point { x: 1, y: 2 };
+            point.bump() + point.x
+        }
+    "#,
+    );
+    let method = module
+        .functions
+        .iter()
+        .position(|f| f.declaration.full_path().ends_with("bump"))
+        .unwrap();
+    let function = &module.functions[method];
+    let BindingTarget::Place(receiver) = function
+        .bindings
+        .iter()
+        .find(|binding| binding.name == "self")
+        .unwrap()
+        .target
+    else {
+        panic!("a mutated receiver has canonical local storage")
+    };
+    // The checked add's fault edge hands back a copy and leaves the place to
+    // the defer, which reads it after the handback is made. A fault in the
+    // return's own cleanup hands back the receiver the return already holds.
+    let copies: Vec<_> = function
+        .blocks
+        .iter()
+        .flat_map(|block| &block.ops)
+        .filter(|op| matches!(op.kind, SemOpKind::LoadCopy { place } if place == receiver))
+        .map(|op| op.results[0].id)
+        .collect();
+    let handbacks: Vec<_> = function
+        .blocks
+        .iter()
+        .filter_map(|block| match &block.terminator {
+            SemTerminator::ResumeUnwind {
+                handback: Some(handback),
+            } => Some(handback.operand.value),
+            _ => None,
+        })
+        .collect();
+    let returned: Vec<_> = function
+        .blocks
+        .iter()
+        .flat_map(|block| &block.ops)
+        .filter(|op| matches!(op.kind, SemOpKind::Destructure { .. }))
+        .flat_map(|op| op.results.iter().map(|result| result.id))
+        .collect();
+    assert!(handbacks.iter().any(|value| copies.contains(value)));
+    assert!(handbacks
+        .iter()
+        .all(|value| copies.contains(value) || returned.contains(value)));
+    assert!(!function
+        .blocks
+        .iter()
+        .flat_map(|block| &block.ops)
+        .any(|op| matches!(op.kind, SemOpKind::LoadTake { place } if place == receiver)));
+
+    // Taking the receiver there instead leaves the defer an empty place.
+    let mut taken = module;
+    for op in taken.functions[method]
+        .blocks
+        .iter_mut()
+        .flat_map(|block| &mut block.ops)
+    {
+        if matches!(op.kind, SemOpKind::LoadCopy { place } if place == receiver)
+            && handbacks.contains(&op.results[0].id)
+        {
+            op.kind = SemOpKind::LoadTake { place: receiver };
+        }
+    }
+    assert!(verify_module(&taken).iter().any(|diagnostic| matches!(
+        &diagnostic.kind,
+        hew_sir::SirDiagnosticKind::FaultLifetime { reason, .. }
+            if reason.contains("defer dependency is not initialized")
+    )));
 }

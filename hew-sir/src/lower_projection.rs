@@ -11,6 +11,27 @@ use hew_hir::HirExpr;
 use hew_types::ResolvedTy;
 use std::collections::{BTreeMap, BTreeSet};
 
+/// An owner [`Builder::open_owner`] took apart around one field: its seat and
+/// the sibling fields of every level, outermost first.
+#[derive(Clone)]
+pub(super) struct OpenOwner {
+    root: PlaceId,
+    levels: Vec<(ResolvedTy, AggregateShapeRef, usize, Vec<crate::ValueDef>)>,
+}
+
+impl OpenOwner {
+    /// The sibling fields that stay live while the owner is open.
+    pub(super) fn siblings(&self) -> impl Iterator<Item = ValueId> + '_ {
+        self.levels.iter().flat_map(|(_, _, index, fields)| {
+            fields
+                .iter()
+                .enumerate()
+                .filter(move |(at, _)| at != index)
+                .map(|(_, field)| field.id)
+        })
+    }
+}
+
 impl Builder<'_, '_> {
     pub(super) fn expression_projection(
         &mut self,
@@ -91,55 +112,17 @@ impl Builder<'_, '_> {
         .map(Some)
     }
 
-    /// Assign into a field of a place this body does not own — an actor's
-    /// state seat or a closure capture. The whole field is materialized as an
-    /// SSA value, the leaf is replaced inside it, and the result is published
-    /// back through the owner's store, which releases the previous contents.
-    pub(super) fn assign_through_owned_place(
-        &mut self,
-        root: PlaceId,
-        place: &BindingPlace,
-        replacement: ValueId,
-        provenance: Provenance,
-    ) -> Result<(), String> {
-        let root_ty = place.root_ty.clone();
-        let value = self.emit_typed(
-            provenance.clone(),
-            &root_ty,
-            SemOpKind::LoadCopy { place: root },
-        )?;
-        let path = place
-            .projections
-            .iter()
-            .map(|(_, shape, field)| {
-                u32::try_from(*field)
-                    .map(|field| (*shape, field))
-                    .map_err(|_| "aggregate field exceeds u32".to_string())
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let leaf = declare_path(
-            &mut self.places,
-            PlaceBase::Value(value),
-            &root_ty,
-            &path,
-            &self.service.aggregate_shapes,
-            self.service.checked_facts.rows(),
-        )?;
-        self.store_projected(leaf, replacement, provenance.clone())?;
-        self.store_projected(root, value, provenance)
-    }
-
     fn is_marked_record(&self, shape: AggregateShapeRef) -> bool {
         matches!(shape, AggregateShapeRef::Record(id)
             if self.service.aggregate_shapes[id.0 as usize].marker
                 != hew_types::DeclarationMarker::None)
     }
 
-    /// The seat a field write must go through whole. An ownership-marked
-    /// record on the path keeps one owner, so it has no field places, and a
-    /// state seat without a copy cannot be staged as one. Either way the seat
-    /// is changed only by [`Self::assign_through_whole_owner`], so it is whole
-    /// at every point a fault can reach.
+    /// The seat a mutation beneath `place` takes whole: `place` lies beneath
+    /// a root this body does not partition into field places - an actor state
+    /// seat, a capture, or a record that keeps one whole owner. The mutation
+    /// opens the owner with [`Self::open_owner`] and closes it again around
+    /// the changed field, so the seat is whole wherever a fault can reach.
     pub(super) fn whole_owner_root(
         &mut self,
         place: &BindingPlace,
@@ -150,39 +133,82 @@ impl Builder<'_, '_> {
         let super::BindingTarget::Place(root) = self.binding_target(place.binding)? else {
             return Ok(None);
         };
-        let origin = self.places[root.0 as usize].origin;
-        let marked = place
-            .projections
-            .iter()
-            .any(|(_, shape, _)| self.is_marked_record(*shape));
-        let copyless_seat = !matches!(origin, PlaceOrigin::Local)
-            && self
-                .service
-                .checked_facts
-                .rows()
-                .get(&hew_types::TypeInstanceKey(place.root_ty.clone()))
-                .is_none_or(|facts| facts.clone == hew_types::CloneKind::None);
-        if !marked && !copyless_seat {
+        if self.owned_projection(place)?.is_some() {
             return Ok(None);
         }
-        match origin {
-            PlaceOrigin::Local | PlaceOrigin::ActorState { .. } => Ok(Some(root)),
-            _ => Err(
-                "writing a field of a captured record that has no copy or keeps one whole \
-                 owner is not implemented"
-                    .into(),
-            ),
-        }
+        Ok(Some(root))
     }
 
-    /// An owned copy of the field `place` names beneath a whole owner, read
-    /// through aggregate loans that end before this returns. A mutation runs
-    /// on the copy, so a fault leaves the owner as it was.
+    /// Take the owner `place` is rooted at whole and take it apart down to the
+    /// field `place` names, which is returned. The caller closes the owner
+    /// again with [`Self::close_owner`] before anything but the one mutation
+    /// it opened the owner for can fault, and on every edge that mutation
+    /// leaves by.
+    pub(super) fn open_owner(
+        &mut self,
+        root: PlaceId,
+        place: &BindingPlace,
+        provenance: &Provenance,
+    ) -> Result<(ValueId, OpenOwner), String> {
+        let mut value = self.emit_typed(
+            provenance.clone(),
+            &place.root_ty,
+            SemOpKind::LoadTake { place: root },
+        )?;
+        if matches!(
+            self.places[root.0 as usize].origin,
+            PlaceOrigin::ActorState { .. }
+        ) || self.in_var_self_receiver(root)
+        {
+            self.state_taken.insert(root);
+        }
+        let mut levels = Vec::with_capacity(place.projections.len());
+        for (ty, shape, index) in &place.projections {
+            let fields = self.emit_destructure_value(value, ty, *shape, provenance.clone())?;
+            value = fields[*index].id;
+            levels.push((ty.clone(), *shape, *index, fields));
+        }
+        Ok((value, OpenOwner { root, levels }))
+    }
+
+    /// Rebuild an opened owner around `field` and re-initialize its seat.
+    pub(super) fn close_owner(
+        &mut self,
+        owner: OpenOwner,
+        field: ValueId,
+        provenance: Provenance,
+    ) -> Result<(), String> {
+        let mut rebuilt = field;
+        for (ty, shape, index, fields) in owner.levels.into_iter().rev() {
+            let fields = fields
+                .into_iter()
+                .enumerate()
+                .map(|(at, field)| Operand {
+                    value: if at == index { rebuilt } else { field.id },
+                })
+                .collect::<Vec<_>>();
+            for field in &fields {
+                self.owned_live.remove(&field.value);
+            }
+            rebuilt = self.emit_typed(
+                provenance.clone(),
+                &ty,
+                SemOpKind::AggregateMake { shape, fields },
+            )?;
+        }
+        self.restore_taken_place(owner.root, rebuilt, provenance)
+    }
+
+    /// An owned copy of the field `place` names beneath a whole owner, or of
+    /// the owner itself, read through aggregate loans that end before this
+    /// returns. A mutation runs on the copy, so a fault leaves the owner as
+    /// it was. `why` names the mutation that cannot open the owner in place.
     pub(super) fn copy_through_whole_owner(
         &mut self,
         root: PlaceId,
         place: &BindingPlace,
         provenance: &Provenance,
+        why: &str,
     ) -> Result<ValueId, String> {
         if self
             .service
@@ -191,10 +217,10 @@ impl Builder<'_, '_> {
             .get(&hew_types::TypeInstanceKey(place.leaf_ty.clone()))
             .is_none_or(|facts| facts.clone == hew_types::CloneKind::None)
         {
+            let leaf = place.leaf_ty.user_facing();
             return Err(format!(
-                "mutating a `{}` in place beneath an owner that has no copy or keeps one whole \
-                 owner is not implemented",
-                place.leaf_ty.user_facing()
+                "mutating a `{leaf}` held by an actor state field, a capture or a resource is \
+                 not implemented for {why}: the mutation works on a copy, and `{leaf}` has none"
             ));
         }
         let mut loans = vec![self.emit_typed(
@@ -237,12 +263,10 @@ impl Builder<'_, '_> {
         Ok(copy)
     }
 
-    /// Assign a field beneath a whole owner. The seat is taken whole, each
-    /// level is taken apart and rebuilt around the replacement, and the
-    /// rebuilt value re-initializes the seat. Nothing between the take and
-    /// the store can fault. The replaced value is released only once the
-    /// owner is whole again, so a faulting release leaves a complete owner
-    /// for cleanup.
+    /// Assign a field beneath a whole owner. The owner is opened around the
+    /// field and closed again around the replacement, and the replaced value
+    /// is released only once the owner is whole again, so a faulting release
+    /// leaves a complete owner for cleanup.
     pub(super) fn assign_through_whole_owner(
         &mut self,
         root: PlaceId,
@@ -250,55 +274,8 @@ impl Builder<'_, '_> {
         replacement: ValueId,
         provenance: Provenance,
     ) -> Result<(), String> {
-        let state_seat = matches!(
-            self.places[root.0 as usize].origin,
-            PlaceOrigin::ActorState { .. }
-        );
-        let mut value = self.emit_typed(
-            provenance.clone(),
-            &place.root_ty,
-            SemOpKind::LoadTake { place: root },
-        )?;
-        if state_seat {
-            self.state_taken.insert(root);
-        }
-        let mut levels = Vec::with_capacity(place.projections.len());
-        for (ty, shape, index) in &place.projections {
-            let fields = self.emit_destructure_value(value, ty, *shape, provenance.clone())?;
-            value = fields[*index].id;
-            levels.push((ty, *shape, *index, fields));
-        }
-        let replaced = value;
-        let mut rebuilt = replacement;
-        for (ty, shape, index, fields) in levels.into_iter().rev() {
-            let fields = fields
-                .into_iter()
-                .enumerate()
-                .map(|(at, field)| Operand {
-                    value: if at == index { rebuilt } else { field.id },
-                })
-                .collect::<Vec<_>>();
-            for field in &fields {
-                self.owned_live.remove(&field.value);
-            }
-            rebuilt = self.emit_typed(
-                provenance.clone(),
-                ty,
-                SemOpKind::AggregateMake { shape, fields },
-            )?;
-        }
-        if state_seat {
-            self.restore_taken_place(root, rebuilt, provenance)?;
-        } else {
-            self.emit_place_operation(
-                SemOpKind::StoreInit {
-                    place: root,
-                    value: Operand { value: rebuilt },
-                },
-                provenance,
-            )?;
-            self.owned_live.remove(&rebuilt);
-        }
+        let (replaced, owner) = self.open_owner(root, place, &provenance)?;
+        self.close_owner(owner, replacement, provenance)?;
         if self.owned_live.contains_key(&replaced) {
             self.emit_destroy(replaced)?;
         }

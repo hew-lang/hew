@@ -136,7 +136,7 @@
           "ops": [
             {
               "dst": null,
-              "op": "store.assign",
+              "op": "store.init",
               "place": 0,
               "span": {
                 "end": 49,
@@ -222,7 +222,7 @@
           "ops": [
             {
               "dst": null,
-              "op": "store.assign",
+              "op": "store.init",
               "place": 0,
               "span": {
                 "end": 70,

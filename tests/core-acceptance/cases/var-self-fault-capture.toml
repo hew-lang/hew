@@ -1,0 +1,11 @@
+[[case]]
+id = "var-self-fault-capture"
+intent = "A `var self` call on a private mutable capture, or on a field beneath one, mutates the capture in place; when it panics, a defer in the closure reads the capture as last written."
+source = "cases/var-self-fault-capture.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "defer sees root 2\ndefer sees root 3\nroot faulted\ndefer sees outer inner 11\ndefer sees outer inner 12\nfield faulted\n"
+stderr = "hew: failure: UserPanic (212): bump failed\nhew: actor crash in Worker.root (actor 1): UserPanic\nhew: failure: UserPanic (212): bump failed\nhew: actor crash in Worker.field (actor 2): UserPanic\n"
+exit = 1

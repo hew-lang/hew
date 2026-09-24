@@ -1,0 +1,11 @@
+[[case]]
+id = "whole-owner-field-mutation"
+intent = "Fields beneath a resource are mutated in place: owned elements pushed through a local, a consumed parameter, a `var self` receiver and an actor state field, `var self` calls on a field, indexed stores, and assignments to a captured resource's fields. A map with a copy is updated through it. A failing indexed store leaves the resource whole, and it closes once."
+source = "cases/whole-owner-field-mutation.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "filled 1 3 30 2\nnow n2 2\nnow n3 3\n1\n2\nclose pool kept 8 2 2 0\nclose item 7\nclose item 8\nclose pool bounded 0 1 2\nclose item 9\noverflow faulted\ndone\nclose conn n3 3\nclose pool filled 1 3 1\nclose item 1\nclose item 2\nclose item 3\n"
+stderr = "hew: failure: IndexOutOfBounds (205)\nhew: actor crash in Worker.overflow (actor 2): IndexOutOfBounds\n"
+exit = 1

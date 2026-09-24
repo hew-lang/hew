@@ -385,8 +385,10 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1611] = {
      "native", "stable", "not-applicable", "not-applicable",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_actor_self_token",
-     "{\"native\": \"fn hew_actor_self_token() -> usize\"}", "native", "stable",
-     "not-applicable", "not-applicable", HEW_CABI_OWNERSHIP_UNMEASURED},
+     "{\"native\": \"fn hew_actor_self_token() -> usize\", \"wasm32-wasip1\": "
+     "\"fn hew_actor_self_token() -> usize\"}",
+     "native,wasm32-wasip1", "stable", "not-applicable", "not-applicable",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_actor_send",
      "{\"native\": \"fn hew_actor_send( *mut HewActor, i32, *mut c_void, "
      "usize, )\", \"wasm32-wasip1\": \"fn hew_actor_send( *mut HewActor, i32, "

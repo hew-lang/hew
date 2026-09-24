@@ -538,13 +538,33 @@ mod tests {
         assert!(crate::verify_module(&immutable)
             .iter()
             .any(|diagnostic| format!("{diagnostic:?}").contains("private mutable access")));
-        let mut taken = module;
-        taken.functions[0].blocks[0].ops[0].kind = crate::SemOpKind::LoadTake {
+        // A mutation may take a private mutable capture only to
+        // re-initialize it before the body exits.
+        let mut restored = module.clone();
+        restored.functions[0].blocks[0].ops[0].kind = crate::SemOpKind::LoadTake {
             place: crate::PlaceId(0),
         };
-        assert!(crate::verify_module(&taken)
-            .iter()
-            .any(|diagnostic| format!("{diagnostic:?}").contains("call-once body")));
+        restored.functions[0].blocks[0].ops[1].kind = crate::SemOpKind::StoreInit {
+            place: crate::PlaceId(0),
+            value: crate::Operand {
+                value: crate::ValueId(1),
+            },
+        };
+        assert!(
+            crate::verify_module(&restored).is_empty(),
+            "{:?}",
+            crate::verify_module(&restored)
+        );
+        let mut abandoned = restored.clone();
+        abandoned.functions[0].blocks[0].ops.truncate(1);
+        assert!(crate::verify_module(&abandoned).iter().any(|diagnostic| {
+            format!("{diagnostic:?}").contains("capture field is not re-initialized at this exit")
+        }));
+        let mut snapshot = restored;
+        snapshot.closures[0].fields[0].access = ClosureCaptureAccess::Read;
+        assert!(crate::verify_module(&snapshot).iter().any(|diagnostic| {
+            format!("{diagnostic:?}").contains("call-once body or private mutable access")
+        }));
     }
 
     fn drop_callable(id: u32, value: u32) -> crate::SemOp {

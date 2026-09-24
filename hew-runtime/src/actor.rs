@@ -6951,7 +6951,6 @@ pub extern "C" fn hew_actor_self_pid() -> u64 {
 /// [`hew_actor_self`] returns. Reading it from the registry keeps one authority
 /// for local handle identity, so a self-handle routes exactly as a spawned one
 /// does.
-#[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub extern "C" fn hew_actor_self_token() -> usize {
     let actor_id = hew_actor_self_pid();

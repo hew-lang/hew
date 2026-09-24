@@ -1,0 +1,27 @@
+#[resource]
+type Conn {
+    fd: i64,
+}
+
+impl Conn {
+    fn close(consume self) {
+        println(f"close conn {self.fd}");
+    }
+}
+
+#[resource]
+type Registry {
+    conns: HashMap<string, Conn>,
+}
+
+impl Registry {
+    fn close(consume self) {
+        println(f"close registry {self.conns.len()}");
+    }
+}
+
+fn main() {
+    var registry = Registry { conns: HashMap.new() };
+    registry.conns.insert("a", Conn { fd: 1 });
+    println(registry.conns.len());
+}

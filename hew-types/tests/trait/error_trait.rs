@@ -172,7 +172,7 @@ fn entry_dyn_error_renders_through_the_display_fmt_slot() {
         impl Error for Failure {}
         impl Pretty for Failure { fn fmt(self) -> string { "pretty" } }
         fn main() -> Result<(), dyn (Pretty + Error)> {
-            Err(Failure { detail: "x" })
+            .Err(Failure { detail: "x" })
         }
         "#,
     );

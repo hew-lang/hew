@@ -89,7 +89,11 @@ impl std::error::Error for FidelityError {}
 pub fn check(source: &str, formatted: &str) -> Result<(), FidelityError> {
     let original = crate::parse(source);
     let reparsed = crate::parse(formatted);
-    if let Some(e) = reparsed.errors.first() {
+    if let Some(e) = reparsed
+        .errors
+        .iter()
+        .find(|e| matches!(e.severity, crate::Severity::Error))
+    {
         return Err(FidelityError::Reparse(format!("{e:?}")));
     }
     if !program_eq_ignoring_spans(&original.program, &reparsed.program) {

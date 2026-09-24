@@ -501,7 +501,10 @@ impl<'a> Formatter<'a> {
             .comments
             .get(self.next_comment)
             .map_or(start, |c| c.span.start.min(start));
-        if blank_line_before(self.source, lead) && !self.output.ends_with("\n\n") {
+        if blank_line_before(self.source, lead)
+            && !self.output.ends_with("\n\n")
+            && !self.output.ends_with("{\n")
+        {
             self.newline();
         }
         if lead < start {
@@ -688,7 +691,7 @@ impl<'a> Formatter<'a> {
         match item {
             Item::Import(decl) => self.format_import(decl),
             Item::Const(decl) => self.format_const(decl),
-            Item::TypeDecl(decl) => self.format_type_decl(decl, span_start),
+            Item::TypeDecl(decl) => self.format_type_decl(decl, span_start, span_end),
             Item::TypeAlias(decl) => self.format_type_alias(decl),
             Item::Trait(decl) => self.format_trait(decl, span_start, span_end),
             Item::Impl(decl) => self.format_impl(decl, span_end),
@@ -811,9 +814,9 @@ impl<'a> Formatter<'a> {
         }
     }
 
-    fn format_type_decl(&mut self, decl: &TypeDecl, span_start: usize) {
+    fn format_type_decl(&mut self, decl: &TypeDecl, span_start: usize, span_end: usize) {
         if let Some(wire) = &decl.wire {
-            self.format_wire_type_decl(decl, wire, span_start);
+            self.format_wire_type_decl(decl, wire, span_start, span_end);
             return;
         }
         self.write_outer_doc(decl.doc_comment.as_ref());
@@ -885,6 +888,9 @@ impl<'a> Formatter<'a> {
                 }
             }
         }
+        if self.has_comments() {
+            self.flush_block_end_comments(span_end);
+        }
         self.indent -= 1;
         self.writeln("}");
     }
@@ -949,7 +955,13 @@ impl<'a> Formatter<'a> {
         self.newline();
     }
 
-    fn format_wire_type_decl(&mut self, decl: &TypeDecl, wire: &WireMetadata, span_start: usize) {
+    fn format_wire_type_decl(
+        &mut self,
+        decl: &TypeDecl,
+        wire: &WireMetadata,
+        span_start: usize,
+        span_end: usize,
+    ) {
         if !self.format_item_attributes(span_start) {
             self.format_wire_attributes(decl, wire);
         }
@@ -1019,6 +1031,9 @@ impl<'a> Formatter<'a> {
                     }
                 }
             }
+        }
+        if self.has_comments() {
+            self.flush_block_end_comments(span_end);
         }
         self.indent -= 1;
         self.writeln("}");

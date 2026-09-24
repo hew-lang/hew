@@ -332,6 +332,27 @@ fn doc_comments_keep_their_place_among_attributes() {
     );
 }
 
+#[test]
+fn comments_between_record_fields() {
+    assert_faithful(
+        "type Pair {\n    // the left side\n    left: i64,\n    /// The right side.\n    right: i64, // trailing\n    // end of record\n}\n\nfn main() {}\n",
+    );
+}
+
+#[test]
+fn comment_after_last_type_method() {
+    assert_faithful(
+        "type Counter {\n    n: i64,\n\n    fn get(c: Counter) -> i64 {\n        c.n\n    }\n    // after the last method\n}\n\nfn main() {}\n",
+    );
+}
+
+#[test]
+fn comments_inside_wire_declarations() {
+    assert_faithful(
+        "#[wire]\ntype Message {\n    // the id\n    id: i32 @1, // first\n    text: string @2,\n    // end of message\n}\n\n#[wire]\nenum Kind {\n    // plain\n    Plain,\n    Rich,\n    // end of kind\n}\n\nfn main() {}\n",
+    );
+}
+
 // ── Negative controls ────────────────────────────────────────────────────
 
 const ACTOR: &str = "actor W {\n    var n: i64,\n\n    // starts it\n    #[on(start)]\n    fn started() {}\n\n    receive fn boom() {}\n}\n";

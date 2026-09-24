@@ -875,15 +875,28 @@ fn run_format(source: &str) -> FormatResult {
         .errors
         .iter()
         .any(|err| matches!(err.severity, hew_parser::Severity::Error));
-    let formatted = if has_fatal_error {
-        None
-    } else {
-        Some(hew_parser::fmt::format_source(
-            source,
-            &parse_result.program,
-        ))
+    let checked =
+        (!has_fatal_error).then(|| hew_parser::fmt::format_checked(source, &parse_result.program));
+    let mut diagnostics = convert_parse_diagnostics(parse_result.errors);
+    let formatted = match checked {
+        Some(Ok(formatted)) => Some(formatted),
+        Some(Err(error)) => {
+            diagnostics.push(WasmDiagnostic {
+                severity: "error".to_string(),
+                phase: "format",
+                message: format!("formatter refused to rewrite the source: {error}"),
+                span: WasmSpan { start: 0, end: 0 },
+                start_offset: 0,
+                end_offset: 0,
+                kind: "E_FMT_FIDELITY".to_string(),
+                notes: Vec::new(),
+                suggestions: Vec::new(),
+                source_module: None,
+            });
+            None
+        }
+        None => None,
     };
-    let diagnostics = convert_parse_diagnostics(parse_result.errors);
 
     FormatResult {
         formatted,

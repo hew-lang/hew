@@ -517,3 +517,96 @@ fn builtin_iterator_lang_item_publishes_exact_next_identity() {
         Some("std.builtins.Iterator::next")
     );
 }
+
+/// A418: a failing `var self` method hands its receiver back whole, so a
+/// receiver field moved out and not yet restored is refused at every
+/// operation that can fail, naming the field and the operation.
+#[test]
+fn var_self_receiver_stays_whole_wherever_it_can_fail() {
+    let declarations = r"
+        #[resource]
+        type Conn { fd: i64 }
+        impl Conn { fn close(consume self) {} fn weight(self) -> i64 { self.fd } }
+        type Holder { conn: Conn, count: i64, spare: Option<Conn>, items: Vec<i64>, pool: Vec<Conn> }
+        fn work() -> i64 { 1 }
+        trait Touch { fn touch(var self, divisor: i64) -> i64; }
+    ";
+    for (body, operation) in [
+        (
+            "let conn = self.conn; self.count = 8 / divisor; self.conn = conn; 0",
+            "this arithmetic",
+        ),
+        (
+            "let conn = self.conn; let n = work(); self.conn = conn; n",
+            "this call",
+        ),
+        (
+            "let conn = self.conn; let n = self.items[0]; self.conn = conn; n",
+            "this index",
+        ),
+        (
+            "let conn = self.conn; self.count += 1; self.conn = conn; 0",
+            "this assignment",
+        ),
+        (
+            "let conn = self.conn; self.spare = Some(Conn { fd: 2 }); self.conn = conn; 0",
+            "this assignment",
+        ),
+        (
+            "let conn = self.conn; { let extra = Conn { fd: 3 }; } self.conn = conn; 0",
+            "releasing `extra`",
+        ),
+        (
+            "let conn = self.conn; let n = conn.weight(); self.conn = conn; n",
+            "`weight(...)`",
+        ),
+        // Clearing releases elements that can reach a `close`.
+        (
+            "let conn = self.conn; self.pool.clear(); self.conn = conn; 0",
+            "`clear(...)`",
+        ),
+    ] {
+        let output = check_source(&format!(
+            "{declarations} impl Touch for Holder {{ fn touch(var self, divisor: i64) -> i64 {{ {body} }} }}"
+        ));
+        let refusals: Vec<_> = output
+            .errors
+            .iter()
+            .filter(|error| {
+                error
+                    .message
+                    .contains("moved out of the `var self` receiver")
+            })
+            .collect();
+        assert_eq!(refusals.len(), 1, "{body}: {:#?}", output.errors);
+        assert!(
+            refusals[0].message.contains(&format!(
+                "`self.conn` is moved out of the `var self` receiver while {operation} can fail"
+            )) && refusals[0]
+                .suggestions
+                .iter()
+                .any(|hint| hint.contains("`take()`")),
+            "{body}: {:#?}",
+            refusals[0]
+        );
+    }
+
+    for body in [
+        // Restored before anything that can fail.
+        "let old = self.conn; self.conn = Conn { fd: divisor }; old.fd * 2",
+        // `take()` leaves `None` behind: the receiver stays whole.
+        "match self.spare.take() { .Some(conn) => conn.fd / divisor, .None => 0 }",
+        // Fields stay in place.
+        "self.count += 1; self.conn.fd = self.conn.fd + work(); self.count",
+        // A runtime operation fails only where its contract says so.
+        "let conn = self.conn; self.count = self.items.len(); self.conn = conn; 0",
+        "let conn = self.conn; let label = f\"{divisor}\"; self.count = label.len(); self.conn = conn; 0",
+        "let conn = self.conn; let spare = self.spare.is_some(); self.conn = conn; if spare { 1 } else { 0 }",
+        "let conn = self.conn; self.items.clear(); self.conn = conn; 0",
+    ] {
+        let output = check_source(&format!(
+            "{declarations} impl Touch for Holder {{ fn touch(var self, divisor: i64) -> i64 {{ {body} }} }}"
+        ));
+        assert!(output.errors.is_empty(), "{body}: {:#?}", output.errors);
+    }
+}

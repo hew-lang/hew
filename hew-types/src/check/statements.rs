@@ -1724,6 +1724,7 @@ impl Checker {
                 //
                 // Evaluated after the RHS so `sock = take_from(sock)` still
                 // reports the read.
+                self.check_receiver_whole_at_assignment(&target.0, *op, &target_ty, span);
                 if op.is_none() {
                     // A deferred field's first store initializes storage that
                     // held no value (D447); HIR carries the site so SIR emits

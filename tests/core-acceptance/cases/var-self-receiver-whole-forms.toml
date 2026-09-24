@@ -1,0 +1,10 @@
+[[case]]
+id = "var-self-receiver-whole-forms"
+intent = "A var self method that replaces a field before anything can fail, takes an Option field, updates fields in place or reads a length while a field is out compiles and runs, closing each resource once."
+source = "cases/var-self-receiver-whole-forms.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "close 1\n2\nclose 5\n5\n3\n4\nclose 3\n"
+exit = 0

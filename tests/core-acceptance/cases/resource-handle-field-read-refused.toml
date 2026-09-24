@@ -1,0 +1,42 @@
+[[case]]
+id = "resource-handle-field-read-refused"
+intent = "Reading a resource's opaque handle by value outside close is refused, as a direct field, in a plain record below the resource and inside an Option, from consuming and borrowing methods."
+source = "cases/resource-handle-field-read-refused.hew"
+kind = "check"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "E_OWN_PARTIAL_CONSUME"
+line = 21
+column = 38
+message = "cannot read `self.handle` by value: `Value` releases the `#[opaque]` handle it carries in its `close`"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "E_OWN_PARTIAL_CONSUME"
+line = 22
+column = 27
+message = "cannot read `self.handle` by value: `Value` releases the `#[opaque]` handle it carries in its `close`"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "E_OWN_PARTIAL_CONSUME"
+line = 23
+column = 33
+message = "cannot read `self.inner.h` by value: `Value` releases the `#[opaque]` handle it carries in its `close`"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "E_OWN_PARTIAL_CONSUME"
+line = 24
+column = 36
+message = "cannot read `self.inner` by value: `Value` releases the `#[opaque]` handle it carries in its `close`"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "E_OWN_PARTIAL_CONSUME"
+line = 25
+column = 41
+message = "cannot read `self.spare` by value: `Value` releases the `#[opaque]` handle it carries in its `close`"

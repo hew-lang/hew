@@ -1,0 +1,13 @@
+[[case]]
+id = "machine-resource-close-effect-refused"
+intent = "A transition helper that releases a resource whose close performs I/O is refused, naming the helper, the resource and the effect in its close."
+source = "cases/machine-resource-close-effect-refused.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "MachineExhaustivenessError"
+line = 21
+column = 32
+message = "machine evaluator is not demonstrably pure: call to `weigh`: releasing `Tag` runs its `close`: `println(...)` is not admitted in a machine transition"

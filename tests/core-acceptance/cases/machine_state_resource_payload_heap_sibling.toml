@@ -1,6 +1,6 @@
 [[case]]
 id = "machine_state_resource_payload_heap_sibling"
-intent = "Pure machine evaluation rejects a state payload carrying resource identity."
+intent = "A direct `#[resource]` state payload has no independent value copy, so a step cannot stage it yet; the refusal names the machine, state, field, type and the transition that takes it."
 source = "../vertical-slice/reject/machine_state_resource_payload_heap_sibling.hew"
 suites = ["acceptance"]
 timeout_seconds = 30
@@ -8,12 +8,12 @@ kind = "reject"
 
 [[case.expected.diagnostics]]
 code = "MachineExhaustivenessError"
-line = 13
-column = 1
-message = "machine evaluator is not demonstrably pure: `Mixed` can carry external identity, effects or unclassified payloads"
+line = 22
+column = 40
+message = "machine `Mixed` state `Active` field `h` holds `Handle`, which has no independent value copy"
 
 [[case.expected.diagnostics]]
 code = "MachineExhaustivenessError"
-line = 28
-column = 1
-message = "machine evaluator is not demonstrably pure: `Plain` can carry external identity, effects or unclassified payloads"
+line = 37
+column = 22
+message = "machine `Plain` state `Live` field `h` holds `Handle`, which has no independent value copy"

@@ -347,6 +347,21 @@ pub enum MethodTargetFamily {
     Vec(VecMethod),
 }
 
+impl MethodTargetFamily {
+    /// The runtime operation this method selects, whose semantic contract
+    /// decides its ownership and failure edges. `None` for a method with no
+    /// value-operation row.
+    #[must_use]
+    pub fn runtime_family(self) -> Option<RuntimeCallFamily> {
+        use crate::runtime_call::{MapValueOp, SetValueOp, VecValueOp};
+        match self {
+            Self::Vec(method) => VecValueOp::from_method(method).map(RuntimeCallFamily::Vector),
+            Self::HashMap(method) => MapValueOp::from_method(method).map(RuntimeCallFamily::Map),
+            Self::HashSet(method) => SetValueOp::from_method(method).map(RuntimeCallFamily::Set),
+        }
+    }
+}
+
 /// `HashMap` dispatch methods. Mirrors the methods registered for the
 /// `Map for HashMap<K, V>` impl in
 /// `collection_dispatch_registry_impl`.

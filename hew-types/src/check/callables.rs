@@ -88,7 +88,8 @@ impl Checker {
         let Some(ty) = self.expr_types.get(&key).map(|ty| self.subst.resolve(ty)) else {
             return;
         };
-        if self.place_read_transfers_ownership(&ty) && !self.reject_borrowed_consumption(expr, span)
+        if (self.place_read_transfers_ownership(&ty) || self.reads_resource_handle_field(expr))
+            && !self.reject_borrowed_consumption(expr, span)
         {
             self.mark_expr_moved(expr, span);
         }

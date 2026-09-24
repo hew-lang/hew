@@ -1,0 +1,33 @@
+// D529: the supervisor calls a crash hook synchronously to rule on the
+// restart before the crashed actor's cleanup, so a hook that suspends through
+// a helper is refused at the suspending call.
+import std.failure;
+
+fn settle() {
+    sleep(1ms);
+}
+
+actor Worker {
+    var value: i64,
+    receive fn get() -> i64 { value }
+    receive fn boom() { panic("boom"); }
+    #[on(crash)]
+    fn on_crash(info: CrashInfo) -> CrashAction {
+        settle();
+        CrashAction.Restart
+    }
+}
+
+supervisor App {
+    strategy: one_for_one,
+    intensity: 5 within 60s,
+    child w: Worker(value: 42),
+}
+
+fn main() -> i64 {
+    let sup = spawn App;
+    let w = sup.w;
+    let _ = w.boom();
+    let w2 = await_restart sup.w;
+    match w2.get() { .Ok(n) => n, .Err(_) => 1 }
+}

@@ -1,13 +1,12 @@
-// Machines are pure value evaluators and cannot carry resource identity.
+// A step stages a copy of its machine until it commits, and a direct
+// #[resource] payload has no copy, so the transition that takes it is refused.
 #[resource]
 type Handle {
     fd: i64,
 }
 
 impl Handle {
-    fn close(consume self) {
-        println(f"CLOSE fd={self.fd}");
-    }
+    fn close(consume self) {}
 }
 
 machine ConnSession {

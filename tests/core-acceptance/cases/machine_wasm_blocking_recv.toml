@@ -8,6 +8,6 @@ kind = "reject"
 
 [[case.expected.diagnostics]]
 code = "MachineExhaustivenessError"
-line = 19
-column = 15
-message = "machine evaluator is not demonstrably pure: `Result<(Sink<i64>, Stream<i64>), string>` can carry external identity, effects or unclassified payloads"
+line = 21
+column = 46
+message = "machine evaluator is not demonstrably pure: `recv(...)` is not admitted in a machine transition"

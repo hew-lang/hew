@@ -1,0 +1,30 @@
+// Releasing a #[resource] runs its close, so a close that performs I/O makes
+// the transition that releases it impure: here a helper builds and drops one.
+#[resource]
+type Tag { id: i64 }
+
+impl Tag {
+    fn close(consume self) {
+        println(f"close {self.id}");
+    }
+}
+
+fn weigh(n: i64) -> i64 {
+    let t = Tag { id: n };
+    t.id + 1
+}
+
+machine Counter {
+    events { Bump, }
+    state Idle,
+    state Live { n: i64, },
+    on Bump: Idle => Live { n: weigh(1) }
+    on Bump: Live => Live reenter { n: state.n + 1 }
+    default { state }
+}
+
+fn main() {
+    var c: Counter = .Idle;
+    let _ = c.step(.Bump);
+    println(c.state_name());
+}

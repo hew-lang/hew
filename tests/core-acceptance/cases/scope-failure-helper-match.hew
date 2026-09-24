@@ -1,0 +1,25 @@
+// A `ScopeFailure` passed to a helper by its written type matches on the same
+// declaration the handler binding carries.
+fn verdict(failure: ScopeFailure) -> string {
+    match failure {
+        .Deadline { message } => if message.contains("Deadline") { "deadline" } else { "bad deadline" },
+        .Fault { message } => if message.contains("boom") { "fault boom" } else { "bad fault" },
+    }
+}
+
+fn main() {
+    let late = scope within 20ms {
+        sleep(1s);
+        "done"
+    } handle failure {
+        verdict(failure)
+    };
+    println(late);
+    let broken = scope {
+        panic("boom");
+        "done"
+    } handle failure {
+        verdict(failure)
+    };
+    println(broken);
+}

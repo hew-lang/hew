@@ -1,0 +1,36 @@
+// D528: returning or copying a resource's #[opaque] handle outside its close
+// would leave two owners of one handle, whether the handle is a direct field,
+// sits in a plain record below the resource or inside an Option. The
+// diagnostic points at the destructure idiom.
+#[opaque]
+type Dq {}
+extern "C" {
+    fn hew_deque_new() -> Dq;
+    fn hew_deque_free(consume dq: Dq);
+}
+type Inner { h: Dq }
+#[resource]
+type Value { handle: Dq, inner: Inner, spare: Option<Dq> }
+impl Value {
+    fn close(consume self) {
+        unsafe { hew_deque_free(self.handle) };
+        unsafe { hew_deque_free(self.inner.h) };
+        if let .Some(h) = self.spare { unsafe { hew_deque_free(h) }; }
+        println("closed");
+    }
+    fn release(consume self) -> Dq { self.handle }
+    fn peek(self) -> Dq { self.handle }
+    fn peek_inner(self) -> Dq { self.inner.h }
+    fn copy_inner(self) -> Inner { self.inner }
+    fn peek_spare(self) -> Option<Dq> { self.spare }
+}
+fn main() {
+    let v = Value {
+        handle: unsafe { hew_deque_new() },
+        inner: Inner { h: unsafe { hew_deque_new() } },
+        spare: None,
+    };
+    let h = v.release();
+    unsafe { hew_deque_free(h) };
+    println("done");
+}

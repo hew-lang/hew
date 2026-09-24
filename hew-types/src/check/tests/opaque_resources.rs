@@ -1328,9 +1328,9 @@ fn disagreeing_producers_record_conflict_instead_of_selecting_a_release() {
     )));
 }
 
-// ── machine-state resource payload gate (value-context lattice: the
-// `MachineStatePayload` position fails closed until the machine's
-// transition/scope drop elaboration lands) ─────────────────────────────
+// ── machine-state resource payload staging: a step stages a copy of its
+// machine until it commits, and a direct `#[resource]` payload has none, so
+// it is refused until a step can take an affine receiver (D530) ──────────
 
 #[test]
 fn machine_state_resource_payload_rejects() {
@@ -1351,7 +1351,7 @@ fn machine_state_resource_payload_rejects() {
     assert!(
         errors.iter().any(|e| {
             e.kind == crate::error::TypeErrorKind::MachineExhaustivenessError
-                && e.message.contains("not demonstrably pure")
+                && e.message.contains("no independent value copy")
         }),
         "a resource in a machine state payload must be rejected: {errors:?}"
     );
@@ -1378,7 +1378,7 @@ fn machine_state_resource_payload_rejects_transitively() {
     assert!(
         errors.iter().any(|e| {
             e.kind == crate::error::TypeErrorKind::MachineExhaustivenessError
-                && e.message.contains("not demonstrably pure")
+                && e.message.contains("no independent value copy")
         }),
         "a record-wrapped resource in a machine state must be rejected: {errors:?}"
     );
@@ -1427,4 +1427,109 @@ fn machine_state_phantom_generic_resource_arg_is_admitted() {
             .any(|e| e.message.contains("machine `Gate` state")),
         "a phantom generic argument must not be treated as stored: {errors:?}"
     );
+}
+
+/// D528: an `#[opaque]` handle a `#[resource]` holds is released by that
+/// resource's `close`, so reading it out by value anywhere else would leave
+/// two owners of one handle - whether it is a direct field, sits in a plain
+/// record below the resource or inside an `Option`. `close` may read it, FFI
+/// calls borrow it, and the suggestion names the destructure that hands it out
+/// without `close`.
+#[test]
+fn resource_handle_field_is_affine_outside_close() {
+    let prelude = r#"
+        #[opaque]
+        type Dq {}
+        extern "C" {
+            fn hew_deque_len(dq: Dq) -> i64;
+            fn hew_deque_free(consume dq: Dq);
+        }
+        type Pair { a: Dq }
+        #[resource]
+        type Value { handle: Dq, inner: Pair, spare: Option<Dq> }
+    "#;
+    let close = "fn close(consume self) {
+        unsafe { hew_deque_free(self.handle) };
+        unsafe { hew_deque_free(self.inner.a) };
+        if let .Some(h) = self.spare { unsafe { hew_deque_free(h) }; }
+    }";
+    for (method, place, destructure) in [
+        (
+            "fn release(consume self) -> Dq { self.handle }",
+            "self.handle",
+            "let Value { handle } = self; handle",
+        ),
+        (
+            "fn peek(self) -> Dq { self.handle }",
+            "self.handle",
+            "let Value { handle } = self; handle",
+        ),
+        (
+            "fn bind(self) -> i64 { let h = self.handle; 1 }",
+            "self.handle",
+            "let Value { handle } = self; handle",
+        ),
+        (
+            "fn wrap(self) -> Pair { Pair { a: self.handle } }",
+            "self.handle",
+            "let Value { handle } = self; handle",
+        ),
+        (
+            "fn free(self) { unsafe { hew_deque_free(self.handle) }; }",
+            "self.handle",
+            "let Value { handle } = self; handle",
+        ),
+        (
+            "fn nested(self) -> Dq { self.inner.a }",
+            "self.inner.a",
+            "let Value { inner } = self; inner.a",
+        ),
+        (
+            "fn record(self) -> Pair { self.inner }",
+            "self.inner",
+            "let Value { inner } = self; inner",
+        ),
+        (
+            "fn optional(self) -> Option<Dq> { self.spare }",
+            "self.spare",
+            "let Value { spare } = self; spare",
+        ),
+    ] {
+        let output = check_source(&format!("{prelude} impl Value {{ {close} {method} }}"));
+        let refusals: Vec<_> = output
+            .errors
+            .iter()
+            .filter(|error| error.kind == TypeErrorKind::OwnPartialConsume)
+            .collect();
+        assert_eq!(refusals.len(), 1, "{method}: {:#?}", output.errors);
+        assert!(
+            refusals[0]
+                .message
+                .contains(&format!("cannot read `{place}` by value: `Value` releases"))
+                && refusals[0]
+                    .suggestions
+                    .iter()
+                    .any(|hint| hint.contains(&format!("`{destructure}`"))),
+            "{method}: {:#?}",
+            refusals[0]
+        );
+    }
+
+    let accepted = check_source(&format!(
+        "{prelude} impl Value {{
+            {close}
+            fn len(self) -> i64 {{ unsafe {{ hew_deque_len(self.handle) }} }}
+            fn inner_len(self) -> i64 {{ unsafe {{ hew_deque_len(self.inner.a) }} }}
+            fn has_spare(self) -> bool {{ self.spare.is_some() }}
+            fn release(consume self) -> Dq {{
+                let Value {{ handle, inner, spare }} = self;
+                unsafe {{ hew_deque_free(inner.a) }};
+                if let .Some(h) = spare {{ unsafe {{ hew_deque_free(h) }}; }}
+                handle
+            }}
+        }}
+        fn count(v: Value) -> i64 {{ unsafe {{ hew_deque_len(v.handle) }} }}
+        fn plain(p: Pair) -> Dq {{ p.a }}"
+    ));
+    assert!(accepted.errors.is_empty(), "{:#?}", accepted.errors);
 }

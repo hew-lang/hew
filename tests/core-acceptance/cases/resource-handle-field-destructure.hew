@@ -1,0 +1,65 @@
+// D528: an #[opaque] handle held by a #[resource] is released by that
+// resource's close, so reading it by value elsewhere is refused. close may
+// read it, FFI calls borrow it, and destructuring hands it out without close.
+// The same holds for a handle in a plain record below the resource or in an
+// Option field.
+#[opaque]
+type Dq {}
+extern "C" {
+    fn hew_deque_new() -> Dq;
+    fn hew_deque_len(dq: Dq) -> i64;
+    fn hew_deque_push_back(dq: Dq, value: i64);
+    fn hew_deque_free(consume dq: Dq);
+}
+#[resource]
+type Value { handle: Dq }
+impl Value {
+    fn close(consume self) { let h = self.handle; unsafe { hew_deque_free(h) }; println("closed"); }
+    fn push(self, v: i64) { unsafe { hew_deque_push_back(self.handle, v) }; }
+    fn len(self) -> i64 { unsafe { hew_deque_len(self.handle) } }
+    fn release(consume self) -> Dq { let Value { handle } = self; handle }
+}
+fn count(v: Value) -> i64 { unsafe { hew_deque_len(v.handle) } }
+
+type Inner { h: Dq }
+#[resource]
+type Nested { inner: Inner, spare: Option<Dq> }
+impl Nested {
+    fn close(consume self) {
+        unsafe { hew_deque_free(self.inner.h) };
+        if let .Some(h) = self.spare { unsafe { hew_deque_free(h) }; }
+        println("nested closed");
+    }
+    fn push(self, v: i64) { unsafe { hew_deque_push_back(self.inner.h, v) }; }
+    fn len(self) -> i64 { unsafe { hew_deque_len(self.inner.h) } }
+    fn has_spare(self) -> bool { self.spare.is_some() }
+    fn release(consume self) -> Inner {
+        let Nested { inner, spare } = self;
+        if let .Some(h) = spare { unsafe { hew_deque_free(h) }; }
+        inner
+    }
+}
+
+fn main() {
+    let v = Value { handle: unsafe { hew_deque_new() } };
+    v.push(1);
+    v.push(2);
+    println(v.len());
+    println(count(v));
+    let h = v.release();
+    println(unsafe { hew_deque_len(h) });
+    unsafe { hew_deque_free(h) };
+    let w = Value { handle: unsafe { hew_deque_new() } };
+    w.push(3);
+    println(w.len());
+
+    let n = Nested { inner: Inner { h: unsafe { hew_deque_new() } }, spare: Some(unsafe { hew_deque_new() }) };
+    n.push(4);
+    println(n.len());
+    println(n.has_spare());
+    let inner = n.release();
+    println(unsafe { hew_deque_len(inner.h) });
+    unsafe { hew_deque_free(inner.h) };
+    let m = Nested { inner: Inner { h: unsafe { hew_deque_new() } }, spare: Some(unsafe { hew_deque_new() }) };
+    println(m.has_spare());
+}

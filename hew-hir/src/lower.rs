@@ -2506,11 +2506,14 @@ pub fn lower_program_with_mono_cap(
             _ => {}
         }
     }
-    // The actor delivery declarations are authored in the embedded
-    // `std/builtins.hew` program rather than the module graph, but they are
-    // lowered under the same `std.builtins` owner every downstream stage looks
-    // them up by. Publish their identities alongside the graph's.
-    for name in hew_types::actor_delivery::DECLARATIONS {
+    // The actor delivery declarations and `ScopeFailure` are authored in the
+    // embedded `std/builtins.hew` program rather than the module graph, but
+    // they are lowered under the same `std.builtins` owner every downstream
+    // stage looks them up by. Publish their identities alongside the graph's.
+    for name in hew_types::actor_delivery::DECLARATIONS
+        .iter()
+        .chain(&["ScopeFailure"])
+    {
         let canonical = format!("std.builtins.{name}");
         ctx.source_type_identities.insert(canonical.clone());
         // A bare reference at root binds to the same owner. A root
@@ -16058,7 +16061,7 @@ impl LowerCtx {
             .resolved_calls
             .get(&key)
             .and_then(|resolved| match resolved.target {
-                CallTarget::RuntimeCollection(method) => Self::semantic_collection_method(method),
+                CallTarget::RuntimeCollection(method) => method.runtime_family(),
                 _ => None,
             });
         if family.is_none() && op.is_none() {
@@ -20218,24 +20221,6 @@ impl LowerCtx {
         }
     }
 
-    fn semantic_collection_method(
-        method: hew_types::MethodTargetFamily,
-    ) -> Option<hew_types::RuntimeCallFamily> {
-        use hew_types::runtime_call::{MapValueOp, SetValueOp};
-        use hew_types::{MethodTargetFamily, RuntimeCallFamily};
-        match method {
-            MethodTargetFamily::Vec(method) => {
-                hew_types::VecValueOp::from_method(method).map(RuntimeCallFamily::Vector)
-            }
-            MethodTargetFamily::HashMap(method) => {
-                MapValueOp::from_method(method).map(RuntimeCallFamily::Map)
-            }
-            MethodTargetFamily::HashSet(method) => {
-                SetValueOp::from_method(method).map(RuntimeCallFamily::Set)
-            }
-        }
-    }
-
     fn normalize_collection_call(
         &mut self,
         kind: HirExprKind,
@@ -20297,8 +20282,9 @@ impl LowerCtx {
                 receiver,
                 args,
                 ..
-            } if Self::semantic_collection_method(method).is_some() => {
-                let mut family = Self::semantic_collection_method(method)
+            } if method.runtime_family().is_some() => {
+                let mut family = method
+                    .runtime_family()
                     .expect("matched semantic collection method");
                 // The checker admitted this read in borrow mode, so `Some`
                 // carries a loan of the slot the collection still owns.

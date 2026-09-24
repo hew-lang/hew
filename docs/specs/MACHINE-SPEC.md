@@ -132,13 +132,21 @@ state. Output order follows evaluation order across hooks and body.
 
 Guards, hooks, transition bodies and their transitive source helpers are
 synchronous value computations. Local mutation and allocation are allowed.
-I/O, actor interaction, suspension, unsafe access, execution-context reads and
-external resource identity are not admitted. The checker proves each selected
-call through its declaration identity or a closed pure runtime operation;
-unknown and indirect calls have no such proof and are rejected. The compiler
-does not infer purity from function names.
+I/O, actor interaction, spawning, suspension, unsafe access and
+execution-context reads are not admitted. Purity restricts what a transition
+does, not the types its state holds: an `Rc`, an actor handle or a
+`#[resource]` payload moves through transitions as an ordinary value. The
+checker proves each selected call through its declaration identity or a closed
+pure runtime operation; unknown and indirect calls have no such proof and are
+rejected. Releasing a `#[resource]` runs its `close`, so the checker proves the
+`close` of every resource a transition's values, its helpers' values or a
+concrete instantiation's states and events can reach, the same way. The
+compiler does not infer purity from function names.
 
-Input, state and output payloads must support independent value copies.
+A step stages an independent copy of its machine, so a state payload must
+support one. A `#[resource]` held directly has none and is refused at the
+transition that takes it, naming the machine, state, field and type; holding
+it through `Rc` shares it across the staged copy and releases it once.
 Computation can still fail with an ordinary checked fault, such as division by
 zero. Evaluation stages the receiver, candidate and outputs; it commits only
 after the complete report is constructed. A fault before commit leaves the
@@ -153,10 +161,10 @@ Embedding the value in an actor does not move those effects into `step`.
 
 The native evaluator supports ordinary machines, owning value payloads,
 guarded fallback, source wildcards, dynamic targets, hooks and typed outputs.
-A generic machine is admitted: its purity proof is deferred to each concrete
-instantiation, so a machine instantiated with a type that carries external
-identity is refused where that argument is chosen, and one no argument could
-purify is refused at its declaration. `usize` const parameters and depth-1
+A generic machine is admitted; each concrete instantiation must support the
+staged copy, so an argument with none is refused at the transition that takes
+it. A direct `#[resource]` payload waits for a step that takes an affine
+receiver and hands it back on a pre-commit fault. `usize` const parameters and depth-1
 composite states are admitted: a const parameter's declared default is its
 value, and a composite flattens to its substates before checking. Additional
 source forms are not yet admitted by this path. Parser or diagram support for

@@ -1,0 +1,14 @@
+[[case]]
+id = "var-self-receiver-hole-refused"
+intent = "Moving a field out of a var self receiver across checked arithmetic is refused at check time, naming the field and the operation."
+source = "cases/var-self-receiver-hole-refused.hew"
+kind = "check"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "E_OWN_PARTIAL_CONSUME"
+line = 16
+column = 22
+message = "`self.conn` is moved out of the `var self` receiver while this arithmetic can fail"

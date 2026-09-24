@@ -26,6 +26,7 @@ group	form	path	retirement_stage	reason
 call-target-authority	call-target-consumer	hew-hir/src/lower.rs	stage-4	exact checker-selected executable identity carrier
 call-target-authority	call-target-consumer	hew-types/src/check/machine_effects.rs	stage-4	machine purity checking consumes checker-selected call identities and runtime families
 call-target-authority	call-target-consumer	hew-types/src/check/methods.rs	stage-4	method checking consumes selected collection targets for their argument and effect contracts
+call-target-authority	call-target-consumer	hew-types/src/check/var_self.rs	stage-4	the var self receiver rule reads a selected call's runtime family to learn whether it has a failure edge
 call-target-authority	call-target-use	hew-hir/src/lower.rs	stage-4	exact checker-selected executable identity carrier
 call-target-authority	call-target-use	hew-types/src/check/calls.rs	stage-4	exact checker-selected executable identity carrier
 call-target-authority	call-target-use	hew-types/src/check/dispatch.rs	stage-4	exact checker-selected executable identity carrier
@@ -34,6 +35,7 @@ call-target-authority	call-target-use	hew-types/src/check/machine_effects.rs	sta
 call-target-authority	call-target-use	hew-types/src/check/methods.rs	stage-4	exact checker-selected executable identity carrier
 call-target-authority	call-target-use	hew-types/src/check/registration.rs	stage-4	builtin registration publishes typed runtime targets at the signature authority
 call-target-authority	call-target-use	hew-types/src/check/type_members.rs	stage-4	exact checker-selected executable identity carrier
+call-target-authority	call-target-use	hew-types/src/check/var_self.rs	stage-4	the var self receiver rule tells a record constructor from a selected call that can fail
 call-target-authority	call-target-variant	hew-types/src/check/dispatch.rs	stage-4	exact checker-selected executable identity carrier
 checker-hir-fact-relation	hir-publication-consumer	hew-hir/src/lower.rs	stage-2	reviewed checker-to-HIR fact reads, including the new method_call_rewrites read that routes generic wire facade calls through the checker-selected WireCodec lowering and the identity-view reads that resolve an impl receiver's spelling and a peer file's span index
 checker-hir-fact-relation	hir-publication-consumer	hew-hir/src/lower/fork.rs	stage-2	fork preparation consumes checked method receiver and rewrite facts before capturing child inputs
@@ -121,6 +123,7 @@ runtime-call-authority	runtime-call-family-use	hew-codegen-rs/src/physical_share
 runtime-call-authority	runtime-call-family-use	hew-codegen-rs/src/physical_encoding_runtime_cases.rs	stage-4	runtime execution fixtures construct typed encoding operations to verify generated adapters
 runtime-call-authority	runtime-call-family-use	hew-hir/src/lower.rs	stage-4	typed runtime-family dispatch carrier
 runtime-call-authority	runtime-call-family-use	hew-mir/src/physical.rs	stage-4	physical runtime realization maps typed actions to their shared semantic families
+runtime-call-authority	runtime-call-family-use	hew-types/src/check/dispatch.rs	stage-4	a selected collection method names its runtime family, shared by HIR lowering and the checker
 runtime-call-authority	runtime-call-family-use	hew-types/src/runtime_call.rs	stage-4	typed runtime-family dispatch carrier
 runtime-call-authority	runtime-call-family-variant	hew-types/src/runtime_call.rs	stage-4	typed runtime-family dispatch carrier including structural formatting
 semantic-owner-shortening-sink	registry-key	hew-types/src/check/registration.rs	stage-1	reviewed remaining owner-shortening sink

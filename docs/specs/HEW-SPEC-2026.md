@@ -1645,9 +1645,16 @@ binding is a use-after-consume diagnostic.
 A `var self` method that fails leaves the receiver, as last written, in the
 caller's binding, field, capture or actor state field, whatever its type; the
 place is never left empty.
-The method must therefore keep `self` whole wherever it can fail: moving a
-field out of `self` and restoring it after a call that can fail is refused.
-Call the field's own `var self` method in place instead.
+The method must therefore keep `self` whole wherever it can fail. While a field
+of `self` is moved out, the checker refuses every operation that can fail - a
+call, checked integer arithmetic, an index, an assignment or scope exit that
+releases a value with a `close` - naming the field and the operation
+(`E_OWN_PARTIAL_CONSUME`). A call to a source function or method can always
+fail; a built-in operation can fail only where it can index out of bounds,
+overflow, call back into source code or release a value with a `close`, so
+`len()` is admitted. Call the field's own methods in place, move it out of an
+`Option` field with `take()`, or assign a replacement to the field before
+anything that can fail.
 
 The consuming receiver is spelled `consume self`, matching a consuming
 parameter such as `consume value: T`. Both inherent and trait methods use the
@@ -3123,6 +3130,39 @@ A handle is never `#[wire]`, so sending one to a remote `Pid` stays
 `E_OPAQUE_MESSAGE_PAYLOAD` (User): a remote payload must be CBOR-serializable
 and a handle has no serializable layout.
 
+**A handle a resource holds is affine outside `close` (normative).** A
+marker-free `#[opaque]` handle passes to a borrowing `extern "C"` parameter as
+a plain pointer, but when a `#[resource]` record holds one - as a field, in a
+plain record below it or inside an `Option` - that record's `close` releases
+it. Outside that `close`, reading a value that carries the handle by value -
+returning it, binding it, storing it or passing it to a `consume` parameter -
+is `E_OWN_PARTIAL_CONSUME`, because it would leave two owners of one handle.
+Destructuring hands the handle out without running `close`:
+
+```hew
+#[opaque]
+type Handle {}
+
+extern "C" {
+    fn handle_free(consume handle: Handle);
+}
+
+#[resource]
+type Value { handle: Handle }
+
+impl Value {
+    fn close(consume self) {
+        unsafe { handle_free(self.handle) };
+    }
+
+    // `self.handle` alone is refused here: `close` would free it again.
+    fn release(consume self) -> Handle {
+        let Value { handle } = self;
+        handle
+    }
+}
+```
+
 > **Limitation at edition 2026 (`E_LIMIT_OPAQUE_ACTOR`, Limitation channel).**
 > The local case above is refused today: an `#[opaque]` type in a `receive fn`
 > parameter or an actor init field is rejected with the message that a message
@@ -3774,10 +3814,17 @@ initialized.
 
 Machine evaluation is synchronous and pure: guards, transition bodies, hooks
 and their transitive helpers may compute and mutate local value data, but
-cannot perform I/O, interact with actors, suspend, access unsafe memory or
-retain external resource identity. An unknown or indirect call has no purity
-proof and is rejected. Checked computation faults remain possible. Inputs,
-states and outputs must support independent value copies.
+cannot perform I/O, interact with actors, spawn, suspend or access unsafe
+memory. Purity restricts what a transition does, not the types its state
+holds: `Rc`, actor handles and `#[resource]` values move through transitions
+as values. Releasing a `#[resource]` runs its `close`, so the `close` of every
+resource a transition, its helpers or its states and events can reach is judged
+like any other call. An unknown or indirect call has no purity proof and is
+rejected.
+Checked computation faults remain possible. A step stages an independent copy
+of its machine until it commits, so a `#[resource]` held directly in a state
+payload is refused at the transition that takes it, naming the machine, state,
+field and type; `Rc<T>` shares it across the staged copy.
 
 The native evaluator admits ordinary concrete machines, const parameters and
 depth-1 composite state blocks (§3.11.9). An unclassified generic payload
@@ -5946,7 +5993,7 @@ unrecovered and the child's role is spent.
 
 1. A hook is a plain `fn` declaration inside an actor body carrying exactly one `#[on(...)]` annotation whose kind is `start`, `stop`, `crash`, `exit`, or `down`.
 2. `#[on(start)]` and `#[on(stop)]` hooks take **no parameters**. Actor fields are in scope by bare name (the same convention as `init { }` and ordinary actor methods).
-3. `#[on(crash)]` hooks take exactly one `CrashInfo` parameter and declare `CrashAction` as the return type. The supervisor applies the returned action as described above.
+3. `#[on(crash)]` hooks take exactly one `CrashInfo` parameter and declare `CrashAction` as the return type. The supervisor applies the returned action as described above. A crash hook cannot suspend: it rules on the restart before cleanup, so a hook that sleeps, awaits or calls a suspending function is rejected at compile time.
 4. `#[on(start)]` and `#[on(stop)]` hooks return `()`.
 5. A hook is **not** generic and has no `where` clause.
 6. Hook functions are not invocable from message handlers; the runtime is the sole caller.

@@ -366,8 +366,9 @@ const PARITY_CASES: &[ParityCase] = &[
         source_rel: "examples/sandbox-graduation/option_some_none.hew",
     },
     ParityCase {
-        // A failing `var self` method hands its receiver back: the defer sees
-        // the value as last written on both engines.
+        // A failing `var self` method hands its receiver back, from a local
+        // and from a plain field beneath a capture: each defer sees the value
+        // as last written on both engines.
         test_name: "var_self_fault_defer",
         source_rel: "examples/sandbox-graduation/var_self_fault_defer.hew",
     },
@@ -379,7 +380,7 @@ const PARITY_CASES: &[ParityCase] = &[
     },
     ParityCase {
         // A push and an indexed write on a field of a `#[resource]` record
-        // run on a copy of the field that is assigned back through the record.
+        // take the record apart around the field and rebuild it in place.
         test_name: "resource_field_collections",
         source_rel: "examples/sandbox-graduation/resource_field_collections.hew",
     },

@@ -248,7 +248,6 @@ tests/pkg-import/two_module_same_generic_valueclass_accept.hew
 # known defect (#3404): `Node.id()` returns the builtin `NodeId` and
 # `RemotePid<T>.node_id()` the one std/builtins.hew declares, so comparing them
 # reads as `expected NodeId, found NodeId`
-tests/vertical-slice/accept/identity_aggregates.hew
 
 # ── tools/ ──────────────────────────────────────────────────────────────────────
 

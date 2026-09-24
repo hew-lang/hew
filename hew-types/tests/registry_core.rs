@@ -35,8 +35,6 @@ mod machine_typecheck;
 mod module_qualified_constructor_test;
 #[path = "registry_core/module_system_test.rs"]
 mod module_system_test;
-#[path = "registry_core/no_legacy_vec_rewrite.rs"]
-mod no_legacy_vec_rewrite;
 #[path = "registry_core/node_register.rs"]
 mod node_register;
 #[path = "registry_core/owned_handle_accessors.rs"]

@@ -472,14 +472,17 @@ pub struct SemVtableId(pub u32);
 
 /// One dispatchable slot of a demanded trait-object table.
 ///
-/// `slot` is the checker's index (`3 + declaration order`, past the runtime's
-/// `drop_in_place`/`size_of`/`align_of` prefix). SIR never recomputes it.
+/// `slot` is the checker's index (`3 + position` in the trait object's
+/// layout, past the runtime's `drop_in_place`/`size_of`/`align_of` prefix).
+/// SIR never recomputes it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SemVtableSlot {
     pub slot: u32,
     /// The trait that declares the method, for diagnostics only.
     pub trait_name: String,
     pub method_name: String,
+    /// The trait method declaration this slot dispatches.
+    pub method: hew_types::DefId,
     /// The exact implementation this concrete type contributes.
     pub callee: CallableId,
     /// How the erased receiver crosses the dispatch boundary.
@@ -1887,11 +1890,14 @@ pub enum SemTerminator {
     ///
     /// The receiver occupies boundary operand slot zero, followed by the
     /// source arguments. `slot` is the checker's index; no stage recomputes
-    /// it. The normal edge is absent exactly for a Never result.
+    /// it. `method` is the trait method declaration the checker resolved the
+    /// call to; every table's `slot` must publish that same declaration. The
+    /// normal edge is absent exactly for a Never result.
     DynCall {
         id: OpId,
         receiver: BoundaryOperand,
         slot: u32,
+        method: hew_types::DefId,
         signature: SemSignature,
         args: Vec<BoundaryOperand>,
         result: CallResult,

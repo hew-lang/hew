@@ -1,0 +1,47 @@
+// A root trait that extends a flat-imported trait dispatches the imported
+// trait's methods, and its supertrait's, through a trait object.
+import dyn_subtrait_import.shapes.{Core, Left, Right};
+
+trait Mine: Left {
+    fn mine(self) -> string;
+}
+
+type Block {
+    n: i64,
+}
+
+impl Core for Block {
+    fn core(self) -> string {
+        f"core {self.n}"
+    }
+}
+
+impl Left for Block {
+    fn left(self) -> string {
+        "left"
+    }
+}
+
+impl Right for Block {
+    fn right(self) -> string {
+        "right"
+    }
+}
+
+impl Mine for Block {
+    fn mine(self) -> string {
+        "mine"
+    }
+}
+
+fn show(value: dyn (Right + Mine)) -> string {
+    f"{value.mine()} {value.right()} {value.left()} {value.core()}"
+}
+
+fn main() {
+    let mine: dyn Mine = Block { n: 1 };
+    println(mine.mine());
+    println(mine.left());
+    println(mine.core());
+    println(show(Block { n: 2 }));
+}

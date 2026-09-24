@@ -526,7 +526,15 @@ fn verify_vtables(module: &SemModule, diagnostics: &mut Vec<SirDiagnostic>) {
         if !erasures.insert((vtable.dyn_ty.clone(), vtable.concrete_ty.clone())) {
             refuse("the same erasure is published twice".into());
         }
+        let mut methods = HashSet::new();
         for (position, slot) in vtable.slots.iter().enumerate() {
+            if !methods.insert(&slot.method) {
+                refuse(format!(
+                    "slot {} repeats trait method `{}`",
+                    slot.slot,
+                    slot.method.full_path()
+                ));
+            }
             let expected_slot = 3 + u32::try_from(position).expect("SIR vtable slot exceeds u32");
             if slot.slot != expected_slot {
                 refuse(format!(
@@ -2542,6 +2550,7 @@ fn verify_dyn_call(
     let SemTerminator::DynCall {
         receiver,
         slot,
+        method,
         signature,
         args,
         result,
@@ -2568,7 +2577,20 @@ fn verify_dyn_call(
     }
     let context = context
         .ok_or_else(|| "dynamic dispatch requires its module's dispatch tables".to_string())?;
-    for table in context.vtables_for(ty) {
+    // WHY: `ResolvedTy::TraitObject` names its traits by spelling, so two
+    // same-named traits from different modules erase to one `dyn_ty`. A table
+    // of the call's own trait object publishes the called method somewhere;
+    // a same-spelled neighbour's table never does, because distinct traits
+    // declare distinct methods.
+    // WHEN obsolete: once trait-object types carry trait declaration identity.
+    // WHAT: select the tables by the exact `dyn_ty` alone.
+    let own_tables = context.vtables_for(ty).filter(|table| {
+        table
+            .slots
+            .iter()
+            .any(|published| published.method == *method)
+    });
+    for table in own_tables {
         let published = table
             .slots
             .iter()
@@ -2580,6 +2602,14 @@ fn verify_dyn_call(
                     ty.user_facing()
                 )
             })?;
+        if published.method != *method {
+            return Err(format!(
+                "dynamic dispatch of `{}` names slot {slot}, which `{}` fills with `{}`",
+                method.full_path(),
+                table.concrete_ty.user_facing(),
+                published.method.full_path()
+            ));
+        }
         let expected = match published.receiver {
             SemParamPassing::ReadOnly => crate::BoundaryDecision::Copy,
             SemParamPassing::Borrow => crate::BoundaryDecision::Borrow,

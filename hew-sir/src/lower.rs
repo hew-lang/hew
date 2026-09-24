@@ -1660,6 +1660,7 @@ impl<'a> InstanceService<'a> {
                 slot,
                 trait_name: entry.trait_name.clone(),
                 method_name: entry.method_name.clone(),
+                method: entry.method.clone(),
                 callee,
                 receiver: receiver_passing,
                 signature: SemSignature {
@@ -3257,6 +3258,7 @@ enum PreparedCallee {
     Dyn {
         receiver: crate::BoundaryOperand,
         slot: u32,
+        method: hew_types::DefId,
     },
 }
 
@@ -3304,10 +3306,15 @@ impl PreparedCallee {
                 normal,
                 unwind,
             },
-            Self::Dyn { receiver, slot } => SemTerminator::DynCall {
+            Self::Dyn {
+                receiver,
+                slot,
+                method,
+            } => SemTerminator::DynCall {
                 id,
                 receiver,
                 slot,
+                method,
                 signature,
                 args,
                 result,
@@ -5689,13 +5696,13 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             } => self.lower_dyn_make(expr, value, concrete_type, vtable_entries),
             HirExprKind::CallDynMethod {
                 receiver,
-                slot,
+                target,
                 args,
                 evaluation_order,
                 signature,
                 ..
             } => self
-                .lower_dyn_call(expr, receiver, *slot, args, evaluation_order, signature)?
+                .lower_dyn_call(expr, receiver, target, args, evaluation_order, signature)?
                 .ok_or_else(|| "dynamic dispatch produced no SIR value".to_string()),
             HirExprKind::ArrayLiteral { elements } => self.lower_array_make(expr, elements),
             HirExprKind::ArrayRepeat { value } => self.lower_array_repeat(expr, value),
@@ -8111,11 +8118,14 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         &mut self,
         expr: &HirExpr,
         receiver: &HirExpr,
-        slot: u32,
+        target: &hew_types::CallTarget,
         args: &[HirExpr],
         evaluation_order: &[usize],
         signature: &hew_types::FnSig,
     ) -> Result<Option<ValueId>, String> {
+        let hew_types::CallTarget::DynamicVtable { method, slot, .. } = target else {
+            return Err("dynamic dispatch carries no checker vtable target".to_string());
+        };
         let live_before_arguments: std::collections::HashSet<_> =
             self.owned_live.keys().copied().collect();
         let mut loans = Vec::new();
@@ -8139,7 +8149,8 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     operand: Operand { value },
                     decision,
                 },
-                slot,
+                slot: *slot,
+                method: method.clone(),
             },
             dispatch,
             lowered_args,

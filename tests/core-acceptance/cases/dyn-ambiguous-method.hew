@@ -1,0 +1,52 @@
+// A method name declared by two traits of one trait object is ambiguous,
+// as it is for a type parameter bounded by both traits.
+trait Alpha {
+    fn name(self) -> string;
+}
+
+trait Beta {
+    fn name(self) -> string;
+}
+
+trait Base {
+    fn label(self) -> string;
+}
+
+trait Sub: Base {
+    fn label(self) -> string;
+}
+
+type Both {
+    n: i64,
+}
+
+impl Alpha for Both {
+    fn name(self) -> string {
+        "alpha"
+    }
+}
+
+impl Beta for Both {
+    fn name(self) -> string {
+        "beta"
+    }
+}
+
+impl Base for Both {
+    fn label(self) -> string {
+        "base"
+    }
+}
+
+impl Sub for Both {
+    fn label(self) -> string {
+        "sub"
+    }
+}
+
+fn main() {
+    let pair: dyn (Alpha + Beta) = Both { n: 1 };
+    println(pair.name());
+    let sub: dyn Sub = Both { n: 2 };
+    println(sub.label());
+}

@@ -101,3 +101,29 @@ fn dyn_index_lowers_to_vtable_call() {
         tail.kind
     );
 }
+
+/// `[]` always dispatches `Index.at`, even when another bound of the trait
+/// object declares a method named `at`.
+#[test]
+fn dyn_index_selects_index_at_beside_another_at() {
+    let output = lower(
+        r"
+        trait Other { fn at(self, position: i64) -> i32; }
+        fn f(idx: dyn (Index<Output = i32> + Other)) -> i32 { idx[2] }
+        ",
+    );
+    let tail = function_tail(&output, "f");
+    let HirExprKind::CallDynMethod {
+        target: hew_types::CallTarget::DynamicVtable { method, slot, .. },
+        ..
+    } = &tail.kind
+    else {
+        panic!(
+            "dyn idx[2] should lower to a vtable call; got {:?}",
+            tail.kind
+        );
+    };
+    // `Index` publishes `get` then `at`; `Other.at` follows them.
+    assert_eq!(method.full_path(), "std.builtins.Index::at");
+    assert_eq!(*slot, 4);
+}

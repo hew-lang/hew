@@ -117,13 +117,14 @@ impl Builder<'_, '_> {
             }
             // An erased entry error renders through the same vtable slot a
             // source-level `Display::fmt` call on that trait object uses.
-            hew_types::EntryDisplayTarget::DynSlot { slot } => (
+            hew_types::EntryDisplayTarget::DynSlot { slot, method } => (
                 PreparedCallee::Dyn {
                     receiver: BoundaryOperand {
                         operand: Operand { value: error },
                         decision: BoundaryDecision::Borrow,
                     },
                     slot: *slot,
+                    method: method.clone(),
                 },
                 crate::SemSignature {
                     params: Vec::new(),

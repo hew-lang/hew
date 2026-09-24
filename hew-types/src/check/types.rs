@@ -261,7 +261,7 @@ pub enum EntryDisplayTarget {
     /// through the vtable slot the coercion site published. The receiver is
     /// borrowed: `Display::fmt` declares a by-value named receiver, which is
     /// a read at the semantic call boundary.
-    DynSlot { slot: u32 },
+    DynSlot { slot: u32, method: crate::DefId },
 }
 
 /// Complete callable realization selected for an entry-boundary dependency.
@@ -743,13 +743,13 @@ pub struct TypeCheckOutput {
     ///
     /// Multi-bound `dyn (A + B)` coercion sites flatten into a single
     /// [`DynCoercion`] whose `trait_name` joins the bound names with `+` and
-    /// whose `method_table` concatenates the per-bound entries in declaration
-    /// order; each entry's method name is prefixed by the originating trait
-    /// (`Trait::method`) so downstream consumers can recover the binding.
+    /// whose `method_table` follows the trait object's layout; each entry's
+    /// method name is prefixed by its declaring trait (`Trait::method`) for
+    /// diagnostics.
     pub dyn_trait_coercions: HashMap<SpanKey, DynCoercion>,
     /// Per-method-call-site resolution for `obj.method()` where `obj` has
     /// resolved type `Ty::TraitObject`. Each entry pins the originating trait,
-    /// the method name, and the vtable slot index (`3 + method_decl_order` —
+    /// the method name, and the vtable slot index (`3 + layout position` —
     /// see [`DynMethodCall::slot`] for the prefix-triple convention).
     ///
     /// Populated alongside [`MethodCallReceiverKind::TraitObject`] at every
@@ -1048,9 +1048,9 @@ pub struct ClosureEscapeFact {
 /// The `method_table` is ordered: vtable slot index `i` (after the
 /// runtime-fixed `drop_in_place`/`size_of`/`align_of` prefix triple defined
 /// in `hew-runtime/src/trait_object.rs`) maps to the i-th entry in
-/// `method_table`. For multi-bound coercions the order is the trait bounds'
-/// declaration order, with each bound contributing its trait's methods in
-/// the trait declaration order.
+/// `method_table`. The order is the trait object's layout
+/// (`Checker::dyn_layout`): supertraits before the traits that extend them,
+/// bounds in written order, one entry per trait method declaration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DynAssocBinding {
     /// Originating trait name; qualifies `assoc_name` for multi-bound objects.
@@ -1079,6 +1079,9 @@ pub struct DynVtableEntry {
     pub trait_name: String,
     /// Trait method name as declared in the trait.
     pub method_name: String,
+    /// The trait method declaration this slot dispatches. A dispatch through
+    /// the slot names the same declaration.
+    pub method: crate::DefId,
     /// Implementer-side function key (`Type::method`).
     pub impl_fn_key: String,
     /// Declaration identity of the implementer-side method that fills this
@@ -1140,9 +1143,10 @@ pub struct DynCoercion {
 /// | 0    | `drop_in_place`       |
 /// | 1    | `size_of` (data)      |
 /// | 2    | `align_of` (data)     |
-/// | 3..N | trait method slots, in trait declaration order |
+/// | 3..N | trait method slots, in the trait object's layout order |
 ///
-/// `slot` is therefore `3 + method_decl_order` for the originating trait.
+/// `slot` is therefore `3 + position` in the whole trait object's layout
+/// (`Checker::dyn_layout`), the numbering the coercion site fills.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DynMethodCall {
     /// Full checker-selected dispatch identity.  HIR carries this verbatim;
@@ -1154,8 +1158,7 @@ pub struct DynMethodCall {
     pub trait_name: String,
     /// Trait method name as declared in the trait body.
     pub method_name: String,
-    /// Vtable slot index: `3 + 0-based method declaration order` within
-    /// the originating trait.
+    /// Vtable slot index: `3 + position` in the trait object's layout.
     pub slot: u32,
     /// Caller-side method signature after substituting trait type
     /// parameters and associated-type bindings from the receiver's

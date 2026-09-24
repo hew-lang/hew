@@ -35,22 +35,28 @@ impl Checker {
             ))
             .cloned()
             .or_else(|| {
-                // `trait_method_ids` is keyed by the trait method's minted
-                // path, so the trait reference has to be resolved to the
-                // trait's own identity first: a `trait_defs` key is a
-                // registry spelling and a flat-imported trait is registered
-                // under its bare name while the declaration renders under the
-                // file that declares it.
-                let lookup_key = self.trait_ref_lookup_key(trait_name);
-                let declaring_trait = self
-                    .lookup_declaration(&lookup_key)
-                    .map_or(lookup_key, |declaration| {
-                        declaration.full_path().to_string()
-                    });
-                self.trait_method_ids
-                    .get(&format!("{declaring_trait}::{method_name}"))
-                    .cloned()
+                self.trait_method_ids_for_key(&self.trait_ref_lookup_key(trait_name), method_name)
             })
+    }
+
+    /// The trait and method declaration IDs for `method_name` declared by the
+    /// trait registered under `trait_defs` key `key`.
+    pub(super) fn trait_method_ids_for_key(
+        &self,
+        key: &str,
+        method_name: &str,
+    ) -> Option<(crate::DefId, crate::DefId)> {
+        // `trait_method_ids` is keyed by the trait method's minted path, so
+        // the key has to be resolved to the trait's own identity first: a
+        // `trait_defs` key is a registry spelling and a flat-imported trait is
+        // registered under its bare name while the declaration renders under
+        // the file that declares it.
+        let declaring_trait = self
+            .lookup_declaration(key)
+            .map_or(key, |declaration| declaration.full_path());
+        self.trait_method_ids
+            .get(&format!("{declaring_trait}::{method_name}"))
+            .cloned()
     }
 }
 
@@ -9010,99 +9016,94 @@ impl Checker {
                 );
                 Ty::Error
             }
-            // Trait object method dispatch: look up methods from all trait bounds
+            // Trait object method dispatch: the method's slot in the whole
+            // trait object's layout, the one numbering the coercion shares.
             (Ty::TraitObject { traits }, _) => {
-                // Try to find the method in any of the traits
-                let mut found_sig = None;
-                let mut found_bound = None;
-                for bound in traits {
-                    let trait_lookup_key = self.trait_ref_lookup_key(&bound.trait_name);
-                    if let Some(sig) = self.lookup_trait_method(&trait_lookup_key, method) {
-                        found_sig = Some(sig);
-                        found_bound = Some(bound);
-                        break;
+                let Some(layout) = self.dyn_layout(traits, span) else {
+                    for arg in args {
+                        let (expr, sp) = arg.expr();
+                        self.synthesize(expr, sp);
                     }
+                    return Ty::Error;
+                };
+                // Every slot of that name, as the static-bound path collects
+                // them for `T: A + B` (plan §4 V14).
+                let mut matching: Vec<_> = layout
+                    .into_iter()
+                    .filter(|slot| slot.method_name == method)
+                    .collect();
+                if matching.len() > 1 {
+                    for arg in args {
+                        let (expr, sp) = arg.expr();
+                        self.synthesize(expr, sp);
+                    }
+                    self.report_error(
+                        TypeErrorKind::AmbiguousTraitMethod,
+                        span,
+                        format!(
+                            "ambiguous trait method `{method}` on `{}`: traits {} each declare \
+                             it, and a call on a trait object cannot name one trait; rename \
+                             the method in all but one of them",
+                            resolved.user_facing(),
+                            matching
+                                .iter()
+                                .map(|slot| format!("`{}`", slot.trait_spelling))
+                                .collect::<Vec<_>>()
+                                .join(" and ")
+                        ),
+                    );
+                    return Ty::Error;
                 }
-
-                if let Some(mut sig) = found_sig {
-                    let pid_send_dispatch = found_bound.as_ref().is_some_and(|bound| {
-                        self.trait_ref_lookup_key(&bound.trait_name) == "std.builtins.Pid"
-                            && method == "send"
-                    });
-                    if let Some(bound) = found_bound {
-                        self.record_method_call_receiver_kind(
-                            span,
-                            MethodCallReceiverKind::TraitObject {
-                                trait_name: bound.trait_name.clone(),
-                            },
+                if let Some(layout_slot) = matching.pop() {
+                    let bound = &traits[layout_slot.bound];
+                    let Some(mut sig) = self.lookup_trait_method(&layout_slot.trait_key, method)
+                    else {
+                        // JUSTIFIED: the layout lists only methods registered
+                        // in `trait_defs`, which always resolve.
+                        unreachable!(
+                            "trait method `{}.{method}` is in a dyn layout but is not resolvable",
+                            layout_slot.trait_key
                         );
-                        // Apply trait-type-param and associated-type
-                        // substitution UP FRONT so the substituted
-                        // `FnSig` can be recorded on `DynMethodCall`
-                        // alongside the slot. W3.031 Stage 1.6 makes
-                        // the typed signature self-contained on
-                        // `Instr::CallTraitMethod`; codegen never
-                        // re-derives it from the impl fn or by
-                        // walking vtable entries (per Q-β resolution).
-                        self.apply_trait_object_bound_substitutions(&mut sig, bound);
-                        if sig.requires_mutable_receiver {
-                            self.check_mutable_method_receiver(
-                                receiver,
-                                &format!("method `{method}` on `dyn {}`", bound.trait_name),
-                                span,
-                            );
-                        }
-                        // Record the per-call-site vtable-slot resolution that
-                        // HIR/MIR lowering will consume to emit
-                        // `Instr::CallTraitMethod`. Slot convention follows
-                        // `hew-runtime/src/trait_object.rs::HewVtable`: slots
-                        // 0..3 are the fixed prefix triple
-                        // (`drop_in_place`/`size_of`/`align_of`), trait methods
-                        // start at slot 3 in trait-declaration order.
-                        // The slot comes from the one authority shared with
-                        // the coercion site, so a supertrait method such as
-                        // `Display::fmt` on `dyn Error` resolves to the slot
-                        // the vtable actually publishes.
-                        if let Some((slot, _, declaring_spelling)) =
-                            self.dyn_vtable_slot_for_method(&bound.trait_name, method)
-                        {
-                            let target = self
-                                .trait_method_call_target_ids(&declaring_spelling, method)
-                                .map_or_else(
-                                    || CallTarget::Unsupported {
-                                        reason: format!(
-                                            "dynamic trait method `{declaring_spelling}.{method}` has no registered declaration identity"
-                                        ),
-                                    },
-                                    |(declaring_trait, method)| {
-                                        CallTarget::DynamicVtable {
-                                            declaring_trait,
-                                            method,
-                                            slot,
-                                        }
-                                    },
-                                );
-                            self.dyn_trait_method_calls.insert(
-                                SpanKey::in_module(span, self.current_module_idx),
-                                crate::check::types::DynMethodCall {
-                                    target,
-                                    trait_name: bound.trait_name.clone(),
-                                    method_name: method.to_string(),
-                                    slot,
-                                    signature: sig.clone(),
-                                },
-                            );
-                        }
-                        if sig.consumes_receiver {
-                            self.method_call_consumes_receiver
-                                .insert(SpanKey::in_module(span, self.current_module_idx));
-                            let resolved_ty = self.subst.resolve(&receiver_ty);
-                            self.mark_expr_moved_if_non_copy(
-                                &receiver.0,
-                                &receiver.1,
-                                &resolved_ty,
-                            );
-                        }
+                    };
+                    let pid_send_dispatch =
+                        layout_slot.trait_key == "std.builtins.Pid" && method == "send";
+                    self.record_method_call_receiver_kind(
+                        span,
+                        MethodCallReceiverKind::TraitObject {
+                            trait_name: bound.trait_name.clone(),
+                        },
+                    );
+                    // Apply trait-type-param and associated-type substitution
+                    // up front so the substituted `FnSig` is recorded on
+                    // `DynMethodCall` alongside the slot; codegen never
+                    // re-derives it from the impl fn or the vtable entries.
+                    self.apply_trait_object_bound_substitutions(&mut sig, bound);
+                    if sig.requires_mutable_receiver {
+                        self.check_mutable_method_receiver(
+                            receiver,
+                            &format!("method `{method}` on `dyn {}`", bound.trait_name),
+                            span,
+                        );
+                    }
+                    self.dyn_trait_method_calls.insert(
+                        SpanKey::in_module(span, self.current_module_idx),
+                        crate::check::types::DynMethodCall {
+                            target: CallTarget::DynamicVtable {
+                                declaring_trait: layout_slot.declaring_trait,
+                                method: layout_slot.method,
+                                slot: layout_slot.slot,
+                            },
+                            trait_name: bound.trait_name.clone(),
+                            method_name: method.to_string(),
+                            slot: layout_slot.slot,
+                            signature: sig.clone(),
+                        },
+                    );
+                    if sig.consumes_receiver {
+                        self.method_call_consumes_receiver
+                            .insert(SpanKey::in_module(span, self.current_module_idx));
+                        let resolved_ty = self.subst.resolve(&receiver_ty);
+                        self.mark_expr_moved_if_non_copy(&receiver.0, &receiver.1, &resolved_ty);
                     }
                     let applied_sig = self.apply_instantiated_call_signature(
                         &sig,
@@ -9600,6 +9601,67 @@ fn collection_dispatch_registry_impl() -> ImplRegistry {
 mod tests {
     use super::*;
     use crate::module_registry::ModuleRegistry;
+
+    /// The dyn layout deduplicates slots by trait method declaration, so
+    /// every method of every builtin trait needs its identity.
+    #[test]
+    fn every_builtin_trait_method_has_a_declaration_identity() {
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&hew_parser::parse("fn main() {}").program);
+        let mut builtin_methods = 0;
+        for (key, info) in &checker.trait_defs {
+            if !key.starts_with("std.builtins.") {
+                continue;
+            }
+            for method in &info.methods {
+                builtin_methods += 1;
+                assert!(
+                    output
+                        .trait_method_ids
+                        .contains_key(&format!("{key}::{}", method.name)),
+                    "`{key}.{}` has no declaration identity",
+                    method.name
+                );
+            }
+        }
+        assert!(
+            builtin_methods > 0,
+            "the builtin prelude registered no traits"
+        );
+    }
+
+    /// A root trait written over a prelude trait by its bare spelling keeps
+    /// an edge to the prelude trait's declaration, so the dyn layout reaches
+    /// the supertrait's method identities.
+    #[test]
+    fn root_supertrait_edges_name_the_prelude_declaration() {
+        let source = r"
+            trait Pretty: Display { fn pretty(self) -> string; }
+            trait Named: Iterator { fn name(self) -> string; }
+            trait Failure: Error { fn code(self) -> i64; }
+            fn main() {}
+        ";
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&hew_parser::parse(source).program);
+        assert!(output.errors.is_empty(), "{:?}", output.errors);
+        for (subtrait, expected) in [
+            ("Pretty", "std.builtins.Display"),
+            ("Named", "std.builtins.Iterator"),
+            ("Failure", "std.builtins.Error"),
+        ] {
+            let edges = &checker.trait_super[subtrait];
+            assert_eq!(edges, &vec![expected.to_string()], "`{subtrait}` edges");
+            for method in &checker.trait_defs[expected].methods {
+                assert!(
+                    output
+                        .trait_method_ids
+                        .contains_key(&format!("{expected}::{}", method.name)),
+                    "`{expected}.{}` has no declaration identity",
+                    method.name
+                );
+            }
+        }
+    }
 
     #[test]
     fn trait_method_target_ids_fail_closed_after_canonical_miss() {

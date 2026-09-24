@@ -1,0 +1,85 @@
+// Every method of a multi-bound trait object dispatches to its own body,
+// whether the colliding slots share a signature or not.
+trait Alpha {
+    fn alpha(self) -> string;
+}
+
+trait Beta {
+    fn beta(self) -> string;
+}
+
+trait Scaled {
+    fn scaled(self) -> i64;
+}
+
+trait Tagged {
+    fn tag(self) -> string;
+}
+
+trait Left: Tagged {
+    fn left(self) -> string;
+}
+
+trait Right: Tagged {
+    fn right(self) -> string;
+}
+
+type Both {
+    n: i64,
+}
+
+impl Alpha for Both {
+    fn alpha(self) -> string {
+        f"alpha {self.n}"
+    }
+}
+
+impl Beta for Both {
+    fn beta(self) -> string {
+        f"beta {self.n}"
+    }
+}
+
+impl Scaled for Both {
+    fn scaled(self) -> i64 {
+        self.n * 100
+    }
+}
+
+impl Tagged for Both {
+    fn tag(self) -> string {
+        f"tag {self.n}"
+    }
+}
+
+impl Left for Both {
+    fn left(self) -> string {
+        "left"
+    }
+}
+
+impl Right for Both {
+    fn right(self) -> string {
+        "right"
+    }
+}
+
+fn describe(value: dyn (Alpha + Beta + Scaled)) -> string {
+    f"{value.beta()} {value.alpha()} {value.scaled()}"
+}
+
+fn main() {
+    let pair: dyn (Alpha + Beta) = Both { n: 3 };
+    println(pair.alpha());
+    println(pair.beta());
+    let mixed: dyn (Alpha + Scaled) = Both { n: 3 };
+    println(mixed.scaled());
+    println(mixed.alpha());
+    println(describe(Both { n: 5 }));
+
+    // A supertrait both bounds share occupies one slot.
+    let sides: dyn (Left + Right) = Both { n: 7 };
+    println(sides.right());
+    println(sides.left());
+    println(sides.tag());
+}

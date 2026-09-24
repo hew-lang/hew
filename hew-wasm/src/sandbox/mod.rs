@@ -110,6 +110,8 @@ pub const REQUIRED_PARITY_TEST_NAMES: &[&str] = &[
     "regex_clone",
     "trap_residual",
     "structural_rendering",
+    "dyn_multibound_dispatch",
+    "dyn_subtrait_display",
     "map_literal",
     "math_intrinsics",
     "trait_objects",

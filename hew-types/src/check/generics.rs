@@ -5,6 +5,28 @@
 use super::*;
 use crate::method_resolution::lookup_method_sig as shared_lookup_method_sig;
 
+/// Slots before the first trait method: the runtime's fixed
+/// `drop_in_place`/`size_of`/`align_of` prefix.
+pub(super) const DYN_VTABLE_PREFIX: u32 = 3;
+
+/// One method of a trait object's dispatch layout.
+#[derive(Clone, Debug)]
+pub(super) struct DynLayoutSlot {
+    /// Published vtable slot index.
+    pub slot: u32,
+    /// `trait_defs` key of the declaring trait.
+    pub trait_key: String,
+    /// The declaring trait as the impl registries spell it.
+    pub trait_spelling: String,
+    pub method_name: String,
+    pub declaring_trait: crate::DefId,
+    /// The trait method declaration this slot dispatches.
+    pub method: crate::DefId,
+    /// The written bound whose closure first reaches this method; its type
+    /// arguments and associated-type bindings substitute the signature.
+    pub bound: usize,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum StructuralMethodStatus {
     Required,
@@ -1698,68 +1720,132 @@ impl Checker {
         self.lookup_trait_method_with_origin_inner(trait_name, method, true)
     }
 
-    /// The ordered vtable method slots for one trait-object bound.
+    /// The dispatch layout of a whole trait-object type: every method of
+    /// every bound and of the bounds' supertraits, one entry per trait method
+    /// declaration.
     ///
-    /// Slot `3 + index` names `(declaring trait key, declaring trait spelling,
-    /// method name)`. The bound trait's own methods come first in declaration
-    /// order, then each supertrait's methods depth-first in supertrait
-    /// declaration order; a method name already claimed by an earlier slot is
-    /// not repeated, so a supertrait redeclaration keeps the sub-trait's slot.
+    /// Supertraits come before the traits that extend them (post-order
+    /// depth-first, bounds in written order), so `dyn Error` publishes
+    /// `Display.fmt` first. A method reached through two bounds, such as a
+    /// shared supertrait's, occupies one slot. Two traits that each declare
+    /// a method of the same name keep separate slots; a call by that name is
+    /// ambiguous.
     ///
-    /// This is the one authority for the layout: the coercion site fills the
-    /// vtable in this order and every dispatch site reads its slot index from
-    /// the same list. Slots 0..3 are the runtime's fixed prefix triple
-    /// (`drop_in_place`, `size_of`, `align_of` — see
-    /// `hew-runtime/src/trait_object.rs`).
-    pub(super) fn dyn_vtable_slots(&self, trait_name: &str) -> Vec<(String, String, String)> {
-        let mut slots: Vec<(String, String, String)> = Vec::new();
-        let mut claimed: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let mut stack: Vec<(String, String)> = vec![(
-            self.trait_ref_lookup_key(trait_name),
-            trait_name.to_string(),
-        )];
-        while let Some((key, spelling)) = stack.pop() {
-            if !visited.insert(key.clone()) {
-                continue;
-            }
-            if let Some(info) = self.trait_defs.get(&key) {
-                for method in &info.methods {
-                    if claimed.insert(method.name.clone()) {
-                        slots.push((key.clone(), spelling.clone(), method.name.clone()));
-                    }
-                }
-            }
-            if let Some(supers) = self.trait_super.get(&key) {
-                for super_key in supers.iter().rev() {
-                    let spelling = super_key
-                        .rsplit('.')
-                        .next()
-                        .unwrap_or(super_key.as_str())
-                        .to_string();
-                    stack.push((super_key.clone(), spelling));
-                }
+    /// This is the one slot numbering: the coercion site fills the vtable in
+    /// this order and every dispatch site reads its slot from the same list.
+    /// A published slot index is `DYN_VTABLE_PREFIX + position`, past the
+    /// runtime's fixed `drop_in_place`/`size_of`/`align_of` prefix
+    /// (`hew-runtime/src/trait_object.rs`).
+    ///
+    /// A method without a declaration identity cannot be told apart from
+    /// another trait's method of the same name, so it is reported at `span`
+    /// and no layout is returned.
+    pub(super) fn dyn_layout(
+        &mut self,
+        traits: &[crate::ty::TraitObjectBound],
+        span: &Span,
+    ) -> Option<Vec<DynLayoutSlot>> {
+        let mut layout = Vec::new();
+        let mut visited = std::collections::HashSet::new();
+        for (bound, trait_object_bound) in traits.iter().enumerate() {
+            let pushed = self.push_dyn_layout_trait(
+                &self.trait_ref_lookup_key(&trait_object_bound.trait_name),
+                &trait_object_bound.trait_name,
+                bound,
+                &mut visited,
+                &mut layout,
+            );
+            if let Err(unidentified) = pushed {
+                self.report_error(
+                    TypeErrorKind::InvalidOperation,
+                    span,
+                    format!(
+                        "trait method `{unidentified}` has no declaration identity, so \
+                         `{}` cannot dispatch it",
+                        Ty::TraitObject {
+                            traits: traits.to_vec()
+                        }
+                        .user_facing()
+                    ),
+                );
+                return None;
             }
         }
-        slots
+        Some(layout)
     }
 
-    /// The vtable slot a dynamic dispatch of `method` on `dyn trait_name`
-    /// occupies, with the trait that declares it.
-    pub(super) fn dyn_vtable_slot_for_method(
+    fn push_dyn_layout_trait(
         &self,
-        trait_name: &str,
+        key: &str,
+        spelling: &str,
+        bound: usize,
+        visited: &mut std::collections::HashSet<String>,
+        layout: &mut Vec<DynLayoutSlot>,
+    ) -> Result<(), String> {
+        if !visited.insert(key.to_string()) {
+            return Ok(());
+        }
+        for super_key in self.trait_super.get(key).cloned().unwrap_or_default() {
+            let super_spelling = super_key.rsplit('.').next().unwrap_or(super_key.as_str());
+            self.push_dyn_layout_trait(&super_key, super_spelling, bound, visited, layout)?;
+        }
+        let Some(info) = self.trait_defs.get(key) else {
+            return Ok(());
+        };
+        for method in &info.methods {
+            let (declaring_trait, method_id) = self
+                .trait_method_ids_for_key(key, &method.name)
+                .ok_or_else(|| format!("{spelling}.{}", method.name))?;
+            if layout.iter().any(|slot| slot.method == method_id) {
+                continue;
+            }
+            let position = u32::try_from(layout.len()).expect("trait-object layout exceeds u32");
+            layout.push(DynLayoutSlot {
+                slot: DYN_VTABLE_PREFIX + position,
+                trait_key: key.to_string(),
+                trait_spelling: spelling.to_string(),
+                method_name: method.name.clone(),
+                declaring_trait,
+                method: method_id,
+                bound,
+            });
+        }
+        Ok(())
+    }
+
+    /// The layout slot of one trait method declaration, for a dispatch the
+    /// language fixes to that method (`Display.fmt` on the entry exit path,
+    /// `Index.at` for `[]`). `trait_key` is the declaring trait's
+    /// `trait_defs` key. A miss is reported at `span`.
+    pub(super) fn dyn_layout_slot_of(
+        &mut self,
+        traits: &[crate::ty::TraitObjectBound],
+        trait_key: &str,
         method: &str,
-    ) -> Option<(u32, String, String)> {
-        self.dyn_vtable_slots(trait_name)
+        span: &Span,
+    ) -> Option<DynLayoutSlot> {
+        let method_id = self
+            .trait_method_ids_for_key(trait_key, method)
+            .map(|(_, method_id)| method_id);
+        let slot = self
+            .dyn_layout(traits, span)?
             .into_iter()
-            .enumerate()
-            .find(|(_, (_, _, name))| name == method)
-            .map(|(index, (key, spelling, _))| {
-                // A trait's method count is bounded far below `u32::MAX`;
-                // `try_from` keeps the boundary explicit.
-                (3 + u32::try_from(index).unwrap_or(u32::MAX), key, spelling)
-            })
+            .find(|slot| Some(&slot.method) == method_id.as_ref());
+        if slot.is_none() {
+            let trait_name = trait_key.rsplit('.').next().unwrap_or(trait_key);
+            self.report_error(
+                TypeErrorKind::BoundsNotSatisfied,
+                span,
+                format!(
+                    "`{}` has no vtable slot for `{trait_name}.{method}`",
+                    Ty::TraitObject {
+                        traits: traits.to_vec()
+                    }
+                    .user_facing()
+                ),
+            );
+        }
+        slot
     }
 
     /// Walk `trait_name` and ALL of its (transitive) supertraits, collecting

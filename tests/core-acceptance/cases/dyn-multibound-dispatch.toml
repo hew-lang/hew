@@ -1,0 +1,10 @@
+[[case]]
+id = "dyn-multibound-dispatch"
+intent = "Each method called on a multi-bound `dyn` value runs its own body, including methods with identical signatures and a supertrait shared by both bounds."
+source = "cases/dyn-multibound-dispatch.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "alpha 3\nbeta 3\n300\nalpha 3\nbeta 5 alpha 5 500\nright\nleft\ntag 7\n"
+exit = 0

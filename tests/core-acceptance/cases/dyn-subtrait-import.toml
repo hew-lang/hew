@@ -1,0 +1,10 @@
+[[case]]
+id = "dyn-subtrait-import"
+intent = "A root trait extending a flat-imported trait dispatches its own, the imported and the shared supertrait's methods through `dyn`."
+source = "cases/dyn-subtrait-import.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "mine\nleft\ncore 1\nmine right left core 2\n"
+exit = 0

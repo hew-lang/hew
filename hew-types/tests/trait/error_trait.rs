@@ -159,3 +159,40 @@ fn unknown_trait_in_dyn_type_is_refused_once() {
         refusals[0].message
     );
 }
+
+/// The entry exit path renders a `dyn` error through `Display.fmt`'s own
+/// slot, even when another bound declares a method named `fmt`.
+#[test]
+fn entry_dyn_error_renders_through_the_display_fmt_slot() {
+    let output = typecheck(
+        r#"
+        trait Pretty { fn fmt(self) -> string; }
+        type Failure { detail: string }
+        impl Display for Failure { fn fmt(value: Failure) -> string { "display" } }
+        impl Error for Failure {}
+        impl Pretty for Failure { fn fmt(self) -> string { "pretty" } }
+        fn main() -> Result<(), dyn (Pretty + Error)> {
+            Err(Failure { detail: "x" })
+        }
+        "#,
+    );
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    let Some(hew_types::EntryExitPlan {
+        action:
+            hew_types::EntryExitAction::Result {
+                display: hew_types::EntryDisplayTarget::DynSlot { slot, method },
+                ..
+            },
+        ..
+    }) = &output.entry_exit_plan
+    else {
+        panic!(
+            "expected a dyn entry exit plan: {:#?}",
+            output.entry_exit_plan
+        );
+    };
+    // `Pretty.fmt` occupies slot 3; `Display.fmt`, reached through `Error`,
+    // is slot 4.
+    assert_eq!(*slot, 4);
+    assert_eq!(method.full_path(), "std.builtins.Display::fmt");
+}

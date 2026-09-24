@@ -1,4 +1,5 @@
-//! Split from `methods.rs`: checker methods, part 4 of 5.
+//! Checker methods grouped by responsibility: dispatch.
+//! Split from `methods.rs`: checker methods, part 1 of 5.
 #![allow(
     unused_imports,
     redundant_imports,
@@ -25,6 +26,159 @@ use crate::stdlib::{STD_NET_CONNECTION, STD_NET_LISTENER};
 use crate::BuiltinType;
 
 impl Checker {
+    /// Mutable methods write back to the receiver's place. Record projections
+    /// share their root's mutability, just as they do for field assignment.
+    pub(super) fn check_mutable_method_receiver(
+        &mut self,
+        receiver: &Spanned<Expr>,
+        description: &str,
+        span: &Span,
+    ) {
+        self.reject_indexed_writable_borrow(receiver);
+        let place = self.expr_place(&receiver.0).or_else(|| {
+            self.assignment_root_binding_name(&receiver.0)
+                .map(|root| (root.to_string(), Vec::new()))
+        });
+        let root = place.as_ref().map(|(root, _)| root.as_str());
+        if !root
+            .and_then(|root| self.env.lookup_ref(root))
+            .is_some_and(|binding| binding.is_mutable)
+        {
+            if let Some(error) =
+                root.and_then(|root| self.private_capture_mutation_error(root, span))
+            {
+                self.errors.push(error);
+                return;
+            }
+            let label =
+                root.map_or_else(|| "this expression".to_string(), |root| format!("`{root}`"));
+            let declaration = root
+                .and_then(|root| self.env.lookup_ref(root))
+                .and_then(|binding| binding.def_span.clone());
+            let error_index = self.errors.len();
+            self.report_error(
+                TypeErrorKind::MutabilityError,
+                span,
+                format!("{description} requires a mutable binding receiver; {label} is not declared with `var`"),
+            );
+            if let (Some(declaration), Some(error)) =
+                (declaration, self.errors.get_mut(error_index))
+            {
+                error.notes.push((
+                    declaration,
+                    "immutable binding declared here; use `var` to allow mutation".to_string(),
+                    error.source_module.clone(),
+                ));
+            }
+        } else if let Some((root, path)) = place {
+            self.env.discount_mutation_receiver_read(&root);
+            self.env.mark_written(&root);
+            self.reject_borrowed_parameter_mutation(&root, &path, span);
+        }
+    }
+
+    pub(in crate::check) fn check_method_call(
+        &mut self,
+        receiver: &Spanned<Expr>,
+        method: &str,
+        args: &[CallArg],
+        span: &Span,
+    ) -> Ty {
+        let result = self.check_method_call_inner(receiver, method, args, span);
+        let result = self.finish_actor_receive_call(receiver, span, result);
+        let key = SpanKey::in_module(span, self.current_module_idx);
+        self.check_method_callable_place(receiver, method, span);
+        let runtime_rewrite_consumes_receiver = matches!(
+            self.method_call_rewrites.get(&key),
+            Some(MethodCallRewrite::RewriteToFunction {
+                consumes_receiver: true,
+                ..
+            })
+        );
+        let runtime_rewrite_updates_receiver = matches!(
+            self.method_call_rewrites.get(&key),
+            Some(MethodCallRewrite::RewriteToFunction {
+                descriptor: Some(descriptor),
+                ..
+            }) if matches!(
+                descriptor.family().semantic_contract().map(|contract| contract.result),
+                Some(
+                    crate::runtime_call::RuntimeResultEffect::UpdatedReceiver(_)
+                        | crate::runtime_call::RuntimeResultEffect::UpdatedReceiverAndValue(_)
+                )
+            )
+        );
+        let collection_updates_receiver = self
+            .resolved_calls
+            .get(&key)
+            .and_then(|call| match call.target {
+                CallTarget::RuntimeCollection(crate::MethodTargetFamily::Vec(method)) => {
+                    crate::VecValueOp::from_method(method).map(crate::RuntimeCallFamily::Vector)
+                }
+                CallTarget::RuntimeCollection(crate::MethodTargetFamily::HashMap(method)) => {
+                    crate::runtime_call::MapValueOp::from_method(method)
+                        .map(crate::RuntimeCallFamily::Map)
+                }
+                CallTarget::RuntimeCollection(crate::MethodTargetFamily::HashSet(method)) => {
+                    crate::runtime_call::SetValueOp::from_method(method)
+                        .map(crate::RuntimeCallFamily::Set)
+                }
+                _ => None,
+            })
+            .is_some_and(|family| {
+                matches!(
+                    family.semantic_contract().map(|contract| contract.result),
+                    Some(
+                        crate::RuntimeResultEffect::UpdatedReceiver(_)
+                            | crate::RuntimeResultEffect::UpdatedReceiverAndValue(_)
+                    )
+                )
+            });
+        if runtime_rewrite_updates_receiver || collection_updates_receiver {
+            self.check_mutable_method_receiver(
+                receiver,
+                &format!("collection method `{method}`"),
+                span,
+            );
+        }
+
+        if runtime_rewrite_consumes_receiver {
+            self.method_call_consumes_receiver.insert(key);
+            if let Expr::Identifier(name) = &receiver.0 {
+                // The typed consumption decision overrides a surface Copy
+                // derivation. In particular, a lambda-actor handle is an
+                // opaque wrapper, but release still consumes its sole runtime
+                // handle and any later receiver use is invalid.
+                self.env.mark_moved(name, receiver.1.clone());
+            }
+        }
+
+        result
+    }
+
+    pub(in crate::check) fn check_dotted_type_member_call_against_expected(
+        &mut self,
+        receiver: &Spanned<Expr>,
+        method: &str,
+        args: &[CallArg],
+        expected: &Ty,
+        span: &Span,
+    ) -> Option<Ty> {
+        let head = self.resolve_dotted_type_head(receiver, method)?;
+        let result = self.dispatch_dotted_type_member(
+            &head,
+            method,
+            &DottedTypeMemberUse::Call {
+                args,
+                expected: Some(expected),
+                span,
+            },
+        )?;
+        self.mark_resolved_nominal_owner_used(&head.canonical_type);
+
+        Some(result)
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "pattern matching type checker with many variants"
@@ -2752,5 +2906,32 @@ impl Checker {
                 Ty::Error
             }
         }
+    }
+
+    pub(super) fn report_missing_method_with_shadow_note(
+        &mut self,
+        receiver: &Spanned<Expr>,
+        method: &str,
+        span: &Span,
+        message: String,
+    ) {
+        let mut error = TypeError::new(TypeErrorKind::UndefinedMethod, span.clone(), message);
+        if let Expr::Identifier(binding) = &receiver.0 {
+            if self.env.lookup_ref(binding).is_some()
+                && self.module_import_bindings.contains_key(&(
+                    self.current_module.clone(),
+                    self.current_module_idx,
+                    binding.clone(),
+                ))
+            {
+                error = error.with_note(
+                    receiver.1.clone(),
+                    format!(
+                        "lexical binding `{binding}` shadows the imported module; `{binding}.{method}` was resolved as a value method lookup"
+                    ),
+                );
+            }
+        }
+        self.errors.push(error);
     }
 }

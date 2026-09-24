@@ -13,14 +13,15 @@ use super::*;
 use crate::BuiltinType;
 use hew_parser::ast::WireMetadata;
 
-mod part1;
-mod part2;
-mod part3;
-mod part4;
-mod part5;
-mod part6;
+mod builtins;
+mod extern_contracts;
+mod functions;
+mod imports;
 #[cfg(test)]
 mod tests;
+mod traits;
+mod type_members;
+mod type_publication;
 
 /// Whether a stdlib Hew-source registration publishes its types' bare names
 /// into the importer's scope, passed to `register_stdlib_hew_items`.

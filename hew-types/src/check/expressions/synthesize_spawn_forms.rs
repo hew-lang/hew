@@ -1,4 +1,5 @@
-//! Split from `expressions.rs`: checker methods, part 5 of 5.
+//! Checker methods grouped by responsibility: synthesize spawn forms.
+//! Split from `expressions.rs`: checker methods, part 1 of 5.
 #![allow(
     unused_imports,
     redundant_imports,
@@ -23,6 +24,872 @@ use crate::BuiltinType;
 use std::collections::VecDeque;
 
 impl Checker {
+    pub(in crate::check) fn report_invalid_actor_send(&mut self, ty: &Ty, span: &Span) {
+        self.report_error_with_suggestions(
+            TypeErrorKind::InvalidSend,
+            span,
+            format!(
+                "cannot send `{}` to actor: type is not Send",
+                ty.user_facing()
+            ),
+            vec!["keep the resource inside one owning actor and send that actor a message instead — see the language guide, 'Own a resource with an actor'".to_string()],
+        );
+    }
+
+    /// A resource destructor owns its receiver and may transfer one field to
+    /// the external release operation. Close-body cleanup retains every field
+    /// it does not move out. This exception is deliberately narrower than an
+    /// arbitrary consuming method: it requires the registered inherent
+    /// `close(consume self)` contract and the lexical receiver binding.
+    pub(super) fn resource_close_owns_self_field(&self, root: &str, parent: &Ty) -> bool {
+        if root != "self" {
+            return false;
+        }
+        let Some(function) = self.current_function.as_ref() else {
+            return false;
+        };
+        let Some(signature) = self.fn_sigs.get(function) else {
+            return false;
+        };
+        if !signature.consumes_receiver
+            || !signature
+                .impl_method
+                .as_ref()
+                .is_some_and(|method| method.is_inherent && method.name == "close")
+        {
+            return false;
+        }
+        matches!(parent, Ty::Named { name, .. } if self.registry.is_resource(name))
+    }
+
+    /// Whether a MODULE-QUALIFIED type name denotes a transferring builtin.
+    ///
+    /// A source-declared lifecycle type (`std.link_monitor.MonitorRef`) reaches
+    /// some positions — notably a declared actor state-field type — spelled by
+    /// its qualified path with no `builtin` tag attached, so the tag test alone
+    /// misses it and the handle silently stayed shareable.
+    ///
+    /// The qualification requirement is load-bearing: `lookup_builtin_type`
+    /// also resolves BARE canonical names, and a user `type MonitorRef` shadow
+    /// is a clone-total record that must keep ordinary value semantics. Only
+    /// the dotted spelling is the stdlib declaration.
+    pub(super) fn qualified_name_resolves_to_transferring_builtin(name: &str) -> bool {
+        name.contains('.')
+            && crate::lookup_builtin_type(name)
+                .is_some_and(BuiltinType::transfers_ownership_across_actor_boundary)
+    }
+
+    pub(in crate::check) fn check_field_access(
+        &mut self,
+        object: &Spanned<Expr>,
+        field: &str,
+        span: &Span,
+    ) -> Ty {
+        self.check_field_access_with_type_args(object, field, None, span)
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "field access handles many type variants"
+    )]
+    pub(super) fn check_field_access_with_type_args(
+        &mut self,
+        object: &Spanned<Expr>,
+        field: &str,
+        type_args: Option<&[Spanned<TypeExpr>]>,
+        span: &Span,
+    ) -> Ty {
+        if type_args.is_some()
+            && matches!(&object.0, Expr::Identifier(name) if self.env.lookup_ref(name).is_some())
+        {
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                span,
+                "explicit type arguments require a function declaration, not a value field"
+                    .to_string(),
+            );
+            return Ty::Error;
+        }
+
+        // `self.count` is the receiver spelling of the actor state binding
+        // `count`. Delegate to the bare-name shell so the read gets the same
+        // type, the same use-after-move reporting, and the same HIR binding
+        // reference the bare spelling gets at this site.
+        if let Some(state_field) = self.actor_self_state_field(&object.0, field) {
+            self.record_actor_self_state_field(span);
+            return self.synthesize_identifier(state_field, span);
+        }
+        if self.is_actor_self_receiver(&object.0) {
+            let similar = crate::error::find_similar(
+                field,
+                self.current_actor_fields.iter().map(|f| f.name.as_str()),
+            );
+            self.report_error_with_suggestions(
+                TypeErrorKind::UndefinedField,
+                span,
+                format!("actor state has no field `{field}`"),
+                similar,
+            );
+            return Ty::Error;
+        }
+        if let Some(head) = self.resolve_dotted_type_head(object, field) {
+            if let Some(result) = self.dispatch_dotted_type_member(
+                &head,
+                field,
+                &DottedTypeMemberUse::Reference { span },
+            ) {
+                self.mark_resolved_nominal_owner_used(&head.canonical_type);
+                return result;
+            }
+        }
+
+        // Dotted type members were dispatched from the canonical head above.
+        // Remaining identifiers are ordinary value projections or unresolved
+        // names and continue through the existing diagnostics.
+
+        // Dotted module-qualified unit constructor:
+        // `module.Type.Variant`. The parser represents this as nested field
+        // access, but neither `module` nor `module.Type` is a runtime value.
+        // Resolve the complete constructor before synthesising the inner
+        // projection so it shares the exact export and variant authority of
+        // the existing `module.Type::Variant` surface.
+        if let Expr::FieldAccess {
+            object: module,
+            field: type_name,
+        } = &object.0
+        {
+            if let Expr::Identifier(module_short) = &module.0 {
+                if self.module_binding_in_current_file(module_short)
+                    && self.env.lookup_ref(module_short).is_none()
+                {
+                    let constructor = format!("{module_short}.{type_name}::{field}");
+                    return self.synthesize_identifier(&constructor, span);
+                }
+            }
+        }
+
+        // Pre-dispatch: module-qualified value-constructor reference, e.g.
+        // `m.Type::Variant` (unit or tuple-naked).  This must run BEFORE
+        // `synthesize(object)` because `module` is not bound in `self.env`
+        // — without the early dispatch the synthesize call would emit the
+        // leaky "undefined variable `module`" diagnostic.
+        //
+        // Mirrors the `module_fn_exports` guard pattern at
+        // `check_method_call` (methods.rs).  Gated on:
+        //   - object is a bare `Expr::Identifier`
+        //   - `field` contains `::` (the type-variant separator)
+        //   - the identifier is neither a value binding nor a known type
+        // The neither-binding-nor-type guard preserves all existing
+        // field-on-value access semantics — only shapes that could only be a
+        // module-qualified reference take the new path.  Nested-module paths
+        // (`a.b.Type::Variant`) are out of scope for v0.5.
+        if let Expr::Identifier(name) = &object.0 {
+            if let Some(pos) = field.find("::") {
+                let receiver_is_binding = self.env.lookup_ref(name).is_some();
+                let receiver_is_known_type = self.type_defs.contains_key(name);
+                if !receiver_is_binding && !receiver_is_known_type {
+                    let type_name = &field[..pos];
+                    let variant_name = &field[pos + 2..];
+                    return self.check_module_qualified_variant_ref(
+                        name,
+                        type_name,
+                        variant_name,
+                        span,
+                    );
+                }
+            }
+        }
+
+        // Pre-dispatch: module-qualified constant reference, e.g. `module.CONST_NAME`.
+        // Must run BEFORE `synthesize(object)` for the same reason as the variant
+        // arm above — the module short-name is not in env as a value binding.
+        //
+        // Gated on:
+        //   - object is a bare `Expr::Identifier`
+        //   - field does NOT contain `::` (plain const name, not a variant)
+        //   - receiver is not a value binding or known type
+        //   - the lexical module binding resolves to an exact owner-qualified
+        //     constant key registered in env
+        if let Expr::Identifier(name) = &object.0 {
+            if !field.contains("::") {
+                let receiver_is_binding = self.env.lookup_ref(name).is_some();
+                let receiver_is_known_type = self.type_defs.contains_key(name);
+                if !receiver_is_binding && !receiver_is_known_type {
+                    let lexical_key = format!("{name}.{field}");
+                    let qualified_key = self
+                        .module_import_bindings
+                        .get(&(
+                            self.current_module.clone(),
+                            self.current_module_idx,
+                            name.clone(),
+                        ))
+                        .map_or_else(|| lexical_key.clone(), |owner| format!("{owner}.{field}"));
+                    if let Some(binding) = self.env.lookup_ref(&qualified_key) {
+                        let ty = binding.ty.clone();
+                        if self.module_binding_in_current_file(name) {
+                            self.used_modules.borrow_mut().insert(ImportKey::in_file(
+                                self.current_module.clone(),
+                                self.current_module_idx,
+                                name.clone(),
+                            ));
+                        }
+                        return ty;
+                    }
+                    // If the receiver looks like a module (known to self.modules) but
+                    // the const is not exported, emit a targeted diagnostic rather than
+                    // falling through to the generic "undefined variable `module`" error.
+                    if self.module_binding_in_current_file(name) {
+                        if self.fn_sigs.contains_key(&qualified_key) {
+                            self.used_modules.borrow_mut().insert(ImportKey::in_file(
+                                self.current_module.clone(),
+                                self.current_module_idx,
+                                name.clone(),
+                            ));
+                            self.reject_wasm_native_only_module_function(name, field, span);
+                            if self.is_shipped_crypto_module(name)
+                                && matches!(field, "random_bytes" | "try_random_bytes")
+                            {
+                                self.reject_wasm_feature(
+                                    span,
+                                    WasmUnsupportedFeature::CryptoRandom,
+                                );
+                            }
+                            self.record_call_edge(&qualified_key);
+                            return self.instantiate_function_value(
+                                &qualified_key,
+                                type_args,
+                                span,
+                            );
+                        }
+                        let similar = crate::error::find_similar(
+                            field,
+                            self.env
+                                .all_names()
+                                .filter_map(|k| k.strip_prefix(&format!("{name}.")))
+                                .filter(|k| !k.contains('.')),
+                        );
+                        if self.resolve_module_type(name, field).is_some() {
+                            self.report_error(
+                                TypeErrorKind::PathKindMismatch,
+                                span,
+                                format!("module member `{name}.{field}` is a type, not a value"),
+                            );
+                            return Ty::Error;
+                        }
+                        self.report_error_with_suggestions(
+                            TypeErrorKind::PathMemberNotFound,
+                            span,
+                            format!("module `{name}` has no exported value `{field}`"),
+                            similar,
+                        );
+                        return Ty::Error;
+                    }
+                }
+            }
+        }
+
+        // The object is the BASE of this projection, not a whole-value use of
+        // itself: `h.other` stays legal after `h.sock` moved out.
+        self.place_base_depth += 1;
+        let obj_ty = self.synthesize(&object.0, &object.1);
+        self.place_base_depth -= 1;
+        // Reading this projection after it (or storage under it) was consumed
+        // is a use-after-move. Assignment targets are exempt: the outermost
+        // target place is written, not read.
+        if self.place_write_depth == 0 || self.place_base_depth > 0 {
+            if let Some((root, mut path)) = self.expr_place(&object.0) {
+                path.push(field.to_string());
+                self.report_place_use_after_move(&root, &path, span);
+            }
+        }
+        let resolved = self.normalize_for_use(&obj_ty);
+        if self.reject_sealed_delivery_access(&resolved, span) {
+            return Ty::Error;
+        }
+
+        match &resolved {
+            // `Range<T>` exposes its bounds as `start`/`end`. It carries no
+            // `TypeDef` (it is a compiler builtin, not a user declaration), so
+            // the two fields resolve straight from the type's own argument
+            // instead of the `type_defs` table the generic `Named` arm below
+            // reads from. Any other field name falls through to that arm,
+            // finds no `TypeDef` for `Range`, and reports `UndefinedField`
+            // exactly as before.
+            Ty::Named {
+                builtin: Some(BuiltinType::Range),
+                args,
+                ..
+            } if args.len() == 1 && matches!(field, "start" | "end") => args[0].clone(),
+            Ty::Named { name, args, .. } => {
+                // A role retains the child's complete type after substituting
+                // the owning supervisor's concrete arguments.
+                if let Some(Ty::Named {
+                    name: sup_name,
+                    args: sup_args,
+                    ..
+                }) = resolved.as_local_actor_ref()
+                {
+                    if let Some(children) = self.supervisor_children.get(sup_name).cloned() {
+                        let selected = children
+                            .statics
+                            .iter()
+                            .enumerate()
+                            .map(|(index, child)| (super::types::ChildKind::Static, index, child))
+                            .chain(children.pools.iter().enumerate().map(|(index, child)| {
+                                (super::types::ChildKind::Pool, index, child)
+                            }))
+                            .find(|(_, _, (name, _))| name == field);
+                        if let Some((kind, index, (child_name, template))) = selected {
+                            let parameters = self
+                                .type_defs
+                                .get(sup_name)
+                                .map_or_else(Vec::new, |definition| definition.type_params.clone());
+                            let substitution = parameters
+                                .into_iter()
+                                .zip(sup_args.iter().cloned())
+                                .collect();
+                            let child_ty = template.substitute_named_params_parallel(&substitution);
+                            if let Ty::Named { name, args, .. } = &child_ty {
+                                self.enforce_type_def_instantiation_bounds(name, args, span);
+                            }
+                            self.supervisor_child_slots.insert(
+                                SpanKey::in_module(span, self.current_module_idx),
+                                super::types::ChildSlot {
+                                    kind,
+                                    index: u32::try_from(index)
+                                        .expect("supervisor child count exceeds u32"),
+                                    child_ty: child_ty.user_facing().to_string(),
+                                    child_name: child_name.clone(),
+                                    supervisor: sup_name.clone(),
+                                },
+                            );
+                            if kind == super::types::ChildKind::Pool {
+                                return Ty::supervisor_pool(
+                                    Ty::actor_handle(sup_name.clone(), sup_args.clone()),
+                                    child_ty,
+                                );
+                            }
+                            return Ty::child_ref(child_ty);
+                        }
+                        let names = children
+                            .statics
+                            .iter()
+                            .chain(children.pools.iter())
+                            .map(|(name, _)| name.as_str());
+                        let similar = crate::error::find_similar(field, names);
+                        self.report_error_with_suggestions(
+                            TypeErrorKind::UndefinedField,
+                            span,
+                            format!("supervisor `{sup_name}` has no child named `{field}`"),
+                            similar,
+                        );
+                        return Ty::Error;
+                    }
+                }
+                if let Some(td) = self.lookup_type_def(name) {
+                    if let Some(field_ty) = td.fields.get(field) {
+                        // Substitute generic type params with concrete args in
+                        // parallel so a swap instantiation like `Pair<B, A>` does
+                        // not alias: sequential A→B then B→A would produce A again.
+                        let subst_map: HashMap<String, Ty> = td
+                            .type_params
+                            .iter()
+                            .zip(args.iter())
+                            .map(|(p, a)| (p.clone(), a.clone()))
+                            .collect();
+                        field_ty.substitute_named_params_parallel(&subst_map)
+                    } else {
+                        let similar =
+                            crate::error::find_similar(field, td.fields.keys().map(String::as_str));
+                        self.report_error_with_suggestions(
+                            TypeErrorKind::UndefinedField,
+                            span,
+                            format!("no field `{field}` on type `{name}`"),
+                            similar,
+                        );
+                        Ty::Error
+                    }
+                } else {
+                    self.report_error(
+                        TypeErrorKind::UndefinedField,
+                        span,
+                        format!(
+                            "cannot access field `{field}` on `{}`",
+                            resolved.user_facing()
+                        ),
+                    );
+                    Ty::Error
+                }
+            }
+            Ty::Tuple(elems) => {
+                // Tuple field access by index: t.0, t.1
+                if let Ok(idx) = field.parse::<usize>() {
+                    if idx < elems.len() {
+                        elems[idx].clone()
+                    } else {
+                        self.report_error(
+                            TypeErrorKind::UndefinedField,
+                            span,
+                            format!("tuple index {idx} out of range (len {})", elems.len()),
+                        );
+                        Ty::Error
+                    }
+                } else {
+                    Ty::Error
+                }
+            }
+            _ => {
+                if resolved != Ty::Error {
+                    self.report_error(
+                        TypeErrorKind::UndefinedField,
+                        span,
+                        format!(
+                            "cannot access field `{field}` on `{}`",
+                            resolved.user_facing()
+                        ),
+                    );
+                }
+                Ty::Error
+            }
+        }
+    }
+
+    pub(in crate::check) fn check_match_expr(
+        &mut self,
+        scrutinee_ty: &Ty,
+        scrutinee: &Spanned<Expr>,
+        arms: &[MatchArm],
+        span: &Span,
+        expected: Option<&Ty>,
+    ) -> Ty {
+        if arms.is_empty() {
+            let resolved = self.subst.resolve(scrutinee_ty);
+            let uninhabited = match &resolved {
+                Ty::Never => true,
+                Ty::Named { name, .. } => self.lookup_type_def(name).is_some_and(|definition| {
+                    definition.kind == TypeDefKind::Enum && definition.variants.is_empty()
+                }),
+                _ => false,
+            };
+            if uninhabited {
+                return Ty::Never;
+            }
+            if resolved != Ty::Error {
+                self.report_error(
+                    TypeErrorKind::NonExhaustiveMatch,
+                    span,
+                    format!(
+                        "an empty match cannot cover inhabited type `{}`",
+                        resolved.user_facing()
+                    ),
+                );
+            }
+            return Ty::Error;
+        }
+
+        let scrutinee_place = self.expr_place(&scrutinee.0);
+        let scrutinee_loan = self.collection_borrow_origin(&scrutinee.0, &scrutinee.1);
+        // If the enclosing context supplies a concrete expected type (e.g. the
+        // function's declared return type), pre-seed result_ty so every arm body
+        // is checked with check_against rather than having the first arm's
+        // synthesized type (which defaults literals to i64) propagate to later arms.
+        let resolved_expected = expected.map(|ty| self.subst.resolve(ty));
+        let mut result_ty: Option<Ty> = match &resolved_expected {
+            Some(ty) if !matches!(ty, Ty::Var(_) | Ty::Error) => Some(ty.clone()),
+            _ => None,
+        };
+        // When this `match` is itself a function-return tail, every arm body
+        // flows to the return and may Ok-coerce. Capture the armed state once;
+        // the per-arm guard check and pattern binding are not tail positions, so
+        // re-arm immediately before each arm body.
+        let tail_ok_armed = std::mem::replace(&mut self.tail_ok_armed, false);
+        // Exactly one arm BODY runs, so each body starts from the ownership
+        // state at the match's entry rather than from whatever the previous arm
+        // left behind, and the state after the match is the union over the arms
+        // that actually reach the join.
+        //
+        // Guards are not bodies. A guard runs whenever its pattern matched and
+        // every earlier arm did not, so guard N and body N+1 both execute on one
+        // path. Guards therefore thread through a running fall-through state —
+        // the same treatment an `else if` chain's conditions get — and each body
+        // starts from the fall-through its own guard produced.
+        //
+        // A guard that DIVERGES is the exception, and it cuts both ways. A later
+        // arm is reached only when this arm's pattern failed, and then the guard
+        // never ran at all — so a diverging guard contributes nothing to the
+        // fall-through. Its own body is unreachable for the same reason, so the
+        // body's exit must stay out of the join no matter what the body does.
+        let ownership_entry = self.env.ownership_snapshot();
+        let mut fall_through = ownership_entry.clone();
+        let mut arm_exits = Vec::with_capacity(arms.len());
+        for arm in arms {
+            self.env.push_scope();
+            self.env.restore_ownership(&fall_through);
+            self.bind_scrutinee_pattern(
+                &arm.pattern,
+                scrutinee_ty,
+                false,
+                scrutinee_place.clone(),
+                scrutinee_loan.clone(),
+            );
+            self.record_arm_resolution(&arm.pattern.0, &arm.pattern.1, scrutinee_ty);
+
+            let mut guard_diverges = false;
+            if let Some((guard, gs)) = &arm.guard {
+                // Pattern bindings borrow during candidate testing. Their
+                // field transfers happen only after the guard selects this
+                // arm, so a declined candidate cannot move the source.
+                let pattern_entry = fall_through.clone();
+                let selected_pattern = self.env.ownership_snapshot();
+                self.env.restore_ownership(&fall_through);
+                let guard_ty = self.check_against(guard, gs, &Ty::Bool);
+                if Self::arm_skips_join(&guard_ty) {
+                    guard_diverges = true;
+                    // Rewind the guard's consumes: neither the unreachable body
+                    // below nor any later arm ever observes them.
+                    self.env.restore_ownership(&fall_through);
+                } else {
+                    // The guard ran and returned false; later arms see its state.
+                    fall_through = self.env.ownership_snapshot();
+                    self.env
+                        .apply_pattern_moves(&pattern_entry, &selected_pattern);
+                }
+            }
+
+            self.tail_ok_armed = tail_ok_armed;
+            let arm_ty = if let Some(expected) = &result_ty {
+                if expected.contains_callable() && resolved_expected.is_none() {
+                    self.synthesize(&arm.body.0, &arm.body.1)
+                } else {
+                    self.check_expr_with_expected(&arm.body.0, &arm.body.1, expected)
+                }
+            } else {
+                self.synthesize(&arm.body.0, &arm.body.1)
+            };
+            self.record_value_transfer(&arm.body.0, &arm.body.1);
+            arm_exits.push(BranchArmExit {
+                ownership: self.env.ownership_snapshot(),
+                diverges: guard_diverges || Self::arm_skips_join(&arm_ty),
+            });
+            // Skip Never/Error when setting the expected type — diverging arms
+            // (return, panic, break) shouldn't constrain the match result type.
+            if !matches!(arm_ty, Ty::Never | Ty::Error) {
+                result_ty = Some(if let Some(previous) = result_ty {
+                    if previous.contains_callable() || arm_ty.contains_callable() {
+                        self.unify_branches(&previous, &arm_ty, span)
+                    } else {
+                        previous
+                    }
+                } else {
+                    arm_ty
+                });
+            }
+
+            self.env.pop_scope();
+        }
+        self.join_branch_ownership(&ownership_entry, &arm_exits);
+        // Leave the flag disarmed: the arm loop set it per-arm, and the
+        // exhaustiveness check below is not a tail position.
+        self.tail_ok_armed = false;
+
+        // Exhaustiveness check for enums/Option/Result
+        self.check_exhaustiveness(scrutinee_ty, arms, span);
+
+        // If all arms diverge (Never/Error), the match itself diverges
+        result_ty.unwrap_or(Ty::Never)
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "lambda checking combines contextual inference with capture analysis"
+    )]
+    pub(in crate::check) fn check_lambda(
+        &mut self,
+        is_move: bool,
+        private_captures: &[Spanned<String>],
+        type_params: Option<&[TypeParam]>,
+        params: &[LambdaParam],
+        return_type: Option<&Spanned<TypeExpr>>,
+        body: &Spanned<Expr>,
+        expected: Option<(&[Ty], &Ty)>,
+        span: &Span,
+        is_actor_body: bool,
+        is_fork_body: bool,
+    ) -> Ty {
+        let key = SpanKey::in_module(span, self.current_module_idx);
+        let owner = super::effects::EffectBody::Closure(key.clone());
+        self.effect_graph.bodies.entry(owner.clone()).or_default();
+        let previous = self.effect_graph.current_body.replace(owner);
+        let result = self.check_lambda_body(
+            is_move,
+            private_captures,
+            type_params,
+            params,
+            return_type,
+            body,
+            expected,
+            span,
+            is_actor_body,
+            is_fork_body,
+        );
+        self.effect_graph.current_body = previous;
+        result
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        clippy::too_many_lines,
+        reason = "lambda checking combines contextual inference with capture analysis"
+    )]
+    pub(super) fn check_lambda_body(
+        &mut self,
+        is_move: bool,
+        private_captures: &[Spanned<String>],
+        type_params: Option<&[TypeParam]>,
+        params: &[LambdaParam],
+        return_type: Option<&Spanned<TypeExpr>>,
+        body: &Spanned<Expr>,
+        expected: Option<(&[Ty], &Ty)>,
+        span: &Span,
+        is_actor_body: bool,
+        is_fork_body: bool,
+    ) -> Ty {
+        let private_bindings = self.resolve_private_captures(private_captures);
+        let body_environment = self
+            .env
+            .closure_environment(&private_bindings, is_actor_body);
+        let outer_environment = std::mem::replace(&mut self.env, body_environment);
+        // Save/restore capture tracking state for nested lambdas
+        let prev_capture_depth = self.lambda_capture_depth;
+        let prev_captures = std::mem::take(&mut self.lambda_captures);
+        let prev_capture_facts = std::mem::take(&mut self.lambda_capture_facts);
+        let prev_actor_handler_context = self.in_actor_handler_context;
+        self.in_actor_handler_context = false;
+        // A lambda body does not inherit the lexical task scope it is written
+        // inside: the closure may run after the scope has joined, so `fork`
+        // statements inside it have no spawn context.
+        let prev_task_scope_depth = self.task_scope_depth;
+        self.task_scope_depth = 0;
+        let prev_in_lambda_actor_body = self.in_lambda_actor_body;
+        // Set is_actor_body for the duration of this lambda's body; nested fn-closures
+        // are called with is_actor_body=false, so they get false regardless of the outer flag.
+        self.in_lambda_actor_body = is_actor_body;
+
+        // Record the scope depth BEFORE pushing the lambda scope — any variable
+        // found below this depth during body checking is a capture.
+        let capture_depth = self.env.depth();
+        self.lambda_capture_depth = Some(capture_depth);
+
+        // Clear any stale scratch state from a previous call in a non-let or
+        // nested context.  We unconditionally reset first so that re-entrant
+        // calls (e.g., a generic lambda inside a function argument) cannot
+        // bleed their type-var pairs out to an unrelated enclosing Stmt::Let.
+        self.last_lambda_generic_sig = None;
+
+        let mut generic_bindings = std::collections::HashMap::new();
+        let mut generic_param_names = HashMap::new();
+        let mut generic_type_vars = Vec::new();
+        if let Some(tps) = type_params {
+            for tp in tps {
+                let tv = TypeVar::fresh();
+                generic_bindings.insert(tp.name.clone(), Ty::Var(tv));
+                generic_param_names.insert(tv.0, tp.name.clone());
+                generic_type_vars.push(tv);
+            }
+        }
+        if !generic_bindings.is_empty() {
+            self.generic_ctx.push(generic_bindings);
+        }
+
+        self.env.push_scope();
+        let prev_in_generator = self.in_generator;
+        self.in_generator = false;
+
+        // Check arity mismatch: lambda parameter count must match expected function type
+        if let Some((expected_params, _)) = &expected {
+            if params.len() != expected_params.len() {
+                self.errors.push(TypeError::new(
+                    TypeErrorKind::ArityMismatch,
+                    span.clone(),
+                    format!(
+                        "lambda has {} parameters but expected function type has {}",
+                        params.len(),
+                        expected_params.len()
+                    ),
+                ));
+            }
+        }
+
+        let mut param_tys = Vec::new();
+        for (i, p) in params.iter().enumerate() {
+            let ty = if let Some(annotation) = &p.ty {
+                let (annotated_ty, hole_vars) = self.resolve_annotation_holes(annotation);
+                // Unify the annotated type against the expected param type regardless
+                // of whether the annotation contains holes.  The holes path (deferred
+                // inference) is orthogonal: a fully-concrete annotation (`|x: i64|`)
+                // must still be rejected when the expected param type is `bool`.
+                if let Some((expected_params, _)) = &expected {
+                    if let Some(expected_ty) = expected_params.get(i) {
+                        self.expect_type(expected_ty, &annotated_ty, &annotation.1);
+                    }
+                }
+                if !hole_vars.is_empty() {
+                    self.record_deferred_inference_holes(
+                        annotation,
+                        format!("lambda parameter `{}`", p.name),
+                        hole_vars,
+                    );
+                }
+                self.subst.resolve(&annotated_ty)
+            } else if let Some((expected_params, _)) = &expected {
+                expected_params
+                    .get(i)
+                    .cloned()
+                    .unwrap_or_else(|| Ty::Var(TypeVar::fresh()))
+            } else {
+                Ty::Var(TypeVar::fresh())
+            };
+            self.check_shadowing(&p.name, &p.name_span);
+            self.env
+                .define_param_with_span(p.name.clone(), ty.clone(), false, p.name_span.clone());
+            param_tys.push(ty);
+        }
+
+        // Save enclosing return type and install the lambda's own return type so
+        // that PostfixTry (`?`) context checks see the lambda's return type,
+        // not the outer function's.
+        let prev_return_type = self.current_return_type.take();
+        let previous_defer = self.deferred_body.take();
+        let prev_fails = std::mem::replace(&mut self.current_fails, false);
+
+        let previous_inferred_returns = self.inferred_lambda_returns.take();
+        let ret_ty = if let Some(annotation) = return_type {
+            let (expected_ret, hole_vars) = self.resolve_annotation_holes(annotation);
+            // Unify the annotated return type against the contextual expected return
+            // type regardless of holes — same rationale as annotated param types above.
+            if let Some((_, contextual_ret)) = expected {
+                self.expect_type(contextual_ret, &expected_ret, &annotation.1);
+            }
+            if !hole_vars.is_empty() {
+                self.record_deferred_inference_holes(annotation, "lambda return type", hole_vars);
+            }
+            self.current_return_type = Some(expected_ret.clone());
+            // Guard: do not pre-seed body with Ty::Error (unresolvable annotation).
+            // Synthesize instead so internal body errors are still reported.
+            let resolved_ret = self.subst.resolve(&expected_ret);
+            if matches!(resolved_ret, Ty::Error) {
+                self.synthesize(&body.0, &body.1);
+            } else {
+                self.check_against(&body.0, &body.1, &expected_ret);
+            }
+            self.subst.resolve(&expected_ret)
+        } else if let Some((_, expected_ret)) = expected {
+            self.current_return_type = Some(expected_ret.clone());
+            self.check_against(&body.0, &body.1, expected_ret);
+            expected_ret.clone()
+        } else {
+            self.infer_lambda_result(body)
+        };
+        self.inferred_lambda_returns = previous_inferred_returns;
+        self.record_value_transfer(&body.0, &body.1);
+
+        self.current_return_type = prev_return_type;
+        self.deferred_body = previous_defer;
+        self.current_fails = prev_fails;
+        self.in_actor_handler_context = prev_actor_handler_context;
+        self.task_scope_depth = prev_task_scope_depth;
+        self.in_lambda_actor_body = prev_in_lambda_actor_body;
+        self.in_generator = prev_in_generator;
+        self.env.pop_scope();
+
+        if let Some(tps) = type_params {
+            if !tps.is_empty() {
+                let type_param_bounds = tps
+                    .iter()
+                    .filter_map(|tp| {
+                        if tp.bounds.is_empty() {
+                            None
+                        } else {
+                            Some((
+                                tp.name.clone(),
+                                tp.bounds.iter().map(|bound| bound.name.clone()).collect(),
+                            ))
+                        }
+                    })
+                    .collect();
+                self.last_lambda_generic_sig = Some(GenericLambdaSig {
+                    call_sig: FnSig {
+                        type_params: tps.iter().map(|tp| tp.name.clone()).collect(),
+                        type_param_bounds,
+                        param_names: params.iter().map(|param| param.name.clone()).collect(),
+                        params: param_tys
+                            .iter()
+                            .map(|param| {
+                                Self::lambda_generic_schema_ty(param, &generic_param_names)
+                            })
+                            .collect(),
+                        return_type: Self::lambda_generic_schema_ty(&ret_ty, &generic_param_names),
+                        ..FnSig::default()
+                    },
+                    type_vars: generic_type_vars,
+                });
+                self.generic_ctx.pop();
+            }
+        }
+
+        let body_environment = std::mem::replace(&mut self.env, outer_environment);
+        self.env.merge_closure_reads(&body_environment);
+        let raw_capture_facts = std::mem::take(&mut self.lambda_capture_facts);
+        // Acquisition happens in the enclosing scope, not in the new closure.
+        self.lambda_capture_depth = prev_capture_depth;
+        let capture_facts = self.finish_closure_captures(
+            raw_capture_facts,
+            &private_bindings,
+            &body_environment,
+            is_move,
+            span,
+            is_fork_body,
+        );
+        let capabilities = self.closure_capabilities(&capture_facts);
+        self.closure_capture_facts.insert(
+            SpanKey::in_module(span, self.current_module_idx),
+            capture_facts.clone(),
+        );
+
+        // The callable payload and its guarantees come from the same resolved captures.
+        let captures: Vec<Ty> = capture_facts.iter().map(|fact| fact.ty.clone()).collect();
+
+        // Restore outer capture tracking state
+        self.lambda_captures = prev_captures;
+        self.lambda_capture_facts = prev_capture_facts;
+        if let Some(depth) = prev_capture_depth {
+            for fact in &capture_facts {
+                if self
+                    .env
+                    .lookup_with_depth(&fact.name)
+                    .is_some_and(|(binding_depth, binding)| {
+                        binding_depth < depth && binding.id == fact.binding_id
+                    })
+                {
+                    self.lambda_capture_facts.push(fact.clone());
+                }
+            }
+        }
+
+        // Every literal has a concrete environment type, including an empty one.
+        // Callable guarantees do not erase the identity needed by HIR and SIR.
+        Ty::Closure {
+            capabilities,
+            params: param_tys,
+            ret: Box::new(ret_ty),
+            captures,
+            identity: super::effects::EffectBody::Closure(SpanKey::in_module(
+                span,
+                self.current_module_idx,
+            )),
+        }
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "struct and enum-variant initialization share one exact-owner diagnostic path"
@@ -997,612 +1864,5 @@ impl Checker {
                 "qualify the spawn target with its module: {qualified_examples}"
             )],
         );
-    }
-
-    /// Publish a checked expression type without overwriting a more precise
-    /// source type recorded during contextual checking.
-    pub(super) fn publish_checked_expression(
-        &mut self,
-        expr: &Expr,
-        span: &Span,
-        result: Ty,
-    ) -> Ty {
-        let key = SpanKey::in_module(span, self.current_module_idx);
-        self.expr_type_source_modules
-            .entry(key.clone())
-            .or_insert_with(|| self.current_module.clone());
-        self.expr_types.entry(key).or_insert_with(|| result.clone());
-        self.record_expression_effect(expr, span);
-        self.check_receiver_whole_at_expr(expr, span, &result);
-        result
-    }
-
-    /// Check if an expression is typically used for side effects (not for its return value).
-    pub(in crate::check) fn record_type(&mut self, span: &Span, ty: &Ty) {
-        let key = SpanKey::in_module(span, self.current_module_idx);
-        self.expr_type_source_modules
-            .insert(key.clone(), self.current_module.clone());
-        self.expr_types.insert(key, ty.clone());
-    }
-
-    pub(in crate::check) fn record_integer_literal_type(
-        &mut self,
-        expr: &Expr,
-        span: &Span,
-        ty: &Ty,
-    ) {
-        self.record_type(span, ty);
-        if let Expr::Unary {
-            op: UnaryOp::Negate,
-            operand,
-        } = expr
-        {
-            self.record_type(&operand.1, ty);
-        }
-    }
-
-    // ── Diagnostic-only stack-allocation hints (HEW-PERF-001) ─────────────
-    //
-    // Phase A.0 scaffold: walk every `let` / `var` binding in a function body,
-    // classify the right-hand side's allocation class, and append a `StackHint`
-    // for every non-`Stack` (non-`Indeterminate`) classification. This pass is
-    // intentionally noisy — it emits a hint on every observed heap allocation
-    // without escape filtering. False-positive suppression lands in subsequent
-    // slices (A.1: return-path; A.2: capture/container; A.3: field/send).
-    //
-    // Conservative bias: when the RHS form is not recognised, classify as
-    // `Indeterminate` (no hint emitted). False negatives are safe; false
-    // positives are user-trust defects. This rule already applies in A.0
-    // because some well-formed RHS expressions lack populated `expr_types`
-    // (e.g. inside generic lambda bodies still being inferred).
-
-    /// Walk a function body and emit `StackHint` entries for every binding
-    /// whose RHS resolves to a heap allocation class. Called from
-    /// `check_function_as` after `warn_affine_param_escape`.
-    pub(in crate::check) fn classify_stack_hints(&mut self, fd: &FnDecl) {
-        // Ignore the function's parameter types and return type for hint
-        // emission — the walker is binding-scoped, not signature-scoped.
-        // Sub-body discipline (`sub-body-scoped-traversal` LESSONS row): a
-        // nested function literal is reached via `Stmt::Let` of an
-        // `Expr::Lambda`, which is classified as `ClosureEnv` here. The body
-        // of that lambda is not re-walked — nested function decls run their
-        // own `classify_stack_hints` pass via `check_function_as`.
-        self.scan_block_for_stack_hints(&fd.body);
-    }
-
-    /// Recursive descent over a block, classifying every binding statement.
-    pub(super) fn scan_block_for_stack_hints(&mut self, block: &Block) {
-        for (stmt, span) in &block.stmts {
-            self.scan_stmt_for_stack_hints(stmt, span);
-        }
-        if let Some(trailing) = &block.trailing_expr {
-            self.scan_expr_for_stack_hints(&trailing.0);
-        }
-    }
-
-    pub(super) fn scan_stmt_for_stack_hints(&mut self, stmt: &Stmt, stmt_span: &Span) {
-        match stmt {
-            Stmt::Let { pattern, value, .. } => {
-                if let Some((expr, expr_span)) = value {
-                    let class = self.classify_alloc(expr, expr_span);
-                    let name = match &pattern.0 {
-                        Pattern::Identifier(n) => n.clone(),
-                        _ => String::new(),
-                    };
-                    self.maybe_record_stack_hint(stmt_span, &name, class);
-                    // Descend into the RHS to classify nested bindings inside
-                    // block expressions (`let x = { let y = ...; y }`).
-                    self.scan_expr_for_stack_hints(expr);
-                }
-            }
-            Stmt::Var { name, value, .. } => {
-                if let Some((expr, expr_span)) = value {
-                    let class = self.classify_alloc(expr, expr_span);
-                    self.maybe_record_stack_hint(stmt_span, name, class);
-                    self.scan_expr_for_stack_hints(expr);
-                }
-            }
-            Stmt::Assign { value, .. } => {
-                self.scan_expr_for_stack_hints(&value.0);
-            }
-            Stmt::If {
-                condition,
-                then_block,
-                else_block,
-            } => {
-                self.scan_expr_for_stack_hints(&condition.0);
-                self.scan_block_for_stack_hints(then_block);
-                if let Some(eb) = else_block {
-                    self.scan_else_block_for_stack_hints(eb);
-                }
-            }
-            Stmt::IfLet {
-                conditions,
-                body,
-                else_body,
-            } => {
-                for expr in condition_exprs(conditions) {
-                    self.scan_expr_for_stack_hints(&expr.0);
-                }
-                self.scan_block_for_stack_hints(body);
-                if let Some(else_expr) = else_body {
-                    self.scan_expr_for_stack_hints(&else_expr.0);
-                }
-            }
-            Stmt::Match { scrutinee, arms } => {
-                self.scan_expr_for_stack_hints(&scrutinee.0);
-                for arm in arms {
-                    self.scan_match_arm_body_for_stack_hints(arm);
-                }
-            }
-            Stmt::While {
-                condition, body, ..
-            } => {
-                self.scan_expr_for_stack_hints(&condition.0);
-                self.scan_block_for_stack_hints(body);
-            }
-            Stmt::WhileLet {
-                conditions, body, ..
-            } => {
-                for expr in condition_exprs(conditions) {
-                    self.scan_expr_for_stack_hints(&expr.0);
-                }
-                self.scan_block_for_stack_hints(body);
-            }
-            Stmt::For { iterable, body, .. } => {
-                self.scan_expr_for_stack_hints(&iterable.0);
-                self.scan_block_for_stack_hints(body);
-            }
-            Stmt::Loop { body, .. } => {
-                self.scan_block_for_stack_hints(body);
-            }
-            Stmt::Expression(expr) => {
-                self.scan_expr_for_stack_hints(&expr.0);
-            }
-            Stmt::Return(opt) => {
-                if let Some((e, _)) = opt {
-                    self.scan_expr_for_stack_hints(e);
-                }
-            }
-            Stmt::Break { value, .. } => {
-                if let Some((e, _)) = value {
-                    self.scan_expr_for_stack_hints(e);
-                }
-            }
-            Stmt::Defer(expr) => {
-                self.scan_expr_for_stack_hints(&expr.0);
-            }
-            // Statement forms that cannot host a binding RHS: nothing to do.
-            // Listed explicitly so a future Stmt variant addition forces a
-            // compile error here (`exhaustive-traversal-and-lowering` LESSONS
-            // row — no silent `_ => {}` in semantic positions).
-            Stmt::Continue { .. } => {}
-        }
-    }
-
-    pub(super) fn scan_else_block_for_stack_hints(&mut self, eb: &hew_parser::ast::ElseBlock) {
-        if let Some(b) = &eb.block {
-            self.scan_block_for_stack_hints(b);
-        }
-        if let Some(if_stmt) = &eb.if_stmt {
-            let (stmt, span) = if_stmt.as_ref();
-            self.scan_stmt_for_stack_hints(stmt, span);
-        }
-    }
-
-    pub(super) fn scan_match_arm_body_for_stack_hints(&mut self, arm: &MatchArm) {
-        if let Some((g, _)) = &arm.guard {
-            self.scan_expr_for_stack_hints(g);
-        }
-        self.scan_expr_for_stack_hints(&arm.body.0);
-    }
-
-    /// Descend into nested expressions to find `let`-bearing block expressions
-    /// and inner lambda bodies. Phase A.0 does not classify expression-position
-    /// allocations on their own (e.g. `vec.push(Vec::new())` does not emit a
-    /// hint for the inner `Vec::new()` because it is unbound). Only `let` /
-    /// `var` bindings produce hints in this slice.
-    pub(super) fn scan_expr_for_stack_hints(&mut self, expr: &Expr) {
-        match expr {
-            Expr::Coalesce { left, right }
-            | Expr::Handle {
-                operand: left,
-                body: right,
-                ..
-            } => {
-                self.scan_expr_for_stack_hints(&left.0);
-                self.scan_expr_for_stack_hints(&right.0);
-            }
-            Expr::Block(block) => self.scan_block_for_stack_hints(block),
-            Expr::If {
-                condition,
-                then_block,
-                else_block,
-                ..
-            } => {
-                self.scan_expr_for_stack_hints(&condition.0);
-                self.scan_expr_for_stack_hints(&then_block.0);
-                if let Some(eb) = else_block {
-                    self.scan_expr_for_stack_hints(&eb.0);
-                }
-            }
-            Expr::IfLet {
-                conditions,
-                body,
-                else_body,
-            } => {
-                // Mirrors the `Stmt::IfLet` arm in `scan_stmt_for_stack_hints`.
-                // `body` and `else_body` are bare `Block` values (not `Spanned<Expr>`),
-                // so we call `scan_block_for_stack_hints` directly.
-                for expr in condition_exprs(conditions) {
-                    self.scan_expr_for_stack_hints(&expr.0);
-                }
-                self.scan_block_for_stack_hints(body);
-                if let Some(else_expr) = else_body {
-                    self.scan_expr_for_stack_hints(&else_expr.0);
-                }
-            }
-            Expr::Match { scrutinee, arms } => {
-                self.scan_expr_for_stack_hints(&scrutinee.0);
-                for arm in arms {
-                    self.scan_match_arm_body_for_stack_hints(arm);
-                }
-            }
-            // All remaining expression forms — including `Expr::Lambda`
-            // (whose body is *not* re-walked here: nested fn / lambda decls
-            // run their own walker pass, and the lambda value itself when
-            // assigned is classified at the binding site as `ClosureEnv`,
-            // so walking the lambda body would double-emit hints) — cannot
-            // host a `let` statement directly. Anything reachable through
-            // call args, indices, struct fields, or tuple elements is
-            // wrapped in an `Expr::Block` when it contains statements,
-            // covered by the `Expr::Block` arm above.
-            _ => {}
-        }
-    }
-
-    /// Classify a binding's RHS expression by looking up its synthesised type
-    /// in `expr_types`. Phase A.0 recognises the named heap types
-    /// (`Vec`, `String`, `HashMap`, `HashSet`, `Rc`) plus closure literals
-    /// (`Expr::Lambda`). Everything else maps to `Stack` (already
-    /// stack-shaped) or `Indeterminate` (unknown form, no hint).
-    pub(super) fn classify_alloc(&self, expr: &Expr, span: &Span) -> AllocationClass {
-        // Closure literals are env-heap regardless of resolved type.
-        if matches!(expr, Expr::Lambda { .. }) {
-            return AllocationClass::ClosureEnv;
-        }
-        let key = SpanKey::in_module(span, self.current_module_idx);
-        match self.expr_types.get(&key) {
-            Some(ty) => Self::classify_ty(&self.subst.resolve(ty)),
-            // Type not recorded — happens for some inferred or rewritten
-            // expressions. Conservative silence per the bias policy.
-            None => AllocationClass::Indeterminate,
-        }
-    }
-
-    pub(super) fn classify_ty(ty: &Ty) -> AllocationClass {
-        match ty {
-            Ty::String => AllocationClass::String,
-            Ty::Named { name, .. } => match name.as_str() {
-                "Vec" => AllocationClass::Vec,
-                "HashMap" => AllocationClass::HashMap,
-                "HashSet" => AllocationClass::HashSet,
-                "Rc" => AllocationClass::Rc,
-                _ => AllocationClass::Stack,
-            },
-            // Type variables, primitives, tuples, arrays, function types:
-            // either already stack-shaped or not yet resolved. A.0 is
-            // conservative.
-            _ => AllocationClass::Stack,
-        }
-    }
-
-    pub(super) fn maybe_record_stack_hint(
-        &mut self,
-        stmt_span: &Span,
-        binding_name: &str,
-        class: AllocationClass,
-    ) {
-        // No hint for stack-shaped or unclassifiable RHSs.
-        if matches!(
-            class,
-            AllocationClass::Stack | AllocationClass::Indeterminate
-        ) {
-            return;
-        }
-        self.stack_hints.push(StackHint {
-            span_key: SpanKey::in_module(stmt_span, self.current_module_idx),
-            binding_name: binding_name.to_string(),
-            alloc_class: class,
-        });
-    }
-
-    /// Type-check `lhs is rhs` (identity comparison, slice D-2).
-    ///
-    /// See the doc comment on the `Expr::Is` arm in [`Self::synthesize_inner`]
-    /// for the allowance set, rejection rules, and cross-class behaviour.
-    ///
-    /// Always returns `Ty::Bool` (even after reporting errors); the operator
-    /// is total at the type level so downstream uses (`if (a is b) { ... }`)
-    /// don't double-poison.
-    pub(super) fn synthesize_is(
-        &mut self,
-        lhs: &Spanned<Expr>,
-        rhs: &Spanned<Expr>,
-        span: &Span,
-    ) -> Ty {
-        let lhs_ty = self.synthesize(&lhs.0, &lhs.1);
-        if let Some(rhs_ty) = self.resolve_is_type_pattern(&rhs.0) {
-            return self.synthesize_is_type_pattern(lhs, &lhs_ty, rhs, &rhs_ty, span);
-        }
-        let rhs_ty = self.synthesize(&rhs.0, &rhs.1);
-        let lhs_resolved = self.subst.resolve(&lhs_ty);
-        let rhs_resolved = self.subst.resolve(&rhs_ty);
-
-        // Don't double-report when either side is already poisoned by an
-        // upstream diagnostic (`Ty::Error`). The operator still produces
-        // `bool` so enclosing expressions see a stable type.
-        if matches!(lhs_resolved, Ty::Error) || matches!(rhs_resolved, Ty::Error) {
-            return Ty::Bool;
-        }
-
-        // An operand still under inference cannot be decided here, and it must
-        // not be abandoned either: a closure's parameter types are fresh
-        // variables while its body is checked and only settle when a call site
-        // unifies them, so `let same = |a, b| a is b;` used to escape
-        // `is_identity_capable` entirely and die in the codegen front on the
-        // span-less `IdentityCompare lhs must be a pointer or integer value`.
-        // Record the obligation and re-run the same decision once inference
-        // has settled (`report_unresolved_inference_holes`) — #3134.
-        if matches!(lhs_resolved, Ty::Var(_)) || matches!(rhs_resolved, Ty::Var(_)) {
-            let key = SpanKey::in_module(span, self.current_module_idx);
-            let check = DeferredIsCheck {
-                span: span.clone(),
-                lhs_span: lhs.1.clone(),
-                lhs_ty,
-                rhs_span: rhs.1.clone(),
-                rhs_ty,
-                source_module: self.current_diagnostic_source_module(),
-            };
-            self.deferred_is_checks.insert(key, check);
-            return Ty::Bool;
-        }
-
-        for (kind, span, message) in
-            self.is_value_form_diagnostics(&lhs.1, &lhs_resolved, &rhs.1, &rhs_resolved, span)
-        {
-            self.report_error(kind, &span, message);
-        }
-
-        Ty::Bool
-    }
-
-    /// The `is` value-form allowance decision over two fully resolved
-    /// operands, as the diagnostics it produces (empty when the comparison is
-    /// admitted).
-    ///
-    /// Shared by [`Self::synthesize_is`] and the deferred re-check in
-    /// [`Self::report_unresolved_inference_holes`] so an `is` whose operand
-    /// types only settle at a call site reaches the identical answer. The two
-    /// callers differ only in how a diagnostic is routed to its source module,
-    /// which is why this returns them instead of reporting.
-    pub(in crate::check) fn is_value_form_diagnostics(
-        &self,
-        lhs_span: &Span,
-        lhs_resolved: &Ty,
-        rhs_span: &Span,
-        rhs_resolved: &Ty,
-        span: &Span,
-    ) -> Vec<(TypeErrorKind, Span, String)> {
-        let lhs_ok = self.is_identity_capable(lhs_resolved);
-        let rhs_ok = self.is_identity_capable(rhs_resolved);
-        let mut diagnostics = Vec::new();
-
-        // One rejection per `is` expression when both operands resolve to the
-        // same value type: two carets carrying a byte-identical message about
-        // one type reads as two separate bugs. Operands of *different* value
-        // types still get one diagnostic each, since each names its own type.
-        let same_value_type = !lhs_ok && !rhs_ok && lhs_resolved == rhs_resolved;
-        if !lhs_ok {
-            diagnostics.push(is_value_type_diagnostic(lhs_span, lhs_resolved));
-        }
-        if !rhs_ok && !same_value_type {
-            diagnostics.push(is_value_type_diagnostic(rhs_span, rhs_resolved));
-        }
-
-        // Cross-class / cross-instantiation mismatch (e.g. `Vec<int> is Vec<String>`
-        // or `<actor handle> is Vec<int>`) — only reported when both sides are
-        // independently identity-capable; otherwise the value-type rejection
-        // above carries the diagnostic.
-        if lhs_ok && rhs_ok && lhs_resolved != rhs_resolved {
-            diagnostics.push((
-                TypeErrorKind::Mismatch {
-                    expected: lhs_resolved.user_facing().to_string(),
-                    actual: rhs_resolved.user_facing().to_string(),
-                },
-                span.clone(),
-                format!(
-                    "`is` operands must have the same type; found `{}` and `{}`",
-                    lhs_resolved.user_facing(),
-                    rhs_resolved.user_facing()
-                ),
-            ));
-        }
-
-        diagnostics
-    }
-
-    pub(super) fn resolve_is_type_pattern(&self, rhs: &Expr) -> Option<Ty> {
-        let Expr::Identifier(name) = rhs else {
-            return None;
-        };
-        Ty::from_name(name).or_else(|| {
-            self.lookup_type_def(name)
-                .map(|type_def| Ty::normalize_named(type_def.name, vec![]))
-        })
-    }
-
-    pub(super) fn synthesize_is_type_pattern(
-        &mut self,
-        lhs: &Spanned<Expr>,
-        lhs_ty: &Ty,
-        rhs: &Spanned<Expr>,
-        rhs_ty: &Ty,
-        span: &Span,
-    ) -> Ty {
-        let lhs_resolved = self.subst.resolve(lhs_ty);
-        let rhs_resolved = self.subst.resolve(rhs_ty);
-
-        if matches!(lhs_resolved, Ty::Error | Ty::Var(_))
-            || matches!(rhs_resolved, Ty::Error | Ty::Var(_))
-        {
-            return Ty::Bool;
-        }
-
-        let lhs_ok = self.is_identity_capable(&lhs_resolved);
-        let rhs_ok = self.is_identity_capable(&rhs_resolved);
-
-        // Same de-duplication as the value form: `a is i64` where `a: i64`
-        // names one type, so it gets one diagnostic.
-        let same_value_type = !lhs_ok && !rhs_ok && lhs_resolved == rhs_resolved;
-        if !lhs_ok {
-            self.report_is_value_type(&lhs.1, &lhs_resolved);
-        }
-        if !rhs_ok && !same_value_type {
-            self.report_is_value_type(&rhs.1, &rhs_resolved);
-        }
-
-        if lhs_ok && rhs_ok && lhs_resolved != rhs_resolved {
-            self.report_error(
-                TypeErrorKind::Mismatch {
-                    expected: lhs_resolved.user_facing().to_string(),
-                    actual: rhs_resolved.user_facing().to_string(),
-                },
-                span,
-                format!(
-                    "`is` type pattern must match the operand type; found `{}` and `{}`",
-                    lhs_resolved.user_facing(),
-                    rhs_resolved.user_facing()
-                ),
-            );
-        } else if lhs_ok && rhs_ok {
-            if !matches!(lhs.0, Expr::Identifier(_)) {
-                self.report_error(
-                    TypeErrorKind::InvalidOperation,
-                    &lhs.1,
-                    "`is` type patterns currently require an identifier operand".to_string(),
-                );
-                return Ty::Bool;
-            }
-            let rhs_key = SpanKey::in_module(&rhs.1, self.current_module_idx);
-            self.is_type_patterns.insert(rhs_key, rhs_resolved.clone());
-            self.record_type(&rhs.1, &rhs_resolved);
-            // Static-tautology warning: the LHS type already equals the RHS
-            // type pattern, so the comparison lowers to `Bool(true)` (see
-            // `hew-hir/src/lower.rs` Expr::Is branch) and any `else` branch
-            // gated on the negation is silently dead. Surface this as a
-            // `RedundantIs` warning so the user is told before they wonder
-            // why their else-branch never runs.
-            self.warnings.push(crate::error::TypeError {
-                severity: crate::error::Severity::Warning,
-                kind: TypeErrorKind::RedundantIs,
-                span: span.clone(),
-                message: format!(
-                    "`is {0}` is always true here: the operand already has type `{0}`",
-                    rhs_resolved.user_facing()
-                ),
-                notes: vec![],
-                suggestions: vec![
-                    "remove the `is` check, or compare against a different type".to_string()
-                ],
-                source_module: None,
-            });
-        }
-
-        Ty::Bool
-    }
-
-    /// Report `E_IS_VALUE_TYPE` for a value-type operand of `is`.
-    pub(super) fn report_is_value_type(&mut self, span: &Span, ty: &Ty) {
-        let (kind, span, message) = is_value_type_diagnostic(span, ty);
-        self.report_error(kind, &span, message);
-    }
-
-    /// Classify a resolved type as identity-bearing per plan §D-D2 (D340: the
-    /// `is` admission set is handle identity only, HEW-SPEC-2026 §3.4.3's pid
-    /// handle category).
-    ///
-    /// Returns `true` when `is` is valid on values of this type:
-    ///
-    /// * Actors and actor handles: `TypeDefKind::Actor` named types and
-    ///   their own actor-handle types.
-    ///
-    /// Returns `false` for value types: scalars, `String`, `bytes`,
-    /// `type Foo { ... }` record declarations (`TypeDefKind::Struct`),
-    /// `record` types, `enum` declarations (`TypeDefKind::Enum`), machines
-    /// (`TypeDefKind::Machine`), heap-backed collections (`Vec<T>`,
-    /// `HashMap<K,V>`, `HashSet<T>`), tuples, arrays, slices, ranges,
-    /// durations, functions, closures, and trait objects. Caller is
-    /// responsible for handling `Ty::Var` / `Ty::Error` before invoking this
-    /// predicate.
-    ///
-    /// This is the single authority for the `is` allowance set: HIR lowering,
-    /// MIR, and the codegen front all read the answer from here and never
-    /// re-derive it (LESSONS `checker-authority`). The set is exactly the set
-    /// of shapes the codegen front can identity-compare, so the
-    /// `Instr::IdentityCompare` legality check stays an unreachable backstop
-    /// rather than a user-visible diagnostic.
-    pub(super) fn is_identity_capable(&self, ty: &Ty) -> bool {
-        match ty {
-            // Named types: actor handles and any user `TypeDef` whose kind
-            // carries heap/reference identity.
-            Ty::Named { name, .. } => {
-                // Actor handles.
-                if ty.as_local_actor_ref().is_some() {
-                    return true;
-                }
-                // Actor declarations are the only identity-bearing user
-                // `TypeDef`. Everything else a `TypeDef` can name is a value:
-                //
-                // * `type Foo { ... }` records (`TypeDefKind::Struct`) are
-                //   copy-on-write values with structural `==` and no pointer
-                //   identity (`docs/v05/ownership.md`), settled by #3108.
-                // * `enum` declarations are tagged values. An `indirect` enum
-                //   does carry a heap box, but `indirect` is a layout
-                //   annotation (HEW-SPEC-2026 §3.7.4) — admitting it to `is`
-                //   would promote it to a semantic one and make identity
-                //   depend on how a variant happens to be laid out, so every
-                //   enum is rejected uniformly (#3134).
-                // * Machines are tagged state values with payload fields, the
-                //   same value class as an enum.
-                //
-                // None of the three has an `IdentityCompare` representation in
-                // the codegen front, which is the other half of the answer:
-                // the set here is the set codegen can lower, so its legality
-                // check stays an unreachable backstop (#3108, #3134).
-                if let Some(td) = self.type_defs.get(name) {
-                    return matches!(td.kind, TypeDefKind::Actor);
-                }
-                false
-            }
-
-            // Everything else is a value type for `is` purposes: scalars,
-            // `String`, `bytes`, `Vec`/`HashMap`/`HashSet` (copy-on-write
-            // values with structural `==`, HEW-SPEC-2026 §3.4.3's value
-            // category, D340), tuples, arrays, slices, function/closure
-            // types, pointers, trait objects, durations, unit, never, tasks,
-            // type vars (handled by caller), and the error sentinel.
-            _ => false,
-        }
-    }
-
-    /// Return `true` if `ty` is a v0.5 substrate handle type (affine — consumed
-    /// by exactly one method call). These are `Duplex<S,R>`, `Sink<T>`,
-    /// `Stream<T>`, `SendHalf<S>`, and `RecvHalf<R>`.
-    ///
-    /// Used by [`synthesize_identifier`](Self::synthesize_identifier) to add a
-    /// targeted suggestion when a `UseAfterMove` fires on a substrate binding.
-    pub(super) fn ty_is_substrate_handle(ty: &Ty) -> bool {
-        matches!(ty, Ty::Named { builtin: Some(builtin), .. } if builtin.is_substrate_handle())
     }
 }

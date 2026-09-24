@@ -22,11 +22,15 @@ use crate::runtime_call::{FloatMethodOp, IntArithKind, IntBitOp, IntMethodWidth}
 use crate::stdlib::{STD_NET_CONNECTION, STD_NET_LISTENER};
 use crate::BuiltinType;
 
-mod part1;
-mod part2;
-mod part3;
-mod part4;
-mod part5;
+mod actor_wire;
+mod clone_rc;
+mod collections;
+mod dispatch;
+mod module_resolution;
+mod named_method_resolution;
+mod primitive_trait_dispatch;
+mod runtime_rewrite;
+mod runtime_symbol_dispatch;
 #[cfg(test)]
 mod tests;
 

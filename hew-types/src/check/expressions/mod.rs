@@ -20,11 +20,14 @@ use crate::env::{PlaceConflict, PlacePath};
 use crate::BuiltinType;
 use std::collections::VecDeque;
 
-mod part1;
-mod part2;
-mod part3;
-mod part4;
-mod part5;
+mod borrow_diagnostics;
+mod generics_eq;
+mod places_moves;
+mod stack_hints;
+mod synthesize;
+mod synthesize_control;
+mod synthesize_spawn_forms;
+mod variants_forms;
 
 /// The joined element type of a `Vec<Task<T>>` operand, or `None` for anything
 /// else. `await` over a vector of task handles is the only vector form it joins.

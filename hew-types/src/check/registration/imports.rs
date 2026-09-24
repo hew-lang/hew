@@ -1,4 +1,5 @@
-//! Split from `registration.rs`: checker methods, part 5 of 6.
+//! Checker methods grouped by responsibility: imports.
+//! Split from `registration.rs`: checker methods, part 1 of 6.
 #![allow(
     unused_imports,
     redundant_imports,
@@ -16,40 +17,488 @@ use crate::BuiltinType;
 use hew_parser::ast::WireMetadata;
 
 impl Checker {
-    /// Diagnose protected-prelude declarations in every non-root module once,
-    /// including private declarations that are never published by an import.
-    pub(in crate::check) fn reject_non_root_protected_prelude_declarations(
-        &mut self,
-        program: &Program,
+    pub(super) fn mark_import_module_used_for_owner(
+        &self,
+        owner: Option<&str>,
+        imported_module: &str,
     ) {
-        let Some(module_graph) = &program.module_graph else {
-            return;
-        };
-        for module_id in &module_graph.topo_order {
-            if *module_id == module_graph.root {
+        for ((scope, file, binding), source) in &self.module_import_bindings {
+            if scope.as_deref() == owner
+                && *file == self.current_module_idx
+                && (binding == imported_module || source == imported_module)
+            {
+                self.used_modules.borrow_mut().insert(ImportKey::in_file(
+                    owner.map(str::to_string),
+                    *file,
+                    binding.clone(),
+                ));
+            }
+        }
+    }
+
+    pub(super) fn mark_loaded_trait_owner_import_used(
+        &self,
+        module: Option<&str>,
+        trait_name: &str,
+    ) {
+        let candidate_owners = [
+            module.map(str::to_string),
+            self.current_module.clone(),
+            None::<String>,
+        ];
+        let mut used = self.used_modules.borrow_mut();
+        for key in self.import_spans.keys() {
+            if !candidate_owners
+                .iter()
+                .any(|owner| owner.as_ref() == key.owner_module.as_ref())
+            {
                 continue;
             }
-            let Some(module) = module_graph.modules.get(module_id) else {
-                continue;
-            };
-            let owner = module_id.path.join(".");
-            for (item, span) in &module.items {
-                let name = match item {
-                    Item::Const(item) => Some(item.name.as_str()),
-                    Item::TypeDecl(item) => Some(item.name.as_str()),
-                    Item::TypeAlias(item) => Some(item.name.as_str()),
-                    Item::Trait(item) => Some(item.name.as_str()),
-                    Item::Function(item) => Some(item.name.as_str()),
-                    Item::Actor(item) => Some(item.name.as_str()),
-                    Item::Supervisor(item) => Some(item.name.as_str()),
-                    Item::Machine(item) => Some(item.name.as_str()),
-                    Item::Record(item) => Some(item.name.as_str()),
-                    Item::Import(_) | Item::Impl(_) | Item::ExternBlock(_) => None,
-                };
-                if let Some(name) = name {
-                    self.reject_protected_prelude_declaration_for_owner(Some(&owner), name, span);
+            let qualified = format!("{}.{}", key.short_name, trait_name);
+            if self.trait_defs.contains_key(&qualified) {
+                used.insert(key.clone());
+            }
+        }
+    }
+
+    pub(super) fn mark_imported_trait_used(&self, module: Option<&str>, trait_name: &str) {
+        if let Some((imported_module, _)) = trait_name.split_once('.') {
+            if self.modules.contains(imported_module) {
+                self.mark_import_module_used_for_owner(module, imported_module);
+                if self.current_module.as_deref() != module {
+                    self.mark_import_module_used_for_owner(
+                        self.current_module.as_deref(),
+                        imported_module,
+                    );
                 }
             }
+            return;
+        }
+
+        if let Some(source_key) = self.trait_import_bindings.get(&(
+            module.unwrap_or_default().to_string(),
+            trait_name.to_string(),
+        )) {
+            if let Some((imported_module, _)) = source_key.rsplit_once('.') {
+                if Some(imported_module) == module {
+                    return;
+                }
+                self.mark_import_module_used_for_owner(module, imported_module);
+                if self.current_module.as_deref() != module {
+                    self.mark_import_module_used_for_owner(
+                        self.current_module.as_deref(),
+                        imported_module,
+                    );
+                }
+            }
+        } else if let Some(imported_module) = self.unqualified_to_module.get(&(
+            module.map(str::to_string),
+            self.current_module_idx,
+            trait_name.to_string(),
+        )) {
+            self.mark_import_module_used_for_owner(module, imported_module.as_str());
+            if self.current_module.as_deref() != module {
+                self.mark_import_module_used_for_owner(
+                    self.current_module.as_deref(),
+                    imported_module.as_str(),
+                );
+            }
+        } else {
+            self.mark_loaded_trait_owner_import_used(module, trait_name);
+        }
+    }
+
+    pub(super) fn mark_imported_trait_used_for_module_aliases(
+        &self,
+        module_short: &str,
+        trait_name: &str,
+    ) {
+        self.mark_imported_trait_used(Some(module_short), trait_name);
+
+        let owner_aliases: Vec<String> = self
+            .import_spans
+            .keys()
+            .filter_map(|key| key.owner_module.as_deref())
+            .filter(|owner| owner.rsplit("::").next() == Some(module_short))
+            .map(str::to_string)
+            .collect();
+        for owner in owner_aliases {
+            self.mark_imported_trait_used(Some(&owner), trait_name);
+        }
+    }
+
+    /// Seed lifecycle import bindings from module-graph edges before type
+    /// declaration members are pre-registered.
+    ///
+    /// `collect_types` intentionally runs before the ordinary import pass, but
+    /// enum/record members can themselves name an imported lifecycle type
+    /// (`std.link_monitor`'s `Crashed(CrashKind)`).  A source declaration alone
+    /// is not authority: require a matching resolved graph edge, then publish
+    /// exactly the same lexical/canonical bindings the later import pass would.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "lifecycle import seeding mirrors all declaration kinds atomically"
+    )]
+    pub(super) fn seed_resolved_lifecycle_import_bindings(
+        &mut self,
+        module: &hew_parser::module::Module,
+        importer: Option<&str>,
+        module_graph: &hew_parser::module::ModuleGraph,
+    ) {
+        let saved_importer_file_idx = self.current_module_idx;
+        let span_indices = module_graph.file_span_indices();
+        for (item_idx, (item, _)) in module.items.iter().enumerate() {
+            // These bindings are written before the ordinary import pass, but
+            // they still belong to the importing SOURCE FILE. A directory
+            // module can assemble imports from several peers, so module-level
+            // or ambient indexing would publish a cross-file binding.
+            self.current_module_idx = if module.id == module_graph.root {
+                0
+            } else {
+                span_indices
+                    .item_index(&module.id, item_idx)
+                    .unwrap_or_default()
+            };
+            let Item::Import(decl) = item else {
+                continue;
+            };
+            let Some(resolved) = module
+                .imports
+                .iter()
+                .find(|edge| edge.target.path == decl.path)
+            else {
+                continue;
+            };
+            let canonical_module = resolved.target.path.join(".");
+            let owner = match canonical_module.as_str() {
+                "std.failure" => "std.failure",
+                "std.link_monitor" => "std.link_monitor",
+                _ => continue,
+            };
+            let target_is_canonical =
+                module_graph
+                    .modules
+                    .get(&resolved.target)
+                    .is_some_and(|target| {
+                        target.source_paths.iter().any(|source| {
+                            crate::module_registry::is_canonical_stdlib_module_source(
+                                source,
+                                &canonical_module,
+                            )
+                        })
+                    });
+            let module_binding = decl
+                .module_alias
+                .clone()
+                .or_else(|| decl.path.last().cloned())
+                .unwrap_or_else(|| owner.rsplit('.').next().unwrap_or(owner).to_string());
+            // Every module-path import supplies an exact lexical owner for
+            // qualified sibling references. A selective import such as
+            // `import hew::closableerr::{ Closable as C }` still makes
+            // `closableerr.CloseError` an explicit source spelling; keeping
+            // that owner fact only for whole-module imports would leave the
+            // type resolver to compare a short surface name against a full
+            // declaration identity.
+            self.module_import_bindings.insert(
+                (
+                    importer.map(str::to_owned),
+                    self.current_module_idx,
+                    module_binding.clone(),
+                ),
+                canonical_module.clone(),
+            );
+
+            let lifecycle_names: &[&str] = match owner {
+                "std.failure" => &["CrashNotification", "CrashKind"],
+                "std.link_monitor" => &[
+                    "MonitorId",
+                    "DownTarget",
+                    "DownReason",
+                    "DownNotification",
+                    "MonitorError",
+                    "MonitorRef",
+                ],
+                _ => unreachable!("matched canonical lifecycle owner"),
+            };
+            for source_name in lifecycle_names {
+                let source_identity = format!("{owner}.{source_name}");
+                if target_is_canonical {
+                    self.canonical_lifecycle_import_authority.insert((
+                        importer.map(str::to_owned),
+                        if decl.spec.is_none() {
+                            module_binding.clone()
+                        } else {
+                            let Some(binding) =
+                                StdlibBarePublication::Import(&decl.spec).bare_binding(source_name)
+                            else {
+                                continue;
+                            };
+                            binding
+                        },
+                        source_identity.clone(),
+                    ));
+                    if decl.spec.is_none() {
+                        // HIR does not re-resolve module imports. Publish the
+                        // checker-proven whole-module spelling so a hook
+                        // annotation such as `f.CrashNotification` retains the
+                        // canonical lifecycle identity across TypeCheckOutput.
+                        let qualified_surface = format!("{module_binding}.{source_name}");
+                        if qualified_surface != source_identity {
+                            self.import_type_name_aliases.insert(
+                                (
+                                    importer.map(str::to_owned),
+                                    self.current_module_idx,
+                                    qualified_surface,
+                                ),
+                                source_identity.clone(),
+                            );
+                        }
+                    }
+                }
+                let Some(binding) =
+                    StdlibBarePublication::Import(&decl.spec).bare_binding(source_name)
+                else {
+                    continue;
+                };
+                self.known_types.insert(binding.clone());
+                self.record_published_bare_type(&binding, &source_identity);
+                self.import_type_name_aliases.insert(
+                    (
+                        importer.map(str::to_owned),
+                        self.current_module_idx,
+                        binding.clone(),
+                    ),
+                    source_identity,
+                );
+                self.unqualified_to_module.insert(
+                    (
+                        importer.map(str::to_owned),
+                        self.current_module_idx,
+                        binding,
+                    ),
+                    canonical_module.clone(),
+                );
+            }
+        }
+        self.current_module_idx = saved_importer_file_idx;
+    }
+
+    /// Record direct lexical authority for lifecycle types imported from an
+    /// exact shipped stdlib source.  A user module can be named `std.failure`,
+    /// so module spelling and ordinary visibility are intentionally not proof.
+    pub(super) fn record_canonical_lifecycle_import_authority(
+        &mut self,
+        decl: &ImportDecl,
+        importer: Option<&str>,
+    ) {
+        let module_name = decl.path.join(".");
+        let owner = match module_name.as_str() {
+            "std.failure" => "std.failure",
+            "std.link_monitor" => "std.link_monitor",
+            _ => return,
+        };
+        if !decl.resolved_source_paths.iter().any(|source| {
+            crate::module_registry::is_canonical_stdlib_module_source(source, &module_name)
+        }) {
+            return;
+        }
+        let module_binding = decl
+            .module_alias
+            .clone()
+            .or_else(|| decl.path.last().cloned())
+            .unwrap_or_else(|| owner.rsplit('.').next().unwrap_or(owner).to_string());
+        let lifecycle_names: &[&str] = match owner {
+            "std.failure" => &["CrashInfo", "CrashAction", "CrashNotification", "CrashKind"],
+            "std.link_monitor" => &[
+                "MonitorId",
+                "DownTarget",
+                "DownReason",
+                "DownNotification",
+                "MonitorError",
+                "MonitorRef",
+            ],
+            _ => unreachable!("matched canonical lifecycle owner"),
+        };
+        for source_name in lifecycle_names {
+            let Some(binding) = StdlibBarePublication::Import(&decl.spec).bare_binding(source_name)
+            else {
+                if decl.spec.is_none() {
+                    let source_identity = format!("{owner}.{source_name}");
+                    self.canonical_lifecycle_import_authority.insert((
+                        importer.map(str::to_owned),
+                        module_binding.clone(),
+                        source_identity.clone(),
+                    ));
+                    let qualified_surface = format!("{module_binding}.{source_name}");
+                    if qualified_surface != source_identity {
+                        self.import_type_name_aliases.insert(
+                            (
+                                importer.map(str::to_owned),
+                                self.current_module_idx,
+                                qualified_surface,
+                            ),
+                            source_identity,
+                        );
+                    }
+                }
+                continue;
+            };
+            self.canonical_lifecycle_import_authority.insert((
+                importer.map(str::to_owned),
+                binding,
+                format!("{owner}.{source_name}"),
+            ));
+        }
+    }
+
+    /// Pass 1.5 — re-resolve type-declaration MEMBER types after import
+    /// processing (#2202).
+    ///
+    /// `collect_types` (Pass 1) resolves record/struct field types, enum-variant
+    /// payload types, and machine state/event field types BEFORE
+    /// `collect_functions` (Pass 2) processes imports and populates the
+    /// import-alias maps (`published_bare_type_owners` / `import_type_name_aliases`).
+    /// A bare import alias used in member position therefore froze as an
+    /// unresolved `Named("Tag")` while its construction (Pass 3) resolves to the
+    /// canonical `aliassrc.Payload`, producing a spurious mismatch.
+    ///
+    /// This pass runs immediately after `collect_functions`, when every module's
+    /// alias maps are live, and re-resolves each type declaration's member types
+    /// under the OWNING module's context. A member that upgrades from a bare
+    /// alias to its canonical qualified identity is committed back into
+    /// `type_defs` (bare + module-qualified keys) and the member-derived facts
+    /// are re-run over the canonical types: the structural marker set
+    /// (`register_type` — Send/Copy/Frozen/Clone/Encode), the
+    /// `Serializable` member set, the per-module qualified marker
+    /// mirror (the ask-reply Send-gate anti-clobber), the variant-constructor
+    /// `fn_sigs`, the wire codec layout, and the `Encode`-driven JSON/YAML/TOML
+    /// methods. Members that did not change are left untouched, so the common
+    /// (alias-free) path is a no-op and no derivation is re-run.
+    ///
+    /// The local-shadow rule is preserved: a local `type U` shadowing an import
+    /// alias keeps `local_type_defs`/`source_type_defs` populated for the owning
+    /// module, so `published_bare_type_qualified` returns `None` and the member
+    /// stays bound to the local definition. Diagnostics emitted while
+    /// re-resolving are dropped by this driver: Pass 1 already emitted for
+    /// genuinely-unresolvable members and the value/use sites (Pass 3) re-emit,
+    /// so this upgrade-only pass must never be the sole emitter.
+    pub(in crate::check) fn reresolve_member_types_after_imports(&mut self, program: &Program) {
+        let errors_before = self.errors.len();
+        let warnings_before = self.warnings.len();
+        let preferred_modules = collision_preferred_package_module_ids(program, &HashSet::new());
+        // Member re-resolution is a secondary fix-up pass (it overwrites the
+        // member types computed during `collect_types` once imports are
+        // visible) and runs with `type_decls_registered` already true. Suppress
+        // the undefined-named-type guard for its duration: a type declaration's
+        // members are out of the F1 diagnostic's remit (they keep the existing
+        // `E_MIR: unknown type` path), and emitting here would also let the
+        // guard substitute `Ty::Error` for the member type, overwriting the
+        // good type computed during `collect_types` and tripping the HIR
+        // field-access checker-boundary conversion downstream.
+        let prev_suppress = self.suppress_undefined_type_report;
+        self.suppress_undefined_type_report = true;
+
+        if let Some(ref mg) = program.module_graph {
+            let span_indices = mg.file_span_indices();
+            for mod_id in &mg.topo_order {
+                if *mod_id == mg.root {
+                    continue;
+                }
+                let Some(module) = mg.modules.get(mod_id) else {
+                    continue;
+                };
+                self.current_module = Some(mod_id.path.join("."));
+                let saved_local_type_defs = self.local_type_defs.clone();
+                let saved_source_type_defs = self.source_type_defs.clone();
+                self.seed_member_reresolution_scope(&module.items);
+                for (item_idx, (item, item_span)) in module.items.iter().enumerate() {
+                    self.current_module_idx = span_indices
+                        .item_index(mod_id, item_idx)
+                        .unwrap_or_default();
+                    if member_item_is_absorbed_from_distinct_child(
+                        program,
+                        &preferred_modules,
+                        mod_id,
+                        item,
+                        item_span,
+                    ) {
+                        continue;
+                    }
+                    self.reresolve_item_member_types(item);
+                }
+                self.local_type_defs = saved_local_type_defs;
+                self.source_type_defs = saved_source_type_defs;
+            }
+        }
+
+        self.current_module = None;
+        self.current_module_idx = 0;
+        let saved_local_type_defs = self.local_type_defs.clone();
+        let saved_source_type_defs = self.source_type_defs.clone();
+        self.seed_member_reresolution_scope(&program.items);
+        for (item, _) in &program.items {
+            self.reresolve_item_member_types(item);
+        }
+        self.local_type_defs = saved_local_type_defs;
+        self.source_type_defs = saved_source_type_defs;
+
+        self.errors.truncate(errors_before);
+        self.warnings.truncate(warnings_before);
+        self.suppress_undefined_type_report = prev_suppress;
+    }
+
+    /// IMPORT-lexical nominal authority (rc1-F1 stage C): a bare name the
+    /// declaring file does not itself declare resolves through the declaring
+    /// module's DIRECT imports — through the names each import actually
+    /// BINDS. A named item import binds exactly its
+    /// bound name, so `import sm::{ Tok as ForeignTok }` binds `ForeignTok`
+    /// and leaves bare `Tok` meaning NOTHING here. Exactly one bound source
+    /// declaration across the import set mints its declaring file's
+    /// identity; zero or several → `None`: the spelling stays as written and
+    /// the contract compare fails closed — ambiguity never picks a winner on
+    /// the C-ABI axis.
+    pub(in crate::check) fn extern_nominal_imported_owner(&self, name: &str) -> Option<String> {
+        // (declaring file, source-declared name) pairs the bound spelling
+        // denotes. Deduped: two import edges to one declaration are one
+        // meaning, not an ambiguity.
+        let mut declarations = self
+            .current_module_direct_import_bindings
+            .iter()
+            .filter_map(|(module, spec)| {
+                // Which SOURCE name does the bound spelling `name` denote
+                // under this import? None = this import does not bind it.
+                let source_name = match spec {
+                    None => return None,
+                    Some(ImportSpec::Names(names)) => names
+                        .iter()
+                        .find(|n| n.alias.as_deref().unwrap_or(&n.name) == name)?
+                        .name
+                        .clone(),
+                };
+                Some((module, source_name))
+            })
+            .flat_map(|(module, source_name)| {
+                self.module_source_paths
+                    .get(module)
+                    .into_iter()
+                    .flatten()
+                    .filter(|source| {
+                        self.file_type_decls
+                            .get(*source)
+                            .is_some_and(|declared| declared.contains(&source_name))
+                    })
+                    .map(|source| (source, source_name.clone()))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        declarations.sort_unstable();
+        declarations.dedup();
+        match declarations.as_slice() {
+            [(single, source_name)] => Some(format!(
+                "{}.{source_name}",
+                self.identity.module_path_for_source(single)?
+            )),
+            _ => None,
         }
     }
 
@@ -622,51 +1071,6 @@ impl Checker {
         }
     }
 
-    pub(super) fn stdlib_hew_source_identity(decl: &ImportDecl, module_path: &str) -> String {
-        // Always prefer the canonical module-path key when available so that
-        // multiple ImportDecl objects for the same stdlib module (e.g. `import
-        // std::fs` appearing in quic.hew, tls.hew, and the user file) all hash
-        // to the same identity string even when only some of them have a
-        // resolved_source_paths populated.  Using the file path as the primary
-        // key produces two different strings for the same logical module and
-        // defeats the registered_stdlib_hew_sources dedup guard.
-        if module_path.is_empty() {
-            decl.resolved_source_paths.first().map_or_else(
-                || String::from("module:"),
-                |p| format!("path:{}", p.display()),
-            )
-        } else {
-            format!("module:{module_path}")
-        }
-    }
-
-    /// Register one resolved Hew stdlib source while preserving two distinct
-    /// scopes of authority:
-    ///
-    /// * declarations and qualified exports are global and therefore deduped;
-    /// * bare import bindings belong to each importer and must be republished
-    ///   every time that importer reaches the already-registered module.
-    ///
-    /// A transitive import can encounter `std::net` before the root's named
-    /// import. Treating the global declaration-dedup bit as a reason to skip
-    /// the second import silently loses the root's `Connection` binding and its
-    /// HIR source identity.
-    pub(in crate::check) fn register_resolved_stdlib_hew_source(
-        &mut self,
-        decl: &ImportDecl,
-        module_path: &str,
-        module_short: &str,
-        module_full_path: &str,
-        items: &[Spanned<Item>],
-        publication: StdlibBarePublication<'_>,
-    ) {
-        if self.stdlib_hew_source_already_registered(decl, module_path) {
-            self.publish_imported_hew_bindings(module_short, module_full_path, items, publication);
-        } else {
-            self.register_stdlib_hew_items(module_short, module_full_path, items, publication);
-        }
-    }
-
     pub(super) fn unresolved_import_error(
         decl: &ImportDecl,
         import_span: Option<&Span>,
@@ -716,561 +1120,6 @@ impl Checker {
                 .map(|n| n.alias.as_deref().unwrap_or(&n.name).to_string()),
             None => None,
         }
-    }
-
-    /// Register type declarations, trait declarations, and impl blocks from
-    /// stdlib modules that have Hew source files. This makes trait methods
-    /// (e.g. bench.Suite.add) visible to the type checker.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "three-pass registration loop with local_type_defs scoping"
-    )]
-    pub(in crate::check) fn register_stdlib_hew_items(
-        &mut self,
-        module_short: &str,
-        module_full_path: &str,
-        items: &[Spanned<Item>],
-        import_spec: StdlibBarePublication<'_>,
-    ) {
-        // Compiler-embedded and registry-loaded Hew source enters outside the
-        // program module graph. Establish its exact declarations in the same
-        // table before any semantic registration; aliases and later graph
-        // visits resolve the existing module/path rows and cannot mint again.
-        let identity_module = self.identity.mint_module(module_full_path, &[]);
-        if !self.identity.module_has_declarations(identity_module) {
-            for (item_ordinal, (item, span)) in items.iter().enumerate() {
-                self.mint_item_declaration_identities(
-                    Some(identity_module),
-                    Some(identity_module),
-                    crate::check::NominalNamespace::Owned,
-                    item_ordinal,
-                    item,
-                    span,
-                );
-            }
-        }
-        let saved_registration_origin = self
-            .registration_origin_module
-            .replace(module_full_path.to_string());
-        for (item, _span) in items {
-            let Item::Import(decl) = item else {
-                continue;
-            };
-            if decl.resolved_items.is_some() {
-                // Load the imported stdlib module so its re-exported traits become
-                // visible to the eager trait-use path. Pass `None` for the import
-                // span deliberately: this import statement lives in a stdlib source
-                // file, so its span indexes that file — not the user document the
-                // diagnostics are reported against. Recording it in `import_spans`
-                // would make it a user-facing unused-import lint candidate whose
-                // span cannot be resolved to any user source, mis-attributing a
-                // stdlib-internal offset to the user's document.
-                let saved_current_module = self.current_module.clone();
-                self.current_module = Some(module_short.to_string());
-                self.register_import(decl, None);
-                self.current_module = saved_current_module;
-            }
-        }
-
-        self.record_trait_import_bindings(module_short, items);
-
-        // Resolve imported declarations in the defining module's lexical scope.
-        let saved_local_type_defs = self.local_type_defs.clone();
-        let saved_source_type_defs = self.source_type_defs.clone();
-        for (item, _) in items {
-            // The program-wide type-parameter harvest in `collect_types` walks
-            // `program.module_graph`, which is empty on the registry-only
-            // checker path (LSP, browser compiler, inline checks). Without the
-            // harvest a declaration's own parameters are unknown while its
-            // members resolve, so `pub type ScopeError<E> { primary: E; }`
-            // reports `unknown type E` against the module's own source.
-            self.collect_item_type_param_names(item);
-            if let Item::TypeDecl(td) = item {
-                self.local_type_defs.insert(td.name.clone());
-                self.source_type_defs.insert(td.name.clone());
-            }
-        }
-
-        // Pass 1: Register types, traits, and functions first
-        for (item, span) in items {
-            match item {
-                Item::TypeDecl(td) => {
-                    // Record visibility for all TypeDecls (both pub and non-pub)
-                    // so the enforcement check can distinguish "private" from "unknown".
-                    let qualified_type = format!("{module_full_path}.{}", td.name);
-                    let surface_qualified_type = format!("{module_short}.{}", td.name);
-                    self.type_visibility
-                        .entry(qualified_type.clone())
-                        .or_insert((td.visibility, Some(module_full_path.to_string())));
-                    self.type_visibility
-                        .entry(surface_qualified_type)
-                        .or_insert((td.visibility, Some(module_full_path.to_string())));
-                    // Record the declaration span so E_VISIBILITY can point "declared
-                    // here" at the actual declaration for both pub and non-pub types.
-                    self.type_def_spans
-                        .entry(qualified_type.clone())
-                        .or_insert_with(|| span.clone());
-                    if !td.visibility.is_pub() {
-                        // Private declarations are not importable, but source-local
-                        // member annotations still need their exact declaration
-                        // identity. The module-graph collection pass has already
-                        // registered the bare definition; mirror it under the full
-                        // owner before a public sibling resolves a bare reference to
-                        // this private type (e.g. `std.net.tls.Holder` containing
-                        // `Wrap`).
-                        let canonical = format!("{module_full_path}.{}", td.name);
-                        let source_def = self.type_defs.get(&canonical).cloned().or_else(|| {
-                            // Direct resolved-item imports have no module-graph
-                            // pre-registration. Resolve this declaration in its
-                            // own scope and capture its just-written bare def.
-                            let saved_importer_module =
-                                self.current_module.replace(module_full_path.to_string());
-                            self.in_stdlib_registration = true;
-                            self.register_type_decl(td);
-                            self.in_stdlib_registration = false;
-                            let source_def = self.type_defs.get(&td.name).cloned();
-                            self.current_module = saved_importer_module;
-                            source_def
-                        });
-                        if let Some(source_def) = source_def.as_ref() {
-                            self.register_canonical_type_def(
-                                module_full_path,
-                                &td.name,
-                                source_def,
-                            );
-                        }
-                        continue;
-                    }
-                    if !self.register_type_namespace_name(Some(module_full_path), &td.name, span) {
-                        continue;
-                    }
-                    let saved_importer_module =
-                        self.current_module.replace(module_full_path.to_string());
-                    self.in_stdlib_registration = true;
-                    self.register_type_decl(td);
-                    self.in_stdlib_registration = false;
-                    let source_def = self.type_defs.get(&td.name).cloned();
-                    self.current_module = saved_importer_module;
-                    self.known_types.insert(td.name.clone());
-                    // Qualified authority is always published, mirroring the
-                    // user-module path: the qualified alias and the module-export
-                    // record that drives the use-time gate's "exported by module
-                    // X" diagnostic and ambiguity candidate naming.
-                    self.register_qualified_type_alias(module_short, &td.name);
-                    if let Some(source_def) = source_def.as_ref() {
-                        self.register_canonical_type_def(module_full_path, &td.name, source_def);
-                    }
-                    self.record_module_type_export(module_short, &td.name);
-                    self.record_module_type_export(module_full_path, &td.name);
-                    // The importer-scope bare binding obeys the qualified-by-
-                    // default gate: `Prelude` (compiled-in bootstrap surfaces)
-                    // always publishes bare; a real `import` publishes bare only
-                    // on a named/glob/aliased opt-in, exactly like a user module.
-                    if let Some(binding) = import_spec.bare_binding(&td.name) {
-                        let source_identity = format!("{module_full_path}.{}", td.name);
-                        self.publish_stdlib_hew_type_binding(
-                            module_short,
-                            binding,
-                            source_identity,
-                            import_spec,
-                        );
-                    }
-                }
-                Item::Machine(md) => {
-                    // Record visibility for all Machines (both pub and non-pub).
-                    let qualified_type = format!("{module_short}.{}", md.name);
-                    self.type_visibility
-                        .entry(qualified_type.clone())
-                        .or_insert((md.visibility, Some(module_full_path.to_string())));
-                    // Record the declaration span for non-pub machines.
-                    self.type_def_spans
-                        .entry(qualified_type.clone())
-                        .or_insert_with(|| span.clone());
-                    if !md.visibility.is_pub() {
-                        continue;
-                    }
-                    if !self.register_machine_type_namespace_names(
-                        Some(module_full_path),
-                        &md.name,
-                        span,
-                    ) {
-                        continue;
-                    }
-                    let event_name = format!("{}Event", md.name);
-                    // Resolved stdlib items are registered while the importer
-                    // is the active checker frame. Re-enter the declaration's
-                    // assembled module before building the machine and its
-                    // generated event/method signatures, matching the module-
-                    // graph pre-registration and ordinary source-body context.
-                    let saved_importer_module =
-                        self.current_module.replace(module_full_path.to_string());
-                    self.register_machine_decl(md, span);
-                    let machine_def = self.type_defs.get(&md.name).cloned();
-                    let event_def = self.type_defs.get(&event_name).cloned();
-                    self.current_module = saved_importer_module;
-                    self.known_types.insert(md.name.clone());
-                    self.known_types.insert(event_name.clone());
-                    self.register_qualified_type_alias(module_short, &md.name);
-                    self.register_qualified_type_alias(module_short, &event_name);
-                    if let Some(machine_def) = machine_def.as_ref() {
-                        self.register_canonical_type_def(module_full_path, &md.name, machine_def);
-                    }
-                    if let Some(event_def) = event_def.as_ref() {
-                        self.register_canonical_type_def(module_full_path, &event_name, event_def);
-                    }
-                    self.record_module_type_export(module_short, &md.name);
-                    self.record_module_type_export(module_short, &event_name);
-                    self.record_module_type_export(module_full_path, &md.name);
-                    self.record_module_type_export(module_full_path, &event_name);
-                    // Bare publication of the machine and its companion event
-                    // enum is gated together so a named/glob import exposes both
-                    // or neither; `Prelude` publishes both unconditionally.
-                    if let Some(binding) = import_spec.bare_binding(&md.name) {
-                        let source_identity = format!("{module_full_path}.{}", md.name);
-                        self.publish_stdlib_hew_type_binding(
-                            module_short,
-                            binding,
-                            source_identity,
-                            import_spec,
-                        );
-                    }
-                    if let Some(binding) = import_spec.bare_binding(&event_name) {
-                        let source_identity = format!("{module_full_path}.{event_name}");
-                        self.publish_stdlib_hew_type_binding(
-                            module_short,
-                            binding,
-                            source_identity,
-                            import_spec,
-                        );
-                    }
-                }
-                Item::Trait(tr) => {
-                    if let Some(supers) = &tr.super_traits {
-                        for super_trait in supers {
-                            self.mark_imported_trait_used_for_module_aliases(
-                                module_short,
-                                &super_trait.name,
-                            );
-                        }
-                    }
-                    // Record visibility for all traits (both pub and non-pub) so a
-                    // cross-module qualified reference to a non-pub trait produces a
-                    // precise E_VISIBILITY at the reference site instead of leaking an
-                    // `E_MIR: unknown type` at the MIR boundary. Mirrors the TypeDecl
-                    // and Machine registration above; traits share the type-namespace
-                    // and the same qualified-reference enforcement path in resolution.
-                    let qualified_type = format!("{module_short}.{}", tr.name);
-                    self.type_visibility
-                        .entry(qualified_type.clone())
-                        .or_insert((tr.visibility, Some(module_full_path.to_string())));
-                    self.type_def_spans
-                        .entry(qualified_type)
-                        .or_insert_with(|| span.clone());
-                    if !tr.visibility.is_pub() {
-                        continue;
-                    }
-                    if !self.register_type_namespace_name(Some(module_full_path), &tr.name, span) {
-                        continue;
-                    }
-                    let info = Self::trait_info_from_decl(
-                        tr,
-                        Some(module_full_path.to_string()),
-                        self.current_module_idx,
-                    );
-                    self.trait_defs.insert(tr.name.clone(), info.clone());
-                    let qualified = format!("{module_full_path}.{}", tr.name);
-                    self.trait_defs.insert(qualified, info.clone());
-                    // Retain the lexical import surface as a lookup index only;
-                    // trait resolution and impl facts select the exact full owner.
-                    self.trait_defs
-                        .entry(format!("{module_short}.{}", tr.name))
-                        .or_insert(info);
-                }
-                Item::Function(fd) => {
-                    let qualified = self.canonical_fn_identity(Some(module_full_path), &fd.name);
-                    let surface_qualified = format!("{module_short}.{}", fd.name);
-                    // Record visibility for all functions in the visibility table.
-                    self.fn_visibility
-                        .entry(qualified.clone())
-                        .or_insert(fd.visibility);
-                    self.fn_visibility
-                        .entry(surface_qualified.clone())
-                        .or_insert(fd.visibility);
-                    self.fn_def_spans
-                        .entry(qualified.clone())
-                        .or_insert_with(|| (span.clone(), Some(module_full_path.to_string())));
-                    // The parsed Hew declaration is the canonical signature
-                    // authority.  A registry import may have installed an ABI
-                    // wrapper under this same exact key first; that wrapper's
-                    // embedded types use the legacy surface owner (`net.X`) and
-                    // must not survive as the source declaration's type fact.
-                    // Rebuild the complete signature in the source owner's
-                    // scope on every first-source registration, independent of
-                    // whether a registry slot already exists.
-                    let saved_importer_module =
-                        self.current_module.replace(module_full_path.to_string());
-                    let (mut sig, assoc_bindings) = self.build_fn_sig_from_decl_with_assoc(fd);
-                    self.current_module = saved_importer_module;
-                    sig.params = sig
-                        .params
-                        .iter()
-                        .map(|ty| {
-                            self.canonicalize_registry_signature(
-                                ty,
-                                module_full_path,
-                                &sig.type_params,
-                            )
-                        })
-                        .collect();
-                    sig.return_type = self.canonicalize_registry_signature(
-                        &sig.return_type,
-                        module_full_path,
-                        &sig.type_params,
-                    );
-                    if fd.visibility == hew_parser::ast::Visibility::Pub {
-                        self.module_fn_exports.insert(qualified.clone());
-                    }
-                    self.fn_type_param_assoc_bindings
-                        .insert(qualified.clone(), assoc_bindings);
-                    self.fn_sigs.insert(qualified.clone(), sig);
-                    // Mirror user-module named/glob import publication. The
-                    // parser has already selected `fd.name`; an alias only
-                    // changes the importing binding, never the declaration
-                    // identity retained in `import_fn_name_aliases`.
-                    if fd.visibility.is_pub() {
-                        if let Some(binding) = import_spec.bare_binding(&fd.name) {
-                            self.publish_stdlib_hew_function_binding(
-                                binding,
-                                &format!("{module_full_path}.{}", fd.name),
-                                import_spec,
-                            );
-                        }
-                    }
-                    if let Some(intrinsic_key) = &fd.intrinsic {
-                        let saved_importer_module =
-                            self.current_module.replace(module_full_path.to_string());
-                        self.register_intrinsic_declaration(qualified, intrinsic_key, &fd.name, fd);
-                        self.current_module = saved_importer_module;
-                    }
-                }
-                Item::Actor(ad) => {
-                    // Record visibility for all actors (both pub and non-pub) so a
-                    // cross-module qualified reference to a non-pub actor produces a
-                    // precise E_VISIBILITY at the reference site instead of leaking an
-                    // `E_MIR: unknown type` at the MIR boundary. Mirrors the TypeDecl,
-                    // Machine, and Trait registration above; actors share the
-                    // type-namespace and the same qualified-reference enforcement path.
-                    let qualified_type = format!("{module_short}.{}", ad.name);
-                    self.type_visibility
-                        .entry(qualified_type.clone())
-                        .or_insert((ad.visibility, Some(module_full_path.to_string())));
-                    self.type_def_spans
-                        .entry(qualified_type)
-                        .or_insert_with(|| span.clone());
-                    if !self.register_type_namespace_name(Some(module_short), &ad.name, span) {
-                        continue;
-                    }
-                    self.register_actor_base(ad, Some(module_short));
-                    if ad.visibility.is_pub() {
-                        if let Some(binding) = import_spec.bare_binding(&ad.name) {
-                            self.publish_stdlib_hew_type_binding(
-                                module_short,
-                                binding,
-                                format!("{module_full_path}.{}", ad.name),
-                                import_spec,
-                            );
-                        }
-                    }
-                }
-                // Register pub consts from C-backed stdlib modules that also
-                // ship Hew source (e.g. `std::misc::log` with `pub const JSON`).
-                // `register_user_module` handles this for pure-Hew user modules;
-                // this arm mirrors it for the stdlib Hew-source path so that
-                // `module.CONST` field access resolves in the type checker via
-                // the same `env.lookup_ref("{module}.{field}")` guard in
-                // `check_field_access`.
-                //
-                // SHIM (visibility): non-pub consts are not registered, so a
-                // cross-module `module.PRIVATE_CONST` reference fails closed with
-                // "module has no exported constant" rather than a dedicated
-                // E_VISIBILITY. WHY: const references resolve through the value
-                // env / field-access path, which has no visibility-enforcement
-                // consult point — unlike traits/actors/types which share the
-                // type-reference path. WHEN obsolete: when a const-visibility
-                // table + a field-access enforcement consult are added. WHAT the
-                // real solution is: record (visibility, decl_module) for every
-                // const here and check access_allowed in check_field_access,
-                // emitting visibility_violation. Tracked as a follow-on; the
-                // current message is already a clean fail-closed diagnostic.
-                Item::Const(cd) => {
-                    if !cd.visibility.is_pub() {
-                        continue;
-                    }
-                    let ty = self.resolve_registered_annotation_ty_no_holes(&cd.ty);
-                    let qualified = format!("{module_full_path}.{}", cd.name);
-                    self.env.define(qualified, ty, false);
-                }
-                _ => {}
-            }
-        }
-        // Pass 2: Register impl methods (after types exist)
-        for (item, span) in items {
-            if let Item::Impl(id) = item {
-                if Self::impl_decl_is_drop_impl(id) {
-                    self.report_unsupported_impl_drop(span);
-                    continue;
-                }
-                if let TypeExpr::Named {
-                    name: type_name,
-                    type_args,
-                } = &id.target_type.0
-                {
-                    let saved_importer_module =
-                        self.current_module.replace(module_full_path.to_string());
-                    // Set current_self_type for resolving `Self` in method parameters
-                    let prev_self_type = self.current_self_type.take();
-                    let self_type_args: Vec<Ty> =
-                        self.resolve_impl_target_type_args(id, type_args.as_ref());
-                    self.current_self_type = Some((type_name.clone(), self_type_args.clone()));
-                    let scope_pushed =
-                        self.enter_impl_scope(id, span, Some(type_name.as_str()), false);
-
-                    let primitive_key = id.trait_bound.as_ref().and_then(|_| {
-                        self.canonical_primitive_or_builtin_key_for_impl_name(type_name)
-                    });
-                    // Compiled-in stdlib impls are the origin of the builtin
-                    // Result/Option/Vec receiver surfaces. Snapshot their
-                    // canonical signatures before a user same-named type can
-                    // clobber the colliding bare `Type::<method>` fn_sigs key.
-                    let builtin_receiver = crate::lookup_builtin_type(type_name).filter(|b| {
-                        matches!(
-                            b,
-                            BuiltinType::Result | BuiltinType::Option | BuiltinType::Vec
-                        )
-                    });
-                    for method in &id.methods {
-                        let sig = self.register_impl_method(
-                            type_name,
-                            method,
-                            id.type_params.as_ref(),
-                            id.where_clause.as_ref(),
-                            id.trait_bound.as_ref(),
-                        );
-                        if let Some(builtin) = builtin_receiver {
-                            let impl_params: Vec<String> = id
-                                .type_params
-                                .iter()
-                                .flatten()
-                                .map(|param| param.name.clone())
-                                .collect();
-                            if builtin == BuiltinType::Vec {
-                                if id.trait_bound.is_none() {
-                                    self.builtin_vec_method_sigs
-                                        .insert(method.name.clone(), (impl_params, sig.clone()));
-                                }
-                            } else {
-                                self.builtin_result_option_method_sigs.insert(
-                                    (builtin, method.name.clone()),
-                                    (impl_params, sig.clone()),
-                                );
-                            }
-                        }
-                        // Also register on qualified type name
-                        let qualified_type = format!("{module_short}.{type_name}");
-                        if let Some(td) = self.lookup_type_def_mut(&qualified_type) {
-                            td.methods.insert(method.name.clone(), sig.clone());
-                        }
-                        if let (Some(canonical), Some(tb)) =
-                            (primitive_key.clone(), id.trait_bound.as_ref())
-                        {
-                            self.record_primitive_trait_impl_self_args(
-                                canonical.clone(),
-                                &tb.name,
-                                self_type_args.clone(),
-                                &id.target_type.1,
-                            );
-                            self.record_primitive_trait_impl_method(
-                                canonical,
-                                &tb.name,
-                                method.name.clone(),
-                                sig,
-                            );
-                        }
-                    }
-                    if let Some(tb) = &id.trait_bound {
-                        self.mark_imported_trait_used_for_module_aliases(module_short, &tb.name);
-                        self.record_trait_impl_methods(
-                            type_name,
-                            &tb.name,
-                            id.methods.iter().map(|method| method.name.clone()),
-                        );
-                        self.record_trait_impl(type_name, &tb.name);
-                    }
-
-                    // Restore previous self type
-                    self.current_self_type = prev_self_type;
-                    if scope_pushed {
-                        self.exit_impl_scope();
-                    }
-                    self.current_module = saved_importer_module;
-                }
-            }
-        }
-        // Pass 3: publish canonical type definitions after impl registration.
-        // Registration itself uses the source leaf as temporary assembly state;
-        // only the full owner survives this pass.
-        for (item, _span) in items {
-            match item {
-                Item::TypeDecl(td) => {
-                    if let Some(source_def) = self.type_defs.get(&td.name).cloned() {
-                        self.register_canonical_type_def(module_full_path, &td.name, &source_def);
-                    }
-                    self.retire_imported_type_keys(module_short, module_full_path, &td.name);
-                    if td.visibility.is_pub() {
-                        self.record_module_type_export(module_short, &td.name);
-                        self.record_module_type_export(module_full_path, &td.name);
-                    }
-                }
-                Item::Machine(md) => {
-                    if !md.visibility.is_pub() {
-                        continue;
-                    }
-                    let event_name = format!("{}Event", md.name);
-                    if let Some(source_def) = self.type_defs.get(&md.name).cloned() {
-                        self.register_canonical_type_def(module_full_path, &md.name, &source_def);
-                    }
-                    if let Some(source_def) = self.type_defs.get(&event_name).cloned() {
-                        self.register_canonical_type_def(
-                            module_full_path,
-                            &event_name,
-                            &source_def,
-                        );
-                    }
-                    self.retire_imported_type_keys(module_short, module_full_path, &md.name);
-                    self.retire_imported_type_keys(module_short, module_full_path, &event_name);
-                    // A public machine publishes its generated event enum as
-                    // part of the same declaration surface.  Keep the export
-                    // ledger paired with the qualified aliases so import
-                    // validation, checker resolution, and HIR all agree that
-                    // `module.MachineEvent::Payload` is callable.
-                    self.record_module_type_export(module_short, &md.name);
-                    self.record_module_type_export(module_short, &event_name);
-                    self.record_module_type_export(module_full_path, &md.name);
-                    self.record_module_type_export(module_full_path, &event_name);
-                }
-                Item::Actor(ad) => {
-                    // The dotted `{module_short}.{name}` entry is authored
-                    // directly by `register_actor_base`; only the export
-                    // record is added here.
-                    self.record_module_type_export(module_short, &ad.name);
-                    self.record_module_type_export(module_full_path, &ad.name);
-                }
-                _ => {}
-            }
-        }
-        self.local_type_defs = saved_local_type_defs;
-        self.source_type_defs = saved_source_type_defs;
-        self.registration_origin_module = saved_registration_origin;
     }
 
     /// Republish selected public names from an already-registered Hew source
@@ -1425,96 +1274,6 @@ impl Checker {
                 _ => {}
             }
         }
-    }
-
-    /// Publish a selected stdlib free function into one importer's bare scope.
-    ///
-    /// Declarations remain globally registered under their canonical full
-    /// owner; explicit imports publish only an exact lexical binding. The
-    /// implicit language floor may additionally expose an ambient signature.
-    pub(super) fn publish_stdlib_hew_function_binding(
-        &mut self,
-        binding: String,
-        source_identity: &str,
-        publication: StdlibBarePublication<'_>,
-    ) {
-        let Some(sig) = self.fn_sigs.get(source_identity).cloned() else {
-            // A declaration source that cannot supply its canonical signature
-            // must not manufacture an ambient bare function binding.
-            return;
-        };
-        if publication.records_import_identity() {
-            self.import_fn_name_aliases.insert(
-                (
-                    self.current_module.clone(),
-                    self.current_module_idx,
-                    binding.clone(),
-                ),
-                source_identity.to_string(),
-            );
-        } else {
-            // Implicit language-floor bindings are ambient; explicit imports
-            // only publish a lexical binding to the canonical signature.
-            if let Some(assoc_bindings) = self
-                .fn_type_param_assoc_bindings
-                .get(source_identity)
-                .cloned()
-            {
-                self.fn_type_param_assoc_bindings
-                    .insert(binding.clone(), assoc_bindings);
-            }
-            self.fn_sigs.insert(binding.clone(), sig);
-        }
-        self.record_published_bare_function(&binding, source_identity);
-        let source_owner = source_identity
-            .rsplit_once('.')
-            .map(|(owner, _)| owner.to_string())
-            .expect("stdlib Hew function binding has an owner-qualified identity");
-        self.unqualified_to_module.insert(
-            (
-                self.current_module.clone(),
-                self.current_module_idx,
-                binding,
-            ),
-            source_owner,
-        );
-    }
-
-    pub(super) fn publish_stdlib_hew_type_binding(
-        &mut self,
-        _module_short: &str,
-        binding: String,
-        source_identity: String,
-        publication: StdlibBarePublication<'_>,
-    ) {
-        self.known_types.insert(binding.clone());
-        self.record_published_bare_type(&binding, &source_identity);
-        // The binding has one declaration-owned source identity. Store its
-        // complete owner here as well, so use-time lint credit can translate
-        // it back through `module_import_bindings` to the user's lexical
-        // module qualifier without shortening dotted stdlib paths.
-        let source_owner = source_identity
-            .rsplit_once('.')
-            .map(|(owner, _)| owner.to_string())
-            .expect("stdlib Hew type binding has an owner-qualified identity");
-        if publication.records_import_identity() {
-            self.import_type_name_aliases.insert(
-                (
-                    self.current_module.clone(),
-                    self.current_module_idx,
-                    binding.clone(),
-                ),
-                source_identity,
-            );
-        }
-        self.unqualified_to_module.insert(
-            (
-                self.current_module.clone(),
-                self.current_module_idx,
-                binding,
-            ),
-            source_owner,
-        );
     }
 
     /// Register items from a file-based import into the IMPORTING file's
@@ -1918,16 +1677,6 @@ impl Checker {
         ))
     }
 
-    pub(super) fn stdlib_hew_source_already_registered(
-        &mut self,
-        decl: &ImportDecl,
-        module_path: &str,
-    ) -> bool {
-        !self
-            .registered_stdlib_hew_sources
-            .insert(Self::stdlib_hew_source_identity(decl, module_path))
-    }
-
     /// Record `module_short`'s own trait import bindings into
     /// `trait_import_bindings`, so a supertrait edge declared in this module that
     /// names a re-imported trait resolves to the original owner (the re-export
@@ -2009,6 +1758,130 @@ impl Checker {
                 }
                 _ => {}
             }
+        }
+    }
+
+    /// Build the precise cross-module record-name collision set, mirroring the
+    /// HIR/MIR authoritative notion (`imported_type_name_collides` /
+    /// `collided_type_names`): a bare record/type-decl name collides when 2+
+    /// distinct non-root modules (package OR file-import) declare it, AFTER
+    /// re-export subsumption so a stdlib module surfaced through two import
+    /// paths (e.g. `std::net::http` and `std::net::http::http_client` both
+    /// re-exporting `http.Response`) is not double-counted. Only a colliding
+    /// record is owner-qualified to its declaring module; a name unique to one
+    /// module keeps its bare identity, so no `http.Response`/`xml.Node`
+    /// over-qualification and no cabi over-qualification SIGSEGV (#2208).
+    pub(in crate::check) fn compute_cross_module_colliding_record_names(
+        program: &Program,
+    ) -> HashSet<String> {
+        let Some(mg) = program.module_graph.as_ref() else {
+            return HashSet::new();
+        };
+        // Empty file-import exclusion: a file-import module counts as a
+        // declaring scope — the mixed file-import + package same-bare-name shape
+        // #2208 depends on — matching the HIR lowering's collision set exactly.
+        let no_file_exclusion: HashSet<hew_parser::module::ModuleId> = HashSet::new();
+        let preferred = collision_preferred_package_module_ids(program, &no_file_exclusion);
+        let mut colliding: HashSet<String> = HashSet::new();
+        for module in mg.modules.values() {
+            for (item, _) in &module.items {
+                let name = match item {
+                    Item::TypeDecl(decl) => &decl.name,
+                    Item::Record(decl) => &decl.name,
+                    _ => continue,
+                };
+                if colliding.contains(name) {
+                    continue;
+                }
+                if collision_imported_type_name_collides(
+                    program,
+                    &no_file_exclusion,
+                    &preferred,
+                    name,
+                ) {
+                    colliding.insert(name.clone());
+                }
+            }
+        }
+        colliding
+    }
+
+    /// Owner-qualify ONLY the cross-module-colliding record names inside a reply
+    /// type, recursing through generic arguments exactly as HIR's
+    /// `qualify_colliding_module_record_ty` does. Builtins, already-qualified
+    /// names, and non-colliding records are returned unchanged, so a reply
+    /// `Result<Unique, Colliding>` becomes `Result<Unique, {module}.Colliding>`
+    /// — the same identity HIR produces — rather than qualifying `Unique` too
+    /// (which MIR's actor-reply equality would reject). Only a name the module
+    /// actually declares (`{module}.{name}` present in `type_defs`) is
+    /// qualified; otherwise the bare name is preserved (#2208).
+    pub(super) fn qualify_colliding_reply_ty(&self, ty: &Ty, module_short: &str) -> Ty {
+        let Ty::Named {
+            name,
+            args,
+            builtin,
+        } = ty
+        else {
+            return ty.clone();
+        };
+        let args = args
+            .iter()
+            .map(|arg| self.qualify_colliding_reply_ty(arg, module_short))
+            .collect();
+        if builtin.is_some()
+            || name.contains('.')
+            || !self.cross_module_colliding_record_names.contains(name)
+        {
+            return Ty::Named {
+                name: name.clone(),
+                args,
+                builtin: *builtin,
+            };
+        }
+        let qualified = format!("{module_short}.{name}");
+        if self.type_defs.contains_key(&qualified) {
+            Ty::Named {
+                name: qualified,
+                args,
+                builtin: None,
+            }
+        } else {
+            Ty::Named {
+                name: name.clone(),
+                args,
+                builtin: *builtin,
+            }
+        }
+    }
+
+    /// Retire the temporary source-leaf and lexical-module keys for an imported
+    /// type after its full-owner definition has been published.
+    pub(super) fn retire_imported_type_keys(
+        &mut self,
+        module_short: &str,
+        module_full_path: &str,
+        name: &str,
+    ) {
+        let canonical = format!("{module_full_path}.{name}");
+        let surface = format!("{module_short}.{name}");
+        for key in [name, surface.as_str()] {
+            if key == canonical {
+                continue;
+            }
+            // A root declaration owns its leaf spelling canonically. Imports
+            // with the same leaf may use that row transiently while their
+            // source definition is assembled, but must not retire the root's
+            // namespace row when their own canonical publication completes.
+            if key == name
+                && self
+                    .type_namespace_owners
+                    .contains_key(&(None, name.to_string()))
+            {
+                continue;
+            }
+            self.type_defs.remove(key);
+            self.type_def_spans.remove(key);
+            self.registry.remove_type_marker_key(key);
         }
     }
 }

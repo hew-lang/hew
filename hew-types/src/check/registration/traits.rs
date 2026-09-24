@@ -1,4 +1,5 @@
-//! Split from `registration.rs`: checker methods, part 4 of 6.
+//! Checker methods grouped by responsibility: traits.
+//! Split from `registration.rs`: checker methods, part 1 of 6.
 #![allow(
     unused_imports,
     redundant_imports,
@@ -16,6 +17,1023 @@ use crate::BuiltinType;
 use hew_parser::ast::WireMetadata;
 
 impl Checker {
+    /// Resolve a trait-bound name against the registered trait table,
+    /// accepting both unqualified and module-qualified forms.
+    pub(in crate::check) fn is_known_trait(&self, name: &str) -> bool {
+        if MarkerTrait::from_name(name).is_some() {
+            return true;
+        }
+        if self.trait_defs.contains_key(name) {
+            return true;
+        }
+        if let Some(uq) = self.strip_module_qualifier(name) {
+            if self.trait_defs.contains_key(uq) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Register a supervisor declaration under an explicit identity key.
+    ///
+    /// `identity` is the bare name for a root or flat-file supervisor and the
+    /// dotted `{module}.{name}` form for one declared inside a module, matching
+    /// what the resolver mints for the same declaration and what
+    /// [`Self::register_actor_decl_as`] does for an actor. `type_defs` and
+    /// `supervisor_children` are keyed by it, so two modules may each declare a
+    /// supervisor of the same name without one clobbering the other.
+    pub(in crate::check) fn register_supervisor_decl_as(
+        &mut self,
+        sd: &SupervisorDecl,
+        identity: &str,
+    ) {
+        let type_params: Vec<_> = sd.type_params.iter().map(|p| p.name.clone()).collect();
+        let scope = self.enter_primary_sig_scope(&[(Some(&sd.type_params), None)]);
+        let fields = sd
+            .params
+            .iter()
+            .map(|param| (param.name.clone(), self.resolve_type_expr(&param.ty)))
+            .collect();
+        let mut bounds = self.collect_type_param_bounds(Some(&sd.type_params), None);
+        for parameter in &type_params {
+            let bounds = bounds.entry(parameter.clone()).or_default();
+            if !bounds.iter().any(|bound| bound == "Send") {
+                bounds.push("Send".into());
+            }
+        }
+        self.type_defs.insert(
+            identity.to_string(),
+            TypeDef {
+                kind: TypeDefKind::Supervisor,
+                name: identity.to_string(),
+                type_params,
+                bounds,
+                fields,
+                field_order: sd.params.iter().map(|param| param.name.clone()).collect(),
+                variants: HashMap::new(),
+                methods: HashMap::new(),
+                doc_comment: None,
+                is_indirect: false,
+            },
+        );
+        // Partition children by kind in source order. Slot index for each
+        // child is its 0-based position within its own partition, matching
+        // the runtime layout (children[] for static, pool_slots[] for pool).
+        let mut statics = Vec::new();
+        let mut pools = Vec::new();
+        for c in &sd.children {
+            let type_args = c
+                .type_args
+                .iter()
+                .map(|arg| self.resolve_type_expr(arg))
+                .collect();
+            let entry = (
+                c.name.clone(),
+                Ty::Named {
+                    builtin: None,
+                    name: self.canonical_supervisor_child_type(&c.actor_type),
+                    args: type_args,
+                },
+            );
+            if c.is_pool {
+                pools.push(entry);
+            } else {
+                statics.push(entry);
+            }
+        }
+        self.supervisor_children.insert(
+            identity.to_string(),
+            crate::check::types::SupervisorChildren { statics, pools },
+        );
+        self.exit_primary_sig_scope(scope);
+        self.known_types.insert(identity.to_string());
+    }
+
+    pub(in crate::check) fn register_actor_decl(&mut self, ad: &ActorDecl) {
+        let identity = ad.name.clone();
+        self.register_actor_decl_as(ad, &identity);
+    }
+
+    /// Register an actor declaration under an explicit identity key.
+    ///
+    /// `identity` is the bare name for root/flat actors and the dotted
+    /// `{module_short}.{name}` form for module actors (see
+    /// [`Self::actor_identity`]). Every per-actor side table — `type_defs`,
+    /// the Send registry, type-param bounds, init params — is keyed by this
+    /// identity so two same-named actors from different modules occupy
+    /// distinct entries instead of last-write-wins clobbering.
+    pub(in crate::check) fn register_actor_decl_as(&mut self, ad: &ActorDecl, identity: &str) {
+        if ad.mailbox_capacity.is_some() {
+            self.actor_overflow_policies.insert(
+                identity.to_string(),
+                ad.overflow_policy
+                    .clone()
+                    .unwrap_or(hew_parser::ast::OverflowPolicy::Block),
+            );
+        }
+
+        // Extract type-param names from the declaration so the TypeDef's
+        // positional `type_params` vector and ordinary nominal bounds share
+        // one declaration authority. Actor arguments must also be Send.
+        //
+        // Computed and pushed into scope before field/init-param resolution
+        // below: an actor's own type parameters (`actor Cache<K: Hash + Eq,
+        // V: Clone>`) must already be in scope while its state fields and
+        // init parameters are resolved, or a field's `HashMap<K, V>` key
+        // admission cannot see K's declared bounds and is rejected as if K
+        // had none.
+        let type_param_names: Vec<String> =
+            ad.type_params.iter().map(|tp| tp.name.clone()).collect();
+        let mut type_param_bounds = self.collect_type_param_bounds(Some(&ad.type_params), None);
+        for parameter in &type_param_names {
+            let bounds = type_param_bounds.entry(parameter.clone()).or_default();
+            if !bounds.iter().any(|bound| bound == "Send") {
+                bounds.push("Send".into());
+            }
+        }
+        let has_type_params = !type_param_names.is_empty();
+        if has_type_params {
+            self.current_type_param_bounds.push(TypeParamScope::new(
+                type_param_bounds.clone(),
+                HashMap::new(),
+            ));
+        }
+
+        let mut fields = HashMap::new();
+        let mut field_order: Vec<String> = Vec::new();
+        let mut hole_vars = Vec::new();
+        for field in &ad.fields {
+            let field_ty = self.resolve_registered_annotation_ty(&field.ty, &mut hole_vars);
+            field_order.push(field.name.clone());
+            fields.insert(field.name.clone(), field_ty);
+        }
+
+        let type_def = TypeDef {
+            kind: TypeDefKind::Actor,
+            name: identity.to_string(),
+            type_params: type_param_names,
+            bounds: type_param_bounds.clone(),
+            fields,
+            field_order,
+            variants: HashMap::new(),
+            methods: HashMap::new(),
+            doc_comment: ad.doc_comment.clone(),
+            is_indirect: false,
+        };
+
+        // Actors are always Send
+        self.registry.register_actor(identity.to_string());
+
+        self.type_defs.insert(identity.to_string(), type_def);
+        // A new handle-bearing candidate entered `type_defs`; invalidate the
+        // cached handle-bearing classification the same way the qualified
+        // type-alias path does.
+        self.handle_bearing_dirty = true;
+
+        // Collect resolved init() parameter types for supervisor checks.  The
+        // byte-copy wall is fail-closed: any shape that does not resolve to a
+        // scalar `Ty` is rejected at the parameter type span.
+        //
+        // Always insert — actors with no init block get an empty vec so that a
+        // `wired_to:` reference to such an actor correctly fires
+        // "no parameter named X" (`E_SUPERVISOR_WIRED_TO_TYPE_MISMATCH`) rather
+        // than silently passing through the "unknown actor" early-return.
+        let params: Vec<ActorInitParamInfo> = if let Some(init) = &ad.init {
+            init.params
+                .iter()
+                .map(|p| {
+                    let mut init_param_hole_vars = Vec::new();
+                    let ty =
+                        self.resolve_registered_annotation_ty(&p.ty, &mut init_param_hole_vars);
+                    ActorInitParamInfo {
+                        name: p.name.clone(),
+                        ty,
+                    }
+                })
+                .collect()
+        } else {
+            vec![]
+        };
+        if has_type_params {
+            self.current_type_param_bounds.pop();
+        }
+        self.actor_init_params.insert(identity.to_string(), params);
+        // A field without a default that init assigns is init's to
+        // initialize (D447). An init parameter sharing a field's name is
+        // refused outright (D458), so it never reaches this computation as
+        // a legitimate source of the field's value.
+        let deferred = ad.init.as_ref().map_or_else(Vec::new, |init| {
+            let assigned = hew_parser::init_analysis::assigned_bare_names(&init.body);
+            ad.fields
+                .iter()
+                .filter(|field| field.default.is_none() && assigned.contains(&field.name))
+                .map(|field| field.name.clone())
+                .collect()
+        });
+        self.actor_deferred_fields
+            .insert(identity.to_string(), deferred.clone());
+        let mut spawn_args = ad
+            .fields
+            .iter()
+            .filter(|field| !deferred.contains(&field.name))
+            .map(|field| (field.name.clone(), field.default.is_none()))
+            .collect::<Vec<_>>();
+        if let Some(init) = &ad.init {
+            spawn_args.extend(
+                init.params
+                    .iter()
+                    .map(|parameter| (parameter.name.clone(), true)),
+            );
+        }
+        self.actor_spawn_args
+            .insert(identity.to_string(), spawn_args);
+        self.record_type_def_inference_holes(identity, hole_vars);
+    }
+
+    pub(in crate::check) fn trait_info_from_decl(
+        tr: &TraitDecl,
+        source_module: Option<String>,
+        file_index: u32,
+    ) -> TraitInfo {
+        Self::trait_info_from_decl_with_diagnostics(tr, source_module, file_index, &mut Vec::new())
+    }
+
+    /// Idempotently seed `#[lang_item("…")]` bindings from a compiled-in
+    /// `std/builtins.hew` trait declaration WITHOUT claiming `lang_item_spans`.
+    ///
+    /// Mirrors the `trait_defs` pre-registration in `register_builtins_hew_impls`
+    /// that deliberately skips `type_def_spans`: the user-redeclare path — which
+    /// includes type-checking `std/builtins.hew` itself, where the same `Display`
+    /// trait is processed a second time through the normal source-registration
+    /// pass — must register cleanly without a `duplicate_definition` error.
+    /// Genuine collisions between two source traits both tagging the same key
+    /// are still caught: that path runs through `register_trait_lang_items`,
+    /// which owns `lang_item_spans`.
+    pub(in crate::check) fn seed_trait_lang_items(&mut self, td: &TraitDecl, span: &Span) {
+        let trait_path = format!("std.builtins.{}", td.name);
+        let Some(trait_id) = self.require_declaration_path(&trait_path, span) else {
+            return;
+        };
+        if let Some(key) = &td.lang_item {
+            if self.lang_items.get(key).is_none() {
+                self.lang_items.insert(
+                    key.clone(),
+                    crate::LangItemBinding {
+                        trait_name: td.name.clone(),
+                        trait_id: trait_id.clone(),
+                        method_name: None,
+                        method_id: None,
+                    },
+                );
+            }
+        }
+        for item in &td.items {
+            if let TraitItem::Method(m) = item {
+                if let Some(key) = &m.lang_item {
+                    if self.lang_items.get(key).is_none() {
+                        let method_id = self.require_declaration_path(
+                            &format!("{}::{}", trait_id.full_path(), m.name),
+                            &m.span,
+                        );
+                        self.lang_items.insert(
+                            key.clone(),
+                            crate::LangItemBinding {
+                                trait_name: td.name.clone(),
+                                trait_id: trait_id.clone(),
+                                method_name: Some(m.name.clone()),
+                                method_id,
+                            },
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Harvest `#[lang_item("…")]` tags from a trait declaration into
+    /// [`Checker::lang_items`].
+    ///
+    /// Two kinds of entries are produced:
+    ///
+    /// * Trait-level (`#[lang_item("display")]` on the `trait` itself) →
+    ///   `LangItemBinding { trait_name: <td.name>, method_name: None }`.
+    /// * Method-level (`#[lang_item("display_fmt")]` on a `TraitItem::Method`)
+    ///   → `LangItemBinding { trait_name: <td.name>, method_name:
+    ///   Some(<m.name>) }`. The enclosing trait name is propagated so HIR
+    ///   lowering can derive `<SelfType>::<method_name>` impl symbols.
+    ///
+    /// Duplicate keys raise `TypeError::duplicate_definition` against the
+    /// trait's span so the registry remains one-binding-per-key.
+    pub(in crate::check) fn register_trait_lang_items(&mut self, td: &TraitDecl, span: Span) {
+        let trait_path = self.trait_ref_lookup_key(&td.name);
+        let Some(trait_id) = self.require_declaration_path(&trait_path, &span) else {
+            return;
+        };
+        if let Some(key) = &td.lang_item {
+            if let Some(prev) = self.lang_item_spans.insert(key.clone(), span.clone()) {
+                self.errors
+                    .push(TypeError::duplicate_definition(span.clone(), key, prev));
+            } else {
+                self.lang_items.insert(
+                    key.clone(),
+                    crate::LangItemBinding {
+                        trait_name: td.name.clone(),
+                        trait_id: trait_id.clone(),
+                        method_name: None,
+                        method_id: None,
+                    },
+                );
+            }
+        }
+        for item in &td.items {
+            if let TraitItem::Method(m) = item {
+                if let Some(key) = &m.lang_item {
+                    let method_span = m.span.clone();
+                    if let Some(prev) = self
+                        .lang_item_spans
+                        .insert(key.clone(), method_span.clone())
+                    {
+                        self.errors
+                            .push(TypeError::duplicate_definition(method_span, key, prev));
+                    } else {
+                        let method_id = self.require_declaration_path(
+                            &format!("{}::{}", trait_id.full_path(), m.name),
+                            &m.span,
+                        );
+                        self.lang_items.insert(
+                            key.clone(),
+                            crate::LangItemBinding {
+                                trait_name: td.name.clone(),
+                                trait_id: trait_id.clone(),
+                                method_name: Some(m.name.clone()),
+                                method_id,
+                            },
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Build `TraitInfo` and surface trait-body diagnostics. Duplicate
+    /// `type Bar; type Bar;` declarations are reported here (the impl-side
+    /// duplicate-detection is handled separately in `build_impl_alias_entries`).
+    pub(in crate::check) fn trait_info_from_decl_with_diagnostics(
+        tr: &TraitDecl,
+        source_module: Option<String>,
+        file_index: u32,
+        errors: &mut Vec<TypeError>,
+    ) -> TraitInfo {
+        let mut methods = Vec::new();
+        let mut associated_types: Vec<TraitAssociatedTypeInfo> = Vec::new();
+        let mut seen_assoc: HashMap<String, Span> = HashMap::new();
+        for item in &tr.items {
+            match item {
+                TraitItem::Method(m) => methods.push(m.clone()),
+                TraitItem::AssociatedType {
+                    name,
+                    bounds,
+                    default,
+                    span,
+                } => {
+                    if let Some(prev_span) = seen_assoc.insert(name.clone(), span.clone()) {
+                        errors.push(TypeError::duplicate_definition(
+                            span.clone(),
+                            name,
+                            prev_span,
+                        ));
+                        continue;
+                    }
+                    associated_types.push(TraitAssociatedTypeInfo {
+                        name: name.clone(),
+                        bounds: bounds.clone(),
+                        default: default.clone(),
+                        span: span.clone(),
+                    });
+                }
+            }
+        }
+        let type_params = tr
+            .type_params
+            .as_ref()
+            .map(|params| params.iter().map(|p| p.name.clone()).collect())
+            .unwrap_or_default();
+        TraitInfo {
+            source_module,
+            file_index,
+            methods,
+            associated_types,
+            type_params,
+        }
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "impl-scope setup validates bounds, aliases, and exact receiver identity atomically"
+    )]
+    pub(in crate::check) fn enter_impl_scope(
+        &mut self,
+        id: &ImplDecl,
+        span: &Span,
+        type_name: Option<&str>,
+        enforce: bool,
+    ) -> bool {
+        let Some(target_name) = type_name else {
+            return false;
+        };
+        // Validate before collect_type_param_scope_with_bounds erases positional type args.
+        self.validate_type_param_bound_shapes(
+            id.type_params.as_ref(),
+            id.where_clause.as_ref(),
+            span,
+        );
+        let entries = self.build_impl_alias_entries(id);
+        let mut impl_scope_holes = Vec::new();
+        let impl_bounds_map = self.collect_type_param_scope_with_assoc_bindings(
+            id.type_params.as_ref(),
+            id.where_clause.as_ref(),
+            &mut impl_scope_holes,
+        );
+        let pushed_impl_bounds = !impl_bounds_map.bounds.is_empty();
+        if pushed_impl_bounds {
+            self.current_type_param_bounds.push(impl_bounds_map);
+        }
+        // Populate impl_assoc_type_bindings on every enter (not gated on
+        // `enforce`) so projection collapse can find bindings during
+        // call-site monomorphisation even when this scope was entered by
+        // a non-enforcing registration sweep. The first writer wins;
+        // subsequent calls with the same impl idempotently re-resolve.
+        if let Some(tb) = &id.trait_bound {
+            // Snapshot trait-side assoc-type list to avoid double-borrow
+            // of trait_defs while we call resolve_type_expr.
+            // The trait component of the binding key is declaration-owned. An
+            // alias or prelude spelling is only a lookup surface; projection
+            // carriers and consumers use this same canonical key end-to-end.
+            // Associated-type bindings are consumed through
+            // `trait_ref_lookup_key` in projection.  Register with that same
+            // source-owned identity; `trait_defs_key_for_bound` is a
+            // declaration-table compatibility key and may retain a bare
+            // presentation spelling while the consumer has already resolved
+            // the trait through its canonical module owner.
+            let tb_key = self.trait_ref_lookup_key(&tb.name);
+            let assoc_names: Vec<String> = self
+                .trait_defs
+                .get(&tb_key)
+                .map(|info| {
+                    info.associated_types
+                        .iter()
+                        .map(|a| a.name.clone())
+                        .collect()
+                })
+                .unwrap_or_default();
+            let target_owned = self
+                .canonical_primitive_or_builtin_key_for_impl_name(target_name)
+                .unwrap_or_else(|| {
+                    self.current_module
+                        .as_ref()
+                        .filter(|_| !target_name.contains('.'))
+                        .map_or_else(
+                            || target_name.to_string(),
+                            |module| format!("{module}.{target_name}"),
+                        )
+                });
+            for assoc_name in assoc_names {
+                let key = (target_owned.clone(), tb_key.clone(), assoc_name.clone());
+                if self.impl_assoc_type_bindings.contains_key(&key) {
+                    continue;
+                }
+                if let Some(entry) = entries.get(&assoc_name) {
+                    let expr = entry.expr.clone();
+                    let resolved = self.resolve_type_expr(&expr);
+                    if !matches!(resolved, Ty::Error) {
+                        self.impl_assoc_type_bindings.insert(key, resolved);
+                    }
+                }
+            }
+        }
+        if enforce {
+            if let Some(tb) = &id.trait_bound {
+                // Snapshot trait-side data we need; cloned so we can release
+                // the borrow on `self.trait_defs` before calling into the
+                // resolver / bound-checker which need `&mut self`. Keyed off the
+                // owner-qualified identity, so two modules importing same-named
+                // traits cannot let one's empty `trait_defs[name]` mask the
+                // other's required `type` and accept an incomplete impl.
+                let trait_key = self.trait_defs_key_for_bound(&tb.name);
+                let trait_snapshot = self
+                    .trait_defs
+                    .get(&trait_key)
+                    .map(|info| info.associated_types.clone());
+                if let Some(associated_types) = trait_snapshot {
+                    let missing: Vec<TraitAssociatedTypeInfo> = associated_types
+                        .iter()
+                        .filter(|assoc| !entries.contains_key(&assoc.name))
+                        .cloned()
+                        .collect();
+                    let target_name_owned = target_name.to_string();
+                    let tb_name = tb.name.clone();
+                    for assoc in missing {
+                        self.report_error_with_note(
+                            TypeErrorKind::UndefinedType,
+                            span,
+                            format!(
+                                "impl `{tb_name}` for `{target_name_owned}` must define associated type `{}`",
+                                assoc.name
+                            ),
+                            &assoc.span,
+                            "required associated type declared here".to_string(),
+                        );
+                    }
+                    self.check_assoc_type_bounds(
+                        &associated_types,
+                        &entries,
+                        &tb_name,
+                        &target_name_owned,
+                        id,
+                    );
+                }
+            }
+        }
+        if pushed_impl_bounds {
+            self.current_type_param_bounds.pop();
+        }
+        self.impl_alias_scopes.push(ImplAliasScope {
+            span: span.clone(),
+            entries,
+            missing_reported: HashSet::new(),
+            report_missing: enforce,
+        });
+        true
+    }
+
+    pub(in crate::check) fn exit_impl_scope(&mut self) {
+        self.impl_alias_scopes.pop();
+    }
+
+    /// Resolve an impl target's type arguments (`Filter<I, A>`) with the
+    /// impl's own type parameters in scope, so `A` names the impl's binder
+    /// rather than a same-spelled type that another module declares.
+    pub(super) fn resolve_impl_target_type_args(
+        &mut self,
+        id: &ImplDecl,
+        type_args: Option<&Vec<Spanned<TypeExpr>>>,
+    ) -> Vec<Ty> {
+        let bounds = self.collect_type_param_scope_with_bounds(
+            id.type_params.as_ref(),
+            id.where_clause.as_ref(),
+        );
+        self.current_type_param_bounds
+            .push(TypeParamScope::new(bounds, HashMap::new()));
+        let resolved = type_args.map_or_else(Vec::new, |args| {
+            args.iter()
+                .map(|type_arg| self.resolve_type_expr(type_arg))
+                .collect()
+        });
+        self.current_type_param_bounds.pop();
+        resolved
+    }
+
+    /// Enforce trait-side bounds on each impl-side associated-type binding.
+    ///
+    /// For `trait Foo { type Out: Display; }` and `impl Foo for X { type Out = Y; }`,
+    /// verifies `Y: Display`. Handles two distinct shapes for the chosen `Y`:
+    ///
+    /// - **Concrete type** (`Ty::Named { name, .. }` where `name` is a known
+    ///   type-def): consult `type_satisfies_trait_bound` directly.
+    /// - **Impl type-param** (`Ty::Named { name, .. }` where `name` is one of
+    ///   the impl's declared type params, e.g. `impl<T: Display> Foo for X { type Out = T; }`):
+    ///   consult the impl's own `collect_type_param_bounds` map, because at
+    ///   impl-registration time `current_function` is not set and
+    ///   `type_satisfies_trait_bound`'s `type_param_carries_bound` fallback
+    ///   would return false-negative.
+    pub(super) fn check_assoc_type_bounds(
+        &mut self,
+        associated_types: &[TraitAssociatedTypeInfo],
+        entries: &HashMap<String, ImplAliasEntry>,
+        trait_name: &str,
+        target_name: &str,
+        id: &ImplDecl,
+    ) {
+        // Pre-collect impl-side type-param bounds. Keys are param names
+        // (e.g. `T`), values are bound trait names. Reused across all assoc
+        // types in this impl.
+        let impl_param_bounds: HashMap<String, Vec<String>> =
+            self.collect_type_param_bounds(id.type_params.as_ref(), id.where_clause.as_ref());
+        let impl_param_names: HashSet<String> = id
+            .type_params
+            .as_ref()
+            .map(|tps| tps.iter().map(|tp| tp.name.clone()).collect())
+            .unwrap_or_default();
+
+        for assoc in associated_types {
+            if assoc.bounds.is_empty() {
+                continue;
+            }
+            let Some(entry) = entries.get(&assoc.name) else {
+                continue;
+            };
+            let expr = entry.expr.clone();
+            let entry_span = expr.1.clone();
+            let resolved = self.resolve_type_expr(&expr);
+            // Skip bounds checking when the RHS itself failed to resolve.
+            // `resolve_type_expr` already emitted the primary diagnostic;
+            // running `type_satisfies_trait_bound(&Ty::Error, _)` here would
+            // produce a spurious cascading `BoundsNotSatisfied` on top of it.
+            if matches!(resolved, Ty::Error) {
+                continue;
+            }
+            for bound in &assoc.bounds {
+                let bound_name = &bound.name;
+                let bound_key = self.trait_defs_key_for_bound(bound_name);
+                let satisfied = match &resolved {
+                    Ty::Named { name, .. } if impl_param_names.contains(name) => {
+                        // Impl type-param: check the impl's own bounds map.
+                        impl_param_bounds.get(name).is_some_and(|bs| {
+                            bs.iter()
+                                .any(|b| b == &bound_key || self.trait_extends(b, &bound_key))
+                        })
+                    }
+                    _ => self.type_satisfies_trait_bound(&resolved, bound_name),
+                };
+                if satisfied {
+                    continue;
+                }
+                self.report_error(
+                    TypeErrorKind::BoundsNotSatisfied,
+                    &entry_span,
+                    format!(
+                        "associated type `{}.{}` in impl for `{}` is bound by trait \
+                         `{}` but `{}` does not implement `{}`",
+                        trait_name,
+                        assoc.name,
+                        target_name,
+                        bound_name,
+                        resolved.user_facing(),
+                        bound_name,
+                    ),
+                );
+            }
+        }
+    }
+
+    pub(in crate::check) fn resolve_impl_associated_type(&mut self, alias: &str) -> Option<Ty> {
+        let scope_index = self.impl_alias_scopes.len().checked_sub(1)?;
+        let expr = {
+            let scope = &mut self.impl_alias_scopes[scope_index];
+            if let Some(entry) = scope.entries.get_mut(alias) {
+                if let Some(resolved) = &entry.resolved {
+                    return Some(resolved.clone());
+                }
+                if entry.resolving {
+                    let should_report =
+                        scope.report_missing && scope.missing_reported.insert(alias.to_string());
+                    let err_span = entry.expr.1.clone();
+                    if should_report {
+                        self.report_error(
+                            TypeErrorKind::InvalidOperation,
+                            &err_span,
+                            format!("associated type `Self.{alias}` recursively references itself"),
+                        );
+                    }
+                    return Some(Ty::Error);
+                }
+                entry.resolving = true;
+                entry.expr.clone()
+            } else {
+                let should_report =
+                    scope.report_missing && scope.missing_reported.insert(alias.to_string());
+                let err_span = scope.span.clone();
+                if should_report {
+                    self.report_error(
+                        TypeErrorKind::UndefinedType,
+                        &err_span,
+                        format!("type alias `Self.{alias}` is not defined in this impl"),
+                    );
+                }
+                return Some(Ty::Error);
+            }
+        };
+        let ty = self.resolve_type_expr(&expr);
+        if let Some(scope) = self.impl_alias_scopes.get_mut(scope_index) {
+            if let Some(entry) = scope.entries.get_mut(alias) {
+                entry.resolving = false;
+                entry.resolved = Some(ty.clone());
+            }
+        }
+        Some(ty)
+    }
+
+    /// Point each root trait's supertrait edges at the supertrait's
+    /// `trait_defs` key, as imported traits' edges already are.
+    ///
+    /// `collect_types` records a root trait's edges before the root's imports
+    /// are bound, so it can only keep the source spelling. Once the imports
+    /// are bound here, `trait Pretty: Display` or a flat-imported `trait Mine:
+    /// Left` resolves to its declaring trait, and every walk of the chain,
+    /// such as a trait object's layout, reaches that trait's identity.
+    pub(super) fn canonicalize_root_super_trait_edges(&mut self, program: &Program) {
+        for (item, _) in &program.items {
+            let Item::Trait(td) = item else {
+                continue;
+            };
+            let Some(supers) = &td.super_traits else {
+                continue;
+            };
+            let keys: Vec<String> = supers
+                .iter()
+                .map(|bound| self.trait_ref_lookup_key(&bound.name))
+                .collect();
+            if self.trait_super.contains_key(&td.name) {
+                self.trait_super.insert(td.name.clone(), keys);
+            }
+        }
+    }
+
+    /// Type-parameter names declared by `trait_name`, or empty when the trait
+    /// is not (yet) registered.
+    pub(super) fn trait_type_param_names(&self, trait_name: &str) -> Vec<String> {
+        let key = self.trait_ref_lookup_key(trait_name);
+        self.trait_defs
+            .get(&key)
+            .or_else(|| self.trait_defs.get(trait_name))
+            .map(|info| info.type_params.clone())
+            .unwrap_or_default()
+    }
+
+    pub(super) fn register_trait_method_sig(
+        &mut self,
+        trait_name: &str,
+        method: &hew_parser::ast::TraitMethod,
+        span: &Span,
+    ) {
+        let method_key = format!("{trait_name}::{}", method.name);
+        // Declaration IDs are minted at the checker registration boundary and
+        // handed to HIR verbatim. The key is source-owned, not a linker name.
+        // A trait declaration owns its method IDs directly. During the
+        // multi-module signature pass the local-trait scope is intentionally
+        // not retained, so routing this declaration through the generic
+        // reference resolver can collapse two same-leaf module traits to the
+        // bare spelling. Prefer the active source module's exact declaration
+        // key; imported/default-method references still use the resolver.
+        let declaration_key = self
+            .current_module
+            .as_ref()
+            .filter(|module| {
+                self.trait_defs
+                    .contains_key(&format!("{module}.{trait_name}"))
+            })
+            .map_or_else(
+                || self.trait_ref_lookup_key(trait_name),
+                |module| format!("{module}.{trait_name}"),
+            );
+        // Keyed by the trait's own declaration key, which is stable across the
+        // implementing modules an inherited default is re-registered under.
+        let trait_params = self.trait_type_param_names(trait_name);
+        if !trait_params.is_empty() {
+            let owner = Self::method_declaration_key(&declaration_key, &method.name);
+            self.reject_shadowing_method_type_params(
+                method.type_params.as_ref(),
+                &[(trait_params, format!("trait `{trait_name}`"))],
+                &owner,
+                &method.span,
+            );
+        }
+        let Some(trait_id) = self.require_declaration_path(&declaration_key, span) else {
+            return;
+        };
+        let method_path = format!("{}::{}", trait_id.full_path(), method.name);
+        let Some(method_id) = self.require_declaration_path(&method_path, &method.span) else {
+            return;
+        };
+        let ids = (trait_id, method_id);
+        self.trait_method_ids
+            .insert(ids.1.full_path().to_string(), ids.clone());
+        if self.registration_is_flat_file_import {
+            self.trait_method_ids_by_binding.insert(
+                (
+                    None,
+                    self.current_module_idx,
+                    trait_name.to_string(),
+                    method.name.clone(),
+                ),
+                ids,
+            );
+        }
+        // The owner-qualified key (`{module}.{trait}::{method}`) is collision-free
+        // even when two imported modules export a same-named trait. The bare
+        // `{trait}::{method}` key is first-write-wins, so with a same-name
+        // collision it holds whichever module registered first and silently
+        // shadows the other's signature. Trait-conformance resolves an aliased
+        // trait to its source owner and looks up this qualified key
+        // authoritatively, so it must always be present when an owner is known.
+        let owner_qualified_key = self
+            .current_module
+            .as_ref()
+            .map(|module| format!("{module}.{method_key}"));
+
+        // Build the trait method's FnDecl once; reuse it for both the bare and
+        // owner-qualified registrations. `Self::Bar` projection is active while
+        // the signature resolves so `Self::Item` becomes a deferred
+        // `Ty::AssocType` carrier instead of an opaque named type.
+        let receiver_identity_is_valid =
+            self.validate_trait_receiver_identity_method(trait_name, method);
+        let mut attributes = method.attributes.clone();
+        if !receiver_identity_is_valid {
+            attributes.retain(|attribute| attribute.name != "returns_receiver");
+        }
+        let decl = FnDecl {
+            origin: hew_parser::ast::DeclarationOrigin::Authored,
+            attributes,
+            is_generator: false,
+            visibility: hew_parser::ast::Visibility::Private,
+            name: method.name.clone(),
+            type_params: method.type_params.clone(),
+            params: method.params.clone(),
+            return_type: method.return_type.clone(),
+            where_clause: method.where_clause.clone(),
+            body: hew_parser::ast::Block {
+                stmts: vec![],
+                trailing_expr: None,
+            },
+            doc_comment: None,
+            decl_span: span.clone(),
+            fn_span: 0..0,
+            intrinsic: None,
+            consumes_self: method.consumes_self,
+        };
+
+        let prev_trait_self = self
+            .current_trait_for_self_projection
+            .replace(declaration_key);
+        // Register the owner-qualified key first (collision-free) regardless of
+        // whether the bare key is already taken by another module's same-named
+        // trait, so the authoritative lookup never misses for a known owner.
+        if let Some(qualified_key) = owner_qualified_key.as_ref() {
+            if !self.fn_sigs.contains_key(qualified_key) {
+                self.register_fn_sig_with_name(qualified_key, &decl);
+            }
+        }
+        // The bare key keeps first-write-wins for the local/non-aliased path.
+        if !self.fn_sigs.contains_key(&method_key) {
+            self.register_fn_sig_with_name(&method_key, &decl);
+        }
+        self.current_trait_for_self_projection = prev_trait_self;
+    }
+
+    pub(in crate::check) fn trait_receiver_identity_is_structurally_valid(
+        method: &hew_parser::ast::TraitMethod,
+    ) -> bool {
+        let identity_attributes: Vec<_> = method
+            .attributes
+            .iter()
+            .filter(|attribute| attribute.name == "returns_receiver")
+            .collect();
+        if identity_attributes.is_empty() {
+            return false;
+        }
+
+        let returns_self_type = method.return_type.as_ref().is_some_and(|(ty, _)| {
+            matches!(
+                ty,
+                TypeExpr::Named { name, type_args }
+                    if name == "Self" && type_args.as_ref().is_none_or(Vec::is_empty)
+            )
+        });
+        let body_is_exact = method.body.as_ref().is_none_or(|body| {
+            let direct_self_tail = body
+                .trailing_expr
+                .as_deref()
+                .is_some_and(|(expr, _)| matches!(expr, Expr::Identifier(name) if name == "self"));
+            direct_self_tail && !block_has_explicit_return(body)
+        });
+        identity_attributes.len() == 1
+            && identity_attributes[0].args.is_empty()
+            && method.consumes_self
+            && returns_self_type
+            && body_is_exact
+    }
+
+    pub(super) fn validate_trait_receiver_identity_method(
+        &mut self,
+        trait_name: &str,
+        method: &hew_parser::ast::TraitMethod,
+    ) -> bool {
+        let declares_identity = method
+            .attributes
+            .iter()
+            .any(|attribute| attribute.name == "returns_receiver");
+        if !declares_identity {
+            return false;
+        }
+        let valid = Self::trait_receiver_identity_is_structurally_valid(method);
+        if !valid {
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                &method.span,
+                format!(
+                    "`#[returns_receiver]` on trait method `{trait_name}.{}` requires \
+                     one zero-argument attribute, a `consume self` receiver, the exact \
+                     `Self` return type, and any default body to have one direct trailing \
+                     `self` with no alternate `return` path",
+                    method.name
+                ),
+            );
+        }
+        valid
+    }
+
+    /// Substitute trait-side type references into impl-side concrete types.
+    ///
+    /// Walks `ty` recursively and replaces:
+    /// * `Ty::Named { name: "Self", args: [] }` → `impl_self`
+    /// * `Ty::Named { name: <trait type param>, args: [] }` → the impl-supplied
+    ///   type arg from `trait_param_map`
+    /// * `Ty::AssocType { base: Self, .. }` → a concrete projection carrier
+    ///   over `impl_self`, then resolves it through `project_assoc_types`
+    ///
+    /// Used by [`Self::check_impl_method_against_trait`] to project the trait
+    /// method's declared signature into the concrete shape the impl method
+    /// must match. Returns the input unchanged for any subterm the
+    /// substitution cannot resolve, so the later structural comparison remains
+    /// fail-closed instead of guessing from presentation spellings.
+    pub(super) fn substitute_trait_sig_for_impl(
+        &self,
+        ty: &Ty,
+        impl_self: &Ty,
+        trait_param_map: &HashMap<String, Ty>,
+    ) -> Ty {
+        match ty {
+            Ty::Named { name, args, .. } if args.is_empty() && name == "Self" => impl_self.clone(),
+            Ty::Named { name, args, .. } if args.is_empty() => {
+                if let Some(mapped) = trait_param_map.get(name) {
+                    return mapped.clone();
+                }
+                ty.clone()
+            }
+            Ty::AssocType {
+                base,
+                trait_name: tn,
+                assoc_name,
+            } => {
+                let new_base = self.substitute_trait_sig_for_impl(base, impl_self, trait_param_map);
+                self.project_assoc_types(&Ty::AssocType {
+                    base: Box::new(new_base),
+                    trait_name: tn.clone(),
+                    assoc_name: assoc_name.clone(),
+                })
+            }
+            _ => ty.map_children_pub(&|child| {
+                self.substitute_trait_sig_for_impl(child, impl_self, trait_param_map)
+            }),
+        }
+    }
+
+    /// Resolve a trait reference as written in an `impl ... for ...` block to
+    /// its OWNER-QUALIFIED identity, so trait conformance never keys off the
+    /// bare `Trait::method` name. The bare name is polluted under same-name
+    /// collisions: `register_trait_method_sig` writes the bare `fn_sigs` key
+    /// first-write-wins, so when two imported modules (or an import plus a
+    /// local declaration) share a trait name, the bare key holds whichever
+    /// registered first and silently shadows the others. Resolution covers all
+    /// three reference kinds uniformly:
+    ///
+    ///   * **aliased / imported-bare** — `published_bare_trait_owners` maps the
+    ///     in-scope binding to its source identity `{module}.{Trait}`. The
+    ///     owner-qualified `fn_sigs` key `{module}.{Trait}::{method}` is
+    ///     collision-free (always registered for module traits).
+    ///   * **local / root** — a trait declared in the importing program shadows
+    ///     any imported same-name trait. The local `trait_defs[bare]` entry is
+    ///     authoritative (last-write-wins), so its required method set and
+    ///     signatures are derived from that `TraitInfo` directly, never from the
+    ///     polluted bare `fn_sigs` key.
+    ///   * **unambiguous single-owner import** — recovered by scanning
+    ///     `trait_defs` for a single `{module}.{Trait}` qualified key.
+    ///
+    /// `trait_name` is the name as written (`A`, `Source`). Returns the resolved
+    /// identity; `owner` is the defining module (`None` for a local/root trait
+    /// or an unresolved name), and `is_local` records the local-shadow case so
+    /// callers source the required-method set from the local `TraitInfo`.
+    pub(in crate::check) fn resolve_trait_conformance_identity(
+        &self,
+        trait_name: &str,
+    ) -> ResolvedTraitIdentity {
+        // A primary trait reference (`impl <Trait> for ...`, a bound) is spelled
+        // in the CURRENT module, so it resolves through the current scope: local
+        // shadow first, then the importer's published-bare binding, then a
+        // single-owner suffix scan. This is the `Current` arm of the one
+        // canonical resolver — keeping every landed H1–H10 behaviour byte-for-byte.
+        self.resolve_trait_ref(trait_name, TraitRefScope::Current)
+    }
+
+    /// Whether a primary trait reference resolves to a LOCAL declaration. Routes
+    /// through the one canonical resolver so callers outside this module (the
+    /// orphan rule) decide "is this trait local" by the same authoritative
+    /// identity every trait-reference site uses, never the bare spelling.
+    pub(in crate::check) fn trait_ref_is_local(&self, trait_name: &str) -> bool {
+        self.resolve_trait_ref(trait_name, TraitRefScope::Current)
+            .is_local
+    }
+
     /// The owner-qualified SOURCE identity (`owner.Name`) a bare TRAIT reference
     /// resolves to when exactly one imported module PUBLISHED the bare binding
     /// into `importer` and a qualified def for it is registered; `None` otherwise
@@ -1277,35 +2295,6 @@ impl Checker {
         }
     }
 
-    /// The `trait_impls_set` / `trait_impl_method_names` identity for an impl
-    /// target named `type_name`.
-    ///
-    /// A generated monomorphic builtin enum (`SendError`, `TimeoutError`,
-    /// `LinkError`, `Delivery`, …) is declared in a stdlib `.hew` source and
-    /// carries exactly one identity: the catalog's `canonical_name`. The
-    /// resolver already stamps that spelling onto every annotation, field and
-    /// variant payload naming the declaration, so registering its impls under
-    /// the bare leaf mints an entry lookup can never find — which is why
-    /// `ActorError.Rejected(reason)` could not interpolate `reason` while a
-    /// bare `SendError.Full` could. Both sides now select the catalog identity.
-    ///
-    /// Every other receiver kind (primitives, `Vec`/`HashMap`/generics, the
-    /// synthetic cursors) has its own arm in
-    /// `canonical_primitive_or_builtin_key_for_impl_name` and never reaches
-    /// the module-qualifying fallback.
-    /// The canonical identity of an `impl` target spelled through a module
-    /// binding, or `None` when the spelling is already an identity (a bare
-    /// local name, a builtin, an exact owner-qualified path).
-    ///
-    /// Only a qualified spelling is resolved: a bare name is the declaring
-    /// scope's own lexical spelling and the surrounding registration already
-    /// owns its qualification.
-    pub(in crate::check) fn canonical_impl_target_identity(&self, name: &str) -> Option<String> {
-        name.contains('.')
-            .then(|| self.canonical_nominal_name(name))
-            .flatten()
-    }
-
     pub(in crate::check) fn trait_impl_type_identity(&self, type_name: &str) -> String {
         self.canonical_primitive_or_builtin_key_for_impl_name(type_name)
             .or_else(|| {
@@ -1376,102 +2365,6 @@ impl Checker {
             .entry((type_identity, trait_identity))
             .or_default();
         entry.extend(method_names);
-    }
-
-    /// Canonical receiver key used by the primitive-and-builtin trait impl
-    /// table.  Returns `Some(canonical)` for any receiver kind whose user
-    /// trait impls cannot be hung off `type_defs`:
-    ///
-    /// * Primitives — keyed by `Ty::canonical_lowering_name()`.  This collapses
-    ///   the user-facing alias set (`isize` → `i64`) so registration and
-    ///   dispatch agree on a single key.  `int` and `Int` are no longer
-    ///   accepted; the resolver hard-errors at the type-position lookup.
-    /// * Compiler-builtin generics `Vec`, `HashMap`, `HashSet`, `Generator`,
-    ///   and the synthetic iterator cursors — keyed by their
-    ///   catalog name; these lack a user-selectable nominal declaration entry
-    ///   that executable impl dispatch can safely attach methods to.
-    ///
-    /// Returns `None` for receivers that already flow through `type_defs`
-    /// (user structs, actors, opaque handle types).
-    #[must_use]
-    pub(crate) fn canonical_primitive_or_builtin_key(ty: &Ty) -> Option<String> {
-        if let Some(canonical) = ty.canonical_lowering_name() {
-            return Some(canonical.to_string());
-        }
-        if let Ty::Named {
-            builtin: Some(builtin),
-            ..
-        } = ty
-        {
-            if let Some(identity) = match builtin {
-                BuiltinType::VecIter => Some("std.builtins.VecIter"),
-                BuiltinType::HashMapIter => Some("std.builtins.HashMapIter"),
-                _ => None,
-            } {
-                return Some(identity.to_string());
-            }
-            // An actor is the type of its handle, so an actor handle's
-            // canonical key is the actor's own nominal, never a builtin
-            // presentation name.
-            if builtin.is_collection()
-                || matches!(
-                    builtin,
-                    BuiltinType::Generator | BuiltinType::ChildRef | BuiltinType::RemotePid
-                )
-            {
-                return Some(builtin.canonical_name().to_string());
-            }
-        }
-        None
-    }
-
-    /// Canonical receiver key at an impl declaration. Context-free raw-name
-    /// lookup intentionally excludes synthetic cursors because a user may
-    /// declare the same leaf. The provenance-aware resolver admits them only
-    /// while registering their shipped stdlib declarations.
-    pub(super) fn canonical_primitive_or_builtin_key_for_impl_name(
-        &self,
-        name: &str,
-    ) -> Option<String> {
-        Self::canonical_primitive_or_builtin_key_from_name(name).or_else(|| {
-            self.resolved_builtin_type(name)
-                .filter(|builtin| {
-                    matches!(
-                        builtin,
-                        BuiltinType::VecIter
-                            | BuiltinType::HashMapIter
-                            | BuiltinType::ChildRef
-                            | BuiltinType::RemotePid
-                    )
-                })
-                .map(|builtin| match builtin {
-                    BuiltinType::VecIter => "std.builtins.VecIter".to_string(),
-                    BuiltinType::HashMapIter => "std.builtins.HashMapIter".to_string(),
-                    BuiltinType::ChildRef | BuiltinType::RemotePid => {
-                        builtin.canonical_name().to_string()
-                    }
-                    _ => unreachable!("filter admits only compiler carrier builtins"),
-                })
-        })
-    }
-
-    /// Same as [`Self::canonical_primitive_or_builtin_key`] but accepts the
-    /// raw type-name string seen at impl-block registration (e.g. `"int"`,
-    /// `"string"`, `"Vec"`).  Returns `None` for names that aren't primitive
-    /// aliases or compiler-builtin generics.
-    #[must_use]
-    pub(in crate::check) fn canonical_primitive_or_builtin_key_from_name(
-        name: &str,
-    ) -> Option<String> {
-        if let Some(prim) = Ty::from_name(name) {
-            return Self::canonical_primitive_or_builtin_key(&prim);
-        }
-        if let Some(builtin) = crate::lookup_builtin_type(name) {
-            if builtin.is_collection() || matches!(builtin, BuiltinType::Generator) {
-                return Some(builtin.canonical_name().to_string());
-            }
-        }
-        None
     }
 
     /// Record an `impl <Trait> for <PrimitiveOrBuiltinGeneric>` method in the
@@ -1641,783 +2534,5 @@ impl Checker {
             .into_iter()
             .next()
             .map(|(trait_name, sig)| (trait_name.clone(), sig.clone()))
-    }
-
-    pub(in crate::check) fn register_receive_fn(&mut self, actor_name: &str, rf: &ReceiveFnDecl) {
-        let mut generic_bindings = std::collections::HashMap::new();
-        if let Some(type_params) = &rf.type_params {
-            for tp in type_params {
-                generic_bindings.insert(
-                    tp.name.clone(),
-                    Ty::Named {
-                        builtin: None,
-                        name: tp.name.clone(),
-                        args: vec![],
-                    },
-                );
-            }
-        }
-        if !generic_bindings.is_empty() {
-            self.generic_ctx.push(generic_bindings);
-        }
-
-        let mut hole_vars = Vec::new();
-        let rf_scope = self.collect_type_param_scope_with_assoc_bindings(
-            rf.type_params.as_ref(),
-            rf.where_clause.as_ref(),
-            &mut hole_vars,
-        );
-        let pushed_rf_bounds = !rf_scope.bounds.is_empty();
-        if pushed_rf_bounds {
-            self.current_type_param_bounds.push(rf_scope.clone());
-        }
-
-        let param_names = rf.params.iter().map(|p| p.name.clone()).collect();
-        let params = rf
-            .params
-            .iter()
-            .map(|p| self.resolve_registered_annotation_ty(&p.ty, &mut hole_vars))
-            .collect();
-        let declared_return_type = rf.return_type.as_ref().map_or(Ty::Unit, |ret| {
-            self.resolve_registered_annotation_ty(ret, &mut hole_vars)
-        });
-        let return_type = if rf.is_generator {
-            Ty::stream(declared_return_type)
-        } else {
-            declared_return_type
-        };
-
-        if pushed_rf_bounds {
-            self.current_type_param_bounds.pop();
-        }
-        if rf.type_params.as_ref().is_some_and(|tp| !tp.is_empty()) {
-            self.generic_ctx.pop();
-        }
-
-        let type_param_bounds =
-            self.collect_type_param_bounds(rf.type_params.as_ref(), rf.where_clause.as_ref());
-        let sig = FnSig {
-            type_params: rf.type_params.as_ref().map_or(vec![], |params| {
-                params.iter().map(|p| p.name.clone()).collect()
-            }),
-            type_param_bounds,
-            param_names,
-            params,
-            return_type,
-            ..FnSig::default()
-        };
-
-        let method_name = format!("{}::{}", actor_name, rf.name);
-        if rf.is_generator {
-            self.receive_generator_methods.insert(method_name.clone());
-        }
-        if matches!(
-            rf.return_type.as_ref().map(|ty| &ty.0),
-            Some(hew_parser::ast::TypeExpr::Fallible { .. })
-        ) {
-            self.receive_fails_methods.insert(method_name.clone());
-        }
-        self.actor_receive_methods.insert(method_name.clone());
-        self.record_fn_sig_inference_holes(&method_name, hole_vars);
-        self.fn_type_param_assoc_bindings
-            .insert(method_name.clone(), rf_scope.assoc_bindings);
-        self.fn_sigs.insert(method_name, sig);
-    }
-
-    /// IMPORT-lexical nominal authority (rc1-F1 stage C): a bare name the
-    /// declaring file does not itself declare resolves through the declaring
-    /// module's DIRECT imports — through the names each import actually
-    /// BINDS. A named item import binds exactly its
-    /// bound name, so `import sm::{ Tok as ForeignTok }` binds `ForeignTok`
-    /// and leaves bare `Tok` meaning NOTHING here. Exactly one bound source
-    /// declaration across the import set mints its declaring file's
-    /// identity; zero or several → `None`: the spelling stays as written and
-    /// the contract compare fails closed — ambiguity never picks a winner on
-    /// the C-ABI axis.
-    pub(in crate::check) fn extern_nominal_imported_owner(&self, name: &str) -> Option<String> {
-        // (declaring file, source-declared name) pairs the bound spelling
-        // denotes. Deduped: two import edges to one declaration are one
-        // meaning, not an ambiguity.
-        let mut declarations = self
-            .current_module_direct_import_bindings
-            .iter()
-            .filter_map(|(module, spec)| {
-                // Which SOURCE name does the bound spelling `name` denote
-                // under this import? None = this import does not bind it.
-                let source_name = match spec {
-                    None => return None,
-                    Some(ImportSpec::Names(names)) => names
-                        .iter()
-                        .find(|n| n.alias.as_deref().unwrap_or(&n.name) == name)?
-                        .name
-                        .clone(),
-                };
-                Some((module, source_name))
-            })
-            .flat_map(|(module, source_name)| {
-                self.module_source_paths
-                    .get(module)
-                    .into_iter()
-                    .flatten()
-                    .filter(|source| {
-                        self.file_type_decls
-                            .get(*source)
-                            .is_some_and(|declared| declared.contains(&source_name))
-                    })
-                    .map(|source| (source, source_name.clone()))
-                    .collect::<Vec<_>>()
-            })
-            .collect::<Vec<_>>();
-        declarations.sort_unstable();
-        declarations.dedup();
-        match declarations.as_slice() {
-            [(single, source_name)] => Some(format!(
-                "{}.{source_name}",
-                self.identity.module_path_for_source(single)?
-            )),
-            _ => None,
-        }
-    }
-
-    /// Resolve an extern callable's nominal types to the registered source
-    /// declaration used by field annotations and ordinary callable signatures.
-    pub(super) fn resolve_extern_signature_nominals(&self, ty: &Ty) -> Ty {
-        match ty {
-            Ty::Named {
-                name,
-                args,
-                builtin,
-            } => {
-                // The callable consumes source values, including fields from
-                // peer files assembled into this module. Resolve their registered
-                // declaration rather than substituting the ABI contract's file
-                // provenance. Already-qualified source identities stay intact.
-                let resolved = self.canonical_nominal_name(name).or_else(|| {
-                    (!name.contains('.') && self.extern_nominal_file_owner(name).is_none())
-                        .then(|| self.extern_nominal_imported_owner(name))
-                        .flatten()
-                });
-                Ty::Named {
-                    name: resolved.unwrap_or_else(|| name.clone()),
-                    args: args
-                        .iter()
-                        .map(|arg| self.resolve_extern_signature_nominals(arg))
-                        .collect(),
-                    builtin: *builtin,
-                }
-            }
-            _ => ty.map_children_pub(&|child| self.resolve_extern_signature_nominals(child)),
-        }
-    }
-
-    /// FILE-lexical nominal authority: the item's own declaring file first,
-    /// then exactly one sibling file of the declaring module.
-    ///
-    /// The item's own file is known only inside the per-item registration
-    /// frame; outside it the sibling rule alone still decides, which is what
-    /// lets source type expressions ask the same question extern signatures do.
-    pub(in crate::check) fn extern_nominal_file_owner(&self, name: &str) -> Option<String> {
-        let declares = |source: &std::path::PathBuf| {
-            self.file_type_decls
-                .get(source)
-                .is_some_and(|declared| declared.contains(name))
-        };
-        if let Some(file) = self.current_item_source.as_ref() {
-            if declares(file) {
-                return Some(format!(
-                    "{}.{name}",
-                    self.identity.module_path_for_source(file)?
-                ));
-            }
-        }
-        let sources = self
-            .module_source_paths
-            .get(self.current_module.as_deref()?)?;
-        let mut declaring = sources.iter().filter(|source| declares(source));
-        let single = declaring.next()?;
-        if declaring.next().is_some() {
-            return None;
-        }
-        Some(format!(
-            "{}.{name}",
-            self.identity.module_path_for_source(single)?
-        ))
-    }
-
-    /// Diagnostic routing token for an item declared in `file` under
-    /// `module`: the file's own path when it is NOT the module's primary
-    /// source (a peer file of a directory module), else `None` (the module
-    /// identity routes as before). The CLI/LSP source maps carry an entry per
-    /// source file keyed by this exact rendering.
-    pub(in crate::check) fn item_file_routing_token(
-        &self,
-        module: Option<&str>,
-        file: Option<&std::path::PathBuf>,
-    ) -> Option<String> {
-        let file = file?;
-        let primary = self.module_source_paths.get(module?)?.first()?;
-        (file != primary).then(|| file.display().to_string())
-    }
-
-    /// Capture the source identity that diagnostic emission must use after the
-    /// current item frame has been cleared. Peer files need their path rather
-    /// than the assembled directory module's identity.
-    pub(in crate::check) fn current_diagnostic_source_module(&self) -> Option<String> {
-        self.item_file_routing_token(
-            self.current_module.as_deref(),
-            self.current_item_source.as_ref(),
-        )
-        .or_else(|| self.current_module.clone())
-    }
-
-    /// Resolve one extern declaration against the single-owner table
-    /// (rc1-F1 stage B): mint the symbol's contract, or run the canonicalized
-    /// structural compare against the established one — adopt on agreement,
-    /// register-then-report on conflict. The compare ALWAYS runs for a
-    /// further declaration of an established symbol (no span-based
-    /// same-site shortcut: a byte-offset span carries no file identity, and
-    /// peer files of one directory module can align spans exactly).
-    pub(super) fn resolve_extern_contract(
-        &mut self,
-        block_span: &Span,
-        declaration_ordinal: usize,
-        source_symbol: &str,
-        sig: &FnSig,
-        consuming_params: &[bool],
-        f: &hew_parser::ast::ExternFnDecl,
-    ) -> Option<crate::DefId> {
-        let declaration = self.require_declaration_occurrence(
-            block_span,
-            crate::DeclarationKind::ExternFunction,
-            declaration_ordinal,
-        )?;
-        if source_symbol.is_empty() {
-            // Template declarations (`#[extern_symbol("…{T}…")]`) have no
-            // call-independent symbol and therefore no symbol-keyed contract
-            // slot; they still register as extern declarations (call-target
-            // resolution, `unsafe` gating).
-            self.extern_table.register_detached_declaration(
-                declaration.clone(),
-                String::new(),
-                self.current_module.clone(),
-            );
-            return Some(declaration);
-        }
-        // Resolve the candidate signature's nominal identities NOW, in the
-        // declaring item's own lexical context (rc1-F1 stage C). The
-        // contract stores resolved signatures, so every later comparison is
-        // identity equality — no compare-time spelling repair, whose context
-        // would be the SECOND declaration's, not the declarer's.
-        let resolved_params = sig
-            .params
-            .iter()
-            .map(|ty| extern_contract_nominal_identity(self, ty))
-            .collect::<Vec<_>>();
-        let resolved_return = extern_contract_nominal_identity(self, &sig.return_type);
-        let Some((established_id, established)) = self
-            .extern_table
-            .established(source_symbol)
-            .map(|(id, contract)| (id, contract.clone()))
-        else {
-            self.extern_table.mint(crate::extern_table::ExternContract {
-                owner: declaration.clone(),
-                symbol: source_symbol.to_string(),
-                params: resolved_params,
-                return_type: resolved_return,
-                consuming_params: consuming_params.to_vec(),
-                is_variadic: f.is_variadic,
-                span: f.span.clone(),
-                declaring_module: self.current_module.clone(),
-                declaring_source: self.current_item_source.clone(),
-            });
-            return Some(declaration);
-        };
-        let agrees = established.params == resolved_params
-            && established.return_type == resolved_return
-            && established.consuming_params == consuming_params
-            && established.is_variadic == f.is_variadic;
-        if agrees {
-            // Single-owner property: a further agreeing declaration becomes
-            // another name of the ONE established ABI contract, keeping its
-            // OWN provenance (declaring module, endpoint).
-            self.extern_table.adopt_declaration(
-                declaration.clone(),
-                source_symbol.to_string(),
-                self.current_module.clone(),
-                established_id,
-            );
-        } else {
-            // Register FIRST, report second: the conflicting declaration
-            // must keep its `unsafe` gate and call-target endpoint while the
-            // hard error propagates (the unsafe registry is not conditional
-            // on ABI agreement).
-            self.extern_table.register_detached_declaration(
-                declaration.clone(),
-                source_symbol.to_string(),
-                self.current_module.clone(),
-            );
-            self.report_extern_contract_conflict(
-                source_symbol,
-                &established,
-                &resolved_params,
-                &resolved_return,
-                consuming_params,
-                f,
-            );
-        }
-        Some(declaration)
-    }
-
-    /// Report a declaration whose signature disagrees with the symbol's
-    /// established contract, attributing both sides to their declaring FILES.
-    pub(super) fn report_extern_contract_conflict(
-        &mut self,
-        source_symbol: &str,
-        established: &crate::extern_table::ExternContract,
-        resolved_params: &[Ty],
-        resolved_return: &Ty,
-        consuming_params: &[bool],
-        f: &hew_parser::ast::ExternFnDecl,
-    ) {
-        let established_description = extern_signature_description(
-            &established.params,
-            &established.return_type,
-            &established.consuming_params,
-            established.is_variadic,
-        );
-        // Describe the RESOLVED identities — the things actually compared —
-        // so two same-leaf nominals from different declaring files render
-        // distinguishably (`pkg.Tok` vs `pkg.aaa.Tok`), never as one
-        // spelling conflicting with itself.
-        let conflicting = extern_signature_description(
-            resolved_params,
-            resolved_return,
-            consuming_params,
-            f.is_variadic,
-        );
-        // File-accurate attribution (rc1-F1 stage C): item spans are
-        // file-relative byte offsets, so a declaration living in a peer
-        // file of a directory module must route to THAT file, never the
-        // module's primary source. The routing token is the declaring
-        // file itself when it differs from the module's primary file;
-        // otherwise the module identity routes as before.
-        let error_token = self
-            .item_file_routing_token(
-                self.current_module.as_deref(),
-                self.current_item_source.as_ref(),
-            )
-            .or_else(|| self.current_module.clone());
-        let note_token = self
-            .item_file_routing_token(
-                established.declaring_module.as_deref(),
-                established.declaring_source.as_ref(),
-            )
-            .or_else(|| established.declaring_module.clone());
-        self.errors.push(TypeError {
-            severity: crate::error::Severity::Error,
-            kind: TypeErrorKind::ConflictingExternDeclaration {
-                symbol_name: source_symbol.to_string(),
-            },
-            span: f.span.clone(),
-            message: format!(
-                "extern symbol `{source_symbol}` has conflicting declarations: \
-                 `{conflicting}` does not match the established `{established_description}`"
-            ),
-            notes: vec![
-                (
-                    established.span.clone(),
-                    format!(
-                        "the first declaration of `{source_symbol}` established `{established_description}`"
-                    ),
-                    note_token,
-                ),
-                (
-                    f.span.clone(),
-                    "extern \"C\" symbol declarations are program-wide unique: the linker \
-                     binds every call site to one implementation, so a redeclaration must \
-                     match the established contract exactly, even if this declaration is \
-                     never called"
-                        .to_string(),
-                    error_token.clone(),
-                ),
-            ],
-            suggestions: vec![format!(
-                "make every declaration of `{source_symbol}` use exactly `{established_description}`"
-            )],
-            source_module: error_token,
-        });
-    }
-
-    /// Establish the extern declaration identity of a registry-loaded C
-    /// function and register its `unsafe` gate.
-    ///
-    /// Registry metadata and codegen-intercepted witnesses publish these
-    /// functions under `key` in `fn_sigs` and the `unsafe` gate resolves a
-    /// call by that same key, so the declaration path is `key`. Shipped
-    /// modules routinely re-export one runtime symbol, so a bare path that is
-    /// already established is the same declaration reached through a second
-    /// mirror, not a conflict; a source declaration already gating `key`
-    /// keeps its own record.
-    pub(super) fn declare_contractless_extern(
-        &mut self,
-        module: crate::ModuleId,
-        module_path: &str,
-        key: &str,
-    ) {
-        let declaration = if let Some(existing) = self.lookup_declaration(key) {
-            existing.clone()
-        } else {
-            // One occurrence per source-less extern declaration in this
-            // module. The registry mirror and the layout witnesses are two
-            // inventories that both declare here; a per-inventory ordinal
-            // made them collide, and `declare` resolves a collision to the
-            // ESTABLISHED declaration, so the second inventory's rows
-            // silently adopted the first's identities and endpoints.
-            let ordinal = self
-                .contractless_extern_occurrences
-                .entry(module)
-                .or_insert(0);
-            let occurrence = crate::DeclarationOccurrence::new_with_synthetic_ordinal(
-                Some(module),
-                &(0..0),
-                *ordinal,
-                crate::DeclarationKind::ExternFunction,
-                0,
-            );
-            *ordinal += 1;
-            match self.identity.declare(occurrence, key) {
-                Ok(declaration) => declaration,
-                Err(error) => {
-                    self.errors.push(TypeError::new(
-                        TypeErrorKind::InvalidOperation,
-                        0..0,
-                        format!("extern declaration `{key}` in `{module_path}`: {error}"),
-                    ));
-                    return;
-                }
-            }
-        };
-        if !self.extern_table.requires_unsafe(key) {
-            self.extern_table.register_contractless_declaration(
-                declaration,
-                key.to_string(),
-                Some(module_path.to_string()),
-            );
-        }
-    }
-
-    #[expect(
-        clippy::too_many_lines,
-        reason = "extern registration validates ABI authority and records lifecycle provenance"
-    )]
-    pub(in crate::check) fn register_extern_block(&mut self, eb: &ExternBlock, block_span: &Span) {
-        // `extern "rt"` is the Hew-side declaration surface for runtime
-        // functions. Validate each declared symbol against the `stable`
-        // section of scripts/runtime-export-classification.toml. Fail-closed: an
-        // unclassified symbol is a hard error so the failure surfaces at check
-        // time rather than at link time or (worse) silently routing to a wrong
-        // runtime entry.
-        //
-        // `extern "C"` remains the raw user FFI surface (unsafe, no
-        // validation). Other ABI strings are not yet defined by the language
-        // and fall through to fn_sigs registration unchanged.
-        if eb.abi == "rt" {
-            let stable = crate::jit_symbols::stable_symbols();
-            for f in &eb.functions {
-                if !stable.contains(f.name.as_str()) {
-                    self.errors.push(TypeError {
-                        severity: crate::error::Severity::Error,
-                        kind: TypeErrorKind::ExternRtSymbolUnclassified {
-                            symbol_name: f.name.clone(),
-                            hint: format!(
-                                "add `\"{}\"` to the `stable` list in \
-                                 scripts/runtime-export-classification.toml, \
-                                 or use `extern \"C\"` for raw FFI symbols \
-                                 that are not part of the Hew runtime export ABI",
-                                f.name
-                            ),
-                        },
-                        span: f.span.clone(),
-                        message: format!(
-                            "`extern \"rt\" fn {}` names a symbol outside the stable \
-                             runtime export ABI — only symbols classified as `stable` \
-                             in scripts/runtime-export-classification.toml may appear in \
-                             `extern \"rt\"` blocks",
-                            f.name
-                        ),
-                        notes: vec![(
-                            f.span.clone(),
-                            "The `non-declarable` classification covers compiler-emitted, \
-                             lifecycle, and shutdown symbols. None of these may be named \
-                             by user code in `extern \"rt\"` blocks."
-                                .to_string(),
-                            self.current_module.clone(),
-                        )],
-                        suggestions: vec![format!(
-                            "add `\"{}\"` to the `stable` list in \
-                             scripts/runtime-export-classification.toml",
-                            f.name
-                        )],
-                        source_module: self.current_module.clone(),
-                    });
-                }
-            }
-        }
-
-        for (declaration_ordinal, f) in eb.functions.iter().enumerate() {
-            let mut hole_vars = Vec::new();
-            let param_names = f.params.iter().map(|p| p.name.clone()).collect();
-            let params: Vec<Ty> = f
-                .params
-                .iter()
-                .map(|p| {
-                    self.resolve_registered_annotation_ty_with_context(
-                        &p.ty,
-                        &mut hole_vars,
-                        TypeResolutionContext::ExternSignature,
-                    )
-                })
-                .collect();
-            let return_type = f.return_type.as_ref().map_or(Ty::Unit, |ret| {
-                self.resolve_registered_annotation_ty_with_context(
-                    ret,
-                    &mut hole_vars,
-                    TypeResolutionContext::ExternSignature,
-                )
-            });
-            for (index, ty) in params.iter().chain([&return_type]).enumerate() {
-                let Some(reason) = unmarshallable_extern_ty(ty) else {
-                    continue;
-                };
-                let span = f
-                    .params
-                    .get(index)
-                    .map_or_else(|| f.span.clone(), |param| param.ty.1.clone());
-                let position = if index < f.params.len() {
-                    format!("parameter {index}")
-                } else {
-                    "return type".to_string()
-                };
-                self.errors.push(TypeError::new(
-                    TypeErrorKind::InvalidOperation,
-                    span,
-                    format!(
-                        "`extern fn {}` {position} is `{}`, which {reason} and has no C-ABI representation",
-                        f.name,
-                        ty.user_facing()
-                    ),
-                ));
-            }
-            let mut sig = FnSig {
-                param_ownership: f
-                    .params
-                    .iter()
-                    .map(|param| crate::env::ParameterOwnership::from_consume(param.is_consume))
-                    .collect(),
-                param_names,
-                params,
-                return_type,
-                extern_symbol: self.ingest_extern_symbol_attrs(&f.attributes),
-                ..FnSig::default()
-            };
-            let source_symbol = sig.extern_symbol.as_ref().map_or_else(
-                || f.name.clone(),
-                |spec| {
-                    if spec.template.is_monomorphic() {
-                        spec.template.raw.clone()
-                    } else {
-                        String::new()
-                    }
-                },
-            );
-            let source_symbol_template = sig
-                .extern_symbol
-                .as_ref()
-                .filter(|spec| !spec.template.is_monomorphic())
-                .map(|spec| spec.template.clone());
-            // Call sites type against the registered source declaration, just
-            // as field annotations do. The ABI contract separately checks the
-            // declaring file's provenance when comparing repeated symbols.
-            // Template declarations carry signature type holes, not concrete
-            // nominals — leave them untouched.
-            if !source_symbol.is_empty() {
-                sig.params = sig
-                    .params
-                    .iter()
-                    .map(|ty| self.resolve_extern_signature_nominals(ty))
-                    .collect();
-                sig.return_type = self.resolve_extern_signature_nominals(&sig.return_type);
-            }
-            // Extern declarations use the same canonical owner spelling as
-            // ordinary free functions. Their exact DefId comes from the
-            // enclosing source occurrence inventoried before registration.
-            let key = scoped_module_item_name(self.canonical_fn_owner(), &f.name)
-                .unwrap_or_else(|| f.name.clone());
-            let consuming_params = f
-                .params
-                .iter()
-                .map(|param| param.is_consume)
-                .collect::<Vec<_>>();
-            let Some(declaration) = self.resolve_extern_contract(
-                block_span,
-                declaration_ordinal,
-                &source_symbol,
-                &sig,
-                &consuming_params,
-                f,
-            ) else {
-                continue;
-            };
-            self.record_fn_sig_inference_holes(&key, hole_vars);
-            self.fn_sigs.insert(key.clone(), sig);
-            if !self
-                .source_extern_declarations
-                .iter()
-                .any(|existing| existing.declaration == declaration)
-            {
-                self.source_extern_declarations
-                    .push(SourceExternDeclaration {
-                        declaration,
-                        symbol: source_symbol,
-                        symbol_template: source_symbol_template,
-                        signature_key: key.clone(),
-                        declaring_module: self.current_module.clone(),
-                        declaring_file: self.current_module_idx,
-                        direct_import_modules: self.current_module_direct_imports.clone(),
-                        consuming_params,
-                    });
-            }
-
-            self.record_root_value_binding(&f.name);
-        }
-    }
-
-    /// Join generated owned-result contracts to exact source extern
-    /// declarations and their consuming release declaration.
-    ///
-    /// The generated table is the only ownership authority. Source names
-    /// participate only after the contract's qualified nominal proves the
-    /// declaring module, so a root or foreign-module symbol collision cannot
-    /// inherit a lifecycle.
-    pub(in crate::check) fn derive_opaque_resource_candidate_graph(
-        &self,
-        fn_sigs: &HashMap<String, FnSig>,
-    ) -> OpaqueResourceCandidateGraph {
-        derive_opaque_resource_candidate_graph(
-            &self.source_extern_declarations,
-            fn_sigs,
-            &self.module_import_bindings,
-            &self.import_type_name_aliases,
-            &self.impl_method_declaration_ids,
-            crate::ffi_contracts::FFI_OWNERSHIP_CONTRACTS,
-            &self.identity,
-        )
-    }
-
-    #[cfg(test)]
-    pub(in crate::check) fn derive_opaque_resource_candidate_graph_for_contracts(
-        &self,
-        fn_sigs: &HashMap<String, FnSig>,
-        contracts: &[(&str, crate::ffi_contracts::ExternOwnershipContract)],
-    ) -> OpaqueResourceCandidateGraph {
-        derive_opaque_resource_candidate_graph(
-            &self.source_extern_declarations,
-            fn_sigs,
-            &self.module_import_bindings,
-            &self.import_type_name_aliases,
-            &self.impl_method_declaration_ids,
-            contracts,
-            &self.identity,
-        )
-    }
-
-    /// Snapshot the compiler-assumed part of the implicit prelude before source
-    /// registration begins.
-    ///
-    /// The prelude manifest is deliberately broader than this protected set:
-    /// ordinary builtins remain normal lexical bindings and may be shadowed by
-    /// user declarations. Only declaration-level lang items plus the core
-    /// enum/desugaring heads below are names the compiler cannot let source
-    /// replace without changing language semantics.
-    pub(in crate::check) fn capture_protected_prelude_bindings(&mut self) {
-        self.protected_prelude_bindings.clear();
-        self.protected_prelude_declaration_collisions.clear();
-
-        let authority = crate::stdlib_authority::authority();
-        let prelude_exports = authority.prelude_exports();
-        let mut protected_names: HashSet<String> = authority
-            .lang_items()
-            .values()
-            .filter(|binding| {
-                matches!(
-                    binding.kind,
-                    crate::stdlib_authority::AuthorityDeclarationKind::Type
-                        | crate::stdlib_authority::AuthorityDeclarationKind::Trait
-                )
-            })
-            .map(|binding| binding.declaration.clone())
-            .collect();
-        // Option/Result construction and propagation, plus for-loop
-        // conversion, are compiler desugarings whose declarations predate the
-        // corresponding lang-item annotations.
-        protected_names.extend(
-            ["Option", "Result", "IntoIterator"]
-                .into_iter()
-                .map(str::to_string),
-        );
-
-        for export in prelude_exports {
-            let source_name = &export.name;
-            let binding = export.alias.as_ref().unwrap_or(source_name);
-            if protected_names.contains(source_name) {
-                self.protected_prelude_bindings
-                    .insert(binding.clone(), export.module.clone());
-            }
-        }
-    }
-
-    pub(in crate::check) fn reject_protected_prelude_declaration(
-        &mut self,
-        name: &str,
-        span: &Span,
-    ) -> bool {
-        let owner = self.current_module.clone();
-        self.reject_protected_prelude_declaration_for_owner(owner.as_deref(), name, span)
-    }
-
-    /// Reject a user declaration that would replace an always-in-scope prelude
-    /// binding. Authority follows the declaration's owner, not whichever
-    /// importer happens to be active while that declaration is published.
-    pub(super) fn reject_protected_prelude_declaration_for_owner(
-        &mut self,
-        declaration_owner: Option<&str>,
-        name: &str,
-        span: &Span,
-    ) -> bool {
-        let compiling_canonical_stdlib = self.checking_embedded_builtins
-            || self.in_stdlib_registration
-            || self
-                .canonical_std_module_sources
-                .contains(declaration_owner.unwrap_or_default())
-            || (declaration_owner.is_none() && !self.canonical_std_root_sources.is_empty());
-        if compiling_canonical_stdlib || !self.protected_prelude_bindings.contains_key(name) {
-            return false;
-        }
-        let declaration_key = (declaration_owner.map(str::to_string), name.to_string());
-        if self
-            .protected_prelude_declaration_collisions
-            .insert(declaration_key)
-        {
-            let mut error = TypeError::new(
-                TypeErrorKind::PreludeDeclCollision,
-                span.clone(),
-                format!(
-                    "declaration `{name}` collides with the protected prelude binding `{name}`"
-                ),
-            );
-            error.source_module = declaration_owner.map(str::to_string);
-            self.errors.push(error);
-        }
-        true
     }
 }

@@ -1,3 +1,4 @@
+//! Checker methods grouped by responsibility: synthesize.
 //! Split from `expressions.rs`: checker methods, part 1 of 5.
 #![allow(
     unused_imports,
@@ -23,109 +24,6 @@ use crate::BuiltinType;
 use std::collections::VecDeque;
 
 impl Checker {
-    pub(super) fn lambda_generic_schema_ty(
-        ty: &Ty,
-        generic_param_names: &HashMap<u32, String>,
-    ) -> Ty {
-        match ty {
-            Ty::Var(v) => generic_param_names.get(&v.0).map_or_else(
-                || ty.clone(),
-                |name| Ty::Named {
-                    builtin: None,
-                    name: name.clone(),
-                    args: vec![],
-                },
-            ),
-            Ty::Named {
-                name,
-                args,
-                builtin,
-            } => Ty::Named {
-                name: name.clone(),
-                builtin: *builtin,
-                args: args
-                    .iter()
-                    .map(|arg| Self::lambda_generic_schema_ty(arg, generic_param_names))
-                    .collect(),
-            },
-            Ty::Tuple(ts) => Ty::Tuple(
-                ts.iter()
-                    .map(|elem| Self::lambda_generic_schema_ty(elem, generic_param_names))
-                    .collect(),
-            ),
-            Ty::Array(inner, n) => Ty::Array(
-                Box::new(Self::lambda_generic_schema_ty(inner, generic_param_names)),
-                *n,
-            ),
-            Ty::Slice(inner) => Ty::Slice(Box::new(Self::lambda_generic_schema_ty(
-                inner,
-                generic_param_names,
-            ))),
-            Ty::Pointer {
-                is_mutable,
-                pointee,
-            } => Ty::Pointer {
-                is_mutable: *is_mutable,
-                pointee: Box::new(Self::lambda_generic_schema_ty(pointee, generic_param_names)),
-            },
-            Ty::Function {
-                capabilities,
-                params,
-                ret,
-            } => Ty::Function {
-                capabilities: *capabilities,
-                params: params
-                    .iter()
-                    .map(|param| Self::lambda_generic_schema_ty(param, generic_param_names))
-                    .collect(),
-                ret: Box::new(Self::lambda_generic_schema_ty(ret, generic_param_names)),
-            },
-            Ty::Closure {
-                capabilities,
-                params,
-                ret,
-                captures,
-                identity,
-            } => Ty::Closure {
-                capabilities: *capabilities,
-                params: params
-                    .iter()
-                    .map(|param| Self::lambda_generic_schema_ty(param, generic_param_names))
-                    .collect(),
-                ret: Box::new(Self::lambda_generic_schema_ty(ret, generic_param_names)),
-                captures: captures
-                    .iter()
-                    .map(|capture| Self::lambda_generic_schema_ty(capture, generic_param_names))
-                    .collect(),
-                identity: identity.clone(),
-            },
-            Ty::TraitObject { traits } => Ty::TraitObject {
-                traits: traits
-                    .iter()
-                    .map(|bound| crate::ty::TraitObjectBound {
-                        trait_name: bound.trait_name.clone(),
-                        args: bound
-                            .args
-                            .iter()
-                            .map(|arg| Self::lambda_generic_schema_ty(arg, generic_param_names))
-                            .collect(),
-                        assoc_bindings: bound
-                            .assoc_bindings
-                            .iter()
-                            .map(|(name, ty)| {
-                                (
-                                    name.clone(),
-                                    Self::lambda_generic_schema_ty(ty, generic_param_names),
-                                )
-                            })
-                            .collect(),
-                    })
-                    .collect(),
-            },
-            _ => ty.clone(),
-        }
-    }
-
     /// Synthesize: infer the type of an expression (bottom-up).
     pub(in crate::check) fn synthesize(&mut self, expr: &Expr, span: &Span) -> Ty {
         if self.deferred_body.is_some()
@@ -163,192 +61,6 @@ impl Checker {
         });
         self.tail_ok_armed = prev_tail_ok_armed;
         self.publish_checked_expression(expr, span, result)
-    }
-
-    pub(in crate::check) fn reject_if_wasm_incompatible_expr(&mut self, expr: &Expr, span: &Span) {
-        if !self.wasm_target {
-            return;
-        }
-        match expr {
-            Expr::Scope { .. } | Expr::ScopeDeadline { .. } | Expr::Race(_) => {
-                self.reject_wasm_feature(span, WasmUnsupportedFeature::StructuredConcurrency);
-            }
-            Expr::ForkChild { .. } | Expr::ForkBlock { .. } => {
-                self.reject_wasm_feature(span, WasmUnsupportedFeature::Tasks);
-            }
-            _ => {}
-        }
-    }
-
-    pub(in crate::check) fn display_impl_type(&mut self, ty: &Ty) -> Option<Ty> {
-        let resolved = self.subst.resolve(ty).materialize_literal_defaults();
-        if matches!(resolved, Ty::String) {
-            return Some(resolved);
-        }
-        if matches!(resolved, Ty::Var(_) | Ty::Error) {
-            return None;
-        }
-        // `instant` is a monotonic timestamp that canonicalises to a bare i64 at
-        // the MIR boundary; HIR's Display dispatch routes it through the i64
-        // catalog arm (raw-nanos rendering), so it is Display-able without a
-        // dedicated `impl Display for instant` body. A monotonic timestamp has
-        // no wall-clock meaning, so raw nanos is the honest rendering.
-        if resolved.is_instant() {
-            return Some(resolved);
-        }
-        // These compiler carriers have a closed Display ABI selected by their
-        // builtin discriminator in HIR/codegen (`hew_*_display`), with the
-        // shipped `std.builtins` impl supplying the source-level contract.
-        // The carrier representation deliberately stays canonical rather than
-        // inheriting a `std.builtins.*` nominal name, so a generic nominal-impl
-        // lookup alone cannot prove the implementation.  This is the same
-        // typed identity boundary used by f-string lowering, not a leaf-name
-        // exception; a user `NodeId` remains `builtin: None` and reaches the
-        // ordinary trait lookup below.
-        if matches!(
-            resolved,
-            Ty::Named {
-                builtin: Some(
-                    crate::BuiltinType::NodeId
-                        | crate::BuiltinType::Location
-                        | crate::BuiltinType::RemotePid
-                ),
-                ..
-            }
-        ) {
-            return Some(resolved);
-        }
-        // Resolve the Display trait name through the lang-item registry.
-        // No `#[lang_item("display")]` in scope means the program defines no
-        // Display trait at all — in which case f-string interpolation can
-        // only accept the trivially-string / inference-pending cases handled
-        // above. Falling back to the literal name `"Display"` keeps
-        // pre-lang-item check-time tests (no stdlib loaded) working with the
-        // implicit naming convention.
-        let (_display_trait, display_trait_key) =
-            self.lang_items.get(crate::LANG_ITEM_DISPLAY).map_or_else(
-                || ("Display".to_string(), "Display".to_string()),
-                |binding| {
-                    (
-                        binding.trait_name.clone(),
-                        binding.trait_id.full_path().to_string(),
-                    )
-                },
-            );
-        if let Some(canonical) = resolved.canonical_lowering_name() {
-            if self
-                .primitive_trait_impls
-                .contains_key(&(canonical.to_string(), display_trait_key.clone()))
-            {
-                return Some(resolved);
-            }
-        }
-        if let Ty::Named { name, args, .. } = &resolved {
-            if self.type_implements_trait_for_ty(&resolved, &display_trait_key) {
-                return Some(resolved);
-            }
-            // A bare type parameter (e.g. `T` in `fn f<T: Display>(x: T)`)
-            // carries no registered impl of its own, but the enclosing
-            // item's where-clause may declare a `Display` bound that
-            // satisfies the obligation abstractly. The concrete `Display`
-            // impl is selected per monomorphisation by HIR's static
-            // trait-dispatch lowering. Mirrors `type_satisfies_trait_bound`.
-            if args.is_empty() && self.type_param_carries_bound(name, &display_trait_key) {
-                return Some(resolved);
-            }
-        }
-        None
-    }
-
-    /// Whether `ty` has a structural rendering: a value `f"{v:?}"` can spell
-    /// from its own parts.
-    ///
-    /// A pending inference variable defers - the surrounding inference
-    /// reports its own error, and a resolved type reaches physical MIR, which
-    /// verifies the recipe it builds. A user declaration renders through its
-    /// declared fields; a compiler carrier renders only when its builtin
-    /// identity says it has structure.
-    pub(super) fn renders_structurally(&mut self, ty: &Ty) -> bool {
-        match self.subst.resolve(ty).materialize_literal_defaults() {
-            Ty::Var(_)
-            | Ty::Error
-            | Ty::I8
-            | Ty::I16
-            | Ty::I32
-            | Ty::I64
-            | Ty::U8
-            | Ty::U16
-            | Ty::U32
-            | Ty::U64
-            | Ty::Isize
-            | Ty::Usize
-            | Ty::F32
-            | Ty::F64
-            | Ty::IntLiteral
-            | Ty::FloatLiteral
-            | Ty::Bool
-            | Ty::Char
-            | Ty::String
-            | Ty::Unit => true,
-            Ty::Tuple(members) => members
-                .iter()
-                .all(|member| self.renders_structurally(member)),
-            Ty::Named { args, builtin, .. } => {
-                builtin.is_none_or(BuiltinType::renders_structurally)
-                    && args.iter().all(|arg| self.renders_structurally(arg))
-            }
-            _ => false,
-        }
-    }
-
-    /// Verify that `ty` renders under `:?`.
-    ///
-    /// `f"{v:?}"` reaches here only when `v` has no `Display` impl to defer
-    /// to, so this is the structural half of the same admission.
-    pub(in crate::check) fn require_structural_render(&mut self, ty: &Ty, span: &Span) {
-        if self.renders_structurally(ty) {
-            return;
-        }
-        let rendered = self
-            .subst
-            .resolve(ty)
-            .materialize_literal_defaults()
-            .user_facing()
-            .to_string();
-        self.report_error(
-            TypeErrorKind::BoundsNotSatisfied,
-            span,
-            format!(
-                "type `{rendered}` has no structural rendering (`:?` renders \
-scalars, strings, tuples, records, enums, `Vec` and `HashMap`; anything \
-else needs `impl Display for {rendered}`)"
-            ),
-        );
-    }
-
-    /// Verify that `ty` has a `Display` impl reachable by f-string
-    /// interpolation lowering.
-    pub(in crate::check) fn require_display_impl(&mut self, ty: &Ty, span: &Span) {
-        if matches!(self.subst.resolve(ty), Ty::Var(_) | Ty::Error) {
-            return;
-        }
-        if self.display_impl_type(ty).is_some() {
-            return;
-        }
-        let resolved = self.subst.resolve(ty).materialize_literal_defaults();
-        let display_trait = self.lang_items.get(crate::LANG_ITEM_DISPLAY).map_or_else(
-            || "Display".to_string(),
-            |binding| binding.trait_name.clone(),
-        );
-        let ty_str = format!("{}", resolved.user_facing());
-        self.report_error(
-            TypeErrorKind::BoundsNotSatisfied,
-            span,
-            format!(
-                "type `{ty_str}` does not implement `{display_trait}` \
-                 (f-string interpolation requires `impl {display_trait} for {ty_str}`)"
-            ),
-        );
     }
 
     #[expect(
@@ -1006,145 +718,6 @@ else needs `impl Display for {rendered}`)"
         }
     }
 
-    pub(super) fn expect_concrete_integer_operands(
-        &mut self,
-        common_ty: &Ty,
-        left: &Spanned<Expr>,
-        left_ty: &Ty,
-        right: &Spanned<Expr>,
-        right_ty: &Ty,
-    ) {
-        if integer_type_info(common_ty, self.pointer_width()).is_some() {
-            // Preserve the source types and publish explicit widening targets
-            // for HIR. Literal and inference operands use contextual unification.
-            self.record_concrete_integer_operand(common_ty, left, left_ty);
-            self.record_concrete_integer_operand(common_ty, right, right_ty);
-        }
-    }
-
-    pub(super) fn record_concrete_integer_operand(
-        &mut self,
-        common_ty: &Ty,
-        operand: &Spanned<Expr>,
-        operand_ty: &Ty,
-    ) {
-        let resolved = self.subst.resolve(operand_ty);
-        if resolved.is_integer() && !resolved.is_integer_literal() && resolved != *common_ty {
-            self.numeric_operand_coercions.insert(
-                SpanKey::in_module(&operand.1, self.current_module_idx),
-                common_ty.clone(),
-            );
-        }
-        if resolved.is_integer_literal() || matches!(resolved, Ty::Var(_)) {
-            if self.is_coercible_numeric(&operand.0)
-                || (resolved.is_integer_literal()
-                    && Self::is_literal_integer_arithmetic(&operand.0))
-            {
-                self.check_against(&operand.0, &operand.1, common_ty);
-            } else {
-                // The operand has already been checked. Rechecking an await
-                // or call would repeat its ownership effects.
-                self.promote_literal_binding(operand_ty, common_ty);
-                self.expect_type(common_ty, operand_ty, &operand.1);
-                self.record_type(&operand.1, common_ty);
-            }
-        }
-    }
-
-    /// Give a binding whose type is still a defaulting integer literal the
-    /// concrete width its arithmetic requires.
-    ///
-    /// `expect_type` cannot do this: `IntLiteral` already unifies with every
-    /// integer type, so the variable keeps the literal kind, the operand site
-    /// alone records the narrower width, and the declaration exports the
-    /// `i64` default. HIR then reads an `i64` binding under an `i32`
-    /// expression, which no later stage can reconcile. Promoting the variable
-    /// keeps the declaration and every reference on one type.
-    pub(super) fn promote_literal_binding(&mut self, operand_ty: &Ty, common_ty: &Ty) {
-        let Ty::Var(var) = operand_ty else {
-            return;
-        };
-        if !common_ty.is_integer() || common_ty.is_integer_literal() {
-            return;
-        }
-        if !self.subst.resolve(&Ty::Var(*var)).is_integer_literal() {
-            return;
-        }
-        self.subst.insert(*var, common_ty).expect(
-            "promoting a literal-defaulting binding to a concrete integer width stays acyclic",
-        );
-    }
-
-    /// Integer arithmetic whose own checked type is still a literal type, so
-    /// every leaf under it is a literal or an untyped const.
-    ///
-    /// Recording only the top node's contextual width would leave those leaves
-    /// to default independently (`a == 0 - 1` with `a: i32` recorded the
-    /// subtraction as `i32` while both literals defaulted to `i64`, which SIR
-    /// then rejected as a mismatched checked-arithmetic terminator). Rechecking
-    /// such a subtree against the contextual width repeats no ownership effect
-    /// because it contains no call, await or resource use.
-    pub(super) fn is_literal_integer_arithmetic(expr: &Expr) -> bool {
-        match expr {
-            Expr::Binary { op, .. } => matches!(
-                op,
-                BinaryOp::Add
-                    | BinaryOp::Subtract
-                    | BinaryOp::Multiply
-                    | BinaryOp::Divide
-                    | BinaryOp::Modulo
-                    | BinaryOp::WrappingAdd
-                    | BinaryOp::WrappingSub
-                    | BinaryOp::WrappingMul
-                    | BinaryOp::BitAnd
-                    | BinaryOp::BitOr
-                    | BinaryOp::BitXor
-                    | BinaryOp::Shl
-                    | BinaryOp::Shr
-            ),
-            Expr::Unary {
-                op: UnaryOp::BitNot | UnaryOp::Negate,
-                ..
-            } => true,
-            _ => false,
-        }
-    }
-
-    pub(super) fn concrete_integer_float_mismatch(left: &Ty, right: &Ty, ptr_width: u8) -> bool {
-        (integer_type_info(left, ptr_width).is_some()
-            && right.is_float()
-            && !right.is_float_literal())
-            || (integer_type_info(right, ptr_width).is_some()
-                && left.is_float()
-                && !left.is_float_literal())
-    }
-
-    pub(super) fn expect_inferable_literal_binding(
-        &mut self,
-        name: &str,
-        expected: &Ty,
-        span: &Span,
-    ) {
-        let Some(binding) = self.env.lookup_ref(name) else {
-            return;
-        };
-        if binding.def_span.is_none() {
-            return;
-        }
-        let actual = binding.ty.clone();
-        // Keep the binding variable intact for unification. `expect_type`
-        // normalizes first, which resolves this `Var` to `IntLiteral` and
-        // loses the root that `unify` must promote to the concrete contextual
-        // width. This is the use-site inference path for `let n = 7; f(n)`.
-        if self.subst.resolve(&actual).is_numeric_literal()
-            && expected.is_numeric()
-            && self.try_unify_inference_with_owner_identity(expected, &actual)
-        {
-            return;
-        }
-        self.expect_type(expected, &actual, span);
-    }
-
     pub(in crate::check) fn synthesize_range(
         &mut self,
         start: Option<&Spanned<Expr>>,
@@ -1394,33 +967,6 @@ else needs `impl Display for {rendered}`)"
         }
     }
 
-    /// A spread reads each of the operand's elements and pushes an independent
-    /// copy onto the new vector, so it admits exactly the element types the
-    /// value class gives a copy path — the same answer `xs[i]`, a range slice
-    /// and cloning iteration get.
-    pub(super) fn refuse_uncopyable_spread_element(&mut self, elem_ty: &Ty, span: &Span) {
-        let Some(blocker) = self.element_clone_blocker(elem_ty) else {
-            return;
-        };
-        if let Some(param) = blocker.unbounded_param() {
-            let param = param.to_string();
-            self.report_unbounded_param_copy(&param, "a spread", span);
-            return;
-        }
-        let blocker = blocker.concrete_text();
-        let resolved = self.subst.resolve(elem_ty).materialize_literal_defaults();
-        self.report_error(
-            TypeErrorKind::InvalidOperation,
-            span,
-            format!(
-                "E_ELEMENT_NO_COPY: spreading a `Vec<{elem}>` copies each element into the \
-                 new vector, but {blocker} has no copy operation; use an owning removal such \
-                 as `pop()` to move the elements out instead",
-                elem = resolved.user_facing()
-            ),
-        );
-    }
-
     /// `Vec<elem_ty>` without the concrete-element validation `make_vec_type`
     /// performs: used to build an expectation for a spread operand, where the
     /// element type may still be an inference variable.
@@ -1538,638 +1084,6 @@ else needs `impl Display for {rendered}`)"
         }
     }
 
-    pub(in crate::check) fn report_invalid_actor_send(&mut self, ty: &Ty, span: &Span) {
-        self.report_error_with_suggestions(
-            TypeErrorKind::InvalidSend,
-            span,
-            format!(
-                "cannot send `{}` to actor: type is not Send",
-                ty.user_facing()
-            ),
-            vec!["keep the resource inside one owning actor and send that actor a message instead — see the language guide, 'Own a resource with an actor'".to_string()],
-        );
-    }
-
-    pub(in crate::check) fn mark_expr_moved_if_non_copy(
-        &mut self,
-        expr: &Expr,
-        span: &Span,
-        ty: &Ty,
-    ) {
-        if !self.registry.implements_marker(ty, MarkerTrait::Copy)
-            || self.reads_resource_handle_field(expr)
-        {
-            self.mark_expr_moved(expr, span);
-        }
-    }
-
-    /// Whether `expr` reads a value carrying an `#[opaque]` handle out of a
-    /// `#[resource]` record (D528). The handle itself classes as a bit copy so
-    /// FFI calls can borrow it, but the enclosing resource's `close` releases
-    /// it: reading it out by value anywhere but that `close` - directly, in a
-    /// plain record below the resource or inside an `Option` - would leave two
-    /// owners of one handle, so such a read is a transfer and the
-    /// partial-consume rule decides it.
-    pub(in crate::check) fn reads_resource_handle_field(&self, expr: &Expr) -> bool {
-        self.expr_place(expr)
-            .is_some_and(|(root, path)| self.resource_handle_owner(&root, &path).is_some())
-    }
-
-    /// The depth of the nearest `#[resource]` record on `path` whose `close`
-    /// releases a handle the selected value carries.
-    pub(super) fn resource_handle_owner(&self, root: &str, path: &[String]) -> Option<usize> {
-        let binding = self.env.lookup_ref(root)?;
-        let mut parent = self.subst.resolve(&binding.ty);
-        let mut owner = None;
-        for (depth, step) in path.iter().enumerate() {
-            if matches!(&parent, Ty::Named { name, .. } if self.registry.is_resource(name)) {
-                owner = Some(depth);
-            }
-            let selected = match &parent {
-                Ty::Tuple(items) => items.get(step.parse::<usize>().ok()?).cloned(),
-                _ => self.project_named_field(&parent, step),
-            };
-            parent = self.subst.resolve(&selected?);
-        }
-        owner.filter(|_| self.carries_resource_handle(&parent, &mut HashSet::new()))
-    }
-
-    /// Whether a value of `ty` holds a marker-free `#[opaque]` handle that is
-    /// not itself owned by a nested `#[resource]`.
-    pub(super) fn carries_resource_handle(&self, ty: &Ty, visiting: &mut HashSet<String>) -> bool {
-        match ty {
-            Ty::Named { name, args, .. } => {
-                if self.registry.is_resource(name) {
-                    return false;
-                }
-                if crate::value_class::ClassDeclarations::declared_type(
-                    &self.class_declarations(),
-                    name,
-                )
-                .is_some_and(|declaration| {
-                    declaration.is_opaque
-                        && declaration.marker == crate::value_class::DeclarationMarker::None
-                }) {
-                    return true;
-                }
-                if args
-                    .iter()
-                    .any(|arg| self.carries_resource_handle(&self.subst.resolve(arg), visiting))
-                {
-                    return true;
-                }
-                let Some(members) = self.registry.member_types(name) else {
-                    return false;
-                };
-                if !visiting.insert(name.clone()) {
-                    return false;
-                }
-                let carries = members
-                    .to_vec()
-                    .iter()
-                    .any(|member| self.carries_resource_handle(member, visiting));
-                visiting.remove(name);
-                carries
-            }
-            Ty::Tuple(elements) => elements
-                .iter()
-                .any(|element| self.carries_resource_handle(element, visiting)),
-            Ty::Array(element, _) | Ty::Slice(element) => {
-                self.carries_resource_handle(element, visiting)
-            }
-            _ => false,
-        }
-    }
-
-    /// Mark an identifier binding moved, unconditionally.
-    ///
-    /// Callers that have already PROVEN the value transfers ownership use this
-    /// directly instead of [`Self::mark_expr_moved_if_non_copy`]. The `Copy`
-    /// gate is not merely redundant there, it is wrong: an owned handle whose
-    /// members are all scalars (`MonitorRef { ref_id: u64 }`) derives `Copy`
-    /// structurally under a spelling that carries no negative impl, and the
-    /// gate would then silently skip the move — leaving two owners of one
-    /// registration. Ownership is decided by the transfer predicate, not by
-    /// the representation of the bytes.
-    /// Mark the PLACE an expression denotes as moved, unconditionally.
-    ///
-    /// The place is the root binding plus the projection steps taken from it,
-    /// so a field transfer (`await a.take(h.sock)`) records that `h.sock`
-    /// specifically is gone while `h`'s siblings stay usable. Consuming a
-    /// projection used to no-op here, which is how a transferred field could be
-    /// detached a second time through the same projection.
-    ///
-    /// Deliberately reports nothing: every site that consumes an expression
-    /// also SYNTHESISES it first, and the read paths ([`Self::check_field_access`]
-    /// and [`Self::synthesize_identifier`]) own the use-after-move diagnostic.
-    /// Reporting here as well would double-diagnose one consuming use.
-    pub(in crate::check) fn mark_expr_moved(&mut self, expr: &Expr, span: &Span) {
-        let Some((root, path)) = self.expr_place(expr) else {
-            return;
-        };
-        if self.reject_borrowed_consumption(expr, span) {
-            return;
-        }
-        if !path.is_empty() {
-            if self.reject_borrowed_consumption(expr, span)
-                || self.reject_partial_place_consumption(&root, &path, span)
-            {
-                return;
-            }
-            self.env.mark_place_moved(&root, path, span.clone());
-            return;
-        }
-        let released_at = self
-            .env
-            .lookup_ref(&root)
-            .and_then(|binding| binding.released_at.clone());
-        if let Some(released_at) = released_at {
-            let mut error = TypeError::new(
-                TypeErrorKind::UseAfterConsume,
-                span.clone(),
-                format!(
-                    "cannot consume released resource `{root}`; its close obligation was already discharged"
-                ),
-            )
-            .with_note(released_at, "resource was closed here");
-            if let Some(source_module) = &self.current_module {
-                error = error.with_source_module(source_module.clone());
-            }
-            self.errors.push(error);
-        }
-        self.env.mark_moved(&root, span.clone());
-    }
-
-    /// A selected field may move only when every enclosing value supports
-    /// independent field ownership. The selected value's own cleanup contract
-    /// does not prevent moving that entire value out of its plain parent.
-    pub(in crate::check) fn reject_partial_place_consumption(
-        &mut self,
-        root: &str,
-        path: &[String],
-        span: &Span,
-    ) -> bool {
-        let Some(binding) = self.env.lookup_ref(root) else {
-            return false;
-        };
-        let mut parent = self.subst.resolve(&binding.ty);
-        for (depth, field) in path.iter().enumerate() {
-            if depth == 0 && self.resource_close_owns_self_field(root, &parent) {
-                let Some(selected) = self.project_named_field(&parent, field) else {
-                    return false;
-                };
-                parent = self.subst.resolve(&selected);
-                continue;
-            }
-            let Some(selected) = self.independent_record_or_tuple_field(&parent, field) else {
-                if self.resource_handle_owner(root, path) == Some(depth) {
-                    let record = Self::render_place(root, &path[..depth]);
-                    let handed_out = Self::render_place(field, &path[depth + 1..]);
-                    let resource = parent.user_facing().to_string();
-                    let short = parent
-                        .type_name()
-                        .and_then(|name| name.rsplit('.').next())
-                        .unwrap_or_default()
-                        .to_string();
-                    self.report_error_with_suggestions(
-                        TypeErrorKind::OwnPartialConsume,
-                        span,
-                        format!(
-                            "cannot read `{}` by value: `{resource}` releases the `#[opaque]` \
-                             handle it carries in its `close`, so outside `close` it cannot be \
-                             copied or moved out",
-                            Self::render_place(root, path),
-                        ),
-                        vec![format!(
-                            "destructure the resource to hand the handle out without running \
-                             `close`: `let {short} {{ {field} }} = {record}; {handed_out}`"
-                        )],
-                    );
-                    return true;
-                }
-                self.report_error_with_suggestions(
-                    TypeErrorKind::OwnPartialConsume,
-                    span,
-                    format!(
-                        "cannot consume `{}` separately: enclosing type `{}` must remain whole",
-                        Self::render_place(root, path),
-                        parent.user_facing(),
-                    ),
-                    vec!["transfer the enclosing value whole to a consuming operation".to_string()],
-                );
-                return true;
-            };
-            parent = self.subst.resolve(&selected);
-        }
-        false
-    }
-
-    /// A resource destructor owns its receiver and may transfer one field to
-    /// the external release operation. Close-body cleanup retains every field
-    /// it does not move out. This exception is deliberately narrower than an
-    /// arbitrary consuming method: it requires the registered inherent
-    /// `close(consume self)` contract and the lexical receiver binding.
-    pub(super) fn resource_close_owns_self_field(&self, root: &str, parent: &Ty) -> bool {
-        if root != "self" {
-            return false;
-        }
-        let Some(function) = self.current_function.as_ref() else {
-            return false;
-        };
-        let Some(signature) = self.fn_sigs.get(function) else {
-            return false;
-        };
-        if !signature.consumes_receiver
-            || !signature
-                .impl_method
-                .as_ref()
-                .is_some_and(|method| method.is_inherent && method.name == "close")
-        {
-            return false;
-        }
-        matches!(parent, Ty::Named { name, .. } if self.registry.is_resource(name))
-    }
-
-    pub(super) fn project_named_field(&self, parent: &Ty, field: &str) -> Option<Ty> {
-        let Ty::Named { name, args, .. } = parent else {
-            return None;
-        };
-        let definition = self.type_defs.get(name)?;
-        if definition.type_params.len() != args.len() {
-            return None;
-        }
-        let substitutions = definition
-            .type_params
-            .iter()
-            .cloned()
-            .zip(args.iter().cloned())
-            .collect();
-        definition
-            .fields
-            .get(field)
-            .map(|ty| ty.substitute_named_params_parallel(&substitutions))
-    }
-
-    pub(super) fn independent_record_or_tuple_field(&self, parent: &Ty, field: &str) -> Option<Ty> {
-        match parent {
-            Ty::Tuple(items) => items.get(field.parse::<usize>().ok()?).cloned(),
-            Ty::Named { name, args, .. } => {
-                let declaration = crate::value_class::ClassDeclarations::declared_type(
-                    &self.class_declarations(),
-                    name,
-                )?;
-                if declaration.marker != crate::value_class::DeclarationMarker::None
-                    || declaration.is_opaque
-                {
-                    return None;
-                }
-                let definition = self.type_defs.get(name)?;
-                if !matches!(definition.kind, TypeDefKind::Struct | TypeDefKind::Record)
-                    || definition.type_params.len() != args.len()
-                {
-                    return None;
-                }
-                let substitutions = definition
-                    .type_params
-                    .iter()
-                    .cloned()
-                    .zip(args.iter().cloned())
-                    .collect();
-                Some(
-                    definition
-                        .fields
-                        .get(field)?
-                        .substitute_named_params_parallel(&substitutions),
-                )
-            }
-            _ => None,
-        }
-    }
-
-    /// Resolve an expression to a checker PLACE: the root binding name plus the
-    /// projection steps taken from it.
-    ///
-    /// Tuple element access (`t.0`) parses as a field access with a numeric
-    /// field name, so field steps cover both spellings.
-    ///
-    /// Returns `None` for anything that is not a projection chain rooted in a
-    /// binding — indexing, calls, `this`. Those roots have no binding-level
-    /// ownership slot to attach a fact to, so nothing is recorded for them
-    /// rather than a guess being recorded; element-of-collection places are the
-    /// known remaining hole and belong to the MIR half of this family.
-    /// Indexed writes and mutating methods need a copy of every indexed parent.
-    pub(in crate::check) fn reject_indexed_writable_borrow(&mut self, target: &Spanned<Expr>) {
-        let mut parent = target;
-        loop {
-            if self
-                .borrowed_element_index_reads
-                .contains(&SpanKey::in_module(&parent.1, self.current_module_idx))
-            {
-                self.report_error(TypeErrorKind::OwnConsumeBorrowed, &parent.1,
-                    "cannot update through a borrowed affine collection element; indexed writeback requires a semantic copy".into());
-                return;
-            }
-            match &parent.0 {
-                Expr::FieldAccess { object, .. } | Expr::Index { object, .. } => parent = object,
-                _ => return,
-            }
-        }
-    }
-
-    pub(in crate::check) fn expr_place(&self, expr: &Expr) -> Option<(String, PlacePath)> {
-        match expr {
-            Expr::Identifier(name) => Some((name.clone(), PlacePath::new())),
-            Expr::FieldAccess { object, field } => {
-                // `self.count` in an actor body denotes the state binding
-                // `count`, so the place it names is rooted in that binding —
-                // never in a binding called `self`, which does not exist here.
-                if let Some(state_field) = self.actor_self_state_field(&object.0, field) {
-                    return Some((state_field.to_string(), PlacePath::new()));
-                }
-                let (root, mut path) = self.expr_place(&object.0)?;
-                path.push(field.clone());
-                Some((root, path))
-            }
-            _ => None,
-        }
-    }
-
-    /// The actor state field an `object.field` projection names when `object`
-    /// is the actor receiver `self`, or `None` when it is an ordinary
-    /// projection.
-    ///
-    /// An actor's state fields are bound as ordinary environment bindings for
-    /// the whole body, which is what makes bare `count` work; `self` is the
-    /// receiver that spells the same binding explicitly. Every site that
-    /// matches on the projection's shape routes through here so the two
-    /// spellings share one resolution, one mutability rule, and one lowering
-    /// instead of growing a parallel receiver path.
-    ///
-    /// `self` is a real bound parameter on impl and trait methods, so an
-    /// in-scope `self` binding means the projection is an ordinary field
-    /// access on the receiver value and is left alone. A name that is not a
-    /// declared state field is left alone too, so [`Self::check_field_access`]
-    /// can report it against the actor.
-    pub(in crate::check) fn actor_self_state_field<'a>(
-        &self,
-        object: &Expr,
-        field: &'a str,
-    ) -> Option<&'a str> {
-        if !self.is_actor_self_receiver(object) {
-            return None;
-        }
-        self.current_actor_fields
-            .iter()
-            .any(|f| f.name == field)
-            .then_some(field)
-    }
-
-    /// Publish the receiver resolution for one `self.field` projection at
-    /// `span`, the span of the whole projection.
-    ///
-    /// [`Self::actor_self_state_field`] is the predicate several checker sites
-    /// read; this is the one place that writes the answer down. Every lowerer
-    /// looks the projection up in
-    /// [`TypeCheckOutput::actor_self_state_fields`](crate::TypeCheckOutput)
-    /// instead of re-deciding it, so a projection is the receiver spelling in
-    /// every backend or in none.
-    pub(in crate::check) fn record_actor_self_state_field(&mut self, span: &Span) {
-        self.actor_self_state_fields
-            .insert(SpanKey::in_module(span, self.current_module_idx));
-    }
-
-    /// Whether an expression is the actor receiver `self`: the bare name,
-    /// inside an actor body, with no `self` binding in scope to mean something
-    /// else. The projected name may still not be a state field — that case
-    /// belongs to [`Self::check_field_access`], which reports it against the
-    /// actor rather than letting the receiver be synthesised as a value.
-    pub(in crate::check) fn is_actor_self_receiver(&self, object: &Expr) -> bool {
-        matches!(object, Expr::Identifier(name) if name == "self")
-            && self.current_actor_type.is_some()
-            && self.env.lookup_ref("self").is_none()
-    }
-
-    /// Render a place for diagnostics: `h.sock`, or plain `h` for the root.
-    pub(in crate::check) fn render_place(root: &str, path: &[String]) -> String {
-        std::iter::once(root)
-            .chain(path.iter().map(String::as_str))
-            .collect::<Vec<_>>()
-            .join(".")
-    }
-
-    /// Report a use of `root`'s place at `path` that collides with a place
-    /// already consumed on this path, if it does.
-    pub(in crate::check) fn report_place_use_after_move(
-        &mut self,
-        root: &str,
-        path: &[String],
-        span: &Span,
-    ) {
-        let Some((conflict, moved_path, moved_at)) = self.env.place_move_conflict(root, path)
-        else {
-            return;
-        };
-        // A place read only to project further into it is not a whole-value
-        // use of itself, at any depth: `o.inner` inside `o.inner.ticket` names
-        // an address, not the aggregate. Without this the partially-moved-root
-        // rule would fire on every ancestor of a moved place and stack one
-        // diagnostic per projection step on top of the real one.
-        if conflict == PlaceConflict::WholeOfPartial && self.place_base_depth > 0 {
-            return;
-        }
-        let place = Self::render_place(root, path);
-        let moved_place = Self::render_place(root, &moved_path);
-        let (message, suggestion) = match conflict {
-            PlaceConflict::Exact => (
-                format!("use of moved place `{place}`"),
-                format!(
-                    "`{place}` transferred its value away; re-initialise it \
-                     (`{place} = ...`) before using it again"
-                ),
-            ),
-            PlaceConflict::UnderMoved => (
-                format!("use of `{place}`, which lives inside moved place `{moved_place}`"),
-                format!(
-                    "`{moved_place}` transferred its value away, taking `{place}` with it; \
-                     read it before the transfer, or re-initialise `{moved_place}`"
-                ),
-            ),
-            PlaceConflict::WholeOfPartial => (
-                format!("use of `{place}` after its field `{moved_place}` was moved out"),
-                format!(
-                    "`{place}` is only partially owned here; use the fields that are still \
-                     owned, or re-initialise `{moved_place}` before using `{place}` whole"
-                ),
-            ),
-        };
-        let mut error = TypeError::new(TypeErrorKind::UseAfterMove, span.clone(), message)
-            .with_note(moved_at, "value was consumed here")
-            .with_suggestion(suggestion);
-        if let Some(source_module) = &self.current_module {
-            error = error.with_source_module(source_module.clone());
-        }
-        self.errors.push(error);
-    }
-
-    /// Whether `ty` carries a value whose SOLE ownership crosses an actor
-    /// message boundary — a substrate handle, or a user `#[resource]` /
-    /// `#[linear]` declaration.
-    ///
-    /// The builtin half delegates to
-    /// [`BuiltinType::transfers_ownership_across_actor_boundary`], the single
-    /// authority HIR's intent stamping also reads. The nominal half is this
-    /// checker's own: `#[resource]` and `#[linear]` types have exactly one
-    /// ownership path, and MIR physically MOVES every message argument out of
-    /// the caller frame (`lower_value_for_move`), so a later use of the caller
-    /// binding is a genuine use-after-move. Without the nominal arm the caller
-    /// kept its binding live and both frames consumed the one value.
-    ///
-    /// Copy-on-write values (`string`, `Vec`, plain records, tuples of them)
-    /// are deliberately NOT here: the boundary copies them and both frames own
-    /// their own copy, which is the language's default value semantics. A
-    /// record that CONTAINS a resource is a different matter — see below.
-    ///
-    /// The walk is structural and total. It descends generic arguments, tuple
-    /// elements, array/slice elements, AND registered record/enum member types,
-    /// because containment is what decides ownership: `type Holder { socket:
-    /// Socket }` transfers the socket just as surely as `(Socket, i64)` does,
-    /// and sending one `Holder` twice gives the socket two drop paths. Skipping
-    /// the named-member edge left exactly that hole open while the tuple edge
-    /// was closed.
-    pub(super) fn ty_contains_affine_actor_transfer(&self, ty: &Ty) -> bool {
-        let mut visiting = std::collections::HashSet::new();
-        self.ty_contains_affine_actor_transfer_guarded(ty, &mut visiting)
-    }
-
-    /// Whether a MODULE-QUALIFIED type name denotes a transferring builtin.
-    ///
-    /// A source-declared lifecycle type (`std.link_monitor.MonitorRef`) reaches
-    /// some positions — notably a declared actor state-field type — spelled by
-    /// its qualified path with no `builtin` tag attached, so the tag test alone
-    /// misses it and the handle silently stayed shareable.
-    ///
-    /// The qualification requirement is load-bearing: `lookup_builtin_type`
-    /// also resolves BARE canonical names, and a user `type MonitorRef` shadow
-    /// is a clone-total record that must keep ordinary value semantics. Only
-    /// the dotted spelling is the stdlib declaration.
-    pub(super) fn qualified_name_resolves_to_transferring_builtin(name: &str) -> bool {
-        name.contains('.')
-            && crate::lookup_builtin_type(name)
-                .is_some_and(BuiltinType::transfers_ownership_across_actor_boundary)
-    }
-
-    /// Recursion body for [`Self::ty_contains_affine_actor_transfer`].
-    ///
-    /// `visiting` makes the walk total over recursive type graphs
-    /// (`type Node { next: Vec<Node> }`). Re-entering a name already on the
-    /// stack contributes no NEW ownership edge, so it answers `false` — the
-    /// neutral element of the `any(...)` disjunction — and the result is
-    /// decided by the non-recursive members. This mirrors the recursion guard
-    /// marker derivation already uses (`implements_marker_guarded`).
-    pub(super) fn ty_contains_affine_actor_transfer_guarded(
-        &self,
-        ty: &Ty,
-        visiting: &mut std::collections::HashSet<String>,
-    ) -> bool {
-        match ty {
-            Ty::CancellationToken => true,
-            Ty::Named {
-                name,
-                args,
-                builtin,
-            } => {
-                if builtin.is_some_and(BuiltinType::transfers_ownership_across_actor_boundary)
-                    || Self::qualified_name_resolves_to_transferring_builtin(name)
-                    || self.registry.is_resource(name)
-                    || self.registry.is_linear(name)
-                {
-                    return true;
-                }
-                if args
-                    .iter()
-                    .any(|arg| self.ty_contains_affine_actor_transfer_guarded(arg, visiting))
-                {
-                    return true;
-                }
-                // A builtin carries no user member set to descend into, and its
-                // ownership verdict is already decided above.
-                if builtin.is_some() || !visiting.insert(name.clone()) {
-                    return false;
-                }
-                let members: Vec<Ty> = self
-                    .registry
-                    .member_types(name)
-                    .map(<[Ty]>::to_vec)
-                    .unwrap_or_default();
-                let carries = members
-                    .iter()
-                    .any(|member| self.ty_contains_affine_actor_transfer_guarded(member, visiting));
-                visiting.remove(name);
-                carries
-            }
-            Ty::Tuple(elements) => elements
-                .iter()
-                .any(|element| self.ty_contains_affine_actor_transfer_guarded(element, visiting)),
-            Ty::Array(element, _) | Ty::Slice(element) => {
-                self.ty_contains_affine_actor_transfer_guarded(element, visiting)
-            }
-            _ => false,
-        }
-    }
-
-    pub(in crate::check) fn enforce_actor_boundary_send(
-        &mut self,
-        expr: &Expr,
-        move_span: &Span,
-        error_span: &Span,
-        ty: &Ty,
-    ) {
-        let ty = self.subst.resolve(ty);
-        let boundary_ty = self.normalize_for_use(&ty);
-        if !self.type_satisfies_trait_bound(&boundary_ty, "Send") {
-            self.report_invalid_actor_send(&ty, error_span);
-        }
-        if self.ty_contains_affine_actor_transfer(&ty) {
-            self.mark_affine_transfer_moved(expr, move_span);
-        }
-    }
-
-    /// Mark the source of one affine boundary transfer moved.
-    ///
-    /// A handle sent directly names a place and marks straight through. A
-    /// handle packed into a tuple or array literal at the call site names no
-    /// place of its own, so the literal is transparent here: the mailbox takes
-    /// the aggregate and with it each element, and the element binding is
-    /// exactly what a later use must be refused against.
-    pub(super) fn mark_affine_transfer_moved(&mut self, expr: &Expr, move_span: &Span) {
-        match expr {
-            Expr::Tuple(elements) => {
-                for (element, span) in elements {
-                    self.mark_affine_transfer_element(element, span);
-                }
-            }
-            Expr::Array(elements) => {
-                for element in elements {
-                    let (element, span) = element.expr();
-                    self.mark_affine_transfer_element(element, span);
-                }
-            }
-            _ => self.mark_expr_moved(expr, move_span),
-        }
-    }
-
-    /// One element of an aggregate literal crossing the boundary: descend only
-    /// where the element's own checked type carries a transferring owner.
-    pub(super) fn mark_affine_transfer_element(&mut self, expr: &Expr, span: &Span) {
-        let key = super::SpanKey::in_module(span, self.current_module_idx);
-        let Some(ty) = self.expr_types.get(&key).map(|ty| self.subst.resolve(ty)) else {
-            return;
-        };
-        if self.ty_contains_affine_actor_transfer(&ty) {
-            self.mark_affine_transfer_moved(expr, span);
-        }
-    }
-
     pub(in crate::check) fn synthesize_yield(
         &mut self,
         value: Option<&Spanned<Expr>>,
@@ -2198,39 +1112,879 @@ else needs `impl Display for {rendered}`)"
         Ty::Unit
     }
 
-    /// D524: an `#[on(crash)]` hook runs on the crashing incarnation's state,
-    /// and a handler that faulted between consuming a copy-less field and
-    /// storing its replacement left that seat empty. The hook may not read a
-    /// field any body of the actor consumes.
-    pub(super) fn reject_crash_hook_consumed_state_read(
-        &mut self,
-        binding: crate::env::TypeBindingId,
-        span: &Span,
-    ) {
-        let Some(field) = self.crash_hook_consumed_fields.get(&binding) else {
-            return;
-        };
-        let (consumer, consumed_at) = self.actor_consumed_state[field].clone();
-        let mut error = TypeError::new(
-            TypeErrorKind::UseAfterConsume,
-            span.clone(),
-            format!(
-                "`#[on(crash)]` hook reads actor state `{field}`, which `{consumer}` consumes; \
-                 a crash before `{consumer}` stores its replacement leaves `{field}` empty"
-            ),
-        )
-        .with_note(consumed_at, format!("`{consumer}` consumes `{field}` here"))
-        .with_suggestion(format!(
-            "hold `{field}` as an `Option` and move it out with `{field}.take()`, which leaves \
-             `None` in the field instead of consuming it"
-        ));
-        if let Some(source_module) = &self.current_module {
-            error = error.with_source_module(source_module.clone());
-        }
-        self.errors.push(error);
-    }
-
     pub(in crate::check) fn synthesize_identifier(&mut self, name: &str, span: &Span) -> Ty {
         self.synthesize_identifier_with_type_args(name, None, span)
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "single dispatch over all identifier forms (context readers, module-qualified variants, bindings, fn sigs, constructors, type aliases); splitting would fragment shared error-reporting state"
+    )]
+    pub(super) fn synthesize_identifier_with_type_args(
+        &mut self,
+        name: &str,
+        type_args: Option<&[Spanned<TypeExpr>]>,
+        span: &Span,
+    ) -> Ty {
+        if type_args.is_some() && self.env.lookup_ref(name).is_some() {
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                span,
+                "explicit type arguments require a function declaration, not a value binding"
+                    .to_string(),
+            );
+            return Ty::Error;
+        }
+        if let Some(reader) = ExecutionContextReader::from_surface_name(name) {
+            if self.in_actor_handler_context {
+                return reader.ty();
+            }
+            self.report_error(
+                TypeErrorKind::ContextReaderOutsideHandler,
+                span,
+                format!(
+                    "context reader `{}` is only available directly inside an actor handler body; \
+                     nested lambdas and ordinary functions have no in-scope execution context",
+                    reader.surface_name()
+                ),
+            );
+            return Ty::Error;
+        }
+        if name.starts_with('@') {
+            self.report_error(
+                TypeErrorKind::UndefinedVariable,
+                span,
+                format!(
+                    "unknown context reader `{name}`; valid readers are @actor_id, \
+                     @supervisor, and @trace_span"
+                ),
+            );
+            return Ty::Error;
+        }
+        let Ok(canonical_lifecycle_name) =
+            self.canonicalize_source_lifecycle_value_path(name, span)
+        else {
+            return Ty::Error;
+        };
+        // The lifecycle authority MINTS the canonical identity here; the
+        // lexical spelling stays available for the surfaces that must split a
+        // `module.Type::Variant` path into its parts. Splitting the minted
+        // identity instead would read `std` as a module binding — a rendered
+        // identity is never parsed back into one (rc1-F1 stage D).
+        let surface_name = name;
+        let name = canonical_lifecycle_name.as_deref().unwrap_or(name);
+        if self.report_bare_const_scope_error(name, span) {
+            return Ty::Error;
+        }
+        // Module-qualified value constructor reference encoded as a flat
+        // `Identifier("module.Type::Variant")` by `parse_dot_postfix` when no
+        // call-args or brace-body follow.  Dispatch to the fail-closed
+        // module-aware checker before falling through to the generic
+        // "undefined variable" path, which would produce a misleading error.
+        //
+        // Guard: only intercept when:
+        //  - the module part isn't a known binding or local type (mirrors
+        //    the check_field_access guard at line 3631)
+        //  - the combined "module.Type" key is NOT already in type_defs
+        //    (registered module-qualified types like "lifecycle.Lifecycle"
+        //    are correctly resolved by resolve_identifier_variant via the
+        //    type_defs flat-key path — don't short-circuit that path)
+        if let Some(dot_pos) = surface_name.find('.') {
+            let candidate_module = &surface_name[..dot_pos];
+            let rest = &surface_name[dot_pos + 1..];
+            if let Some(colon_pos) = rest.find("::") {
+                let type_name = &rest[..colon_pos];
+                let variant_name = &rest[colon_pos + 2..];
+                let is_binding = self.env.lookup_ref(candidate_module).is_some();
+                let is_known_type = self.type_defs.contains_key(candidate_module);
+                let qualified_key = format!("{candidate_module}.{type_name}");
+                let qualified_in_type_defs = self.type_defs.contains_key(&qualified_key);
+                if !is_binding && !is_known_type && !qualified_in_type_defs {
+                    return self.check_module_qualified_variant_ref(
+                        candidate_module,
+                        type_name,
+                        variant_name,
+                        span,
+                    );
+                }
+            }
+        }
+        if let Some((depth, binding)) = self.env.lookup_with_depth(name) {
+            let binding_id = binding.id;
+            let is_moved = binding.is_moved;
+            let deferred_init = binding.deferred_init();
+            let moved_at = binding.moved_at.clone();
+            let ty = binding.ty.clone();
+            let def_span = binding
+                .def_span
+                .clone()
+                .or_else(|| binding.shadow_span.clone());
+            // The outermost place of an assignment target is written, not read:
+            // `sock = Socket { .. }` after `sock.detach()` is the re-initialisation
+            // that plugs the hole, not a use of the value that left.
+            let is_write_target = self.place_write_depth > 0 && self.place_base_depth == 0;
+            if !is_write_target {
+                self.reject_crash_hook_consumed_state_read(binding_id, span);
+            }
+            if is_moved && deferred_init && !is_write_target {
+                self.report_error(
+                    TypeErrorKind::InvalidOperation,
+                    span,
+                    format!(
+                        "E_ACTOR_FIELD_UNINITIALIZED: state field `{name}` is read before \
+                         `init` initializes it; assign it first"
+                    ),
+                );
+            } else if is_moved && !is_write_target {
+                let is_linear = matches!(
+                    &ty,
+                    Ty::Named { name, .. } if self.registry.is_linear(name)
+                );
+                let mut err = TypeError::new(
+                    if is_linear {
+                        TypeErrorKind::UseAfterConsume
+                    } else {
+                        TypeErrorKind::UseAfterMove
+                    },
+                    span.clone(),
+                    if is_linear {
+                        format!("UseAfterConsume: use of consumed linear value `{name}`")
+                    } else {
+                        format!("use of moved value `{name}`")
+                    },
+                );
+                if let Some(ref source_module) = self.current_module {
+                    err = err.with_source_module(source_module.clone());
+                }
+                if let Some(moved_span) = moved_at {
+                    err = err.with_note(moved_span, "value was consumed here");
+                }
+                // Substrate handles (Duplex, Sink, Stream, SendHalf, RecvHalf) are
+                // affine: each consuming method (`.close()`, `.send_half()`,
+                // `.recv_half()`, etc.) moves the handle exactly once. Subsequent
+                // uses are rejected here. Name the type so the user knows why.
+                if Self::ty_is_substrate_handle(&ty) {
+                    err = err.with_suggestion(format!(
+                        "`{}` is a substrate handle — consuming methods like `.close()`, \
+                         `.send_half()`, and `.recv_half()` move the handle; \
+                         use a single consuming call per binding",
+                        ty.user_facing()
+                    ));
+                } else if is_linear {
+                    err = err.with_suggestion(
+                        "a `#[linear]` binding has exactly one ownership path; invoke its \
+                         consuming method only once"
+                            .to_string(),
+                    );
+                } else if self.registry.implements_marker(&ty, MarkerTrait::Clone) {
+                    // The value's type has a clone path, so the canonical fix is
+                    // to duplicate it before the consuming use and pass the copy.
+                    err = err.with_suggestion(format!(
+                        "duplicate `{name}` with `clone {name}` before the consuming use \
+                         to keep the original usable"
+                    ));
+                }
+                self.errors.push(err);
+            }
+            // A whole-value use of a partially-moved aggregate would hand a
+            // second owner the storage that already moved out. Projection bases
+            // are exempt (handled inside the reporter, which is the one
+            // authority on that rule) and so are assignment targets, which
+            // write rather than read.
+            if !is_moved && !is_write_target {
+                self.report_place_use_after_move(name, &[], span);
+            }
+            // A read inside a generator body captures into the generator frame.
+            // `in_generator` covers `gen fn`, `receive gen fn` and `gen { }`,
+            // and is cleared inside a nested lambda body, whose own capture
+            // rule (`finish_closure_captures`) owns that boundary instead.
+            if self.in_generator && !is_write_target {
+                self.reject_borrowed_generator_capture(name, span);
+            }
+            // Track captures: variable from scope below the lambda boundary
+            if let Some(capture_depth) = self.lambda_capture_depth {
+                if depth < capture_depth {
+                    self.lambda_captures.push(ty.clone());
+                    self.lambda_capture_facts.push(ClosureCaptureFact {
+                        binding_id,
+                        name: name.to_string(),
+                        ty: ty.clone(),
+                        acquisition: crate::ClosureCaptureAcquisition::Snapshot,
+                        access: crate::ClosureCaptureAccess::Read,
+                        consumption: crate::ClosureCaptureConsumption::Retained,
+                        is_send: false,
+                        is_sync: false,
+                        use_span: span.clone(),
+                        def_span,
+                    });
+                }
+            }
+            ty
+        } else if let Some(fn_sig_key) = self.visible_fn_signature_key(name) {
+            // Function name used as a value (e.g., variant constructor)
+            if let Some(source_identity) = self
+                .import_fn_name_aliases
+                .get(&(
+                    self.current_module.clone(),
+                    self.current_module_idx,
+                    name.to_string(),
+                ))
+                .cloned()
+            {
+                self.reject_wasm_native_only_function_identity(&source_identity, span);
+                if let Some((source_owner, _)) = source_identity.rsplit_once('.') {
+                    self.mark_module_owner_bindings_used(source_owner);
+                }
+            }
+            self.record_call_edge(&fn_sig_key);
+            let sig = self.fn_sigs[&fn_sig_key].clone();
+            // A bare enum variant used as a value (`let c = Red;`,
+            // `xs.map(Wrap)`) is refused like its call form; nothing here
+            // selects the enum, so the fix-it qualifies it.
+            // A machine's states are written bare only inside that machine
+            // (§3.11.3); elsewhere they follow the same rule (D550).
+            if !surface_name.contains("::") {
+                if let Some((owner, _, _)) =
+                    self.lookup_variant_constructor(name)
+                        .filter(|(owner, _, _)| {
+                            self.type_defs
+                                .get(owner)
+                                .is_some_and(|td| td.kind == TypeDefKind::Enum)
+                                && !self.machine_state_is_bare_here(owner)
+                        })
+                {
+                    let replacement =
+                        format!("{}.{name}", super::calls::variant_owner_spelling(&owner));
+                    self.report_bare_variant_expr(name, &replacement, span);
+                }
+            }
+            // local-shadows-global: when the fn_sig slot was won by a builtin enum
+            // variant, prefer any user-declared enum that has a variant with the
+            // same name (e.g. user `enum AppError { NotFound(string); }` shadows
+            // the builtin `LookupError::NotFound` unit variant).
+            if sig.is_builtin_variant {
+                if let Some(user_ty) = self.find_user_variant_shadow_ty(name) {
+                    return user_ty;
+                }
+            }
+            if sig.params.is_empty() && self.let_identifier_is_unit_variant(name) {
+                sig.return_type
+            } else {
+                self.instantiate_function_value(&fn_sig_key, type_args, span)
+            }
+        } else if self.module_binding_in_current_file(surface_name) {
+            self.report_error(
+                TypeErrorKind::ModuleUsedAsValue,
+                span,
+                format!("module `{surface_name}` cannot be used as a value"),
+            );
+            Ty::Error
+        } else if self.type_defs.contains_key(surface_name)
+            || self.known_types.contains(surface_name)
+            || self.type_aliases.contains_key(surface_name)
+            || crate::lookup_builtin_type(surface_name).is_some()
+            || crate::ty::is_reserved_type_name(surface_name)
+        {
+            self.report_error(
+                TypeErrorKind::TypeUsedAsValue,
+                span,
+                format!("type `{surface_name}` cannot be used as a value"),
+            );
+            Ty::Error
+        } else {
+            self.resolve_identifier_variant(name, span)
+        }
+    }
+
+    pub(super) fn synthesize_qualified_assoc(
+        &mut self,
+        path: &hew_parser::ast::QualifiedAssocExpr,
+        span: &Span,
+    ) -> Ty {
+        self.resolve_type_expr(&path.base);
+        let Some(member) = path.members.first() else {
+            self.report_error(
+                TypeErrorKind::PathMemberNotFound,
+                span,
+                "qualified associated path requires an item name".to_string(),
+            );
+            return Ty::Error;
+        };
+        if path.members.len() != 1 {
+            self.report_error(
+                TypeErrorKind::PathKindMismatch,
+                span,
+                "qualified associated values cannot continue through another path segment"
+                    .to_string(),
+            );
+            return Ty::Error;
+        }
+
+        let trait_name = path.trait_path.source_spelling();
+        let mut candidates = Vec::new();
+        if self.trait_defs.contains_key(&trait_name) {
+            candidates.push(trait_name.clone());
+        } else if !trait_name.contains('.') && !trait_name.contains("::") {
+            if let Some(owners) = self.published_bare_trait_owners.get(&(
+                self.current_module.clone(),
+                self.current_module_idx,
+                trait_name.clone(),
+            )) {
+                candidates.extend(
+                    owners
+                        .iter()
+                        .filter(|owner| self.trait_defs.contains_key(*owner))
+                        .cloned(),
+                );
+            }
+        }
+        candidates.sort_unstable();
+        candidates.dedup();
+
+        if candidates.len() > 1 {
+            self.report_error_with_suggestions(
+                TypeErrorKind::AssocItemAmbiguous,
+                span,
+                format!(
+                    "associated item `{member}` is ambiguous because trait `{trait_name}` has multiple imported owners"
+                ),
+                candidates
+                    .iter()
+                    .map(|candidate| format!("qualify the trait as `{candidate}`"))
+                    .collect(),
+            );
+            return Ty::Error;
+        }
+        let Some(trait_key) = candidates.first() else {
+            self.report_error(
+                TypeErrorKind::PathMemberNotFound,
+                span,
+                format!("cannot resolve trait `{trait_name}` for associated item `{member}`"),
+            );
+            return Ty::Error;
+        };
+        let info = &self.trait_defs[trait_key];
+        if info
+            .associated_types
+            .iter()
+            .any(|associated| associated.name == *member)
+        {
+            self.report_error(
+                TypeErrorKind::PathKindMismatch,
+                span,
+                format!(
+                    "associated item `{trait_key}.{member}` is a type and cannot be used as a value"
+                ),
+            );
+            return Ty::Error;
+        }
+        if info.methods.iter().any(|method| method.name == *member) {
+            self.report_error(
+                TypeErrorKind::PathKindMismatch,
+                span,
+                format!(
+                    "associated method `{trait_key}.{member}` requires method-call syntax on a value"
+                ),
+            );
+            return Ty::Error;
+        }
+        self.report_error(
+            TypeErrorKind::PathMemberNotFound,
+            span,
+            format!("trait `{trait_key}` has no associated item `{member}`"),
+        );
+        Ty::Error
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "index checking covers range slices, Vec runtime indexing, user Index impls, and dyn Index dispatch"
+    )]
+    pub(in crate::check) fn synthesize_index(
+        &mut self,
+        object: &Spanned<Expr>,
+        index: &Spanned<Expr>,
+        span: &Span,
+        ctx: IndexContext,
+    ) -> Ty {
+        let obj_ty = self.synthesize(&object.0, &object.1);
+
+        // C-3 range-slice (`xs[a..b]`, `xs[a..=b]`, `xs[..b]`, `xs[a..]`,
+        // `xs[..]`): when the index is a range expression, the result type
+        // is `Vec<T>` (a freshly-allocated copy) for `Vec<T>` receivers.
+        // Each present endpoint must check against `i64`. Open endpoints
+        // contribute no constraint; MIR fills them at lowering.
+        // Other receivers (`Array<T, N>`, `Slice<T>`) are not supported by
+        // this slice — the checker rejects with a typed-receiver diagnostic
+        // that names Vec as the only supported receiver, mirroring C-2's
+        // narrow surface.
+        if let Expr::Range {
+            start,
+            end,
+            inclusive: _,
+        } = &index.0
+        {
+            if let Some(s) = start.as_deref() {
+                self.check_against(&s.0, &s.1, &Ty::I64);
+            }
+            if let Some(e) = end.as_deref() {
+                self.check_against(&e.0, &e.1, &Ty::I64);
+            }
+            return match &obj_ty {
+                Ty::Named {
+                    builtin: Some(BuiltinType::Vec),
+                    args,
+                    ..
+                } if !args.is_empty() => {
+                    let element = args[0].clone();
+                    if self.validate_vec_slice_element_clone_type(&element, span) {
+                        obj_ty.clone()
+                    } else {
+                        Ty::Error
+                    }
+                }
+                // W3 collections-sugar S2: `s[a..b]` over `string` returns a
+                // fresh owned `string`. Codepoint-bounds slice, O(n), panic on
+                // invalid bounds. Endpoints are i64 (validated above).
+                Ty::String => Ty::String,
+                // W3 collections-sugar S2: `b[a..b]` over `bytes` returns a
+                // refcounted `bytes` slice. Byte-bounds, O(1), panic on
+                // invalid bounds. Endpoints are i64 (validated above).
+                Ty::Bytes => Ty::Bytes,
+                _ => {
+                    self.report_error(
+                        TypeErrorKind::InvalidOperation,
+                        span,
+                        format!(
+                            "cannot range-slice `{}`; range-slice syntax `xs[a..b]` is \
+                             supported only for `Vec<T>`, `string`, and `bytes` receivers",
+                            obj_ty.user_facing()
+                        ),
+                    );
+                    Ty::Error
+                }
+            };
+        }
+
+        let resolved_obj = self.subst.resolve(&obj_ty);
+        if let Some((_, child_ty)) = resolved_obj.as_supervisor_pool() {
+            let idx_actual = self.synthesize(&index.0, &index.1);
+            let idx_resolved = self.subst.resolve(&idx_actual);
+            if Self::is_narrower_signed_int(&idx_resolved) {
+                self.numeric_operand_coercions.insert(
+                    SpanKey::in_module(&index.1, self.current_module_idx),
+                    Ty::I64,
+                );
+            } else {
+                self.check_against(&index.0, &index.1, &Ty::I64);
+            }
+            if ctx == IndexContext::AssignTarget {
+                self.report_error(
+                    TypeErrorKind::InvalidOperation,
+                    span,
+                    "supervisor pool members cannot be assigned through indexed access".to_string(),
+                );
+                return Ty::Error;
+            }
+            self.pool_accessor_sites.insert(
+                SpanKey::in_module(span, self.current_module_idx),
+                crate::check::types::PoolAccessor {
+                    kind: crate::check::types::PoolAccessorKind::Index,
+                },
+            );
+            return Ty::child_ref(child_ty.clone());
+        }
+        if let Ty::TraitObject { traits } = &resolved_obj {
+            for bound in traits {
+                if bound.trait_name != "Index" {
+                    continue;
+                }
+                self.check_against(&index.0, &index.1, &Ty::I32);
+                if let Some((_, output_ty)) = bound
+                    .assoc_bindings
+                    .iter()
+                    .find(|(name, _)| name == "Output")
+                {
+                    self.record_dyn_index_method_call(traits, bound, span);
+                    return output_ty.clone();
+                }
+                self.report_error(
+                    TypeErrorKind::InvalidOperation,
+                    span,
+                    "`[]` over `dyn Index` requires an `Output` associated-type binding"
+                        .to_string(),
+                );
+                return Ty::Error;
+            }
+        }
+
+        match &resolved_obj {
+            // Vec keeps the existing runtime-backed indexing ABI. The std
+            // `Index` impl exposes the trait surface, but MIR still owns the
+            // bounds-check + hew_vec_get_T lowering and that ABI takes i64.
+            //
+            // Implicit index-site widening: accept a signed integer narrower
+            // than i64 (i8/i16/i32) as a Vec index.  The operand widens to i64
+            // at the call site; the element result type is NOT changed (LESSONS
+            // `widen-operands-not-result-when-tightening-int-coercion`).
+            // Publish the operand widening so HIR inserts an explicit cast
+            // before the runtime bounds check.
+            Ty::Named {
+                builtin: Some(BuiltinType::Vec),
+                args,
+                ..
+            } if !args.is_empty() => {
+                let idx_actual = self.synthesize(&index.0, &index.1);
+                let idx_resolved = self.subst.resolve(&idx_actual);
+                if Self::is_narrower_signed_int(&idx_resolved) {
+                    self.numeric_operand_coercions.insert(
+                        SpanKey::in_module(&index.1, self.current_module_idx),
+                        Ty::I64,
+                    );
+                } else {
+                    self.check_against(&index.0, &index.1, &Ty::I64);
+                }
+                if matches!(ctx, IndexContext::Read) {
+                    if !self.validate_vec_index_borrow_surface(&args[0], span) {
+                        return Ty::Error;
+                    }
+                    // D432: an element with no clone is read as a loan of the
+                    // slot the vector still owns, never copied out.
+                    match self.vec_iteration_element_mode(&args[0], span) {
+                        Some(super::types::VecIterationMode::Borrow) => {
+                            self.borrowed_element_index_reads
+                                .insert(SpanKey::in_module(span, self.current_module_idx));
+                        }
+                        Some(super::types::VecIterationMode::Clone) => {}
+                        None => return Ty::Error,
+                    }
+                }
+                self.indexed_place_operations.insert(
+                    SpanKey::in_module(span, self.current_module_idx),
+                    (
+                        crate::RuntimeCallFamily::Vector(crate::VecValueOp::Index),
+                        crate::RuntimeCallFamily::Vector(crate::VecValueOp::Set),
+                    ),
+                );
+                if matches!(ctx, IndexContext::AssignTarget) {
+                    self.record_resolved_vec_call("set", &args[0], span);
+                }
+                args[0].clone()
+            }
+            // `m[k]` over `HashMap<K, V>` is the trait-routed `Index<K>`
+            // accessor (`<HashMap<K, V> as Index>::Output = V`), mirroring
+            // `v[i]` over `Vec<T>`.
+            //
+            // Read context (`let x = m[k]`): the TRAPPING accessor
+            // (`Index::at`) — result type is the BARE value `V`. A missing key
+            // aborts with `IndexOutOfBounds` (the map analogue of a `v[i]`
+            // out-of-bounds trap), so there is no `Option` round-trip. No
+            // resolved `.get` call is recorded here: the MIR `Index` node lowers
+            // directly to the `hew_hashmap_get_clone_layout` trap choke
+            // (`lower_hashmap_index_trap`). Callers who want the non-aborting
+            // outcome use `m.get(k) -> Option<V>` instead.
+            //
+            // Write context (`m[k] = v`): the assignment-target type is the
+            // bare value `V` (so the RHS checks against `V`), and the checker
+            // records a `ResolvedCall` to `hew_hashmap_insert_layout` at this
+            // span. The key bound is the existing `K: Hash + Eq` admission
+            // contract — the same one every HashMap method call enforces.
+            Ty::Named {
+                builtin: Some(BuiltinType::HashMap),
+                args,
+                ..
+            } if args.len() == 2 => {
+                let key_ty = args[0].clone();
+                let val_ty = args[1].clone();
+                self.check_against(&index.0, &index.1, &key_ty);
+                // Enforce `K: Hash + Eq` and reject unsafe key/value element
+                // types, exactly as the method-call path does — for both the
+                // read (trap) and the write (insert) surfaces.
+                if !self.validate_hashmap_owned_element_types(&key_ty, &val_ty, span) {
+                    return Ty::Error;
+                }
+                // The trapping read clones the value out of its slot; the
+                // write only moves one in.
+                if ctx == IndexContext::Read
+                    && !self.validate_collection_value_clone_type(
+                        &val_ty,
+                        BuiltinType::HashMap,
+                        "m[k]",
+                        span,
+                    )
+                {
+                    return Ty::Error;
+                }
+                self.indexed_place_operations.insert(
+                    SpanKey::in_module(span, self.current_module_idx),
+                    (
+                        crate::RuntimeCallFamily::Map(crate::runtime_call::MapValueOp::Index),
+                        crate::RuntimeCallFamily::Map(crate::runtime_call::MapValueOp::Insert),
+                    ),
+                );
+                match ctx {
+                    // Trapping bare-`V` read: no `.get` resolved call; MIR's
+                    // `Index` node owns the `hew_hashmap_get_clone_layout` trap
+                    // lowering.
+                    IndexContext::Read => val_ty,
+                    // Write target: record the `hew_hashmap_insert_layout` call
+                    // at the index span (the same one `m.insert(k, v)` emits).
+                    IndexContext::AssignTarget => {
+                        self.record_resolved_hashmap_call("insert", &key_ty, &val_ty, span);
+                        val_ty
+                    }
+                }
+            }
+            // W3 collections-sugar S2: `s[i]` over `string` returns a `char`
+            // at codepoint offset, O(n), panic on OOB. Index is i64. The
+            // checker is authoritative; MIR will route to `hew_string_index`.
+            Ty::String => {
+                self.check_against(&index.0, &index.1, &Ty::I64);
+                Ty::Char
+            }
+            // W3 collections-sugar S2: `b[i]` over `bytes` returns a `u8`
+            // at byte offset, O(1), panic on OOB. Index is i64. MIR will
+            // route to `hew_bytes_index`.
+            Ty::Bytes => {
+                self.indexed_place_operations.insert(
+                    SpanKey::in_module(span, self.current_module_idx),
+                    (
+                        crate::RuntimeCallFamily::BytesIndex,
+                        crate::RuntimeCallFamily::BytesSet,
+                    ),
+                );
+                self.check_against(&index.0, &index.1, &Ty::I64);
+                Ty::U8
+            }
+            Ty::Named { name, args, .. } => {
+                if self.type_satisfies_trait_bound(&resolved_obj, "Index") {
+                    let expected_key = self
+                        .lookup_named_method_sig(name, args, "at")
+                        .and_then(|sig| sig.params.first().cloned())
+                        .unwrap_or(Ty::I32);
+                    self.check_against(&index.0, &index.1, &expected_key);
+                    let output = self.project_assoc_types(&Ty::AssocType {
+                        base: Box::new(resolved_obj.clone()),
+                        trait_name: "Index".into(),
+                        assoc_name: "Output".into(),
+                    });
+                    if matches!(output, Ty::AssocType { .. }) {
+                        self.report_error(
+                            TypeErrorKind::AssocTypeProjectionFailed {
+                                type_name: resolved_obj.user_facing().to_string(),
+                                trait_name: "Index".to_string(),
+                                assoc_name: "Output".to_string(),
+                            },
+                            span,
+                            format!(
+                                "could not project associated type `<{} as Index>.Output` \
+                                 while checking `[]`; ensure the impl defines \
+                                 `type Output = ...`",
+                                resolved_obj.user_facing()
+                            ),
+                        );
+                        return Ty::Error;
+                    }
+                    return output;
+                }
+
+                self.check_against(&index.0, &index.1, &Ty::I64);
+                // Bracket indexing via a named type's `.get()` method is no longer
+                // supported. Use the explicit method call instead.
+                if self.lookup_named_method_sig(name, args, "get").is_some() {
+                    self.report_error_with_suggestions(
+                        TypeErrorKind::InvalidOperation,
+                        span,
+                        format!(
+                            "cannot index into `{}` with `[]`; use `.get(k)` instead",
+                            resolved_obj.user_facing()
+                        ),
+                        vec![format!("use `.get(k)` on `{}`", resolved_obj.user_facing())],
+                    );
+                } else {
+                    self.report_error(
+                        TypeErrorKind::InvalidOperation,
+                        span,
+                        format!("cannot index into `{}`", resolved_obj.user_facing()),
+                    );
+                }
+                Ty::Error
+            }
+            Ty::Array(elem, _) => {
+                self.indexed_place_operations.insert(
+                    SpanKey::in_module(span, self.current_module_idx),
+                    (
+                        crate::RuntimeCallFamily::Array(crate::runtime_call::ArrayValueOp::Index),
+                        crate::RuntimeCallFamily::Array(crate::runtime_call::ArrayValueOp::Set),
+                    ),
+                );
+                self.check_against(&index.0, &index.1, &Ty::I64);
+                if matches!(ctx, IndexContext::Read) {
+                    match self.vec_iteration_element_mode(elem, span) {
+                        Some(super::types::VecIterationMode::Borrow) => {
+                            self.borrowed_element_index_reads
+                                .insert(SpanKey::in_module(span, self.current_module_idx));
+                        }
+                        Some(super::types::VecIterationMode::Clone) => {}
+                        None => return Ty::Error,
+                    }
+                }
+                (**elem).clone()
+            }
+            Ty::Slice(elem) => {
+                self.check_against(&index.0, &index.1, &Ty::I64);
+                (**elem).clone()
+            }
+            other => {
+                self.check_against(&index.0, &index.1, &Ty::I64);
+                if *other != Ty::Error {
+                    self.report_error(
+                        TypeErrorKind::InvalidOperation,
+                        span,
+                        format!("cannot index into `{}`", other.user_facing()),
+                    );
+                }
+                Ty::Error
+            }
+        }
+    }
+
+    /// Type-check an arithmetic operation where at least one operand is `duration` or `instant`.
+    ///
+    /// Supported operations:
+    /// - `duration +/- duration → duration`
+    /// - `duration % duration → duration`
+    /// - `duration * int → duration`, `int * duration → duration`
+    /// - `duration / int → duration`
+    /// - `duration / duration → i64` (ratio)
+    /// - `instant + duration → instant` (advance a point in time)
+    /// - `duration + instant → instant` (commutative advance)
+    pub(in crate::check) fn check_duration_arithmetic(
+        &mut self,
+        op: BinaryOp,
+        left: &Ty,
+        right: &Ty,
+        span: &Span,
+    ) -> Ty {
+        match (left, right, op) {
+            // duration +/- duration → duration, duration % duration → duration
+            (Ty::Duration, Ty::Duration, BinaryOp::Add | BinaryOp::Subtract | BinaryOp::Modulo) => {
+                Ty::Duration
+            }
+            // duration * int → duration, int * duration → duration
+            (Ty::Duration, r, BinaryOp::Multiply) if r.is_integer() => Ty::Duration,
+            (l, Ty::Duration, BinaryOp::Multiply) if l.is_integer() => Ty::Duration,
+            // duration / int → duration
+            (Ty::Duration, r, BinaryOp::Divide) if r.is_integer() => Ty::Duration,
+            // duration / duration → i64 (ratio)
+            (Ty::Duration, Ty::Duration, BinaryOp::Divide) => Ty::I64,
+            // instant + duration → instant (advance a point in time by a duration)
+            (l, Ty::Duration, BinaryOp::Add) if l.is_instant() => left.clone(),
+            // duration + instant → instant (commutative: duration + instant)
+            (Ty::Duration, r, BinaryOp::Add) if r.is_instant() => right.clone(),
+            // instant - duration → instant (rewind a point in time by a duration)
+            (l, Ty::Duration, BinaryOp::Subtract) if l.is_instant() => left.clone(),
+            // instant - instant → duration (the elapsed gap between two points;
+            // both instants canonicalise to i64 nanos, the difference is a
+            // signed nanosecond duration). Not commutative — `duration - instant`
+            // is meaningless and stays on the error arm below.
+            (l, r, BinaryOp::Subtract) if l.is_instant() && r.is_instant() => Ty::Duration,
+            _ => {
+                self.report_error(
+                    TypeErrorKind::InvalidOperation,
+                    span,
+                    format!(
+                        "cannot apply `{op}` to `{}` and `{}`",
+                        left.user_facing(),
+                        right.user_facing()
+                    ),
+                );
+                Ty::Error
+            }
+        }
+    }
+
+    /// Check if an expression is typically used for side effects (not for its return value).
+    pub(in crate::check) fn record_type(&mut self, span: &Span, ty: &Ty) {
+        let key = SpanKey::in_module(span, self.current_module_idx);
+        self.expr_type_source_modules
+            .insert(key.clone(), self.current_module.clone());
+        self.expr_types.insert(key, ty.clone());
+    }
+
+    pub(in crate::check) fn record_integer_literal_type(
+        &mut self,
+        expr: &Expr,
+        span: &Span,
+        ty: &Ty,
+    ) {
+        self.record_type(span, ty);
+        if let Expr::Unary {
+            op: UnaryOp::Negate,
+            operand,
+        } = expr
+        {
+            self.record_type(&operand.1, ty);
+        }
+    }
+
+    /// Type-check `lhs is rhs` (identity comparison, slice D-2).
+    ///
+    /// See the doc comment on the `Expr::Is` arm in [`Self::synthesize_inner`]
+    /// for the allowance set, rejection rules, and cross-class behaviour.
+    ///
+    /// Always returns `Ty::Bool` (even after reporting errors); the operator
+    /// is total at the type level so downstream uses (`if (a is b) { ... }`)
+    /// don't double-poison.
+    pub(super) fn synthesize_is(
+        &mut self,
+        lhs: &Spanned<Expr>,
+        rhs: &Spanned<Expr>,
+        span: &Span,
+    ) -> Ty {
+        let lhs_ty = self.synthesize(&lhs.0, &lhs.1);
+        if let Some(rhs_ty) = self.resolve_is_type_pattern(&rhs.0) {
+            return self.synthesize_is_type_pattern(lhs, &lhs_ty, rhs, &rhs_ty, span);
+        }
+        let rhs_ty = self.synthesize(&rhs.0, &rhs.1);
+        let lhs_resolved = self.subst.resolve(&lhs_ty);
+        let rhs_resolved = self.subst.resolve(&rhs_ty);
+
+        // Don't double-report when either side is already poisoned by an
+        // upstream diagnostic (`Ty::Error`). The operator still produces
+        // `bool` so enclosing expressions see a stable type.
+        if matches!(lhs_resolved, Ty::Error) || matches!(rhs_resolved, Ty::Error) {
+            return Ty::Bool;
+        }
+
+        // An operand still under inference cannot be decided here, and it must
+        // not be abandoned either: a closure's parameter types are fresh
+        // variables while its body is checked and only settle when a call site
+        // unifies them, so `let same = |a, b| a is b;` used to escape
+        // `is_identity_capable` entirely and die in the codegen front on the
+        // span-less `IdentityCompare lhs must be a pointer or integer value`.
+        // Record the obligation and re-run the same decision once inference
+        // has settled (`report_unresolved_inference_holes`) — #3134.
+        if matches!(lhs_resolved, Ty::Var(_)) || matches!(rhs_resolved, Ty::Var(_)) {
+            let key = SpanKey::in_module(span, self.current_module_idx);
+            let check = DeferredIsCheck {
+                span: span.clone(),
+                lhs_span: lhs.1.clone(),
+                lhs_ty,
+                rhs_span: rhs.1.clone(),
+                rhs_ty,
+                source_module: self.current_diagnostic_source_module(),
+            };
+            self.deferred_is_checks.insert(key, check);
+            return Ty::Bool;
+        }
+
+        for (kind, span, message) in
+            self.is_value_form_diagnostics(&lhs.1, &lhs_resolved, &rhs.1, &rhs_resolved, span)
+        {
+            self.report_error(kind, &span, message);
+        }
+
+        Ty::Bool
     }
 }

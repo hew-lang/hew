@@ -1,4 +1,5 @@
-//! Split from `registration.rs`: checker methods, part 3 of 6.
+//! Checker methods grouped by responsibility: functions.
+//! Split from `registration.rs`: checker methods, part 1 of 6.
 #![allow(
     unused_imports,
     redundant_imports,
@@ -16,6 +17,302 @@ use crate::BuiltinType;
 use hew_parser::ast::WireMetadata;
 
 impl Checker {
+    /// Populate `declared_type_param_names` with every type-parameter name
+    /// declared anywhere in the program and its modules — on type / record /
+    /// trait / impl / machine / actor declarations and on every generic method
+    /// (impl method, trait method, actor receive-fn) or free function — and
+    /// `declared_nominal_type_names` with every declared NOMINAL type name
+    /// (type / type-alias / record / trait / actor / supervisor / machine, plus
+    /// the synthesised `<Machine>Event` companion).
+    ///
+    /// The undefined-named-type guard consults both sets. A name declared as a
+    /// type parameter somewhere is intentionally left opaque (`Ty::named`) by
+    /// the resolver and re-resolved at several secondary sites (signature
+    /// rebuilds, receiver probes, trait-conformance checks) WITHOUT its scope
+    /// re-pushed, so it must never be reported as undefined. A nominal type
+    /// declared in an imported `module_graph` module is likewise resolvable even
+    /// while that module's signatures are registered in a pass where the global
+    /// `trait_defs` / `known_types` still hold only the root module's
+    /// declarations. A genuinely undefined type (`Bogus`) is in neither set, so
+    /// it is still caught.
+    pub(in crate::check) fn collect_declared_type_param_names(&mut self, program: &Program) {
+        for (item, _) in &program.items {
+            self.collect_item_type_param_names(item);
+            self.collect_item_nominal_type_name(item);
+        }
+        if let Some(mg) = &program.module_graph {
+            for module in mg.modules.values() {
+                for (item, _) in &module.items {
+                    self.collect_item_type_param_names(item);
+                    self.collect_item_nominal_type_name(item);
+                }
+            }
+        }
+        // Harvest trait-level type parameters from every registered trait def.
+        // Built-in and stdlib traits (e.g. `Index<Idx>` from std/builtins.hew)
+        // are registered into `trait_defs` by `register_builtins` rather than
+        // appearing in the walked program AST; their parameter names surface in
+        // user code when a `dyn Trait<...>` annotation pulls the trait's method
+        // signatures through resolution without the trait scope re-pushed.
+        let trait_param_names: Vec<String> = self
+            .trait_defs
+            .values()
+            .flat_map(|trait_def| trait_def.type_params.iter().cloned())
+            .collect();
+        self.declared_type_param_names.extend(trait_param_names);
+    }
+
+    pub(super) fn collect_item_type_param_names(&mut self, item: &Item) {
+        match item {
+            Item::Supervisor(sd) => self.insert_type_param_names(&sd.type_params),
+            Item::Function(fd) => self.insert_opt_type_param_names(fd.type_params.as_ref()),
+            Item::TypeDecl(td) => self.insert_opt_type_param_names(td.type_params.as_ref()),
+            Item::Record(rd) => self.insert_opt_type_param_names(rd.type_params.as_ref()),
+            Item::Trait(tr) => {
+                self.insert_opt_type_param_names(tr.type_params.as_ref());
+                for trait_item in &tr.items {
+                    if let TraitItem::Method(method) = trait_item {
+                        self.insert_opt_type_param_names(method.type_params.as_ref());
+                    }
+                }
+            }
+            Item::Impl(id) => {
+                self.insert_opt_type_param_names(id.type_params.as_ref());
+                for method in &id.methods {
+                    self.insert_opt_type_param_names(method.type_params.as_ref());
+                }
+            }
+            Item::Actor(ad) => {
+                self.insert_type_param_names(&ad.type_params);
+                for receive_fn in &ad.receive_fns {
+                    self.insert_opt_type_param_names(receive_fn.type_params.as_ref());
+                }
+                for method in &ad.methods {
+                    self.insert_opt_type_param_names(method.type_params.as_ref());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    pub(super) fn insert_opt_type_param_names(&mut self, tps: Option<&Vec<TypeParam>>) {
+        if let Some(tps) = tps {
+            self.insert_type_param_names(tps);
+        }
+    }
+
+    pub(super) fn insert_type_param_names(&mut self, tps: &[TypeParam]) {
+        for tp in tps {
+            self.declared_type_param_names.insert(tp.name.clone());
+        }
+    }
+
+    /// Validate that no trait bound in the given type parameters or
+    /// where-clause carries positional type arguments (e.g. `T: Eq<U>`).
+    /// Such forms are not valid in Hew — the checker cannot enforce
+    /// phantom-parameterised marker bounds, and admitting them would silently
+    /// erase the type arguments in `collect_type_param_bounds`, reducing
+    /// `Eq<U>` to bare `Eq` without any diagnostic.
+    ///
+    /// Emits `UnknownTraitBoundShape` at `span` for every offending bound.
+    /// Must be called before `collect_type_param_bounds` erases `type_args`.
+    /// Covers fn/impl/impl-method/machine declaration positions.
+    pub(in crate::check) fn validate_type_param_bound_shapes(
+        &mut self,
+        type_params: Option<&Vec<TypeParam>>,
+        where_clause: Option<&WhereClause>,
+        span: &Span,
+    ) {
+        // Check inline type-param bounds: e.g. `<T: Eq<U>>`.
+        if let Some(params) = type_params {
+            for param in params {
+                for bound in &param.bounds {
+                    if bound.type_args.as_ref().is_some_and(|a| !a.is_empty()) {
+                        self.report_error(
+                            TypeErrorKind::UnknownTraitBoundShape {
+                                trait_name: bound.name.clone(),
+                            },
+                            span,
+                            format!(
+                                "trait bound `{}` on type parameter `{}` carries positional \
+                                 type arguments, which are not supported; use associated-type \
+                                 bindings (`Trait<Assoc = Ty>`) instead",
+                                bound.name, param.name,
+                            ),
+                        );
+                    }
+                }
+            }
+        }
+        // Check where-clause bounds: `where T: Eq<U>`.
+        if let Some(wc) = where_clause {
+            for predicate in &wc.predicates {
+                for bound in &predicate.bounds {
+                    if bound.type_args.as_ref().is_some_and(|a| !a.is_empty()) {
+                        self.report_error(
+                            TypeErrorKind::UnknownTraitBoundShape {
+                                trait_name: bound.name.clone(),
+                            },
+                            span,
+                            format!(
+                                "trait bound `{}` in where-clause carries positional \
+                                 type arguments, which are not supported; use associated-type \
+                                 bindings (`Trait<Assoc = Ty>`) instead",
+                                bound.name,
+                            ),
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Thin wrapper for the fn-decl path; delegates to
+    /// `validate_type_param_bound_shapes` using the function's own
+    /// type-param list, where-clause, and declaration span.
+    pub(in crate::check) fn validate_fn_type_param_bound_shapes(&mut self, fd: &FnDecl) {
+        self.validate_type_param_bound_shapes(
+            fd.type_params.as_ref(),
+            fd.where_clause.as_ref(),
+            &fd.decl_span,
+        );
+    }
+
+    /// Pass 2: Collect function signatures
+    #[expect(
+        clippy::too_many_lines,
+        reason = "signature collection maintains one ordered registration walk"
+    )]
+    pub(in crate::check) fn collect_functions(&mut self, program: &Program) {
+        let flat_file_import_modules = flat_file_import_module_ids(program);
+        self.flat_file_import_module_names = flat_file_import_modules
+            .iter()
+            .map(|module_id| module_id.path.join("."))
+            .collect();
+        // Process module graph items first (if multi-module).
+        // Skip the root module — its items are already in program.items and
+        // will be processed below with current_module = None (bare names).
+        if let Some(ref mg) = program.module_graph {
+            let span_indices = mg.file_span_indices();
+            for mod_id in &mg.topo_order {
+                if *mod_id == mg.root {
+                    continue;
+                }
+                if let Some(module) = mg.modules.get(mod_id) {
+                    let module_name = mod_id.path.join(".");
+                    self.record_canonical_std_module_source(&module_name, &module.source_paths);
+                    self.current_module = Some(module_name.clone());
+                    self.registration_is_flat_file_import =
+                        flat_file_import_modules.contains(mod_id);
+                    self.current_module_direct_imports = module
+                        .imports
+                        .iter()
+                        .map(|import| import.target.path.join("."))
+                        .collect();
+                    self.current_module_direct_import_bindings = module
+                        .imports
+                        .iter()
+                        .map(|import| (import.target.path.join("."), import.spec.clone()))
+                        .collect();
+                    // Scope local declarations to the module being registered.
+                    let saved_local_type_defs = self.local_type_defs.clone();
+                    let saved_source_type_defs = self.source_type_defs.clone();
+                    for (item, _) in &module.items {
+                        match item {
+                            Item::TypeDecl(td) => {
+                                self.local_type_defs.insert(td.name.clone());
+                                self.source_type_defs.insert(td.name.clone());
+                            }
+                            Item::Machine(md) => {
+                                self.local_type_defs.insert(md.name.clone());
+                                self.source_type_defs.insert(md.name.clone());
+                                let event_type_name = format!("{}Event", md.name);
+                                self.local_type_defs.insert(event_type_name.clone());
+                                self.source_type_defs.insert(event_type_name);
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    // Snapshot error/warning counts before signature registration
+                    // for this module.  Diagnostics emitted during collect_function_item
+                    // (e.g. duplicate-definition errors, import errors) are tagged with
+                    // the module name below so the CLI renders them against the correct
+                    // source file rather than the root compilation unit.
+                    let err_before = self.errors.len();
+                    let warn_before = self.warnings.len();
+
+                    let item_sources = self.module_item_sources.get(&module_name).cloned();
+                    for (item_idx, (item, span)) in module.items.iter().enumerate() {
+                        // Per-item defining-file identity (rc1-F1 stage C):
+                        // registration-time facts (extern contracts, their
+                        // conflict diagnostics) attribute to the item's own
+                        // source file, not the assembled module's primary.
+                        self.current_item_source = item_sources
+                            .as_ref()
+                            .and_then(|sources| sources.get(item_idx))
+                            .cloned();
+                        self.current_item_ordinal = item_idx;
+                        self.current_module_idx = span_indices
+                            .item_index(mod_id, item_idx)
+                            .unwrap_or_default();
+                        self.collect_function_item(item, span);
+                    }
+                    self.current_item_source = None;
+                    self.current_item_ordinal = 0;
+
+                    for e in &mut self.errors[err_before..] {
+                        if e.source_module.is_none() {
+                            e.source_module = Some(module_name.clone());
+                        }
+                    }
+                    for w in &mut self.warnings[warn_before..] {
+                        if w.source_module.is_none() {
+                            w.source_module = Some(module_name.clone());
+                        }
+                    }
+
+                    self.local_type_defs = saved_local_type_defs;
+                    self.source_type_defs = saved_source_type_defs;
+                }
+            }
+        }
+
+        // Process main module items.
+        self.current_module = None;
+        self.current_module_idx = 0;
+        self.registration_is_flat_file_import = false;
+        self.current_module_direct_imports = program
+            .module_graph
+            .as_ref()
+            .and_then(|graph| graph.modules.get(&graph.root))
+            .map(|root| {
+                root.imports
+                    .iter()
+                    .map(|import| import.target.path.join("."))
+                    .collect()
+            })
+            .unwrap_or_default();
+        self.current_module_direct_import_bindings = program
+            .module_graph
+            .as_ref()
+            .and_then(|graph| graph.modules.get(&graph.root))
+            .map(|root| {
+                root.imports
+                    .iter()
+                    .map(|import| (import.target.path.join("."), import.spec.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        for (item_ordinal, (item, span)) in program.items.iter().enumerate() {
+            self.current_item_ordinal = item_ordinal;
+            self.collect_function_item(item, span);
+        }
+        self.canonicalize_root_super_trait_edges(program);
+        self.current_module_direct_imports.clear();
+        self.current_module_direct_import_bindings.clear();
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "expression type checking requires many cases"
@@ -498,16 +795,6 @@ impl Checker {
             .is_some_and(|trait_bound| trait_bound.name == "Drop")
     }
 
-    pub(in crate::check) fn report_unsupported_impl_drop(&mut self, span: &Span) {
-        self.errors.push(TypeError::new(
-            TypeErrorKind::InvalidOperation,
-            span.clone(),
-            "`impl Drop` is not supported (its `drop` method would not run); use \
-             `#[resource]` with a `close()` method for deterministic cleanup, or \
-             rely on automatic field-wise drop",
-        ));
-    }
-
     pub(in crate::check) fn register_fn_sig(&mut self, fd: &FnDecl) {
         // A top-level free function's signature is the primary resolution of its
         // own annotations: its type-param bounds frame is pushed before the
@@ -595,48 +882,6 @@ impl Checker {
         }
     }
 
-    /// Type-parameter names declared by `trait_name`, or empty when the trait
-    /// is not (yet) registered.
-    pub(super) fn trait_type_param_names(&self, trait_name: &str) -> Vec<String> {
-        let key = self.trait_ref_lookup_key(trait_name);
-        self.trait_defs
-            .get(&key)
-            .or_else(|| self.trait_defs.get(trait_name))
-            .map(|info| info.type_params.clone())
-            .unwrap_or_default()
-    }
-
-    /// DECISION: a method type parameter that shadows a type parameter of its
-    /// enclosing `impl` block or `trait` is REFUSED, rather than the two being
-    /// distinguished by scope.
-    ///
-    /// The two are already conflated everywhere downstream, silently and
-    /// wrongly. `instantiate_named_method_sig` (`method_resolution.rs`)
-    /// substitutes the enclosing type arguments by NAME and then drops every
-    /// matching name from `sig.type_params`, so the method's own parameter is
-    /// erased and bound to the enclosing argument: given
-    /// `impl<T> Holder<T> { fn same<T>(self, marker: T) }`, a `Holder<i64>`
-    /// receiver makes `same("text")` report `expected i64, found string`, and
-    /// `trait Choice<T> { fn same<T>(self, marker: T) }` reports `expected T`.
-    /// The method's `T` never existed in either case.
-    ///
-    /// Keying substitutions by `(scope, name)` would not fix that: the collapse
-    /// happens upstream of any substitution map, and `type_params` is a flat
-    /// `Vec<String>` read by every consumer of `FnSig`, all of which would need
-    /// the two-level key. Shadowing buys no expressiveness — the method
-    /// parameter can always be renamed — so the fail-closed refusal is both the
-    /// smaller change and the honest one.
-    ///
-    /// One authority for all three shapes: inherent `impl` methods, trait
-    /// declaration methods (including default bodies), and trait `impl`
-    /// methods shadowing a parameter the trait declared.
-    /// Module-qualified identity of a declaration owner, for the shadow-report
-    /// dedup key.
-    pub(in crate::check) fn declaration_owner_key(&self, name: &str) -> String {
-        scoped_module_item_name(self.current_module.as_deref(), name)
-            .unwrap_or_else(|| name.to_string())
-    }
-
     /// Declaration identity for the shadow-report dedup key: a module-qualified
     /// owner plus the method name. Built in one place so the three registration
     /// paths cannot drift into three spellings of the same identity.
@@ -707,188 +952,6 @@ impl Checker {
                 )],
             );
         }
-    }
-
-    pub(super) fn register_trait_method_sig(
-        &mut self,
-        trait_name: &str,
-        method: &hew_parser::ast::TraitMethod,
-        span: &Span,
-    ) {
-        let method_key = format!("{trait_name}::{}", method.name);
-        // Declaration IDs are minted at the checker registration boundary and
-        // handed to HIR verbatim. The key is source-owned, not a linker name.
-        // A trait declaration owns its method IDs directly. During the
-        // multi-module signature pass the local-trait scope is intentionally
-        // not retained, so routing this declaration through the generic
-        // reference resolver can collapse two same-leaf module traits to the
-        // bare spelling. Prefer the active source module's exact declaration
-        // key; imported/default-method references still use the resolver.
-        let declaration_key = self
-            .current_module
-            .as_ref()
-            .filter(|module| {
-                self.trait_defs
-                    .contains_key(&format!("{module}.{trait_name}"))
-            })
-            .map_or_else(
-                || self.trait_ref_lookup_key(trait_name),
-                |module| format!("{module}.{trait_name}"),
-            );
-        // Keyed by the trait's own declaration key, which is stable across the
-        // implementing modules an inherited default is re-registered under.
-        let trait_params = self.trait_type_param_names(trait_name);
-        if !trait_params.is_empty() {
-            let owner = Self::method_declaration_key(&declaration_key, &method.name);
-            self.reject_shadowing_method_type_params(
-                method.type_params.as_ref(),
-                &[(trait_params, format!("trait `{trait_name}`"))],
-                &owner,
-                &method.span,
-            );
-        }
-        let Some(trait_id) = self.require_declaration_path(&declaration_key, span) else {
-            return;
-        };
-        let method_path = format!("{}::{}", trait_id.full_path(), method.name);
-        let Some(method_id) = self.require_declaration_path(&method_path, &method.span) else {
-            return;
-        };
-        let ids = (trait_id, method_id);
-        self.trait_method_ids
-            .insert(ids.1.full_path().to_string(), ids.clone());
-        if self.registration_is_flat_file_import {
-            self.trait_method_ids_by_binding.insert(
-                (
-                    None,
-                    self.current_module_idx,
-                    trait_name.to_string(),
-                    method.name.clone(),
-                ),
-                ids,
-            );
-        }
-        // The owner-qualified key (`{module}.{trait}::{method}`) is collision-free
-        // even when two imported modules export a same-named trait. The bare
-        // `{trait}::{method}` key is first-write-wins, so with a same-name
-        // collision it holds whichever module registered first and silently
-        // shadows the other's signature. Trait-conformance resolves an aliased
-        // trait to its source owner and looks up this qualified key
-        // authoritatively, so it must always be present when an owner is known.
-        let owner_qualified_key = self
-            .current_module
-            .as_ref()
-            .map(|module| format!("{module}.{method_key}"));
-
-        // Build the trait method's FnDecl once; reuse it for both the bare and
-        // owner-qualified registrations. `Self::Bar` projection is active while
-        // the signature resolves so `Self::Item` becomes a deferred
-        // `Ty::AssocType` carrier instead of an opaque named type.
-        let receiver_identity_is_valid =
-            self.validate_trait_receiver_identity_method(trait_name, method);
-        let mut attributes = method.attributes.clone();
-        if !receiver_identity_is_valid {
-            attributes.retain(|attribute| attribute.name != "returns_receiver");
-        }
-        let decl = FnDecl {
-            origin: hew_parser::ast::DeclarationOrigin::Authored,
-            attributes,
-            is_generator: false,
-            visibility: hew_parser::ast::Visibility::Private,
-            name: method.name.clone(),
-            type_params: method.type_params.clone(),
-            params: method.params.clone(),
-            return_type: method.return_type.clone(),
-            where_clause: method.where_clause.clone(),
-            body: hew_parser::ast::Block {
-                stmts: vec![],
-                trailing_expr: None,
-            },
-            doc_comment: None,
-            decl_span: span.clone(),
-            fn_span: 0..0,
-            intrinsic: None,
-            consumes_self: method.consumes_self,
-        };
-
-        let prev_trait_self = self
-            .current_trait_for_self_projection
-            .replace(declaration_key);
-        // Register the owner-qualified key first (collision-free) regardless of
-        // whether the bare key is already taken by another module's same-named
-        // trait, so the authoritative lookup never misses for a known owner.
-        if let Some(qualified_key) = owner_qualified_key.as_ref() {
-            if !self.fn_sigs.contains_key(qualified_key) {
-                self.register_fn_sig_with_name(qualified_key, &decl);
-            }
-        }
-        // The bare key keeps first-write-wins for the local/non-aliased path.
-        if !self.fn_sigs.contains_key(&method_key) {
-            self.register_fn_sig_with_name(&method_key, &decl);
-        }
-        self.current_trait_for_self_projection = prev_trait_self;
-    }
-
-    pub(in crate::check) fn trait_receiver_identity_is_structurally_valid(
-        method: &hew_parser::ast::TraitMethod,
-    ) -> bool {
-        let identity_attributes: Vec<_> = method
-            .attributes
-            .iter()
-            .filter(|attribute| attribute.name == "returns_receiver")
-            .collect();
-        if identity_attributes.is_empty() {
-            return false;
-        }
-
-        let returns_self_type = method.return_type.as_ref().is_some_and(|(ty, _)| {
-            matches!(
-                ty,
-                TypeExpr::Named { name, type_args }
-                    if name == "Self" && type_args.as_ref().is_none_or(Vec::is_empty)
-            )
-        });
-        let body_is_exact = method.body.as_ref().is_none_or(|body| {
-            let direct_self_tail = body
-                .trailing_expr
-                .as_deref()
-                .is_some_and(|(expr, _)| matches!(expr, Expr::Identifier(name) if name == "self"));
-            direct_self_tail && !block_has_explicit_return(body)
-        });
-        identity_attributes.len() == 1
-            && identity_attributes[0].args.is_empty()
-            && method.consumes_self
-            && returns_self_type
-            && body_is_exact
-    }
-
-    pub(super) fn validate_trait_receiver_identity_method(
-        &mut self,
-        trait_name: &str,
-        method: &hew_parser::ast::TraitMethod,
-    ) -> bool {
-        let declares_identity = method
-            .attributes
-            .iter()
-            .any(|attribute| attribute.name == "returns_receiver");
-        if !declares_identity {
-            return false;
-        }
-        let valid = Self::trait_receiver_identity_is_structurally_valid(method);
-        if !valid {
-            self.report_error(
-                TypeErrorKind::InvalidOperation,
-                &method.span,
-                format!(
-                    "`#[returns_receiver]` on trait method `{trait_name}.{}` requires \
-                     one zero-argument attribute, a `consume self` receiver, the exact \
-                     `Self` return type, and any default body to have one direct trailing \
-                     `self` with no alternate `return` path",
-                    method.name
-                ),
-            );
-        }
-        valid
     }
 
     /// Collect the full resolver scope for declared type params: trait-bound
@@ -977,12 +1040,6 @@ impl Checker {
             }
         }
         bounds
-    }
-
-    pub(in crate::check) fn push_unique_bound(entry: &mut Vec<String>, bound: &str) {
-        if !entry.iter().any(|b| b == bound) {
-            entry.push(bound.to_string());
-        }
     }
 
     pub(in crate::check) fn collect_type_param_assoc_bindings(
@@ -1083,87 +1140,6 @@ impl Checker {
                 }
             }
             _ => false,
-        }
-    }
-
-    /// Ingest a `#[extern_symbol("…")]` attribute (Stage 2 of W3.001).
-    ///
-    /// Stage 1 already validated the attribute's **attachment position**
-    /// (parser rejects it on free fns, actors, trait fns,
-    /// type-decl methods). This helper runs at FnSig-ingest time on
-    /// the surviving attachment sites (extern `"C"` block fns,
-    /// inherent impl methods, trait-impl methods) and:
-    ///
-    /// 1. Finds the (at most one) `extern_symbol` attribute.
-    /// 2. Parses its template via
-    ///    [`crate::extern_symbol::ExternSymbolTemplate::parse`].
-    /// 3. On success returns a populated
-    ///    [`crate::extern_symbol::ExternSymbolSpec`].
-    /// 4. On failure emits a span-anchored
-    ///    [`TypeErrorKind::InvalidExternSymbolTemplate`] diagnostic
-    ///    and returns `None` (fail-closed: the `FnSig` records no
-    ///    template, so Stage-3 monomorphic dispatch will surface the
-    ///    same call site as an unresolved-symbol diagnostic rather
-    ///    than silently routing through a malformed template).
-    ///
-    /// Returns `None` when no `extern_symbol` attribute is present —
-    /// the normal case for ordinary functions and methods.
-    pub(in crate::check) fn ingest_extern_symbol_attrs(
-        &mut self,
-        attrs: &[Attribute],
-    ) -> Option<crate::extern_symbol::ExternSymbolSpec> {
-        let attr = attrs.iter().find(|a| a.name == "extern_symbol")?;
-        // Stage 1 parser accepts only a single positional string argument
-        // for `#[extern_symbol("...")]` (see hew-parser tests at
-        // `extern_symbol_attribute_on_*_is_captured`). If a future
-        // parser regression lets a malformed shape through, fail closed
-        // with a precise diagnostic rather than panic.
-        let raw_payload = match attr.args.as_slice() {
-            [AttributeArg::Positional(s)] => s.as_str(),
-            [] => {
-                self.errors.push(TypeError::new(
-                    TypeErrorKind::InvalidExternSymbolTemplate {
-                        reason: "missing template string — expected `#[extern_symbol(\"...\")]`"
-                            .to_string(),
-                    },
-                    attr.span.clone(),
-                    "`#[extern_symbol]` requires a single string argument naming the C-ABI \
-                     runtime symbol (with optional `{T}` placeholders for per-monomorphization \
-                     dispatch)"
-                        .to_string(),
-                ));
-                return None;
-            }
-            _ => {
-                self.errors.push(TypeError::new(
-                    TypeErrorKind::InvalidExternSymbolTemplate {
-                        reason: "expected exactly one positional string argument".to_string(),
-                    },
-                    attr.span.clone(),
-                    "`#[extern_symbol(\"hew_symbol\")]` accepts exactly one positional string \
-                     argument; multi-argument and key-value forms are not part of the W3.001 \
-                     grammar"
-                        .to_string(),
-                ));
-                return None;
-            }
-        };
-        match crate::extern_symbol::ExternSymbolTemplate::parse(raw_payload) {
-            Ok(template) => Some(crate::extern_symbol::ExternSymbolSpec {
-                template,
-                span: attr.span.clone(),
-            }),
-            Err(err) => {
-                let reason = err.reason();
-                self.errors.push(TypeError::new(
-                    TypeErrorKind::InvalidExternSymbolTemplate {
-                        reason: reason.clone(),
-                    },
-                    attr.span.clone(),
-                    format!("invalid `#[extern_symbol]` template: {reason}"),
-                ));
-                None
-            }
         }
     }
 
@@ -2259,52 +2235,6 @@ impl Checker {
         self.lookup_declaration(&path).cloned()
     }
 
-    /// Substitute trait-side type references into impl-side concrete types.
-    ///
-    /// Walks `ty` recursively and replaces:
-    /// * `Ty::Named { name: "Self", args: [] }` → `impl_self`
-    /// * `Ty::Named { name: <trait type param>, args: [] }` → the impl-supplied
-    ///   type arg from `trait_param_map`
-    /// * `Ty::AssocType { base: Self, .. }` → a concrete projection carrier
-    ///   over `impl_self`, then resolves it through `project_assoc_types`
-    ///
-    /// Used by [`Self::check_impl_method_against_trait`] to project the trait
-    /// method's declared signature into the concrete shape the impl method
-    /// must match. Returns the input unchanged for any subterm the
-    /// substitution cannot resolve, so the later structural comparison remains
-    /// fail-closed instead of guessing from presentation spellings.
-    pub(super) fn substitute_trait_sig_for_impl(
-        &self,
-        ty: &Ty,
-        impl_self: &Ty,
-        trait_param_map: &HashMap<String, Ty>,
-    ) -> Ty {
-        match ty {
-            Ty::Named { name, args, .. } if args.is_empty() && name == "Self" => impl_self.clone(),
-            Ty::Named { name, args, .. } if args.is_empty() => {
-                if let Some(mapped) = trait_param_map.get(name) {
-                    return mapped.clone();
-                }
-                ty.clone()
-            }
-            Ty::AssocType {
-                base,
-                trait_name: tn,
-                assoc_name,
-            } => {
-                let new_base = self.substitute_trait_sig_for_impl(base, impl_self, trait_param_map);
-                self.project_assoc_types(&Ty::AssocType {
-                    base: Box::new(new_base),
-                    trait_name: tn.clone(),
-                    assoc_name: assoc_name.clone(),
-                })
-            }
-            _ => ty.map_children_pub(&|child| {
-                self.substitute_trait_sig_for_impl(child, impl_self, trait_param_map)
-            }),
-        }
-    }
-
     /// Rename method-level type parameter names in `ty` from the trait's
     /// declared names to the impl's declared names, paired positionally.
     ///
@@ -2351,49 +2281,136 @@ impl Checker {
         ty.substitute_named_params_parallel(&subst_map)
     }
 
-    /// Resolve a trait reference as written in an `impl ... for ...` block to
-    /// its OWNER-QUALIFIED identity, so trait conformance never keys off the
-    /// bare `Trait::method` name. The bare name is polluted under same-name
-    /// collisions: `register_trait_method_sig` writes the bare `fn_sigs` key
-    /// first-write-wins, so when two imported modules (or an import plus a
-    /// local declaration) share a trait name, the bare key holds whichever
-    /// registered first and silently shadows the others. Resolution covers all
-    /// three reference kinds uniformly:
-    ///
-    ///   * **aliased / imported-bare** — `published_bare_trait_owners` maps the
-    ///     in-scope binding to its source identity `{module}.{Trait}`. The
-    ///     owner-qualified `fn_sigs` key `{module}.{Trait}::{method}` is
-    ///     collision-free (always registered for module traits).
-    ///   * **local / root** — a trait declared in the importing program shadows
-    ///     any imported same-name trait. The local `trait_defs[bare]` entry is
-    ///     authoritative (last-write-wins), so its required method set and
-    ///     signatures are derived from that `TraitInfo` directly, never from the
-    ///     polluted bare `fn_sigs` key.
-    ///   * **unambiguous single-owner import** — recovered by scanning
-    ///     `trait_defs` for a single `{module}.{Trait}` qualified key.
-    ///
-    /// `trait_name` is the name as written (`A`, `Source`). Returns the resolved
-    /// identity; `owner` is the defining module (`None` for a local/root trait
-    /// or an unresolved name), and `is_local` records the local-shadow case so
-    /// callers source the required-method set from the local `TraitInfo`.
-    pub(in crate::check) fn resolve_trait_conformance_identity(
-        &self,
-        trait_name: &str,
-    ) -> ResolvedTraitIdentity {
-        // A primary trait reference (`impl <Trait> for ...`, a bound) is spelled
-        // in the CURRENT module, so it resolves through the current scope: local
-        // shadow first, then the importer's published-bare binding, then a
-        // single-owner suffix scan. This is the `Current` arm of the one
-        // canonical resolver — keeping every landed H1–H10 behaviour byte-for-byte.
-        self.resolve_trait_ref(trait_name, TraitRefScope::Current)
+    pub(in crate::check) fn register_receive_fn(&mut self, actor_name: &str, rf: &ReceiveFnDecl) {
+        let mut generic_bindings = std::collections::HashMap::new();
+        if let Some(type_params) = &rf.type_params {
+            for tp in type_params {
+                generic_bindings.insert(
+                    tp.name.clone(),
+                    Ty::Named {
+                        builtin: None,
+                        name: tp.name.clone(),
+                        args: vec![],
+                    },
+                );
+            }
+        }
+        if !generic_bindings.is_empty() {
+            self.generic_ctx.push(generic_bindings);
+        }
+
+        let mut hole_vars = Vec::new();
+        let rf_scope = self.collect_type_param_scope_with_assoc_bindings(
+            rf.type_params.as_ref(),
+            rf.where_clause.as_ref(),
+            &mut hole_vars,
+        );
+        let pushed_rf_bounds = !rf_scope.bounds.is_empty();
+        if pushed_rf_bounds {
+            self.current_type_param_bounds.push(rf_scope.clone());
+        }
+
+        let param_names = rf.params.iter().map(|p| p.name.clone()).collect();
+        let params = rf
+            .params
+            .iter()
+            .map(|p| self.resolve_registered_annotation_ty(&p.ty, &mut hole_vars))
+            .collect();
+        let declared_return_type = rf.return_type.as_ref().map_or(Ty::Unit, |ret| {
+            self.resolve_registered_annotation_ty(ret, &mut hole_vars)
+        });
+        let return_type = if rf.is_generator {
+            Ty::stream(declared_return_type)
+        } else {
+            declared_return_type
+        };
+
+        if pushed_rf_bounds {
+            self.current_type_param_bounds.pop();
+        }
+        if rf.type_params.as_ref().is_some_and(|tp| !tp.is_empty()) {
+            self.generic_ctx.pop();
+        }
+
+        let type_param_bounds =
+            self.collect_type_param_bounds(rf.type_params.as_ref(), rf.where_clause.as_ref());
+        let sig = FnSig {
+            type_params: rf.type_params.as_ref().map_or(vec![], |params| {
+                params.iter().map(|p| p.name.clone()).collect()
+            }),
+            type_param_bounds,
+            param_names,
+            params,
+            return_type,
+            ..FnSig::default()
+        };
+
+        let method_name = format!("{}::{}", actor_name, rf.name);
+        if rf.is_generator {
+            self.receive_generator_methods.insert(method_name.clone());
+        }
+        if matches!(
+            rf.return_type.as_ref().map(|ty| &ty.0),
+            Some(hew_parser::ast::TypeExpr::Fallible { .. })
+        ) {
+            self.receive_fails_methods.insert(method_name.clone());
+        }
+        self.actor_receive_methods.insert(method_name.clone());
+        self.record_fn_sig_inference_holes(&method_name, hole_vars);
+        self.fn_type_param_assoc_bindings
+            .insert(method_name.clone(), rf_scope.assoc_bindings);
+        self.fn_sigs.insert(method_name, sig);
     }
 
-    /// Whether a primary trait reference resolves to a LOCAL declaration. Routes
-    /// through the one canonical resolver so callers outside this module (the
-    /// orphan rule) decide "is this trait local" by the same authoritative
-    /// identity every trait-reference site uses, never the bare spelling.
-    pub(in crate::check) fn trait_ref_is_local(&self, trait_name: &str) -> bool {
-        self.resolve_trait_ref(trait_name, TraitRefScope::Current)
-            .is_local
+    /// Build a `FnSig` from a function declaration (used for user module registration).
+    pub(in crate::check) fn build_fn_sig_from_decl_with_assoc(
+        &mut self,
+        fd: &FnDecl,
+    ) -> (FnSig, HashMap<(String, String, String), Ty>) {
+        let mut hole_vars = Vec::new();
+        let scope = self.collect_type_param_scope_with_assoc_bindings(
+            fd.type_params.as_ref(),
+            fd.where_clause.as_ref(),
+            &mut hole_vars,
+        );
+        let pushed_bounds = !scope.bounds.is_empty();
+        if pushed_bounds {
+            self.current_type_param_bounds.push(scope.clone());
+        }
+        let param_names = fd.params.iter().map(|p| p.name.clone()).collect();
+        let params = fd
+            .params
+            .iter()
+            .map(|p| self.resolve_registered_annotation_ty(&p.ty, &mut hole_vars))
+            .collect();
+        let declared_return = fd.return_type.as_ref().map_or(Ty::Unit, |ret| {
+            self.resolve_registered_annotation_ty(ret, &mut hole_vars)
+        });
+        if pushed_bounds {
+            self.current_type_param_bounds.pop();
+        }
+        let type_params = fd.type_params.as_ref().map_or(vec![], |params| {
+            params.iter().map(|p| p.name.clone()).collect()
+        });
+        // E_GEN_RETURN_SPELLING recovery + generator/async-generator wrap.
+        let return_type =
+            self.wrap_fn_return_type(fd, declared_return, fd.return_type.as_ref().map(|(_, s)| s));
+        let assoc_bindings = scope.assoc_bindings;
+        let sig = FnSig {
+            type_params,
+            type_param_bounds: self
+                .collect_type_param_bounds(fd.type_params.as_ref(), fd.where_clause.as_ref()),
+            param_ownership: fd
+                .params
+                .iter()
+                .map(|param| crate::env::ParameterOwnership::from_consume(param.is_consume))
+                .collect(),
+            param_names,
+            params,
+            return_type,
+            doc_comment: fd.doc_comment.clone(),
+            ..FnSig::default()
+        };
+        (sig, assoc_bindings)
     }
 }

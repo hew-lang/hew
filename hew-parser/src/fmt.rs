@@ -310,6 +310,15 @@ impl<'a> Formatter<'a> {
             let Some(&close) = self.closers.get(&open) else {
                 break;
             };
+            if close < last {
+                // A span can start inside its first operand's parentheses:
+                // this group belongs to that operand, so look further out.
+                if open == 0 {
+                    break;
+                }
+                open -= 1;
+                continue;
+            }
             // Between the expression's last token and this `)`, only the
             // closers of parentheses opened inside the expression.
             let encloses = close >= last
@@ -2061,7 +2070,11 @@ impl<'a> Formatter<'a> {
             let at = self.machine_section(span_start, span_end, "default");
             members.push((at, MachineMember::Default));
         }
-        members.sort_by_key(|(start, _)| *start);
+        // Without source the section keywords have no position, so keep the
+        // canonical order the list was built in.
+        if !self.source.is_empty() {
+            members.sort_by_key(|(start, _)| *start);
+        }
 
         let mut previous: Option<std::mem::Discriminant<MachineMember<'_>>> = None;
         for (start, member) in &members {
@@ -2073,7 +2086,7 @@ impl<'a> Formatter<'a> {
             self.begin_member(*start, canonical);
             match member {
                 MachineMember::Events => {
-                    self.format_machine_events("events", &decl.events, span_end)
+                    self.format_machine_events("events", &decl.events, span_end);
                 }
                 MachineMember::Emits => self.format_machine_events("emits", &decl.emits, span_end),
                 MachineMember::State(state) => {
@@ -4344,11 +4357,12 @@ impl<'a> Formatter<'a> {
                 self.write(" ");
                 self.format_block(body, self.source.len());
             }
-            Expr::InterpolatedString(_) if self.literal_spelling(&expr.1).is_some() => {
-                let spelling = self.literal_spelling(&expr.1).unwrap_or_default();
-                self.write(&spelling);
-            }
             Expr::InterpolatedString(parts) => {
+                // The source spelling keeps escapes and interpolation layout.
+                if let Some(spelling) = self.literal_spelling(&expr.1) {
+                    self.write(&spelling);
+                    return;
+                }
                 self.write("f\"");
                 for part in parts {
                     match part {

@@ -356,7 +356,7 @@ fn comments_inside_wire_declarations() {
 #[test]
 fn trailing_comment_on_last_argument_and_element() {
     assert_faithful(
-        r#"fn f(a: i64, b: i64) -> i64 {
+        r"fn f(a: i64, b: i64) -> i64 {
     a + b
 }
 
@@ -371,14 +371,14 @@ fn main() {
     ];
     println(x + xs.len());
 }
-"#,
+",
     );
 }
 
 #[test]
 fn trailing_comment_on_last_parameter_and_field() {
     assert_faithful(
-        r#"fn f(
+        r"fn f(
     a: i64,
     b: i64, // last param
 ) -> i64 {
@@ -397,7 +397,7 @@ fn main() {
     };
     println(f(p.x, p.y));
 }
-"#,
+",
     );
 }
 
@@ -440,7 +440,7 @@ fn comment_between_loop_header_and_brace() {
 #[test]
 fn comments_in_signature_and_where_clause() {
     assert_faithful(
-        r#"fn f(a: i64) /* returns */ -> i64 {
+        r"fn f(a: i64) /* returns */ -> i64 {
     a
 }
 
@@ -454,14 +454,14 @@ where
 fn main() {
     println(f(1));
 }
-"#,
+",
     );
 }
 
 #[test]
 fn comments_inside_import_selection() {
     assert_faithful(
-        r#"import std.fs; // files
+        r"import std.fs; // files
 // the next import
 import std.{
     // time next
@@ -469,7 +469,7 @@ import std.{
 };
 
 fn main() {}
-"#,
+",
     );
 }
 
@@ -494,7 +494,7 @@ fn comments_around_or_patterns_and_guards() {
 #[test]
 fn comment_after_trailing_record_base() {
     assert_faithful(
-        r#"type P {
+        r"type P {
     x: i64,
     y: i64,
 }
@@ -506,27 +506,27 @@ fn f(b: P) -> P {
 fn main() {
     println(f(P { x: 0, y: 0 }).y);
 }
-"#,
+",
     );
 }
 
 #[test]
 fn comment_before_statement_semicolon() {
     assert_faithful(
-        r#"fn main() {
+        r"fn main() {
     let a = 1 // a note
     ;
     let c = a /* mid */ ;
     println(a + c);
 }
-"#,
+",
     );
 }
 
 #[test]
 fn comment_inside_empty_argument_list() {
     assert_faithful(
-        r#"fn f() -> i64 {
+        r"fn f() -> i64 {
     1
 }
 
@@ -539,14 +539,14 @@ fn main() {
     ];
     println(x + xs.len());
 }
-"#,
+",
     );
 }
 
 #[test]
 fn comment_before_supervisor_strategy() {
     assert_faithful(
-        r#"actor Ping {
+        r"actor Ping {
     receive fn ping() {}
 }
 
@@ -558,14 +558,14 @@ supervisor App {
 }
 
 fn main() {}
-"#,
+",
     );
 }
 
 #[test]
 fn comments_between_machine_members() {
     assert_faithful(
-        r#"machine Door {
+        r"machine Door {
     // Input-event vocabulary
     events {
         Open,
@@ -580,7 +580,7 @@ fn comments_between_machine_members() {
 }
 
 fn main() {}
-"#,
+",
     );
 }
 

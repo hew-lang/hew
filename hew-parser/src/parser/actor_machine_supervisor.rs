@@ -322,6 +322,10 @@ impl Parser<'_> {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "machine body parsing has one arm per section"
+    )]
     pub(crate) fn parse_machine_decl(&mut self, visibility: Visibility) -> Option<MachineDecl> {
         let name = self.expect_ident()?;
 

@@ -1828,15 +1828,19 @@ fn handle_inbound_ask(
             );
         }
     };
+    // A dead target (never spawned, or already freed) has no dispatch pointer
+    // tracked at all: that is an ActorStopped fact (folds to the public
+    // `ActorError.Dead`, matching the local ask route, D526), never a decode
+    // problem. Only once a live actor's dispatch is resolved does a missing
+    // codec registration for `msg_type` become a genuine DecodeFailure.
+    let Some(dispatch) = crate::lifetime::live_actors::dispatch_ptr_by_id(target_actor_id) else {
+        reject(AskError::ActorStopped);
+        return;
+    };
     // The codecs are keyed by the target actor type's dispatch pointer, so a
     // frame is decoded, and its reply encoded, only by that actor's member.
-    let codecs =
-        crate::lifetime::live_actors::dispatch_ptr_by_id(target_actor_id).and_then(|dispatch| {
-            Some((
-                crate::xnode_serial::lookup_request(dispatch, msg_type)?,
-                crate::xnode_serial::lookup_reply(dispatch, msg_type)?,
-            ))
-        });
+    let codecs = crate::xnode_serial::lookup_request(dispatch, msg_type)
+        .zip(crate::xnode_serial::lookup_reply(dispatch, msg_type));
     let Some((request_codec, reply_codec)) = codecs else {
         reject(AskError::DecodeFailure);
         return;
@@ -7924,9 +7928,31 @@ mod tests {
     const TWO_PROCESS_REGISTRY_NAME: &str = "two-process-registry-worker";
     const TWO_PROCESS_ASK_ECHO_NAME: &str = "two-process-ask-echo-worker";
     const TWO_PROCESS_ASK_TIMEOUT_NAME: &str = "two-process-ask-timeout-worker";
+    const TWO_PROCESS_ASK_DEAD_NAME: &str = "two-process-ask-dead-worker";
     const TWO_PROCESS_HELPER_ENV: &str = "HEW_REGISTRY_GOSSIP_HELPER";
     const TWO_PROCESS_READY_FILE_ENV: &str = "HEW_REGISTRY_GOSSIP_READY_FILE";
     const TWO_PROCESS_SERVER_PORT_ENV: &str = "HEW_REGISTRY_GOSSIP_SERVER_PORT";
+    /// Client writes this file once it has resolved the dead-actor test's
+    /// registered pid over gossip, so the server knows it is safe to free the
+    /// actor: `hew_actor_free` unregisters the name and emits a gossip-remove,
+    /// which would make a too-early free leave the lookup unresolved forever
+    /// instead of exercising a genuinely dead-actor ask.
+    const TWO_PROCESS_RESOLVED_FILE_ENV: &str = "HEW_REGISTRY_GOSSIP_RESOLVED_FILE";
+    /// Client writes this file once its ask has resolved, so the server knows
+    /// it is safe to stop its node: stopping (and dropping the connection)
+    /// before a slow-but-successful round trip arrives would surface
+    /// `ConnectionDropped` instead of the rejection reason under test.
+    const TWO_PROCESS_DONE_FILE_ENV: &str = "HEW_REGISTRY_GOSSIP_DONE_FILE";
+    /// Server writes this file once `hew_actor_free` has fully returned, so
+    /// the client sends its ask only after the target is unreachably dead.
+    /// Without this barrier, an ask that lands while the actor is mid-`stop`
+    /// (submitted just after `hew_actor_stop` but before `hew_actor_free`
+    /// untracks it) can race the mailbox teardown's orphaned-ask completion
+    /// and hang rather than resolve — a distinct, pre-existing mailbox-
+    /// teardown race, not what this fix addresses. Serializing the ask after
+    /// a *complete* free reproduces the reported dead-actor symptom without
+    /// that unrelated race's flakiness.
+    const TWO_PROCESS_FREED_FILE_ENV: &str = "HEW_REGISTRY_GOSSIP_FREED_FILE";
 
     static TWO_PROCESS_REGISTRY_DELIVERY: (Mutex<bool>, Condvar) =
         (Mutex::new(false), Condvar::new());
@@ -8279,6 +8305,166 @@ mod tests {
         crate::registry::hew_registry_clear();
     }
 
+    /// Poll for a marker file's existence up to `timeout`. Used from inside a
+    /// two-process helper subprocess body, which has no `ManagedChild` handle
+    /// on its peer to detect an early exit; the orchestrating parent's own
+    /// bounded `wait_output` is the backstop that surfaces a hang as a timeout
+    /// with both processes' captured output.
+    #[cfg(feature = "encryption")]
+    fn wait_for_marker_file(path: &std::path::Path, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        while !path.exists() {
+            if Instant::now() >= deadline {
+                return false;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        true
+    }
+
+    /// Server half of the dead-actor cross-process ask case: registers a
+    /// worker, lets the client resolve it over gossip, then fully frees it
+    /// (stop + free — not merely stop) before the client asks it, reproducing
+    /// a target that is genuinely gone rather than merely stopped-but-tracked.
+    #[cfg(feature = "encryption")]
+    fn run_two_process_ask_dead_server_helper() {
+        register_test_u32_codec(dispatch_key(noop_dispatch), TWO_PROCESS_REGISTRY_MSG_TYPE);
+        let _real_sched = init_real_scheduler();
+        crate::registry::hew_registry_clear();
+
+        let (node, port, _client_identity) = start_authorized_tcp_node(
+            TWO_PROCESS_REGISTRY_SERVER_NODE,
+            TWO_PROCESS_REGISTRY_CLIENT_NODE,
+        );
+        crate::pid::hew_pid_set_local_node(TWO_PROCESS_REGISTRY_SERVER_NODE);
+        let worker = spawn_remote_test_actor(noop_dispatch);
+        assert!(!worker.is_null(), "dead-actor server worker spawn failed");
+        // SAFETY: actor was just spawned successfully.
+        let worker_pid = unsafe { (*worker).id };
+        assert_eq!(
+            crate::pid::hew_pid_node(worker_pid),
+            TWO_PROCESS_REGISTRY_SERVER_NODE
+        );
+
+        let name = CString::new(TWO_PROCESS_ASK_DEAD_NAME).expect("valid ask registry name");
+        // SAFETY: node/name/worker_pid are valid in this helper process.
+        let register_rc = unsafe { hew_node_register(node.as_ptr(), name.as_ptr(), worker_pid) };
+        assert_eq!(register_rc, 0, "dead-actor server register");
+
+        let ready_file = std::env::var(TWO_PROCESS_READY_FILE_ENV).expect("ready file env");
+        std::fs::write(&ready_file, port.to_string()).expect("write ready file");
+
+        let resolved_file =
+            std::env::var(TWO_PROCESS_RESOLVED_FILE_ENV).expect("resolved file env");
+        assert!(
+            wait_for_marker_file(
+                std::path::Path::new(&resolved_file),
+                Duration::from_secs(30)
+            ),
+            "client did not confirm registry resolution before the actor was freed"
+        );
+
+        // SAFETY: actor and node are owned by this helper process.
+        unsafe {
+            crate::actor::hew_actor_stop(worker);
+            let _ = crate::actor::hew_actor_free(worker);
+        }
+        // `hew_actor_free` returns only once the actor is fully untracked, so
+        // the client is safe to ask now — signal it rather than let the ask
+        // race the free (see `TWO_PROCESS_FREED_FILE_ENV`'s doc comment).
+        let freed_file = std::env::var(TWO_PROCESS_FREED_FILE_ENV).expect("freed file env");
+        std::fs::write(&freed_file, "1").expect("write freed file");
+
+        // Wait for the client's confirmed round trip rather than a fixed
+        // sleep: stopping the node (which drops the connection) before a
+        // slow-but-successful ask arrives would surface `ConnectionDropped`
+        // instead of the rejection reason under test.
+        let done_file = std::env::var(TWO_PROCESS_DONE_FILE_ENV).expect("done file env");
+        assert!(
+            wait_for_marker_file(std::path::Path::new(&done_file), Duration::from_secs(30)),
+            "client did not confirm its ask resolved before the server timeout"
+        );
+        // SAFETY: node is owned by this helper process.
+        unsafe {
+            assert_eq!(hew_node_stop(node.as_ptr()), 0);
+        }
+        crate::registry::hew_registry_clear();
+    }
+
+    /// Client half of the dead-actor cross-process ask case (see the server
+    /// half's doc comment).
+    #[cfg(feature = "encryption")]
+    fn run_two_process_ask_dead_client_helper() {
+        let client = run_two_process_ask_client_setup(
+            TWO_PROCESS_REGISTRY_CLIENT_NODE,
+            TWO_PROCESS_REGISTRY_SERVER_NODE,
+            TWO_PROCESS_ASK_DEAD_NAME,
+        );
+        let node = &client.node;
+        let remote_pid = client.remote_pid;
+
+        let resolved_file =
+            std::env::var(TWO_PROCESS_RESOLVED_FILE_ENV).expect("resolved file env");
+        std::fs::write(&resolved_file, "1").expect("write resolved file");
+
+        // Wait for the server's confirmed, complete free rather than asking
+        // immediately: an ask that lands mid-teardown (after `hew_actor_stop`
+        // but before `hew_actor_free` finishes untracking it) can race the
+        // mailbox's orphaned-ask completion — a distinct, pre-existing
+        // mailbox-teardown concern this test does not exercise.
+        let freed_file = std::env::var(TWO_PROCESS_FREED_FILE_ENV).expect("freed file env");
+        assert!(
+            wait_for_marker_file(std::path::Path::new(&freed_file), Duration::from_secs(30)),
+            "server did not confirm the target actor was freed before the ask"
+        );
+
+        let send_value: u32 = 21;
+        // SAFETY: remote_pid was resolved from a separate helper process over TCP.
+        let (_, status) = unsafe {
+            ask_for_test(
+                &raw const remote_pid,
+                test_dispatch(),
+                TWO_PROCESS_REGISTRY_MSG_TYPE,
+                (&raw const send_value).cast::<c_void>().cast_mut(),
+                std::mem::size_of::<u32>(),
+                // Generous, not `TEST_REMOTE_ASK_TIMEOUT_MS`: the server frees
+                // the target only after confirming this process's gossip
+                // resolution, so allow for that round trip plus the rejection's
+                // own trip back, rather than a latency-sensitive small window.
+                10_000,
+                std::mem::size_of::<u32>(),
+            )
+        };
+        // Signal completion before asserting: the server waits on this file
+        // (bounded) rather than a fixed sleep before it stops its node, so a
+        // slow-but-successful round trip never races the server tearing down
+        // the connection out from under a not-yet-arrived ask.
+        let done_file = std::env::var(TWO_PROCESS_DONE_FILE_ENV).expect("done file env");
+        std::fs::write(&done_file, "1").expect("write done file");
+        assert!(
+            status != AskError::None as i32,
+            "ask to a dead remote actor unexpectedly returned a reply"
+        );
+        assert_eq!(
+            status,
+            AskError::ActorStopped as i32,
+            "a remote ask to a dead actor must report ActorStopped, matching a local dead \
+             target's reason rather than DecodeFailure"
+        );
+        assert_eq!(
+            crate::internal::types::hew_ask_error_translate_for_public_result(status),
+            3,
+            "a dead remote actor must surface the same public ActorError.Dead ordinal (3) \
+             the local ask route reports (D526)"
+        );
+
+        // SAFETY: node is owned by this helper process.
+        unsafe {
+            assert_eq!(hew_node_stop(node.as_ptr()), 0);
+        }
+        crate::registry::hew_registry_clear();
+    }
+
     #[cfg(feature = "encryption")]
     fn run_two_process_ask_server_helper(
         node_id: u16,
@@ -8559,6 +8745,30 @@ mod tests {
         run_two_process_ask_timeout_client_helper();
     }
 
+    #[cfg(feature = "encryption")]
+    #[test]
+    fn remote_ask_two_process_dead_server_helper() {
+        if !matches!(
+            std::env::var(TWO_PROCESS_HELPER_ENV).as_deref(),
+            Ok("ask_dead_server")
+        ) {
+            return;
+        }
+        run_two_process_ask_dead_server_helper();
+    }
+
+    #[cfg(feature = "encryption")]
+    #[test]
+    fn remote_ask_two_process_dead_client_helper() {
+        if !matches!(
+            std::env::var(TWO_PROCESS_HELPER_ENV).as_deref(),
+            Ok("ask_dead_client")
+        ) {
+            return;
+        }
+        run_two_process_ask_dead_client_helper();
+    }
+
     /// Broker a real Noise key exchange for the two-process tests (issue #2652,
     /// D110). Mints both nodes' stable identities up-front in the shared temp
     /// dir and returns `(server_keyfile, server_pubkey_hex, client_keyfile,
@@ -8684,6 +8894,72 @@ mod tests {
             "hew_node::tests::remote_ask_two_process_timeout_client_helper",
             "ask_timeout_client",
         );
+    }
+
+    /// Orchestrates the dead-actor cross-process ask case. Distinct from
+    /// [`run_two_process_remote_ask_case`]: the server and client rendezvous
+    /// through an extra marker file so the actor is freed only after the
+    /// client has resolved it over gossip (`hew_actor_free` unregisters the
+    /// name and emits a gossip-remove, which would otherwise race the lookup).
+    #[cfg(feature = "encryption")]
+    fn run_two_process_dead_ask_case() {
+        let _guard = crate::runtime_test_guard();
+        let ready_dir = tempfile::tempdir().expect("ready tempdir");
+        let ready_file = ready_dir.path().join("ask-dead-server-ready");
+        let ready_file_s = ready_file.to_string_lossy().into_owned();
+        let resolved_file = ready_dir.path().join("ask-dead-resolved");
+        let resolved_file_s = resolved_file.to_string_lossy().into_owned();
+        let freed_file = ready_dir.path().join("ask-dead-freed");
+        let freed_file_s = freed_file.to_string_lossy().into_owned();
+        let done_file = ready_dir.path().join("ask-dead-done");
+        let done_file_s = done_file.to_string_lossy().into_owned();
+
+        // Broker a real Noise key exchange (D110) so both nodes admit Strict.
+        let (server_keyfile, server_pub_hex, client_keyfile, client_pub_hex) =
+            broker_two_process_noise_keys(ready_dir.path());
+
+        let mut server = spawn_registry_gossip_helper(
+            "hew_node::tests::remote_ask_two_process_dead_server_helper",
+            "ask_dead_server",
+            &[
+                (TWO_PROCESS_READY_FILE_ENV, ready_file_s),
+                (TWO_PROCESS_RESOLVED_FILE_ENV, resolved_file_s.clone()),
+                (TWO_PROCESS_FREED_FILE_ENV, freed_file_s.clone()),
+                (TWO_PROCESS_DONE_FILE_ENV, done_file_s.clone()),
+                (TWO_PROCESS_KEYFILE_ENV, server_keyfile),
+                (TWO_PROCESS_PEER_PUBKEY_ENV, client_pub_hex),
+            ],
+        );
+        let server_port = wait_for_ready_port(&ready_file, &mut server, Duration::from_secs(10));
+
+        let mut client = spawn_registry_gossip_helper(
+            "hew_node::tests::remote_ask_two_process_dead_client_helper",
+            "ask_dead_client",
+            &[
+                (TWO_PROCESS_SERVER_PORT_ENV, server_port.to_string()),
+                (TWO_PROCESS_RESOLVED_FILE_ENV, resolved_file_s),
+                (TWO_PROCESS_FREED_FILE_ENV, freed_file_s),
+                (TWO_PROCESS_DONE_FILE_ENV, done_file_s),
+                (TWO_PROCESS_KEYFILE_ENV, client_keyfile),
+                (TWO_PROCESS_PEER_PUBKEY_ENV, server_pub_hex),
+            ],
+        );
+        let client_output = client.wait_output(Duration::from_secs(40));
+        assert_child_success("ask_dead_client", &client_output);
+
+        let server_output = server.wait_output(Duration::from_secs(40));
+        assert_child_success("ask_dead_server", &server_output);
+    }
+
+    /// A remote ask targeting an actor that has been fully freed on its own
+    /// node, across a genuine OS-process boundary over TCP, must report the
+    /// same `Dead` reason a local ask to a dead target reports (D526), not
+    /// `DecodeFailure`. Complements the in-process QUIC-mesh coverage above
+    /// with a real two-process reproduction of the reported symptom.
+    #[cfg(feature = "encryption")]
+    #[test]
+    fn two_process_remote_ask_dead_actor_reports_dead() {
+        run_two_process_dead_ask_case();
     }
 
     /// Start a node whose transport has been pre-allocated as a `quic_mesh`
@@ -11838,6 +12114,172 @@ mod tests {
         // SAFETY: actor and nodes were allocated in this test and remain valid here.
         unsafe {
             let _ = crate::actor::hew_actor_free(actor);
+            assert_eq!(hew_node_stop(node1.as_ptr()), 0);
+            assert_eq!(hew_node_stop(node2.as_ptr()), 0);
+        }
+        crate::registry::hew_registry_clear();
+    }
+
+    /// A remote ask targeting an actor id that was never spawned at all (a
+    /// bogus serial under the peer's real node identity and session) must
+    /// report `ActorStopped`/`Dead`, the same as a genuinely freed one below.
+    /// Before the fix, the connection reader's `location_matches_local` gate
+    /// silently dropped ANY envelope whose target wasn't a tracked live actor
+    /// — never spawned or already freed alike — before `node_inbound_router`
+    /// ever ran, so the asking peer only ever observed a bare `Timeout`.
+    #[cfg(feature = "quic")]
+    #[test]
+    fn two_node_inbound_ask_to_never_spawned_actor_reports_dead() {
+        let _guard = crate::runtime_test_guard();
+        let _real_sched;
+        crate::registry::hew_registry_clear();
+        let (node1, _node1_port, node2, node2_port) = start_authorized_quic_mesh_pair(321, 322);
+        _real_sched = init_real_scheduler();
+        crate::pid::hew_pid_set_local_node(322);
+        // A live actor establishes node2's identity/session for `Location`
+        // construction below; its own id is never used as the ask target.
+        let anchor = spawn_remote_test_actor(noop_dispatch);
+        crate::pid::hew_pid_set_local_node(321);
+        assert!(!anchor.is_null(), "anchor actor spawn failed");
+        // SAFETY: anchor was just spawned and is valid here.
+        let anchor_id = unsafe { (*anchor).id };
+        let bogus_serial = crate::pid::hew_pid_serial(anchor_id) + 1_000_000;
+
+        let connect_addr = CString::new(format!("322@127.0.0.1:{node2_port}")).unwrap();
+        // SAFETY: node1 and connect_addr are valid for this connection attempt.
+        unsafe { connect_with_retry(node1.as_ptr(), &connect_addr) };
+        // SAFETY: both node pointers remain valid until teardown.
+        unsafe { wait_for_handshake(node1.as_ptr(), node2.as_ptr()) };
+
+        // SAFETY: node2 is a live test node.
+        let node2_ref = unsafe { node2.as_ptr().as_ref() }.expect("test node must be live");
+        let location = Location::new(
+            node2_ref
+                .auth
+                .node_identity()
+                .expect("authorized test node has an identity"),
+            bogus_serial,
+            node2_ref
+                .auth
+                .session_incarnation()
+                .expect("authorized test node has a session"),
+        )
+        .expect("bogus location must still be well-formed");
+        let target = HewRemotePid::from(location);
+
+        // SAFETY: this is a remote void ask; null payload/size are valid.
+        let (_, status) = unsafe {
+            ask_for_test(
+                &raw const target,
+                inbound_test_codec(noop_dispatch, 0),
+                1,
+                TEST_U32_REQUEST.cast_mut(),
+                std::mem::size_of::<u32>(),
+                TEST_REMOTE_ASK_TIMEOUT_MS,
+                0,
+            )
+        };
+
+        assert!(
+            status != AskError::None as i32,
+            "inbound ask to a never-spawned actor must not return the void-success sentinel"
+        );
+        assert_eq!(
+            status,
+            AskError::ActorStopped as i32,
+            "a remote ask to a never-spawned actor must report ActorStopped, not a silent drop"
+        );
+        assert_eq!(
+            crate::internal::types::hew_ask_error_translate_for_public_result(status),
+            3,
+            "a dead remote actor must surface the same public ActorError.Dead ordinal (3) the \
+             local ask route reports (D526)"
+        );
+
+        // SAFETY: nodes were allocated in this test and remain valid here.
+        unsafe {
+            assert_eq!(hew_node_stop(node1.as_ptr()), 0);
+            assert_eq!(hew_node_stop(node2.as_ptr()), 0);
+        }
+        crate::registry::hew_registry_clear();
+    }
+
+    /// A remote ask targeting an actor that is genuinely dead — fully freed on
+    /// its own node, not merely stopped-but-still-tracked (the scenario above)
+    /// — must report the same reason a local ask to a dead target reports
+    /// (D526's `ActorError.Dead`), not `DecodeFailure`. Before this fix, a
+    /// freed actor had no tracked dispatch pointer at all, and
+    /// `handle_inbound_ask` read that absence as a codec-lookup failure.
+    #[cfg(feature = "quic")]
+    #[test]
+    fn two_node_inbound_dead_actor_ask_reports_dead_not_decode_failure() {
+        let _guard = crate::runtime_test_guard();
+        let _real_sched;
+        crate::registry::hew_registry_clear();
+
+        // Cross-bound SPKI→NodeId credentials → Strict authorized connection.
+        let (node1, _node1_port, node2, node2_port) = start_authorized_quic_mesh_pair(319, 320);
+
+        _real_sched = init_real_scheduler();
+
+        crate::pid::hew_pid_set_local_node(320);
+        let actor = spawn_remote_test_actor(noop_dispatch);
+        crate::pid::hew_pid_set_local_node(319);
+        assert!(!actor.is_null(), "actor spawn failed");
+        // SAFETY: actor was just spawned and is valid here.
+        let actor_id = unsafe { (*actor).id };
+        assert_eq!(crate::pid::hew_pid_node(actor_id), 320);
+
+        let connect_addr = CString::new(format!("320@127.0.0.1:{node2_port}")).unwrap();
+        // SAFETY: node1 and connect_addr are valid for this connection attempt.
+        unsafe { connect_with_retry(node1.as_ptr(), &connect_addr) };
+        // SAFETY: both node pointers remain valid until teardown.
+        unsafe { wait_for_handshake(node1.as_ptr(), node2.as_ptr()) };
+
+        let target = remote_pid_for_node(&node2, actor_id);
+
+        // Fully free the actor — not merely stop it — before the ask arrives,
+        // so `dispatch_ptr_by_id` on the receiving node has no tracked entry
+        // at all (the dead case), distinct from the stopped-but-tracked case
+        // `two_node_inbound_actor_stopped_reports_actor_stopped` covers.
+        // SAFETY: actor was spawned above and remains valid until freed here.
+        unsafe {
+            crate::actor::hew_actor_stop(actor);
+            let _ = crate::actor::hew_actor_free(actor);
+        }
+
+        // SAFETY: this is a remote void ask; null payload/size are valid.
+        let (_, status) = unsafe {
+            ask_for_test(
+                &raw const target,
+                inbound_test_codec(noop_dispatch, 0),
+                1,
+                TEST_U32_REQUEST.cast_mut(),
+                std::mem::size_of::<u32>(),
+                TEST_REMOTE_ASK_TIMEOUT_MS,
+                0,
+            )
+        };
+
+        assert!(
+            status != AskError::None as i32,
+            "inbound ask to a dead actor must not return the void-success sentinel"
+        );
+        assert_eq!(
+            status,
+            AskError::ActorStopped as i32,
+            "a remote ask to a dead (fully freed) actor must report ActorStopped, matching a \
+             local dead target's reason rather than DecodeFailure"
+        );
+        assert_eq!(
+            crate::internal::types::hew_ask_error_translate_for_public_result(status),
+            3,
+            "a dead remote actor must surface the same public ActorError.Dead ordinal (3) the \
+             local ask route reports (D526)"
+        );
+
+        // SAFETY: nodes were allocated in this test and remain valid here.
+        unsafe {
             assert_eq!(hew_node_stop(node1.as_ptr()), 0);
             assert_eq!(hew_node_stop(node2.as_ptr()), 0);
         }

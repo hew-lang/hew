@@ -11,6 +11,9 @@
 
 use hew_cabi::string::HewString;
 use std::ffi::c_int;
+// Only the Linux/BSD/macOS pollers below re-export this through `super::`;
+// the Windows AFD poller and the no-poller stub each import their own.
+#[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "macos"))]
 use std::ffi::c_void;
 
 // ---------------------------------------------------------------------------

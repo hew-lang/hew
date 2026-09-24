@@ -661,8 +661,8 @@ pub(crate) fn with_live_incarnation<R>(
 ///
 /// Reads the dispatch field UNDER the liveness lock (via `with_live_actors_opt`)
 /// so a concurrent teardown cannot free the actor mid-read. Returns `None` when
-/// the actor is not live (the caller then takes the existing fail-closed drop /
-/// `DecodeFailure` path — never a fabricated key) or has no dispatch set.
+/// the actor is not live (the caller then takes the existing fail-closed
+/// `ActorStopped` rejection — never a fabricated key) or has no dispatch set.
 // live on not(wasm32) — cross-node inbound decode; dead on wasm32.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn dispatch_ptr_by_id(actor_id: u64) -> Option<*const std::ffi::c_void> {

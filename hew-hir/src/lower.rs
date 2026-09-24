@@ -2506,11 +2506,14 @@ pub fn lower_program_with_mono_cap(
             _ => {}
         }
     }
-    // The actor delivery declarations are authored in the embedded
-    // `std/builtins.hew` program rather than the module graph, but they are
-    // lowered under the same `std.builtins` owner every downstream stage looks
-    // them up by. Publish their identities alongside the graph's.
-    for name in hew_types::actor_delivery::DECLARATIONS {
+    // The actor delivery declarations and `ScopeFailure` are authored in the
+    // embedded `std/builtins.hew` program rather than the module graph, but
+    // they are lowered under the same `std.builtins` owner every downstream
+    // stage looks them up by. Publish their identities alongside the graph's.
+    for name in hew_types::actor_delivery::DECLARATIONS
+        .iter()
+        .chain(&["ScopeFailure"])
+    {
         let canonical = format!("std.builtins.{name}");
         ctx.source_type_identities.insert(canonical.clone());
         // A bare reference at root binds to the same owner. A root

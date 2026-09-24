@@ -1,0 +1,10 @@
+[[case]]
+id = "scope-failure-helper-match"
+intent = "A helper that takes a `ScopeFailure` by its written type matches both cases and reads each message."
+source = "cases/scope-failure-helper-match.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "deadline\nfault boom\n"
+exit = 0

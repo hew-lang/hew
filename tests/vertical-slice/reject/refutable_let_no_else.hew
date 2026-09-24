@@ -5,7 +5,7 @@
 //! adding an `else { … }` clause (it must diverge) or using `if let`/`match`.
 
 fn validate(s: string) -> Result<i64, string> {
-    if s == "good" { Ok(1) } else { Err("bad") }
+    if s == "good" { .Ok(1) } else { .Err("bad") }
 }
 
 fn parse_one(s: string) -> i64 {

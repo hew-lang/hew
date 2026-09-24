@@ -59,9 +59,9 @@ fn plain_guard(n: i64) -> i64 {
 }
 
 fn main() {
-    print(returning_guard(Ok(7)));
+    print(returning_guard(.Ok(7)));
     println("");
-    print(returning_guard(Err("boom")));
+    print(returning_guard(.Err("boom")));
     println("");
     print(plain_guard(0));
     println("");

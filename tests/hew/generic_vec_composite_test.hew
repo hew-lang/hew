@@ -43,8 +43,8 @@ fn test_generic_vec_heap_composite_reads_back() {
 
 fn count_options<T: Clone>(x: T) -> i64 {
     var items: Vec<Option<T>> = Vec.new();
-    items.push(Some(x));
-    items.push(None);
+    items.push(.Some(x));
+    items.push(.None);
     match items.get(0) {
         .Some(.Some(_)) => items.len(),
         _ => -1,
@@ -63,8 +63,8 @@ fn test_generic_vec_option_element() {
 #[test]
 fn test_concrete_vec_option_element() {
     var items: Vec<Option<i64>> = Vec.new();
-    items.push(Some(5));
-    items.push(None);
+    items.push(.Some(5));
+    items.push(.None);
     let got = match items.get(0) {
         .Some(.Some(v)) => v,
         _ => -1,

@@ -29,18 +29,18 @@ fn build(seg: string) -> string {
 fn produce(n: i64) -> Result<string, string> {
     if n % 2 == 0 {
         let v = build("even");
-        Ok(v)
+        .Ok(v)
     } else {
-        Err(build("odd"))
+        .Err(build("odd"))
     }
 }
 
 fn produce_bytes(n: i64) -> Result<bytes, string> {
     if n >= 0 {
         let s = build("bytes");
-        Ok(s.to_bytes())
+        .Ok(s.to_bytes())
     } else {
-        Err(build("neg"))
+        .Err(build("neg"))
     }
 }
 

@@ -43,7 +43,7 @@ fn main() -> i64 {
 
         // Variant-payload alias: `s5` moved into the `Some` payload.
         let s5 = ("variant-" + "payload");
-        let _o = Some(s5);
+        let _o = Option.Some(s5);
 
         i = i + 1;
     }

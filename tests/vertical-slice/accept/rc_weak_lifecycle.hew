@@ -16,11 +16,11 @@ fn upgraded_value(weak: Weak<i64>) -> i64 {
 }
 
 fn graph_replacement_counts() -> i64 {
-    let root = Rc.new(Node { label: "root", parent: None });
+    let root = Rc.new(Node { label: "root", parent: .None });
     let weak = root.downgrade();
-    root.set(Node { label: "back-edge", parent: Some(weak.clone()) });
+    root.set(Node { label: "back-edge", parent: .Some(weak.clone()) });
     let before = root.weak_count();
-    root.set(Node { label: "final", parent: None });
+    root.set(Node { label: "final", parent: .None });
     before * 10 + root.weak_count()
 }
 

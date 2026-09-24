@@ -7,7 +7,7 @@ type NestedOptional {
 }
 
 fn main() {
-    let value = NestedOptional { value: None };
+    let value = NestedOptional { value: .None };
     // Request the codec so codegen-front validation must classify the nested
     // null shape; merely constructing a record does not synthesize a codec.
     let _encoded = value.encode();

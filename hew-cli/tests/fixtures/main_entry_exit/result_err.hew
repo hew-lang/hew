@@ -13,5 +13,5 @@ impl Display for AppError {
 impl Error for AppError {}
 
 fn main() -> Result<(), AppError> {
-    Err(AppError.Failed("displayed failure"))
+    .Err(AppError.Failed("displayed failure"))
 }

@@ -54,7 +54,7 @@ fn main() -> i64 {
     var extracted = batches[0];
     extracted[0] = "independent";
     if extracted[0] != "independent" || batches[0][0] != "FIRST" || saved.labels[0] != "FIRST" { return 8; }
-    let success: Result<[string; 2], string> = Ok(saved.labels);
+    let success: Result<[string; 2], string> = .Ok(saved.labels);
     var results: Vec<Result<[string; 2], string>> = Vec.new();
     results.push(success);
     match results[0] {

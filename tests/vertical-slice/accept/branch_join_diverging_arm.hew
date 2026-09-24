@@ -68,9 +68,9 @@ fn main() {
     println("");
     print(close_then_return(false));
     println("");
-    print(let_else_cleanup(Some(7)));
+    print(let_else_cleanup(.Some(7)));
     println("");
-    print(let_else_cleanup(None));
+    print(let_else_cleanup(.None));
     println("");
     print(mixed_arms(0));
     println("");

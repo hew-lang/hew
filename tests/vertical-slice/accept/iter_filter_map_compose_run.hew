@@ -24,11 +24,11 @@ impl Iterator for Countdown {
     /// Yield `n, n-1, …, 1` then `None`; advance the cursor in place.
     fn next(var self) -> Option<i64> {
         if self.n <= 0 {
-            None
+            .None
         } else {
             let cur = self.n;
             self.n = self.n - 1;
-            Some(cur)
+            .Some(cur)
         }
     }
 }
@@ -43,8 +43,8 @@ impl<I, A, B> Iterator for Map<I, A, B> where I: Iterator<Item = A> {
     /// Pump the inner iterator once and lift the item through `f`.
     fn next(var self) -> Option<B> {
         match self.iter.next() {
-            .Some(x) => Some((self.f)(x)),
-            .None => None,
+            .Some(x) => .Some((self.f)(x)),
+            .None => .None,
         }
     }
 }
@@ -62,12 +62,12 @@ impl<I, A> Iterator for Filter<I, A> where I: Iterator<Item = A> {
             match self.iter.next() {
                 .Some(x) => {
                     if (self.pred)(x) {
-                        return Some(x);
+                        return .Some(x);
                     }
                     // x rejected; dropped here
                 },
                 .None => {
-                    return None;
+                    return .None;
                 },
             }
         }

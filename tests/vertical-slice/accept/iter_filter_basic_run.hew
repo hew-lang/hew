@@ -23,11 +23,11 @@ impl Iterator for Countdown {
     /// Yield `n, n-1, …, 1` then `None`; advance the cursor in place.
     fn next(var self) -> Option<i64> {
         if self.n <= 0 {
-            None
+            .None
         } else {
             let cur = self.n;
             self.n = self.n - 1;
-            Some(cur)
+            .Some(cur)
         }
     }
 }
@@ -46,12 +46,12 @@ impl<I, A> Iterator for Filter<I, A> where I: Iterator<Item = A> {
     /// own write-back persists the cursor across calls.
     fn next(var self) -> Option<A> {
         var inner = self.iter;
-        var found: Option<A> = None;
+        var found: Option<A> = .None;
         loop {
             match inner.next() {
                 .Some(x) => {
                     if (self.pred)(x) {
-                        found = Some(x);
+                        found = .Some(x);
                         break;
                     }
                     // x rejected; falls out of scope here, dropped exactly once

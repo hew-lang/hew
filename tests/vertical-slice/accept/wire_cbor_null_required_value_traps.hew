@@ -12,6 +12,6 @@ type RequiredValue {
 }
 
 fn main() -> i64 {
-    let raw = RequiredOption { value: None }.encode();
+    let raw = RequiredOption { value: .None }.encode();
     RequiredValue.decode(raw).value
 }

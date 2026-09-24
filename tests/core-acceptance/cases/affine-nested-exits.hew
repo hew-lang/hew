@@ -30,8 +30,8 @@ fn first_or_weight(consume choice: Option<Choice>) -> string {
 }
 
 fn main() {
-    println(first_or_weight(Some(Choice.Values(started("early"), 7))));
-    println(first_or_weight(Some(Choice.Values(started("driven"), 1))));
-    println(first_or_weight(Some(Choice.Values(started("heavy"), 11))));
+    println(first_or_weight(.Some(Choice.Values(started("early"), 7))));
+    println(first_or_weight(.Some(Choice.Values(started("driven"), 1))));
+    println(first_or_weight(.Some(Choice.Values(started("heavy"), 11))));
     println("done");
 }

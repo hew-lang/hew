@@ -1,5 +1,5 @@
 fn main() {
-    let opt: Option<i64> = None;
+    let opt: Option<i64> = .None;
     let v = opt.expect("opt is present");
     println(v);
 }

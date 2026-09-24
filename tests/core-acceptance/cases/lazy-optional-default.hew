@@ -8,9 +8,9 @@ fn choose(value: Option<string>) -> string {
 }
 
 fn main() -> i64 {
-    let present = Some("kept".to_upper());
+    let present = Option.Some("kept".to_upper());
     println(choose(present));
     println(choose(present));
-    println(choose(None));
+    println(choose(.None));
     0
 }

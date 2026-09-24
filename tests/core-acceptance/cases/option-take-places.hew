@@ -16,24 +16,24 @@ actor Keeper {
     }
 
     receive fn put(v: string) {
-        slot = Some(v);
+        slot = .Some(v);
     }
 }
 
 fn main() {
-    var name: Option<string> = Some("ada");
+    var name: Option<string> = .Some("ada");
     println(name.take().unwrap_or("none"));
     println(name.is_none());
     println(name.take().is_none());
-    name = Some("grace");
+    name = .Some("grace");
     println(name.take().unwrap_or("none"));
 
-    var h = Holder { name: Some("lin"), count: 1 };
+    var h = Holder { name: .Some("lin"), count: 1 };
     println(h.name.take().unwrap_or("none"));
     println(h.name.is_none());
     println(h.count);
 
-    let k = spawn Keeper(slot: Some("a"), h: Holder { name: Some("bob"), count: 2 });
+    let k = spawn Keeper(slot: .Some("a"), h: Holder { name: .Some("bob"), count: 2 });
     println(k.grab().expect("grab"));
     println(k.grab().expect("grab"));
     k.put("c").expect("put");

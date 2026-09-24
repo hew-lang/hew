@@ -8,14 +8,14 @@ fn adjust(n: i64) -> Result<i64, string> {
     let adjusted = if n > 0 {
         n
     } else {
-        return Err("non-positive")
+        return .Err("non-positive")
     };
-    Ok(adjusted + 1)
+    .Ok(adjusted + 1)
 }
 
 fn combine(n: i64) -> Result<i64, string> {
     let ten = 10;
-    Ok(ten + if n == 1 { n + 1 } else { return Err("bad-arg") })
+    .Ok(ten + if n == 1 { n + 1 } else { return .Err("bad-arg") })
 }
 
 fn show(r: Result<i64, string>) -> string {

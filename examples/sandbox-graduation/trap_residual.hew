@@ -9,33 +9,33 @@ fn repeat_count() -> i64 {
 }
 
 fn result_ok() -> Result<i64, string> {
-    Ok(41)
+    .Ok(41)
 }
 
 fn result_err() -> Result<i64, string> {
-    Err("boom")
+    .Err("boom")
 }
 
 fn try_result_ok() -> Result<i64, string> {
     let value = result_ok()?;
-    Ok(value + 1)
+    .Ok(value + 1)
 }
 
 fn try_result_err() -> Result<i64, string> {
     let value = result_err()?;
-    Ok(value + 1)
+    .Ok(value + 1)
 }
 
 fn try_option_some() -> Option<i64> {
-    let input: Option<i64> = Some(5);
+    let input: Option<i64> = .Some(5);
     let value = input?;
-    Some(value + 1)
+    .Some(value + 1)
 }
 
 fn try_option_none() -> Option<i64> {
-    let input: Option<i64> = None;
+    let input: Option<i64> = .None;
     let value = input?;
-    Some(value + 1)
+    .Some(value + 1)
 }
 
 fn main() {

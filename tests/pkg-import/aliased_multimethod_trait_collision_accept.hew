@@ -20,7 +20,7 @@ impl P for W {
     }
 
     fn close(w: W) -> Result<Tally, ProcErr> {
-        Ok(Tally { code: w.id * 2 })
+        .Ok(Tally { code: w.id * 2 })
     }
 }
 

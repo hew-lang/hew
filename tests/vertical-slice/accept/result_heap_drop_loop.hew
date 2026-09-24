@@ -20,9 +20,9 @@
 // non-loop handler (see `result_handler_heap_oracle`) is fully leak-free.
 fn handle(n: i64) -> Result<i64, string> {
     if n >= 0 {
-        Ok(n * 2)
+        .Ok(n * 2)
     } else {
-        Err(("neg-" + "input"))
+        .Err(("neg-" + "input"))
     }
 }
 

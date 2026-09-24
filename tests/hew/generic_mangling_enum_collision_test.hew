@@ -14,8 +14,8 @@ type Foo_i64 {
 
 #[test]
 fn test_generic_mangle_keeps_option_payload_layouts_distinct() {
-    let generic: Option<Foo<i64>> = Some(Foo { value: 41 });
-    let literal: Option<Foo_i64> = Some(Foo_i64 { value: 73 });
+    let generic: Option<Foo<i64>> = .Some(Foo { value: 41 });
+    let literal: Option<Foo_i64> = .Some(Foo_i64 { value: 73 });
     match generic {
         .Some(value) => testing.assert_eq(value.value, 41),
         .None => testing.assert_true(false),

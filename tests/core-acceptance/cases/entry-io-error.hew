@@ -1,5 +1,5 @@
 import std.fs;
 
 fn main() -> Result<(), fs.IoError> {
-    Err(fs.IoError.NotFound(2))
+    .Err(fs.IoError.NotFound(2))
 }

@@ -9,29 +9,29 @@
 // here because it IS the runtime surface under pin; user-facing code
 // matches instead.
 fn main() -> i64 {
-    let a: Option<i64> = Some(9);
+    let a: Option<i64> = .Some(9);
     println(a.expect("a is present"));
-    let b: Option<f64> = Some(1.5);
+    let b: Option<f64> = .Some(1.5);
     println(b.expect("b is present"));
-    let c: Option<i32> = Some(3);
+    let c: Option<i32> = .Some(3);
     let cv = c.expect("c is present");
-    let d: Option<i64> = Some(9);
+    let d: Option<i64> = .Some(9);
     println(d.unwrap_or(0));
-    let e: Option<f64> = Some(2.5);
+    let e: Option<f64> = .Some(2.5);
     println(e.unwrap_or(0.0));
-    let g: Option<i32> = Some(4);
+    let g: Option<i32> = .Some(4);
     let gv = g.unwrap_or(7);
-    let r: Result<i64, string> = Ok(7);
+    let r: Result<i64, string> = .Ok(7);
     println(r.expect("r is present"));
-    let rf: Result<f64, string> = Ok(1.0);
+    let rf: Result<f64, string> = .Ok(1.0);
     println(rf.expect("rf is present"));
-    let ri: Result<i32, string> = Ok(2);
+    let ri: Result<i32, string> = .Ok(2);
     let riv = ri.expect("ri is present");
-    let ru: Result<i64, string> = Ok(8);
+    let ru: Result<i64, string> = .Ok(8);
     println(ru.unwrap_or(0));
-    let rv: Result<i32, string> = Ok(8);
+    let rv: Result<i32, string> = .Ok(8);
     let rvv = rv.unwrap_or(0);
-    let p: Result<i64, string> = Ok(7);
+    let p: Result<i64, string> = .Ok(7);
     let ok = p.is_ok();
     let err = p.is_err();
     println(f"{ok} {err}");

@@ -12,7 +12,7 @@ type RequiredOption {
 }
 
 fn main() -> i64 {
-    let raw = OptionalSource { value: None }.encode();
+    let raw = OptionalSource { value: .None }.encode();
     match RequiredOption.decode(raw).value {
         .Some(value) => value,
         .None => 0,

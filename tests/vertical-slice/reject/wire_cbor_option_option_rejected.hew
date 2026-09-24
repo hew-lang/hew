@@ -8,7 +8,7 @@ type Nested {
 }
 
 fn main() -> i64 {
-    let h = Nested { x: Some(Some(1)) };
+    let h = Nested { x: .Some(.Some(1)) };
     let back = Nested.decode(h.encode());
     match back.x {
         .Some(inner) => match inner {

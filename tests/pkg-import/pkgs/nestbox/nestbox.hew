@@ -28,5 +28,5 @@ pub fn collect(a: string, b: string) -> Result<Vec<Box>, i64> {
     var boxes: Vec<Box> = Vec.new();
     boxes.push(make_box(a, b));
     boxes.push(make_box(b, a));
-    Ok(boxes)
+    .Ok(boxes)
 }

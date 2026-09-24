@@ -29,7 +29,7 @@ pub type CloseError {
 
 impl C for ClosableHandle {
     fn close(handle: ClosableHandle) -> Result<(), CloseError> {
-        Ok(())
+        .Ok(())
     }
 }
 

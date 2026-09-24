@@ -36,12 +36,12 @@ fn mk_carrier() -> Carrier {
 }
 
 fn main() {
-    let p = OuterRecord { other: [7, 8], value: Some(Inner { v: [1, 2] }) };
+    let p = OuterRecord { other: [7, 8], value: .Some(Inner { v: [1, 2] }) };
     match p.value {
         .Some(inner) => println(inner.v[0] + inner.v[1]),
         .None => println("none"),
     }
-    let t = OuterTuple { other: [9], value: Some(([3, 4], 5)) };
+    let t = OuterTuple { other: [9], value: .Some(([3, 4], 5)) };
     match t.value {
         .Some(pair) => println(pair.0[0] + pair.0[1] + pair.1),
         .None => println("none"),
@@ -53,7 +53,7 @@ fn main() {
     println(items.len());
 
     // The vacant arm hands out nothing, so the record keeps both fields.
-    let empty = OuterRecord { other: [6], value: None };
+    let empty = OuterRecord { other: [6], value: .None };
     match empty.value {
         .Some(inner) => println(inner.v[0]),
         .None => println("none"),

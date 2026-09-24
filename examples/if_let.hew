@@ -2,13 +2,13 @@
 //! Description: If Let example.
 
 fn main() {
-    let value = Some(5);
+    let value = Option.Some(5);
     let result = if let .Some(x) = value {
         x
     } else {
         0
     };
-    if let .Some(x) = Some(result) {
+    if let .Some(x) = Option.Some(result) {
         println(x);
     } else {
         println(0);

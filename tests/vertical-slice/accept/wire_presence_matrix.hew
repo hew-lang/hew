@@ -53,7 +53,7 @@ fn main() -> i64 {
         return 1;
     }
 
-    let required_none = RequiredOption { value: None };
+    let required_none = RequiredOption { value: .None };
     let required_none_cbor = required_none.encode();
     if required_none_cbor.len() != 3
         || required_none_cbor[0] != 161
@@ -65,7 +65,7 @@ fn main() -> i64 {
         return 3;
     }
 
-    let required_some_cbor = RequiredOption { value: Some(42) }.encode();
+    let required_some_cbor = RequiredOption { value: .Some(42) }.encode();
     if required_some_cbor.len() != 4
         || required_some_cbor[0] != 161
         || required_some_cbor[1] != 1
@@ -82,7 +82,7 @@ fn main() -> i64 {
         _ => return 27,
     }
 
-    let absent = OptionalOption { value: None };
+    let absent = OptionalOption { value: .None };
     let absent_cbor = absent.encode();
     if absent_cbor.len() != 1 || absent_cbor[0] != 160 {
         return 4;
@@ -91,12 +91,12 @@ fn main() -> i64 {
         return 5;
     }
 
-    let explicit_null = RequiredOption { value: None }.encode();
+    let explicit_null = RequiredOption { value: .None }.encode();
     if !is_none(OptionalOption.decode(explicit_null).value) {
         return 6;
     }
 
-    let present = OptionalOption { value: Some(42) };
+    let present = OptionalOption { value: .Some(42) };
     let present_cbor = present.encode();
     if present_cbor.len() != 4
         || present_cbor[0] != 161
@@ -116,16 +116,16 @@ fn main() -> i64 {
 
     let text_none = TextMatrix {
         required_value: 7,
-        required_option: None,
-        optional_option: None,
+        required_option: .None,
+        optional_option: .None,
     };
     if text_none.to_json() != "{\"required_option\":null,\"required_value\":7}" {
         return 8;
     }
     let yaml_none = TextMatrix {
         required_value: 7,
-        required_option: None,
-        optional_option: None,
+        required_option: .None,
+        optional_option: .None,
     };
     if yaml_none.to_yaml() != "required_option: null\nrequired_value: 7\n" {
         return 29;

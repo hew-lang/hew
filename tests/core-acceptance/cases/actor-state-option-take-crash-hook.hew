@@ -25,7 +25,7 @@ actor Vault {
         match sock.take() {
             .Some(s) => {
                 let label = s.detach(fail);
-                sock = Some(Socket { label: label + "!" });
+                sock = .Some(Socket { label: label + "!" });
                 label
             }
             .None => "empty",
@@ -41,7 +41,7 @@ actor Vault {
 
 supervisor Group {
     intensity: 1 within 60s,
-    child vault: Vault(sock: Some(Socket { label: "sock" })),
+    child vault: Vault(sock: .Some(Socket { label: "sock" })),
 }
 
 fn main() {

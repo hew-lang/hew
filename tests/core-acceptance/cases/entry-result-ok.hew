@@ -14,14 +14,14 @@ impl Error for AppError {}
 
 fn check(value: i64) -> Result<(), AppError> {
     if value > 2 {
-        return Err(AppError.Failed("too large"));
+        return .Err(AppError.Failed("too large"));
     }
-    Ok(())
+    .Ok(())
 }
 
 fn main() -> Result<(), AppError> {
     let held = "held:" + "ok";
     check(1)?;
     println(held);
-    Ok(())
+    .Ok(())
 }

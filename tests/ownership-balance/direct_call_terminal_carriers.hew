@@ -2,18 +2,18 @@ enum ProbeError { Failed(string), }
 type Envelope { message: string }
 
 fn unit_result(ok: bool) -> Result<(), string> {
-    if ok { return Ok(()); }
-    Err("unit failed")
+    if ok { return .Ok(()); }
+    .Err("unit failed")
 }
 
 fn text_result(ok: bool) -> Result<string, ProbeError> {
-    if ok { return Ok("ready"); }
-    Err(ProbeError.Failed("text failed"))
+    if ok { return .Ok("ready"); }
+    .Err(ProbeError.Failed("text failed"))
 }
 
 fn optional_envelope(some: bool) -> Option<Envelope> {
-    if some { return Some(Envelope { message: "stop" }); }
-    None
+    if some { return .Some(Envelope { message: "stop" }); }
+    .None
 }
 
 fn statement_match(ok: bool, stop: bool) -> string {
@@ -27,10 +27,10 @@ fn statement_match(ok: bool, stop: bool) -> string {
 
 fn try_comparison(ok: bool, stop: bool) -> Result<string, ProbeError> {
     if text_result(ok)? != "ready" {
-        return Err(ProbeError.Failed("unexpected"));
+        return .Err(ProbeError.Failed("unexpected"));
     }
-    if stop { return Ok("stopped"); }
-    Ok("continued")
+    if stop { return .Ok("stopped"); }
+    .Ok("continued")
 }
 
 fn nested_match(some: bool, ok: bool) -> string {

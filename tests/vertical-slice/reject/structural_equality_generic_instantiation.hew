@@ -5,8 +5,8 @@ fn same<T>(left: Option<T>, right: Option<T>) -> bool {
 fn main() -> i64 {
     let left: HashMap<string, i64> = HashMap.new();
     let right: HashMap<string, i64> = HashMap.new();
-    let boxed_left: Option<HashMap<string, i64>> = Some(left);
-    let boxed_right: Option<HashMap<string, i64>> = Some(right);
+    let boxed_left: Option<HashMap<string, i64>> = .Some(left);
+    let boxed_right: Option<HashMap<string, i64>> = .Some(right);
     match same(boxed_left, boxed_right) {
         true => 0,
         false => 1,

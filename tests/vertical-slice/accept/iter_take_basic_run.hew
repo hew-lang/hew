@@ -28,11 +28,11 @@ impl Iterator for Countdown {
     /// Yield `n, n-1, …, 1` then `None`; advance the cursor in place.
     fn next(var self) -> Option<i64> {
         if self.n <= 0 {
-            None
+            .None
         } else {
             let cur = self.n;
             self.n = self.n - 1;
-            Some(cur)
+            .Some(cur)
         }
     }
 }
@@ -54,12 +54,12 @@ impl<I, A> Iterator for Take<I, A> where I: Iterator<Item = A> {
     /// calls without pumping the inner iterator.
     fn next(var self) -> Option<A> {
         if self.remaining <= 0 {
-            return None;
+            return .None;
         }
         var inner = self.iter;
         let result = match inner.next() {
-            .Some(x) => Some(x),
-            .None => None,
+            .Some(x) => Option.Some(x),
+            .None => .None,
         };
         self.iter = inner;
         self.remaining = self.remaining - 1;

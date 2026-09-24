@@ -8,7 +8,7 @@ type Status {
 }
 
 fn fetch(n: i64) -> Result<Status, string> {
-    if n > 0 { Ok(Status { state: "passing", detail: "ok" }) } else { Err("boom") }
+    if n > 0 { .Ok(Status { state: "passing", detail: "ok" }) } else { .Err("boom") }
 }
 
 fn note(a: string, b: string) { println(a + b); }
@@ -25,10 +25,10 @@ fn poll(attempts: i64) -> Result<Status, string> {
         };
         note(last.state.clone(), last.detail.clone());
         if last.state == "passing" {
-            return Ok(last);
+            return .Ok(last);
         }
     }
-    Ok(last)
+    .Ok(last)
 }
 
 fn main() {

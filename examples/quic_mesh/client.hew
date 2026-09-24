@@ -36,16 +36,16 @@ fn lookup_counter() -> Result<RemotePid<Counter>, LookupError> {
     for attempt in 0 .. 40 {
         let found: Result<RemotePid<Counter>, LookupError> = Node.lookup("counter");
         match found {
-            .Ok(counter) => return Ok(counter),
+            .Ok(counter) => return .Ok(counter),
             .Err(error) => {
                 if attempt == 39 {
-                    return Err(error);
+                    return .Err(error);
                 }
                 sleep(100ms);
             },
         }
     }
-    Err(LookupError.NotFound)
+    .Err(LookupError.NotFound)
 }
 
 fn main() {

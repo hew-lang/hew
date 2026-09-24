@@ -33,15 +33,15 @@ impl Iterator for StringSeq {
     fn next(var self) -> Option<string> {
         if self.idx == 0 {
             self.idx = self.idx + 1;
-            Some("keep")
+            .Some("keep")
         } else if self.idx == 1 {
             self.idx = self.idx + 1;
-            Some("keep2")
+            .Some("keep2")
         } else if self.idx == 2 {
             self.idx = self.idx + 1;
-            Some("skip_me")
+            .Some("skip_me")
         } else {
-            None
+            .None
         }
     }
 }
@@ -57,12 +57,12 @@ impl<I, A> Iterator for Filter<I, A> where I: Iterator<Item = A> {
     /// of scope in the match arm body and is dropped exactly once.
     fn next(var self) -> Option<A> {
         var inner = self.iter;
-        var found: Option<A> = None;
+        var found: Option<A> = .None;
         loop {
             match inner.next() {
                 .Some(x) => {
                     if (self.pred)(x) {
-                        found = Some(x);
+                        found = .Some(x);
                         break;
                     }
                     // x rejected: string dropped here (RAII, exactly once)

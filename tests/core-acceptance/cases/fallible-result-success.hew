@@ -1,6 +1,6 @@
 fn nested(outer_error: bool) -> Result<string, string> fails string {
     if outer_error { return error "outer".to_upper(); }
-    Err("inner".to_upper())
+    .Err("inner".to_upper())
 }
 
 fn describe(outer_error: bool) -> string {

@@ -1,6 +1,6 @@
 fn make(success: bool) -> Result<string, string> {
-    if success { return Ok("accepted".to_upper()); }
-    Err("rejected".to_upper())
+    if success { return .Ok("accepted".to_upper()); }
+    .Err("rejected".to_upper())
 }
 
 fn extract(value: Result<string, string>) -> string {

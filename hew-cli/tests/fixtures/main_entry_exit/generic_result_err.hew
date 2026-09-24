@@ -13,5 +13,5 @@ impl<T: Display> Display for BoxError<T> {
 impl<T: Display> Error for BoxError<T> {}
 
 fn main() -> Result<(), BoxError<string>> {
-    Err(BoxError.Failed("generic failure"))
+    .Err(BoxError.Failed("generic failure"))
 }

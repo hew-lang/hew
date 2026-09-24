@@ -9,5 +9,5 @@ fn checked(value: Result<string, string>) -> string {
     }
 }
 fn main() {
-    println(checked(Err("selected fault".to_upper())));
+    println(checked(.Err("selected fault".to_upper())));
 }

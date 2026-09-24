@@ -12,7 +12,7 @@ impl<T> Holder<T> {
 fn main() -> i64 {
     let first: HashMap<string, i64> = HashMap.new();
     let second: HashMap<string, i64> = HashMap.new();
-    let holder = Holder { left: Some(first), right: Some(second) };
+    let holder = Holder { left: .Some(first), right: .Some(second) };
     match holder.same() {
         true => 0,
         false => 1,

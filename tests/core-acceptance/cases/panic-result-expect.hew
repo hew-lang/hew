@@ -1,5 +1,5 @@
 fn failed() -> Result<string, string> {
-    Err("owned error".to_upper())
+    .Err("owned error".to_upper())
 }
 
 fn expect_failure() -> string {

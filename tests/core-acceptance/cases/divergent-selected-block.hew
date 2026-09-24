@@ -28,9 +28,9 @@ fn checked(value: Result<string, string>) -> string {
 }
 
 fn main() {
-    println(selected(Ok("normal".to_upper())));
-    println(selected(Err("early".to_upper())));
+    println(selected(.Ok("normal".to_upper())));
+    println(selected(.Err("early".to_upper())));
     println(choose(true, "if".to_upper()));
     println(choose(false, "else".to_upper()));
-    println(checked(Ok("checked".to_upper())));
+    println(checked(.Ok("checked".to_upper())));
 }

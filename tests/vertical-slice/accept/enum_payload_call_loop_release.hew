@@ -13,22 +13,22 @@ type Row {
 
 fn ok_bytes(n: i64) -> Result<bytes, string> {
     if n >= 0 {
-        Ok("payload".to_bytes())
+        .Ok("payload".to_bytes())
     } else {
-        Err("negative".to_upper())
+        .Err("negative".to_upper())
     }
 }
 
 fn mixed(n: i64) -> Result<string, string> {
     if n % 2 == 0 {
-        Ok("even-payload".to_upper())
+        .Ok("even-payload".to_upper())
     } else {
-        Err("odd-payload".to_upper())
+        .Err("odd-payload".to_upper())
     }
 }
 
 fn ok_row(n: i64) -> Result<Row, string> {
-    Ok(Row { name: "row-payload".to_upper(), id: n })
+    .Ok(Row { name: "row-payload".to_upper(), id: n })
 }
 
 fn bytes_loop() -> i64 {

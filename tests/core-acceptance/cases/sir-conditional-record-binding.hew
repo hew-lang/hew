@@ -10,20 +10,20 @@ fn publish(existing: Vec<Pull>, head: string) -> Result<string, string> {
     if existing.len() == 1 {
         let candidate = existing[0].clone();
         if candidate.head_sha == head {
-            return Ok("matched " + candidate.base_sha);
+            return .Ok("matched " + candidate.base_sha);
         }
     }
-    Err("no match")
+    .Err("no match")
 }
 
 // Control: the same comparison without binding the record.
 fn publish_unbound(existing: Vec<Pull>, head: string) -> Result<string, string> {
     if existing.len() == 1 {
         if existing[0].head_sha == head {
-            return Ok("matched unbound");
+            return .Ok("matched unbound");
         }
     }
-    Err("no match")
+    .Err("no match")
 }
 
 // Control: the same binding inside a loop body, released once per iteration.
@@ -32,24 +32,24 @@ fn publish_loop(existing: Vec<Pull>, head: string) -> Result<string, string> {
     while index < existing.len() {
         let candidate = existing[index].clone();
         if candidate.head_sha == head {
-            return Ok("matched loop " + candidate.base_sha);
+            return .Ok("matched loop " + candidate.base_sha);
         }
         index = index + 1;
     }
-    Err("no match")
+    .Err("no match")
 }
 
 // Control: an early return guards the binding, which then lives at function
 // scope instead of inside a conditional block.
 fn publish_flat(existing: Vec<Pull>, head: string) -> Result<string, string> {
     if existing.len() != 1 {
-        return Err("no match");
+        return .Err("no match");
     }
     let candidate = existing[0].clone();
     if candidate.head_sha == head {
-        return Ok("matched flat " + candidate.base_sha);
+        return .Ok("matched flat " + candidate.base_sha);
     }
-    Err("no match")
+    .Err("no match")
 }
 
 fn report(outcome: Result<string, string>) {

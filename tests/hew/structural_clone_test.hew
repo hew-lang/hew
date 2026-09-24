@@ -9,9 +9,9 @@ type Pair {
 
 #[test]
 fn builtin_aggregates_clone_member_wise() {
-    let option: Option<(i64, string)> = Some((7, "seven"));
+    let option: Option<(i64, string)> = .Some((7, "seven"));
     let option_copy = clone option;
-    let result: Result<i64, string> = Err("failure");
+    let result: Result<i64, string> = .Err("failure");
     let result_copy = clone result;
     let pair = Pair { number: 9, label: "nine" };
     let pair_copy = clone pair;
@@ -38,7 +38,7 @@ fn clone_option<T: Clone>(value: Option<T>) -> Option<T> {
 
 #[test]
 fn bounded_generic_clone_is_admitted_and_instantiates() {
-    let original: Option<i64> = Some(3);
+    let original: Option<i64> = .Some(3);
     let copied = clone_option(original);
-    testing.assert_true(copied == Some(3));
+    testing.assert_true(copied == Option.Some(3));
 }

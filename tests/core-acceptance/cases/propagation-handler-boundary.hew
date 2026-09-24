@@ -1,7 +1,7 @@
 fn source(mode: i64) -> Result<Result<string, string>, string> {
-    if mode == 0 { return Err("outer".to_upper()); }
-    if mode == 1 { return Ok(Err("inner".to_upper())); }
-    Ok(Ok("value".to_upper()))
+    if mode == 0 { return .Err("outer".to_upper()); }
+    if mode == 1 { return .Ok(.Err("inner".to_upper())); }
+    .Ok(.Ok("value".to_upper()))
 }
 
 fn route(mode: i64) -> Result<string, string> {
@@ -9,7 +9,7 @@ fn route(mode: i64) -> Result<string, string> {
         println(error);
         "recovered".to_upper()
     };
-    Ok(text)
+    .Ok(text)
 }
 
 fn report(mode: i64) {

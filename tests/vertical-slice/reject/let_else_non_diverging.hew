@@ -6,7 +6,7 @@
 //! the checker rejects it with E_LET_ELSE_DOES_NOT_DIVERGE.
 
 fn validate(s: string) -> Result<i64, string> {
-    if s == "good" { Ok(1) } else { Err("bad") }
+    if s == "good" { .Ok(1) } else { .Err("bad") }
 }
 
 fn parse_one(s: string) -> i64 {

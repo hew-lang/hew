@@ -26,7 +26,7 @@ fn peek(p: Pair) -> i64 {
 }
 
 fn main() {
-    let p = Pair { other: [7, 8], value: Some([1, 2, 3]) };
+    let p = Pair { other: [7, 8], value: .Some([1, 2, 3]) };
     println(p.other[0] + p.other[1]);
     println(peek(p));
     let taken = take(p);
@@ -35,7 +35,7 @@ fn main() {
     println(p.other[0] + p.other[1]);
 
     // The vacant arm hands out no payload on either side of the boundary.
-    let vacant = Pair { other: [4, 5], value: None };
+    let vacant = Pair { other: [4, 5], value: .None };
     println(peek(vacant));
     println(take(vacant).len());
     println(vacant.other[0] + vacant.other[1]);

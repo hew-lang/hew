@@ -5,9 +5,9 @@
 // Exercises: Result<T,E>, Ok/Err, Option<T>, Some/None, ? operator, match
 fn divide(a: i64, b: i64) -> Result<i64, string> {
     if b == 0 {
-        Err("division by zero")
+        .Err("division by zero")
     } else {
-        Ok(a / b)
+        .Ok(a / b)
     }
 }
 
@@ -43,7 +43,7 @@ fn test_result_err() -> i32 {
 }
 
 fn test_option_some() -> i32 {
-    let x = Some(42);
+    let x = Option.Some(42);
     let val = match x {
         .Some(v) => v,
         .None => -1,
@@ -57,7 +57,7 @@ fn test_option_some() -> i32 {
 }
 
 fn test_option_none() -> i32 {
-    let x: Option<i64> = None;
+    let x: Option<i64> = .None;
     let val = match x {
         .Some(v) => v,
         .None => -1,
@@ -73,7 +73,7 @@ fn test_option_none() -> i32 {
 // ? operator propagation
 fn try_divide(a: i64, b: i64) -> Result<i64, string> {
     let x = divide(a, b)?;
-    Ok(x * 2)
+    .Ok(x * 2)
 }
 
 fn test_try_ok() -> i32 {
@@ -108,7 +108,7 @@ fn test_try_err() -> i32 {
 fn chain_divide(a: i64, b: i64, c: i64) -> Result<i64, string> {
     let x = divide(a, b)?;
     let y = divide(x, c)?;
-    Ok(y)
+    .Ok(y)
 }
 
 fn test_chained_try() -> i32 {

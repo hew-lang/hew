@@ -205,6 +205,10 @@
               }
             ],
             "callee": 2,
+            "handback": {
+              "own": "none",
+              "value": 8
+            },
             "normal": {
               "args": [
                 6
@@ -221,7 +225,9 @@
               "start": 287
             },
             "unwind": {
-              "args": [],
+              "args": [
+                8
+              ],
               "to": 6
             }
           }
@@ -234,8 +240,8 @@
               "dst": null,
               "op": "destructure",
               "results": [
-                8,
-                9
+                10,
+                11
               ],
               "shape": null,
               "span": {
@@ -251,16 +257,16 @@
                 "end": 276,
                 "start": 276
               },
-              "value": 9
+              "value": 11
             },
             {
               "dst": null,
               "op": "destroy_value",
               "span": null,
-              "value": 8
+              "value": 10
             },
             {
-              "dst": 10,
+              "dst": 12,
               "op": "load.copy",
               "own": "none",
               "place": 0,
@@ -280,20 +286,20 @@
             "args": [
               {
                 "decision": "copy",
-                "value": 10
+                "value": 12
               }
             ],
             "callee": 1,
             "normal": {
               "args": [
-                11
+                13
               ],
               "to": 8
             },
             "op": "call",
             "result": {
               "own": "owned",
-              "value": 11
+              "value": 13
             },
             "span": {
               "end": 307,
@@ -308,7 +314,12 @@
         {
           "id": 6,
           "ops": [],
-          "params": [],
+          "params": [
+            {
+              "own": "none",
+              "value": 9
+            }
+          ],
           "term": {
             "edge": {
               "args": [],
@@ -346,14 +357,14 @@
           "params": [
             {
               "own": "owned",
-              "value": 12
+              "value": 14
             }
           ],
           "term": {
             "args": [
               {
                 "decision": "borrow",
-                "value": 12
+                "value": 14
               }
             ],
             "callbacks": [],
@@ -417,7 +428,7 @@
               "dst": null,
               "op": "destroy_value",
               "span": null,
-              "value": 12
+              "value": 14
             }
           ],
           "params": [],

@@ -94,6 +94,7 @@ pub const REQUIRED_PARITY_TEST_NAMES: &[&str] = &[
     "var_self_fault_defer",
     "option_take",
     "resource_field_collections",
+    "capture_collections",
     "const_reference",
     "logical_binary_operators",
     "bitwise_binary_operators",

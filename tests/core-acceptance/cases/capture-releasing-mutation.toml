@@ -1,0 +1,13 @@
+[[case]]
+id = "capture-releasing-mutation"
+intent = "Inserting into a captured map of resources in a repeatedly called closure is refused, and the refusal names the reason: the insert can release the map when it fails, and without a copy of the map the capture could not be left whole."
+source = "cases/capture-releasing-mutation.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "E_SIR_UNSUPPORTED"
+line = 12
+column = 1
+message = "held by an actor state field, a capture or a resource is not implemented for an operation that can release the collection when it fails"

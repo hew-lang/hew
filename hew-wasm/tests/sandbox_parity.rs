@@ -367,8 +367,8 @@ const PARITY_CASES: &[ParityCase] = &[
     },
     ParityCase {
         // A failing `var self` method hands its receiver back, from a local
-        // and from a plain field beneath a capture: each defer sees the value
-        // as last written on both engines.
+        // and from a plain field beneath a capture: each defer, including one
+        // in the method, sees the value as last written on both engines.
         test_name: "var_self_fault_defer",
         source_rel: "examples/sandbox-graduation/var_self_fault_defer.hew",
     },
@@ -384,6 +384,12 @@ const PARITY_CASES: &[ParityCase] = &[
         // record apart around the field and rebuild it in place.
         test_name: "resource_field_collections",
         source_rel: "examples/sandbox-graduation/resource_field_collections.hew",
+    },
+    ParityCase {
+        // Map and set inserts and removes on a closure's mutable capture
+        // update the closure's own collection across calls on both engines.
+        test_name: "capture_collections",
+        source_rel: "examples/sandbox-graduation/capture_collections.hew",
     },
     ParityCase {
         test_name: "const_reference",

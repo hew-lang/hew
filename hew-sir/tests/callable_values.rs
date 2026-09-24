@@ -661,3 +661,76 @@ fn generator_producer_descriptor_rejects_ordinary_callable_capabilities() {
     capabilities.call = hew_types::CallableCallMode::Read;
     assert!(!verify_module(&module).is_empty());
 }
+
+#[test]
+fn a_capture_is_copied_only_for_a_mutation_that_can_release_it() {
+    let module = lower_source(
+        r#"
+        fn main() -> i64 {
+            let counts: HashMap<string, i64> = HashMap.new();
+            let words: Vec<string> = [];
+            var add = capture(var counts, var words) |word: string| -> i64 {
+                counts.insert(word, 1);
+                words.push("seen");
+                counts.len() + words.len()
+            };
+            add("a") + add("b")
+        }
+    "#,
+    );
+    let callable = module
+        .callables
+        .iter()
+        .find(|entry| matches!(entry.instance, hew_sir::CallableInstance::Closure(_)))
+        .unwrap()
+        .id;
+    let function = module
+        .functions
+        .iter()
+        .find(|function| function.callable == callable)
+        .unwrap();
+    let capture = |field| {
+        function
+            .places
+            .iter()
+            .find(|place| {
+                matches!(place.origin,
+                    hew_sir::PlaceOrigin::Capture { field: at, .. } if at == field)
+            })
+            .unwrap()
+            .id
+    };
+    let producer = |value: hew_sir::ValueId| {
+        function
+            .blocks
+            .iter()
+            .flat_map(|block| &block.ops)
+            .find(|op| op.results.iter().any(|result| result.id == value))
+            .map(|op| &op.kind)
+    };
+    // A map insert can release its receiver when a key callback faults, and
+    // the closure reads the capture again after a recovered fault, so the
+    // insert runs on a copy. A push keeps its receiver and takes the capture.
+    let mut copied = Vec::new();
+    let mut taken = Vec::new();
+    for block in &function.blocks {
+        let SemTerminator::RtCall { args, .. } = &block.terminator else {
+            continue;
+        };
+        let Some(SemOpKind::Move { source }) = producer(args[0].operand.value) else {
+            continue;
+        };
+        match producer(source.value) {
+            Some(SemOpKind::CopyValue { source }) => {
+                let Some(SemOpKind::LoadBorrow { place }) = producer(source.value) else {
+                    panic!("a capture's copy is read through a loan of the capture")
+                };
+                copied.push(*place);
+            }
+            Some(SemOpKind::LoadTake { place }) => taken.push(*place),
+            other => panic!("unexpected runtime receiver source {other:?}"),
+        }
+    }
+    assert_eq!(copied, [capture(0)]);
+    assert_eq!(taken, [capture(1)]);
+}

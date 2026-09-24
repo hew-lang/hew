@@ -703,3 +703,94 @@ fn fields_beneath_a_whole_owner_are_mutated_in_place() {
         .iter()
         .any(|op| matches!(op.kind, SemOpKind::StoreInit { place, .. } if place == pool)));
 }
+
+#[test]
+fn a_plain_receiver_is_copied_back_before_its_defers_read_it() {
+    let module = lower(
+        r#"
+        type Point { x: i64, y: i64 }
+        trait Bump { fn bump(var self) -> i64; }
+        impl Bump for Point {
+            fn bump(var self) -> i64 {
+                defer println(f"{self.x}");
+                self.x = self.x + 1;
+                self.x
+            }
+        }
+        fn main() -> i64 {
+            var point = Point { x: 1, y: 2 };
+            point.bump() + point.x
+        }
+    "#,
+    );
+    let method = module
+        .functions
+        .iter()
+        .position(|f| f.declaration.full_path().ends_with("bump"))
+        .unwrap();
+    let function = &module.functions[method];
+    let BindingTarget::Place(receiver) = function
+        .bindings
+        .iter()
+        .find(|binding| binding.name == "self")
+        .unwrap()
+        .target
+    else {
+        panic!("a mutated receiver has canonical local storage")
+    };
+    // The checked add's fault edge hands back a copy and leaves the place to
+    // the defer, which reads it after the handback is made. A fault in the
+    // return's own cleanup hands back the receiver the return already holds.
+    let copies: Vec<_> = function
+        .blocks
+        .iter()
+        .flat_map(|block| &block.ops)
+        .filter(|op| matches!(op.kind, SemOpKind::LoadCopy { place } if place == receiver))
+        .map(|op| op.results[0].id)
+        .collect();
+    let handbacks: Vec<_> = function
+        .blocks
+        .iter()
+        .filter_map(|block| match &block.terminator {
+            SemTerminator::ResumeUnwind {
+                handback: Some(handback),
+            } => Some(handback.operand.value),
+            _ => None,
+        })
+        .collect();
+    let returned: Vec<_> = function
+        .blocks
+        .iter()
+        .flat_map(|block| &block.ops)
+        .filter(|op| matches!(op.kind, SemOpKind::Destructure { .. }))
+        .flat_map(|op| op.results.iter().map(|result| result.id))
+        .collect();
+    assert!(handbacks.iter().any(|value| copies.contains(value)));
+    assert!(handbacks
+        .iter()
+        .all(|value| copies.contains(value) || returned.contains(value)));
+    assert!(!function
+        .blocks
+        .iter()
+        .flat_map(|block| &block.ops)
+        .any(|op| matches!(op.kind, SemOpKind::LoadTake { place } if place == receiver)));
+
+    // Taking the receiver there instead leaves the defer an empty place.
+    let mut taken = module;
+    for op in taken.functions[method]
+        .blocks
+        .iter_mut()
+        .flat_map(|block| &mut block.ops)
+    {
+        if matches!(op.kind, SemOpKind::LoadCopy { place } if place == receiver)
+            && handbacks.contains(&op.results[0].id)
+        {
+            op.kind = SemOpKind::LoadTake { place: receiver };
+        }
+    }
+    assert!(verify_module(&taken).iter().any(|diagnostic| matches!(
+        &diagnostic.kind,
+        hew_sir::SirDiagnosticKind::FaultLifetime { reason, .. }
+            if reason.contains("defer dependency is not initialized")
+    )));
+}

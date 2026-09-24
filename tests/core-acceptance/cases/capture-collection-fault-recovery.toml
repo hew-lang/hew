@@ -1,0 +1,10 @@
+[[case]]
+id = "capture-collection-fault-recovery"
+intent = "Map and set inserts and removes on a private mutable capture of a repeatedly called closure mutate the closure's collection; when a key's hash faults and the caller recovers, the closure still holds its collection and later calls see it."
+source = "cases/capture-collection-fault-recovery.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "1\n2\ninsert faulted\n-1\n3\n0\n1\n2\n1\n1\n2\n2\n"
+exit = 0

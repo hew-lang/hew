@@ -1,0 +1,51 @@
+type Point {
+    x: i64,
+    y: i64,
+}
+
+impl Point {
+    // The checked add alone gives the body a fault edge.
+    fn bump(var self) -> i64 {
+        defer println(f"bump defer sees {self.x}");
+        self.x = self.x + 1;
+        self.x
+    }
+
+    fn bump_or_panic(var self, fail: bool) -> i64 {
+        defer println(f"panic defer sees {self.x}");
+        self.x = self.x + 1;
+        if fail {
+            panic("bump failed");
+        }
+        self.x
+    }
+
+    fn bump_and_index(var self, values: Vec<i64>, at: i64) -> i64 {
+        defer println(f"index defer sees {self.x}");
+        self.x = self.x + 1;
+        self.x + values[at]
+    }
+}
+
+fn main() {
+    var point = Point { x: 1, y: 2 };
+    let values: Vec<i64> = [10, 20];
+    println(point.bump());
+    println(point.bump_or_panic(false));
+    println(point.bump_and_index(values, 1));
+    let panicked = scope {
+        point.bump_or_panic(true)
+    } handle failure {
+        println(f"panic recovered at x {point.x}");
+        -1
+    };
+    println(panicked);
+    let indexed = scope {
+        point.bump_and_index(values, 5)
+    } handle failure {
+        println(f"index recovered at x {point.x}");
+        -1
+    };
+    println(indexed);
+    println(f"{point.x} {point.y}");
+}

@@ -1,0 +1,20 @@
+#[resource]
+type Conn {
+    fd: i64,
+}
+
+impl Conn {
+    fn close(consume self) {
+        println(f"close conn {self.fd}");
+    }
+}
+
+fn main() {
+    let conns: HashMap<string, Conn> = HashMap.new();
+    var add = move capture(var conns) |name: string, fd: i64| {
+        conns.insert(name, Conn { fd: fd });
+        println(conns.len());
+    };
+    add("a", 1);
+    add("b", 2);
+}

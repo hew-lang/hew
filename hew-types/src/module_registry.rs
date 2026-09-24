@@ -186,11 +186,14 @@ fn stdlib_root_candidates(
         candidates.push(prefix.join("share/hew"));
         candidates.push(prefix.to_path_buf());
     }
-    let profile_dir = anchor
-        .profile_dir
-        .canonicalize()
-        .unwrap_or_else(|_| anchor.profile_dir.clone());
-    if executable.starts_with(&profile_dir) {
+    // Both sides of the containment test go through `canonicalize`, so the
+    // comparison sees one spelling of each path: Windows returns verbatim
+    // `\\?\C:\...` paths from it, and a plain path never starts with one.
+    let canonical =
+        |path: &std::path::Path| path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let profile_dir = canonical(&anchor.profile_dir);
+    let executable_dir = executable.parent().map(canonical);
+    if executable_dir.is_some_and(|dir| dir.starts_with(&profile_dir)) {
         candidates.push(anchor.checkout.clone());
     }
     candidates

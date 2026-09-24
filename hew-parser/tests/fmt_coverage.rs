@@ -2197,18 +2197,11 @@ fn fmt_trait_multi_item_blank_lines_roundtrip() {
 }
 
 #[test]
-fn fmt_trait_multi_item_blank_lines_canonicalize_with_comments() {
-    let src = concat!(
-        "// Formatter should not suppress trait spacing.\n",
-        "trait Describable {\n",
-        "    fn describe() -> i32 {\n",
-        "        42\n",
-        "    }\n",
-        "    fn reset();\n",
-        "}\n"
-    );
-    let expected = concat!(
-        "// Formatter should not suppress trait spacing.\n",
+fn fmt_trait_items_keep_author_blank_lines_with_comments() {
+    // Members keep the author's spacing whether or not the file has comments:
+    // a blank line between trait items stays, and adjacent items stay adjacent.
+    let spaced = concat!(
+        "// Spacing follows the source.\n",
         "trait Describable {\n",
         "    fn describe() -> i32 {\n",
         "        42\n",
@@ -2217,8 +2210,9 @@ fn fmt_trait_multi_item_blank_lines_canonicalize_with_comments() {
         "    fn reset();\n",
         "}\n"
     );
-
-    assert_eq!(roundtrip(src), expected);
+    assert_eq!(roundtrip(spaced), spaced);
+    let adjacent = spaced.replace("    }\n\n", "    }\n");
+    assert_eq!(roundtrip(&adjacent), adjacent);
 }
 
 #[test]

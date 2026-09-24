@@ -33,7 +33,7 @@ fn issue_repro_keeps_comment_in_main_and_hook_before_handler() {
 #[test]
 fn comments_between_call_arguments() {
     assert_faithful(
-        r#"fn f(a: i64, b: i64) -> i64 {
+        r"fn f(a: i64, b: i64) -> i64 {
     a + b
 }
 
@@ -45,14 +45,14 @@ fn main() {
     );
     println(x);
 }
-"#,
+",
     );
 }
 
 #[test]
 fn comments_between_array_elements() {
     assert_faithful(
-        r#"fn main() {
+        r"fn main() {
     let xs = [
         1, // one
         // two next
@@ -60,14 +60,14 @@ fn comments_between_array_elements() {
     ];
     println(xs.len());
 }
-"#,
+",
     );
 }
 
 #[test]
 fn comments_between_record_literal_fields() {
     assert_faithful(
-        r#"type P {
+        r"type P {
     x: i64,
     y: i64,
 }
@@ -80,7 +80,7 @@ fn main() {
     };
     println(p.x);
 }
-"#,
+",
     );
 }
 
@@ -106,7 +106,7 @@ fn comments_around_match_arms() {
 #[test]
 fn comments_before_closing_brace_and_between_items() {
     assert_faithful(
-        r#"fn main() {
+        r"fn main() {
     let a = 1;
     println(a);
     // dangling before close
@@ -117,20 +117,20 @@ fn comments_before_closing_brace_and_between_items() {
 fn other() {
     // only a comment
 }
-"#,
+",
     );
 }
 
 #[test]
 fn comment_inside_binary_expression() {
     assert_faithful(
-        r#"fn main() {
+        r"fn main() {
     let a = 1
         // continued
         + 2;
     println(a);
 }
-"#,
+",
     );
 }
 
@@ -154,7 +154,7 @@ fn comments_around_else_branch() {
 #[test]
 fn comments_between_parameters() {
     assert_faithful(
-        r#"fn f(
+        r"fn f(
     a: i64, // first param
     // second param
     b: i64,
@@ -165,7 +165,7 @@ fn comments_between_parameters() {
 fn main() {
     println(f(1, 2));
 }
-"#,
+",
     );
 }
 
@@ -221,28 +221,28 @@ fn main() {
 #[test]
 fn comment_before_method_call() {
     assert_faithful(
-        r#"fn main() {
+        r"fn main() {
     let xs = [1, 2, 3];
     let n = xs
         // count them
         .len();
     println(n);
 }
-"#,
+",
     );
 }
 
 #[test]
 fn comment_inside_lambda_body() {
     assert_faithful(
-        r#"fn main() {
+        r"fn main() {
     let f = |x: i64| {
         // inside lambda
         x + 1
     };
     println(f(1));
 }
-"#,
+",
     );
 }
 
@@ -284,18 +284,18 @@ fn main() {
 #[test]
 fn block_comments_inside_expressions() {
     assert_faithful(
-        r#"fn main() {
+        r"fn main() {
     let a = /* inline */ 1;
     println(a /* after */);
 }
-"#,
+",
     );
 }
 
 #[test]
 fn comment_inside_let_else_block() {
     assert_faithful(
-        r#"fn main() {
+        r"fn main() {
     let x: Option<i64> = .Some(1);
     let .Some(v) = x else {
         // bail
@@ -303,7 +303,7 @@ fn comment_inside_let_else_block() {
     };
     println(v);
 }
-"#,
+",
     );
 }
 

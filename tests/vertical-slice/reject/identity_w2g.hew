@@ -1,0 +1,3 @@
+type P { fd: i64 }
+impl Drop for P { fn drop(self) { println("closed"); } }
+fn main() { let p = P { fd: 1 }; }

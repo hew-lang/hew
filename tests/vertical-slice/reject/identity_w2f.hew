@@ -1,0 +1,4 @@
+trait Display { fn fmt(self) -> string; }
+type T { v: i64 }
+impl Display for T { fn fmt(self) -> string { "x" } }
+fn main() { println(T { v: 1 }.fmt()); }

@@ -1,0 +1,12 @@
+trait Sz { fn size(self) -> i64; }
+trait Nm { fn size(self) -> string; }
+type T { v: i64 }
+impl Sz for T { fn size(self) -> i64 { 1 } }
+impl Nm for T { fn size(self) -> string { "b" } }
+fn via_sz<X: Sz>(x: X) -> i64 { x.size() }
+fn via_nm<X: Nm>(x: X) -> string { x.size() }
+fn main() {
+    let t = T { v: 1 };
+    println(via_sz(t));
+    println(via_nm(t));
+}

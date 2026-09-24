@@ -1,0 +1,8 @@
+fn len(s: string) -> i64 { 999 }
+fn to_string(x: i64) -> string { "user-to-string" }
+fn assert_eq(a: i64, b: i64) { println("user assert_eq"); }
+fn main() {
+    println(len("abc"));
+    println(to_string(5));
+    assert_eq(3, 5);
+}

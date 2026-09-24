@@ -1,0 +1,6 @@
+trait A { fn name(self) -> string; }
+trait B { fn name(self) -> string; }
+type T { v: i64 }
+impl A for T { fn name(self) -> string { "A" } }
+impl B for T { fn name(self) -> string { "B" } }
+fn main() { let t = T { v: 1 }; println(t.name()); }

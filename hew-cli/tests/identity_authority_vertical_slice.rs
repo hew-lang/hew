@@ -184,3 +184,140 @@ fn identity_w9a_machine_event_collision_names_the_machine() {
          got:\n{combined}"
     );
 }
+
+/// W1 (dot-call, ambiguity): two traits declaring the same method name with
+/// no inherent method and no bound/dyn context must refuse the dot call as
+/// ambiguous, not silently pick the last-registered impl. Known failure:
+/// today's dispatch resolves `t.name()` to `B` (last impl wins) instead of
+/// refusing.
+#[test]
+fn identity_w1b_dot_ambiguous_trait_method_refused() {
+    let (ok, combined) = check_reject_fixture("identity_w1b_dot");
+    assert!(
+        !ok,
+        "target: refused E_AMBIGUOUS_TRAIT_METHOD naming `A` and `B`; got success:\n{combined}"
+    );
+}
+
+/// W1 (R1, disjoint method names): two traits with distinct method names
+/// (`Sz::size -> i64`, `Nm::size -> string`, same spelling but different
+/// traits) implemented on the same type must both resolve independently
+/// through their own bound calls. Known failure: the checker conflates
+/// same-named methods across unrelated traits into one signature and
+/// refuses the program with a spurious type mismatch, never reaching R1's
+/// intended output.
+#[test]
+fn identity_w1d_disjoint_trait_methods_resolve_independently() {
+    let (ok, stdout) = run_accept_fixture("identity_w1d");
+    let expected = std::fs::read_to_string(
+        repo_root().join("tests/vertical-slice/accept/identity_w1d.expected"),
+    )
+    .expect("read identity_w1d.expected");
+    assert!(
+        ok,
+        "identity_w1d must run to completion (target: `1` then `b`)"
+    );
+    assert_eq!(
+        stdout, expected,
+        "R1: Sz::size and Nm::size must not collide"
+    );
+}
+
+/// W2 (D554-2, prelude collision): a user declaration spelled `Display`
+/// collides with the protected prelude binding and must be refused with
+/// exactly that diagnostic, no cascading errors. This already holds on
+/// 8a786c595 (regression oracle, not a known failure): the checker refuses
+/// the collision cleanly and emits no other diagnostic.
+#[test]
+fn identity_w2f_prelude_collision_no_cascade() {
+    let (ok, combined) = check_reject_fixture("identity_w2f");
+    assert!(
+        !ok,
+        "target: refused for colliding with the protected prelude binding `Display`; \
+         got success:\n{combined}"
+    );
+    assert!(
+        combined.contains("collides with the protected prelude binding"),
+        "expected the prelude-collision diagnostic; got:\n{combined}"
+    );
+    assert_eq!(
+        combined.matches("error:").count(),
+        1,
+        "target: the collision is the only diagnostic, no cascade; got:\n{combined}"
+    );
+}
+
+/// W2 (D554-2, `Drop` is not a real trait): `impl Drop for P` must be
+/// refused and pointed at `#[resource]` with `close()` as the deterministic
+/// alternative. This already holds on 8a786c595 (regression oracle, not a
+/// known failure).
+#[test]
+fn identity_w2g_impl_drop_refused_with_resource_help() {
+    let (ok, combined) = check_reject_fixture("identity_w2g");
+    assert!(
+        !ok,
+        "target: refused \"unknown trait `Drop`\" with `#[resource]` help; \
+         got success:\n{combined}"
+    );
+    assert!(
+        combined.contains("not supported") && combined.contains("#[resource]"),
+        "expected the Drop-unsupported diagnostic naming #[resource]; got:\n{combined}"
+    );
+}
+
+/// W3 (R3, callee identity): a user `fn` spelled `len`/`to_string`/
+/// `assert_eq` must shadow the builtin of the same name, the same rule
+/// `identity_w3b` exercises for a closure over a module fn. Known failure:
+/// the builtins win regardless of the user declarations in scope, including
+/// the assertion builtin panicking instead of calling the user override.
+#[test]
+fn identity_w3a_user_fn_shadows_builtin() {
+    let (ok, stdout) = run_accept_fixture("identity_w3a");
+    let expected = std::fs::read_to_string(
+        repo_root().join("tests/vertical-slice/accept/identity_w3a.expected"),
+    )
+    .expect("read identity_w3a.expected");
+    assert!(
+        ok,
+        "identity_w3a must run to completion under the user overrides"
+    );
+    assert_eq!(
+        stdout, expected,
+        "R3: user `len`/`to_string`/`assert_eq` must win over the builtins"
+    );
+}
+
+/// W3 (R3, callee identity): a user `fn println` must shadow the builtin
+/// `println`, so calling it produces no output. Known failure: the builtin
+/// wins and prints `x` regardless of the user declaration.
+#[test]
+fn identity_w3e_user_println_shadows_builtin() {
+    let (ok, stdout) = run_accept_fixture("identity_w3e");
+    let expected = std::fs::read_to_string(
+        repo_root().join("tests/vertical-slice/accept/identity_w3e.expected"),
+    )
+    .expect("read identity_w3e.expected");
+    assert!(
+        ok,
+        "identity_w3e must run to completion under the user println"
+    );
+    assert_eq!(
+        stdout, expected,
+        "R3: user `println` must win, producing no output"
+    );
+}
+
+/// W4 (R6, pattern identity): a struct pattern naming a variant/record
+/// (`Other { .. }`) that does not exist on the scrutinee's type (`Point`)
+/// must be refused, never silently matched by field shape. Known failure:
+/// the checker accepts the mismatched pattern name and matches by field
+/// shape alone.
+#[test]
+fn identity_w4b_pattern_name_must_match_scrutinee_type() {
+    let (ok, combined) = check_reject_fixture("identity_w4b");
+    assert!(
+        !ok,
+        "target: refused \"pattern names `Other`, scrutinee is `Point`\"; \
+         got success:\n{combined}"
+    );
+}

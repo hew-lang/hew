@@ -3123,6 +3123,38 @@ A handle is never `#[wire]`, so sending one to a remote `Pid` stays
 `E_OPAQUE_MESSAGE_PAYLOAD` (User): a remote payload must be CBOR-serializable
 and a handle has no serializable layout.
 
+**A handle field of a resource is affine outside `close` (normative).** A
+marker-free `#[opaque]` handle passes to a borrowing `extern "C"` parameter as
+a plain pointer, but when a `#[resource]` record holds one, that record's
+`close` releases it. Outside that `close`, reading the field by value -
+returning it, binding it, storing it or passing it to a `consume` parameter -
+is `E_OWN_PARTIAL_CONSUME`, because it would leave two owners of one handle.
+Destructuring hands the handle out without running `close`:
+
+```hew
+#[opaque]
+type Handle {}
+
+extern "C" {
+    fn handle_free(consume handle: Handle);
+}
+
+#[resource]
+type Value { handle: Handle }
+
+impl Value {
+    fn close(consume self) {
+        unsafe { handle_free(self.handle) };
+    }
+
+    // `self.handle` alone is refused here: `close` would free it again.
+    fn release(consume self) -> Handle {
+        let Value { handle } = self;
+        handle
+    }
+}
+```
+
 > **Limitation at edition 2026 (`E_LIMIT_OPAQUE_ACTOR`, Limitation channel).**
 > The local case above is refused today: an `#[opaque]` type in a `receive fn`
 > parameter or an actor init field is rejected with the message that a message

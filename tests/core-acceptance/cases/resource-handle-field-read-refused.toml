@@ -1,0 +1,21 @@
+[[case]]
+id = "resource-handle-field-read-refused"
+intent = "Returning a resource's opaque handle field by value outside close is refused, from a consuming and from a borrowing method."
+source = "cases/resource-handle-field-read-refused.hew"
+kind = "check"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "E_OWN_PARTIAL_CONSUME"
+line = 14
+column = 38
+message = "cannot read `self.handle` by value: `Value` releases this `#[opaque]` handle in its `close`"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "E_OWN_PARTIAL_CONSUME"
+line = 15
+column = 27
+message = "cannot read `self.handle` by value: `Value` releases this `#[opaque]` handle in its `close`"

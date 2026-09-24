@@ -1,0 +1,10 @@
+[[case]]
+id = "resource-handle-field-destructure"
+intent = "A resource's opaque handle field is borrowed by FFI calls, read by its close, and handed out by destructuring without running close; the remaining resource closes once."
+source = "cases/resource-handle-field-destructure.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "2\n2\n2\n1\nclosed\n"
+exit = 0

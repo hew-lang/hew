@@ -1561,9 +1561,59 @@ else needs `impl Display for {rendered}`)"
     }
 
     pub(super) fn mark_expr_moved_if_non_copy(&mut self, expr: &Expr, span: &Span, ty: &Ty) {
-        if !self.registry.implements_marker(ty, MarkerTrait::Copy) {
+        if !self.registry.implements_marker(ty, MarkerTrait::Copy)
+            || self.reads_resource_handle_field(expr)
+        {
             self.mark_expr_moved(expr, span);
         }
+    }
+
+    /// Whether `expr` names an `#[opaque]` handle field of a `#[resource]`
+    /// record (D528). The handle itself classes as a bit copy so FFI calls can
+    /// borrow it, but the enclosing resource's `close` releases it: reading it
+    /// out by value anywhere but that `close` would leave two owners of one
+    /// handle, so such a read is a transfer and the partial-consume rule
+    /// decides it.
+    pub(super) fn reads_resource_handle_field(&self, expr: &Expr) -> bool {
+        let Some((root, path)) = self.expr_place(expr) else {
+            return false;
+        };
+        let Some((field, parents)) = path.split_last() else {
+            return false;
+        };
+        let Some(binding) = self.env.lookup_ref(&root) else {
+            return false;
+        };
+        let mut parent = self.subst.resolve(&binding.ty);
+        for step in parents {
+            let Some(selected) = self.project_named_field(&parent, step) else {
+                return false;
+            };
+            parent = self.subst.resolve(&selected);
+        }
+        self.is_resource_handle_field(&parent, field)
+    }
+
+    /// Whether `field` of `parent` is a marker-free `#[opaque]` handle held by
+    /// a `#[resource]` record.
+    fn is_resource_handle_field(&self, parent: &Ty, field: &str) -> bool {
+        let Ty::Named { name, .. } = parent else {
+            return false;
+        };
+        if !self.registry.is_resource(name) {
+            return false;
+        }
+        let Some(Ty::Named { name: handle, .. }) = self
+            .project_named_field(parent, field)
+            .map(|ty| self.subst.resolve(&ty))
+        else {
+            return false;
+        };
+        crate::value_class::ClassDeclarations::declared_type(&self.class_declarations(), &handle)
+            .is_some_and(|declaration| {
+                declaration.is_opaque
+                    && declaration.marker == crate::value_class::DeclarationMarker::None
+            })
     }
 
     /// Mark an identifier binding moved, unconditionally.
@@ -1647,6 +1697,30 @@ else needs `impl Display for {rendered}`)"
                 continue;
             }
             let Some(selected) = self.independent_record_or_tuple_field(&parent, field) else {
+                if depth + 1 == path.len() && self.is_resource_handle_field(&parent, field) {
+                    let record = Self::render_place(root, &path[..depth]);
+                    let resource = parent.user_facing().to_string();
+                    let short = parent
+                        .type_name()
+                        .and_then(|name| name.rsplit('.').next())
+                        .unwrap_or_default()
+                        .to_string();
+                    self.report_error_with_suggestions(
+                        TypeErrorKind::OwnPartialConsume,
+                        span,
+                        format!(
+                            "cannot read `{}` by value: `{resource}` releases this `#[opaque]` \
+                             handle in its `close`, so outside `close` the field cannot be \
+                             copied or moved out",
+                            Self::render_place(root, path),
+                        ),
+                        vec![format!(
+                            "destructure the resource to hand the handle out without running \
+                             `close`: `let {short} {{ {field} }} = {record}; {field}`"
+                        )],
+                    );
+                    return true;
+                }
                 self.report_error_with_suggestions(
                     TypeErrorKind::OwnPartialConsume,
                     span,

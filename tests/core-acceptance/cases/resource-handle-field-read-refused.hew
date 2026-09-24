@@ -1,0 +1,22 @@
+// D528: returning or copying a resource's #[opaque] handle field outside its
+// close would leave two owners of one handle; the diagnostic points at the
+// destructure idiom.
+#[opaque]
+type Dq {}
+extern "C" {
+    fn hew_deque_new() -> Dq;
+    fn hew_deque_free(consume dq: Dq);
+}
+#[resource]
+type Value { handle: Dq }
+impl Value {
+    fn close(consume self) { unsafe { hew_deque_free(self.handle) }; println("closed"); }
+    fn release(consume self) -> Dq { self.handle }
+    fn peek(self) -> Dq { self.handle }
+}
+fn main() {
+    let v = Value { handle: unsafe { hew_deque_new() } };
+    let h = v.release();
+    unsafe { hew_deque_free(h) };
+    println("done");
+}

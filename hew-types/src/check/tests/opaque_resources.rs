@@ -1428,3 +1428,61 @@ fn machine_state_phantom_generic_resource_arg_is_admitted() {
         "a phantom generic argument must not be treated as stored: {errors:?}"
     );
 }
+
+/// D528: an `#[opaque]` handle field of a `#[resource]` is released by that
+/// resource's `close`, so reading it out by value anywhere else would leave
+/// two owners of one handle. `close` may read it, FFI calls borrow it, and the
+/// suggestion names the destructure that hands it out without `close`.
+#[test]
+fn resource_handle_field_is_affine_outside_close() {
+    let prelude = r#"
+        #[opaque]
+        type Dq {}
+        extern "C" {
+            fn hew_deque_len(dq: Dq) -> i64;
+            fn hew_deque_free(consume dq: Dq);
+        }
+        #[resource]
+        type Value { handle: Dq }
+        type Pair { a: Dq }
+    "#;
+    for method in [
+        "fn release(consume self) -> Dq { self.handle }",
+        "fn peek(self) -> Dq { self.handle }",
+        "fn bind(self) -> i64 { let h = self.handle; 1 }",
+        "fn wrap(self) -> Pair { Pair { a: self.handle } }",
+        "fn free(self) { unsafe { hew_deque_free(self.handle) }; }",
+    ] {
+        let output = check_source(&format!(
+            "{prelude} impl Value {{ fn close(consume self) {{ unsafe {{ hew_deque_free(self.handle) }}; }} {method} }}"
+        ));
+        let refusals: Vec<_> = output
+            .errors
+            .iter()
+            .filter(|error| error.kind == TypeErrorKind::OwnPartialConsume)
+            .collect();
+        assert_eq!(refusals.len(), 1, "{method}: {:#?}", output.errors);
+        assert!(
+            refusals[0]
+                .message
+                .contains("cannot read `self.handle` by value: `Value` releases")
+                && refusals[0]
+                    .suggestions
+                    .iter()
+                    .any(|hint| hint.contains("`let Value { handle } = self; handle`")),
+            "{method}: {:#?}",
+            refusals[0]
+        );
+    }
+
+    let accepted = check_source(&format!(
+        "{prelude} impl Value {{
+            fn close(consume self) {{ let h = self.handle; unsafe {{ hew_deque_free(h) }}; }}
+            fn len(self) -> i64 {{ unsafe {{ hew_deque_len(self.handle) }} }}
+            fn release(consume self) -> Dq {{ let Value {{ handle }} = self; handle }}
+        }}
+        fn count(v: Value) -> i64 {{ unsafe {{ hew_deque_len(v.handle) }} }}
+        fn plain(p: Pair) -> Dq {{ p.a }}"
+    ));
+    assert!(accepted.errors.is_empty(), "{:#?}", accepted.errors);
+}

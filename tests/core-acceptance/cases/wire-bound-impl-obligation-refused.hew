@@ -1,0 +1,26 @@
+// A Hash and Eq impl bounded by `T: Serializable` does not apply to a key
+// whose argument has no wire encoding, so the map has no key operations.
+type Plain {
+    a: i64,
+}
+
+type Key<T> {
+    id: T,
+}
+
+impl<T: Serializable> Eq for Key<T> {
+    fn eq(self, other: Key<T>) -> bool {
+        true
+    }
+}
+
+impl<T: Serializable> Hash for Key<T> {
+    fn hash(self) -> i64 {
+        7
+    }
+}
+
+fn main() {
+    let plains: HashMap<Key<Plain>, i64> = HashMap.new();
+    println(f"{plains.len()}");
+}

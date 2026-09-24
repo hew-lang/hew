@@ -151,24 +151,28 @@ pub(crate) struct ImplMethodBinders {
 pub(crate) enum ImplMethodObligation {
     Marker(MarkerTrait),
     Display,
+    Serializable,
 }
 
 impl ImplMethodBinders {
+    #[cfg(test)]
     fn instantiate(
         &self,
         method: &crate::DefId,
         receiver: &ResolvedTy,
         registry: &TraitRegistry,
     ) -> Result<Vec<ResolvedTy>, ClassError> {
-        self.instantiate_with_display(method, receiver, registry, &mut |_| Ok(false))
+        self.instantiate_with(method, receiver, registry, &mut |_, _| Ok(false))
     }
 
-    fn instantiate_with_display(
+    /// Instantiate the impl binders from `receiver`, deciding each bound the
+    /// registry cannot answer (`Display`, `Serializable`) through `decide`.
+    fn instantiate_with(
         &self,
         method: &crate::DefId,
         receiver: &ResolvedTy,
         registry: &TraitRegistry,
-        display: &mut dyn FnMut(&ResolvedTy) -> Result<bool, ClassError>,
+        decide: &mut dyn FnMut(&ResolvedTy, ImplMethodObligation) -> Result<bool, ClassError>,
     ) -> Result<Vec<ResolvedTy>, ClassError> {
         if let Some(name) = self.method_params.first() {
             return Err(ClassError::TypeParam { name: name.clone() });
@@ -227,7 +231,7 @@ impl ImplMethodBinders {
                 ImplMethodObligation::Marker(marker) => {
                     registry.implements_marker(&type_args[position].to_ty(), *marker)
                 }
-                ImplMethodObligation::Display => display(&type_args[position])?,
+                other => decide(&type_args[position], *other)?,
             };
             if !satisfied {
                 return Err(refusal());
@@ -288,6 +292,8 @@ pub struct TypeFactContext {
     display_trait: String,
     aliases: HashMap<String, crate::check::TypeAliasDef>,
     rendering_members: HashMap<String, RenderingMembers>,
+    /// Declarations with a checked `#[wire]` layout, by canonical identity.
+    wire_types: HashSet<String>,
 }
 
 /// Source type identities before storage normalization expands aliases.
@@ -348,6 +354,7 @@ impl TypeFactContext {
             display_trait: "Display".to_string(),
             aliases: HashMap::new(),
             rendering_members: HashMap::new(),
+            wire_types: HashSet::new(),
         }
     }
 
@@ -376,6 +383,11 @@ impl TypeFactContext {
         aliases: HashMap<String, crate::check::TypeAliasDef>,
     ) -> Self {
         self.aliases = aliases;
+        self
+    }
+
+    pub(crate) fn with_wire_types(mut self, wire_types: HashSet<String>) -> Self {
+        self.wire_types = wire_types;
         self
     }
 
@@ -603,9 +615,15 @@ impl TypeFactService {
             }
         })?;
         let args =
-            binders.instantiate_with_display(&method, ty, &self.context.registry, &mut |ty| {
-                self.select_display_method(ty, ty, visiting)
-                    .map(|selected| selected.is_some())
+            binders.instantiate_with(&method, ty, &self.context.registry, &mut |ty, bound| {
+                match bound {
+                    ImplMethodObligation::Serializable => {
+                        Ok(self.is_serializable(ty, &|_, _| false))
+                    }
+                    _ => self
+                        .select_display_method(ty, ty, visiting)
+                        .map(|selected| selected.is_some()),
+                }
             })?;
         visiting.remove(ty);
         Ok(Some((method, args)))
@@ -745,7 +763,15 @@ impl TypeFactService {
                     name: method.display_name().to_string(),
                 }
             })?;
-            let type_args = binders.instantiate(&method, ty, &self.context.registry)?;
+            let type_args = binders.instantiate_with(
+                &method,
+                ty,
+                &self.context.registry,
+                &mut |ty, bound| {
+                    Ok(matches!(bound, ImplMethodObligation::Serializable)
+                        && self.is_serializable(ty, &|_, _| false))
+                },
+            )?;
             return Ok(Some(ValueMethodPlan::User { method, type_args }));
         }
         if !crate::check::declaration_walk_terminates(ty, &self.context.type_defs) {
@@ -860,6 +886,121 @@ impl TypeFactService {
                     | ResolvedTy::Bytes
             )),
         }
+    }
+
+    /// The one `Serializable` admission check: whether the wire codec can plan
+    /// `ty`. It admits scalars, `Vec`/`HashMap`/`HashSet`/`Option` of
+    /// serializable values, and `#[wire]` declarations whose members are
+    /// serializable. `param` answers a bound (`Serializable`, `Hash`, `Eq`) on a
+    /// type parameter of the code being checked; concrete callers pass a
+    /// closure that answers `false`.
+    ///
+    /// WHY this is narrower than "every data type": plain records, tuples,
+    /// arrays, `Result` and unit have no codec plan until the structural data
+    /// shape and event walk land (design-data-codegen §1.3-1.4). WHEN that
+    /// lands, this becomes `data_shape(ty).is_ok()` and widens in place.
+    pub(crate) fn is_serializable(
+        &self,
+        ty: &ResolvedTy,
+        param: &dyn Fn(&str, MarkerTrait) -> bool,
+    ) -> bool {
+        self.serializable_within(ty, param, &mut Vec::new())
+    }
+
+    /// `is_serializable` for a member reached from the declarations in
+    /// `visiting`. The codec plan is finite, so a schema that reaches itself
+    /// has none.
+    pub(crate) fn serializable_within(
+        &self,
+        ty: &ResolvedTy,
+        param: &dyn Fn(&str, MarkerTrait) -> bool,
+        visiting: &mut Vec<String>,
+    ) -> bool {
+        match ty {
+            ResolvedTy::I8
+            | ResolvedTy::I16
+            | ResolvedTy::I32
+            | ResolvedTy::I64
+            | ResolvedTy::U8
+            | ResolvedTy::U16
+            | ResolvedTy::U32
+            | ResolvedTy::U64
+            | ResolvedTy::Isize
+            | ResolvedTy::Usize
+            | ResolvedTy::F32
+            | ResolvedTy::F64
+            | ResolvedTy::Bool
+            | ResolvedTy::Char
+            | ResolvedTy::Duration
+            | ResolvedTy::String
+            | ResolvedTy::Bytes => true,
+            ResolvedTy::TypeParam { name } => param(name, MarkerTrait::Serializable),
+            ResolvedTy::Named {
+                builtin: Some(builtin),
+                args,
+                ..
+            } => match (builtin, args.as_slice()) {
+                (BuiltinType::Vec, [element]) => self.serializable_within(element, param, visiting),
+                (BuiltinType::HashSet, [element]) => {
+                    self.is_codec_key(element, param)
+                        && self.serializable_within(element, param, visiting)
+                }
+                (BuiltinType::HashMap, [key, value]) => {
+                    self.is_codec_key(key, param)
+                        && self.serializable_within(key, param, visiting)
+                        && self.serializable_within(value, param, visiting)
+                }
+                // `None` and `Some(None)` share the null encoding, and a type
+                // parameter may itself be instantiated with an `Option`.
+                (BuiltinType::Option, [value]) => {
+                    !value.is_builtin(BuiltinType::Option)
+                        && !matches!(value, ResolvedTy::TypeParam { .. })
+                        && self.serializable_within(value, param, visiting)
+                }
+                _ => false,
+            },
+            ResolvedTy::Named {
+                name,
+                builtin: None,
+                args,
+                is_opaque: false,
+            } => {
+                if !args.is_empty()
+                    || !self.context.wire_types.contains(name)
+                    || visiting.contains(name)
+                    || self
+                        .context
+                        .declarations
+                        .get(name)
+                        .is_none_or(|declaration| {
+                            declaration.marker != crate::DeclarationMarker::None
+                        })
+                {
+                    return false;
+                }
+                let Ok(members) = self.declared_capability_members(ty) else {
+                    return false;
+                };
+                visiting.push(name.clone());
+                let ok = members
+                    .iter()
+                    .all(|member| self.serializable_within(member, param, visiting));
+                visiting.pop();
+                ok
+            }
+            _ => false,
+        }
+    }
+
+    /// Map keys and set elements need the selected `Hash` and `Eq` the codec
+    /// uses to rebuild the collection.
+    fn is_codec_key(&self, ty: &ResolvedTy, param: &dyn Fn(&str, MarkerTrait) -> bool) -> bool {
+        if let ResolvedTy::TypeParam { name } = ty {
+            return param(name, MarkerTrait::Hash) && param(name, MarkerTrait::Eq);
+        }
+        [ValueCapability::Hash, ValueCapability::Eq]
+            .into_iter()
+            .all(|capability| matches!(self.select_capability(ty, capability), Ok(Some(_))))
     }
 
     fn members_have_capability(

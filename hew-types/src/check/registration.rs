@@ -2849,13 +2849,11 @@ impl Checker {
         };
 
         let type_def_key = self.authoritative_type_def_key(&type_decl.name);
-        let Some(fields) = self
-            .type_defs
-            .get(&type_def_key)
-            .map(|type_def| type_def.fields.clone())
-        else {
+        let Some(type_def) = self.type_defs.get(&type_def_key).cloned() else {
             return;
         };
+        let fields = type_def.fields.clone();
+        self.validate_wire_type_members(type_decl, &type_def);
 
         for metadata in wire.field_meta.iter().filter(|field| field.is_optional) {
             let field_span = type_decl
@@ -2883,6 +2881,58 @@ impl Checker {
                 );
             }
         }
+    }
+
+    /// Every member of a `#[wire]` declaration must itself have a wire
+    /// encoding; the resolved member types come from its checked definition
+    /// and the spans from the source declaration.
+    fn validate_wire_type_members(&mut self, type_decl: &TypeDecl, type_def: &TypeDef) {
+        let identity = self.current_module_identity().map_or_else(
+            || type_decl.name.clone(),
+            |module| format!("{module}.{}", type_decl.name),
+        );
+        let mut members = Vec::new();
+        for item in &type_decl.body {
+            match item {
+                TypeBodyItem::Field { name, ty, .. } => {
+                    if let Some(field_ty) = type_def.fields.get(name) {
+                        members.push((format!("field `{name}`"), field_ty.clone(), ty.1.clone()));
+                    }
+                }
+                TypeBodyItem::Variant(variant) => {
+                    let payload: Vec<(String, Ty, Span)> =
+                        match (&variant.kind, type_def.variants.get(&variant.name)) {
+                            (VariantKind::Tuple(spans), Some(VariantDef::Tuple(tys))) => spans
+                                .iter()
+                                .zip(tys)
+                                .enumerate()
+                                .map(|(index, (span, ty))| {
+                                    (
+                                        format!("variant `{}` payload {index}", variant.name),
+                                        ty.clone(),
+                                        span.1.clone(),
+                                    )
+                                })
+                                .collect(),
+                            (VariantKind::Struct(spans), Some(VariantDef::Struct(fields))) => spans
+                                .iter()
+                                .filter_map(|(name, span)| {
+                                    let (_, ty) = fields.iter().find(|(field, _)| field == name)?;
+                                    Some((
+                                        format!("variant `{}` field `{name}`", variant.name),
+                                        ty.clone(),
+                                        span.1.clone(),
+                                    ))
+                                })
+                                .collect(),
+                            _ => Vec::new(),
+                        };
+                    members.extend(payload);
+                }
+                TypeBodyItem::Method(_) => {}
+            }
+        }
+        self.validate_wire_type_encoding(&identity, members);
     }
 
     /// Seed `local_type_defs`/`source_type_defs` with the current scope's own
@@ -7042,13 +7092,12 @@ impl Checker {
                 {
                     crate::type_facts::ImplMethodObligation::Display
                 } else {
-                    // `Serializable` needs the checker's wire layouts, which the
-                    // registry-backed obligation cannot see; such an impl is
-                    // refused rather than admitted on a partial answer.
-                    crate::type_facts::ImplMethodObligation::Marker(
-                        MarkerTrait::from_name(&identity)
-                            .filter(|marker| *marker != MarkerTrait::Serializable)?,
-                    )
+                    match MarkerTrait::from_name(&identity)? {
+                        MarkerTrait::Serializable => {
+                            crate::type_facts::ImplMethodObligation::Serializable
+                        }
+                        marker => crate::type_facts::ImplMethodObligation::Marker(marker),
+                    }
                 };
                 obligations.push((name.to_string(), obligation));
             }

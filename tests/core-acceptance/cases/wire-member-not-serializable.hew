@@ -1,0 +1,34 @@
+// Every member of a `#[wire]` type must have a wire encoding: a plain type, a
+// tuple and a schema that contains itself are refused at the declaration.
+type Plain {
+    a: i64,
+}
+
+#[wire]
+type HasPlain {
+    p: Plain @1,
+}
+
+#[wire]
+type HasTuple {
+    t: (i64, i64) @1,
+}
+
+#[wire]
+type Tree {
+    v: i64 @1,
+    kids: Vec<Tree> @2,
+}
+
+#[wire]
+type Fine {
+    names: Vec<string> @1,
+    tag: Option<string> @2,
+}
+
+fn main() {
+    let hp = HasPlain { p: Plain { a: 1 } };
+    println(hp.to_json());
+    let fine = Fine { names: ["a"], tag: None };
+    println(fine.to_json());
+}

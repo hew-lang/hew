@@ -7,7 +7,7 @@ timeout_seconds = 30
 kind = "reject"
 
 [[case.expected.diagnostics]]
-code = "E_SIR_UNSUPPORTED"
-line = 9
-column = 1
-message = "Option<Option<_>> is ambiguous under the null encoding"
+code = "BoundsNotSatisfied"
+line = 6
+column = 12
+message = "E_WIRE_MEMBER_NOT_SERIALIZABLE: field `value` of `#[wire]` type `NestedOptional` has type `Option<Option<i64>>`"

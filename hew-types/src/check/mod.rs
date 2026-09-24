@@ -740,6 +740,7 @@ impl Checker {
             .collect();
         TypeFactContext::new(rendered, self.registry.clone(), self.type_defs.clone())
             .with_aliases(self.type_aliases.clone())
+            .with_wire_types(self.wire_layouts.keys().cloned().collect())
             .with_impl_methods(
                 self.trait_impl_method_declaration_ids.clone(),
                 self.trait_impl_method_binders.clone(),

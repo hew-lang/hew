@@ -1,0 +1,28 @@
+[[case]]
+id = "wire-member-not-serializable"
+intent = "A #[wire] declaration whose member is a plain type, a tuple or the declaration itself is refused at that member, so its per-type codec methods never reach lowering; a well-formed #[wire] type beside them is accepted."
+source = "cases/wire-member-not-serializable.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "BoundsNotSatisfied"
+line = 9
+column = 8
+message = "field `p` of `#[wire]` type `HasPlain` has type `Plain`"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "BoundsNotSatisfied"
+line = 14
+column = 8
+message = "field `t` of `#[wire]` type `HasTuple` has type `(i64, i64)`"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "BoundsNotSatisfied"
+line = 20
+column = 11
+message = "field `kids` of `#[wire]` type `Tree` has type `Vec<Tree>`"

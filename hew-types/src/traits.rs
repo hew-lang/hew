@@ -763,8 +763,7 @@ impl TraitRegistry {
                     };
                 }
                 // Option<T> and Result<T,E>: pure value-type generic builtins.
-                // All markers derive structurally from type arguments — same rule as
-                // `implements_serializable_inner` at line ~473 which already had this arm.
+                // All markers derive structurally from type arguments.
                 // Resource uses ANY (not all): if any type argument is a built-in resource
                 // handle (Duplex, ActorFn, CancellationToken), the wrapper MAY hold one and
                 // must be treated as a resource too. Note: user `#[resource]` types (e.g.

@@ -1,0 +1,29 @@
+// An impl bounded by `T: Serializable` is selected for a serializable
+// argument: the map rebuilds through the user Hash and Eq, which treat every
+// key as the same one.
+type Key<T> {
+    id: T,
+}
+
+impl<T: Serializable> Eq for Key<T> {
+    fn eq(self, other: Key<T>) -> bool {
+        true
+    }
+}
+
+impl<T: Serializable> Hash for Key<T> {
+    fn hash(self) -> i64 {
+        7
+    }
+}
+
+fn main() {
+    var ids: HashMap<Key<i64>, string> = HashMap.new();
+    ids.insert(Key { id: 1 }, "a");
+    ids.insert(Key { id: 2 }, "b");
+    println(f"{ids.len()}");
+    var names: HashMap<Key<string>, i64> = HashMap.new();
+    names.insert(Key { id: "x" }, 1);
+    names.insert(Key { id: "y" }, 2);
+    println(f"{names.len()}");
+}

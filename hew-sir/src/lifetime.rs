@@ -350,18 +350,26 @@ fn mark_trap(state: &mut State) {
     };
 }
 
-/// Releases, and the moves that hand a failing `var self` method's receiver
-/// back to its caller.
-fn is_cleanup(kind: &SemOpKind) -> bool {
+/// Releases, and the moves and plain copies that hand a failing `var self`
+/// method's receiver back to its caller.
+fn is_cleanup(op: &crate::SemOp) -> bool {
     matches!(
-        kind,
+        op.kind,
         SemOpKind::EndBorrow { .. }
             | SemOpKind::TaskScopeClose { .. }
             | SemOpKind::DestroyValue { .. }
             | SemOpKind::EndLifetime { .. }
             | SemOpKind::LoadTake { .. }
             | SemOpKind::Destructure { .. }
-    )
+    ) || is_plain_copy(op)
+}
+
+/// A copy of a place that owns nothing: it cannot fail, so a fault edge may
+/// hand a plain `var self` receiver back with it and leave the place for the
+/// defers that still read it.
+pub(crate) fn is_plain_copy(op: &crate::SemOp) -> bool {
+    matches!((&op.kind, op.results.as_slice()),
+        (SemOpKind::LoadCopy { .. }, [copy]) if copy.own == OwnKind::None)
 }
 
 /// A least fixed point admits only cleanup suffixes with a finite trap exit.
@@ -417,7 +425,7 @@ pub(crate) fn cleanup_suffixes(function: &SemFunction) -> BTreeMap<BlockId, usiz
                 let start = block
                     .ops
                     .iter()
-                    .rposition(|op| !is_cleanup(&op.kind))
+                    .rposition(|op| !is_cleanup(op))
                     .map_or(0, |index| index + 1);
                 suffixes.insert(block.id, start);
             }

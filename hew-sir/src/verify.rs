@@ -4687,8 +4687,8 @@ fn failure_cfg_matches_exit(
         };
         // Releases, the re-publication of a seat a call took and handed back
         // on this edge, the rebuilding of an owner opened around it, and the
-        // moves that hand a failing `var self` method's receiver back.
-        // Nothing else runs on a failure edge.
+        // moves and plain copies that hand a failing `var self` method's
+        // receiver back. Nothing else runs on a failure edge.
         if block.ops.iter().any(|op| {
             !matches!(
                 op.kind,
@@ -4700,7 +4700,7 @@ fn failure_cfg_matches_exit(
                     | SemOpKind::LoadTake { .. }
                     | SemOpKind::Destructure { .. }
                     | SemOpKind::AggregateMake { .. }
-            )
+            ) && !crate::lifetime::is_plain_copy(op)
         }) {
             return false;
         }

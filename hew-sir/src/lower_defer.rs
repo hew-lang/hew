@@ -252,10 +252,18 @@ impl Builder<'_, '_> {
                 decision,
             }));
         }
+        // A copied receiver stays in its place, where the defers this fault
+        // still runs read it.
         let value = match self.binding_target(binding)? {
-            super::BindingTarget::Place(place) => {
-                self.emit_typed(Provenance::Synthesized, &ty, SemOpKind::LoadTake { place })?
-            }
+            super::BindingTarget::Place(place) => self.emit_typed(
+                Provenance::Synthesized,
+                &ty,
+                if owned {
+                    SemOpKind::LoadTake { place }
+                } else {
+                    SemOpKind::LoadCopy { place }
+                },
+            )?,
             super::BindingTarget::Value(value) => value,
         };
         if owned && self.owned_live.remove(&value).is_none() {

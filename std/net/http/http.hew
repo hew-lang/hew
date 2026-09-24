@@ -215,9 +215,9 @@ impl RequestMethods for Request {
             -1
         };
         if n < 0 {
-            Err(net.net_error_from_errno(0))
+            .Err(net.net_error_from_errno(0))
         } else {
-            Ok(())
+            .Ok(())
         } // HTTP has no OS errno channel
     }
     /// Send a plain-text HTTP response.
@@ -230,9 +230,9 @@ impl RequestMethods for Request {
             -1
         };
         if n < 0 {
-            Err(net.net_error_from_errno(0))
+            .Err(net.net_error_from_errno(0))
         } else {
-            Ok(())
+            .Ok(())
         } // HTTP has no OS errno channel
     }
     /// Send a JSON HTTP response with `Content-Type: application/json`.
@@ -245,9 +245,9 @@ impl RequestMethods for Request {
             -1
         };
         if n < 0 {
-            Err(net.net_error_from_errno(0))
+            .Err(net.net_error_from_errno(0))
         } else {
-            Ok(())
+            .Ok(())
         } // HTTP has no OS errno channel
     }
     /// Begin a streaming response.
@@ -262,15 +262,15 @@ impl RequestMethods for Request {
             if unsafe {
                 hew_sink_is_valid(sink)
             } {
-                Ok(sink)
+                .Ok(sink)
             } else {
                 let _ = unsafe {
                     hew_stream_last_error()
                 }; // consume the error message
-                Err(net.net_error_from_errno(0))
+                .Err(net.net_error_from_errno(0))
             }
         } else {
-            Err(net.net_error_from_errno(0))
+            .Err(net.net_error_from_errno(0))
         }
     }
 }
@@ -332,7 +332,7 @@ pub fn listen(addr: string) -> Result<Server, net.NetError> {
         hew_http_server_is_valid(server)
     };
     if ok {
-        return Ok(server);
+        return .Ok(server);
     }
     let errno = unsafe {
         hew_http_last_listen_errno()
@@ -341,9 +341,9 @@ pub fn listen(addr: string) -> Result<Server, net.NetError> {
         let detail = unsafe {
             hew_http_last_error()
         };
-        return Err(net.NetError.InvalidArgument(detail));
+        return .Err(net.NetError.InvalidArgument(detail));
     }
-    Err(net.net_error_from_errno(errno))
+    .Err(net.net_error_from_errno(errno))
 }
 
 /// Send a full HTTP response.

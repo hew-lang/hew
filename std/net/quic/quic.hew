@@ -554,11 +554,11 @@ pub fn connection_disconnect(consume conn: QUICConnection) -> Result<(), net.Net
     unsafe {
         let status = hew_quic_conn_disconnect(conn);
         if status == QUIC_ABSENT_HANDLE {
-            Err(NetError.InvalidArgument("this QUIC connection was never established"))
+            .Err(NetError.InvalidArgument("this QUIC connection was never established"))
         } else if status < 0 {
-            Err(net.net_error_from_errno(0))
+            .Err(net.net_error_from_errno(0))
         } else {
-            Ok(())
+            .Ok(())
         }
     }
 }
@@ -598,11 +598,11 @@ pub fn stream_send(strm: QUICStream, data: bytes) -> Result<(), net.NetError> {
     unsafe {
         let status = hew_quic_stream_send(strm, data);
         if status == QUIC_ABSENT_HANDLE {
-            Err(NetError.InvalidArgument("this QUIC stream was never opened"))
+            .Err(NetError.InvalidArgument("this QUIC stream was never opened"))
         } else if status < 0 {
-            Err(net.net_error_from_errno(0))
+            .Err(net.net_error_from_errno(0))
         } else {
-            Ok(())
+            .Ok(())
         }
     }
 }
@@ -614,7 +614,7 @@ pub fn stream_send(strm: QUICStream, data: bytes) -> Result<(), net.NetError> {
 /// than narrowed into a 500 ms deadline.
 fn try_quic_deadline_ms(context: string, deadline_ms: i64) -> Result<i64, net.NetError> {
     if deadline_ms <= 0 {
-        return Ok(0);
+        return .Ok(0);
     }
     net.duration_ms(context, deadline_ms)
 }
@@ -629,13 +629,13 @@ pub fn stream_send_timeout(strm: QUICStream, data: bytes, deadline_ms: i64) -> R
         hew_quic_stream_send_timeout_hew(strm, data, deadline as i32)
     };
     if status == QUIC_ABSENT_HANDLE {
-        Err(NetError.InvalidArgument("this QUIC stream was never opened"))
+        .Err(NetError.InvalidArgument("this QUIC stream was never opened"))
     } else if status == -2 {
-        Err(net.net_error_timed_out())
+        .Err(net.net_error_timed_out())
     } else if status < 0 {
-        Err(net.net_error_from_errno(0))
+        .Err(net.net_error_from_errno(0))
     } else {
-        Ok(())
+        .Ok(())
     }
 }
 
@@ -652,13 +652,13 @@ pub fn stream_recv_timeout(strm: QUICStream, deadline_ms: i64) -> Result<bytes, 
         hew_quic_stream_last_recv_status()
     };
     if status == QUIC_ABSENT_HANDLE {
-        Err(NetError.InvalidArgument("this QUIC stream was never opened"))
+        .Err(NetError.InvalidArgument("this QUIC stream was never opened"))
     } else if status == -2 {
-        Err(net.net_error_timed_out())
+        .Err(net.net_error_timed_out())
     } else if status < 0 {
-        Err(net.net_error_from_errno(0))
+        .Err(net.net_error_from_errno(0))
     } else {
-        Ok(payload)
+        .Ok(payload)
     }
 }
 
@@ -674,11 +674,11 @@ pub fn stream_finish(strm: QUICStream) -> Result<(), net.NetError> {
     unsafe {
         let status = hew_quic_stream_finish(strm);
         if status == QUIC_ABSENT_HANDLE {
-            Err(NetError.InvalidArgument("this QUIC stream was never opened"))
+            .Err(NetError.InvalidArgument("this QUIC stream was never opened"))
         } else if status < 0 {
-            Err(net.net_error_from_errno(0))
+            .Err(net.net_error_from_errno(0))
         } else {
-            Ok(())
+            .Ok(())
         }
     }
 }
@@ -697,11 +697,11 @@ pub fn stream_stop(strm: QUICStream, error_code: i64) -> Result<(), net.NetError
     unsafe {
         let status = hew_quic_stream_stop(strm, error_code);
         if status == QUIC_ABSENT_HANDLE {
-            Err(NetError.InvalidArgument("this QUIC stream was never opened"))
+            .Err(NetError.InvalidArgument("this QUIC stream was never opened"))
         } else if status < 0 {
-            Err(net.net_error_from_errno(0))
+            .Err(net.net_error_from_errno(0))
         } else {
-            Ok(())
+            .Ok(())
         }
     }
 }

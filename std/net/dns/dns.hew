@@ -39,9 +39,9 @@ pub fn resolve(hostname: string) -> Result<Vec<string>, net.NetError> {
         hew_dns_resolve(hostname)
     };
     if addrs.len() == 0 {
-        Err(net.net_error_from_errno(0))
+        .Err(net.net_error_from_errno(0))
     } else {
-        Ok(addrs)
+        .Ok(addrs)
     }
 }
 
@@ -58,9 +58,9 @@ pub fn lookup_host(hostname: string) -> Result<string, net.NetError> {
         hew_dns_lookup_host(hostname)
     };
     if ip == "" {
-        Err(net.net_error_from_errno(0))
+        .Err(net.net_error_from_errno(0))
     } else {
-        Ok(ip)
+        .Ok(ip)
     }
 }
 

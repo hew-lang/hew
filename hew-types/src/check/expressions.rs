@@ -457,7 +457,10 @@ else needs `impl Display for {rendered}`)"
             // genuinely-unconstrained `None` still fails closed: the recorded
             // `Option<Var>` stays unresolved and `validate_expr_output_contract`
             // (admissibility.rs) surfaces it as an inference error. See W4.042.
-            Expr::Identifier(name) if name == "None" => Ty::option(Ty::Var(TypeVar::fresh())),
+            Expr::Identifier(name) if name == "None" => {
+                self.report_bare_variant_expr(name, "Option.None", span);
+                Ty::option(Ty::Var(TypeVar::fresh()))
+            }
             Expr::Identifier(name) => self.synthesize_identifier(name, span),
             Expr::ContextVariant(context) => {
                 if let Some(record) = &context.record {
@@ -2460,6 +2463,23 @@ else needs `impl Display for {rendered}`)"
             }
             self.record_call_edge(&fn_sig_key);
             let sig = self.fn_sigs[&fn_sig_key].clone();
+            // A bare enum variant used as a value (`let c = Red;`,
+            // `xs.map(Wrap)`) is refused like its call form; nothing here
+            // selects the enum, so the fix-it qualifies it.
+            if !surface_name.contains("::") {
+                if let Some((owner, _, _)) =
+                    self.lookup_variant_constructor(name)
+                        .filter(|(owner, _, _)| {
+                            self.type_defs
+                                .get(owner)
+                                .is_some_and(|td| td.kind == TypeDefKind::Enum)
+                        })
+                {
+                    let replacement =
+                        format!("{}.{name}", super::calls::variant_owner_spelling(&owner));
+                    self.report_bare_variant_expr(name, &replacement, span);
+                }
+            }
             // local-shadows-global: when the fn_sig slot was won by a builtin enum
             // variant, prefer any user-declared enum that has a variant with the
             // same name (e.g. user `enum AppError { NotFound(string); }` shadows
@@ -2906,9 +2926,10 @@ else needs `impl Display for {rendered}`)"
         }
         if let Some(ty) = found {
             if !name.contains("::") {
-                let replacement = ty
-                    .type_name()
-                    .map_or_else(|| format!(".{name}"), |owner| format!("{owner}.{name}"));
+                let replacement = ty.type_name().map_or_else(
+                    || format!(".{name}"),
+                    |owner| format!("{}.{name}", super::calls::variant_owner_spelling(owner)),
+                );
                 self.report_bare_variant_expr(name, &replacement, span);
             }
             ty
@@ -3911,48 +3932,65 @@ else needs `impl Display for {rendered}`)"
         expected: &Ty,
     ) -> Ty {
         match expr {
-            Expr::Block(block) => {
-                let actual = self.check_block(block, Some(expected));
-                let result = if matches!(actual, Ty::Never | Ty::Error) {
-                    actual.clone()
-                } else {
-                    let n = self.errors.len();
-                    self.expect_type(expected, &actual, span);
-                    if self.errors.len() > n {
-                        Ty::Error
-                    } else {
-                        actual.clone()
-                    }
-                };
-                // A block's value IS its trailing expression's value. When that
-                // tail fails to meet the expectation, `check_against` reports
-                // the mismatch on the tail's own span, PUBLISHES the tail's
-                // recovered type, and returns the error placeholder to poison
-                // the caller. Publish the same recovered type for the block so
-                // the two agree: the produced-value graph treats the tail as
-                // the block's identity dependency and rejects a disagreement
-                // ("identity dependency changes type from T to Error"), and
-                // consumers that read published types -- hover -- surface the
-                // placeholder as an unknown type. The placeholder is still what
-                // this call returns, so callers keep their poisoned result.
-                let published = if matches!(result, Ty::Error) {
-                    block
-                        .trailing_expr
-                        .as_ref()
-                        .and_then(|tail| {
-                            self.expr_types
-                                .get(&SpanKey::in_module(&tail.1, self.current_module_idx))
-                                .cloned()
-                        })
-                        .unwrap_or_else(|| result.clone())
-                } else {
-                    result.clone()
-                };
-                self.publish_checked_expression(expr, span, published);
-                result
+            Expr::Block(block) => self.check_block_expr_with_expected(expr, block, span, expected),
+            // An `unsafe` block is a block: its tail flows to the surrounding
+            // expectation, so `.Ok(x)` resolves inside one.
+            Expr::UnsafeBlock(block) => {
+                let prev = self.in_unsafe;
+                self.in_unsafe = true;
+                let ty = self.check_block_expr_with_expected(expr, block, span, expected);
+                self.in_unsafe = prev;
+                ty
             }
             _ => self.check_against(expr, span, expected),
         }
+    }
+
+    fn check_block_expr_with_expected(
+        &mut self,
+        expr: &Expr,
+        block: &Block,
+        span: &Span,
+        expected: &Ty,
+    ) -> Ty {
+        let actual = self.check_block(block, Some(expected));
+        let result = if matches!(actual, Ty::Never | Ty::Error) {
+            actual.clone()
+        } else {
+            let n = self.errors.len();
+            self.expect_type(expected, &actual, span);
+            if self.errors.len() > n {
+                Ty::Error
+            } else {
+                actual.clone()
+            }
+        };
+        // A block's value IS its trailing expression's value. When that
+        // tail fails to meet the expectation, `check_against` reports
+        // the mismatch on the tail's own span, PUBLISHES the tail's
+        // recovered type, and returns the error placeholder to poison
+        // the caller. Publish the same recovered type for the block so
+        // the two agree: the produced-value graph treats the tail as
+        // the block's identity dependency and rejects a disagreement
+        // ("identity dependency changes type from T to Error"), and
+        // consumers that read published types -- hover -- surface the
+        // placeholder as an unknown type. The placeholder is still what
+        // this call returns, so callers keep their poisoned result.
+        let published = if matches!(result, Ty::Error) {
+            block
+                .trailing_expr
+                .as_ref()
+                .and_then(|tail| {
+                    self.expr_types
+                        .get(&SpanKey::in_module(&tail.1, self.current_module_idx))
+                        .cloned()
+                })
+                .unwrap_or_else(|| result.clone())
+        } else {
+            result.clone()
+        };
+        self.publish_checked_expression(expr, span, published);
+        result
     }
 
     /// Check: verify expression against expected type (top-down).
@@ -4425,11 +4463,10 @@ else needs `impl Display for {rendered}`)"
                 expected.clone()
             }
 
-            (Expr::Block(_), _) => {
+            (Expr::Block(_) | Expr::UnsafeBlock(_), _) => {
                 self.tail_ok_armed = tail_ok_armed;
                 self.check_expr_with_expected(expr, span, expected)
             }
-
             // Array repeat coercion to Array<T, N> type. The declared length
             // `N` is part of the fixed-array type, so — like the plain array
             // literal arm above — the repeat count must agree with it. A
@@ -5099,6 +5136,20 @@ else needs `impl Display for {rendered}`)"
             // event type that actually contains the named unit variant.  The check is
             // purely additive — the existing synthesize+unify fallback handles all
             // other shapes.
+            //
+            // A bare builtin `None` under an expected `Option` is refused with the
+            // contextual fix-it the expected type makes available.
+            (
+                Expr::Identifier(name),
+                Ty::Named {
+                    builtin: Some(crate::BuiltinType::Option),
+                    ..
+                },
+            ) if name == "None" => {
+                self.report_bare_variant_expr(name, ".None", span);
+                self.record_type(span, expected);
+                expected.clone()
+            }
             (
                 Expr::Identifier(name),
                 Ty::Named {

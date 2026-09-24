@@ -43,9 +43,9 @@ pub fn gzip_compress(data: bytes) -> Result<bytes, string> {
         hew_compress_last_error_hew()
     };
     if reason.len() > 0 {
-        Err(reason)
+        .Err(reason)
     } else {
-        Ok(out)
+        .Ok(out)
     }
 }
 
@@ -58,9 +58,9 @@ pub fn gzip_decompress(data: bytes, max_output_len: i64) -> Result<bytes, string
         hew_compress_last_error_hew()
     };
     if reason.len() > 0 {
-        Err(reason)
+        .Err(reason)
     } else {
-        Ok(out)
+        .Ok(out)
     }
 }
 
@@ -73,9 +73,9 @@ pub fn deflate_compress(data: bytes) -> Result<bytes, string> {
         hew_compress_last_error_hew()
     };
     if reason.len() > 0 {
-        Err(reason)
+        .Err(reason)
     } else {
-        Ok(out)
+        .Ok(out)
     }
 }
 
@@ -88,9 +88,9 @@ pub fn deflate_decompress(data: bytes, max_output_len: i64) -> Result<bytes, str
         hew_compress_last_error_hew()
     };
     if reason.len() > 0 {
-        Err(reason)
+        .Err(reason)
     } else {
-        Ok(out)
+        .Ok(out)
     }
 }
 
@@ -103,9 +103,9 @@ pub fn zlib_compress(data: bytes) -> Result<bytes, string> {
         hew_compress_last_error_hew()
     };
     if reason.len() > 0 {
-        Err(reason)
+        .Err(reason)
     } else {
-        Ok(out)
+        .Ok(out)
     }
 }
 
@@ -118,9 +118,9 @@ pub fn zlib_decompress(data: bytes, max_output_len: i64) -> Result<bytes, string
         hew_compress_last_error_hew()
     };
     if reason.len() > 0 {
-        Err(reason)
+        .Err(reason)
     } else {
-        Ok(out)
+        .Ok(out)
     }
 }
 

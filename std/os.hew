@@ -64,9 +64,9 @@ pub fn args() -> Vec<string> {
 pub fn env(name: string) -> Option<string> {
     unsafe {
         if hew_env_has(name) {
-            Some(hew_env_get(name))
+            .Some(hew_env_get(name))
         } else {
-            None
+            .None
         }
     }
 }
@@ -89,13 +89,13 @@ impl Display for EnvError {
 /// Environment names must be non-empty and cannot contain `=`.
 pub fn set_env(name: string, value: string) -> Result<(), EnvError> {
     if name == "" || name.contains("=") {
-        return Err(EnvError.InvalidName(name));
+        return .Err(EnvError.InvalidName(name));
     }
     unsafe {
         if hew_env_set(name, value) == 0 {
-            Ok(())
+            .Ok(())
         } else {
-            Err(EnvError.InvalidName(name))
+            .Err(EnvError.InvalidName(name))
         }
     }
 }
@@ -105,13 +105,13 @@ pub fn set_env(name: string, value: string) -> Result<(), EnvError> {
 /// Environment names must be non-empty and cannot contain `=`.
 pub fn remove_env(name: string) -> Result<(), EnvError> {
     if name == "" || name.contains("=") {
-        return Err(EnvError.InvalidName(name));
+        return .Err(EnvError.InvalidName(name));
     }
     unsafe {
         if hew_env_remove(name) == 0 {
-            Ok(())
+            .Ok(())
         } else {
-            Err(EnvError.InvalidName(name))
+            .Err(EnvError.InvalidName(name))
         }
     }
 }

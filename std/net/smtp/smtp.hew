@@ -51,9 +51,9 @@ impl ConnMethods for Conn {
             hew_smtp_send(conn, from, to, subject, body)
         };
         if n < 0 {
-            Err(smtp_err("smtp send failed"))
+            .Err(smtp_err("smtp send failed"))
         } else {
-            Ok(())
+            .Ok(())
         }
     }
     /// Send an HTML email.
@@ -62,9 +62,9 @@ impl ConnMethods for Conn {
             hew_smtp_send_html(conn, from, to, subject, html)
         };
         if n < 0 {
-            Err(smtp_err("smtp send_html failed"))
+            .Err(smtp_err("smtp send_html failed"))
         } else {
-            Ok(())
+            .Ok(())
         }
     }
 }
@@ -130,9 +130,9 @@ pub fn connect(host: string, port: i64, username: string, password: string) -> R
         hew_smtp_conn_is_valid(conn)
     };
     if ok {
-        Ok(conn)
+        .Ok(conn)
     } else {
-        Err(smtp_err("smtp connect failed"))
+        .Err(smtp_err("smtp connect failed"))
     }
 }
 
@@ -162,9 +162,9 @@ pub fn connect_tls(host: string, port: i64, username: string, password: string) 
         hew_smtp_conn_is_valid(conn)
     };
     if ok {
-        Ok(conn)
+        .Ok(conn)
     } else {
-        Err(smtp_err("smtp connect failed"))
+        .Err(smtp_err("smtp connect failed"))
     }
 }
 
@@ -175,9 +175,9 @@ pub fn send(host: string, port: i64, username: string, password: string, from: s
         hew_smtp_send_once(host, port, username, password, from, to, subject, body)
     };
     if n < 0 {
-        Err(smtp_err("smtp send failed"))
+        .Err(smtp_err("smtp send failed"))
     } else {
-        Ok(())
+        .Ok(())
     }
 }
 
@@ -188,9 +188,9 @@ pub fn send_html(host: string, port: i64, username: string, password: string, fr
         hew_smtp_send_html_once(host, port, username, password, from, to, subject, html)
     };
     if n < 0 {
-        Err(smtp_err("smtp send_html failed"))
+        .Err(smtp_err("smtp send_html failed"))
     } else {
-        Ok(())
+        .Ok(())
     }
 }
 

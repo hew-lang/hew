@@ -291,9 +291,9 @@ pub fn parse(s: string) -> Result<Value, ParseError> {
         hew_toml_parse(s)
     };
     if val.type_of() >= 0 {
-        Ok(val)
+        .Ok(val)
     } else {
-        Err(ParseError.Invalid(parse_error_message()))
+        .Err(ParseError.Invalid(parse_error_message()))
     }
 }
 
@@ -310,9 +310,9 @@ pub fn stringify(val: Value) -> Result<string, string> {
         hew_toml_last_serialize_error()
     };
     if reason.len() > 0 {
-        Err(reason)
+        .Err(reason)
     } else {
-        Ok(text)
+        .Ok(text)
     }
 }
 

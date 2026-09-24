@@ -61,21 +61,21 @@ pub type Sink<T> {
 /// nothing else fixes it: `let (tx, rx): (stream.Sink<i64>, stream.Stream<i64>) = ...`.
 pub fn pipe<T>(capacity: i64) -> Result<(Sink<T>, Stream<T>), string> {
     if capacity < 0 {
-        return Err(f"stream.pipe: invalid capacity {capacity} (must be >= 0)");
+        return .Err(f"stream.pipe: invalid capacity {capacity} (must be >= 0)");
     }
     unsafe {
         let pair = hew_stream_channel(capacity as i64);
         if !hew_stream_pair_is_valid(pair) {
             let detail = hew_stream_last_error();
             if detail == "" {
-                return Err("stream.pipe: pipe allocation failed");
+                return .Err("stream.pipe: pipe allocation failed");
             }
-            return Err(detail);
+            return .Err(detail);
         }
         let sink = pair_sink(pair);
         let input = pair_stream(pair);
         hew_stream_pair_free(pair);
-        Ok((sink, input))
+        .Ok((sink, input))
     }
 }
 
@@ -87,13 +87,13 @@ pub fn open(path: string) -> Result<Stream<bytes>, string> {
     unsafe {
         let input = hew_stream_from_file_read(path);
         if hew_stream_is_valid(input) {
-            Ok(input)
+            .Ok(input)
         } else {
             let detail = hew_stream_last_error();
             if detail == "" {
-                return Err(f"stream.open: could not open {path}");
+                return .Err(f"stream.open: could not open {path}");
             }
-            Err(detail)
+            .Err(detail)
         }
     }
 }
@@ -183,13 +183,13 @@ impl Codec<string> for Lines {
             }
         }
         if end < 0 {
-            return Ok(Decoded.Incomplete(buf));
+            return .Ok(Decoded.Incomplete(buf));
         }
         let line = buf[0..end];
         let rest = buf[end + 1..buf.len()];
         match utf8.decode(line) {
-            .Ok(text) => Ok(Decoded.Frame(text, rest)),
-            .Err(error) => Err(CodecError.Malformed(to_string(error))),
+            .Ok(text) => .Ok(Decoded.Frame(text, rest)),
+            .Err(error) => .Err(CodecError.Malformed(to_string(error))),
         }
     }
     fn encode(self, item: string) -> bytes {
@@ -207,21 +207,21 @@ pub type LengthPrefixed {
 impl Codec<bytes> for LengthPrefixed {
     fn decode(self, buf: bytes) -> Result<Decoded<bytes>, CodecError> {
         if self.width != 1 && self.width != 2 && self.width != 4 {
-            return Err(CodecError.Malformed(f"length prefix width {self.width} is not 1, 2 or 4"));
+            return .Err(CodecError.Malformed(f"length prefix width {self.width} is not 1, 2 or 4"));
         }
         if buf.len() < self.width {
-            return Ok(Decoded.Incomplete(buf));
+            return .Ok(Decoded.Incomplete(buf));
         }
         var length = 0;
         for i in 0 .. self.width {
             length = length * 256 + buf[i] as i64;
         }
         if buf.len() < self.width + length {
-            return Ok(Decoded.Incomplete(buf));
+            return .Ok(Decoded.Incomplete(buf));
         }
         let frame = buf[self.width..self.width + length];
         let rest = buf[self.width + length..buf.len()];
-        Ok(Decoded.Frame(frame, rest))
+        .Ok(Decoded.Frame(frame, rest))
     }
     fn encode(self, item: bytes) -> bytes {
         var remaining = item.len();

@@ -2390,6 +2390,23 @@ fn migrate_source_file(file_path: &Path, file: &str, source: &str) -> Result<Str
         return Err(());
     };
 
+    // A std source migrated in place is also loaded as its own std module
+    // (`std/option.hew` is `std.option`), and its diagnostics carry that
+    // module. Accept those when this file is the module's only source, so the
+    // spans index this file.
+    let own_path = std::fs::canonicalize(file_path).ok();
+    let own_modules: Vec<String> = state
+        .program
+        .module_graph
+        .iter()
+        .flat_map(|graph| graph.modules.values())
+        .filter(|module| {
+            !module.id.path.is_empty()
+                && module.source_paths.len() == 1
+                && std::fs::canonicalize(&module.source_paths[0]).ok() == own_path
+        })
+        .map(|module| module.id.path.join("."))
+        .collect();
     let tokens = hew_lexer::lex(source);
     let mut variants = Vec::new();
     let mut refusals = Vec::new();
@@ -2402,7 +2419,11 @@ fn migrate_source_file(file_path: &Path, file: &str, source: &str) -> Result<Str
         if !is_expression && !is_pattern {
             continue;
         }
-        if error.source_module.is_some() {
+        if error
+            .source_module
+            .as_ref()
+            .is_some_and(|module| !own_modules.contains(module))
+        {
             continue;
         }
         let Some((name, span)) = tokens.iter().find_map(|(token, span)| {
@@ -2441,21 +2462,18 @@ fn migrate_source_file(file_path: &Path, file: &str, source: &str) -> Result<Str
             continue;
         };
 
-        let is_contextual_expression = error
-            .suggestions
-            .iter()
-            .any(|suggestion| suggestion == &format!("replace `{name}` with `.{name}`"));
-        let replacement = if is_pattern || is_contextual_expression {
-            format!(".{name}")
-        } else if let Some(owner) = typecheck
-            .expr_types
-            .get(&hew_types::SpanKey::from(&error.span))
-            .and_then(hew_types::Ty::type_name)
-        {
-            format!("{owner}.{name}")
-        } else {
+        // The checker's fix-it is the one authority for the replacement: the
+        // contextual `.Variant` where an expected type selects the enum, the
+        // owner-qualified `Type.Variant` where nothing does.
+        let prefix = format!("replace `{name}` with `");
+        let Some(replacement) = error.suggestions.iter().find_map(|suggestion| {
+            suggestion
+                .strip_prefix(&prefix)
+                .and_then(|rest| rest.strip_suffix('`'))
+                .map(str::to_string)
+        }) else {
             refusals.push(format!(
-                "{}:{}-{}: checker did not resolve a variant owner for `{name}`",
+                "{}:{}-{}: checker offered no replacement for `{name}`",
                 file, span.start, span.end
             ));
             continue;

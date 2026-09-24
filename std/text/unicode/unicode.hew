@@ -332,8 +332,8 @@ fn codepoint_at_option(s: string, i: i64) -> Option<i64> {
 /// ```
 pub fn codepoint_at(s: string, i: i64) -> Result<i64, string> {
     match codepoint_at_option(s, i) {
-        .Some(cp) => Ok(cp),
-        .None => Err("unicode.codepoint_at: index out of bounds"),
+        .Some(cp) => .Ok(cp),
+        .None => .Err("unicode.codepoint_at: index out of bounds"),
     }
 }
 
@@ -374,11 +374,11 @@ pub fn rune_count(s: string) -> i64 {
 /// ```
 pub fn rune_len(cp: i64) -> Result<i64, string> {
     match cp {
-        x if !is_valid_rune(x) => Err("unicode.rune_len: invalid rune"),
-        x if x <= 0x7F => Ok(1),
-        x if x <= 0x7FF => Ok(2),
-        x if x <= 0xFFFF => Ok(3),
-        _ => Ok(4),
+        x if !is_valid_rune(x) => .Err("unicode.rune_len: invalid rune"),
+        x if x <= 0x7F => .Ok(1),
+        x if x <= 0x7FF => .Ok(2),
+        x if x <= 0xFFFF => .Ok(3),
+        _ => .Ok(4),
     }
 }
 

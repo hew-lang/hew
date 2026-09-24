@@ -81,8 +81,8 @@ pub fn encode(payload: string, secret: string, algorithm: string) -> Result<stri
         hew_jwt_encode_hew(payload, secret, algo)
     };
     match last_error() {
-        JwtError.None => Ok(token),
-        err => Err(err),
+        JwtError.None => .Ok(token),
+        err => .Err(err),
     }
 }
 
@@ -96,8 +96,8 @@ pub fn decode(token: string, secret: string, algorithm: string) -> Result<string
         hew_jwt_decode_hew(token, secret, algo)
     };
     match last_error() {
-        JwtError.None => Ok(payload),
-        err => Err(err),
+        JwtError.None => .Ok(payload),
+        err => .Err(err),
     }
 }
 

@@ -201,9 +201,9 @@ pub fn counter(name: string) -> Result<Counter, MetricsError> {
         hew_metric_counter_register(name)
     };
     if id < 0 {
-        Err(MetricsError.Rejected(name))
+        .Err(MetricsError.Rejected(name))
     } else {
-        Ok(Counter { id: id })
+        .Ok(Counter { id: id })
     }
 }
 
@@ -215,9 +215,9 @@ pub fn gauge(name: string) -> Result<Gauge, MetricsError> {
         hew_metric_gauge_register(name)
     };
     if id < 0 {
-        Err(MetricsError.Rejected(name))
+        .Err(MetricsError.Rejected(name))
     } else {
-        Ok(Gauge { id: id })
+        .Ok(Gauge { id: id })
     }
 }
 
@@ -232,9 +232,9 @@ pub fn histogram(name: string) -> Result<Histogram, MetricsError> {
         hew_metric_histogram_register_simple(name)
     };
     if id < 0 {
-        Err(MetricsError.Rejected(name))
+        .Err(MetricsError.Rejected(name))
     } else {
-        Ok(Histogram { id: id })
+        .Ok(Histogram { id: id })
     }
 }
 

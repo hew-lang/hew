@@ -74,7 +74,7 @@ pub fn from_char(code: i64) -> string {
 pub fn to_int(s: string) -> Result<i64, string> {
     let slen = s.len();
     if slen == 0 {
-        return Err("string.to_int: invalid integer literal");
+        return .Err("string.to_int: invalid integer literal");
     }
     var start = 0;
     var negative = false;
@@ -86,7 +86,7 @@ pub fn to_int(s: string) -> Result<i64, string> {
         start = 1;
     }
     if start >= slen {
-        return Err("string.to_int: invalid integer literal");
+        return .Err("string.to_int: invalid integer literal");
     }
     // i64::MIN / 10 truncated toward zero (-9223372036854775808 / 10 = -922337203685477580).
     // If the accumulator goes below this cutoff, the next digit would overflow i64.
@@ -103,26 +103,26 @@ pub fn to_int(s: string) -> Result<i64, string> {
         let digit = s.slice(i, i + 1);
         let d = digit_value(digit);
         if d < 0 {
-            return Err("string.to_int: invalid integer literal");
+            return .Err("string.to_int: invalid integer literal");
         }
         if result < cutoff || result == cutoff && d > max_last_digit {
-            return Err("string.to_int: integer out of range");
+            return .Err("string.to_int: integer out of range");
         }
         result = result * 10 - d;
     }
     if negative {
-        Ok(result)
+        .Ok(result)
     } else {
-        Ok(0 - result)
+        .Ok(0 - result)
     }
 }
 
 /// Parse a string as a float, returning a structured error on failure.
 pub fn to_float(s: string) -> Result<f64, string> {
     if is_valid_float_literal(s) {
-        Ok(parse_valid_float_literal(s))
+        .Ok(parse_valid_float_literal(s))
     } else {
-        Err("string.to_float: invalid float literal")
+        .Err("string.to_float: invalid float literal")
     }
 }
 
@@ -748,7 +748,7 @@ impl string {
     /// or `None` when `needle` does not occur.
     #[extern_symbol(hew_string_find)]
     fn find(s: string, needle: string) -> Option<i64> {
-        None
+        .None
     }
     /// Copy the range from `start` inclusive to `end` exclusive, in Unicode scalars.
     #[extern_symbol(hew_string_slice)]
@@ -763,7 +763,7 @@ impl string {
     /// scalar index is out of bounds, like `get`.
     #[extern_symbol(hew_string_char_at)]
     fn char_at(s: string, idx: i64) -> Option<char> {
-        None
+        .None
     }
     /// Return the `char` at codepoint-index `index`, or `None` when the index
     /// is out of bounds. This is the non-trapping `Index.get` accessor,
@@ -771,7 +771,7 @@ impl string {
     /// the same runtime operation as `char_at`, under the `Index` spelling.
     #[extern_symbol(hew_string_char_at)]
     fn get(s: string, index: i64) -> Option<char> {
-        None
+        .None
     }
     #[extern_symbol(hew_string_chars)]
     fn chars(s: string) -> Vec<char> {
@@ -789,7 +789,7 @@ impl string {
     /// byte offset.
     #[extern_symbol(hew_string_char_at_utf8)]
     fn codepoint_at_utf8(s: string, i: i64) -> Option<i64> {
-        None
+        .None
     }
     /// Return the UTF-8 byte encoding of this string as an owned `bytes` value.
     ///

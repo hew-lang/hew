@@ -376,7 +376,7 @@ pub trait ActorMsg {
 impl<T: ActorMsg> ChildRef<T> {
     /// Send a message to the currently live actor in this supervised role.
     fn send(child: ChildRef<T>, msg: T.Msg) -> Result<(), SendError> {
-        Err(SendError.Closed)
+        .Err(SendError.Closed)
     }
 }
 
@@ -439,14 +439,14 @@ impl<T: ActorMsg> RemotePid<T> {
     /// needs a `#[wire]` schema. The checker lowers every native call site
     /// to a remote submission, so this body only seeds its signature.
     fn send(pid: RemotePid<T>, msg: T.Msg) -> Result<(), SendError> {
-        Err(SendError.NodeRoutingNotWired)
+        .Err(SendError.NodeRoutingNotWired)
     }
     /// Ask this remote actor for a reply, failing with `ActorError` if the
     /// caller-supplied timeout elapses or routing/reply delivery fails. A
     /// remote call carries no sealed message, so it never reports `Rejected`.
     /// The message and reply need `#[wire]` schemas.
     fn ask(pid: RemotePid<T>, msg: T.Msg, timeout_ms: u64) -> Result<T.Reply, ActorError<Never, Never>> {
-        Err(ActorError.NodeNotRunning)
+        .Err(ActorError.NodeNotRunning)
     }
 }
 
@@ -581,11 +581,11 @@ impl<T> Iterator for VecIter<T> {
     /// place; the caller observes the bumped cursor on the next call.
     fn next(var self) -> Option<T> {
         if self.idx >= self.vec.len() {
-            None
+            .None
         } else {
             let v = self.vec[self.idx];
             self.idx = self.idx + 1;
-            Some(v)
+            .Some(v)
         }
     }
 }
@@ -635,12 +635,12 @@ impl<K, V> Iterator for HashMapIter<K, V> {
     /// Yield `Some((ks[idx], vs[idx]))` and advance `idx`; `None` at the end.
     fn next(var self) -> Option<(K, V)> {
         if self.idx >= self.ks.len() {
-            None
+            .None
         } else {
             let k = self.ks[self.idx];
             let v = self.vs[self.idx];
             self.idx = self.idx + 1;
-            Some((k, v))
+            .Some((k, v))
         }
     }
 }

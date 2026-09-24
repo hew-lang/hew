@@ -100,9 +100,9 @@ impl ExprMethods for Expr {
             hew_cron_next_hew(expr.handle, after_epoch_secs as i64)
         };
         if result.status == 0 {
-            Ok(result.timestamp as i64)
+            .Ok(result.timestamp as i64)
         } else {
-            Err(cron_error_from_result(result))
+            .Err(cron_error_from_result(result))
         }
     }
     /// Return the cron expression as a string.

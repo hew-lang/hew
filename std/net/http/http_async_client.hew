@@ -209,11 +209,11 @@ fn split_authority_path(after_scheme: string) -> (string, string) {
     let end = match slash {
         .Some(s) => match query {
             .Some(q) => if s < q {
-                Some(s)
+                Option.Some(s)
             } else {
-                Some(q)
+                Option.Some(q)
             },
-            .None => Some(s),
+            .None => .Some(s),
         },
         .None => query,
     };

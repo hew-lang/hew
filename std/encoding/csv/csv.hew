@@ -113,7 +113,7 @@ pub fn parse_no_headers(data: string) -> Result<Table, string> {
 pub fn parse_file(path: string) -> Result<Table, string> {
     match fs.read(path) {
         .Ok(content) => parse_impl(content, true),
-        .Err(reason) => Err(to_string(reason)),
+        .Err(reason) => .Err(to_string(reason)),
     }
 }
 // ── Internal parsing ──────────────────────────────────────────────────
@@ -135,7 +135,7 @@ fn parse_impl(data: string, has_headers: bool) -> Result<Table, string> {
     var rows: Vec<Vec<string>> = Vec.new();
     let ilen = data.len();
     if ilen == 0 {
-        return Ok(Table { hdrs: headers, data: rows });
+        return .Ok(Table { hdrs: headers, data: rows });
     }
     // Current row accumulator and field accumulator.
     var cur_row: Vec<string> = Vec.new();
@@ -169,7 +169,7 @@ fn parse_impl(data: string, has_headers: bool) -> Result<Table, string> {
         } else if ch == "\"" && state == 1 {
             // A quote may only open a field. Inside an unquoted field it is an
             // unescaped delimiter, not data (RFC 4180 §2.5).
-            return Err("csv: unescaped quote inside an unquoted field");
+            return .Err("csv: unescaped quote inside an unquoted field");
         } else if ch == "," && (state == 0 || state == 1 || state == 3) {
             // Field separator — emit current field, reset for next
             cur_row.push(cur_field);
@@ -220,7 +220,7 @@ fn parse_impl(data: string, has_headers: bool) -> Result<Table, string> {
             // After a closing quote only ',' or a row terminator may follow
             // (RFC 4180 §2.5). Skipping the character would silently discard
             // input and hand back a table that does not describe the source.
-            return Err("csv: unexpected text after a closing quote");
+            return .Err("csv: unexpected text after a closing quote");
         } else {
             // Regular character in Outside or InUnquoted state
             cur_field = cur_field + ch;
@@ -231,7 +231,7 @@ fn parse_impl(data: string, has_headers: bool) -> Result<Table, string> {
     if state == 2 {
         // The input ended inside a quoted field. Flushing it would turn a
         // truncated document into a complete-looking table.
-        return Err("csv: unterminated quoted field");
+        return .Err("csv: unterminated quoted field");
     }
     // EOF — flush any pending field/row (handles inputs without trailing newline).
     // A completely empty trailing line (state==0, cur_row empty, cur_field=="")
@@ -255,7 +255,7 @@ fn parse_impl(data: string, has_headers: bool) -> Result<Table, string> {
             headers.push(f"col{i}");
         }
     }
-    Ok(Table { hdrs: headers, data: rows })
+    .Ok(Table { hdrs: headers, data: rows })
 }
 
 /// Find the column index for a header name. Returns -1 if not found.

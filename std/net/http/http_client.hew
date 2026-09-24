@@ -182,7 +182,7 @@ pub fn request_string(method: string, url: string, body: string, headers: Vec<(s
         unsafe {
             hew_http_response_free(resp)
         };
-        return None;
+        return .None;
     }
     let result = unsafe {
         hew_http_response_body(resp)
@@ -190,7 +190,7 @@ pub fn request_string(method: string, url: string, body: string, headers: Vec<(s
     unsafe {
         hew_http_response_free(resp)
     };
-    Some(result)
+    .Some(result)
 }
 
 /// Set the global outbound-request timeout, rejecting a value the C ABI
@@ -200,7 +200,7 @@ pub fn set_timeout(timeout_ms: i64) -> Result<(), net.NetError> {
     unsafe {
         hew_http_set_timeout(checked as i32) // INTERNAL-ABI: range-checked above
     };
-    Ok(())
+    .Ok(())
 }
 
 /// Return the last HTTP client error observed on this thread.

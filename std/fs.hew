@@ -205,8 +205,8 @@ fn last_io_error() -> IoError {
 pub fn read(file_path: string) -> Result<string, IoError> {
     let data = read_bytes(file_path)?;
     match utf8.decode(data) {
-        .Ok(text) => Ok(text),
-        .Err(_) => Err(IoError.Other(0)),
+        .Ok(text) => .Ok(text),
+        .Err(_) => .Err(IoError.Other(0)),
     }
 }
 
@@ -217,8 +217,8 @@ pub fn write(file_path: string, content: string) -> Result<(), IoError> {
     match unsafe {
         hew_file_write(file_path, content)
     } {
-        0 => Ok(()),
-        _ => Err(last_io_error()),
+        0 => .Ok(()),
+        _ => .Err(last_io_error()),
     }
 }
 
@@ -229,8 +229,8 @@ pub fn append(file_path: string, content: string) -> Result<(), IoError> {
     match unsafe {
         hew_file_append(file_path, content)
     } {
-        0 => Ok(()),
-        _ => Err(last_io_error()),
+        0 => .Ok(()),
+        _ => .Err(last_io_error()),
     }
 }
 
@@ -259,8 +259,8 @@ pub fn delete(file_path: string) -> Result<(), IoError> {
     match unsafe {
         hew_file_delete(file_path)
     } {
-        0 => Ok(()),
-        _ => Err(last_io_error()),
+        0 => .Ok(()),
+        _ => .Err(last_io_error()),
     }
 }
 
@@ -296,12 +296,12 @@ pub fn read_bytes(file_path: string) -> Result<bytes, IoError> {
             // `hew_file_read_bytes: ...` message can't leak into a later,
             // unrelated `hew_last_error()` / `hew_stream_last_error()` read.
             let _ = hew_stream_last_error();
-            Err(io_error_from_kind(kind, errno as i64))
+            .Err(io_error_from_kind(kind, errno as i64))
         } else {
             // `data` is the sole owner of the freshly-read buffer and is not
             // used after this point, so move it straight into the result. A
             // byte-by-byte copy would be pure overhead (bytes is a CoW value).
-            Ok(data)
+            .Ok(data)
         }
     }
 }
@@ -313,8 +313,8 @@ pub fn write_bytes(file_path: string, data: bytes) -> Result<(), IoError> {
     match unsafe {
         hew_file_write_bytes(file_path, data)
     } {
-        0 => Ok(()),
-        _ => Err(last_io_error()),
+        0 => .Ok(()),
+        _ => .Err(last_io_error()),
     }
 }
 
@@ -327,8 +327,8 @@ pub fn mkdir(dir_path: string) -> Result<(), IoError> {
     match unsafe {
         hew_fs_mkdir(dir_path)
     } {
-        0 => Ok(()),
-        _ => Err(last_io_error()),
+        0 => .Ok(()),
+        _ => .Err(last_io_error()),
     }
 }
 
@@ -339,8 +339,8 @@ pub fn mkdir_all(dir_path: string) -> Result<(), IoError> {
     match unsafe {
         hew_fs_mkdir_all(dir_path)
     } {
-        0 => Ok(()),
-        _ => Err(last_io_error()),
+        0 => .Ok(()),
+        _ => .Err(last_io_error()),
     }
 }
 
@@ -367,9 +367,9 @@ pub fn list_dir(dir_path: string) -> Result<Vec<string>, IoError> {
         let errno = hew_stream_last_errno();
         let _ = hew_stream_last_error();
         if errno == 0 {
-            Ok(entries)
+            .Ok(entries)
         } else {
-            Err(io_error_from_kind(kind, errno as i64))
+            .Err(io_error_from_kind(kind, errno as i64))
         }
     }
 }
@@ -380,8 +380,8 @@ pub fn rename(from: string, to: string) -> Result<(), IoError> {
     match unsafe {
         hew_fs_rename(from, to)
     } {
-        0 => Ok(()),
-        _ => Err(last_io_error()),
+        0 => .Ok(()),
+        _ => .Err(last_io_error()),
     }
 }
 
@@ -391,8 +391,8 @@ pub fn copy(from: string, to: string) -> Result<(), IoError> {
     match unsafe {
         hew_fs_copy(from, to)
     } {
-        0 => Ok(()),
-        _ => Err(last_io_error()),
+        0 => .Ok(()),
+        _ => .Err(last_io_error()),
     }
 }
 

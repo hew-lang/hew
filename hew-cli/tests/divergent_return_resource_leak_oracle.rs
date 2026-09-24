@@ -134,7 +134,8 @@ fn divergent_record(c: bool) -> Pipe {
 
 fn same_tuple(c: bool) -> (Sink<string>, Stream<string>) {
     let (s1, r1) = match stream.pipe(8) { .Ok(pair) => pair, .Err(error) => panic(error), };
-    let (s2, r2) = match stream.pipe(8) { .Ok(pair) => pair, .Err(error) => panic(error), };
+    // Nothing uses the unselected pair, so its element type needs a witness.
+    let (s2, r2): (Sink<string>, Stream<string>) = match stream.pipe(8) { .Ok(pair) => pair, .Err(error) => panic(error), };
     if c { (s1, r1) } else { (s1, r1) }
 }
 

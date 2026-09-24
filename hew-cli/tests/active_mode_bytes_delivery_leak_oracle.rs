@@ -13,27 +13,18 @@
 
 mod support;
 
-use std::io::{Read, Write};
+use std::io::Write;
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::path::Path;
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Output};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use support::leak_slope::{compile_to_native, parse_leaks_summary, require_leaks_tool};
-use support::require_codegen;
+use support::{require_codegen, try_run_bounded_command};
 
 const HIGH_DELIVERIES: usize = 50;
 const PROCESS_TIMEOUT: Duration = Duration::from_secs(30);
-
-struct ChildGuard(Child);
-
-impl Drop for ChildGuard {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
-}
 
 fn allocate_loopback_port() -> u16 {
     TcpListener::bind(("127.0.0.1", 0))
@@ -107,74 +98,72 @@ fn connect_and_deliver(port: u16, index: usize) {
         .unwrap_or_else(|error| panic!("delivery {index}: close client socket: {error}"));
 }
 
-fn run_under_leaks(bin: &Path, port: u16, deliveries: usize) -> (usize, usize) {
-    let mut child = ChildGuard(
-        Command::new("leaks")
-            .args(["--atExit", "--"])
-            .arg(bin)
-            .env("MallocStackLogging", "1")
-            .env("MallocScribble", "1")
-            .env("MallocPreScribble", "1")
-            .env("MallocGuardEdges", "1")
-            .env("HEW_WORKERS", "2")
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap_or_else(|error| panic!("run {} under leaks(1): {error}", bin.display())),
-    );
+/// `leaks --atExit` over `bin` with guard malloc and stack logging, so any
+/// reported leak names its allocation site.
+fn leaks_command(bin: &Path) -> Command {
+    let mut command = Command::new("leaks");
+    command
+        .args(["--atExit", "--"])
+        .arg(bin)
+        .env("MallocStackLogging", "1")
+        .env("MallocScribble", "1")
+        .env("MallocPreScribble", "1")
+        .env("MallocGuardEdges", "1")
+        .env("HEW_WORKERS", "2");
+    command
+}
 
-    for index in 0..deliveries {
-        connect_and_deliver(port, index);
-    }
-
-    let deadline = Instant::now() + PROCESS_TIMEOUT;
-    let status = loop {
-        if let Some(status) = child.0.try_wait().expect("poll active-mode leak oracle") {
-            break status;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "active-mode leak oracle {} did not finish within {PROCESS_TIMEOUT:?}",
-            bin.display()
+/// Run `bin` under `leaks(1)` in its own process group with drained pipes and
+/// a deadline that kills the whole tree, while `drive` exercises it.
+fn run_bounded_under_leaks(bin: &Path, drive: impl FnOnce() + Send) -> Output {
+    thread::scope(|scope| {
+        let driver = scope.spawn(drive);
+        let result = try_run_bounded_command(
+            leaks_command(bin),
+            format!("inspect {} with leaks(1)", bin.display()),
+            PROCESS_TIMEOUT,
         );
-        thread::sleep(Duration::from_millis(20));
-    };
+        let drive_result = driver.join();
+        let output = result.unwrap_or_else(|error| panic!("{error}"));
+        assert!(
+            drive_result.is_ok(),
+            "driver for {} failed; leaks(1) report:\n{}",
+            bin.display(),
+            support::describe_output(&output)
+        );
+        output
+    })
+}
 
-    let mut stdout = String::new();
-    child
-        .0
-        .stdout
-        .take()
-        .expect("active-mode leak stdout was captured")
-        .read_to_string(&mut stdout)
-        .expect("read active-mode leak stdout");
-    let mut stderr = String::new();
-    child
-        .0
-        .stderr
-        .take()
-        .expect("active-mode leak stderr was captured")
-        .read_to_string(&mut stderr)
-        .expect("read active-mode leak stderr");
-    let report = format!("{stdout}\n{stderr}");
-
-    assert_eq!(
-        stdout.lines().filter(|line| *line == "DATA").count(),
-        deliveries,
-        "work witness: expected {deliveries} delivered on_data messages; report:\n{report}"
-    );
-    assert_eq!(
-        stdout.lines().filter(|line| *line == "DONE").count(),
-        1,
-        "work witness: server did not reach its clean terminal sentinel:\n{report}"
-    );
+/// Check that every `(line, count)` witness was printed and that `leaks(1)`
+/// both parsed a summary and exited cleanly, then return that summary.
+fn leaks_verdict(output: &Output, witnesses: &[(&str, usize)]) -> (usize, usize) {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let report = format!("{stdout}\n{}", String::from_utf8_lossy(&output.stderr));
+    for &(witness, expected) in witnesses {
+        assert_eq!(
+            stdout.lines().filter(|line| *line == witness).count(),
+            expected,
+            "work witness: expected `{witness}` {expected} time(s); report:\n{report}"
+        );
+    }
     let summary = parse_leaks_summary(&report)
         .unwrap_or_else(|| panic!("leaks(1) emitted no parseable summary:\n{report}"));
     assert!(
-        status.success(),
-        "active-mode server leaked or failed under guard malloc: status={status:?}\n{report}"
+        output.status.success(),
+        "probe leaked or failed under guard malloc: status={:?}\n{report}",
+        output.status
     );
     summary
+}
+
+fn run_under_leaks(bin: &Path, port: u16, deliveries: usize) -> (usize, usize) {
+    let output = run_bounded_under_leaks(bin, || {
+        for index in 0..deliveries {
+            connect_and_deliver(port, index);
+        }
+    });
+    leaks_verdict(&output, &[("DATA", deliveries), ("DONE", 1)])
 }
 
 const CONDITIONAL_HANDLER_BYTES_SOURCE: &str = r#"
@@ -205,64 +194,8 @@ fn main() -> i64 {
 "#;
 
 fn run_conditional_under_leaks(bin: &Path) -> (usize, usize) {
-    let mut child = ChildGuard(
-        Command::new("leaks")
-            .args(["--atExit", "--"])
-            .arg(bin)
-            .env("MallocStackLogging", "1")
-            .env("MallocScribble", "1")
-            .env("MallocPreScribble", "1")
-            .env("MallocGuardEdges", "1")
-            .env("HEW_WORKERS", "2")
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap_or_else(|error| panic!("run {} under leaks(1): {error}", bin.display())),
-    );
-    let deadline = Instant::now() + PROCESS_TIMEOUT;
-    let status = loop {
-        if let Some(status) = child.0.try_wait().expect("poll conditional Bytes oracle") {
-            break status;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "conditional Bytes oracle {} did not finish within {PROCESS_TIMEOUT:?}",
-            bin.display()
-        );
-        thread::sleep(Duration::from_millis(20));
-    };
-    let mut stdout = String::new();
-    child
-        .0
-        .stdout
-        .take()
-        .expect("conditional Bytes stdout was captured")
-        .read_to_string(&mut stdout)
-        .expect("read conditional Bytes stdout");
-    let mut stderr = String::new();
-    child
-        .0
-        .stderr
-        .take()
-        .expect("conditional Bytes stderr was captured")
-        .read_to_string(&mut stderr)
-        .expect("read conditional Bytes stderr");
-    let report = format!("{stdout}\n{stderr}");
-    for witness in ["FORWARDED", "LOCAL", "DONE"] {
-        assert_eq!(
-            stdout.lines().filter(|line| *line == witness).count(),
-            1,
-            "conditional Bytes oracle did not execute `{witness}` exactly once:\n{report}"
-        );
-    }
-    let summary = parse_leaks_summary(&report)
-        .unwrap_or_else(|| panic!("leaks(1) emitted no parseable summary:\n{report}"));
-    assert!(
-        status.success(),
-        "conditional Bytes handler leaked or failed under guard malloc: \
-         status={status:?}\n{report}"
-    );
-    summary
+    let output = run_bounded_under_leaks(bin, || {});
+    leaks_verdict(&output, &[("FORWARDED", 1), ("LOCAL", 1), ("DONE", 1)])
 }
 
 #[cfg_attr(

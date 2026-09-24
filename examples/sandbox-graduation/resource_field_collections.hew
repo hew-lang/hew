@@ -1,20 +1,30 @@
-// A `#[resource]` record's collection field changes in place: a push and an
-// indexed write, then the record closes once with its final contents.
+// A `#[resource]` record's fields change in place, held in a variable or in a
+// closure's capture: pushes, an indexed write and a field assignment, then
+// each record closes once with its final contents.
 #[resource]
 type Log {
     lines: Vec<string>,
+    name: string,
 }
 
 impl Log {
     fn close(consume self) {
-        println(f"close {self.lines.len()} {self.lines[0]}");
+        println(f"close {self.name} {self.lines.len()} {self.lines[0]}");
     }
 }
 
 fn main() {
-    var log = Log { lines: Vec.new() };
+    var log = Log { lines: Vec.new(), name: "log" };
     log.lines.push("first");
     log.lines.push("second");
     log.lines[0] = "edited";
     println(f"{log.lines[0]} {log.lines[1]}");
+    let tally = Log { lines: ["start"], name: "tally" };
+    var append = move capture(var tally) |line: string| {
+        tally.lines.push(line);
+        tally.name = f"tally {line}";
+        println(f"{tally.name} {tally.lines.len()}");
+    };
+    append("a");
+    append("b");
 }

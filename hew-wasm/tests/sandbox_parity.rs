@@ -379,8 +379,9 @@ const PARITY_CASES: &[ParityCase] = &[
         source_rel: "examples/sandbox-graduation/option_take.hew",
     },
     ParityCase {
-        // A push and an indexed write on a field of a `#[resource]` record
-        // take the record apart around the field and rebuild it in place.
+        // Pushes, an indexed write and a field assignment on a `#[resource]`
+        // record, held in a variable and in a closure's capture, take the
+        // record apart around the field and rebuild it in place.
         test_name: "resource_field_collections",
         source_rel: "examples/sandbox-graduation/resource_field_collections.hew",
     },

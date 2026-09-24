@@ -526,7 +526,15 @@ fn verify_vtables(module: &SemModule, diagnostics: &mut Vec<SirDiagnostic>) {
         if !erasures.insert((vtable.dyn_ty.clone(), vtable.concrete_ty.clone())) {
             refuse("the same erasure is published twice".into());
         }
+        let mut methods = HashSet::new();
         for (position, slot) in vtable.slots.iter().enumerate() {
+            if !methods.insert(&slot.method) {
+                refuse(format!(
+                    "slot {} repeats trait method `{}`",
+                    slot.slot,
+                    slot.method.full_path()
+                ));
+            }
             let expected_slot = 3 + u32::try_from(position).expect("SIR vtable slot exceeds u32");
             if slot.slot != expected_slot {
                 refuse(format!(
@@ -2542,6 +2550,7 @@ fn verify_dyn_call(
     let SemTerminator::DynCall {
         receiver,
         slot,
+        method,
         signature,
         args,
         result,
@@ -2580,6 +2589,14 @@ fn verify_dyn_call(
                     ty.user_facing()
                 )
             })?;
+        if published.method != *method {
+            return Err(format!(
+                "dynamic dispatch of `{}` names slot {slot}, which `{}` fills with `{}`",
+                method.full_path(),
+                table.concrete_ty.user_facing(),
+                published.method.full_path()
+            ));
+        }
         let expected = match published.receiver {
             SemParamPassing::ReadOnly => crate::BoundaryDecision::Copy,
             SemParamPassing::Borrow => crate::BoundaryDecision::Borrow,

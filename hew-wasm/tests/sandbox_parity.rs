@@ -471,6 +471,12 @@ const PARITY_CASES: &[ParityCase] = &[
         test_name: "structural_rendering",
         source_rel: "tests/core-acceptance/cases/structural-rendering.hew",
     },
+    ParityCase {
+        // Every method of a multi-bound trait object reaches its own body
+        // through the one slot layout, reusing the core-acceptance fixture.
+        test_name: "dyn_multibound_dispatch",
+        source_rel: "tests/core-acceptance/cases/dyn-multibound-dispatch.hew",
+    },
 ];
 
 #[derive(Debug, Clone, Copy)]
@@ -579,6 +585,9 @@ fn assert_exact_stdout(case: &ParityCase, native: &Output) {
         ),
         "f32_arithmetic_precision" => Some("16777216\n"),
         "pointer_width_native64" => Some("4294967296\n4294967296\n"),
+        "dyn_multibound_dispatch" => {
+            Some("alpha 3\nbeta 3\n300\nalpha 3\nbeta 5 alpha 5 500\nright\nleft\ntag 7\n")
+        }
         _ => None,
     };
     if let Some(expected) = expected {

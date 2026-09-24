@@ -622,33 +622,22 @@ impl Checker {
         }
     }
 
-    /// Validate object safety for a single trait used in `dyn` position, and
-    /// build the method-table entries for the (`trait`, `concrete`) pair.
+    /// Validate one trait bound used in `dyn` position against the concrete
+    /// type being erased.
     ///
-    /// Returns `Some(methods)` when the trait is object-safe AND the concrete
-    /// type implements it (either via a nominal `impl Trait for T` recorded
-    /// in `trait_impls_set` / `primitive_trait_impls`, or via the structural
-    /// `type_structurally_satisfies` path). Returns `None` when the trait is
-    /// not registered, when the concrete type does not implement it, or when
-    /// the trait is not object-safe — in which case a diagnostic is reported.
-    ///
-    /// `concrete_type_name` is the type-name spelling expected by the
-    /// impl registries (e.g. `"i32"` for `Ty::I32` via
-    /// `Ty::canonical_lowering_name`, `"MyStruct"` for user `Ty::Named`).
-    ///
-    /// The returned `method_table` entries are `(method_name, impl_fn_key)`:
-    /// * `impl_fn_key = "<concrete_type_name>::<method_name>"` for user types
-    ///   (matches `fn_sigs` qualified key).
-    /// * `impl_fn_key = "<canonical>::<method_name>"` for primitive /
-    ///   builtin-generic receivers; the impl `FnSig` lives in
-    ///   `primitive_trait_impls`.
+    /// Returns how the concrete type satisfies the bound: `Some(true)` for a
+    /// structural match, `Some(false)` for a nominal `impl Trait for T` or a
+    /// primitive impl. Returns `None` when the trait is not registered, its
+    /// associated types are unbound, the concrete type does not implement it,
+    /// or a trait in its closure is not object-safe; the object-safety and
+    /// projection checks report their own diagnostics.
     fn validate_dyn_trait_bound(
         &mut self,
         bound: &crate::ty::TraitObjectBound,
         concrete_type_name: &str,
         concrete_type: &Ty,
         span: &Span,
-    ) -> Option<Vec<DynVtableEntry>> {
+    ) -> Option<bool> {
         let trait_name = bound.trait_name.as_str();
         let trait_lookup_key = self.trait_ref_lookup_key(trait_name);
         // Resolve the trait declaration; an unregistered trait can never be
@@ -669,9 +658,9 @@ impl Checker {
             let mut seen = std::collections::HashSet::new();
             std::iter::once(trait_lookup_key.clone())
                 .chain(
-                    self.dyn_vtable_slots(trait_name)
+                    self.dyn_layout(std::slice::from_ref(bound))
                         .into_iter()
-                        .map(|(key, _, _)| key),
+                        .map(|slot| slot.trait_key),
                 )
                 .filter(|key| seen.insert(key.clone()))
                 .collect()
@@ -685,79 +674,25 @@ impl Checker {
             }
         }
 
-        // Build the method-table. Prefer the nominal impl registries; fall
-        // back to the structural match path so bare `impl T { fn ... }` that
-        // structurally satisfies a trait also gets a populated table.
-        let nominal_impl = self.type_implements_trait_for_ty(concrete_type, &trait_lookup_key);
-
-        let primitive_impl_methods = self
-            .primitive_trait_impls
-            .get(&(concrete_type_name.to_string(), trait_lookup_key.clone()))
-            .or_else(|| {
-                self.primitive_trait_impls
-                    .get(&(concrete_type_name.to_string(), trait_name.to_string()))
-            })
-            .cloned();
-
+        // Prefer the nominal impl registries; fall back to the structural
+        // match path so a bare `impl T { fn ... }` that structurally
+        // satisfies a trait also fills the table.
+        let nominal_impl = self.type_implements_trait_for_ty(concrete_type, &trait_lookup_key)
+            || self
+                .primitive_trait_impls
+                .contains_key(&(concrete_type_name.to_string(), trait_lookup_key.clone()))
+            || self
+                .primitive_trait_impls
+                .contains_key(&(concrete_type_name.to_string(), trait_name.to_string()));
         let structural_ok = !nominal_impl
-            && primitive_impl_methods.is_none()
             && self.type_structurally_satisfies(concrete_type_name, &trait_lookup_key);
-
-        if !nominal_impl && primitive_impl_methods.is_none() && !structural_ok {
+        if !nominal_impl && !structural_ok {
             return None;
         }
         if !self.validate_dyn_assoc_binding_projections(trait_name, bound, concrete_type, span) {
             return None;
         }
-
-        let canonical_type_name = match concrete_type {
-            Ty::Named { builtin: None, .. } => self
-                .flat_file_import_type_owner(concrete_type_name)
-                .or_else(|| self.canonical_nominal_name(concrete_type_name))
-                .unwrap_or_else(|| concrete_type_name.to_string()),
-            Ty::Named {
-                builtin: Some(_), ..
-            } => concrete_type_name.to_string(),
-            _ => self
-                .canonical_nominal_name(concrete_type_name)
-                .unwrap_or_else(|| concrete_type_name.to_string()),
-        };
-        // One authority for the slot layout: the bound's own methods in
-        // declaration order, then its supertraits' methods. `trait Error:
-        // Display` therefore publishes `Display::fmt` at the slot every
-        // dispatch site computes from the same list.
-        let slots = self.dyn_vtable_slots(trait_name);
-        let mut table: Vec<DynVtableEntry> = Vec::with_capacity(slots.len());
-        for (declaring_key, declaring_spelling, method_name) in slots {
-            let impl_fn_key = format!("{canonical_type_name}::{method_name}");
-            let Some(mut signature) = self.lookup_trait_method(&declaring_key, &method_name) else {
-                // JUSTIFIED: the slot list is built from `trait_defs`, so a
-                // method it names is resolvable. Fabricating an empty
-                // signature would poison the vtable.
-                unreachable!(
-                    "trait method `{declaring_key}.{method_name}` is listed in trait_defs but is not resolvable"
-                );
-            };
-            self.apply_trait_object_bound_substitutions(&mut signature, bound);
-            // The admission path names the filler: a nominal `impl Trait for T`
-            // publishes its method under the trait impl registry, a structural
-            // match is the inherent method a direct `T.method(…)` call targets.
-            // Whichever admitted the bound owns the slot's declaration identity.
-            let impl_method = if structural_ok {
-                self.inherent_impl_method_declaration(concrete_type, &method_name)
-            } else {
-                self.trait_impl_method_declaration(concrete_type, &declaring_spelling, &method_name)
-                    .map(|(declaration, _)| declaration)
-            };
-            table.push(DynVtableEntry {
-                trait_name: declaring_spelling,
-                method_name,
-                impl_fn_key,
-                impl_method,
-                signature,
-            });
-        }
-        Some(table)
+        Some(structural_ok)
     }
 
     /// Validate and record a `T → dyn Trait` coercion at `span`.  Walks every
@@ -778,45 +713,85 @@ impl Checker {
         concrete_type: &Ty,
         span: &Span,
     ) -> bool {
-        // Collect per-bound method tables. Bail (false) if any bound is
-        // unsatisfied or not object-safe.
-        let mut per_bound: Vec<(String, Vec<DynVtableEntry>)> = Vec::with_capacity(traits.len());
+        // How the concrete type satisfies each bound. Bail (false) if any
+        // bound is unsatisfied or not object-safe.
+        let mut structural_by_bound = Vec::with_capacity(traits.len());
         for bound in traits {
-            let Some(methods) =
+            let Some(structural) =
                 self.validate_dyn_trait_bound(bound, type_name, concrete_type, span)
             else {
                 return false;
             };
-            per_bound.push((bound.trait_name.clone(), methods));
+            structural_by_bound.push(structural);
         }
 
         // Composite trait_name: `A` for single-bound, `A+B` for multi-bound.
-        let composite_trait_name = if per_bound.len() == 1 {
-            per_bound[0].0.clone()
-        } else {
-            per_bound
-                .iter()
-                .map(|(name, _)| name.as_str())
-                .collect::<Vec<_>>()
-                .join("+")
-        };
+        let composite_trait_name = traits
+            .iter()
+            .map(|bound| bound.trait_name.as_str())
+            .collect::<Vec<_>>()
+            .join("+");
 
-        // Flatten method tables. For multi-bound, prefix each method name with
-        // its originating trait so downstream consumers can route correctly.
-        let multi = per_bound.len() > 1;
+        let canonical_type_name = match concrete_type {
+            Ty::Named { builtin: None, .. } => self
+                .flat_file_import_type_owner(type_name)
+                .or_else(|| self.canonical_nominal_name(type_name))
+                .unwrap_or_else(|| type_name.to_string()),
+            Ty::Named {
+                builtin: Some(_), ..
+            } => type_name.to_string(),
+            _ => self
+                .canonical_nominal_name(type_name)
+                .unwrap_or_else(|| type_name.to_string()),
+        };
+        // The table follows the whole trait object's layout, the numbering
+        // every dispatch site reads its slot from.
+        let multi = traits.len() > 1;
         let assoc_bindings = canonical_dyn_assoc_bindings(traits);
         let mut method_table: Vec<(String, String)> = Vec::new();
         let mut vtable_entries: Vec<DynVtableEntry> = Vec::new();
-        for (trait_name, methods) in &per_bound {
-            for entry in methods {
-                let qualified = if multi {
-                    format!("{trait_name}::{}", entry.method_name)
-                } else {
-                    entry.method_name.clone()
-                };
-                method_table.push((qualified, entry.impl_fn_key.clone()));
-                vtable_entries.push(entry.clone());
-            }
+        for slot in self.dyn_layout(traits) {
+            let bound = &traits[slot.bound];
+            let impl_fn_key = format!("{canonical_type_name}::{}", slot.method_name);
+            let Some(mut signature) = self.lookup_trait_method(&slot.trait_key, &slot.method_name)
+            else {
+                // JUSTIFIED: the layout is built from `trait_defs`, so a
+                // method it names is resolvable. Fabricating an empty
+                // signature would poison the vtable.
+                unreachable!(
+                    "trait method `{}.{}` is listed in trait_defs but is not resolvable",
+                    slot.trait_key, slot.method_name
+                );
+            };
+            self.apply_trait_object_bound_substitutions(&mut signature, bound);
+            // The admission path names the filler: a nominal `impl Trait for T`
+            // publishes its method under the trait impl registry, a structural
+            // match is the inherent method a direct `T.method(…)` call targets.
+            // Whichever admitted the bound owns the slot's declaration identity.
+            let impl_method = if structural_by_bound[slot.bound] {
+                self.inherent_impl_method_declaration(concrete_type, &slot.method_name)
+            } else {
+                self.trait_impl_method_declaration(
+                    concrete_type,
+                    &slot.trait_spelling,
+                    &slot.method_name,
+                )
+                .map(|(declaration, _)| declaration)
+            };
+            let qualified = if multi {
+                format!("{}::{}", slot.trait_spelling, slot.method_name)
+            } else {
+                slot.method_name.clone()
+            };
+            method_table.push((qualified, impl_fn_key.clone()));
+            vtable_entries.push(DynVtableEntry {
+                trait_name: slot.trait_spelling,
+                method_name: slot.method_name,
+                method: slot.method,
+                impl_fn_key,
+                impl_method,
+                signature,
+            });
         }
         let vtable_key = DynVtableKey {
             trait_name: composite_trait_name.clone(),

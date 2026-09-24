@@ -1213,11 +1213,9 @@ impl Checker {
                 // than a concrete declaration: the slot the coercion site
                 // published is the whole realization.
                 if let Ty::TraitObject { traits } = &error_ty {
-                    let slot = traits.iter().find_map(|bound| {
-                        self.dyn_vtable_slot_for_method(&bound.trait_name, "fmt")
-                            .map(|(slot, _, _)| slot)
-                    });
-                    let Some(slot) = slot else {
+                    let Ok(generics::DynLayoutSlot { slot, method, .. }) =
+                        self.dyn_dispatch_slot(traits, "fmt")
+                    else {
                         self.errors.push(TypeError::new(
                             TypeErrorKind::BoundsNotSatisfied,
                             span.clone(),
@@ -1231,7 +1229,7 @@ impl Checker {
                     return Some(EntryExitAction::Result {
                         result_ty: resolved_return_type?,
                         error_ty: ResolvedTy::from_ty(&error_ty).ok()?,
-                        display: EntryDisplayTarget::DynSlot { slot },
+                        display: EntryDisplayTarget::DynSlot { slot, method },
                     });
                 }
                 let Some((display_declaration, display_signature_key)) =

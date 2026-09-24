@@ -3094,7 +3094,7 @@ else needs `impl Display for {rendered}`)"
                     .iter()
                     .find(|(name, _)| name == "Output")
                 {
-                    self.record_dyn_index_method_call(bound, span);
+                    self.record_dyn_index_method_call(traits, bound, span);
                     return output_ty.clone();
                 }
                 self.report_error(
@@ -3338,35 +3338,30 @@ else needs `impl Display for {rendered}`)"
         }
     }
 
-    fn record_dyn_index_method_call(&mut self, bound: &crate::ty::TraitObjectBound, span: &Span) {
+    fn record_dyn_index_method_call(
+        &mut self,
+        traits: &[crate::ty::TraitObjectBound],
+        bound: &crate::ty::TraitObjectBound,
+        span: &Span,
+    ) {
         let trait_name = bound.trait_name.as_str();
-        let trait_lookup_key = self.trait_ref_lookup_key(trait_name);
-        let Some((slot, _, declaring_spelling)) = self.dyn_vtable_slot_for_method(trait_name, "at")
-        else {
+        let Ok(layout_slot) = self.dyn_dispatch_slot(traits, "at") else {
             return;
         };
+        let slot = layout_slot.slot;
         // Compute the substituted `at` signature for the originating
         // bound (the bound's assoc bindings carry e.g. `Output = T`).
         // W3.031 Stage 1.6: the typed `FnSig` is self-contained on
         // the call-site side table; no codegen-time re-derivation.
-        let Some(mut sig) = self.lookup_trait_method(&trait_lookup_key, "at") else {
+        let Some(mut sig) = self.lookup_trait_method(&layout_slot.trait_key, "at") else {
             return;
         };
         self.apply_trait_object_bound_substitutions(&mut sig, bound);
-        let target = self
-            .trait_method_call_target_ids(&declaring_spelling, "at")
-            .map_or_else(
-                || crate::check::dispatch::CallTarget::Unsupported {
-                    reason: format!(
-                        "dynamic trait method `{trait_name}.at` has no registered declaration identity"
-                    ),
-                },
-                |(declaring_trait, method)| crate::check::dispatch::CallTarget::DynamicVtable {
-                    declaring_trait,
-                    method,
-                    slot,
-                },
-            );
+        let target = crate::check::dispatch::CallTarget::DynamicVtable {
+            declaring_trait: layout_slot.declaring_trait,
+            method: layout_slot.method,
+            slot,
+        };
         self.dyn_trait_method_calls.insert(
             SpanKey::in_module(span, self.current_module_idx),
             crate::check::types::DynMethodCall {

@@ -2,6 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
+pub use hew_lexer::{sym, Symbol, SyntaxContext};
+
 /// Source span with byte offsets.
 pub type Span = std::ops::Range<usize>;
 
@@ -63,22 +65,134 @@ impl std::fmt::Display for CallableCapabilities {
     }
 }
 
+/// An identifier as written: its interned spelling and the hygiene context
+/// that wrote it. Source identifiers carry [`SyntaxContext::ROOT`].
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct Ident {
+    pub name: Symbol,
+    pub ctx: SyntaxContext,
+}
+
+impl Ident {
+    /// A source-context identifier spelled `spelling`.
+    #[must_use]
+    pub fn new(spelling: &str) -> Self {
+        Self::from_symbol(Symbol::intern(spelling))
+    }
+
+    /// A source-context identifier for an already interned spelling.
+    #[must_use]
+    pub fn from_symbol(name: Symbol) -> Self {
+        Self {
+            name,
+            ctx: SyntaxContext::ROOT,
+        }
+    }
+}
+
+/// Prints the spelling, with the context only when it is not the source
+/// context, so AST dumps read like source.
+impl std::fmt::Debug for Ident {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&self.name, f)?;
+        if self.ctx != SyntaxContext::ROOT {
+            write!(f, "#{:?}", self.ctx)?;
+        }
+        Ok(())
+    }
+}
+
+impl std::fmt::Display for Ident {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.name, f)
+    }
+}
+
 /// A dotted syntactic path whose segments have not yet been resolved.
+///
+/// The parser keeps every qualified spelling as segments; which prefix names
+/// a module, a type or a variant is a resolution fact, never re-derived from a
+/// joined string. Each segment keeps its own span for tooling.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Path {
-    pub segments: Vec<String>,
+    pub segments: Vec<Spanned<Ident>>,
+}
+
+impl Path {
+    /// A one-segment path.
+    #[must_use]
+    pub fn single(ident: Ident, span: Span) -> Self {
+        Self {
+            segments: vec![(ident, span)],
+        }
+    }
+
+    /// A path the compiler writes rather than parses: source-context
+    /// segments with empty spans.
+    #[must_use]
+    pub fn from_spellings(spellings: &[&str]) -> Self {
+        Self {
+            segments: spellings
+                .iter()
+                .map(|spelling| (Ident::new(spelling), 0..0))
+                .collect(),
+        }
+    }
+
+    /// The path spelled by an `Ident`/`FieldAccess` chain, or `None` when the
+    /// expression is anything else.
+    #[must_use]
+    pub fn from_chain(expr: &Spanned<Expr>) -> Option<Self> {
+        match &expr.0 {
+            Expr::Ident(ident) => Some(Self::single(*ident, expr.1.clone())),
+            Expr::FieldAccess { object, field } => {
+                let mut path = Self::from_chain(object)?;
+                path.segments.push(field.clone());
+                Some(path)
+            }
+            _ => None,
+        }
+    }
+
+    /// The final segment; `None` only for the empty path of a file import.
+    #[must_use]
+    pub fn last(&self) -> Option<Ident> {
+        self.segments.last().map(|(ident, _)| *ident)
+    }
+
+    /// The identifier when the path has exactly one segment.
+    #[must_use]
+    pub fn as_single(&self) -> Option<Ident> {
+        match self.segments.as_slice() {
+            [(ident, _)] => Some(*ident),
+            _ => None,
+        }
+    }
+}
+
+/// Joins the segments with `.` for diagnostics and formatting.
+impl std::fmt::Display for Path {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for (index, (segment, _)) in self.segments.iter().enumerate() {
+            if index > 0 {
+                f.write_str(".")?;
+            }
+            std::fmt::Display::fmt(segment, f)?;
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ContextVariantExpr {
-    pub name: String,
+    pub name: Ident,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub record: Option<Box<ContextVariantRecord>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ContextVariantRecord {
-    pub fields: Vec<(String, Spanned<Expr>)>,
+    pub fields: Vec<(Ident, Spanned<Expr>)>,
     pub base: Option<Box<Spanned<Expr>>>,
 }
 
@@ -120,14 +234,7 @@ impl ArrayElement {
 pub struct QualifiedAssocExpr {
     pub base: Box<Spanned<TypeExpr>>,
     pub trait_path: Path,
-    pub members: Vec<String>,
-}
-
-impl Path {
-    #[must_use]
-    pub fn source_spelling(&self) -> String {
-        self.segments.join(".")
-    }
+    pub members: Vec<Ident>,
 }
 
 // ── Program ──────────────────────────────────────────────────────────
@@ -223,7 +330,7 @@ pub enum CallArg {
     /// A positional argument: just an expression.
     Positional(Spanned<Expr>),
     /// A named argument: `name: expr`.
-    Named { name: String, value: Spanned<Expr> },
+    Named { name: Ident, value: Spanned<Expr> },
 }
 
 impl CallArg {
@@ -246,10 +353,10 @@ impl CallArg {
 
     /// Get the name if this is a named argument.
     #[must_use]
-    pub fn name(&self) -> Option<&str> {
+    pub fn name(&self) -> Option<Ident> {
         match self {
             CallArg::Positional(_) => None,
-            CallArg::Named { name, .. } => Some(name),
+            CallArg::Named { name, .. } => Some(*name),
         }
     }
 }
@@ -282,7 +389,7 @@ pub enum Expr {
     /// clone diagnostic rather than silently aliasing.
     Clone(Box<Spanned<Expr>>),
     Literal(Literal),
-    Identifier(String),
+    Ident(Ident),
     /// Expected-type contextual variant spelling, `.Variant`.
     ///
     /// This is deliberately not represented as a bare identifier: the
@@ -298,7 +405,7 @@ pub enum Expr {
     /// qualified associated path.
     RecordInitSuffix {
         target: Box<Spanned<Expr>>,
-        fields: Vec<(String, Spanned<Expr>)>,
+        fields: Vec<(Ident, Spanned<Expr>)>,
         base: Option<Box<Spanned<Expr>>>,
     },
     /// Fully-qualified associated item, `<T as module.Trait>.Item`.
@@ -334,7 +441,7 @@ pub enum Expr {
     Lambda {
         is_move: bool,
         /// Existing outer names made privately mutable in this environment.
-        private_captures: Vec<Spanned<String>>,
+        private_captures: Vec<Spanned<Ident>>,
         type_params: Option<Vec<TypeParam>>,
         params: Vec<LambdaParam>,
         return_type: Option<Spanned<TypeExpr>>,
@@ -349,7 +456,7 @@ pub enum Expr {
         /// `MissingActorTypeArgs` when a generic actor is spawned without them.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         type_args: Vec<Spanned<TypeExpr>>,
-        args: Vec<(String, Spanned<Expr>)>,
+        args: Vec<(Ident, Spanned<Expr>)>,
     },
     SpawnLambdaActor {
         is_move: bool,
@@ -383,12 +490,12 @@ pub enum Expr {
     },
     MethodCall {
         receiver: Box<Spanned<Expr>>,
-        method: String,
+        method: Spanned<Ident>,
         args: Vec<CallArg>,
     },
     StructInit {
-        name: String,
-        fields: Vec<(String, Spanned<Expr>)>,
+        path: Path,
+        fields: Vec<(Ident, Spanned<Expr>)>,
         /// Explicit type arguments supplied at the struct literal site,
         /// e.g. `Wrapper<String> { value: "hello" }`.
         /// Absent when the user omits them and inference fills the gap.
@@ -424,7 +531,7 @@ pub enum Expr {
     ReturnError(Box<Spanned<Expr>>),
     FieldAccess {
         object: Box<Spanned<Expr>>,
-        field: String,
+        field: Spanned<Ident>,
     },
     Index {
         object: Box<Spanned<Expr>>,
@@ -444,7 +551,7 @@ pub enum Expr {
     /// ordinary lexical handler block, not in the operand or continuation.
     Handle {
         operand: Box<Spanned<Expr>>,
-        error: Spanned<String>,
+        error: Spanned<Ident>,
         body: Box<Spanned<Expr>>,
     },
     Range {
@@ -486,8 +593,8 @@ pub enum Expr {
     /// transition body, `entry`, or `exit` block. Legality (must appear inside
     /// a machine context) is checked at HIR lowering, not parsing.
     MachineEmit {
-        event_name: String,
-        fields: Vec<(String, Spanned<Expr>)>,
+        event_name: Ident,
+        fields: Vec<(Ident, Spanned<Expr>)>,
     },
 
     /// Generator block expression: `gen { yield ...; }`.
@@ -579,7 +686,7 @@ pub enum Stmt {
         else_block: Option<Block>,
     },
     Var {
-        name: String,
+        name: Ident,
         ty: Option<Spanned<TypeExpr>>,
         value: Option<Spanned<Expr>>,
     },
@@ -607,31 +714,31 @@ pub enum Stmt {
         arms: Vec<MatchArm>,
     },
     Loop {
-        label: Option<String>,
+        label: Option<Ident>,
         body: Block,
     },
     For {
-        label: Option<String>,
+        label: Option<Ident>,
         pattern: Spanned<Pattern>,
         iterable: Spanned<Expr>,
         body: Block,
     },
     While {
-        label: Option<String>,
+        label: Option<Ident>,
         condition: Spanned<Expr>,
         body: Block,
     },
     WhileLet {
-        label: Option<String>,
+        label: Option<Ident>,
         conditions: Vec<ConditionItem>,
         body: Block,
     },
     Break {
-        label: Option<String>,
+        label: Option<Ident>,
         value: Option<Spanned<Expr>>,
     },
     Continue {
-        label: Option<String>,
+        label: Option<Ident>,
     },
     Return(Option<Spanned<Expr>>),
     Defer(Box<Spanned<Expr>>),
@@ -648,7 +755,7 @@ pub enum TypeExpr {
         error: Box<Spanned<TypeExpr>>,
     },
     Named {
-        name: String,
+        path: Path,
         type_args: Option<Vec<Spanned<TypeExpr>>>,
     },
     /// Fully-qualified associated type, `<T as module.Trait>.Item`.
@@ -693,7 +800,7 @@ pub enum TypeExpr {
 pub struct QualifiedAssocPath {
     pub base: Box<Spanned<TypeExpr>>,
     pub trait_path: Path,
-    pub members: Vec<String>,
+    pub members: Vec<Ident>,
 }
 
 // ── Patterns ─────────────────────────────────────────────────────────
@@ -702,28 +809,20 @@ pub struct QualifiedAssocPath {
 pub enum Pattern {
     Wildcard,
     Literal(Literal),
-    Identifier(String),
-    /// A qualified nominal pattern.  Keeping path segments separate prevents
-    /// a second string-key namespace from escaping the parser.
+    Identifier(Ident),
+    /// A nominal pattern: `Some(x)`, `Point { x, .. }`, `ma.Shape.Circle(r)`.
+    /// A one-segment path always carries a payload; a bare name is
+    /// [`Pattern::Identifier`].
     NominalPath {
         path: Path,
         payload: Option<NominalPatternPayload>,
     },
     /// Expected-type contextual variant spelling, `.Variant`.
     ContextVariant(ContextVariantPattern),
-    Constructor {
-        name: String,
-        patterns: Vec<Spanned<Pattern>>,
-    },
-    Struct {
-        name: String,
-        fields: Vec<PatternField>,
-        rest: Option<Span>,
-    },
     /// Shorthand record destructure: `{ a, b }` with no type name.
     ///
     /// The checker infers the record type from the expected/scrutinee type and
-    /// delegates to the same field-binding path as `Pattern::Struct`.  Only
+    /// delegates to the same field-binding path as a record `NominalPath`.  Only
     /// valid in `let` positions against an irrefutable (product) type.
     RecordShorthand {
         fields: Vec<PatternField>,
@@ -754,7 +853,7 @@ pub enum NominalPatternPayload {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ContextVariantPattern {
-    pub name: String,
+    pub name: Ident,
     pub payload: Option<NominalPatternPayload>,
 }
 
@@ -963,7 +1062,7 @@ pub struct TimeoutClause {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LambdaParam {
-    pub name: String,
+    pub name: Ident,
     pub ty: Option<Spanned<TypeExpr>>,
     /// Span of the parameter name.
     pub name_span: Span,
@@ -971,7 +1070,7 @@ pub struct LambdaParam {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PatternField {
-    pub name: String,
+    pub name: Ident,
     pub pattern: Option<Spanned<Pattern>>,
 }
 
@@ -984,7 +1083,7 @@ pub struct ElseBlock {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Param {
-    pub name: String,
+    pub name: Ident,
     pub ty: Spanned<TypeExpr>,
     pub is_mutable: bool,
     /// `true` when this value parameter was declared with the `consume`
@@ -1002,7 +1101,7 @@ pub struct Param {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TypeParam {
-    pub name: String,
+    pub name: Ident,
     pub bounds: Vec<TraitBound>,
 }
 
@@ -1025,7 +1124,7 @@ pub enum ConstParamTy {
 /// is purely additive — existing `type_params` consumers see no change.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ConstParam {
-    pub name: String,
+    pub name: Ident,
     pub ty: ConstParamTy,
     /// Optional `= 16` default. `None` when the parameter has no default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1034,13 +1133,13 @@ pub struct ConstParam {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AssocTypeBinding {
-    pub name: String,
+    pub name: Ident,
     pub ty: Spanned<TypeExpr>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TraitBound {
-    pub name: String,
+    pub path: Path,
     pub type_args: Option<Vec<Spanned<TypeExpr>>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub assoc_type_bindings: Vec<AssocTypeBinding>,
@@ -1114,7 +1213,7 @@ pub struct FnDecl {
     pub is_generator: bool,
     #[serde(default)]
     pub visibility: Visibility,
-    pub name: String,
+    pub name: Ident,
     pub type_params: Option<Vec<TypeParam>>,
     pub params: Vec<Param>,
     pub return_type: Option<Spanned<TypeExpr>>,
@@ -1159,7 +1258,7 @@ pub struct FnDecl {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ImportDecl {
-    pub path: Vec<String>,
+    pub path: Path,
     pub spec: Option<ImportSpec>,
     /// Whether a brace selection ended with a comma.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -1170,7 +1269,7 @@ pub struct ImportDecl {
     /// present, `alias` is the qualifier a bare reference reaches the module's
     /// names through (`alias.Thing`), replacing the last path segment.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub module_alias: Option<String>,
+    pub module_alias: Option<Ident>,
     pub file_path: Option<String>,
     /// Resolved items from the imported file (populated by `resolve_file_imports`).
     /// Used by the type checker to register user module items under the module namespace.
@@ -1189,8 +1288,8 @@ pub struct ImportDecl {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ImportName {
-    pub name: String,
-    pub alias: Option<String>,
+    pub name: Ident,
+    pub alias: Option<Ident>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1202,7 +1301,7 @@ pub enum ImportSpec {
 pub struct ConstDecl {
     #[serde(default)]
     pub visibility: Visibility,
-    pub name: String,
+    pub name: Ident,
     pub ty: Spanned<TypeExpr>,
     pub value: Spanned<Expr>,
     pub doc_comment: Option<String>,
@@ -1231,7 +1330,7 @@ pub struct TypeDecl {
     #[serde(default)]
     pub visibility: Visibility,
     pub kind: TypeDeclKind,
-    pub name: String,
+    pub name: Ident,
     pub type_params: Option<Vec<TypeParam>>,
     pub where_clause: Option<WhereClause>,
     pub body: Vec<TypeBodyItem>,
@@ -1254,7 +1353,7 @@ pub struct TypeDecl {
     /// Names of methods declared with a `consume self` receiver in this type body.
     /// Populated by the parser; used by the type checker to validate ownership rules.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub consuming_methods: Vec<String>,
+    pub consuming_methods: Vec<Ident>,
     /// Lang-item key from `#[lang_item("key")]`, if present.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lang_item: Option<String>,
@@ -1272,7 +1371,7 @@ impl ResourceMarker {
 pub struct TypeAliasDecl {
     #[serde(default)]
     pub visibility: Visibility,
-    pub name: String,
+    pub name: Ident,
     pub type_params: Option<Vec<TypeParam>>,
     pub ty: Spanned<TypeExpr>,
     pub doc_comment: Option<String>,
@@ -1287,7 +1386,7 @@ pub struct TypeAliasDecl {
 pub struct RecordDecl {
     #[serde(default)]
     pub visibility: Visibility,
-    pub name: String,
+    pub name: Ident,
     pub type_params: Option<Vec<TypeParam>>,
     pub where_clause: Option<WhereClause>,
     pub kind: RecordKind,
@@ -1309,7 +1408,7 @@ pub enum RecordKind {
 /// A single field in a named-form `record` body.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RecordField {
-    pub name: String,
+    pub name: Ident,
     pub ty: Spanned<TypeExpr>,
     pub doc_comment: Option<String>,
     #[serde(skip)]
@@ -1355,7 +1454,7 @@ pub struct WireFieldMeta {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum TypeBodyItem {
     Field {
-        name: String,
+        name: Ident,
         ty: Spanned<TypeExpr>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         attributes: Vec<Attribute>,
@@ -1374,7 +1473,7 @@ pub enum TypeBodyItem {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct VariantDecl {
-    pub name: String,
+    pub name: Ident,
     pub kind: VariantKind,
     #[serde(default)]
     pub doc_comment: Option<String>,
@@ -1389,14 +1488,14 @@ pub struct VariantDecl {
 pub enum VariantKind {
     Unit,
     Tuple(Vec<Spanned<TypeExpr>>),
-    Struct(Vec<(String, Spanned<TypeExpr>)>),
+    Struct(Vec<(Ident, Spanned<TypeExpr>)>),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TraitDecl {
     #[serde(default)]
     pub visibility: Visibility,
-    pub name: String,
+    pub name: Ident,
     pub type_params: Option<Vec<TypeParam>>,
     pub super_traits: Option<Vec<TraitBound>>,
     pub items: Vec<TraitItem>,
@@ -1417,7 +1516,7 @@ pub struct TraitDecl {
 pub enum TraitItem {
     Method(TraitMethod),
     AssociatedType {
-        name: String,
+        name: Ident,
         bounds: Vec<TraitBound>,
         default: Option<Spanned<TypeExpr>>,
         #[serde(default)]
@@ -1430,7 +1529,7 @@ pub struct TraitMethod {
     /// Source attributes attached to the method declaration.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attributes: Vec<Attribute>,
-    pub name: String,
+    pub name: Ident,
     pub type_params: Option<Vec<TypeParam>>,
     pub params: Vec<Param>,
     pub return_type: Option<Spanned<TypeExpr>>,
@@ -1468,7 +1567,7 @@ pub struct ImplDecl {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ImplTypeAlias {
-    pub name: String,
+    pub name: Ident,
     pub ty: Spanned<TypeExpr>,
     /// Byte span from the `type` keyword through the `;`.
     #[serde(default)]
@@ -1526,7 +1625,7 @@ pub struct ExternFnDecl {
     /// downstream `FnSig` / MIR ingest live in later compiler stages.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attributes: Vec<Attribute>,
-    pub name: String,
+    pub name: Ident,
     pub params: Vec<Param>,
     pub return_type: Option<Spanned<TypeExpr>>,
     pub is_variadic: bool,
@@ -1543,7 +1642,7 @@ pub struct ExternFnDecl {
 pub struct ActorDecl {
     #[serde(default)]
     pub visibility: Visibility,
-    pub name: String,
+    pub name: Ident,
     /// Optional generic type parameters declared as `actor Name<T, U> { ... }`
     /// or `actor Name<T: Trait> { ... }`.
     ///
@@ -1585,7 +1684,7 @@ pub enum OverflowPolicy {
     Block,
     Fail,
     Coalesce {
-        key_field: String,
+        key_field: Ident,
         fallback: Option<OverflowFallback>,
     },
 }
@@ -1610,7 +1709,7 @@ pub struct ActorInit {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FieldDecl {
-    pub name: String,
+    pub name: Ident,
     pub ty: Spanned<TypeExpr>,
     /// `true` when declared with `var` (mutable actor field); `false` for `let`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -1627,7 +1726,7 @@ pub struct FieldDecl {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ReceiveFnDecl {
     pub is_generator: bool,
-    pub name: String,
+    pub name: Ident,
     pub type_params: Option<Vec<TypeParam>>,
     pub params: Vec<Param>,
     pub return_type: Option<Spanned<TypeExpr>>,
@@ -1645,7 +1744,7 @@ pub struct ReceiveFnDecl {
 pub struct SupervisorDecl {
     #[serde(default)]
     pub visibility: Visibility,
-    pub name: String,
+    pub name: Ident,
     #[serde(default)]
     pub type_params: Vec<TypeParam>,
     /// Construction-time config parameters, written `supervisor App(config: T)`.
@@ -1689,15 +1788,15 @@ pub enum SupervisorStrategy {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ChildSpec {
-    pub name: String,
-    pub actor_type: String,
+    pub name: Ident,
+    pub actor_type: Path,
     #[serde(default)]
     pub type_args: Vec<Spanned<TypeExpr>>,
     /// Named init args for this child's actor, e.g. `child w: Worker(id: 7)`.
     /// Mirrors `Spawn.args` at the AST level: each entry is `(field_name, expr)`.
     /// Positional args (no `name:` prefix) are rejected by the parser with a
     /// migration diagnostic.
-    pub args: Vec<(String, Spanned<Expr>)>,
+    pub args: Vec<(Ident, Spanned<Expr>)>,
     #[serde(default)]
     pub restart: Option<RestartPolicy>,
     /// Declarative sibling wiring: maps init-param name → sibling child name.
@@ -1771,7 +1870,7 @@ fn is_zero_usize(n: &usize) -> bool {
 pub struct MachineDecl {
     #[serde(default)]
     pub visibility: Visibility,
-    pub name: String,
+    pub name: Ident,
     /// Optional generic type parameters declared as `machine Name<T, U> { ... }`
     /// or `machine Name<T: Trait> { ... }`.
     ///
@@ -1827,12 +1926,12 @@ pub struct MachineDecl {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CompositeGroup {
     /// Composite (grouping) name. Not a live state — only its members are.
-    pub name: String,
+    pub name: Ident,
     /// Leaf substate names, in declaration order.
-    pub members: Vec<String>,
+    pub members: Vec<Ident>,
     /// The substate marked `initial` — the state entered when the composite is
     /// targeted by name.
-    pub initial: String,
+    pub initial: Ident,
     /// Composite-level `entry` block, spliced parent-then-child on entry.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entry: Option<Block>,
@@ -1842,7 +1941,7 @@ pub struct CompositeGroup {
     /// Composite-owned shared fields (sugar: stamped onto every member). Kept
     /// here so the formatter re-emits them on the composite, not each member.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub fields: Vec<(String, Spanned<TypeExpr>)>,
+    pub fields: Vec<(Ident, Spanned<TypeExpr>)>,
     /// Parent-level transitions authored inside the composite block, retained
     /// verbatim (source `_` = any member) so the formatter re-emits them on the
     /// composite rather than as the N expanded flat copies.
@@ -1855,8 +1954,8 @@ pub struct CompositeGroup {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MachineState {
-    pub name: String,
-    pub fields: Vec<(String, Spanned<TypeExpr>)>,
+    pub name: Ident,
+    pub fields: Vec<(Ident, Spanned<TypeExpr>)>,
     /// Optional `entry { ... }` lifecycle block executed when entering this state.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entry: Option<Block>,
@@ -1870,8 +1969,8 @@ pub struct MachineState {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MachineEvent {
-    pub name: String,
-    pub fields: Vec<(String, Spanned<TypeExpr>)>,
+    pub name: Ident,
+    pub fields: Vec<(Ident, Spanned<TypeExpr>)>,
     /// Byte span of the declaration inside its `events`/`emits` header.
     #[serde(default)]
     pub span: Span,
@@ -1893,9 +1992,9 @@ pub enum MachineTransitionBodyForm {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MachineTransition {
-    pub event_name: String,
-    pub source_state: String,
-    pub target_state: String,
+    pub event_name: Ident,
+    pub source_state: Ident,
+    pub target_state: Ident,
     /// True when the target state was authored in the contextual form
     /// (`=> .Variant`) rather than bare (`=> Variant`). `target_state` holds
     /// the flat leaf name either way, so the authored spelling would otherwise
@@ -1916,7 +2015,7 @@ pub struct MachineTransition {
     /// this list is retained purely so the formatter can re-emit the head form
     /// and strip that prelude. Empty when the rule used no head binding.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub event_bindings: Vec<String>,
+    pub event_bindings: Vec<Ident>,
     /// The composite state this rule named as its target, when it named one.
     /// `target_state` holds the group's `initial` substate, which is the live
     /// target; without this the formatter would rewrite `=> Connected` into
@@ -1926,7 +2025,7 @@ pub struct MachineTransition {
     /// Additive and serde-defaulted, like `target_is_contextual`: a rule that
     /// named a leaf state keeps the field out of the wire form entirely.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub target_composite: Option<String>,
+    pub target_composite: Option<Ident>,
     /// Number of leading `body` statements that are composite entry/exit hook
     /// splices (D2/D3), prepended by the parser's composite post-pass. The
     /// formatter strips exactly this many leading statements so the authored

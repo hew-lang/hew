@@ -19,7 +19,7 @@
 
 use hew_hir::{lower_program_host_target, HirDiagnosticKind, HirFn, HirItem, ResolutionCtx};
 use hew_parser::ast::{Item, Program};
-use hew_parser::module::{Module, ModuleGraph, ModuleId};
+use hew_parser::module::{Module, ModuleGraph, ModulePath};
 use hew_types::{module_registry::ModuleRegistry, Checker, TypeCheckOutput};
 
 /// Build a `Program` with a non-root floor module at `module_path`
@@ -38,8 +38,8 @@ fn build_program_with_floor_module(module_path: &[&str], floor_src: &str) -> Pro
         root.errors
     );
 
-    let floor_id = ModuleId::new(module_path.iter().map(ToString::to_string).collect());
-    let root_id = ModuleId::root();
+    let floor_id = ModulePath::new(module_path.iter());
+    let root_id = ModulePath::root();
 
     let floor_items: Vec<_> = floor
         .program

@@ -1,10 +1,11 @@
 //! File-imported actor identity at the supervisor boundary.
 
+use hew_parser::ast::Ident;
 use std::path::PathBuf;
 
 use hew_hir::{lower_program_host_target, HirActorDecl, HirItem, HirSupervisorDecl, ResolutionCtx};
 use hew_parser::ast::{ImportDecl, ImportName, ImportSpec, Item, Program};
-use hew_parser::module::{Module, ModuleGraph, ModuleId};
+use hew_parser::module::{Module, ModuleGraph, ModulePath};
 use hew_types::{module_registry::ModuleRegistry, Checker, TypeCheckOutput};
 
 const WORKER_MODULE: &str = "imported_supervisor_child_support.worker";
@@ -50,8 +51,8 @@ fn file_import_program(
     import.resolved_item_source_paths = vec![worker_path.clone(); imported_items.len()];
     import.resolved_source_paths = vec![worker_path.clone()];
 
-    let worker_id = ModuleId::new(WORKER_MODULE.split('.').map(str::to_string).collect());
-    let root_id = ModuleId::root();
+    let worker_id = ModulePath::new(WORKER_MODULE.split('.'));
+    let root_id = ModulePath::root();
     let worker_module = Module {
         id: worker_id.clone(),
         items: imported_items.clone(),
@@ -121,10 +122,12 @@ fn actor_import_program(
 
     let import_item = (
         Item::Import(ImportDecl {
-            path: NAMED_WORKER_MODULE.split('.').map(str::to_string).collect(),
+            path: hew_parser::ast::Path::from_spellings(
+                &NAMED_WORKER_MODULE.split('.').collect::<Vec<_>>(),
+            ),
             spec,
             selection_trailing_comma: false,
-            module_alias: module_alias.map(str::to_string),
+            module_alias: module_alias.map(Ident::new),
             file_path: None,
             resolved_items: Some(imported.program.items.clone().into()),
             resolved_item_source_paths: Vec::new(),
@@ -132,8 +135,8 @@ fn actor_import_program(
         }),
         0..0,
     );
-    let worker_id = ModuleId::new(NAMED_WORKER_MODULE.split('.').map(str::to_string).collect());
-    let root_id = ModuleId::root();
+    let worker_id = ModulePath::new(NAMED_WORKER_MODULE.split('.'));
+    let root_id = ModulePath::root();
     let mut root_items = vec![import_item];
     root_items.extend(root.program.items.clone());
     let mut graph = ModuleGraph::new(root_id.clone());
@@ -167,8 +170,8 @@ fn actor_import_program(
 fn named_import_program(alias: Option<&str>, root_tail: &str) -> Program {
     actor_import_program(
         Some(ImportSpec::Names(vec![ImportName {
-            name: "Worker".to_string(),
-            alias: alias.map(str::to_string),
+            name: Ident::new("Worker"),
+            alias: alias.map(Ident::new),
         }])),
         None,
         root_tail,

@@ -470,7 +470,7 @@ pub(super) fn lint_receive_fn_definition(
     rec: &ReceiveFnDecl,
     out: &mut Vec<TypeError>,
 ) {
-    let Some(shadowed_builtin) = shadowed_actor_handle_builtin(&rec.name) else {
+    let Some(shadowed_builtin) = shadowed_actor_handle_builtin(rec.name.name.as_str()) else {
         return;
     };
     ctx.emit(
@@ -680,7 +680,7 @@ fn walk_expr<V: NodeVisitor>(expr: &Expr, span: &Span, visitor: &mut V) {
     visitor.visit_expr(expr, span);
     match expr {
         Expr::Literal(_)
-        | Expr::Identifier(_)
+        | Expr::Ident(_)
         | Expr::QualifiedAssoc(_)
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)

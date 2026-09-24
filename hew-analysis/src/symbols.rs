@@ -27,9 +27,14 @@ pub fn build_document_symbols(source: &str, parse_result: &ParseResult) -> Vec<S
 )]
 fn item_to_symbol(source: &str, item: &Item, item_span: OffsetSpan) -> SymbolInfo {
     match item {
-        Item::Function(f) => named_symbol(source, &f.name, SymbolKind::Function, item_span),
+        Item::Function(f) => named_symbol(
+            source,
+            f.name.name.as_str(),
+            SymbolKind::Function,
+            item_span,
+        ),
         Item::Actor(a) => {
-            let mut sym = named_symbol(source, &a.name, SymbolKind::Actor, item_span);
+            let mut sym = named_symbol(source, a.name.name.as_str(), SymbolKind::Actor, item_span);
             let mut children = Vec::new();
             if a.init.is_some() {
                 children.push(keyword_symbol(
@@ -49,7 +54,7 @@ fn item_to_symbol(source: &str, item: &Item, item_span: OffsetSpan) -> SymbolInf
                 let recv_search_from = recv_span.map_or(item_span.start, |span| span.start);
                 children.push(child_symbol(
                     source,
-                    &recv.name,
+                    recv.name.name.as_str(),
                     SymbolKind::Method,
                     recv_span,
                     recv_search_from,
@@ -63,7 +68,7 @@ fn item_to_symbol(source: &str, item: &Item, item_span: OffsetSpan) -> SymbolInf
                 };
                 children.push(child_symbol(
                     source,
-                    &method.name,
+                    method.name.name.as_str(),
                     SymbolKind::Method,
                     method_span,
                     method.decl_span.start.max(item_span.start),
@@ -75,9 +80,14 @@ fn item_to_symbol(source: &str, item: &Item, item_span: OffsetSpan) -> SymbolInf
             }
             sym
         }
-        Item::Supervisor(s) => named_symbol(source, &s.name, SymbolKind::Supervisor, item_span),
+        Item::Supervisor(s) => named_symbol(
+            source,
+            s.name.name.as_str(),
+            SymbolKind::Supervisor,
+            item_span,
+        ),
         Item::Trait(t) => {
-            let mut sym = named_symbol(source, &t.name, SymbolKind::Trait, item_span);
+            let mut sym = named_symbol(source, t.name.name.as_str(), SymbolKind::Trait, item_span);
             let mut associated_type_cursor = item_span.start;
             let children: Vec<SymbolInfo> = t
                 .items
@@ -91,7 +101,7 @@ fn item_to_symbol(source: &str, item: &Item, item_span: OffsetSpan) -> SymbolInf
                         };
                         child_symbol(
                             source,
-                            &m.name,
+                            m.name.name.as_str(),
                             SymbolKind::Method,
                             method_span,
                             m.span.start,
@@ -101,7 +111,7 @@ fn item_to_symbol(source: &str, item: &Item, item_span: OffsetSpan) -> SymbolInf
                         let symbol = keyword_symbol(
                             source,
                             "type",
-                            name,
+                            name.name.as_str(),
                             SymbolKind::TypeAlias,
                             associated_type_cursor,
                         );
@@ -117,7 +127,7 @@ fn item_to_symbol(source: &str, item: &Item, item_span: OffsetSpan) -> SymbolInf
         }
         Item::Impl(i) => {
             let name = match &i.trait_bound {
-                Some(tb) => format!("impl {} for ...", tb.name),
+                Some(tb) => format!("impl {} for ...", tb.path), // TRANSITION(P1): deleted by A1 commit 2
                 None => "impl".to_string(),
             };
             let mut sym = symbol_with_spans(
@@ -137,7 +147,7 @@ fn item_to_symbol(source: &str, item: &Item, item_span: OffsetSpan) -> SymbolInf
                     };
                     child_symbol(
                         source,
-                        &m.name,
+                        m.name.name.as_str(),
                         SymbolKind::Method,
                         method_span,
                         m.decl_span.start.max(item_span.start),
@@ -149,21 +159,31 @@ fn item_to_symbol(source: &str, item: &Item, item_span: OffsetSpan) -> SymbolInf
             }
             sym
         }
-        Item::Const(c) => named_symbol(source, &c.name, SymbolKind::Constant, item_span),
+        Item::Const(c) => named_symbol(
+            source,
+            c.name.name.as_str(),
+            SymbolKind::Constant,
+            item_span,
+        ),
         Item::TypeDecl(td) => {
             let kind = match td.kind {
                 TypeDeclKind::Struct => SymbolKind::Type,
                 TypeDeclKind::Enum => SymbolKind::Enum,
             };
-            let mut sym = named_symbol(source, &td.name, kind, item_span);
+            let mut sym = named_symbol(source, td.name.name.as_str(), kind, item_span);
             let mut body_cursor = sym.selection_span.end;
             let children: Vec<SymbolInfo> = td
                 .body
                 .iter()
                 .map(|item| match item {
                     TypeBodyItem::Variant(v) => {
-                        let symbol =
-                            child_symbol(source, &v.name, SymbolKind::Variant, None, body_cursor);
+                        let symbol = child_symbol(
+                            source,
+                            v.name.name.as_str(),
+                            SymbolKind::Variant,
+                            None,
+                            body_cursor,
+                        );
                         body_cursor = symbol.selection_span.end;
                         symbol
                     }
@@ -175,7 +195,7 @@ fn item_to_symbol(source: &str, item: &Item, item_span: OffsetSpan) -> SymbolInf
                         };
                         let symbol = child_symbol(
                             source,
-                            &m.name,
+                            m.name.name.as_str(),
                             SymbolKind::Method,
                             method_span,
                             m.decl_span.start.max(item_span.start),
@@ -184,8 +204,12 @@ fn item_to_symbol(source: &str, item: &Item, item_span: OffsetSpan) -> SymbolInf
                         symbol
                     }
                     TypeBodyItem::Field { name, ty, .. } => {
-                        let symbol =
-                            field_symbol(source, name, OffsetSpan::from(ty.1.clone()), body_cursor);
+                        let symbol = field_symbol(
+                            source,
+                            name.name.as_str(),
+                            OffsetSpan::from(ty.1.clone()),
+                            body_cursor,
+                        );
                         body_cursor = symbol.selection_span.end;
                         symbol
                     }
@@ -197,7 +221,8 @@ fn item_to_symbol(source: &str, item: &Item, item_span: OffsetSpan) -> SymbolInf
             sym
         }
         Item::Machine(m) => {
-            let mut sym = named_symbol(source, &m.name, SymbolKind::Machine, item_span);
+            let mut sym =
+                named_symbol(source, m.name.name.as_str(), SymbolKind::Machine, item_span);
             let mut state_cursor = item_span.start;
             let mut event_cursor = item_span.start;
             let mut children: Vec<SymbolInfo> = m
@@ -207,7 +232,7 @@ fn item_to_symbol(source: &str, item: &Item, item_span: OffsetSpan) -> SymbolInf
                     let symbol = keyword_symbol(
                         source,
                         "state",
-                        &state.name,
+                        state.name.name.as_str(),
                         SymbolKind::State,
                         state_cursor,
                     );
@@ -219,7 +244,7 @@ fn item_to_symbol(source: &str, item: &Item, item_span: OffsetSpan) -> SymbolInf
                 let symbol = keyword_symbol(
                     source,
                     "event",
-                    &event.name,
+                    event.name.name.as_str(),
                     SymbolKind::Event,
                     event_cursor,
                 );
@@ -232,7 +257,12 @@ fn item_to_symbol(source: &str, item: &Item, item_span: OffsetSpan) -> SymbolInf
             }
             sym
         }
-        Item::TypeAlias(ta) => named_symbol(source, &ta.name, SymbolKind::TypeAlias, item_span),
+        Item::TypeAlias(ta) => named_symbol(
+            source,
+            ta.name.name.as_str(),
+            SymbolKind::TypeAlias,
+            item_span,
+        ),
         Item::ExternBlock(eb) => {
             let mut sym = symbol_with_spans(
                 &format!("extern \"{}\"", eb.abi),
@@ -243,7 +273,15 @@ fn item_to_symbol(source: &str, item: &Item, item_span: OffsetSpan) -> SymbolInf
             let children: Vec<SymbolInfo> = eb
                 .functions
                 .iter()
-                .map(|f| child_symbol(source, &f.name, SymbolKind::Function, None, item_span.start))
+                .map(|f| {
+                    child_symbol(
+                        source,
+                        f.name.name.as_str(),
+                        SymbolKind::Function,
+                        None,
+                        item_span.start,
+                    )
+                })
                 .collect();
             if let Some(c) = crate::util::non_empty(children) {
                 sym.children = c;
@@ -251,10 +289,10 @@ fn item_to_symbol(source: &str, item: &Item, item_span: OffsetSpan) -> SymbolInf
             sym
         }
         Item::Import(i) => {
-            let name = i.path.join(".");
+            let name = i.path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
             symbol_with_spans(&name, SymbolKind::Module, item_span, item_span)
         }
-        Item::Record(r) => named_symbol(source, &r.name, SymbolKind::Type, item_span),
+        Item::Record(r) => named_symbol(source, r.name.name.as_str(), SymbolKind::Type, item_span),
     }
 }
 

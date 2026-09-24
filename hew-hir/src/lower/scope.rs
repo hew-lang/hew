@@ -5,7 +5,7 @@ use super::*;
 impl LowerCtx {
     pub(super) fn pattern_name(&mut self, pattern: &Spanned<Pattern>) -> Option<String> {
         if let Pattern::Identifier(name) = &pattern.0 {
-            Some(name.clone())
+            Some(name.to_string())
         } else {
             self.unsupported(pattern.1.clone(), "pattern", "slice-2");
             None
@@ -41,7 +41,12 @@ impl LowerCtx {
     /// every non-param binder) always leaves `false`.
     pub(super) fn bind_param(&mut self, param: &Param) -> HirBinding {
         let ty = self.lower_type(&param.ty);
-        let mut binding = self.bind(param.name.clone(), ty, param.is_mutable, param.ty.1.clone());
+        let mut binding = self.bind(
+            param.name.to_string(),
+            ty,
+            param.is_mutable,
+            param.ty.1.clone(),
+        );
         binding.is_consume = param.is_consume;
         binding
     }
@@ -49,7 +54,12 @@ impl LowerCtx {
     pub(super) fn bind_actor_param(&mut self, param: &Param) -> HirBinding {
         let ty = self.lower_type(&param.ty);
         let ty = self.qualify_current_module_record_ty(ty);
-        let mut binding = self.bind(param.name.clone(), ty, param.is_mutable, param.ty.1.clone());
+        let mut binding = self.bind(
+            param.name.to_string(),
+            ty,
+            param.is_mutable,
+            param.ty.1.clone(),
+        );
         binding.is_consume = param.is_consume;
         binding
     }

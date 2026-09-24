@@ -1,4 +1,5 @@
 use super::*;
+use hew_parser::ast::Ident;
 use hew_types::module_registry::ModuleRegistry;
 use hew_types::Checker;
 
@@ -955,7 +956,7 @@ fn checker_proven_whole_module_lifecycle_alias_canonicalizes_in_hir() {
 fn named_type_ref(name: &str, args: Vec<Spanned<TypeExpr>>) -> Spanned<TypeExpr> {
     (
         TypeExpr::Named {
-            name: name.to_string(),
+            path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new(name), 0..0),
             type_args: (!args.is_empty()).then_some(args),
         },
         0..0,
@@ -1133,7 +1134,7 @@ fn parse_typecheck_and_lower(
 #[test]
 fn checker_admitted_opaque_lifecycle_survives_into_exact_hir_authority() {
     use hew_parser::ast::Program;
-    use hew_parser::module::{Module, ModuleGraph, ModuleId};
+    use hew_parser::module::{Module, ModuleGraph, ModulePath};
 
     let parsed = hew_parser::parse(
         r#"
@@ -1155,8 +1156,8 @@ fn checker_admitted_opaque_lifecycle_survives_into_exact_hir_authority() {
     );
     assert!(parsed.errors.is_empty(), "{:#?}", parsed.errors);
 
-    let module_id = ModuleId::new(vec!["std".to_string(), "fs".to_string()]);
-    let root_id = ModuleId::root();
+    let module_id = ModulePath::new(["std", "fs"]);
+    let root_id = ModulePath::root();
     let mut graph = ModuleGraph::new(root_id.clone());
     graph
         .add_module(Module {
@@ -1273,7 +1274,7 @@ fn resource_record_lifecycle_requires_its_exact_emitted_close_body() {
 #[test]
 fn opaque_lifecycle_rejects_a_second_release_hidden_in_control_flow() {
     use hew_parser::ast::Program;
-    use hew_parser::module::{Module, ModuleGraph, ModuleId};
+    use hew_parser::module::{Module, ModuleGraph, ModulePath};
 
     let parsed = hew_parser::parse(
         r#"
@@ -1296,8 +1297,8 @@ fn opaque_lifecycle_rejects_a_second_release_hidden_in_control_flow() {
     );
     assert!(parsed.errors.is_empty(), "{:#?}", parsed.errors);
 
-    let module_id = ModuleId::new(vec!["std".to_string(), "fs".to_string()]);
-    let root_id = ModuleId::root();
+    let module_id = ModulePath::new(["std", "fs"]);
+    let root_id = ModulePath::root();
     let mut graph = ModuleGraph::new(root_id.clone());
     graph
         .add_module(Module {
@@ -2117,7 +2118,7 @@ fn builtin_lowering_gates_use_discriminants_not_type_spellings() {
         "Task<T> retains its await binding type"
     );
 
-    let object = (Expr::Identifier("xs".to_string()), 0..2);
+    let object = (Expr::Ident(Ident::new("xs")), 0..2);
     let index = (
         Expr::Literal(Literal::Integer {
             value: 0,
@@ -2946,7 +2947,7 @@ fn lower_canonical_encoding_fixture(
     source: &str,
     module_source: &str,
 ) -> LowerOutput {
-    use hew_parser::module::{Module, ModuleGraph, ModuleId};
+    use hew_parser::module::{Module, ModuleGraph, ModulePath};
     let parsed = hew_parser::parse(source);
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
     let mut program = parsed.program;
@@ -2960,8 +2961,8 @@ fn lower_canonical_encoding_fixture(
         .parent()
         .unwrap()
         .join(format!("std/encoding/{format}/{format}.hew"))];
-    let module = ModuleId::new(vec!["std".into(), "encoding".into(), format.into()]);
-    let root = ModuleId::root();
+    let module = ModulePath::new(["std", "encoding", format]);
+    let root = ModulePath::root();
     let mut graph = ModuleGraph::new(root.clone());
     graph
         .add_module(Module {
@@ -2978,7 +2979,7 @@ fn lower_canonical_encoding_fixture(
         ("option", include_str!("../../../std/option.hew")),
         ("result", include_str!("../../../std/result.hew")),
     ] {
-        let id = ModuleId::new(vec!["std".into(), name.into()]);
+        let id = ModulePath::new(["std", name]);
         graph
             .add_module(Module {
                 id: id.clone(),
@@ -3511,7 +3512,7 @@ fn lambda_actor_close_produces_unit_in_value_and_statement_positions() {
 
 fn named_type(name: &str) -> TypeExpr {
     TypeExpr::Named {
-        name: name.to_string(),
+        path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new(name), 0..0),
         type_args: None,
     }
 }
@@ -3679,7 +3680,7 @@ fn record_shadowing_builtin_result_keeps_actor_ask_lowerable() {
 /// "unit variant called as a function" diagnostic.
 #[test]
 fn nonroot_pub_enum_variant_shadows_same_named_builtin_in_hir() {
-    use hew_parser::module::{Module, ModuleGraph, ModuleId};
+    use hew_parser::module::{Module, ModuleGraph, ModulePath};
 
     let mod_src = hew_parser::parse(
         r"
@@ -3696,8 +3697,8 @@ fn nonroot_pub_enum_variant_shadows_same_named_builtin_in_hir() {
         mod_src.errors
     );
 
-    let root_id = ModuleId::root();
-    let mod_id = ModuleId::new(vec!["errmod".to_string()]);
+    let root_id = ModulePath::root();
+    let mod_id = ModulePath::new(["errmod"]);
     let module = Module {
         id: mod_id.clone(),
         items: mod_src.program.items,
@@ -3824,7 +3825,7 @@ fn unrelated_qualified_same_leaf_is_not_a_builtin_alias() {
 
 #[test]
 fn named_import_enum_alias_resolves_variant_through_exact_source_owner() {
-    use hew_parser::module::{Module, ModuleGraph, ModuleId};
+    use hew_parser::module::{Module, ModuleGraph, ModulePath};
 
     let source = hew_parser::parse(
         r"
@@ -3867,8 +3868,8 @@ fn named_import_enum_alias_resolves_variant_through_exact_source_owner() {
         }
     }
 
-    let root_id = ModuleId::root();
-    let source_id = ModuleId::new(vec!["hew".to_string(), "aliassrc".to_string()]);
+    let root_id = ModulePath::root();
+    let source_id = ModulePath::new(["hew", "aliassrc"]);
     let mut graph = ModuleGraph::new(root_id.clone());
     graph
         .add_module(Module {
@@ -3927,7 +3928,7 @@ fn named_import_enum_alias_resolves_variant_through_exact_source_owner() {
     reason = "the import-order regression constructs both complete module graphs inline"
 )]
 fn same_leaf_enum_aliases_keep_their_source_owners_in_both_import_orders() {
-    use hew_parser::module::{Module, ModuleGraph, ModuleId};
+    use hew_parser::module::{Module, ModuleGraph, ModulePath};
 
     // Deliberately disagree on both ordinal and payload shape. A flat
     // `Color::Red` registry key would make one import order diagnose the
@@ -3999,22 +4000,18 @@ fn same_leaf_enum_aliases_keep_their_source_owners_in_both_import_orders() {
                 continue;
             };
             import.resolved_items = Some(
-                match import.path.as_slice() {
-                    [package, module] if package == "hew" && module == "alpha" => {
-                        alpha.program.items.clone()
-                    }
-                    [package, module] if package == "hew" && module == "beta" => {
-                        beta.program.items.clone()
-                    }
+                match import.path.to_string().as_str() {
+                    "hew.alpha" => alpha.program.items.clone(),
+                    "hew.beta" => beta.program.items.clone(),
                     path => panic!("unexpected import path: {path:?}"),
                 }
                 .into(),
             );
         }
 
-        let root_id = ModuleId::root();
-        let alpha_id = ModuleId::new(vec!["hew".to_string(), "alpha".to_string()]);
-        let beta_id = ModuleId::new(vec!["hew".to_string(), "beta".to_string()]);
+        let root_id = ModulePath::root();
+        let alpha_id = ModulePath::new(["hew", "alpha"]);
+        let beta_id = ModulePath::new(["hew", "beta"]);
         let mut graph = ModuleGraph::new(root_id.clone());
         graph
             .add_module(Module {
@@ -4116,7 +4113,7 @@ fn same_leaf_enum_aliases_keep_their_source_owners_in_both_import_orders() {
 /// variant.
 #[test]
 fn nonroot_private_enum_variant_shadows_same_named_builtin_in_hir() {
-    use hew_parser::module::{Module, ModuleGraph, ModuleId};
+    use hew_parser::module::{Module, ModuleGraph, ModulePath};
 
     let mod_src = hew_parser::parse(
         r"
@@ -4133,8 +4130,8 @@ fn nonroot_private_enum_variant_shadows_same_named_builtin_in_hir() {
         mod_src.errors
     );
 
-    let root_id = ModuleId::root();
-    let mod_id = ModuleId::new(vec!["errmod".to_string()]);
+    let root_id = ModulePath::root();
+    let mod_id = ModulePath::new(["errmod"]);
     let module = Module {
         id: mod_id.clone(),
         items: mod_src.program.items,
@@ -4198,7 +4195,7 @@ fn conn_holder_module(
         parsed.errors
     );
     hew_parser::module::Module {
-        id: hew_parser::module::ModuleId::new(vec![mod_name.to_string()]),
+        id: hew_parser::module::ModulePath::new([mod_name.to_string()]),
         items: parsed.program.items,
         imports: vec![],
         source_paths: vec![],
@@ -4251,14 +4248,14 @@ fn localpid_of(qualified_actor_name: &str) -> ResolvedTy {
 /// whether the caller ever names the colliding type.
 #[test]
 fn same_short_name_actors_in_different_modules_canonicalize_independently() {
-    use hew_parser::module::{ModuleGraph, ModuleId};
+    use hew_parser::module::{ModuleGraph, ModulePath};
 
     let modules = [
         conn_holder_module("a", "HolderA", 1),
         conn_holder_module("b", "HolderB", 2),
     ];
-    let module_ids: Vec<ModuleId> = modules.iter().map(|m| m.id.clone()).collect();
-    let root_id = ModuleId::root();
+    let module_ids: Vec<ModulePath> = modules.iter().map(|m| m.id.clone()).collect();
+    let root_id = ModulePath::root();
     let mut mg = ModuleGraph::new(root_id.clone());
     for module in modules {
         mg.add_module(module).unwrap();

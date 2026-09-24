@@ -1311,7 +1311,7 @@ fn builtin_result_constructors_materialize_output_types_without_call_type_args()
         .items
         .iter()
         .find_map(|(item, _)| match item {
-            Item::Function(function) if function.name == "main" => Some(function),
+            Item::Function(function) if function.name == Ident::new("main") => Some(function),
             _ => None,
         })
         .expect("main function should exist");
@@ -1473,7 +1473,7 @@ fn builtin_result_constructor_composite_output_type_fallbacks_materialize() {
         .items
         .iter()
         .find_map(|(item, _)| match item {
-            Item::Function(function) if function.name == "main" => Some(function),
+            Item::Function(function) if function.name == Ident::new("main") => Some(function),
             _ => None,
         })
         .expect("main function should exist");

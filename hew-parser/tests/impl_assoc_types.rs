@@ -1,3 +1,4 @@
+use hew_parser::ast::Ident;
 use hew_parser::ast::{Item, TraitItem};
 
 #[test]
@@ -49,5 +50,5 @@ fn parses_trait_defaults_and_impl_type_aliases() {
         other => panic!("expected impl item, got {other:?}"),
     };
     assert_eq!(impl_decl.type_aliases.len(), 1);
-    assert_eq!(impl_decl.type_aliases[0].name, "Item");
+    assert_eq!(impl_decl.type_aliases[0].name, Ident::new("Item"));
 }

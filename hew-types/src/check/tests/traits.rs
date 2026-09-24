@@ -539,8 +539,8 @@ fn module_local_dyn_trait_method_records_vtable_call() {
         .expect("root program must contain the shapes import");
     import.resolved_items = Some(module_items.clone().into());
 
-    let root_id = ModuleId::root();
-    let shapes_id = ModuleId::new(vec!["shapes".to_string()]);
+    let root_id = ModulePath::root();
+    let shapes_id = ModulePath::new(["shapes"]);
     let mut module_graph = ModuleGraph::new(root_id.clone());
     module_graph
         .add_module(Module {
@@ -1704,7 +1704,7 @@ fn named_type_with_get_method_rejects_bracket_index_via_type_def() {
     );
 
     let expr = Expr::Index {
-        object: Box::new((Expr::Identifier("boxy".to_string()), 0..4)),
+        object: Box::new((Expr::Ident(Ident::new("boxy")), 0..4)),
         index: Box::new(make_int_literal(0, 5..6)),
     };
 
@@ -1758,7 +1758,7 @@ fn named_type_with_get_method_rejects_bracket_index_via_fn_sig() {
     );
 
     let expr = Expr::Index {
-        object: Box::new((Expr::Identifier("wrapper".to_string()), 0..7)),
+        object: Box::new((Expr::Ident(Ident::new("wrapper")), 0..7)),
         index: Box::new(make_int_literal(0, 8..9)),
     };
 
@@ -1824,7 +1824,7 @@ fn hashmap_bracket_index_is_a_compile_error() {
     // Use an i64 index so the only diagnostic comes from the named-type guard,
     // not from a type mismatch on the index expression itself.
     let expr = Expr::Index {
-        object: Box::new((Expr::Identifier("m".to_string()), 0..1)),
+        object: Box::new((Expr::Ident(Ident::new("m")), 0..1)),
         index: Box::new(make_int_literal(0, 2..3)),
     };
 
@@ -1986,7 +1986,7 @@ fn module_qualified_named_type_method_rejects_leaf_method_retry() {
         false,
     );
 
-    let receiver = (Expr::Identifier("thing".to_string()), 0..5);
+    let receiver = (Expr::Ident(Ident::new("thing")), 0..5);
     let ty = checker.check_method_call(&receiver, "label", &[], &(0..13));
 
     assert_eq!(ty, Ty::Error);
@@ -2478,12 +2478,12 @@ fn structural_hardening_super_trait_e1_guard_propagates() {
     // Build super-trait with an associated type.
     let assoc_super = TraitDecl {
         visibility: hew_parser::ast::Visibility::Private,
-        name: "AssocSuper".to_string(),
+        name: Ident::new("AssocSuper"),
         type_params: None,
         super_traits: None,
         items: vec![
             TraitItem::AssociatedType {
-                name: "Output".to_string(),
+                name: Ident::new("Output"),
                 default: None,
                 bounds: vec![],
                 span: 0..0,
@@ -2491,13 +2491,16 @@ fn structural_hardening_super_trait_e1_guard_propagates() {
             TraitItem::Method(TraitMethod {
                 attributes: vec![],
                 consumes_self: false,
-                name: "do_it".to_string(),
+                name: Ident::new("do_it"),
                 type_params: None,
                 params: vec![Param {
-                    name: "val".to_string(),
+                    name: Ident::new("val"),
                     ty: (
                         TypeExpr::Named {
-                            name: "Self".to_string(),
+                            path: hew_parser::ast::Path::single(
+                                hew_parser::ast::Ident::new("Self"),
+                                0..0,
+                            ),
                             type_args: None,
                         },
                         0..4,
@@ -2524,23 +2527,26 @@ fn structural_hardening_super_trait_e1_guard_propagates() {
     // Child trait with no assoc types of its own.
     let child = TraitDecl {
         visibility: hew_parser::ast::Visibility::Private,
-        name: "ChildTrait".to_string(),
+        name: Ident::new("ChildTrait"),
         type_params: None,
         super_traits: Some(vec![hew_parser::ast::TraitBound {
-            name: "AssocSuper".to_string(),
+            path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("AssocSuper"), 0..0),
             type_args: None,
             assoc_type_bindings: vec![],
         }]),
         items: vec![TraitItem::Method(TraitMethod {
             attributes: vec![],
             consumes_self: false,
-            name: "run".to_string(),
+            name: Ident::new("run"),
             type_params: None,
             params: vec![Param {
-                name: "val".to_string(),
+                name: Ident::new("val"),
                 ty: (
                     TypeExpr::Named {
-                        name: "Self".to_string(),
+                        path: hew_parser::ast::Path::single(
+                            hew_parser::ast::Ident::new("Self"),
+                            0..0,
+                        ),
                         type_args: None,
                     },
                     0..4,
@@ -2581,22 +2587,25 @@ fn structural_hardening_super_trait_generic_method_guard_propagates() {
 
     let generic_super = TraitDecl {
         visibility: hew_parser::ast::Visibility::Private,
-        name: "GenericSuper".to_string(),
+        name: Ident::new("GenericSuper"),
         type_params: None,
         super_traits: None,
         items: vec![TraitItem::Method(TraitMethod {
             attributes: vec![],
             consumes_self: false,
-            name: "map".to_string(),
+            name: Ident::new("map"),
             type_params: Some(vec![TypeParam {
-                name: "U".to_string(),
+                name: Ident::new("U"),
                 bounds: vec![],
             }]),
             params: vec![Param {
-                name: "val".to_string(),
+                name: Ident::new("val"),
                 ty: (
                     TypeExpr::Named {
-                        name: "Self".to_string(),
+                        path: hew_parser::ast::Path::single(
+                            hew_parser::ast::Ident::new("Self"),
+                            0..0,
+                        ),
                         type_args: None,
                     },
                     0..4,
@@ -2621,23 +2630,26 @@ fn structural_hardening_super_trait_generic_method_guard_propagates() {
 
     let child = TraitDecl {
         visibility: hew_parser::ast::Visibility::Private,
-        name: "ChildTrait".to_string(),
+        name: Ident::new("ChildTrait"),
         type_params: None,
         super_traits: Some(vec![hew_parser::ast::TraitBound {
-            name: "GenericSuper".to_string(),
+            path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("GenericSuper"), 0..0),
             type_args: None,
             assoc_type_bindings: vec![],
         }]),
         items: vec![TraitItem::Method(TraitMethod {
             attributes: vec![],
             consumes_self: false,
-            name: "run".to_string(),
+            name: Ident::new("run"),
             type_params: None,
             params: vec![Param {
-                name: "val".to_string(),
+                name: Ident::new("val"),
                 ty: (
                     TypeExpr::Named {
-                        name: "Self".to_string(),
+                        path: hew_parser::ast::Path::single(
+                            hew_parser::ast::Ident::new("Self"),
+                            0..0,
+                        ),
                         type_args: None,
                     },
                     0..4,
@@ -3094,8 +3106,8 @@ fn foreign_impl_program(root_source: &str) -> TypeCheckOutput {
         std::iter::repeat_n(thing_path.clone(), thing_item_count).collect();
     root_import.resolved_source_paths = vec![thing_path.clone()];
 
-    let root_id = ModuleId::root();
-    let thing_id = ModuleId::new(vec!["pkg".to_string(), "thing".to_string()]);
+    let root_id = ModulePath::root();
+    let thing_id = ModulePath::new(["pkg", "thing"]);
     let mut graph = ModuleGraph::new(root_id.clone());
     graph
         .add_module(Module {

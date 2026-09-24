@@ -642,8 +642,8 @@ mod for_loop_iterable_fail_closed {
         checker.env.define("it".to_string(), iter_ty, false);
         let for_stmt = Stmt::For {
             label: None,
-            pattern: (Pattern::Identifier("x".to_string()), 0..1),
-            iterable: (Expr::Identifier("it".to_string()), 7..9),
+            pattern: (Pattern::Identifier(Ident::new("x")), 0..1),
+            iterable: (Expr::Ident(Ident::new("it")), 7..9),
             body: Block {
                 stmts: vec![],
                 trailing_expr: None,

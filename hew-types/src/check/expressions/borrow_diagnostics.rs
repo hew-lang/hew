@@ -39,12 +39,12 @@ impl Checker {
             }
             Expr::Handle { error, body, .. } => {
                 let mut handler_scopes = scopes.to_vec();
-                handler_scopes.push(HashMap::from([(error.0.clone(), None)]));
+                handler_scopes.push(HashMap::from([(error.0.to_string(), None)]));
                 self.check_expr_is_rc_param_return(&body.0, &body.1, &handler_scopes);
             }
-            Expr::Identifier(name) => {
-                if let Some(source_param) = Self::lookup_dangerous_binding(name, scopes) {
-                    self.emit_borrowed_param_return(name, &source_param, span);
+            Expr::Ident(ident) => {
+                if let Some(source) = Self::lookup_dangerous_binding(ident.name.as_str(), scopes) {
+                    self.emit_borrowed_param_return(ident.name.as_str(), &source, span);
                 }
             }
             // Descend into block expressions: `{ r }` or `unsafe { r }` wraps
@@ -68,8 +68,8 @@ impl Checker {
             {
                 if matches!(
                     &function.0,
-                    Expr::Identifier(name)
-                        if crate::runtime_call::RuntimeCallFamily::from_checker_signature(name)
+                    Expr::Ident(name)
+                        if crate::runtime_call::RuntimeCallFamily::from_checker_signature(name.name.as_str())
                             == Some(crate::runtime_call::RuntimeCallFamily::RcNew)
                 ) {
                     return;
@@ -84,11 +84,11 @@ impl Checker {
                 method,
                 args,
             } if self
-                .dotted_static_aggregate_identity(&receiver.0, method)
+                .dotted_static_aggregate_identity(&receiver.0, method.0.name.as_str())
                 .is_some() =>
             {
                 let identity = self
-                    .dotted_static_aggregate_identity(&receiver.0, method)
+                    .dotted_static_aggregate_identity(&receiver.0, method.0.name.as_str())
                     .expect("guarded by a successful static aggregate lookup");
                 if crate::runtime_call::RuntimeCallFamily::from_checker_signature(&identity)
                     == Some(crate::runtime_call::RuntimeCallFamily::RcNew)
@@ -180,7 +180,7 @@ impl Checker {
 
     pub(in crate::check) fn callee_is_aggregate_constructor(&self, function: &Expr) -> bool {
         let name = match function {
-            Expr::Identifier(name) => name,
+            Expr::Ident(name) => name,
             // A contextual variant (`.Some(r)`, `.Wrap(r)`) always constructs
             // and embeds its payload.
             Expr::ContextVariant(_) => return true,
@@ -191,12 +191,13 @@ impl Checker {
         // `Type::assoc` / `E::Variant` paths construct or wrap a value and may
         // embed the argument (`Rc::new(r)`, `MyEnum::Variant(r)`).  Fail-closed:
         // descend on every qualified call so an aggregate escape is never missed.
-        if name.contains("::") {
+        if name.name.as_str().contains("::") {
             return true;
         }
         // User enum / struct tuple-variant constructors, resolved by name
         // (any casing) rather than an uppercase-first heuristic.
-        self.lookup_variant_constructor(name).is_some()
+        self.lookup_variant_constructor(name.name.as_str())
+            .is_some()
     }
 
     /// Return the checker identity for a dotted static call whose receiver is
@@ -208,16 +209,18 @@ impl Checker {
         receiver: &Expr,
         method: &str,
     ) -> Option<String> {
-        let Expr::Identifier(owner) = receiver else {
+        let Expr::Ident(owner) = receiver else {
             return None;
         };
-        if self.env.lookup_ref(owner).is_some() {
+        if self.env.lookup_ref(owner.name.as_str()).is_some() {
             return None;
         }
         let identity = format!("{owner}::{method}");
         (self.lookup_variant_constructor(&identity).is_some()
-            || self.source_nominal_declaration(owner).is_some()
-            || crate::lookup_builtin_type(owner).is_some())
+            || self
+                .source_nominal_declaration(owner.name.as_str())
+                .is_some()
+            || crate::lookup_builtin_type(owner.name.as_str()).is_some())
         .then_some(identity)
     }
 
@@ -368,14 +371,14 @@ impl Checker {
         scopes: &[DangerousRcScope],
     ) -> Option<DangerousRcBinding> {
         match expr {
-            Expr::Identifier(name) => Self::lookup_dangerous_binding(name, scopes),
+            Expr::Ident(name) => Self::lookup_dangerous_binding(name.name.as_str(), scopes),
             Expr::Call { function, args, .. }
                 if self.callee_is_aggregate_constructor(&function.0) =>
             {
                 if matches!(
                     &function.0,
-                    Expr::Identifier(name)
-                        if crate::runtime_call::RuntimeCallFamily::from_checker_signature(name)
+                    Expr::Ident(name)
+                        if crate::runtime_call::RuntimeCallFamily::from_checker_signature(name.name.as_str())
                             == Some(crate::runtime_call::RuntimeCallFamily::RcNew)
                 ) {
                     return None;
@@ -393,11 +396,11 @@ impl Checker {
                 method,
                 args,
             } if self
-                .dotted_static_aggregate_identity(&receiver.0, method)
+                .dotted_static_aggregate_identity(&receiver.0, method.0.name.as_str())
                 .is_some() =>
             {
                 let identity = self
-                    .dotted_static_aggregate_identity(&receiver.0, method)
+                    .dotted_static_aggregate_identity(&receiver.0, method.0.name.as_str())
                     .expect("guarded by a successful static aggregate lookup");
                 if crate::runtime_call::RuntimeCallFamily::from_checker_signature(&identity)
                     == Some(crate::runtime_call::RuntimeCallFamily::RcNew)
@@ -487,8 +490,10 @@ impl Checker {
                         // escape. A genuine binder still propagates the RHS
                         // danger (and shadows an outer dangerous param when the
                         // RHS is safe).
-                        Pattern::Identifier(name) if !self.let_identifier_is_unit_variant(name) => {
-                            Self::define_dangerous_binding(scopes, name.clone(), binding);
+                        Pattern::Identifier(name)
+                            if !self.let_identifier_is_unit_variant(name.name.as_str()) =>
+                        {
+                            Self::define_dangerous_binding(scopes, name.to_string(), binding);
                         }
                         Pattern::Identifier(_) => {
                             // Unit-variant tag-test: binds nothing, shadows nothing.
@@ -502,24 +507,28 @@ impl Checker {
                     let binding = value
                         .as_ref()
                         .and_then(|(expr, _)| self.dangerous_source_in_expr(expr, scopes));
-                    Self::define_dangerous_binding(scopes, name.clone(), binding);
+                    Self::define_dangerous_binding(scopes, name.to_string(), binding);
                 }
                 Stmt::Assign {
-                    target: (Expr::Identifier(name), _),
+                    target: (Expr::Ident(name), _),
                     value: (expr, _),
                     ..
                 } => {
                     let binding = self.dangerous_source_in_expr(expr, scopes);
-                    Self::update_dangerous_binding(scopes, name, binding);
+                    Self::update_dangerous_binding(scopes, name.name.as_str(), binding);
                 }
                 Stmt::Assign {
                     target: (Expr::FieldAccess { object, .. }, _),
                     value: (expr, _),
                     ..
                 } => {
-                    if let Expr::Identifier(obj_name) = &object.0 {
+                    if let Expr::Ident(obj_name) = &object.0 {
                         if let Some(binding) = self.dangerous_source_in_expr(expr, scopes) {
-                            Self::update_dangerous_binding(scopes, obj_name, Some(binding));
+                            Self::update_dangerous_binding(
+                                scopes,
+                                obj_name.name.as_str(),
+                                Some(binding),
+                            );
                         }
                     }
                 }
@@ -540,14 +549,14 @@ impl Checker {
                     _,
                 )) => {
                     const STORING_METHODS: &[&str] = &["push", "set", "insert", "append"];
-                    if STORING_METHODS.contains(&method.as_str()) {
-                        if let Expr::Identifier(recv_name) = &receiver.0 {
+                    if STORING_METHODS.contains(&method.0.name.as_str()) {
+                        if let Expr::Ident(recv_name) = &receiver.0 {
                             for arg in args {
                                 let (expr, _) = arg.expr();
                                 if let Some(binding) = self.dangerous_source_in_expr(expr, scopes) {
                                     Self::update_dangerous_binding(
                                         scopes,
-                                        recv_name,
+                                        recv_name.name.as_str(),
                                         Some(binding),
                                     );
                                     break;
@@ -646,7 +655,7 @@ impl Checker {
             .params
             .first()
             .filter(|param| self.is_receiver_param(param))
-            .map(|param| param.name.clone())
+            .map(|param| param.name)
         else {
             return;
         };
@@ -657,9 +666,9 @@ impl Checker {
         let mut bindings: HashMap<String, (String, String)> = HashMap::new();
         self.scan_block_for_owned_handle_field_return(
             &fd.body,
-            &receiver_name,
+            receiver_name.name.as_str(),
             &type_name,
-            &fd.name,
+            fd.name.name.as_str(),
             &mut bindings,
         );
     }
@@ -726,13 +735,13 @@ impl Checker {
                     pattern: (Pattern::Identifier(var_name), _),
                     value: Some((Expr::FieldAccess { object, field }, _)),
                     ..
-                } if matches!(&object.0, Expr::Identifier(n) if n == receiver_name)
-                    && !self.let_identifier_is_unit_variant(var_name) =>
+                } if matches!(&object.0, Expr::Ident(n) if n.name.as_str() == receiver_name)
+                    && !self.let_identifier_is_unit_variant(var_name.name.as_str()) =>
                 {
                     if let Some((field_name, handle_name)) =
-                        self.owned_handle_field_return_by_name(field, type_name)
+                        self.owned_handle_field_return_by_name(field.0.name.as_str(), type_name)
                     {
-                        bindings.insert(var_name.clone(), (field_name, handle_name));
+                        bindings.insert(var_name.to_string(), (field_name, handle_name));
                     }
                 }
                 Stmt::Return(Some((expr, span))) => self.check_expr_for_owned_handle_field_return(
@@ -866,15 +875,15 @@ impl Checker {
         // risk as returning the field directly. The check is conservative: if
         // `p` has been observed as an alias of any owned handle field in this
         // method body, we always flag it, even if there are intermediate uses.
-        if let Expr::Identifier(var_name) = expr {
-            if let Some((field_name, handle_name)) = bindings.get(var_name).cloned() {
+        if let Expr::Ident(var_name) = expr {
+            if let Some((field_name, handle_name)) = bindings.get(var_name.name.as_str()).cloned() {
                 self.report_owned_handle_field_return(
                     span,
                     method_name,
                     type_name,
                     &field_name,
                     &handle_name,
-                    Some(var_name),
+                    Some(var_name.name.as_str()),
                 );
                 return;
             }
@@ -948,7 +957,7 @@ impl Checker {
             Expr::Coalesce { right: body, .. } | Expr::Handle { body, .. } => {
                 let mut branch_bindings = bindings.clone();
                 if let Expr::Handle { error, .. } = expr {
-                    branch_bindings.remove(&error.0);
+                    branch_bindings.remove(error.0.name.as_str());
                 }
                 self.check_expr_for_owned_handle_field_return(
                     &body.0,
@@ -963,7 +972,7 @@ impl Checker {
             | Expr::Unary { .. }
             | Expr::Clone(_)
             | Expr::Literal(_)
-            | Expr::Identifier(_)
+            | Expr::Ident(_)
             | Expr::ContextVariant(_)
             | Expr::GenericApplySuffix { .. }
             | Expr::RecordInitSuffix { .. }
@@ -1052,10 +1061,10 @@ impl Checker {
         let Expr::FieldAccess { object, field } = expr else {
             return None;
         };
-        if !matches!(&object.0, Expr::Identifier(name) if name == receiver_name) {
+        if !matches!(&object.0, Expr::Ident(name) if name.name.as_str() == receiver_name) {
             return None;
         }
-        self.owned_handle_field_return_by_name(field, type_name)
+        self.owned_handle_field_return_by_name(field.0.name.as_str(), type_name)
     }
 
     /// Check whether the named field of `type_name` holds an owned handle.

@@ -218,7 +218,7 @@ fn non_result_fn_tail_is_unaffected() {
 fn bare_identifier_tail_typed_as_ok_payload_is_ok_wrapped() {
     // The most common tail shape: a bare identifier whose type is the Ok
     // payload. `fn f(x: i64) -> Result<i64, E> { x }` must Ok-wrap `x`. This
-    // tail is an `Expr::Identifier`, handled by the identifier arm of
+    // tail is an `Expr::Ident`, handled by the identifier arm of
     // `check_against` (not the default arm), so it exercises the arm-level
     // coercion fix.
     let src = r"

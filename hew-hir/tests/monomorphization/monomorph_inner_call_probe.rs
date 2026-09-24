@@ -5,6 +5,7 @@
 //! If YES → MIR can iterate the side-table and substitute. If NO → MIR
 //! must walk the body and reconstruct inner-call args from fn signatures.
 
+use hew_parser::ast::Ident;
 use hew_parser::ast::Item;
 use hew_types::module_registry::ModuleRegistry;
 use hew_types::{Checker, SpanKey};
@@ -32,13 +33,13 @@ fn probe_inner_generic_call_type_args_recorded() {
     let mut outer_span = None;
     for (item, _) in &parsed.program.items {
         if let Item::Function(fd) = item {
-            if fd.name == "outer" {
+            if fd.name == Ident::new("outer") {
                 if let Some(boxed) = fd.body.trailing_expr.as_ref() {
                     let (_, sp) = &**boxed;
                     inner_span = Some(sp.clone());
                 }
             }
-            if fd.name == "main" {
+            if fd.name == Ident::new("main") {
                 // The statement `let a: i64 = outer(42);`
                 for st in &fd.body.stmts {
                     if let hew_parser::ast::Stmt::Let {

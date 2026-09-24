@@ -1,12 +1,13 @@
 //! Spawn and lambda-actor lowering.
 
 use super::*;
+use hew_parser::ast::Ident;
 
 impl LowerCtx {
     pub(super) fn lower_spawn(
         &mut self,
         target: &Spanned<Expr>,
-        args: &[(String, Spanned<Expr>)],
+        args: &[(Ident, Spanned<Expr>)],
         span: Span,
     ) -> (HirExprKind, ResolvedTy) {
         // Syntactic fallback only. The checker's spawn result type
@@ -15,10 +16,10 @@ impl LowerCtx {
         // qualified-spawn resolution for the diagnostic-recovery paths where
         // no expr_types entry exists.
         let actor_name = match &target.0 {
-            Expr::Identifier(name) => Some(name.clone()),
+            Expr::Ident(name) => Some(name.to_string()),
             Expr::FieldAccess { object, field } => {
-                if let Expr::Identifier(module) = &object.0 {
-                    Some(format!("{module}.{field}"))
+                if let Expr::Ident(module) = &object.0 {
+                    Some(format!("{module}.{field}", field = field.0))
                 } else {
                     None
                 }
@@ -42,7 +43,7 @@ impl LowerCtx {
 
         let lowered_args = args
             .iter()
-            .map(|(name, expr)| (name.clone(), self.lower_expr(expr, IntentKind::Read)))
+            .map(|(name, expr)| (name.to_string(), self.lower_expr(expr, IntentKind::Read)))
             .collect::<Vec<_>>();
         let ty = if let Some(ty) = self.expr_types.get(&self.mk_key(&span)).cloned() {
             match ResolvedTy::from_ty(&ty) {
@@ -147,7 +148,7 @@ impl LowerCtx {
                 .ty
                 .as_ref()
                 .map_or(ResolvedTy::Unit, |ann| self.lower_type(ann));
-            let binding = self.bind(param.name.clone(), ty, false, param.name_span.clone());
+            let binding = self.bind(param.name.to_string(), ty, false, param.name_span.clone());
             param_ids.insert(binding.id);
             hir_params.push(binding);
         }

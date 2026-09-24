@@ -438,7 +438,7 @@ fn hashset_for_in_keeps_real_receiver_type_separate_from_synthetic_vec_result() 
         .filter_map(|(item, _)| match item {
             Item::Function(function)
                 if matches!(
-                    function.name.as_str(),
+                    function.name.name.as_str(),
                     "direct" | "field" | "nested" | "tuple_field"
                 ) =>
             {
@@ -446,7 +446,7 @@ fn hashset_for_in_keeps_real_receiver_type_separate_from_synthetic_vec_result() 
                     let Stmt::For { iterable, .. } = statement else {
                         return None;
                     };
-                    Some((function.name.clone(), iterable.1.clone()))
+                    Some((function.name, iterable.1.clone()))
                 })
             }
             _ => None,
@@ -514,8 +514,8 @@ fn vec_new_with_error_element_remains_error_typed() {
     let span = 0..8;
     let func = (
         Expr::FieldAccess {
-            object: Box::new((Expr::Identifier("Vec".to_string()), 0..3)),
-            field: "new".to_string(),
+            object: Box::new((Expr::Ident(Ident::new("Vec")), 0..3)),
+            field: (Ident::new("new"), 0..0),
         },
         span.clone(),
     );
@@ -3163,14 +3163,17 @@ fn register_type_decl_marks_transitive_handle_bearing_structs() {
         origin: hew_parser::ast::DeclarationOrigin::Authored,
         visibility: Visibility::Private,
         kind: TypeDeclKind::Struct,
-        name: "Inner".to_string(),
+        name: Ident::new("Inner"),
         type_params: None,
         where_clause: None,
         body: vec![TypeBodyItem::Field {
-            name: "pattern".to_string(),
+            name: Ident::new("pattern"),
             ty: (
                 TypeExpr::Named {
-                    name: "regex.Pattern".to_string(),
+                    path: hew_parser::ast::Path::single(
+                        hew_parser::ast::Ident::new("regex.Pattern"),
+                        0..0,
+                    ),
                     type_args: None,
                 },
                 0..0,
@@ -3191,14 +3194,14 @@ fn register_type_decl_marks_transitive_handle_bearing_structs() {
         origin: hew_parser::ast::DeclarationOrigin::Authored,
         visibility: Visibility::Private,
         kind: TypeDeclKind::Struct,
-        name: "Outer".to_string(),
+        name: Ident::new("Outer"),
         type_params: None,
         where_clause: None,
         body: vec![TypeBodyItem::Field {
-            name: "inner".to_string(),
+            name: Ident::new("inner"),
             ty: (
                 TypeExpr::Named {
-                    name: "Inner".to_string(),
+                    path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("Inner"), 0..0),
                     type_args: None,
                 },
                 0..0,
@@ -3219,14 +3222,14 @@ fn register_type_decl_marks_transitive_handle_bearing_structs() {
         origin: hew_parser::ast::DeclarationOrigin::Authored,
         visibility: Visibility::Private,
         kind: TypeDeclKind::Struct,
-        name: "Plain".to_string(),
+        name: Ident::new("Plain"),
         type_params: None,
         where_clause: None,
         body: vec![TypeBodyItem::Field {
-            name: "count".to_string(),
+            name: Ident::new("count"),
             ty: (
                 TypeExpr::Named {
-                    name: "i64".to_string(),
+                    path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("i64"), 0..0),
                     type_args: None,
                 },
                 0..0,
@@ -3378,8 +3381,8 @@ fn non_root_private_rc_record_is_admitted_during_body_checking() {
         parsed.errors
     );
 
-    let root_id = ModuleId::root();
-    let mod_id = ModuleId::new(vec!["helpers".to_string()]);
+    let root_id = ModulePath::root();
+    let mod_id = ModulePath::new(["helpers"]);
     let module = Module {
         id: mod_id.clone(),
         items: parsed.program.items,
@@ -3435,8 +3438,8 @@ fn imported_module_record_seeds_send_marker_for_actor_ask_reply() {
         parsed.errors
     );
 
-    let root_id = ModuleId::root();
-    let mod_id = ModuleId::new(vec!["testffi".to_string()]);
+    let root_id = ModulePath::root();
+    let mod_id = ModulePath::new(["testffi"]);
     let module = Module {
         id: mod_id.clone(),
         items: parsed.program.items,
@@ -3509,9 +3512,9 @@ fn same_bare_name_imported_replies_derive_send_per_module() {
         good.errors
     );
 
-    let root_id = ModuleId::root();
-    let bad_id = ModuleId::new(vec!["badpkg".to_string()]);
-    let good_id = ModuleId::new(vec!["goodpkg".to_string()]);
+    let root_id = ModulePath::root();
+    let bad_id = ModulePath::new(["badpkg"]);
+    let good_id = ModulePath::new(["goodpkg"]);
     let mut mg = ModuleGraph::new(root_id.clone());
     mg.add_module(Module {
         id: bad_id.clone(),

@@ -1,6 +1,7 @@
 //! Expression lowering.
 
 use super::*;
+use hew_parser::ast::{Ident, Path};
 
 impl LowerCtx {
     pub(super) fn lower_expr(&mut self, expr: &Spanned<Expr>, intent: IntentKind) -> HirExpr {
@@ -88,7 +89,7 @@ impl LowerCtx {
         // reference, and MIR sees one place.
         if let Expr::FieldAccess { field, .. } = &expr.0 {
             if self.actor_self_state_fields.contains(&self.mk_key(&span)) {
-                let bare = Expr::Identifier(field.clone());
+                let bare = Expr::Ident(field.0);
                 return self.lower_expr_inner(&(bare, span), intent);
             }
         }
@@ -100,11 +101,14 @@ impl LowerCtx {
         } = &expr.0
         {
             if let Expr::FieldAccess { object, field } = &function.0 {
-                if let Expr::Identifier(owner) = &object.0 {
-                    if hew_types::lookup_builtin_type(owner).is_some() {
+                if let Expr::Ident(owner) = &object.0 {
+                    if hew_types::lookup_builtin_type(owner.name.as_str()).is_some() {
                         let compatibility = Expr::Call {
                             function: Box::new((
-                                Expr::Identifier(format!("{owner}::{field}")),
+                                Expr::Ident(Ident::new(&format!(
+                                    "{owner}::{field}",
+                                    field = field.0
+                                ))), // TRANSITION(P1): deleted by A1 commit 2
                                 function.1.clone(),
                             )),
                             type_args: type_args.clone(),
@@ -117,14 +121,16 @@ impl LowerCtx {
             }
         }
         if let Expr::FieldAccess { object, field } = &expr.0 {
-            if let Expr::Identifier(owner) = &object.0 {
-                let qualified = format!("{owner}::{field}");
+            if let Expr::Ident(owner) = &object.0 {
+                let qualified = format!("{owner}::{field}", field = field.0);
                 let checker_ty = self.checker_expr_ty_if_present(&span);
                 if matches!(
                     self.lookup_variant_ctor(&qualified, checker_ty.as_ref()),
                     Some((_, _, HirVariantKind::Unit))
                 ) {
-                    return self.lower_expr_inner(&(Expr::Identifier(qualified), span), intent);
+                    return self
+                        .lower_expr_inner(&(Expr::Ident(Ident::new(&qualified)), span), intent);
+                    // TRANSITION(P1): deleted by A1 commit 2
                 }
             }
         }
@@ -146,10 +152,13 @@ impl LowerCtx {
             }
             if let Expr::GenericApplySuffix { target, type_args } = &receiver.0 {
                 if !self.method_call_rewrites.contains_key(&self.mk_key(&span)) {
-                    if let Expr::Identifier(owner) = &target.0 {
+                    if let Expr::Ident(owner) = &target.0 {
                         let compatibility = Expr::Call {
                             function: Box::new((
-                                Expr::Identifier(format!("{owner}::{method}")),
+                                Expr::Ident(Ident::new(&format!(
+                                    "{owner}::{method}",
+                                    method = method.0
+                                ))), // TRANSITION(P1): deleted by A1 commit 2
                                 target.1.clone(),
                             )),
                             type_args: Some(type_args.clone()),
@@ -160,8 +169,8 @@ impl LowerCtx {
                     }
                 }
             }
-            if let Expr::Identifier(owner) = &receiver.0 {
-                let qualified = format!("{owner}::{method}");
+            if let Expr::Ident(owner) = &receiver.0 {
+                let qualified = format!("{owner}::{method}", method = method.0);
                 let checker_ty = self.checker_expr_ty_if_present(&span);
                 if !self
                     .method_call_receiver_kinds
@@ -172,7 +181,10 @@ impl LowerCtx {
                     )
                 {
                     let compatibility = Expr::Call {
-                        function: Box::new((Expr::Identifier(qualified), receiver.1.clone())),
+                        function: Box::new((
+                            Expr::Ident(Ident::new(&qualified)), // TRANSITION(P1): deleted by A1 commit 2
+                            receiver.1.clone(),
+                        )),
                         type_args: None,
                         args: args.clone(),
                         is_tail_call: false,
@@ -189,18 +201,18 @@ impl LowerCtx {
                     _ => None,
                 });
             let contextual_name = owner.map_or_else(
-                || context.name.clone(),
+                || context.name.to_string(),
                 |owner| format!("{owner}::{}", context.name),
             );
             let compatibility = if let Some(record) = &context.record {
                 Expr::StructInit {
-                    name: contextual_name,
+                    path: Path::single(Ident::new(&contextual_name), span.clone()), // TRANSITION(P1): deleted by A1 commit 2
                     fields: record.fields.clone(),
                     type_args: None,
                     base: record.base.clone(),
                 }
             } else {
-                Expr::Identifier(contextual_name)
+                Expr::Ident(Ident::new(&contextual_name)) // TRANSITION(P1): deleted by A1 commit 2
             };
             return self.lower_expr_inner(&(compatibility, span), intent);
         }
@@ -451,7 +463,9 @@ impl LowerCtx {
                     resolved_ty,
                 )
             }
-            Expr::Identifier(name) if name == "self" && self.lookup(name).is_none() => {
+            Expr::Ident(name)
+                if name.name.as_str() == "self" && self.lookup(name.name.as_str()).is_none() =>
+            {
                 // Bare `self` inside an actor `receive fn` — the actor's own
                 // handle, whose type is the actor. The checker records it in
                 // `expr_types`, but ONLY inside an actor; elsewhere it reports
@@ -513,7 +527,7 @@ impl LowerCtx {
                     }
                 }
             }
-            Expr::Identifier(name) => {
+            Expr::Ident(name) => {
                 // Inside a machine body, check if the identifier names one of the
                 // enclosing machine's states (unit state ctor, e.g. `Green`).
                 // If so, produce `MachineVariantCtor` rather than going through
@@ -523,7 +537,7 @@ impl LowerCtx {
                 // HIR-side authority: the type checker does not record a side-table
                 // entry for this expression; the result type is derived from the
                 // machine declaration context held in `current_machine_states`.
-                self.lower_identifier(name, span.clone(), site)
+                self.lower_identifier(name.name.as_str(), span.clone(), site)
             }
             Expr::ContextVariant(_) | Expr::GenericApplySuffix { .. } => {
                 unreachable!("compatibility suffix expressions are lowered before site allocation")
@@ -653,7 +667,7 @@ impl LowerCtx {
                 )
             }
             Expr::StructInit {
-                name,
+                path: named_path,
                 fields,
                 // Surface-level explicit type arguments (`Box<i64> { ... }`).
                 // The HIR-recorded `type_args` below comes from the checker's
@@ -663,20 +677,21 @@ impl LowerCtx {
                 type_args: _,
                 base,
             } => {
-                // Inside a machine body, check if the struct-init name is a state
-                // with payload fields (e.g. `SynReceived { remote_port: remote_port }`).
-                // Resolve to `MachineVariantCtor` before the record-layout path.
-                //
-                // HIR-side authority: same deviation as `MachineVariantCtor` for bare
-                // identifiers — the checker has no side-table for state-ctor sites.
-                // Payload fields are validated structurally (field names matched against
-                // the state's declared fields). The `base` functional-update form is not
-                // supported for machine state ctors and is rejected below if present.
-                // Enum struct-variant ctor (`Shape::Box { w: 3, h: 4 }`).
-                // Looks like a struct literal but resolves to a registered
-                // enum variant in `enum_variants_by_name`. Resolved before
-                // the machine-state path so a qualified `Shape::Box` is
-                // routed correctly even outside any machine body.
+                let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
+                                                    // Inside a machine body, check if the struct-init name is a state
+                                                    // with payload fields (e.g. `SynReceived { remote_port: remote_port }`).
+                                                    // Resolve to `MachineVariantCtor` before the record-layout path.
+                                                    //
+                                                    // HIR-side authority: same deviation as `MachineVariantCtor` for bare
+                                                    // identifiers — the checker has no side-table for state-ctor sites.
+                                                    // Payload fields are validated structurally (field names matched against
+                                                    // the state's declared fields). The `base` functional-update form is not
+                                                    // supported for machine state ctors and is rejected below if present.
+                                                    // Enum struct-variant ctor (`Shape::Box { w: 3, h: 4 }`).
+                                                    // Looks like a struct literal but resolves to a registered
+                                                    // enum variant in `enum_variants_by_name`. Resolved before
+                                                    // the machine-state path so a qualified `Shape::Box` is
+                                                    // routed correctly even outside any machine body.
                 let checker_ctor_ty = self.checker_expr_ty_if_present(&span);
                 let enum_struct_variant = if let Some((type_name, variant_idx, kind)) =
                     self.lookup_variant_ctor(name, checker_ctor_ty.as_ref())
@@ -725,7 +740,9 @@ impl LowerCtx {
                     let mut hir_payload: Vec<(String, HirExpr)> =
                         Vec::with_capacity(field_decls.len());
                     for (field_name, _field_ty) in &field_decls {
-                        if let Some((_, src_expr)) = fields.iter().find(|(n, _)| n == field_name) {
+                        if let Some((_, src_expr)) =
+                            fields.iter().find(|(n, _)| n.name.as_str() == field_name)
+                        {
                             hir_payload.push((
                                 field_name.clone(),
                                 self.lower_expr(src_expr, IntentKind::Read),
@@ -745,14 +762,14 @@ impl LowerCtx {
                     // the canonical struct-init expr's checker entry covers
                     // most cases but the variant-ctor branch is HIR-side.
                     for (fname, src_expr) in fields {
-                        if !field_decls.iter().any(|(n, _)| n == fname) {
+                        if !field_decls.iter().any(|(n, _)| n == fname.name.as_str()) {
                             // Lower the expression for coverage even though
                             // we discard it.
                             let _ = self.lower_expr(src_expr, IntentKind::Read);
                             self.diagnostics.push(HirDiagnostic::new(
                                 HirDiagnosticKind::EnumVariantConstructorUnknownField {
                                     variant: name.clone(),
-                                    field: fname.clone(),
+                                    field: fname.to_string(),
                                 },
                                 span.clone(),
                                 "extra field in enum struct-variant constructor",
@@ -838,7 +855,7 @@ impl LowerCtx {
                     let hir_fields = fields
                         .iter()
                         .map(|(fname, expr)| {
-                            (fname.clone(), self.lower_expr(expr, IntentKind::Read))
+                            (fname.to_string(), self.lower_expr(expr, IntentKind::Read))
                         })
                         .collect();
                     // Lower the functional-update base if present. The checker has
@@ -1206,7 +1223,7 @@ impl LowerCtx {
                 receiver,
                 method,
                 args,
-            } => self.lower_method_call(receiver, method, args, span.clone(), site),
+            } => self.lower_method_call(receiver, method.0.name.as_str(), args, span.clone(), site),
             // `clone <operand>` reuses the `.clone()` lowering: the checker
             // recorded the method resolution / rewrite at this span (see
             // `synthesize` `Expr::Clone`), so this routes through the same
@@ -1440,9 +1457,11 @@ impl LowerCtx {
                     field: type_name,
                 } = &object.0
                 {
-                    if let Expr::Identifier(module_short) = &module.0 {
-                        let canonical_type =
-                            self.imported_module_member_key(module_short, type_name);
+                    if let Expr::Ident(module_short) = &module.0 {
+                        let canonical_type = self.imported_module_member_key(
+                            module_short.name.as_str(),
+                            type_name.0.name.as_str(),
+                        );
                         let checker_ty = self.checker_expr_ty_if_present(&span);
                         let checker_selects_type = matches!(
                             &checker_ty,
@@ -1450,7 +1469,7 @@ impl LowerCtx {
                         );
                         if checker_selects_type {
                             if let Some((type_name, variant_idx, HirVariantKind::Unit)) =
-                                self.lookup_variant_ctor(field, checker_ty.as_ref())
+                                self.lookup_variant_ctor(field.0.name.as_str(), checker_ty.as_ref())
                             {
                                 let result_ty = checker_ty
                                     .expect("module-qualified variant selection checked above");
@@ -1478,12 +1497,15 @@ impl LowerCtx {
                 // (which would `lower_expr(object)` on a bare module name and
                 // fail with `UnresolvedSymbol`).
                 //
-                // Guard: object is a bare `Expr::Identifier` and the checker-resolved
+                // Guard: object is a bare `Expr::Ident` and the checker-resolved
                 // owner key is in `const_registry`. The registry pre-pass stores
                 // imported consts under exact source owners, so the lexical module
                 // binding must cross the same owner map used by type checking.
-                if let Expr::Identifier(module_name) = &object.0 {
-                    let qualified_key = self.imported_module_member_key(module_name, field);
+                if let Expr::Ident(module_name) = &object.0 {
+                    let qualified_key = self.imported_module_member_key(
+                        module_name.name.as_str(),
+                        field.0.name.as_str(),
+                    );
                     // A file import's declaration is spliced into the root
                     // namespace and registered under its bare name, so the
                     // qualified spelling reaches it through the same mapping a
@@ -1508,10 +1530,13 @@ impl LowerCtx {
 
                 // Resolve a module function value through its lexical owner.
                 // A local record with the same name remains a field access.
-                if let Expr::Identifier(module_name) = &object.0 {
-                    let key = self.imported_module_member_key(module_name, field);
+                if let Expr::Ident(module_name) = &object.0 {
+                    let key = self.imported_module_member_key(
+                        module_name.name.as_str(),
+                        field.0.name.as_str(),
+                    );
                     let symbol = crate::mangle_dotted_name(&key);
-                    if self.lookup(module_name).is_none()
+                    if self.lookup(module_name.name.as_str()).is_none()
                         && self.fn_registry.contains_key(&symbol)
                         && matches!(
                             self.checker_expr_ty_if_present(&span),
@@ -1530,14 +1555,14 @@ impl LowerCtx {
                     }
                 }
 
-                let missing_import = if let Expr::Identifier(module_name) = &object.0 {
-                    self.missing_stdlib_module_import(module_name)
+                let missing_import = if let Expr::Ident(module_name) = &object.0 {
+                    self.missing_stdlib_module_import(module_name.name.as_str())
                         .map(|module| (module_name, module))
                 } else {
                     None
                 };
                 if let Some((module_name, module)) = missing_import {
-                    let name = format!("{module_name}.{field}");
+                    let name = format!("{module_name}.{field}", field = field.0);
                     let source_module = module.replace("::", ".");
                     self.diagnostics.push(HirDiagnostic::new(
                         HirDiagnosticKind::ImportMissing {
@@ -1549,10 +1574,11 @@ impl LowerCtx {
                     ));
                     (
                         HirExprKind::FieldAccess {
-                            object: Box::new(
-                                self.unresolved_module_object(module_name, object.1.clone()),
-                            ),
-                            field: field.clone(),
+                            object: Box::new(self.unresolved_module_object(
+                                module_name.name.as_str(),
+                                object.1.clone(),
+                            )),
+                            field: field.0.to_string(),
                         },
                         ResolvedTy::Unit,
                     )
@@ -1564,13 +1590,15 @@ impl LowerCtx {
                     // the field read comes exclusively from the checker side-table,
                     // never re-derived here.
                     let hir_object = self.lower_expr(object, IntentKind::Read);
-                    let tuple_index = match &hir_object.ty {
-                        ResolvedTy::Tuple(elements) => field
-                            .parse::<usize>()
-                            .ok()
-                            .map(|index| (index, elements.get(index).cloned(), elements.len())),
-                        _ => None,
-                    };
+                    let tuple_index =
+                        match &hir_object.ty {
+                            ResolvedTy::Tuple(elements) => {
+                                field.0.name.as_str().parse::<usize>().ok().map(|index| {
+                                    (index, elements.get(index).cloned(), elements.len())
+                                })
+                            }
+                            _ => None,
+                        };
                     if let Some((index, expected_ty, tuple_len)) = tuple_index {
                         if let Some(expected_ty) = expected_ty {
                             if let Some(field_ty) =
@@ -1649,7 +1677,7 @@ impl LowerCtx {
                                 Err(err) => {
                                     let diagnostic = HirDiagnostic::new(
                                         HirDiagnosticKind::CheckerBoundaryViolation {
-                                            name: field.clone(),
+                                            name: field.0.to_string(),
                                             reason: err.to_string(),
                                         },
                                         span.clone(),
@@ -1663,7 +1691,7 @@ impl LowerCtx {
                             // No checker entry: malformed checker output. Fail-closed.
                             self.diagnostics.push(HirDiagnostic::new(
                                 HirDiagnosticKind::CheckerBoundaryViolation {
-                                    name: field.clone(),
+                                    name: field.0.to_string(),
                                     reason: "expr_types has no entry for field-access site".into(),
                                 },
                                 span.clone(),
@@ -1683,7 +1711,7 @@ impl LowerCtx {
                         (
                             HirExprKind::FieldAccess {
                                 object: Box::new(hir_object),
-                                field: field.clone(),
+                                field: field.0.to_string(),
                             },
                             field_ty,
                         )
@@ -1696,7 +1724,7 @@ impl LowerCtx {
             Expr::MachineEmit { event_name, .. } => {
                 self.diagnostics.push(HirDiagnostic::new(
                     HirDiagnosticKind::UnresolvedSymbol {
-                        name: event_name.clone(),
+                        name: event_name.to_string(),
                     },
                     span.clone(),
                     "`emit` outside a normalized machine body has no output vector",

@@ -10,7 +10,7 @@ use hew_hir::{
     lower_program_host_target, HirExpr, HirExprKind, HirItem, HirStmtKind, ResolutionCtx,
 };
 use hew_parser::ast::{ImportDecl, Item, Program, Spanned};
-use hew_parser::module::{Module, ModuleGraph, ModuleId};
+use hew_parser::module::{Module, ModuleGraph, ModulePath};
 use hew_types::{module_registry::ModuleRegistry, Checker, ResolvedTy, TypeCheckOutput};
 
 const BANK_SRC: &str = "pub actor Account {\n\
@@ -37,7 +37,7 @@ fn build_program(root_src: &str) -> Program {
 
     let import_item: Spanned<Item> = (
         Item::Import(ImportDecl {
-            path: vec!["hew".to_string(), "bank".to_string()],
+            path: hew_parser::ast::Path::from_spellings(&["hew", "bank"]),
             spec: None,
             selection_trailing_comma: false,
             module_alias: None,
@@ -49,8 +49,8 @@ fn build_program(root_src: &str) -> Program {
         0..0,
     );
 
-    let bank_id = ModuleId::new(vec!["bank".to_string()]);
-    let root_id = ModuleId::root();
+    let bank_id = ModulePath::new(["bank"]);
+    let root_id = ModulePath::root();
     let bank_module = Module {
         id: bank_id.clone(),
         items: imported.program.items,

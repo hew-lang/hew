@@ -1,6 +1,7 @@
 //! Resource lifecycle admission and close/consume discipline.
 
 use super::*;
+use hew_parser::ast::Ident;
 
 /// Whether an inherent impl block's receiver names `declaration`.
 ///
@@ -603,13 +604,13 @@ impl LowerCtx {
         let inline_close = decl
             .body
             .iter()
-            .any(|item| matches!(item, TypeBodyItem::Method(m) if m.name == "close"));
+            .any(|item| matches!(item, TypeBodyItem::Method(m) if m.name == Ident::new("close")));
         if inline_close {
             self.resource_close_discipline_failures
                 .insert(declaration.clone());
             self.diagnostics.push(HirDiagnostic::new(
                 HirDiagnosticKind::ResourceCloseSourceUnsupported {
-                    name: decl.name.clone(),
+                    name: decl.name.to_string(),
                 },
                 span.clone(),
                 "`#[resource]` types must declare `close` in a sibling \
@@ -633,7 +634,7 @@ impl LowerCtx {
                     .insert(declaration.clone());
                 self.diagnostics.push(HirDiagnostic::new(
                     HirDiagnosticKind::ResourceCloseMustReturnUnit {
-                        name: decl.name.clone(),
+                        name: decl.name.to_string(),
                         return_ty: display.clone(),
                     },
                     decl_span,
@@ -653,7 +654,7 @@ impl LowerCtx {
             .insert(declaration.clone());
         self.diagnostics.push(HirDiagnostic::new(
             HirDiagnosticKind::ResourceMissingClose {
-                name: decl.name.clone(),
+                name: decl.name.to_string(),
             },
             span.clone(),
             "`#[resource]` type must declare `fn close(consume self) { ... }` in a \
@@ -693,7 +694,7 @@ impl LowerCtx {
         if has_inline_consuming {
             self.diagnostics.push(HirDiagnostic::new(
                 HirDiagnosticKind::LinearConsumingMethodSourceUnsupported {
-                    name: decl.name.clone(),
+                    name: decl.name.to_string(),
                 },
                 span.clone(),
                 "`#[linear]` types must declare their `consume self` method in a \
@@ -709,7 +710,7 @@ impl LowerCtx {
         }) {
             self.diagnostics.push(HirDiagnostic::new(
                 HirDiagnosticKind::LinearNoConsumingMethods {
-                    name: decl.name.clone(),
+                    name: decl.name.to_string(),
                 },
                 span.clone(),
                 "`#[linear]` type must declare at least one `consume self` method \

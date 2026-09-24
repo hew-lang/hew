@@ -7,7 +7,7 @@ pub(super) use super::*;
 // ── W4.042: builtin `None` checker-boundary type record ───────────────────────
 //
 // True root cause (re-plan, tip d81529ba): `synthesize_inner`'s
-// `Expr::Identifier("None")` arm early-`return`s `Ty::option(Var)` and bypasses
+// `Expr::Ident("None")` arm early-`return`s `Ty::option(Var)` and bypasses
 // the universal `record_type(span, &ty)` tail every other arm reaches. With no
 // `expr_types` entry the `check_program` boundary resolve has nothing to write
 // back, so the post-unification concrete `Option<i64>` is never recorded at the

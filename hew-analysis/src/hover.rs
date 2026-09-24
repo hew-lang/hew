@@ -1,5 +1,6 @@
 //! Hover analysis: produce rich hover information for identifiers and expressions.
 
+use hew_parser::ast::Ident;
 use std::collections::HashMap;
 
 use hew_parser::ast::{
@@ -211,26 +212,38 @@ fn hover_field_declaration_at_offset(
                 for body_item in &type_decl.body {
                     match body_item {
                         TypeBodyItem::Field { name, ty, .. } => {
-                            let span = crate::util::find_name_span(source, search_from, name);
+                            let span = crate::util::find_name_span(
+                                source,
+                                search_from,
+                                name.name.as_str(),
+                            );
                             if span.start <= offset && offset < span.end {
                                 let ty_text = method_resolution::lookup_type_def(
                                     &type_output.type_defs,
-                                    &type_decl.name,
+                                    type_decl.name.name.as_str(),
                                 )
                                 .and_then(|type_def| {
                                     type_def
                                         .fields
-                                        .get(name)
+                                        .get(name.name.as_str())
                                         .map(|ty| ty.user_facing().to_string())
                                 })
                                 .unwrap_or_else(|| format_type_expr_hover(&ty.0));
-                                return Some(field_hover_result(name, &ty_text, span));
+                                return Some(field_hover_result(
+                                    name.name.as_str(),
+                                    &ty_text,
+                                    span,
+                                ));
                             }
                             search_from = ty.1.end.max(span.end);
                         }
                         TypeBodyItem::Variant(variant) => {
-                            search_from =
-                                crate::util::find_name_span(source, search_from, &variant.name).end;
+                            search_from = crate::util::find_name_span(
+                                source,
+                                search_from,
+                                variant.name.name.as_str(),
+                            )
+                            .end;
                         }
                         TypeBodyItem::Method(method) => {
                             search_from = search_from.max(method.decl_span.end);
@@ -245,20 +258,28 @@ fn hover_field_declaration_at_offset(
                 if let RecordKind::Named(fields) = &record_decl.kind {
                     let mut search_from = item_span.start;
                     for field in fields {
-                        let span = crate::util::find_name_span(source, search_from, &field.name);
+                        let span = crate::util::find_name_span(
+                            source,
+                            search_from,
+                            field.name.name.as_str(),
+                        );
                         if span.start <= offset && offset < span.end {
                             let ty_text = method_resolution::lookup_type_def(
                                 &type_output.type_defs,
-                                &record_decl.name,
+                                record_decl.name.name.as_str(),
                             )
                             .and_then(|type_def| {
                                 type_def
                                     .fields
-                                    .get(&field.name)
+                                    .get(field.name.name.as_str())
                                     .map(|ty| ty.user_facing().to_string())
                             })
                             .unwrap_or_else(|| format_type_expr_hover(&field.ty.0));
-                            return Some(field_hover_result(&field.name, &ty_text, span));
+                            return Some(field_hover_result(
+                                field.name.name.as_str(),
+                                &ty_text,
+                                span,
+                            ));
                         }
                         search_from = field.ty.1.end.max(span.end);
                     }
@@ -593,7 +614,7 @@ fn hover_binding_in_stmt(
                 word,
                 word_span,
                 offset,
-                name,
+                name.name.as_str(),
                 ty.as_ref(),
                 value.as_ref(),
             ) {
@@ -765,7 +786,7 @@ fn hover_pattern_binding(
 }
 
 fn nominal_path_leaf(path: &hew_parser::ast::Path) -> Option<&str> {
-    path.segments.last().map(String::as_str)
+    path.segments.last().map(|(ident, _)| ident.name.as_str())
 }
 
 #[expect(
@@ -783,8 +804,13 @@ fn find_pattern_binding_type(
         return None;
     }
     match &pattern.0 {
-        Pattern::Identifier(name) => (name == word).then(|| source_ty.clone()),
-        Pattern::Constructor { name, patterns } => {
+        Pattern::Identifier(name) => (name.name.as_str() == word).then(|| source_ty.clone()),
+        // TRANSITION(P1): deleted by A1 commit 2
+        Pattern::NominalPath {
+            path: one_path,
+            payload: Some(hew_parser::ast::NominalPatternPayload::Tuple(patterns)),
+        } if one_path.segments.len() == 1 => {
+            let name = &one_path.to_string();
             constructor_payload_tys(source_ty, name, type_defs).and_then(|payload_tys| {
                 patterns
                     .iter()
@@ -794,8 +820,14 @@ fn find_pattern_binding_type(
                     })
             })
         }
-        Pattern::Struct { name, fields, .. } => fields.iter().find_map(|field| {
-            let field_ty = struct_pattern_field_ty(source_ty, name, &field.name, type_defs)?;
+        // TRANSITION(P1): deleted by A1 commit 2
+        Pattern::NominalPath {
+            path: one_path,
+            payload: Some(hew_parser::ast::NominalPatternPayload::Record { fields, .. }),
+        } if one_path.segments.len() == 1 => fields.iter().find_map(|field| {
+            let name = &one_path.to_string();
+            let field_ty =
+                struct_pattern_field_ty(source_ty, name, field.name.name.as_str(), type_defs)?;
             field.pattern.as_ref().and_then(|pattern| {
                 find_pattern_binding_type(pattern, &field_ty, type_defs, word, offset)
             })
@@ -804,7 +836,8 @@ fn find_pattern_binding_type(
         Pattern::RecordShorthand { fields, .. } => fields.iter().find_map(|field| {
             // Derive field type from source_ty by name, same as bind_pattern does.
             let type_name = source_ty.type_name()?;
-            let field_ty = struct_pattern_field_ty(source_ty, type_name, &field.name, type_defs)?;
+            let field_ty =
+                struct_pattern_field_ty(source_ty, type_name, field.name.name.as_str(), type_defs)?;
             field.pattern.as_ref().and_then(|pattern| {
                 find_pattern_binding_type(pattern, &field_ty, type_defs, word, offset)
             })
@@ -851,40 +884,48 @@ fn find_pattern_binding_type(
             Some(hew_parser::ast::NominalPatternPayload::Record { fields, .. }) => {
                 let name = nominal_path_leaf(path)?;
                 fields.iter().find_map(|field| {
-                    let field_ty =
-                        struct_pattern_field_ty(source_ty, name, &field.name, type_defs)?;
+                    let field_ty = struct_pattern_field_ty(
+                        source_ty,
+                        name,
+                        field.name.name.as_str(),
+                        type_defs,
+                    )?;
                     field.pattern.as_ref().and_then(|pattern| {
                         find_pattern_binding_type(pattern, &field_ty, type_defs, word, offset)
                     })
                 })
             }
         },
-        Pattern::ContextVariant(context) => match context.payload.as_ref() {
-            None => None,
-            Some(hew_parser::ast::NominalPatternPayload::Tuple(patterns)) => {
-                constructor_payload_tys(source_ty, &context.name, type_defs).and_then(
-                    |payload_tys| {
-                        patterns
-                            .iter()
-                            .zip(payload_tys.iter())
-                            .find_map(|(pattern, payload_ty)| {
-                                find_pattern_binding_type(
-                                    pattern, payload_ty, type_defs, word, offset,
-                                )
-                            })
-                    },
-                )
-            }
-            Some(hew_parser::ast::NominalPatternPayload::Record { fields, .. }) => {
-                fields.iter().find_map(|field| {
-                    let field_ty =
-                        struct_pattern_field_ty(source_ty, &context.name, &field.name, type_defs)?;
-                    field.pattern.as_ref().and_then(|pattern| {
-                        find_pattern_binding_type(pattern, &field_ty, type_defs, word, offset)
+        Pattern::ContextVariant(context) => {
+            match context.payload.as_ref() {
+                None => None,
+                Some(hew_parser::ast::NominalPatternPayload::Tuple(patterns)) => {
+                    constructor_payload_tys(source_ty, context.name.name.as_str(), type_defs)
+                        .and_then(|payload_tys| {
+                            patterns.iter().zip(payload_tys.iter()).find_map(
+                                |(pattern, payload_ty)| {
+                                    find_pattern_binding_type(
+                                        pattern, payload_ty, type_defs, word, offset,
+                                    )
+                                },
+                            )
+                        })
+                }
+                Some(hew_parser::ast::NominalPatternPayload::Record { fields, .. }) => {
+                    fields.iter().find_map(|field| {
+                        let field_ty = struct_pattern_field_ty(
+                            source_ty,
+                            context.name.name.as_str(),
+                            field.name.name.as_str(),
+                            type_defs,
+                        )?;
+                        field.pattern.as_ref().and_then(|pattern| {
+                            find_pattern_binding_type(pattern, &field_ty, type_defs, word, offset)
+                        })
                     })
-                })
+                }
             }
-        },
+        }
         Pattern::Wildcard | Pattern::Literal(_) => None,
     }
 }
@@ -894,18 +935,16 @@ fn find_binding_name(pattern: &(Pattern, Span), word: &str, offset: usize) -> Op
         return None;
     }
     match &pattern.0 {
-        Pattern::Identifier(name) => (name == word).then_some(()),
-        Pattern::Constructor { patterns, .. } | Pattern::Tuple(patterns) => patterns
+        Pattern::Identifier(name) => (name.name.as_str() == word).then_some(()),
+        Pattern::Tuple(patterns) => patterns
             .iter()
             .find_map(|pattern| find_binding_name(pattern, word, offset)),
-        Pattern::Struct { fields, .. } | Pattern::RecordShorthand { fields, .. } => {
-            fields.iter().find_map(|field| {
-                field
-                    .pattern
-                    .as_ref()
-                    .and_then(|pattern| find_binding_name(pattern, word, offset))
-            })
-        }
+        Pattern::RecordShorthand { fields, .. } => fields.iter().find_map(|field| {
+            field
+                .pattern
+                .as_ref()
+                .and_then(|pattern| find_binding_name(pattern, word, offset))
+        }),
         Pattern::Or(left, right) => {
             find_binding_name(left, word, offset).or_else(|| find_binding_name(right, word, offset))
         }
@@ -1046,10 +1085,18 @@ fn format_type_expr_hover(type_expr: &TypeExpr) -> String {
         TypeExpr::QualifiedAssocPath(path) => format!(
             "<{} as {}>.{}",
             format_type_expr_hover(&path.base.0),
-            path.trait_path.source_spelling(),
-            path.members.join(".")
+            path.trait_path,
+            path.members
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(".")
         ),
-        TypeExpr::Named { name, type_args } => {
+        TypeExpr::Named {
+            path: named_path,
+            type_args,
+        } => {
+            let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
             let base =
                 Ty::from_name(name).map_or_else(|| name.clone(), |ty| ty.user_facing().to_string());
             if let Some(type_args) = type_args {
@@ -1132,7 +1179,7 @@ fn format_trait_bound_hover(bound: &TraitBound) -> String {
     if let Some(type_args) = &bound.type_args {
         format!(
             "{}<{}>",
-            bound.name,
+            bound.path, // TRANSITION(P1): deleted by A1 commit 2
             type_args
                 .iter()
                 .map(|(arg, _)| format_type_expr_hover(arg))
@@ -1140,7 +1187,7 @@ fn format_trait_bound_hover(bound: &TraitBound) -> String {
                 .join(", ")
         )
     } else {
-        bound.name.clone()
+        bound.path.to_string() // TRANSITION(P1): deleted by A1 commit 2
     }
 }
 
@@ -1155,7 +1202,7 @@ fn hover_param_in_item(
         Item::Function(function) => hover_param_in_decl(
             &function.fn_span,
             &function.params,
-            fn_sigs.get(function.name.as_str()),
+            fn_sigs.get(function.name.name.as_str()),
             word,
             word_span,
             offset,
@@ -1206,9 +1253,13 @@ fn hover_param_in_item(
             None
         }
         Item::Impl(impl_decl) => {
-            let TypeExpr::Named { name, .. } = &impl_decl.target_type.0 else {
+            let TypeExpr::Named {
+                path: named_path, ..
+            } = &impl_decl.target_type.0
+            else {
                 return None;
             };
+            let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
             for method in &impl_decl.methods {
                 let key = format!("{name}::{}", method.name);
                 if let Some(result) = hover_param_in_method(
@@ -1305,7 +1356,7 @@ fn hover_param_in_decl(
         .param_names
         .iter()
         .zip(&sig.params)
-        .find_map(|(param_name, ty)| (param_name == &param.name).then_some(ty))?;
+        .find_map(|(param_name, ty)| (param_name == param.name.name.as_str()).then_some(ty))?;
 
     Some(HoverResult {
         contents: format!("```hew\n{word}: {}\n```", ty.user_facing()),
@@ -1314,7 +1365,7 @@ fn hover_param_in_decl(
 }
 
 fn is_param_name_span(param: &Param, word: &str, word_span: OffsetSpan) -> bool {
-    if param.name != word || word_span.end > param.ty.1.start {
+    if param.name != Ident::new(word) || word_span.end > param.ty.1.start {
         return false;
     }
 

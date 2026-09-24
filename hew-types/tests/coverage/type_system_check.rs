@@ -4,7 +4,7 @@
 /// emitted by `emit_scope_warnings` are suppressed when the checker is
 /// type-checking a stdlib (or built-in library) source body, but that the
 /// same lints still fire for user-code bodies in the same compilation unit.
-use hew_parser::module::{Module, ModuleGraph, ModuleId};
+use hew_parser::module::{Module, ModuleGraph, ModulePath};
 use hew_types::error::TypeErrorKind;
 use hew_types::module_registry::ModuleRegistry;
 use hew_types::Checker;
@@ -26,8 +26,8 @@ fn program_with_module(mod_path: &[&str], module_source: &str) -> hew_parser::as
         module_result.errors
     );
 
-    let root_id = ModuleId::root();
-    let mod_id = ModuleId::new(mod_path.iter().map(ToString::to_string).collect());
+    let root_id = ModulePath::root();
+    let mod_id = ModulePath::new(mod_path.iter());
 
     let module = Module {
         id: mod_id.clone(),
@@ -138,8 +138,8 @@ fn user_code_unused_variable_still_warns_with_stdlib_present() {
         root_parsed.errors
     );
 
-    let root_id = ModuleId::root();
-    let mod_id = ModuleId::new(vec!["std".to_string(), "iter".to_string()]);
+    let root_id = ModulePath::root();
+    let mod_id = ModulePath::new(["std", "iter"]);
     let stdlib_module = Module {
         id: mod_id.clone(),
         items: stdlib_parsed.program.items,
@@ -187,7 +187,7 @@ fn user_code_unused_variable_still_warns_with_stdlib_present() {
     );
 }
 
-/// A user file named `std.hew` produces a single-segment `ModuleId` `["std"]`.
+/// A user file named `std.hew` produces a single-segment `ModulePath` `["std"]`.
 /// This must NOT be treated as a stdlib module — the user's own unused
 /// variables inside it must still warn.  This is the regression guard for
 /// the single-segment over-suppression edge case.

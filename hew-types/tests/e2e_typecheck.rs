@@ -1,5 +1,6 @@
 mod common;
 
+use hew_parser::ast::Ident;
 use std::fs;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -28,7 +29,7 @@ fn main_call_spans(program: &hew_parser::ast::Program) -> Vec<hew_parser::ast::S
         .items
         .iter()
         .find_map(|(item, _)| match item {
-            Item::Function(fd) if fd.name == "main" => Some(fd),
+            Item::Function(fd) if fd.name == Ident::new("main") => Some(fd),
             _ => None,
         })
         .expect("main function should exist");

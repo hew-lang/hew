@@ -351,10 +351,10 @@ fn summarize_import(import: &hew_parser::ast::ImportDecl) -> String {
     if let Some(path) = &import.file_path {
         return format!("import {path}");
     }
-    if import.path.is_empty() {
+    if import.path.segments.is_empty() {
         "import <module>".to_string()
     } else {
-        format!("import {}", import.path.join("."))
+        format!("import {}", import.path) // TRANSITION(P1): deleted by A1 commit 2
     }
 }
 
@@ -364,7 +364,7 @@ fn summarize_function(function: &hew_parser::ast::FnDecl) -> String {
         summary.push_str("gen ");
     }
     summary.push_str("fn ");
-    summary.push_str(&function.name);
+    summary.push_str(function.name.name.as_str());
     summary
 }
 

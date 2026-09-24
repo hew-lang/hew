@@ -2,7 +2,7 @@
 
 use std::collections::BTreeSet;
 
-use crate::ast::{condition_exprs, Block, ElseBlock, Expr, Stmt};
+use crate::ast::{condition_exprs, sym, Block, ElseBlock, Expr, Stmt, Symbol};
 
 /// Bare names an `init` body assigns with a plain `name = value` or
 /// `self.name = value`, in any nested structural block.
@@ -12,13 +12,13 @@ use crate::ast::{condition_exprs, Block, ElseBlock, Expr, Stmt};
 /// are not walked: a store from a child body is not the actor's own
 /// initialization sequence.
 #[must_use]
-pub fn assigned_bare_names(body: &Block) -> BTreeSet<String> {
+pub fn assigned_bare_names(body: &Block) -> BTreeSet<Symbol> {
     let mut names = BTreeSet::new();
     block_targets(body, &mut names);
     names
 }
 
-fn block_targets(block: &Block, names: &mut BTreeSet<String>) {
+fn block_targets(block: &Block, names: &mut BTreeSet<Symbol>) {
     for (stmt, _) in &block.stmts {
         stmt_targets(stmt, names);
     }
@@ -27,7 +27,7 @@ fn block_targets(block: &Block, names: &mut BTreeSet<String>) {
     }
 }
 
-fn else_targets(else_block: &ElseBlock, names: &mut BTreeSet<String>) {
+fn else_targets(else_block: &ElseBlock, names: &mut BTreeSet<Symbol>) {
     if let Some(block) = &else_block.block {
         block_targets(block, names);
     }
@@ -36,7 +36,7 @@ fn else_targets(else_block: &ElseBlock, names: &mut BTreeSet<String>) {
     }
 }
 
-fn stmt_targets(stmt: &Stmt, names: &mut BTreeSet<String>) {
+fn stmt_targets(stmt: &Stmt, names: &mut BTreeSet<Symbol>) {
     match stmt {
         Stmt::Assign {
             target,
@@ -44,12 +44,12 @@ fn stmt_targets(stmt: &Stmt, names: &mut BTreeSet<String>) {
             value,
         } => {
             match &target.0 {
-                Expr::Identifier(name) => {
-                    names.insert(name.clone());
+                Expr::Ident(name) => {
+                    names.insert(name.name);
                 }
-                Expr::FieldAccess { object, field } if matches!(&object.0, Expr::Identifier(receiver) if receiver == "self") =>
+                Expr::FieldAccess { object, field } if matches!(&object.0, Expr::Ident(receiver) if receiver.name == sym::SELF_VALUE) =>
                 {
-                    names.insert(field.clone());
+                    names.insert(field.0.name);
                 }
                 _ => {}
             }
@@ -126,7 +126,7 @@ fn stmt_targets(stmt: &Stmt, names: &mut BTreeSet<String>) {
     }
 }
 
-fn expr_targets(expr: &Expr, names: &mut BTreeSet<String>) {
+fn expr_targets(expr: &Expr, names: &mut BTreeSet<Symbol>) {
     match expr {
         Expr::Block(block)
         | Expr::Scope { body: block }
@@ -164,6 +164,7 @@ fn expr_targets(expr: &Expr, names: &mut BTreeSet<String>) {
 #[cfg(test)]
 mod tests {
     use super::assigned_bare_names;
+    use crate::ast::Symbol;
 
     fn init_body(source: &str) -> crate::ast::Block {
         let result = crate::parse(source);
@@ -186,7 +187,11 @@ mod tests {
         let names = assigned_bare_names(&body);
         assert_eq!(
             names.into_iter().collect::<Vec<_>>(),
-            vec!["a".to_string(), "b".to_string(), "c".to_string()]
+            vec![
+                Symbol::intern("a"),
+                Symbol::intern("b"),
+                Symbol::intern("c")
+            ]
         );
     }
 }

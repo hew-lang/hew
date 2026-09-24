@@ -524,7 +524,7 @@ pub(crate) fn build_module_source_map(program: &hew_parser::ast::Program) -> Mod
             continue;
         };
         if let Ok(text) = std::fs::read_to_string(path) {
-            map.insert(mod_id.path.join("."), (text, path.display().to_string()));
+            map.insert(mod_id.dotted(), (text, path.display().to_string()));
         }
     }
     map

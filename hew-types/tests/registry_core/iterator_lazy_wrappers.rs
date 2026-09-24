@@ -23,6 +23,7 @@
 )]
 
 use crate::common;
+use hew_parser::ast::Ident;
 
 use common::typecheck_embedded_builtins_isolated;
 use hew_parser::ast::{ImplDecl, Item, Program, TraitItem, TypeBodyItem, TypeDecl, TypeExpr};
@@ -185,7 +186,7 @@ fn find_type_decl<'a>(program: &'a Program, name: &str) -> &'a TypeDecl {
         .items
         .iter()
         .find_map(|(item, _)| match item {
-            Item::TypeDecl(td) if td.name == name => Some(td),
+            Item::TypeDecl(td) if td.name == Ident::new(name) => Some(td),
             _ => None,
         })
         .unwrap_or_else(|| panic!("type decl `{name}` must be parsed"))
@@ -200,9 +201,9 @@ fn find_impl_iterator_for<'a>(program: &'a Program, self_ty_name: &str) -> &'a I
                 let is_iter_trait = imp
                     .trait_bound
                     .as_ref()
-                    .is_some_and(|tb| tb.name == "Iterator");
+                    .is_some_and(|tb| tb.path.to_string() == "Iterator"); // TRANSITION(P1): deleted by A1 commit 2
                 let self_matches = match &imp.target_type.0 {
-                    TypeExpr::Named { name, .. } => name == self_ty_name,
+                    TypeExpr::Named { path, .. } => path.to_string() == self_ty_name,
                     _ => false,
                 };
                 if is_iter_trait && self_matches {
@@ -219,14 +220,14 @@ fn find_impl_iterator_for<'a>(program: &'a Program, self_ty_name: &str) -> &'a I
 fn type_param_names(td: &TypeDecl) -> Vec<&str> {
     td.type_params
         .as_ref()
-        .map(|ps| ps.iter().map(|p| p.name.as_str()).collect())
+        .map(|ps| ps.iter().map(|p| p.name.name.as_str()).collect())
         .unwrap_or_default()
 }
 
 fn impl_type_param_names(imp: &ImplDecl) -> Vec<&str> {
     imp.type_params
         .as_ref()
-        .map(|ps| ps.iter().map(|p| p.name.as_str()).collect())
+        .map(|ps| ps.iter().map(|p| p.name.name.as_str()).collect())
         .unwrap_or_default()
 }
 
@@ -234,7 +235,7 @@ fn field_names(td: &TypeDecl) -> Vec<&str> {
     td.body
         .iter()
         .filter_map(|item| match item {
-            TypeBodyItem::Field { name, .. } => Some(name.as_str()),
+            TypeBodyItem::Field { name, .. } => Some(name.name.as_str()),
             _ => None,
         })
         .collect()
@@ -242,9 +243,9 @@ fn field_names(td: &TypeDecl) -> Vec<&str> {
 
 fn impl_item_assoc_named(imp: &ImplDecl, name: &str) -> Option<String> {
     imp.type_aliases.iter().find_map(|al| {
-        if al.name == name {
+        if al.name == Ident::new(name) {
             match &al.ty.0 {
-                TypeExpr::Named { name, .. } => Some(name.clone()),
+                TypeExpr::Named { path, .. } => Some(path.to_string()),
                 _ => None,
             }
         } else {
@@ -360,7 +361,7 @@ fn iterator_trait_surface_carries_locked_next_shape() {
         .items
         .iter()
         .find_map(|(item, _)| match item {
-            Item::Trait(td) if td.name == "Iterator" => Some(td),
+            Item::Trait(td) if td.name == Ident::new("Iterator") => Some(td),
             _ => None,
         })
         .expect("Iterator trait in prelude");
@@ -368,12 +369,12 @@ fn iterator_trait_surface_carries_locked_next_shape() {
         .items
         .iter()
         .find_map(|ti| match ti {
-            TraitItem::Method(m) if m.name == "next" => Some(m),
+            TraitItem::Method(m) if m.name == Ident::new("next") => Some(m),
             _ => None,
         })
         .expect("Iterator::next must exist");
     let recv = next.params.first().expect("next has a receiver");
-    assert_eq!(recv.name, "self");
+    assert_eq!(recv.name, Ident::new("self"));
     assert!(!recv.is_mutable, "Q001 locks `next` as by-move `self`");
 }
 
@@ -467,7 +468,7 @@ fn stdlib_iter_module_carries_wrapper_decls() {
         .items
         .iter()
         .filter_map(|(item, _)| match item {
-            Item::TypeDecl(td) => Some(td.name.as_str()),
+            Item::TypeDecl(td) => Some(td.name.name.as_str()),
             _ => None,
         })
         .collect();
@@ -483,7 +484,7 @@ fn stdlib_iter_module_carries_wrapper_decls() {
         .items
         .iter()
         .filter_map(|(item, _)| match item {
-            Item::Function(f) => Some(f.name.as_str()),
+            Item::Function(f) => Some(f.name.name.as_str()),
             _ => None,
         })
         .collect();

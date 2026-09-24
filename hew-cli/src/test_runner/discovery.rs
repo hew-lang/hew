@@ -62,7 +62,7 @@ pub fn discover_tests(program: &Program, file: &str) -> Vec<TestCase> {
                 let should_panic = f.attributes.iter().any(|a| a.name == "should_panic");
                 let serial = f.attributes.iter().any(|a| a.name == "serial");
                 tests.push(TestCase {
-                    name: f.name.clone(),
+                    name: f.name.to_string(),
                     file: file.to_string(),
                     occurrence: DeclarationOccurrence::new_with_synthetic_ordinal(
                         None,

@@ -55,10 +55,10 @@ fn poisoned_expr_types_emits_checker_boundary_violation() {
         panic!("expected Expr::Call; got: {:?}", call_spanned.0);
     };
     // Confirm the callee is `foo` so the assertion below is meaningful.
-    let (Expr::Identifier(callee_name), _) = function.as_ref() else {
+    let (Expr::Ident(callee_name), _) = function.as_ref() else {
         panic!("expected Identifier callee; got: {:?}", function.0);
     };
-    assert_eq!(callee_name, "foo", "callee must be foo");
+    assert_eq!(callee_name.name.as_str(), "foo", "callee must be foo");
 
     // Poison the call span with an unresolved inference variable.
     // TypeVar(0) is a fixed literal — no global-counter side-effects.

@@ -122,10 +122,18 @@ fn format_type(ty: &hew_parser::ast::TypeExpr) -> String {
         TypeExpr::QualifiedAssocPath(path) => format!(
             "<{} as {}>.{}",
             format_type(&path.base.0),
-            path.trait_path.source_spelling(),
-            path.members.join(".")
+            path.trait_path,
+            path.members
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(".")
         ),
-        TypeExpr::Named { name, type_args } => {
+        TypeExpr::Named {
+            path: named_path,
+            type_args,
+        } => {
+            let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
             if let Some(args) = type_args {
                 let arg_strs: Vec<String> = args.iter().map(|(t, _)| format_type(t)).collect();
                 format!("{name}<{}>", arg_strs.join(", "))
@@ -190,7 +198,7 @@ fn format_type(ty: &hew_parser::ast::TypeExpr) -> String {
                         let strs: Vec<String> = args.iter().map(|(t, _)| format_type(t)).collect();
                         format!("<{}>", strs.join(", "))
                     });
-                    format!("{}{args}", b.name)
+                    format!("{}{args}", b.path) // TRANSITION(P1): deleted by A1 commit 2
                 })
                 .collect();
             if parts.len() == 1 {
@@ -292,7 +300,7 @@ fn build_fn_signature(f: &hew_parser::ast::FnDecl) -> String {
         sig.push_str("gen ");
     }
     sig.push_str("fn ");
-    sig.push_str(&f.name);
+    sig.push_str(f.name.name.as_str());
     sig.push('(');
     let params: Vec<String> = f
         .params
@@ -323,7 +331,7 @@ fn build_receive_signature(r: &hew_parser::ast::ReceiveFnDecl) -> String {
     } else {
         sig.push_str("fn ");
     }
-    sig.push_str(&r.name);
+    sig.push_str(r.name.name.as_str());
     sig.push('(');
     let params: Vec<String> = r
         .params
@@ -345,7 +353,7 @@ fn build_receive_signature(r: &hew_parser::ast::ReceiveFnDecl) -> String {
 /// Build a trait method signature string.
 fn build_trait_method_signature(m: &hew_parser::ast::TraitMethod) -> String {
     let mut sig = String::from("fn ");
-    sig.push_str(&m.name);
+    sig.push_str(m.name.name.as_str());
     sig.push('(');
     let params: Vec<String> = m
         .params
@@ -390,7 +398,7 @@ fn extract_struct_fields(body: &[TypeBodyItem]) -> Vec<DocField> {
             } = item
             {
                 Some(DocField {
-                    name: name.clone(),
+                    name: name.to_string(),
                     ty: format_type(&ty.0),
                     doc: doc_comment.clone(),
                 })
@@ -406,7 +414,7 @@ fn extract_enum_variants(body: &[TypeBodyItem]) -> Vec<DocEnumVariant> {
         .filter_map(|item| {
             if let TypeBodyItem::Variant(v) = item {
                 Some(DocEnumVariant {
-                    name: v.name.clone(),
+                    name: v.name.to_string(),
                     shape: format_variant_shape(&v.kind),
                     doc: v.doc_comment.clone(),
                 })
@@ -441,7 +449,7 @@ pub fn extract_docs(program: &Program, module_name: &str) -> DocModule {
         match item {
             Item::Function(f) if f.visibility.is_pub() => {
                 functions.push(DocFunction {
-                    name: f.name.clone(),
+                    name: f.name.to_string(),
                     signature: build_fn_signature(f),
                     doc: f.doc_comment.clone(),
                 });
@@ -452,7 +460,7 @@ pub fn extract_docs(program: &Program, module_name: &str) -> DocModule {
                     TypeDeclKind::Enum => "enum",
                 };
                 types.push(DocType {
-                    name: t.name.clone(),
+                    name: t.name.to_string(),
                     kind,
                     fields: extract_struct_fields(&t.body),
                     variants: extract_enum_variants(&t.body),
@@ -464,7 +472,7 @@ pub fn extract_docs(program: &Program, module_name: &str) -> DocModule {
                     .fields
                     .iter()
                     .map(|f| DocField {
-                        name: f.name.clone(),
+                        name: f.name.to_string(),
                         ty: format_type(&f.ty.0),
                         doc: f.doc_comment.clone(),
                     })
@@ -473,13 +481,13 @@ pub fn extract_docs(program: &Program, module_name: &str) -> DocModule {
                     .receive_fns
                     .iter()
                     .map(|r| DocMethod {
-                        name: r.name.clone(),
+                        name: r.name.to_string(),
                         signature: build_receive_signature(r),
                         doc: r.doc_comment.clone(),
                     })
                     .collect();
                 actors.push(DocActor {
-                    name: a.name.clone(),
+                    name: a.name.to_string(),
                     fields,
                     handlers,
                     doc: a.doc_comment.clone(),
@@ -497,7 +505,7 @@ pub fn extract_docs(program: &Program, module_name: &str) -> DocModule {
                     .filter_map(|item| {
                         if let hew_parser::ast::TraitItem::Method(m) = item {
                             Some(DocMethod {
-                                name: m.name.clone(),
+                                name: m.name.to_string(),
                                 signature: build_trait_method_signature(m),
                                 doc: m.doc_comment.clone(),
                             })
@@ -507,14 +515,14 @@ pub fn extract_docs(program: &Program, module_name: &str) -> DocModule {
                     })
                     .collect();
                 traits.push(DocTrait {
-                    name: t.name.clone(),
+                    name: t.name.to_string(),
                     methods,
                     doc: t.doc_comment.clone(),
                 });
             }
             Item::Const(c) if c.visibility.is_pub() => {
                 consts.push(DocConst {
-                    name: c.name.clone(),
+                    name: c.name.to_string(),
                     ty: format_type(&c.ty.0),
                     value: format_literal(&c.value.0),
                     visibility: visibility_prefix(c.visibility).to_string(),
@@ -523,7 +531,7 @@ pub fn extract_docs(program: &Program, module_name: &str) -> DocModule {
             }
             Item::TypeAlias(ta) if ta.visibility.is_pub() => {
                 type_aliases.push(DocTypeAlias {
-                    name: ta.name.clone(),
+                    name: ta.name.to_string(),
                     ty: format_type(&ta.ty.0),
                     visibility: visibility_prefix(ta.visibility).to_string(),
                     doc: ta.doc_comment.clone(),

@@ -1,6 +1,7 @@
 //! Whole-program lowering entry point.
 
 use super::*;
+use hew_parser::ast::Ident;
 
 /// Variant of [`lower_program`] with an explicit monomorphisation-registry
 /// cap. Intended for tests that exercise the
@@ -34,7 +35,7 @@ pub fn lower_program_with_mono_cap(
             && graph
                 .modules
                 .keys()
-                .any(|module| module.path.join(".") == "std.prelude")
+                .any(|module| module.dotted() == "std.prelude")
     });
     let file_import_module_idx = file_import_item_module_indices(program);
     // Source items flattened from a file import still belong to that file's
@@ -62,7 +63,7 @@ pub fn lower_program_with_mono_cap(
             if module.source_paths.is_empty() {
                 if let (Some(index), Some(identity_module)) = (
                     span_indices.module_base(module_id),
-                    ctx.identity.module_for_path(&module_id.path.join(".")),
+                    ctx.identity.module_for_path(&module_id.dotted()),
                 ) {
                     ctx.declaration_module_by_file_index
                         .insert(index, identity_module);
@@ -133,10 +134,10 @@ pub fn lower_program_with_mono_cap(
             .enumerate()
             .filter(|(item_idx, _)| !file_import_module_idx.contains_key(item_idx))
             .filter_map(|(_, (item, _))| match item {
-                Item::TypeDecl(decl) => Some(decl.name.clone()),
-                Item::Record(decl) => Some(decl.name.clone()),
-                Item::Actor(decl) => Some(decl.name.clone()),
-                Item::Supervisor(decl) => Some(decl.name.clone()),
+                Item::TypeDecl(decl) => Some(decl.name.to_string()),
+                Item::Record(decl) => Some(decl.name.to_string()),
+                Item::Actor(decl) => Some(decl.name.to_string()),
+                Item::Supervisor(decl) => Some(decl.name.to_string()),
                 _ => None,
             }),
     );
@@ -155,28 +156,28 @@ pub fn lower_program_with_mono_cap(
         match item {
             Item::TypeDecl(decl) => {
                 ctx.file_import_root_type_aliases.insert(
-                    decl.name.clone(),
+                    decl.name.to_string(),
                     format!("{module_full_path}.{}", decl.name),
                 );
             }
             Item::Record(decl) => {
                 ctx.file_import_root_type_aliases.insert(
-                    decl.name.clone(),
+                    decl.name.to_string(),
                     format!("{module_full_path}.{}", decl.name),
                 );
             }
             Item::Machine(decl) => {
                 ctx.file_import_root_type_aliases.insert(
-                    decl.name.clone(),
+                    decl.name.to_string(),
                     format!("{module_full_path}.{}", decl.name),
                 );
-                let event = machine_event_surface_type(&decl.name);
+                let event = machine_event_surface_type(decl.name.name.as_str());
                 ctx.file_import_root_type_aliases
                     .insert(event.clone(), format!("{module_full_path}.{event}"));
             }
             Item::Actor(decl) => {
                 ctx.file_import_root_type_aliases.insert(
-                    decl.name.clone(),
+                    decl.name.to_string(),
                     format!("{module_full_path}.{}", decl.name),
                 );
             }
@@ -204,7 +205,7 @@ pub fn lower_program_with_mono_cap(
             if *module_id == module_graph.root {
                 continue;
             }
-            let module_full_path = module_id.path.join(".");
+            let module_full_path = module_id.dotted();
             let Some(module) = module_graph.modules.get(module_id) else {
                 continue;
             };
@@ -266,8 +267,8 @@ pub fn lower_program_with_mono_cap(
             .map(str::to_string);
         match item {
             Item::Function(func) => {
-                let item = ctx.register_fn_entry(&func.name, func);
-                if func.name == "main" {
+                let item = ctx.register_fn_entry(func.name.name.as_str(), func);
+                if func.name == Ident::new("main") {
                     let declaration =
                         ctx.source_declaration(span, hew_types::DeclarationKind::Function, 0);
                     if let (Some(plan), Some(declaration)) = (entry_exit_plan.as_ref(), declaration)
@@ -295,10 +296,11 @@ pub fn lower_program_with_mono_cap(
                 // a subset of this because its methods use the same
                 // `fn_registry` key shape.
                 if let TypeExpr::Named {
-                    name,
+                    path: named_path,
                     type_args: target_type_args,
                 } = &impl_decl.target_type.0
                 {
+                    let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
                     if impl_decl.where_clause.is_none()
                         || classify_unsupported_where_clause(impl_decl).is_none()
                     {
@@ -337,14 +339,20 @@ pub fn lower_program_with_mono_cap(
                         // entries so call sites resolve `Type::method` even
                         // when the body lives on the trait declaration.
                         if let Some(tb) = &impl_decl.trait_bound {
-                            let overridden: HashSet<&str> =
-                                impl_decl.methods.iter().map(|m| m.name.as_str()).collect();
-                            if let Some(default_owner) = ctx.trait_declaration(&tb.name) {
+                            let overridden: HashSet<&str> = impl_decl
+                                .methods
+                                .iter()
+                                .map(|m| m.name.name.as_str())
+                                .collect();
+                            if let Some(default_owner) = ctx.trait_declaration(&tb.path.to_string())
+                            {
+                                // TRANSITION(P1): deleted by A1 commit 2
                                 if let Some(defaults) =
                                     ctx.trait_defaults.get(&default_owner).cloned()
                                 {
                                     for default_method in &defaults {
-                                        if !overridden.contains(default_method.method.name.as_str())
+                                        if !overridden
+                                            .contains(default_method.method.name.name.as_str())
                                         {
                                             ctx.register_trait_default_fn_entry(
                                                 &symbol_name,
@@ -395,8 +403,8 @@ pub fn lower_program_with_mono_cap(
         .flat_map(|module_graph| module_graph.modules.values())
         .flat_map(|module| module.items.iter())
         .filter_map(|(item, _)| match item {
-            Item::TypeDecl(decl) => Some(decl.name.clone()),
-            Item::Record(decl) => Some(decl.name.clone()),
+            Item::TypeDecl(decl) => Some(decl.name.to_string()),
+            Item::Record(decl) => Some(decl.name.to_string()),
             _ => None,
         })
         .filter(|name| {
@@ -407,7 +415,7 @@ pub fn lower_program_with_mono_cap(
         .clone_from(&colliding_imported_record_names);
     ctx.file_import_module_names = file_import_modules
         .iter()
-        .map(|id| id.path.join("."))
+        .map(hew_parser::module::ModulePath::dotted)
         .collect();
     // Bare record/type-decl names that genuinely collide across modules,
     // INCLUDING a file-import vs package collision (the shape the actor-ask
@@ -419,7 +427,7 @@ pub fn lower_program_with_mono_cap(
     // module counts as a colliding declarant. A name unique to one owner is
     // absent and never owner-qualified (#2208).
     ctx.cross_module_colliding_record_names = {
-        let no_file_exclusion: HashSet<hew_parser::module::ModuleId> = HashSet::new();
+        let no_file_exclusion: HashSet<hew_parser::module::ModulePath> = HashSet::new();
         let preferred_all = preferred_package_module_ids(program, &no_file_exclusion);
         program
             .module_graph
@@ -428,8 +436,8 @@ pub fn lower_program_with_mono_cap(
             .flat_map(|mg| mg.modules.values())
             .flat_map(|module| module.items.iter())
             .filter_map(|(item, _)| match item {
-                Item::TypeDecl(decl) => Some(decl.name.clone()),
-                Item::Record(decl) => Some(decl.name.clone()),
+                Item::TypeDecl(decl) => Some(decl.name.to_string()),
+                Item::Record(decl) => Some(decl.name.to_string()),
                 _ => None,
             })
             .filter(|name| {
@@ -442,7 +450,7 @@ pub fn lower_program_with_mono_cap(
             if *mod_id == mg.root {
                 continue;
             }
-            let module_full_path = mod_id.path.join(".");
+            let module_full_path = mod_id.dotted();
             if let Some(module) = mg.modules.get(mod_id) {
                 // #2202: lower this imported module's type-decl/record members
                 // under its OWN module context so a member typed by an import
@@ -456,7 +464,7 @@ pub fn lower_program_with_mono_cap(
                     .iter()
                     .filter_map(|(item, _)| match item {
                         Item::Function(function) if !function.visibility.is_pub() => {
-                            Some(function.name.clone())
+                            Some(function.name.to_string())
                         }
                         _ => None,
                     })
@@ -479,7 +487,8 @@ pub fn lower_program_with_mono_cap(
                         .unwrap_or_default();
                     match item {
                         Item::Function(func)
-                            if func.visibility.is_pub() || private_closure.contains(&func.name) =>
+                            if func.visibility.is_pub()
+                                || private_closure.contains(func.name.name.as_str()) =>
                         {
                             if item_is_duplicated_in_distinct_leaf_module(
                                 program,
@@ -549,7 +558,7 @@ pub fn lower_program_with_mono_cap(
                             // record identity; never let a same-leaf sibling
                             // overwrite it here.
                             ctx.record_registry
-                                .entry(decl.name.clone())
+                                .entry(decl.name.to_string())
                                 .or_insert_with(|| RecordEntry {
                                     id,
                                     type_params,
@@ -581,14 +590,14 @@ pub fn lower_program_with_mono_cap(
                                 },
                             );
                             ctx.record_registry
-                                .entry(decl.name.clone())
+                                .entry(decl.name.to_string())
                                 .or_insert_with(|| RecordEntry {
                                     id,
                                     type_params,
                                     fields,
                                 });
                             ctx.type_classes
-                                .entry(decl.name.clone())
+                                .entry(decl.name.to_string())
                                 .or_insert((ResourceMarker::None, None));
                         }
                         // Register extern fn signatures declared by imported
@@ -629,7 +638,11 @@ pub fn lower_program_with_mono_cap(
                         // no `pub` filter) keeps HIR aligned with the
                         // checker-authoritative `fn_sigs`.
                         Item::Impl(impl_decl) => {
-                            if let TypeExpr::Named { name, .. } = &impl_decl.target_type.0 {
+                            if let TypeExpr::Named {
+                                path: named_path, ..
+                            } = &impl_decl.target_type.0
+                            {
+                                let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
                                 if impl_decl.where_clause.is_none()
                                     || classify_unsupported_where_clause(impl_decl).is_none()
                                 {
@@ -647,16 +660,18 @@ pub fn lower_program_with_mono_cap(
                                         let overridden: HashSet<&str> = impl_decl
                                             .methods
                                             .iter()
-                                            .map(|m| m.name.as_str())
+                                            .map(|m| m.name.name.as_str())
                                             .collect();
-                                        if let Some(default_owner) = ctx.trait_declaration(&tb.name)
+                                        if let Some(default_owner) =
+                                            ctx.trait_declaration(&tb.path.to_string())
+                                        // TRANSITION(P1): deleted by A1 commit 2
                                         {
                                             if let Some(defaults) =
                                                 ctx.trait_defaults.get(&default_owner).cloned()
                                             {
                                                 for default_method in &defaults {
                                                     if !overridden.contains(
-                                                        default_method.method.name.as_str(),
+                                                        default_method.method.name.name.as_str(),
                                                     ) {
                                                         let fn_decl = trait_method_to_fn_decl(
                                                             &default_method.method,
@@ -737,7 +752,7 @@ pub fn lower_program_with_mono_cap(
                 let fields = ctx.checked_record_fields(&definition, item_span);
                 let type_params = definition.type_params;
                 ctx.record_registry.insert(
-                    decl.name.clone(),
+                    decl.name.to_string(),
                     RecordEntry {
                         id,
                         type_params,
@@ -745,7 +760,7 @@ pub fn lower_program_with_mono_cap(
                     },
                 );
                 ctx.type_classes
-                    .insert(decl.name.clone(), (ResourceMarker::None, None));
+                    .insert(decl.name.to_string(), (ResourceMarker::None, None));
             }
             Item::Record(decl) => {
                 let id = ctx.ids.item();
@@ -761,7 +776,7 @@ pub fn lower_program_with_mono_cap(
                 let fields = ctx.checked_record_fields(&definition, item_span);
                 let type_params = definition.type_params;
                 ctx.record_registry.insert(
-                    decl.name.clone(),
+                    decl.name.to_string(),
                     RecordEntry {
                         id,
                         type_params,
@@ -839,23 +854,26 @@ pub fn lower_program_with_mono_cap(
             match item {
                 Item::Machine(md) => {
                     for state in &md.states {
-                        *bare_counts.entry(state.name.clone()).or_insert(0) += 1;
-                        *surface_ctor_counts
-                            .entry(tagged_union_surface_ctor_key(&md.name, &state.name))
-                            .or_insert(0) += 1;
-                        // Machine states shadow same-named builtins (local-shadows-global).
-                        user_declared_variant_names.insert(state.name.clone());
-                    }
-                    for event in &md.events {
-                        *bare_counts.entry(event.name.clone()).or_insert(0) += 1;
+                        *bare_counts.entry(state.name.to_string()).or_insert(0) += 1;
                         *surface_ctor_counts
                             .entry(tagged_union_surface_ctor_key(
-                                &machine_event_surface_type(&md.name),
-                                &event.name,
+                                md.name.name.as_str(),
+                                state.name.name.as_str(),
+                            ))
+                            .or_insert(0) += 1;
+                        // Machine states shadow same-named builtins (local-shadows-global).
+                        user_declared_variant_names.insert(state.name.to_string());
+                    }
+                    for event in &md.events {
+                        *bare_counts.entry(event.name.to_string()).or_insert(0) += 1;
+                        *surface_ctor_counts
+                            .entry(tagged_union_surface_ctor_key(
+                                &machine_event_surface_type(md.name.name.as_str()),
+                                event.name.name.as_str(),
                             ))
                             .or_insert(0) += 1;
                         // Machine events shadow same-named builtins (local-shadows-global).
-                        user_declared_variant_names.insert(event.name.clone());
+                        user_declared_variant_names.insert(event.name.to_string());
                     }
                 }
                 Item::TypeDecl(td) if td.kind == TypeDeclKind::Enum => {
@@ -865,13 +883,16 @@ pub fn lower_program_with_mono_cap(
                     // another enum just as it is with a unit variant).
                     for body_item in &td.body {
                         if let TypeBodyItem::Variant(v) = body_item {
-                            *bare_counts.entry(v.name.clone()).or_insert(0) += 1;
+                            *bare_counts.entry(v.name.to_string()).or_insert(0) += 1;
                             *surface_ctor_counts
-                                .entry(tagged_union_surface_ctor_key(&td.name, &v.name))
+                                .entry(tagged_union_surface_ctor_key(
+                                    td.name.name.as_str(),
+                                    v.name.name.as_str(),
+                                ))
                                 .or_insert(0) += 1;
                             // Track root-program user variants for the
                             // local-shadows-global builtin registration guard.
-                            user_declared_variant_names.insert(v.name.clone());
+                            user_declared_variant_names.insert(v.name.to_string());
                         }
                     }
                 }
@@ -913,25 +934,28 @@ pub fn lower_program_with_mono_cap(
                         match item {
                             Item::Machine(md) => {
                                 for state in &md.states {
-                                    *bare_counts.entry(state.name.clone()).or_insert(0) += 1;
+                                    *bare_counts.entry(state.name.to_string()).or_insert(0) += 1;
                                     *surface_ctor_counts
-                                        .entry(tagged_union_surface_ctor_key(&md.name, &state.name))
+                                        .entry(tagged_union_surface_ctor_key(
+                                            md.name.name.as_str(),
+                                            state.name.name.as_str(),
+                                        ))
                                         .or_insert(0) += 1;
                                     // Machine states (pub or private) shadow same-named
                                     // builtins across the flat global registry, matching
                                     // the checker's global register_machine_decl walk.
-                                    user_declared_variant_names.insert(state.name.clone());
+                                    user_declared_variant_names.insert(state.name.to_string());
                                 }
                                 for event in &md.events {
-                                    *bare_counts.entry(event.name.clone()).or_insert(0) += 1;
+                                    *bare_counts.entry(event.name.to_string()).or_insert(0) += 1;
                                     *surface_ctor_counts
                                         .entry(tagged_union_surface_ctor_key(
-                                            &machine_event_surface_type(&md.name),
-                                            &event.name,
+                                            &machine_event_surface_type(md.name.name.as_str()),
+                                            event.name.name.as_str(),
                                         ))
                                         .or_insert(0) += 1;
                                     // Machine events shadow same-named builtins.
-                                    user_declared_variant_names.insert(event.name.clone());
+                                    user_declared_variant_names.insert(event.name.to_string());
                                 }
                             }
                             Item::TypeDecl(td) if td.kind == TypeDeclKind::Enum => {
@@ -942,11 +966,14 @@ pub fn lower_program_with_mono_cap(
                                 // visibility.
                                 for body_item in &td.body {
                                     if let TypeBodyItem::Variant(v) = body_item {
-                                        *bare_counts.entry(v.name.clone()).or_insert(0) += 1;
+                                        *bare_counts.entry(v.name.to_string()).or_insert(0) += 1;
                                         *surface_ctor_counts
-                                            .entry(tagged_union_surface_ctor_key(&td.name, &v.name))
+                                            .entry(tagged_union_surface_ctor_key(
+                                                td.name.name.as_str(),
+                                                v.name.name.as_str(),
+                                            ))
                                             .or_insert(0) += 1;
-                                        user_declared_variant_names.insert(v.name.clone());
+                                        user_declared_variant_names.insert(v.name.to_string());
                                     }
                                 }
                             }
@@ -986,19 +1013,29 @@ pub fn lower_program_with_mono_cap(
                     for (idx, state) in md.states.iter().enumerate() {
                         let qualified = format!("{}::{}", md.name, state.name);
                         ctx.machine_ctor_registry
-                            .insert(qualified, (md.name.clone(), idx));
-                        if bare_counts.get(&state.name).copied().unwrap_or(0) == 1 {
+                            .insert(qualified, (md.name.to_string(), idx));
+                        if bare_counts
+                            .get(state.name.name.as_str())
+                            .copied()
+                            .unwrap_or(0)
+                            == 1
+                        {
                             ctx.machine_ctor_registry
-                                .insert(state.name.clone(), (md.name.clone(), idx));
+                                .insert(state.name.to_string(), (md.name.to_string(), idx));
                         }
                     }
                     for (idx, event) in md.events.iter().enumerate() {
                         let qualified = format!("{}::{}", event_type_name, event.name);
                         ctx.machine_ctor_registry
                             .insert(qualified, (event_type_name.clone(), idx));
-                        if bare_counts.get(&event.name).copied().unwrap_or(0) == 1 {
+                        if bare_counts
+                            .get(event.name.name.as_str())
+                            .copied()
+                            .unwrap_or(0)
+                            == 1
+                        {
                             ctx.machine_ctor_registry
-                                .insert(event.name.clone(), (event_type_name.clone(), idx));
+                                .insert(event.name.to_string(), (event_type_name.clone(), idx));
                         }
                     }
                 }
@@ -1018,10 +1055,10 @@ pub fn lower_program_with_mono_cap(
                         if let TypeBodyItem::Variant(v) = body_item {
                             let qualified = format!("{}::{}", td.name, v.name);
                             ctx.machine_ctor_registry
-                                .insert(qualified, (td.name.clone(), variant_idx));
-                            if bare_counts.get(&v.name).copied().unwrap_or(0) == 1 {
+                                .insert(qualified, (td.name.to_string(), variant_idx));
+                            if bare_counts.get(v.name.name.as_str()).copied().unwrap_or(0) == 1 {
                                 ctx.machine_ctor_registry
-                                    .insert(v.name.clone(), (td.name.clone(), variant_idx));
+                                    .insert(v.name.to_string(), (td.name.to_string(), variant_idx));
                             }
                             variant_idx += 1;
                         }
@@ -1059,7 +1096,7 @@ pub fn lower_program_with_mono_cap(
                     continue;
                 }
                 if let Some(module) = mg.modules.get(mod_id) {
-                    let source_module = mod_id.path.join(".");
+                    let source_module = mod_id.dotted();
                     for (item, _) in &module.items {
                         match item {
                             Item::Machine(md) => {
@@ -1072,16 +1109,19 @@ pub fn lower_program_with_mono_cap(
                                         format!("{source_module}.{}::{}", md.name, state.name);
                                     ctx.machine_ctor_registry
                                         .insert(module_qualified, (source_state_type.clone(), idx));
-                                    let surface =
-                                        tagged_union_surface_ctor_key(&md.name, &state.name);
+                                    let surface = tagged_union_surface_ctor_key(
+                                        md.name.name.as_str(),
+                                        state.name.name.as_str(),
+                                    );
                                     if surface_ctor_counts.get(&surface).copied() == Some(1) {
                                         ctx.machine_ctor_registry
                                             .entry(surface)
                                             .or_insert_with(|| (source_state_type.clone(), idx));
                                     }
-                                    if bare_counts.get(&state.name).copied() == Some(1) {
+                                    if bare_counts.get(state.name.name.as_str()).copied() == Some(1)
+                                    {
                                         ctx.machine_ctor_registry
-                                            .entry(state.name.clone())
+                                            .entry(state.name.to_string())
                                             .or_insert_with(|| (source_state_type.clone(), idx));
                                     }
                                 }
@@ -1094,16 +1134,17 @@ pub fn lower_program_with_mono_cap(
                                         .insert(module_qualified, (source_event_type.clone(), idx));
                                     let surface = tagged_union_surface_ctor_key(
                                         &event_type_name,
-                                        &event.name,
+                                        event.name.name.as_str(),
                                     );
                                     if surface_ctor_counts.get(&surface).copied() == Some(1) {
                                         ctx.machine_ctor_registry
                                             .entry(surface)
                                             .or_insert_with(|| (source_event_type.clone(), idx));
                                     }
-                                    if bare_counts.get(&event.name).copied() == Some(1) {
+                                    if bare_counts.get(event.name.name.as_str()).copied() == Some(1)
+                                    {
                                         ctx.machine_ctor_registry
-                                            .entry(event.name.clone())
+                                            .entry(event.name.to_string())
                                             .or_insert_with(|| (source_event_type.clone(), idx));
                                     }
                                 }
@@ -1119,8 +1160,10 @@ pub fn lower_program_with_mono_cap(
                                             module_qualified,
                                             (source_enum_name.clone(), variant_idx),
                                         );
-                                        let surface =
-                                            tagged_union_surface_ctor_key(&td.name, &v.name);
+                                        let surface = tagged_union_surface_ctor_key(
+                                            td.name.name.as_str(),
+                                            v.name.name.as_str(),
+                                        );
                                         if surface_ctor_counts.get(&surface).copied() == Some(1) {
                                             ctx.machine_ctor_registry
                                                 .entry(surface)
@@ -1128,9 +1171,10 @@ pub fn lower_program_with_mono_cap(
                                                     (source_enum_name.clone(), variant_idx)
                                                 });
                                         }
-                                        if bare_counts.get(&v.name).copied() == Some(1) {
+                                        if bare_counts.get(v.name.name.as_str()).copied() == Some(1)
+                                        {
                                             ctx.machine_ctor_registry
-                                                .entry(v.name.clone())
+                                                .entry(v.name.to_string())
                                                 .or_insert_with(|| {
                                                     (source_enum_name.clone(), variant_idx)
                                                 });
@@ -1383,7 +1427,7 @@ pub fn lower_program_with_mono_cap(
                 continue;
             }
             if let Some(module) = mg.modules.get(mod_id) {
-                let source_module = mod_id.path.join(".");
+                let source_module = mod_id.dotted();
                 let diag_start = ctx.diagnostics.len();
                 // #2202: canonicalise this module's imported enum-payload and
                 // machine state/event member aliases under its own context.
@@ -1481,7 +1525,7 @@ pub fn lower_program_with_mono_cap(
                 continue;
             }
             if let Some(module) = mg.modules.get(mod_id) {
-                let source_module = mod_id.path.join(".");
+                let source_module = mod_id.dotted();
                 let diag_start = ctx.diagnostics.len();
                 // #2202: §4b lowers imported type-decl + machine members into
                 // the HIR descriptors MIR consumes; resolve their alias-typed
@@ -1683,7 +1727,11 @@ pub fn lower_program_with_mono_cap(
                 if !is_builtin_callable_impl(item) {
                     continue;
                 }
-                if let TypeExpr::Named { name, .. } = &impl_decl.target_type.0 {
+                if let TypeExpr::Named {
+                    path: named_path, ..
+                } = &impl_decl.target_type.0
+                {
+                    let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
                     let receiver_specific = is_builtin_receiver_impl(item);
                     let symbol_owner = if receiver_specific {
                         injected_builtin_impl_symbol_owner(name).to_string()
@@ -1692,10 +1740,14 @@ pub fn lower_program_with_mono_cap(
                     };
                     let impl_type_params = impl_type_param_names(impl_decl);
                     for method in &impl_decl.methods {
-                        let emitted_symbol =
-                            crate::node::HirImplBlock::method_symbol(&symbol_owner, &method.name);
-                        let source_symbol =
-                            crate::node::HirImplBlock::method_symbol(name, &method.name);
+                        let emitted_symbol = crate::node::HirImplBlock::method_symbol(
+                            &symbol_owner,
+                            method.name.name.as_str(),
+                        );
+                        let source_symbol = crate::node::HirImplBlock::method_symbol(
+                            name,
+                            method.name.name.as_str(),
+                        );
                         let declaration = ctx
                             .impl_method_declaration_ids
                             .get(&emitted_symbol)
@@ -1789,7 +1841,7 @@ pub fn lower_program_with_mono_cap(
     // Companion table: module_idx (1-based topo order) → FULL dotted module name
     // (e.g. "subpkg.helper"). Used alongside `file_import_module_idx` to set
     // `current_module_name` when lowering file-import items, mirroring the
-    // checker's `Checker::current_module` (`mod_id.path.join(".")`). Keying by
+    // checker's `Checker::current_module` (`mod_id.dotted()`). Keying by
     // the full path — not the short last segment — is what lets HIR's
     // `import_type_name_aliases` lookups hit the keys the checker wrote for
     // depth-≥2 importers.
@@ -1797,7 +1849,7 @@ pub fn lower_program_with_mono_cap(
     // whether their executable methods are needed or have checked successfully.
     let scope_failure = builtin_declarations.as_ref().and_then(|builtins| {
         let (source, span) = builtins.items.iter().find_map(|(item, span)| match item {
-            Item::TypeDecl(decl) if decl.name == "ScopeFailure" => Some((decl, span)),
+            Item::TypeDecl(decl) if decl.name == Ident::new("ScopeFailure") => Some((decl, span)),
             _ => None,
         })?;
         let canonical_name = "std.builtins.ScopeFailure";
@@ -1810,7 +1862,8 @@ pub fn lower_program_with_mono_cap(
             return None;
         };
         let mut source = source.clone();
-        source.name = canonical_name.to_string();
+        // The lowered declaration carries its canonical owner spelling.
+        source.name = Ident::new(canonical_name); // TRANSITION(P1): deleted by A1 commit 2
         let decl = ctx.lower_type_decl_with_identity(&source, span.clone(), declaration)?;
         ctx.type_classes
             .insert(canonical_name.to_string(), (decl.marker, None));
@@ -1839,7 +1892,7 @@ pub fn lower_program_with_mono_cap(
     if let Some(builtins) = builtin_declarations.as_ref() {
         for name in hew_types::actor_delivery::DECLARATIONS {
             let Some((source, span)) = builtins.items.iter().find_map(|(item, span)| match item {
-                Item::TypeDecl(decl) if decl.name == *name => Some((decl, span)),
+                Item::TypeDecl(decl) if decl.name.name.as_str() == *name => Some((decl, span)),
                 _ => None,
             }) else {
                 continue;
@@ -1855,7 +1908,7 @@ pub fn lower_program_with_mono_cap(
                 continue;
             };
             let mut source = source.clone();
-            source.name.clone_from(&canonical_name);
+            source.name = Ident::new(&canonical_name); // TRANSITION(P1): deleted by A1 commit 2
             let Some(decl) = ctx.lower_type_decl_with_identity(&source, span.clone(), declaration)
             else {
                 continue;
@@ -1928,14 +1981,18 @@ pub fn lower_program_with_mono_cap(
                 // catalog entry already supplies the semantics. Fail-closed:
                 // an unknown key produces `UnknownIntrinsic` instead of a
                 // silently-incorrect lowering.
-                if let Some(intrinsic_key) = ctx.intrinsic_declarations.get(&func.name).cloned() {
+                if let Some(intrinsic_key) = ctx
+                    .intrinsic_declarations
+                    .get(func.name.name.as_str())
+                    .cloned()
+                {
                     let known = crate::stdlib_catalog::entries()
                         .iter()
                         .any(|e| e.name == intrinsic_key);
                     if !known {
                         ctx.diagnostics.push(HirDiagnostic::new(
                             HirDiagnosticKind::UnknownIntrinsic {
-                                fn_name: func.name.clone(),
+                                fn_name: func.name.to_string(),
                                 intrinsic_key,
                             },
                             span.clone(),
@@ -2112,7 +2169,8 @@ pub fn lower_program_with_mono_cap(
                         .as_ref()
                         .map_or(ResolvedTy::Unit, |ret| ctx.lower_type(ret));
                     let provenance = extern_provenance(ctx.current_module_name.as_deref());
-                    let runtime_capability = extern_runtime_capability(&provenance, &func.name);
+                    let runtime_capability =
+                        extern_runtime_capability(&provenance, func.name.name.as_str());
                     let Some(declaration) = ctx.source_declaration(
                         span,
                         hew_types::DeclarationKind::ExternFunction,
@@ -2124,7 +2182,7 @@ pub fn lower_program_with_mono_cap(
                         id: ctx.ids.item(),
                         node: ctx.ids.node(),
                         declaration,
-                        name: func.name.clone(),
+                        name: func.name.to_string(),
                         abi: block.abi.clone(),
                         param_tys,
                         param_consume,
@@ -2200,9 +2258,9 @@ pub fn lower_program_with_mono_cap(
             if let Some(module) = mg.modules.get(mod_id) {
                 let module_idx = span_indices.module_base(mod_id).unwrap_or_default();
                 ctx.current_module_idx = module_idx;
-                let source_module = mod_id.path.join(".");
+                let source_module = mod_id.dotted();
                 // Match the checker's `current_module` key (full dotted path,
-                // `mod_id.path.join(".")`) so `import_type_name_aliases` lookups
+                // `mod_id.dotted()`) so `import_type_name_aliases` lookups
                 // resolve for depth-≥2 modules (e.g. "subpkg.helper"); the short
                 // last segment would miss the checker-written alias key.
                 ctx.current_module_name = Some(source_module.clone());
@@ -2220,7 +2278,7 @@ pub fn lower_program_with_mono_cap(
                     .filter_map(|(it, _)| {
                         if let Item::Function(f) = it {
                             if !f.visibility.is_pub() {
-                                return Some(f.name.clone());
+                                return Some(f.name.to_string());
                             }
                         }
                         None
@@ -2243,7 +2301,7 @@ pub fn lower_program_with_mono_cap(
                     .filter_map(|(it, _)| {
                         if let Item::Actor(actor) = it {
                             Some((
-                                actor.name.clone(),
+                                actor.name.to_string(),
                                 format!("{source_module}.{}", actor.name),
                             ))
                         } else {
@@ -2270,7 +2328,7 @@ pub fn lower_program_with_mono_cap(
                             let qualified = format!("{source_module}.{}", cd.name);
                             ctx.const_registry
                                 .get(&qualified)
-                                .map(|entry| (cd.name.clone(), entry.clone()))
+                                .map(|entry| (cd.name.to_string(), entry.clone()))
                         } else {
                             None
                         }
@@ -2311,7 +2369,7 @@ pub fn lower_program_with_mono_cap(
                             }
                         }
                         Item::Function(func)
-                            if imported_private_closure.contains(func.name.as_str()) =>
+                            if imported_private_closure.contains(func.name.name.as_str()) =>
                         {
                             if item_is_duplicated_in_distinct_leaf_module(
                                 program,
@@ -2393,7 +2451,7 @@ pub fn lower_program_with_mono_cap(
                                 let provenance =
                                     extern_provenance(ctx.current_module_name.as_deref());
                                 let runtime_capability =
-                                    extern_runtime_capability(&provenance, &func.name);
+                                    extern_runtime_capability(&provenance, func.name.name.as_str());
                                 let Some(declaration) = ctx.source_declaration(
                                     span,
                                     hew_types::DeclarationKind::ExternFunction,
@@ -2405,7 +2463,7 @@ pub fn lower_program_with_mono_cap(
                                     id: ctx.ids.item(),
                                     node: ctx.ids.node(),
                                     declaration,
-                                    name: func.name.clone(),
+                                    name: func.name.to_string(),
                                     abi: block.abi.clone(),
                                     param_tys,
                                     param_consume,
@@ -2480,49 +2538,49 @@ pub fn lower_program_with_mono_cap(
                                 continue;
                             }
                             if let TypeExpr::Named {
-                                name: self_type_name,
-                                ..
+                                path: named_path, ..
                             } = &impl_decl.target_type.0
                             {
-                                // Conservatively lower only the imported impl
-                                // methods that are provably safe cross-module;
-                                // skip the rest so the module still imports
-                                // cleanly and an actual call to a skipped method
-                                // fails closed downstream.
-                                //
-                                // A method is skipped when EITHER:
-                                //  - its body calls a bare name that resolves in
-                                //    neither the same-module rewrite map,
-                                //    `fn_registry` (which by now holds every
-                                //    seeded stdlib/runtime symbol and every
-                                //    same-module extern fn), a lexically-bound
-                                //    fn-typed parameter, nor the source builtin
-                                //    overload set — catches codegen-intercepted
-                                //    builtins that are not extern-declared, e.g.
-                                //    `Stream.recv` → `hew_stream_next_layout`; OR
-                                //  - its signature names a user type that would
-                                //    not resolve at the MIR boundary — a
-                                //    cross-module dotted type (`fs.IoError`) or a
-                                //    user trait/type used as a generic argument
-                                //    (an actor handle such as `WebSocketHandler`). Only
-                                //    primitives/builtins and the impl's own self
-                                //    type are admitted.
-                                //
-                                // This is intentionally tight: it captures the
-                                // fluent-builder shape (e.g. JSON `with_*` /
-                                // `push_*`, params `string`/`i64`/`f64`/`bool`,
-                                // returning the opaque self handle) without
-                                // eagerly lowering methods that would unmask
-                                // pre-existing per-module cross-module-resolution
-                                // gaps. Lifting the signature restriction needs
-                                // imported user-type/trait registration at the
-                                // MIR boundary — a separate lane.
-                                // Generic type parameters in scope on the impl
-                                // block. A signature naming one (`Option<B>` on
-                                // `impl<I, A, B> Iterator for Map<I, A, B>`) is a
-                                // carrier resolved at monomorphisation time, not a
-                                // The pre-lowering body plan and this emitter
-                                // share one exact eligibility authority.
+                                let self_type_name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
+                                                                              // Conservatively lower only the imported impl
+                                                                              // methods that are provably safe cross-module;
+                                                                              // skip the rest so the module still imports
+                                                                              // cleanly and an actual call to a skipped method
+                                                                              // fails closed downstream.
+                                                                              //
+                                                                              // A method is skipped when EITHER:
+                                                                              //  - its body calls a bare name that resolves in
+                                                                              //    neither the same-module rewrite map,
+                                                                              //    `fn_registry` (which by now holds every
+                                                                              //    seeded stdlib/runtime symbol and every
+                                                                              //    same-module extern fn), a lexically-bound
+                                                                              //    fn-typed parameter, nor the source builtin
+                                                                              //    overload set — catches codegen-intercepted
+                                                                              //    builtins that are not extern-declared, e.g.
+                                                                              //    `Stream.recv` → `hew_stream_next_layout`; OR
+                                                                              //  - its signature names a user type that would
+                                                                              //    not resolve at the MIR boundary — a
+                                                                              //    cross-module dotted type (`fs.IoError`) or a
+                                                                              //    user trait/type used as a generic argument
+                                                                              //    (an actor handle such as `WebSocketHandler`). Only
+                                                                              //    primitives/builtins and the impl's own self
+                                                                              //    type are admitted.
+                                                                              //
+                                                                              // This is intentionally tight: it captures the
+                                                                              // fluent-builder shape (e.g. JSON `with_*` /
+                                                                              // `push_*`, params `string`/`i64`/`f64`/`bool`,
+                                                                              // returning the opaque self handle) without
+                                                                              // eagerly lowering methods that would unmask
+                                                                              // pre-existing per-module cross-module-resolution
+                                                                              // gaps. Lifting the signature restriction needs
+                                                                              // imported user-type/trait registration at the
+                                                                              // MIR boundary — a separate lane.
+                                                                              // Generic type parameters in scope on the impl
+                                                                              // block. A signature naming one (`Option<B>` on
+                                                                              // `impl<I, A, B> Iterator for Map<I, A, B>`) is a
+                                                                              // carrier resolved at monomorphisation time, not a
+                                                                              // The pre-lowering body plan and this emitter
+                                                                              // share one exact eligibility authority.
                                 let skip_methods =
                                     ctx.imported_impl_skip_methods(impl_decl, &source_module);
                                 // Impl method symbols are declaration-owned,
@@ -2579,9 +2637,10 @@ pub fn lower_program_with_mono_cap(
                         Item::Const(const_decl) => {
                             let qualified = format!("{source_module}.{}", const_decl.name);
                             if let Some(entry) = ctx.const_registry.get(&qualified).cloned() {
-                                ctx.const_registry.insert(const_decl.name.clone(), entry);
+                                ctx.const_registry
+                                    .insert(const_decl.name.to_string(), entry);
                                 let lowered = ctx.lower_const(const_decl, span.clone());
-                                ctx.const_registry.remove(&const_decl.name);
+                                ctx.const_registry.remove(const_decl.name.name.as_str());
                                 if let Some(lowered) = lowered {
                                     items.push(HirItem::Const(lowered));
                                 }
@@ -2752,7 +2811,7 @@ pub fn lower_program_with_mono_cap(
                             id: ctx.ids.item(),
                             node: ctx.ids.node(),
                             declaration,
-                            name: function.name.clone(),
+                            name: function.name.to_string(),
                             abi: block.abi.clone(),
                             param_tys: function
                                 .params
@@ -2770,7 +2829,7 @@ pub fn lower_program_with_mono_cap(
                                 .map_or(ResolvedTy::Unit, |ty| ctx.lower_type(ty)),
                             runtime_capability: extern_runtime_capability(
                                 &provenance,
-                                &function.name,
+                                function.name.name.as_str(),
                             ),
                             provenance,
                             span: function.span.clone(),
@@ -2779,9 +2838,13 @@ pub fn lower_program_with_mono_cap(
                 }
                 if let Item::Impl(impl_decl) = item {
                     if is_builtin_callable_impl(item) {
-                        let TypeExpr::Named { name, .. } = &impl_decl.target_type.0 else {
+                        let TypeExpr::Named {
+                            path: named_path, ..
+                        } = &impl_decl.target_type.0
+                        else {
                             continue;
                         };
+                        let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
                         let receiver_specific = is_builtin_receiver_impl(item);
                         let symbol_owner = if receiver_specific {
                             injected_builtin_impl_symbol_owner(name).to_string()
@@ -2795,11 +2858,11 @@ pub fn lower_program_with_mono_cap(
                                 !builtin_callable_impl_method_symbols.contains(
                                     &crate::node::HirImplBlock::method_symbol(
                                         &symbol_owner,
-                                        &method.name,
+                                        method.name.name.as_str(),
                                     ),
                                 )
                             })
-                            .map(|method| method.name.clone())
+                            .map(|method| method.name.to_string())
                             .collect();
                         if skipped_methods.len() == impl_decl.methods.len() {
                             continue;
@@ -2812,11 +2875,13 @@ pub fn lower_program_with_mono_cap(
                         // Alias the exact checker declaration onto that linker
                         // projection only inside this injected-source scope.
                         for method in &impl_decl.methods {
-                            let source_symbol =
-                                crate::node::HirImplBlock::method_symbol(name, &method.name);
+                            let source_symbol = crate::node::HirImplBlock::method_symbol(
+                                name,
+                                method.name.name.as_str(),
+                            );
                             let emitted_symbol = crate::node::HirImplBlock::method_symbol(
                                 &symbol_owner,
-                                &method.name,
+                                method.name.name.as_str(),
                             );
                             if !builtin_callable_impl_method_symbols.contains(&emitted_symbol) {
                                 continue;

@@ -79,7 +79,7 @@ pub(super) fn build_module_source_map(
             continue;
         };
         module_sources.insert(
-            module_id.path.join("."),
+            module_id.dotted(),
             DiagnosticSource {
                 uri: open_document_uri(&uri, documents),
                 line_offsets: compute_line_offsets(&source),

@@ -1,6 +1,7 @@
 //! Postfix `?`, result coercion and scope recovery lowering.
 
 use super::*;
+use hew_parser::ast::Ident;
 
 impl LowerCtx {
     pub(super) fn unsupported_postfix_try(
@@ -142,7 +143,7 @@ impl LowerCtx {
         &mut self,
         operand: &Spanned<Expr>,
         body: &Spanned<Expr>,
-        error: Option<&Spanned<String>>,
+        error: Option<&Spanned<Ident>>,
         span: &Span,
     ) -> (HirExprKind, ResolvedTy) {
         let Some(recovery) = self.recovery_kinds.get(&self.mk_key(span)).cloned() else {
@@ -153,6 +154,7 @@ impl LowerCtx {
                 return self
                     .unsupported_postfix_try(span, "scope recovery requires an error binder");
             };
+            let name = name.name.as_str();
             return self.lower_scope_recovery(operand, body, name, binding_span, failure_ty, span);
         }
         let scrutinee = self.lower_expr(operand, IntentKind::Read);
@@ -189,12 +191,17 @@ impl LowerCtx {
         self.push_scope();
         let error_bindings = if let (Some((name, binding_span)), Some(error_ty)) = (error, error_ty)
         {
-            let binding = self.bind(name.clone(), error_ty.clone(), false, binding_span.clone());
+            let binding = self.bind(
+                name.to_string(),
+                error_ty.clone(),
+                false,
+                binding_span.clone(),
+            );
             vec![HirMatchArmBinding {
                 span: binding.span.clone(),
                 binding: binding.id,
                 field_idx: 0,
-                name: name.clone(),
+                name: name.to_string(),
                 ty: error_ty,
             }]
         } else {

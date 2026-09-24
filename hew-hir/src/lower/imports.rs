@@ -1,6 +1,7 @@
 //! Import and module-identity helpers for file and package items.
 
 use super::*;
+use hew_parser::ast::Ident;
 
 /// Map each *spliced file-import* entry in `program.items` to the `module_idx`
 /// the checker stamped its `SpanKey` facts with, so HIR's `mk_key` lookups for
@@ -81,7 +82,7 @@ pub(super) fn file_import_item_module_indices(program: &Program) -> HashMap<usiz
 /// http and websocket each define their own `Server`/`impl ServerMethods for
 /// Server`). A bare-name skip would silently drop a package-import impl that
 /// merely shares a name with a file-import/root impl; an origin skip cannot.
-pub(super) fn file_import_module_ids(program: &Program) -> HashSet<hew_parser::module::ModuleId> {
+pub(super) fn file_import_module_ids(program: &Program) -> HashSet<hew_parser::module::ModulePath> {
     let mut ids = HashSet::new();
     let Some(mg) = &program.module_graph else {
         return ids;
@@ -161,8 +162,8 @@ pub(super) fn file_import_module_ids(program: &Program) -> HashSet<hew_parser::m
 /// and `std::net::http::http_client`) linking.
 pub(super) fn preferred_package_module_ids(
     program: &Program,
-    file_import_modules: &HashSet<hew_parser::module::ModuleId>,
-) -> HashSet<hew_parser::module::ModuleId> {
+    file_import_modules: &HashSet<hew_parser::module::ModulePath>,
+) -> HashSet<hew_parser::module::ModulePath> {
     use std::path::{Path, PathBuf};
 
     let mut preferred = HashSet::new();
@@ -174,7 +175,7 @@ pub(super) fn preferred_package_module_ids(
     // `topo_order` so each carries its position, giving the equal-set tiebreak
     // for free (earlier position survives). Modules absent from `mg.modules`
     // are never lowered, so they cannot subsume or be subsumed.
-    let mut candidates: Vec<(&hew_parser::module::ModuleId, HashSet<&Path>, usize)> = Vec::new();
+    let mut candidates: Vec<(&hew_parser::module::ModulePath, HashSet<&Path>, usize)> = Vec::new();
     for (pos, id) in mg.topo_order.iter().enumerate() {
         if *id == mg.root || file_import_modules.contains(id) {
             continue;
@@ -216,8 +217,8 @@ pub(super) fn preferred_package_module_ids(
 
 pub(super) fn item_is_duplicated_in_preferred_module(
     program: &Program,
-    preferred_modules: &HashSet<hew_parser::module::ModuleId>,
-    current_module: &hew_parser::module::ModuleId,
+    preferred_modules: &HashSet<hew_parser::module::ModulePath>,
+    current_module: &hew_parser::module::ModulePath,
     item: &Item,
 ) -> bool {
     if preferred_modules.contains(current_module) {
@@ -243,8 +244,8 @@ pub(super) fn item_is_duplicated_in_preferred_module(
 /// owner and must be skipped during directory-module function emission.
 pub(super) fn item_is_duplicated_in_distinct_leaf_module(
     program: &Program,
-    preferred_modules: &HashSet<hew_parser::module::ModuleId>,
-    current_module: &hew_parser::module::ModuleId,
+    preferred_modules: &HashSet<hew_parser::module::ModulePath>,
+    current_module: &hew_parser::module::ModulePath,
     item: &Item,
     item_span: &Span,
 ) -> bool {
@@ -254,8 +255,8 @@ pub(super) fn item_is_duplicated_in_distinct_leaf_module(
     let Some(module_graph) = &program.module_graph else {
         return false;
     };
-    let current_leaf = current_module.path.last();
-    let appears_in = |module_id: &hew_parser::module::ModuleId| {
+    let current_leaf = current_module.segments.last();
+    let appears_in = |module_id: &hew_parser::module::ModulePath| {
         module_graph.modules.get(module_id).is_some_and(|module| {
             module
                 .items
@@ -265,27 +266,27 @@ pub(super) fn item_is_duplicated_in_distinct_leaf_module(
     };
     if preferred_modules
         .iter()
-        .any(|module_id| module_id.path.last() == current_leaf && appears_in(module_id))
+        .any(|module_id| module_id.segments.last() == current_leaf && appears_in(module_id))
     {
         return false;
     }
     preferred_modules
         .iter()
-        .any(|module_id| module_id.path.last() != current_leaf && appears_in(module_id))
+        .any(|module_id| module_id.segments.last() != current_leaf && appears_in(module_id))
 }
 
 pub(super) fn item_declares_type_name(item: &Item, type_name: &str) -> bool {
     match item {
-        Item::TypeDecl(decl) => decl.name == type_name,
-        Item::Record(decl) => decl.name == type_name,
+        Item::TypeDecl(decl) => decl.name == Ident::new(type_name),
+        Item::Record(decl) => decl.name == Ident::new(type_name),
         _ => false,
     }
 }
 
 pub(super) fn imported_type_name_collides(
     program: &Program,
-    file_import_modules: &HashSet<hew_parser::module::ModuleId>,
-    preferred_modules: &HashSet<hew_parser::module::ModuleId>,
+    file_import_modules: &HashSet<hew_parser::module::ModulePath>,
+    preferred_modules: &HashSet<hew_parser::module::ModulePath>,
     type_name: &str,
 ) -> bool {
     let Some(module_graph) = &program.module_graph else {

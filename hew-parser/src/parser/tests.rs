@@ -115,9 +115,9 @@ fn parse_supervisor_child_dotted_module_qualified_type() {
     let Item::Supervisor(sd) = &result.program.items[0].0 else {
         panic!("expected supervisor, got {:?}", result.program.items[0].0);
     };
-    assert_eq!(sd.children[0].actor_type, "bank.Account");
+    assert_eq!(sd.children[0].actor_type.to_string(), "bank.Account");
     assert_eq!(sd.children[0].args.len(), 1);
-    assert_eq!(sd.children[1].actor_type, "Local");
+    assert_eq!(sd.children[1].actor_type.to_string(), "Local");
 }
 
 /// A supervisor takes construction-time config params: `supervisor App(config: T)`.
@@ -134,10 +134,10 @@ fn parse_supervisor_construction_time_config_params() {
         panic!("expected supervisor, got {:?}", result.program.items[0].0);
     };
     assert_eq!(sd.params.len(), 1, "one config param");
-    assert_eq!(sd.params[0].name, "config");
+    assert_eq!(sd.params[0].name, Ident::new("config"));
     // The child init arg references the config binding (a non-literal expr).
     assert_eq!(sd.children[0].args.len(), 1);
-    assert_eq!(sd.children[0].args[0].0, "capacity");
+    assert_eq!(sd.children[0].args[0].0, Ident::new("capacity"));
 }
 
 /// Pool arity is the per-child `count:` clause, parsed beside `restart:` and
@@ -162,7 +162,7 @@ fn parse_pool_count_clause_lands_beside_the_init_args() {
         1,
         "the parenthesised list holds only the actor's own fields"
     );
-    assert_eq!(child.args[0].0, "value");
+    assert_eq!(child.args[0].0, Ident::new("value"));
     assert_eq!(child.restart, Some(RestartPolicy::Transient));
 }
 
@@ -182,7 +182,7 @@ fn parse_pool_child_sets_an_actor_field_named_count() {
     };
     let child = &sd.children[0];
     assert_eq!(child.args.len(), 1, "the `count` field stays an init arg");
-    assert_eq!(child.args[0].0, "count");
+    assert_eq!(child.args[0].0, Ident::new("count"));
     assert!(child.count.is_some(), "arity comes from the clause");
 }
 
@@ -248,7 +248,7 @@ fn parse_static_child_count_init_arg_stays_a_field() {
     let Item::Supervisor(sd) = &result.program.items[0].0 else {
         panic!("expected supervisor");
     };
-    assert_eq!(sd.children[0].args[0].0, "count");
+    assert_eq!(sd.children[0].args[0].0, Ident::new("count"));
     assert!(sd.children[0].count.is_none());
 }
 
@@ -342,7 +342,7 @@ fn parse_actor_decl() {
     assert_eq!(result.program.items.len(), 1);
     if let Item::Actor(actor) = &result.program.items[0].0 {
         assert_eq!(actor.fields.len(), 1);
-        assert_eq!(actor.fields[0].name, "count");
+        assert_eq!(actor.fields[0].name, Ident::new("count"));
         assert_eq!(actor.receive_fns.len(), 1);
     } else {
         panic!("expected actor item");
@@ -642,8 +642,8 @@ fn record_identifier_does_not_disrupt_sibling_methods() {
         2,
         "both receive functions must be parsed"
     );
-    assert_eq!(actor.receive_fns[0].name, "record");
-    assert_eq!(actor.receive_fns[1].name, "add");
+    assert_eq!(actor.receive_fns[0].name, Ident::new("record"));
+    assert_eq!(actor.receive_fns[1].name, Ident::new("add"));
 }
 
 #[test]
@@ -667,13 +667,13 @@ fn parse_receive_fn_type_params_and_where_clause() {
     if let Item::Actor(actor) = &result.program.items[0].0 {
         assert_eq!(actor.receive_fns.len(), 1);
         let rf = &actor.receive_fns[0];
-        assert_eq!(rf.name, "bar");
+        assert_eq!(rf.name, Ident::new("bar"));
         let tps = rf.type_params.as_ref().expect("expected type_params");
         assert_eq!(tps.len(), 1);
-        assert_eq!(tps[0].name, "T");
+        assert_eq!(tps[0].name, Ident::new("T"));
         let wc = rf.where_clause.as_ref().expect("expected where_clause");
         assert_eq!(wc.predicates.len(), 1);
-        assert_eq!(wc.predicates[0].bounds[0].name, "Display");
+        assert_eq!(wc.predicates[0].bounds[0].path.to_string(), "Display");
     } else {
         panic!("expected actor item");
     }
@@ -688,8 +688,8 @@ fn parse_where_clause_trailing_comma_fn() {
     if let Item::Function(f) = &result.program.items[0].0 {
         let wc = f.where_clause.as_ref().expect("expected where_clause");
         assert_eq!(wc.predicates.len(), 2);
-        assert_eq!(wc.predicates[0].bounds[0].name, "Display");
-        assert_eq!(wc.predicates[1].bounds[0].name, "Clone");
+        assert_eq!(wc.predicates[0].bounds[0].path.to_string(), "Display");
+        assert_eq!(wc.predicates[1].bounds[0].path.to_string(), "Clone");
     } else {
         panic!("expected function item");
     }
@@ -705,8 +705,8 @@ fn parse_where_clause_trailing_comma_receive_fn() {
         let rf = &actor.receive_fns[0];
         let wc = rf.where_clause.as_ref().expect("expected where_clause");
         assert_eq!(wc.predicates.len(), 2);
-        assert_eq!(wc.predicates[0].bounds[0].name, "Display");
-        assert_eq!(wc.predicates[1].bounds[0].name, "Clone");
+        assert_eq!(wc.predicates[0].bounds[0].path.to_string(), "Display");
+        assert_eq!(wc.predicates[1].bounds[0].path.to_string(), "Clone");
     } else {
         panic!("expected actor item");
     }
@@ -721,7 +721,7 @@ fn parse_where_clause_single_trailing_comma() {
     if let Item::Function(f) = &result.program.items[0].0 {
         let wc = f.where_clause.as_ref().expect("expected where_clause");
         assert_eq!(wc.predicates.len(), 1);
-        assert_eq!(wc.predicates[0].bounds[0].name, "Display");
+        assert_eq!(wc.predicates[0].bounds[0].path.to_string(), "Display");
     } else {
         panic!("expected function item");
     }
@@ -893,11 +893,11 @@ fn parse_match_block_arm_precedes_contextual_variant_pattern() {
     let names = arms
         .iter()
         .map(|arm| match &arm.pattern.0 {
-            Pattern::ContextVariant(variant) => variant.name.clone(),
+            Pattern::ContextVariant(variant) => variant.name,
             other => panic!("expected contextual variant pattern, got {other:?}"),
         })
         .collect::<Vec<_>>();
-    assert_eq!(names, ["Ok", "Err"]);
+    assert_eq!(names, [Ident::new("Ok"), Ident::new("Err")]);
 }
 
 /// Negative control for `parse_match_block_arm_precedes_contextual_variant_pattern`:
@@ -930,7 +930,7 @@ fn block_expression_inside_a_match_arm_keeps_dot_postfix() {
         matches!(
             &value.0,
             Expr::MethodCall { receiver, method, .. }
-                if method == "len" && matches!(receiver.0, Expr::Block(_))
+                if method.0.name.as_str() == "len" && matches!(receiver.0, Expr::Block(_))
         ),
         "the block inside the arm must still take `.len()`, got {:?}",
         value.0
@@ -1020,7 +1020,7 @@ fn parse_mutable_function_param() {
     match &result.program.items[0].0 {
         Item::Function(f) => {
             assert_eq!(f.params.len(), 1);
-            assert_eq!(f.params[0].name, "x");
+            assert_eq!(f.params[0].name, Ident::new("x"));
             assert!(f.params[0].is_mutable);
         }
         other => panic!("expected function item, got: {other:?}"),
@@ -1093,7 +1093,7 @@ fn parse_labeled_while_break_continue() {
     if let Item::Function(ref f) = result.program.items[0].0 {
         // Third statement should be the labeled while
         if let Stmt::While { ref label, .. } = f.body.stmts[1].0 {
-            assert_eq!(label.as_deref(), Some("outer"));
+            assert_eq!(*label, Some(Ident::new("outer")));
         } else {
             panic!("expected While statement");
         }
@@ -1110,10 +1110,10 @@ fn parse_context_reader_as_identifier_expression() {
     let Item::Function(function) = &result.program.items[0].0 else {
         panic!("expected function item");
     };
-    let Some((Expr::Identifier(name), _)) = function.body.trailing_expr.as_deref() else {
+    let Some((Expr::Ident(name), _)) = function.body.trailing_expr.as_deref() else {
         panic!("expected context reader identifier tail");
     };
-    assert_eq!(name, "@actor_id");
+    assert_eq!(*name, Ident::new("@actor_id"));
 }
 
 #[test]
@@ -1128,7 +1128,7 @@ fn parse_labeled_loop() {
     assert!(result.errors.is_empty());
     if let Item::Function(ref f) = result.program.items[0].0 {
         if let Stmt::Loop { ref label, .. } = f.body.stmts[0].0 {
-            assert_eq!(label.as_deref(), Some("top"));
+            assert_eq!(*label, Some(Ident::new("top")));
         } else {
             panic!("expected Loop statement");
         }
@@ -1237,7 +1237,7 @@ fn async_is_accepted_as_an_identifier() {
     let Item::Function(function) = &result.program.items[0].0 else {
         panic!("expected Function item");
     };
-    assert_eq!(function.name, "async");
+    assert_eq!(function.name, Ident::new("async"));
 }
 
 #[test]
@@ -1339,7 +1339,11 @@ fn parse_pattern_contextual_keywords() {
                 arms[0].pattern
             );
         };
-        assert_eq!(name, *kw, "pattern name mismatch for keyword '{kw}'");
+        assert_eq!(
+            name.name.as_str(),
+            *kw,
+            "pattern name mismatch for keyword '{kw}'"
+        );
     }
 }
 
@@ -1428,8 +1432,8 @@ fn parse_interpolated_strings_preserve_nul_and_expression_parts() {
             panic!("expected interpolated string binding");
         };
         assert!(
-            matches!(&parts[..], [StringPart::Literal(text), StringPart::Expr((Expr::Identifier(name), _))]
-            if text.as_bytes() == b"a\0" && name == "name")
+            matches!(&parts[..], [StringPart::Literal(text), StringPart::Expr((Expr::Ident(name), _))]
+            if text.as_bytes() == b"a\0" && name.name.as_str() == "name")
         );
     }
 }
@@ -1467,8 +1471,8 @@ fn parse_interpolated_string_structural_format_part() {
     };
     assert!(matches!(
         parts.as_slice(),
-        [StringPart::Literal(prefix), StringPart::StructuralExpr((Expr::Identifier(name), _))]
-            if prefix == "value=" && name == "item"
+        [StringPart::Literal(prefix), StringPart::StructuralExpr((Expr::Ident(name), _))]
+            if prefix == "value=" && name.name.as_str() == "item"
     ));
 }
 
@@ -1510,7 +1514,7 @@ fn parse_interpolated_string_shared_escapes_decode_and_escaped_delimiters_stay_l
     assert_eq!(parts[0], StringPart::Literal("left { } A ".to_string()));
     assert!(matches!(
         parts[1],
-        StringPart::Expr((Expr::Identifier(ref name), _)) if name == "name"
+        StringPart::Expr((Expr::Ident(ref name), _)) if name.name.as_str() == "name"
     ));
 }
 
@@ -2032,7 +2036,7 @@ fn submission_is_an_ordinary_call_and_send_is_an_ordinary_name() {
         parse("fn main() { let outcome = policy(worker, on_full: .Wait).process(job); }");
     assert!(submitted.errors.is_empty(), "{:?}", submitted.errors);
     assert!(
-        matches!(first_let_value(&submitted), Expr::MethodCall { method, .. } if method == "process")
+        matches!(first_let_value(&submitted), Expr::MethodCall { method, .. } if method.0.name.as_str() == "process")
     );
     for source in [
         "fn main() { let outcome = channel.send(value); }",
@@ -2059,7 +2063,7 @@ fn parse_clone_prefix_expression() {
     match first_let_value(&result) {
         Expr::Clone(operand) => {
             assert!(
-                matches!(&operand.0, Expr::Identifier(name) if name == "x"),
+                matches!(&operand.0, Expr::Ident(name) if name.name.as_str() == "x"),
                 "clone operand should be identifier `x`, got: {:?}",
                 operand.0
             );
@@ -2076,7 +2080,7 @@ fn parse_clone_prefix_takes_whole_postfix_chain() {
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
     match first_let_value(&result) {
         Expr::Clone(operand) => assert!(
-            matches!(&operand.0, Expr::FieldAccess { field, .. } if field == "field"),
+            matches!(&operand.0, Expr::FieldAccess { field, .. } if field.0.name.as_str() == "field"),
             "clone operand should be the field access, got: {:?}",
             operand.0
         ),
@@ -2112,7 +2116,7 @@ fn parse_clone_call_is_not_a_prefix() {
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
     match first_let_value(&result) {
         Expr::Call { function, .. } => assert!(
-            matches!(&function.0, Expr::Identifier(name) if name == "clone"),
+            matches!(&function.0, Expr::Ident(name) if name.name.as_str() == "clone"),
             "expected a call to `clone`, got: {:?}",
             function.0
         ),
@@ -2163,7 +2167,7 @@ fn parse_import_statement() {
     let result = parse(source);
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
     if let Item::Import(imp) = &result.program.items[0].0 {
-        assert_eq!(imp.path, vec!["std", "fs"]);
+        assert_eq!(imp.path.to_string(), "std.fs");
     } else {
         panic!("expected import");
     }
@@ -2177,14 +2181,14 @@ fn parse_dotted_import_with_self_and_aliases() {
     let Item::Import(import) = &result.program.items[0].0 else {
         panic!("expected import");
     };
-    assert_eq!(import.path, ["app", "net", "http"]);
+    assert_eq!(import.path.to_string(), "app.net.http");
     let Some(ImportSpec::Names(names)) = &import.spec else {
         panic!("expected selected names");
     };
-    assert_eq!(names[0].name, "self");
-    assert_eq!(names[0].alias.as_deref(), Some("transport"));
-    assert_eq!(names[1].name, "Client");
-    assert_eq!(names[1].alias.as_deref(), Some("C"));
+    assert_eq!(names[0].name, Ident::new("self"));
+    assert_eq!(names[0].alias, Some(Ident::new("transport")));
+    assert_eq!(names[1].name, Ident::new("Client"));
+    assert_eq!(names[1].alias, Some(Ident::new("C")));
 }
 
 #[test]
@@ -2225,7 +2229,7 @@ fn parse_import_actor_path_segment() {
     let result = parse(source);
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
     if let Item::Import(imp) = &result.program.items[0].0 {
-        assert_eq!(imp.path, vec!["std", "actor", "monitor"]);
+        assert_eq!(imp.path.to_string(), "std.actor.monitor");
     } else {
         panic!("expected import");
     }
@@ -2237,11 +2241,11 @@ fn parse_import_machine_path_segment() {
     let result = parse(source);
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
     if let Item::Import(imp) = &result.program.items[0].0 {
-        assert_eq!(imp.path, vec!["src", "workflow", "machine"]);
+        assert_eq!(imp.path.to_string(), "src.workflow.machine");
         let Some(ImportSpec::Names(names)) = &imp.spec else {
             panic!("expected selective import spec");
         };
-        assert_eq!(names[0].name, "Machine");
+        assert_eq!(names[0].name, Ident::new("Machine"));
     } else {
         panic!("expected import");
     }
@@ -2268,7 +2272,7 @@ fn parse_import_type_decl_keyword_path_segments() {
             result.errors
         );
         if let Item::Import(imp) = &result.program.items[0].0 {
-            assert_eq!(imp.path, vec!["src", kw, "helpers"]);
+            assert_eq!(imp.path.to_string(), format!("src.{kw}.helpers"));
         } else {
             panic!("expected import for segment `{kw}`");
         }
@@ -2447,9 +2451,9 @@ fn extern_rt_block_single_fn() {
     };
     assert_eq!(block.abi, "rt");
     assert_eq!(block.functions.len(), 1);
-    assert_eq!(block.functions[0].name, "println");
+    assert_eq!(block.functions[0].name, Ident::new("println"));
     assert_eq!(block.functions[0].params.len(), 1);
-    assert_eq!(block.functions[0].params[0].name, "s");
+    assert_eq!(block.functions[0].params[0].name, Ident::new("s"));
 }
 
 #[test]
@@ -2463,9 +2467,9 @@ fn extern_rt_block_multiple_fns() {
     };
     assert_eq!(block.abi, "rt");
     assert_eq!(block.functions.len(), 3);
-    assert_eq!(block.functions[0].name, "println");
-    assert_eq!(block.functions[1].name, "print");
-    assert_eq!(block.functions[2].name, "assert");
+    assert_eq!(block.functions[0].name, Ident::new("println"));
+    assert_eq!(block.functions[1].name, Ident::new("print"));
+    assert_eq!(block.functions[2].name, Ident::new("assert"));
 }
 
 #[test]
@@ -2494,7 +2498,7 @@ fn extern_unknown_abi_accepted_at_parse_level() {
     };
     assert_eq!(block.abi, "xyz");
     assert_eq!(block.functions.len(), 1);
-    assert_eq!(block.functions[0].name, "foo");
+    assert_eq!(block.functions[0].name, Ident::new("foo"));
 }
 
 #[test]
@@ -2515,7 +2519,7 @@ fn join_is_an_ordinary_identifier() {
         {
             assert!(
                 matches!(&val.0, Expr::Call { function, .. }
-                    if matches!(&function.0, Expr::Identifier(name) if name == "join")),
+                    if matches!(&function.0, Expr::Ident(name) if name.name.as_str() == "join")),
                 "expected a call to identifier `join`, got {:?}",
                 val.0
             );
@@ -2534,13 +2538,13 @@ fn parse_import_alias() {
     let result = parse(source);
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
     if let Item::Import(imp) = &result.program.items[0].0 {
-        assert_eq!(imp.path, vec!["std", "net"]);
+        assert_eq!(imp.path.to_string(), "std.net");
         if let Some(ImportSpec::Names(names)) = &imp.spec {
             assert_eq!(names.len(), 2);
-            assert_eq!(names[0].name, "http");
-            assert_eq!(names[0].alias.as_deref(), Some("h"));
-            assert_eq!(names[1].name, "websocket");
-            assert_eq!(names[1].alias.as_deref(), Some("ws"));
+            assert_eq!(names[0].name, Ident::new("http"));
+            assert_eq!(names[0].alias, Some(Ident::new("h")));
+            assert_eq!(names[1].name, Ident::new("websocket"));
+            assert_eq!(names[1].alias, Some(Ident::new("ws")));
         } else {
             panic!("expected ImportSpec::Names, got {:?}", imp.spec);
         }
@@ -2557,8 +2561,8 @@ fn parse_import_alias_single() {
     if let Item::Import(imp) = &result.program.items[0].0 {
         if let Some(ImportSpec::Names(names)) = &imp.spec {
             assert_eq!(names.len(), 1);
-            assert_eq!(names[0].name, "foo");
-            assert_eq!(names[0].alias.as_deref(), Some("bar"));
+            assert_eq!(names[0].name, Ident::new("foo"));
+            assert_eq!(names[0].alias, Some(Ident::new("bar")));
         } else {
             panic!("expected ImportSpec::Names");
         }
@@ -2574,9 +2578,9 @@ fn parse_import_whole_module_alias() {
     let result = parse(source);
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
     if let Item::Import(imp) = &result.program.items[0].0 {
-        assert_eq!(imp.path, vec!["std", "net"]);
+        assert_eq!(imp.path.to_string(), "std.net");
         assert!(imp.spec.is_none(), "whole-module alias keeps spec None");
-        assert_eq!(imp.module_alias.as_deref(), Some("n"));
+        assert_eq!(imp.module_alias, Some(Ident::new("n")));
     } else {
         panic!("expected import item");
     }
@@ -2626,9 +2630,9 @@ fn parse_import_no_alias_preserves_name() {
     if let Item::Import(imp) = &result.program.items[0].0 {
         if let Some(ImportSpec::Names(names)) = &imp.spec {
             assert_eq!(names.len(), 2);
-            assert_eq!(names[0].name, "foo");
+            assert_eq!(names[0].name, Ident::new("foo"));
             assert!(names[0].alias.is_none());
-            assert_eq!(names[1].name, "bar");
+            assert_eq!(names[1].name, Ident::new("bar"));
             assert!(names[1].alias.is_none());
         } else {
             panic!("expected ImportSpec::Names");
@@ -2947,7 +2951,7 @@ enum Command {
         panic!("expected type declaration");
     };
     assert_eq!(decl.kind, TypeDeclKind::Enum);
-    assert_eq!(decl.name, "Command");
+    assert_eq!(decl.name, Ident::new("Command"));
     let wire = decl.wire.as_ref().expect("expected wire metadata on enum");
     assert!(wire.field_meta.is_empty(), "enum variants have no @N tags");
     assert!(wire.reserved_numbers.is_empty());
@@ -2986,12 +2990,12 @@ enum Packet {
     let TypeBodyItem::Variant(v1) = &decl.body[0] else {
         panic!("expected variant V1");
     };
-    assert_eq!(v1.name, "V1");
+    assert_eq!(v1.name, Ident::new("V1"));
     assert!(matches!(v1.kind, VariantKind::Struct(ref fs) if fs.len() == 1));
     let TypeBodyItem::Variant(v2) = &decl.body[1] else {
         panic!("expected variant V2");
     };
-    assert_eq!(v2.name, "V2");
+    assert_eq!(v2.name, Ident::new("V2"));
     assert!(matches!(v2.kind, VariantKind::Struct(ref fs) if fs.len() == 2));
 }
 
@@ -3092,7 +3096,7 @@ pub enum Command {
         panic!("expected type declaration");
     };
     assert_eq!(decl.kind, TypeDeclKind::Enum);
-    assert_eq!(decl.name, "Command");
+    assert_eq!(decl.name, Ident::new("Command"));
     assert_eq!(decl.visibility, Visibility::Pub);
     let wire = decl
         .wire
@@ -3130,7 +3134,7 @@ enum Mixed {
         panic!("expected type declaration");
     };
     assert_eq!(decl.kind, TypeDeclKind::Enum);
-    assert_eq!(decl.name, "Mixed");
+    assert_eq!(decl.name, Ident::new("Mixed"));
     assert!(
         decl.wire.is_some(),
         "expected wire metadata on mixed-variant enum"
@@ -3141,7 +3145,7 @@ enum Mixed {
     let TypeBodyItem::Variant(a) = &decl.body[0] else {
         panic!("expected variant A at index 0");
     };
-    assert_eq!(a.name, "A");
+    assert_eq!(a.name, Ident::new("A"));
     assert!(
         matches!(a.kind, VariantKind::Unit),
         "variant A should be unit, got {:?}",
@@ -3152,7 +3156,7 @@ enum Mixed {
     let TypeBodyItem::Variant(b) = &decl.body[1] else {
         panic!("expected variant B at index 1");
     };
-    assert_eq!(b.name, "B");
+    assert_eq!(b.name, Ident::new("B"));
     assert!(
         matches!(b.kind, VariantKind::Tuple(ref ts) if ts.len() == 1),
         "variant B should be tuple(1), got {:?}",
@@ -3163,12 +3167,12 @@ enum Mixed {
     let TypeBodyItem::Variant(c) = &decl.body[2] else {
         panic!("expected variant C at index 2");
     };
-    assert_eq!(c.name, "C");
+    assert_eq!(c.name, Ident::new("C"));
     match &c.kind {
         VariantKind::Struct(fields) => {
             assert_eq!(fields.len(), 2, "variant C should have 2 fields");
-            assert_eq!(fields[0].0, "x");
-            assert_eq!(fields[1].0, "y");
+            assert_eq!(fields[0].0, Ident::new("x"));
+            assert_eq!(fields[1].0, Ident::new("y"));
         }
         other => panic!("variant C should be struct, got {other:?}"),
     }
@@ -3285,7 +3289,7 @@ fn generic_apply_suffix_commits_with_nested_angles() {
         panic!("expected generic call, got {expr:?}");
     };
     assert_eq!(type_args.len(), 1);
-    assert!(matches!(&type_args[0].0, TypeExpr::Named { name, .. } if name == "Vec"));
+    assert!(matches!(&type_args[0].0, TypeExpr::Named { path, .. } if path.to_string() == "Vec"));
 }
 
 #[test]
@@ -3338,41 +3342,45 @@ fn generic_apply_suffix_attaches_before_member_access() {
     else {
         panic!("expected method call, got {expr:?}");
     };
-    assert_eq!(method, "new");
+    assert_eq!(method.0, Ident::new("new"));
     assert!(matches!(receiver.0, Expr::GenericApplySuffix { .. }));
 }
 
 #[test]
 fn tuple_index_integer_suffix_remains_field_access() {
     let expr = parse_let_expr("t.0");
-    assert!(matches!(expr, Expr::FieldAccess { field, .. } if field == "0"));
+    assert!(matches!(expr, Expr::FieldAccess { field, .. } if field.0.name.as_str() == "0"));
 }
 
 #[test]
 fn contextual_variant_expression_preserves_each_payload_origin() {
     let unit = parse_let_expr(".None");
     assert!(
-        matches!(unit, Expr::ContextVariant(context) if context.name == "None" && context.record.is_none())
+        matches!(unit, Expr::ContextVariant(context) if context.name == Ident::new("None") && context.record.is_none())
     );
 
     let tuple = parse_let_expr(".Some(value)");
     let Expr::Call { function, .. } = tuple else {
         panic!("expected contextual tuple-payload call, got {tuple:?}");
     };
-    assert!(matches!(&function.0, Expr::ContextVariant(context) if context.name == "Some"));
+    assert!(
+        matches!(&function.0, Expr::ContextVariant(context) if context.name == Ident::new("Some"))
+    );
 
     let record = parse_let_expr(".Ready { value: value }");
     let Expr::ContextVariant(context) = record else {
         panic!("expected contextual record variant, got {record:?}");
     };
-    assert_eq!(context.name, "Ready");
+    assert_eq!(context.name, Ident::new("Ready"));
     assert_eq!(context.record.expect("record payload").fields.len(), 1);
 }
 
 #[test]
 fn pure_dot_record_init_and_qualified_assoc_paths_parse() {
     let expr = parse_let_expr("wire.Message.Data { bytes: payload }");
-    assert!(matches!(expr, Expr::StructInit { name, .. } if name == "wire.Message.Data"));
+    assert!(
+        matches!(expr, Expr::StructInit { path, .. } if path.to_string() == "wire.Message.Data")
+    );
 
     let assoc = parse_let_expr("<T as iter.Iterator>.make()");
     let Expr::Call { function, .. } = assoc else {
@@ -3381,8 +3389,8 @@ fn pure_dot_record_init_and_qualified_assoc_paths_parse() {
     assert!(matches!(
         &function.0,
         Expr::QualifiedAssoc(assoc)
-            if assoc.trait_path.segments == ["iter", "Iterator"]
-                && assoc.members.len() == 1 && assoc.members[0] == "make"
+            if assoc.trait_path.to_string() == "iter.Iterator"
+                && assoc.members.len() == 1 && assoc.members[0] == Ident::new("make")
     ));
 
     let result = parse("fn project(x: <T as iter.Iterator>.Item) {}");
@@ -3393,8 +3401,8 @@ fn pure_dot_record_init_and_qualified_assoc_paths_parse() {
     assert!(matches!(
         &function.params[0].ty.0,
         TypeExpr::QualifiedAssocPath(assoc)
-            if assoc.trait_path.segments == ["iter", "Iterator"]
-                && assoc.members.len() == 1 && assoc.members[0] == "Item"
+            if assoc.trait_path.to_string() == "iter.Iterator"
+                && assoc.members.len() == 1 && assoc.members[0] == Ident::new("Item")
     ));
 }
 
@@ -3413,7 +3421,10 @@ fn nested_dotted_spawn_and_supervisor_child_paths_parse() {
     let Item::Supervisor(supervisor) = &supervised.program.items[0].0 else {
         panic!("expected supervisor");
     };
-    assert_eq!(supervisor.children[0].actor_type, "app.workers.Worker");
+    assert_eq!(
+        supervisor.children[0].actor_type.to_string(),
+        "app.workers.Worker"
+    );
 }
 
 #[test]
@@ -3620,8 +3631,8 @@ trait Fluent {
     assert_eq!(m.attributes.len(), 1);
     assert_eq!(m.attributes[0].name, "returns_receiver");
     assert_eq!(m.params.len(), 2);
-    assert_eq!(m.params[0].name, "self");
-    assert_eq!(m.params[1].name, "child");
+    assert_eq!(m.params[0].name, Ident::new("self"));
+    assert_eq!(m.params[1].name, Ident::new("child"));
     assert!(m.params[1].is_consume);
 }
 
@@ -3690,14 +3701,14 @@ fn parses_parameterized_type_alias() {
     let Item::TypeAlias(alias) = &result.program.items[0].0 else {
         panic!("expected type alias");
     };
-    assert_eq!(alias.name, "Pair");
+    assert_eq!(alias.name, Ident::new("Pair"));
     assert_eq!(
         alias
             .type_params
             .as_ref()
             .expect("type parameters")
             .iter()
-            .map(|param| param.name.as_str())
+            .map(|param| param.name.name.as_str())
             .collect::<Vec<_>>(),
         vec!["T"]
     );
@@ -3855,16 +3866,16 @@ fn struct_init_explicit_single_type_arg_parses() {
         panic!("expected let with value");
     };
     let Expr::StructInit {
-        name, type_args, ..
+        path, type_args, ..
     } = expr
     else {
         panic!("expected StructInit, got {expr:?}");
     };
-    assert_eq!(name, "Wrapper");
+    assert_eq!(path.to_string(), "Wrapper");
     let args = type_args.as_ref().expect("type_args should be Some");
     assert_eq!(args.len(), 1, "expected one type arg");
     assert!(
-        matches!(&args[0].0, TypeExpr::Named { name, .. } if name == "string"),
+        matches!(&args[0].0, TypeExpr::Named { path, .. } if path.to_string() == "string"),
         "expected string type arg, got {:?}",
         args[0].0
     );
@@ -3928,11 +3939,11 @@ fn struct_init_explicit_multi_type_arg_parses() {
     let args = type_args.as_ref().expect("type_args should be Some");
     assert_eq!(args.len(), 2, "expected two type args");
     assert!(
-        matches!(&args[0].0, TypeExpr::Named { name, .. } if name == "int"),
+        matches!(&args[0].0, TypeExpr::Named { path, .. } if path.to_string() == "int"),
         "first type arg should be int"
     );
     assert!(
-        matches!(&args[1].0, TypeExpr::Named { name, .. } if name == "string"),
+        matches!(&args[1].0, TypeExpr::Named { path, .. } if path.to_string() == "string"),
         "second type arg should be string"
     );
 }
@@ -4007,8 +4018,8 @@ fn parses_resource_marker_and_consuming_method() {
         panic!("expected TypeDecl, got {item:?}");
     };
     assert_eq!(td.resource_marker, ResourceMarker::Resource);
-    assert_eq!(td.consuming_methods, vec!["close".to_string()]);
-    assert_eq!(td.name, "File");
+    assert_eq!(td.consuming_methods, vec![Ident::new("close")]);
+    assert_eq!(td.name, Ident::new("File"));
 }
 
 #[test]
@@ -4035,7 +4046,7 @@ fn parses_linear_marker_and_multiple_consuming_methods() {
     // Only `commit` and `rollback` consume; `id(self: Txn)` does not.
     assert_eq!(
         td.consuming_methods,
-        vec!["commit".to_string(), "rollback".to_string()],
+        vec![Ident::new("commit"), Ident::new("rollback")],
     );
 }
 
@@ -4475,8 +4486,8 @@ fn is_operator_simple_identifiers() {
         "expected Expr::Is, got {expr:?}"
     );
     if let Expr::Is { lhs, rhs } = expr {
-        assert!(matches!(lhs.0, Expr::Identifier(ref s) if s == "x"));
-        assert!(matches!(rhs.0, Expr::Identifier(ref s) if s == "y"));
+        assert!(matches!(lhs.0, Expr::Ident(ref s) if s.name.as_str() == "x"));
+        assert!(matches!(rhs.0, Expr::Ident(ref s) if s.name.as_str() == "y"));
     }
 }
 
@@ -4746,7 +4757,7 @@ fn functional_update_basic_parses() {
     assert_eq!(fields.len(), 1, "one explicit field expected");
     let base = base.as_ref().expect("base should be Some");
     assert!(
-        matches!(&base.0, Expr::Identifier(name) if name == "old"),
+        matches!(&base.0, Expr::Ident(name) if name.name.as_str() == "old"),
         "base should be Identifier 'old', got {:?}",
         base.0
     );
@@ -4931,7 +4942,7 @@ fn extern_symbol_attribute_on_extern_c_fn_is_captured() {
     };
     assert_eq!(block.functions.len(), 1);
     let extern_fn = &block.functions[0];
-    assert_eq!(extern_fn.name, "hew_vec_push");
+    assert_eq!(extern_fn.name, Ident::new("hew_vec_push"));
     assert_eq!(extern_fn.attributes.len(), 1, "must carry one attribute");
     let attr = &extern_fn.attributes[0];
     assert_eq!(attr.name, "extern_symbol");
@@ -4960,7 +4971,7 @@ fn extern_symbol_attribute_on_impl_method_is_captured() {
     };
     assert_eq!(impl_decl.methods.len(), 1);
     let method = &impl_decl.methods[0];
-    assert_eq!(method.name, "push");
+    assert_eq!(method.name, Ident::new("push"));
     assert_eq!(method.attributes.len(), 1);
     assert_eq!(method.attributes[0].name, "extern_symbol");
     assert_eq!(method.attributes[0].args[0].as_str(), "hew_vec_push_{T}");
@@ -5151,12 +5162,12 @@ fn leading_dot_constructor_pattern_preserves_origin() {
     let patterns = first_match_arm_patterns(source);
     match &patterns[0] {
         Pattern::ContextVariant(context) => {
-            assert_eq!(context.name, "Some");
+            assert_eq!(context.name, Ident::new("Some"));
             let Some(NominalPatternPayload::Tuple(patterns)) = &context.payload else {
                 panic!("expected tuple payload, got {:?}", context.payload);
             };
             assert_eq!(patterns.len(), 1);
-            assert!(matches!(&patterns[0].0, Pattern::Identifier(n) if n == "x"));
+            assert!(matches!(&patterns[0].0, Pattern::Identifier(n) if n.name.as_str() == "x"));
         }
         other => panic!("expected contextual variant pattern, got {other:?}"),
     }
@@ -5170,7 +5181,7 @@ fn leading_dot_unit_variant_pattern_preserves_origin() {
     assert!(matches!(
         &patterns[0],
         Pattern::ContextVariant(context)
-            if context.name == "None" && context.payload.is_none()
+            if context.name == Ident::new("None") && context.payload.is_none()
     ));
 }
 
@@ -5183,8 +5194,10 @@ fn leading_dot_or_pattern_parses() {
     let Pattern::Or(left, right) = &patterns[0] else {
         panic!("expected Pattern::Or, got {:?}", patterns[0]);
     };
-    assert!(matches!(&left.0, Pattern::ContextVariant(context) if context.name == "A"));
-    assert!(matches!(&right.0, Pattern::ContextVariant(context) if context.name == "B"));
+    assert!(matches!(&left.0, Pattern::ContextVariant(context) if context.name == Ident::new("A")));
+    assert!(
+        matches!(&right.0, Pattern::ContextVariant(context) if context.name == Ident::new("B"))
+    );
 }
 
 /// Adding the leading-dot arm does not disturb a qualified constructor pattern.
@@ -5195,9 +5208,11 @@ fn leading_dot_arm_leaves_qualified_pattern_path_intact() {
     let Pattern::NominalPath { path, payload } = &patterns[0] else {
         panic!("expected nominal path, got {:?}", patterns[0]);
     };
-    assert_eq!(path.segments, ["E", "Some"]);
+    assert_eq!(path.to_string(), "E.Some");
     assert!(matches!(payload, Some(NominalPatternPayload::Tuple(_))));
-    assert!(matches!(&patterns[1], Pattern::ContextVariant(context) if context.name == "None"));
+    assert!(
+        matches!(&patterns[1], Pattern::ContextVariant(context) if context.name == Ident::new("None"))
+    );
 }
 
 #[test]
@@ -5207,7 +5222,7 @@ fn module_qualified_variant_pattern_preserves_dotted_owner() {
     let Pattern::NominalPath { path, .. } = &patterns[0] else {
         panic!("expected nominal path, got {:?}", patterns[0]);
     };
-    assert_eq!(path.segments, ["m", "E", "Some"]);
+    assert_eq!(path.to_string(), "m.E.Some");
 }
 
 #[test]
@@ -5217,7 +5232,7 @@ fn dotted_pattern_is_a_segmented_nominal_path() {
     let Pattern::NominalPath { path, payload } = &patterns[0] else {
         panic!("expected nominal path, got {:?}", patterns[0]);
     };
-    assert_eq!(path.segments, ["foo", "bar"]);
+    assert_eq!(path.to_string(), "foo.bar");
     assert!(payload.is_none());
 }
 
@@ -5231,7 +5246,7 @@ fn multi_segment_dotted_pattern_is_accepted() {
     let Pattern::NominalPath { path, .. } = &patterns[0] else {
         panic!("expected nominal path, got {:?}", patterns[0]);
     };
-    assert_eq!(path.segments, ["m", "T", "Variant"]);
+    assert_eq!(path.to_string(), "m.T.Variant");
 }
 
 /// The dotted-pattern loop accepts both a qualified constructor and a path leaf.
@@ -5276,12 +5291,12 @@ fn parse_let_record_shorthand_two_fields_no_type_name() {
         panic!("expected Pattern::RecordShorthand, got {:?}", pattern.0);
     };
     assert_eq!(fields.len(), 2);
-    assert_eq!(fields[0].name, "x");
+    assert_eq!(fields[0].name, Ident::new("x"));
     assert!(
         fields[0].pattern.is_none(),
         "shorthand field should have no sub-pattern"
     );
-    assert_eq!(fields[1].name, "y");
+    assert_eq!(fields[1].name, Ident::new("y"));
 }
 
 /// `let { x: px, y: py } = p` parses as `Pattern::RecordShorthand` with
@@ -5473,10 +5488,6 @@ fn record_rest_patterns_parse_in_all_record_forms() {
     ] {
         let patterns = first_match_arm_patterns(source);
         match &patterns[0] {
-            Pattern::Struct { fields, rest, .. } if !shorthand => {
-                assert_eq!(fields.len(), 1);
-                assert!(rest.is_some());
-            }
             Pattern::NominalPath {
                 payload: Some(NominalPatternPayload::Record { fields, rest }),
                 ..
@@ -5497,7 +5508,11 @@ fn record_rest_patterns_parse_in_all_record_forms() {
 fn record_rest_pattern_all_wildcard_form_parses() {
     let patterns =
         first_match_arm_patterns("fn f(p: Point) -> i64 { match p { Point { .. } => 0 } }");
-    let Pattern::Struct { fields, rest, .. } = &patterns[0] else {
+    let Pattern::NominalPath {
+        payload: Some(NominalPatternPayload::Record { fields, rest }),
+        ..
+    } = &patterns[0]
+    else {
         panic!("expected struct rest pattern, got {:?}", patterns[0]);
     };
     assert!(fields.is_empty());
@@ -5688,7 +5703,7 @@ fn fallible_function_surface_preserves_success_and_error_types() {
         matches!(&function.return_type.as_ref().expect("return type").0,
         TypeExpr::Fallible { success, error }
         if matches!(&success.0, TypeExpr::Tuple(fields) if fields.len() == 2)
-            && matches!(&error.0, TypeExpr::Named { name, .. } if name == "string"))
+            && matches!(&error.0, TypeExpr::Named { path, .. } if path.to_string() == "string"))
     );
 }
 
@@ -5785,8 +5800,8 @@ fn select_arm_binds_its_source_with_from() {
     assert_eq!(arms.len(), 2);
     // The `from` clause carries the source operand itself; nothing wraps it.
     assert!(arms.iter().all(
-        |arm| matches!(&arm.source.0, Expr::Identifier(name) if name == "left"
-            || name == "right")
+        |arm| matches!(&arm.source.0, Expr::Ident(name) if name.name.as_str() == "left"
+            || name.name.as_str() == "right")
     ));
     assert!(timeout.is_some());
 }
@@ -5942,7 +5957,7 @@ fn statement_blocks_end_before_a_dotted_tail() {
         };
         assert!(
             matches!(&tail.0, Expr::Call { function, .. }
-                if matches!(&function.0, Expr::ContextVariant(context) if context.name == "Ok")),
+                if matches!(&function.0, Expr::ContextVariant(context) if context.name == Ident::new("Ok"))),
             "`{opener}` tail must be `.Ok(1)`, got {:?}",
             tail.0
         );
@@ -5989,4 +6004,165 @@ fn statement_block_operands_need_parentheses() {
         let (_, errors) = statement_block_body(accepted);
         assert!(errors.is_empty(), "`{accepted}` must parse: {errors:?}");
     }
+}
+
+// ── Path AST: qualified spellings stay segmented ─────────────────────────
+
+use crate::ast::{Symbol, SyntaxContext};
+
+/// The segment spellings of `path`, and the source text each segment span covers.
+fn path_segments<'src>(source: &'src str, path: &Path) -> Vec<(Ident, &'src str)> {
+    path.segments
+        .iter()
+        .map(|(ident, span)| (*ident, &source[span.clone()]))
+        .collect()
+}
+
+fn idents(spellings: &[&'static str]) -> Vec<(Ident, &'static str)> {
+    spellings
+        .iter()
+        .map(|spelling| (Ident::new(spelling), *spelling))
+        .collect()
+}
+
+#[test]
+fn qualified_type_parses_to_segmented_path_with_type_args() {
+    let source = "fn main() { let x: ma.Shape<T> = make(); }";
+    let result = parse(source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    let Item::Function(f) = &result.program.items[0].0 else {
+        panic!("expected function");
+    };
+    let Stmt::Let {
+        ty: Some((TypeExpr::Named { path, type_args }, _)),
+        ..
+    } = &f.body.stmts[0].0
+    else {
+        panic!(
+            "expected a let with a named type, got {:?}",
+            f.body.stmts[0].0
+        );
+    };
+    assert_eq!(path_segments(source, path), idents(&["ma", "Shape"]));
+    let args = type_args.as_ref().expect("type arguments");
+    assert!(
+        matches!(&args[..], [(TypeExpr::Named { path, type_args: None }, _)] if path.as_single() == Some(Ident::new("T")))
+    );
+}
+
+#[test]
+fn pure_dot_record_literal_parses_to_segmented_struct_init_path() {
+    let source = "fn main() { let x = wire.Message.Data { bytes: payload }; }";
+    let result = parse(source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    let Item::Function(f) = &result.program.items[0].0 else {
+        panic!("expected function");
+    };
+    let Stmt::Let {
+        value: Some((Expr::StructInit { path, fields, .. }, _)),
+        ..
+    } = &f.body.stmts[0].0
+    else {
+        panic!("expected a struct literal, got {:?}", f.body.stmts[0].0);
+    };
+    assert_eq!(
+        path_segments(source, path),
+        idents(&["wire", "Message", "Data"])
+    );
+    assert_eq!(fields[0].0, Ident::new("bytes"));
+}
+
+#[test]
+fn import_parses_to_segmented_path() {
+    let source = "import std.net.http;";
+    let result = parse(source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    let Item::Import(import) = &result.program.items[0].0 else {
+        panic!("expected import");
+    };
+    assert_eq!(
+        path_segments(source, &import.path),
+        idents(&["std", "net", "http"])
+    );
+}
+
+#[test]
+fn qualified_record_pattern_parses_to_nominal_path() {
+    let patterns = first_match_arm_patterns(
+        "fn f(p: ma.Point) -> i64 { match p { ma.Point { x, .. } => x } }",
+    );
+    let Pattern::NominalPath {
+        path,
+        payload: Some(NominalPatternPayload::Record { fields, rest }),
+    } = &patterns[0]
+    else {
+        panic!("expected a qualified record pattern, got {:?}", patterns[0]);
+    };
+    assert_eq!(path.to_string(), "ma.Point");
+    assert_eq!(path.segments.len(), 2);
+    assert_eq!(fields[0].name, Ident::new("x"));
+    assert!(rest.is_some());
+}
+
+#[test]
+fn one_segment_constructor_and_record_patterns_are_nominal_paths() {
+    let patterns = first_match_arm_patterns(
+        "fn f(o: Option<i64>) -> i64 { match o { Some(v) => v, None => 0 } }",
+    );
+    assert!(matches!(
+        &patterns[0],
+        Pattern::NominalPath { path, payload: Some(NominalPatternPayload::Tuple(items)) }
+            if path.as_single() == Some(Ident::new("Some")) && items.len() == 1
+    ));
+    // A bare name stays an identifier pattern; resolution decides whether it
+    // names a unit variant or binds.
+    assert!(matches!(&patterns[1], Pattern::Identifier(name) if *name == Ident::new("None")));
+}
+
+/// Negative control: a dotted chain in expression position without `{` is a
+/// `FieldAccess` chain. Whether `a` is a module or a local is a resolution
+/// fact, so the parser builds no path.
+#[test]
+fn dotted_expression_without_brace_stays_field_access_chain() {
+    let expr = parse_let_expr("a.b.c");
+    let Expr::FieldAccess { object, field } = &expr else {
+        panic!("expected field access, got {expr:?}");
+    };
+    assert_eq!(field.0, Ident::new("c"));
+    let Expr::FieldAccess { object, field } = &object.0 else {
+        panic!("expected nested field access, got {:?}", object.0);
+    };
+    assert_eq!(field.0, Ident::new("b"));
+    assert!(matches!(&object.0, Expr::Ident(name) if *name == Ident::new("a")));
+}
+
+/// Negative control: struct literals are not admitted in an `if` condition, so
+/// `a.b { }` there is the condition `a.b` followed by the then block.
+#[test]
+fn dotted_condition_before_block_stays_field_access() {
+    let result = parse("fn main() { if a.b { } }");
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    let Item::Function(f) = &result.program.items[0].0 else {
+        panic!("expected function");
+    };
+    let condition = match (&f.body.stmts[..], f.body.trailing_expr.as_deref()) {
+        ([(Stmt::If { condition, .. }, _)], _) => &condition.0,
+        ([], Some((Expr::If { condition, .. }, _))) => &condition.0,
+        other => panic!("expected an if, got {other:?}"),
+    };
+    let Expr::FieldAccess { object, field } = condition else {
+        panic!("expected field access condition, got {condition:?}");
+    };
+    assert_eq!(field.0, Ident::new("b"));
+    assert!(matches!(&object.0, Expr::Ident(name) if *name == Ident::new("a")));
+}
+
+#[test]
+fn identifiers_carry_the_root_syntax_context() {
+    let expr = parse_let_expr("value");
+    let Expr::Ident(ident) = expr else {
+        panic!("expected identifier, got {expr:?}");
+    };
+    assert_eq!(ident.name, Symbol::intern("value"));
+    assert_eq!(ident.ctx, SyntaxContext::ROOT);
 }

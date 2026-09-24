@@ -68,10 +68,10 @@ impl Parser<'_> {
 
     // ── Types ──
     pub(crate) fn parse_syntactic_path(&mut self) -> Option<Path> {
-        let mut segments = vec![self.expect_ident()?];
+        let mut segments = vec![self.expect_ident_spanned()?];
         while self.peek() == Some(&Token::Dot) {
             self.advance();
-            segments.push(self.expect_ident()?);
+            segments.push(self.expect_ident_spanned()?);
         }
         Some(Path { segments })
     }
@@ -242,14 +242,13 @@ impl Parser<'_> {
                     let mut bounds = Vec::new();
                     loop {
                         let path = self.parse_syntactic_path()?;
-                        let name = path.source_spelling();
                         let (type_args, assoc_type_bindings) = if self.eat(&Token::Less) {
                             self.parse_trait_bound_args_with_context(context)?
                         } else {
                             (None, Vec::new())
                         };
                         bounds.push(TraitBound {
-                            name,
+                            path,
                             type_args,
                             assoc_type_bindings,
                         });
@@ -263,14 +262,13 @@ impl Parser<'_> {
                 } else {
                     // Single trait: dyn TraitName
                     let path = self.parse_syntactic_path()?;
-                    let name = path.source_spelling();
                     let (type_args, assoc_type_bindings) = if self.eat(&Token::Less) {
                         self.parse_trait_bound_args_with_context(context)?
                     } else {
                         (None, Vec::new())
                     };
                     vec![TraitBound {
-                        name,
+                        path,
                         type_args,
                         assoc_type_bindings,
                     }]
@@ -328,21 +326,21 @@ impl Parser<'_> {
             }
             _ => {
                 // Named type: identifier or contextual keyword, with optional qualification
-                let mut name = self.expect_ident()?;
+                let (head, head_span) = self.expect_ident_spanned()?;
                 // `_` in type position means infer the type
-                if name == "_" {
+                if head.name == sym::UNDERSCORE {
                     TypeExpr::Infer
                 } else {
+                    let mut path = Path::single(head, head_span);
                     while self.eat(&Token::Dot) {
-                        let type_name = self.expect_ident()?;
-                        name = format!("{name}.{type_name}");
+                        path.segments.push(self.expect_ident_spanned()?);
                     }
                     let type_args = if self.eat(&Token::Less) {
                         Some(self.parse_type_args_with_context(context)?)
                     } else {
                         None
                     };
-                    TypeExpr::Named { name, type_args }
+                    TypeExpr::Named { path, type_args }
                 }
             }
         };
@@ -427,7 +425,7 @@ impl Parser<'_> {
                 // rather than a full `TypeExpr` so the error message
                 // can pinpoint the unsupported width.
                 let ty_name = self.expect_ident()?;
-                let ty = match ty_name.as_str() {
+                let ty = match ty_name.name.as_str() {
                     "usize" => ConstParamTy::Usize,
                     other => {
                         self.error(format!(
@@ -631,7 +629,6 @@ impl Parser<'_> {
 
     pub(crate) fn parse_trait_bound(&mut self) -> Option<TraitBound> {
         let path = self.parse_syntactic_path()?;
-        let name = path.source_spelling();
 
         let (type_args, assoc_type_bindings) = if self.eat(&Token::Less) {
             self.parse_trait_bound_args()?
@@ -640,7 +637,7 @@ impl Parser<'_> {
         };
 
         Some(TraitBound {
-            name,
+            path,
             type_args,
             assoc_type_bindings,
         })
@@ -733,7 +730,7 @@ impl Parser<'_> {
                 break;
             };
 
-            if name == "self" {
+            if name.name == sym::SELF_VALUE {
                 let span = self
                     .tokens
                     .get(self.pos.wrapping_sub(1))
@@ -762,7 +759,10 @@ impl Parser<'_> {
                         name,
                         ty: (
                             TypeExpr::Named {
-                                name: "Self".to_string(),
+                                path: Path::single(
+                                    Ident::from_symbol(sym::SELF_TYPE),
+                                    span.clone(),
+                                ),
                                 type_args: None,
                             },
                             span,

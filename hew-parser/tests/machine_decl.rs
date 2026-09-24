@@ -1,5 +1,7 @@
 //! Tests for parsing `machine` declarations.
 
+use hew_parser::ast::Ident;
+
 #[test]
 fn parse_simple_machine() {
     let source = r"
@@ -28,18 +30,18 @@ fn main() {
     assert_eq!(result.program.items.len(), 2);
 
     if let hew_parser::ast::Item::Machine(m) = &result.program.items[0].0 {
-        assert_eq!(m.name, "Light");
+        assert_eq!(m.name, Ident::new("Light"));
         assert_eq!(m.states.len(), 2);
-        assert_eq!(m.states[0].name, "Off");
-        assert_eq!(m.states[1].name, "On");
+        assert_eq!(m.states[0].name, Ident::new("Off"));
+        assert_eq!(m.states[1].name, Ident::new("On"));
         assert_eq!(m.events.len(), 1);
-        assert_eq!(m.events[0].name, "Toggle");
+        assert_eq!(m.events[0].name, Ident::new("Toggle"));
         assert_eq!(m.transitions.len(), 2);
-        assert_eq!(m.transitions[0].event_name, "Toggle");
-        assert_eq!(m.transitions[0].source_state, "Off");
-        assert_eq!(m.transitions[0].target_state, "On");
-        assert_eq!(m.transitions[1].source_state, "On");
-        assert_eq!(m.transitions[1].target_state, "Off");
+        assert_eq!(m.transitions[0].event_name, Ident::new("Toggle"));
+        assert_eq!(m.transitions[0].source_state, Ident::new("Off"));
+        assert_eq!(m.transitions[0].target_state, Ident::new("On"));
+        assert_eq!(m.transitions[1].source_state, Ident::new("On"));
+        assert_eq!(m.transitions[1].target_state, Ident::new("Off"));
     } else {
         panic!("expected Machine item, got {:?}", result.program.items[0].0);
     }
@@ -70,8 +72,8 @@ machine Light {
     let hew_parser::ast::Item::Machine(machine) = &result.program.items[0].0 else {
         panic!("expected Machine item");
     };
-    assert_eq!(machine.transitions[0].source_state, "Off");
-    assert_eq!(machine.transitions[0].target_state, "On");
+    assert_eq!(machine.transitions[0].source_state, Ident::new("Off"));
+    assert_eq!(machine.transitions[0].target_state, Ident::new("On"));
     assert!(
         machine.transitions[0].target_is_contextual,
         "the authored `.On` spelling must reach the AST"
@@ -79,9 +81,9 @@ machine Light {
     assert!(matches!(
         machine.transitions[0].body.0,
         hew_parser::ast::Expr::ContextVariant(ref context)
-            if context.name == "On" && context.record.is_none()
+            if context.name == Ident::new("On") && context.record.is_none()
     ));
-    assert_eq!(machine.transitions[1].target_state, "Off");
+    assert_eq!(machine.transitions[1].target_state, Ident::new("Off"));
     assert!(
         !machine.transitions[1].target_is_contextual,
         "a bare target must not be recorded as contextual"
@@ -203,15 +205,15 @@ machine Counter {
     );
 
     if let hew_parser::ast::Item::Machine(m) = &result.program.items[0].0 {
-        assert_eq!(m.name, "Counter");
+        assert_eq!(m.name, Ident::new("Counter"));
         assert_eq!(m.states.len(), 2);
-        assert_eq!(m.states[1].name, "Running");
+        assert_eq!(m.states[1].name, Ident::new("Running"));
         assert_eq!(m.states[1].fields.len(), 1);
-        assert_eq!(m.states[1].fields[0].0, "count");
+        assert_eq!(m.states[1].fields[0].0, Ident::new("count"));
         assert_eq!(m.transitions.len(), 3);
         // Wildcard source
-        assert_eq!(m.transitions[2].source_state, "_");
-        assert_eq!(m.transitions[2].target_state, "Idle");
+        assert_eq!(m.transitions[2].source_state, Ident::new("_"));
+        assert_eq!(m.transitions[2].target_state, Ident::new("Idle"));
     } else {
         panic!("expected Machine item");
     }
@@ -242,9 +244,9 @@ machine Tcp {
     );
 
     if let hew_parser::ast::Item::Machine(m) = &result.program.items[0].0 {
-        assert_eq!(m.events[0].name, "Connect");
+        assert_eq!(m.events[0].name, Ident::new("Connect"));
         assert_eq!(m.events[0].fields.len(), 1);
-        assert_eq!(m.events[0].fields[0].0, "port");
+        assert_eq!(m.events[0].fields[0].0, Ident::new("port"));
     } else {
         panic!("expected Machine item");
     }
@@ -277,7 +279,7 @@ machine Tcp {
     if let hew_parser::ast::Item::Machine(m) = &result.program.items[0].0 {
         assert_eq!(m.transitions.len(), 1);
         // The binding names are recorded on the transition for the formatter.
-        assert_eq!(m.transitions[0].event_bindings, vec!["port".to_string()]);
+        assert_eq!(m.transitions[0].event_bindings, vec![Ident::new("port")]);
         // The head binding makes the body a block whose first statement binds
         // `port` from `event.port`.
         let hew_parser::ast::Expr::Block(block) = &m.transitions[0].body.0 else {
@@ -291,13 +293,13 @@ machine Tcp {
             panic!("expected first prelude stmt to be a let binding");
         };
         assert!(
-            matches!(&pattern.0, hew_parser::ast::Pattern::Identifier(n) if n == "port"),
+            matches!(&pattern.0, hew_parser::ast::Pattern::Identifier(n) if n.name.as_str() == "port"),
             "expected `let port = …`"
         );
         let Some((hew_parser::ast::Expr::FieldAccess { field, .. }, _)) = value.as_ref() else {
             panic!("expected let value to be `event.port`");
         };
-        assert_eq!(field, "port");
+        assert_eq!(field.0, Ident::new("port"));
     } else {
         panic!("expected Machine item");
     }
@@ -374,8 +376,8 @@ machine Noop {
     );
 
     if let hew_parser::ast::Item::Machine(m) = &result.program.items[0].0 {
-        assert_eq!(m.transitions[0].source_state, "_");
-        assert_eq!(m.transitions[0].target_state, "_");
+        assert_eq!(m.transitions[0].source_state, Ident::new("_"));
+        assert_eq!(m.transitions[0].target_state, Ident::new("_"));
     } else {
         panic!("expected Machine item");
     }
@@ -410,7 +412,7 @@ machine Traffic {
     if let hew_parser::ast::Item::Machine(m) = &result.program.items[0].0 {
         assert_eq!(m.states.len(), 2);
         let red = &m.states[0];
-        assert_eq!(red.name, "Red");
+        assert_eq!(red.name, Ident::new("Red"));
         assert!(red.entry.is_some(), "Red should have entry block");
         assert!(red.exit.is_some(), "Red should have exit block");
         let green = &m.states[1];
@@ -450,7 +452,7 @@ machine Counter {
     );
 
     if let hew_parser::ast::Item::Machine(m) = &result.program.items[0].0 {
-        assert_eq!(m.name, "Counter");
+        assert_eq!(m.name, Ident::new("Counter"));
         assert_eq!(m.transitions.len(), 2);
     } else {
         panic!("expected Machine item");
@@ -492,7 +494,7 @@ machine Signal {
 
     if let hew_parser::ast::Item::Machine(m) = &result.program.items[0].0 {
         assert_eq!(m.emits.len(), 1);
-        assert_eq!(m.emits[0].name, "Ready");
+        assert_eq!(m.emits[0].name, Ident::new("Ready"));
         assert!(m.emits[0].fields.is_empty());
     } else {
         panic!("expected Machine item");
@@ -596,7 +598,7 @@ machine Conn {
     };
 
     // Composite name is NOT a flat state; the three substates + Disconnected are.
-    let state_names: Vec<&str> = m.states.iter().map(|s| s.name.as_str()).collect();
+    let state_names: Vec<&str> = m.states.iter().map(|s| s.name.name.as_str()).collect();
     assert!(
         !state_names.contains(&"Connected"),
         "composite name must be dropped from flat states; got {state_names:?}"
@@ -610,8 +612,10 @@ machine Conn {
     let disconnect_sources: Vec<&str> = m
         .transitions
         .iter()
-        .filter(|t| t.event_name == "Disconnect" && t.target_state == "Disconnected")
-        .map(|t| t.source_state.as_str())
+        .filter(|t| {
+            t.event_name == Ident::new("Disconnect") && t.target_state == Ident::new("Disconnected")
+        })
+        .map(|t| t.source_state.name.as_str())
         .collect();
     let mut sorted = disconnect_sources.clone();
     sorted.sort_unstable();
@@ -628,9 +632,16 @@ machine Conn {
     // The grouping side-table records the composite for the formatter/diagram.
     assert_eq!(m.composite_groups.len(), 1);
     let group = &m.composite_groups[0];
-    assert_eq!(group.name, "Connected");
-    assert_eq!(group.initial, "Authenticating");
-    assert_eq!(group.members, vec!["Authenticating", "Active", "Draining"]);
+    assert_eq!(group.name, Ident::new("Connected"));
+    assert_eq!(group.initial, Ident::new("Authenticating"));
+    assert_eq!(
+        group.members,
+        vec![
+            Ident::new("Authenticating"),
+            Ident::new("Active"),
+            Ident::new("Draining")
+        ]
+    );
 }
 
 #[test]
@@ -793,7 +804,7 @@ fn main() {}
     let names: Vec<&str> = extern_block
         .functions
         .iter()
-        .map(|f| f.name.as_str())
+        .map(|f| f.name.name.as_str())
         .collect();
     assert!(
         names.contains(&"entry") && names.contains(&"exit") && names.contains(&"emit"),
@@ -867,20 +878,20 @@ machine Collision<T> {
 
     let names: Vec<Vec<String>> = machines
         .iter()
-        .map(|m| m.type_params.iter().map(|p| p.name.clone()).collect())
+        .map(|m| m.type_params.iter().map(|p| p.name.to_string()).collect())
         .collect();
 
-    assert_eq!(machines[0].name, "Light");
+    assert_eq!(machines[0].name, Ident::new("Light"));
     assert!(machines[0].type_params.is_empty());
 
-    assert_eq!(machines[1].name, "Lifecycle");
+    assert_eq!(machines[1].name, Ident::new("Lifecycle"));
     assert_eq!(names[1], vec!["T".to_string()]);
     assert!(machines[1].type_params[0].bounds.is_empty());
     assert_eq!(machines[1].states.len(), 2);
     assert_eq!(machines[1].events.len(), 1);
     assert_eq!(machines[1].transitions.len(), 1);
 
-    assert_eq!(machines[2].name, "Triple");
+    assert_eq!(machines[2].name, Ident::new("Triple"));
     assert_eq!(
         names[2],
         vec!["T".to_string(), "U".to_string(), "V".to_string()]
@@ -888,9 +899,9 @@ machine Collision<T> {
 
     // Parser accepts a type-param/state-name collision because name binding is
     // not a parser concern; later semantic passes may reject it if needed.
-    assert_eq!(machines[3].name, "Collision");
+    assert_eq!(machines[3].name, Ident::new("Collision"));
     assert_eq!(names[3], vec!["T".to_string()]);
-    assert_eq!(machines[3].states[0].name, "T");
+    assert_eq!(machines[3].states[0].name, Ident::new("T"));
 }
 
 #[test]
@@ -950,19 +961,25 @@ machine Bounded<T: Resource, U: Resource + Display> {
         .items
         .iter()
         .find_map(|(item, _)| match item {
-            hew_parser::ast::Item::Machine(m) if m.name == "Bounded" => Some(m),
+            hew_parser::ast::Item::Machine(m) if m.name == Ident::new("Bounded") => Some(m),
             _ => None,
         })
         .expect("Bounded machine should parse");
 
     assert_eq!(machine.type_params.len(), 2);
-    assert_eq!(machine.type_params[0].name, "T");
+    assert_eq!(machine.type_params[0].name, Ident::new("T"));
     assert_eq!(machine.type_params[0].bounds.len(), 1);
-    assert_eq!(machine.type_params[0].bounds[0].name, "Resource");
-    assert_eq!(machine.type_params[1].name, "U");
+    assert_eq!(
+        machine.type_params[0].bounds[0].path.to_string(),
+        "Resource"
+    );
+    assert_eq!(machine.type_params[1].name, Ident::new("U"));
     assert_eq!(machine.type_params[1].bounds.len(), 2);
-    assert_eq!(machine.type_params[1].bounds[0].name, "Resource");
-    assert_eq!(machine.type_params[1].bounds[1].name, "Display");
+    assert_eq!(
+        machine.type_params[1].bounds[0].path.to_string(),
+        "Resource"
+    );
+    assert_eq!(machine.type_params[1].bounds[1].path.to_string(), "Display");
 }
 
 #[test]
@@ -1049,7 +1066,7 @@ machine Container<T> where T: Resource {
         .items
         .iter()
         .find_map(|(item, _)| match item {
-            hew_parser::ast::Item::Machine(m) if m.name == "Container" => Some(m),
+            hew_parser::ast::Item::Machine(m) if m.name == Ident::new("Container") => Some(m),
             _ => None,
         })
         .expect("Container machine should parse");
@@ -1065,7 +1082,10 @@ machine Container<T> where T: Resource {
         .expect("expected where clause to be parsed");
     assert_eq!(where_clause.predicates.len(), 1);
     assert_eq!(where_clause.predicates[0].bounds.len(), 1);
-    assert_eq!(where_clause.predicates[0].bounds[0].name, "Resource");
+    assert_eq!(
+        where_clause.predicates[0].bounds[0].path.to_string(),
+        "Resource"
+    );
 }
 
 #[test]
@@ -1110,7 +1130,7 @@ machine Combined<T: Resource> where T: Display {
         .items
         .iter()
         .find_map(|(item, _)| match item {
-            hew_parser::ast::Item::Machine(m) if m.name == "Combined" => Some(m),
+            hew_parser::ast::Item::Machine(m) if m.name == Ident::new("Combined") => Some(m),
             _ => None,
         })
         .expect("Combined machine should parse");
@@ -1118,7 +1138,10 @@ machine Combined<T: Resource> where T: Display {
     // Inline bound on T.
     assert_eq!(machine.type_params.len(), 1);
     assert_eq!(machine.type_params[0].bounds.len(), 1);
-    assert_eq!(machine.type_params[0].bounds[0].name, "Resource");
+    assert_eq!(
+        machine.type_params[0].bounds[0].path.to_string(),
+        "Resource"
+    );
 
     // Plus where-clause bound on T.
     let where_clause = machine
@@ -1127,7 +1150,10 @@ machine Combined<T: Resource> where T: Display {
         .expect("expected where clause to be parsed");
     assert_eq!(where_clause.predicates.len(), 1);
     assert_eq!(where_clause.predicates[0].bounds.len(), 1);
-    assert_eq!(where_clause.predicates[0].bounds[0].name, "Display");
+    assert_eq!(
+        where_clause.predicates[0].bounds[0].path.to_string(),
+        "Display"
+    );
 }
 
 #[test]
@@ -1173,7 +1199,7 @@ machine Multi<T, U> where T: Resource, U: Display + Send {
         .items
         .iter()
         .find_map(|(item, _)| match item {
-            hew_parser::ast::Item::Machine(m) if m.name == "Multi" => Some(m),
+            hew_parser::ast::Item::Machine(m) if m.name == Ident::new("Multi") => Some(m),
             _ => None,
         })
         .expect("Multi machine should parse");
@@ -1184,10 +1210,19 @@ machine Multi<T, U> where T: Resource, U: Display + Send {
         .expect("expected where clause to be parsed");
     assert_eq!(where_clause.predicates.len(), 2);
     assert_eq!(where_clause.predicates[0].bounds.len(), 1);
-    assert_eq!(where_clause.predicates[0].bounds[0].name, "Resource");
+    assert_eq!(
+        where_clause.predicates[0].bounds[0].path.to_string(),
+        "Resource"
+    );
     assert_eq!(where_clause.predicates[1].bounds.len(), 2);
-    assert_eq!(where_clause.predicates[1].bounds[0].name, "Display");
-    assert_eq!(where_clause.predicates[1].bounds[1].name, "Send");
+    assert_eq!(
+        where_clause.predicates[1].bounds[0].path.to_string(),
+        "Display"
+    );
+    assert_eq!(
+        where_clause.predicates[1].bounds[1].path.to_string(),
+        "Send"
+    );
 }
 
 #[test]
@@ -1253,7 +1288,7 @@ fn first_machine_named<'a>(
         .items
         .iter()
         .find_map(|(item, _)| match item {
-            hew_parser::ast::Item::Machine(m) if m.name == name => Some(m),
+            hew_parser::ast::Item::Machine(m) if m.name.name.as_str() == name => Some(m),
             _ => None,
         })
         .unwrap_or_else(|| panic!("machine `{name}` should parse"))
@@ -1276,7 +1311,7 @@ fn machine_const_param_minimal_parses() {
     let m = first_machine_named(&r.program, "M");
     assert!(m.type_params.is_empty(), "expected no type params");
     assert_eq!(m.const_params.len(), 1);
-    assert_eq!(m.const_params[0].name, "N");
+    assert_eq!(m.const_params[0].name, Ident::new("N"));
     assert!(matches!(
         m.const_params[0].ty,
         hew_parser::ast::ConstParamTy::Usize
@@ -1319,9 +1354,9 @@ fn machine_mixed_type_and_const_params_parses() {
     assert!(r.errors.is_empty(), "parse errors: {:?}", r.errors);
     let m = first_machine_named(&r.program, "M");
     assert_eq!(m.type_params.len(), 1);
-    assert_eq!(m.type_params[0].name, "T");
+    assert_eq!(m.type_params[0].name, Ident::new("T"));
     assert_eq!(m.const_params.len(), 1);
-    assert_eq!(m.const_params[0].name, "N");
+    assert_eq!(m.const_params[0].name, Ident::new("N"));
 }
 
 #[test]
@@ -1416,8 +1451,8 @@ fn typed_machine_outputs_round_trip_separately_from_inputs() {
     let hew_parser::ast::Item::Machine(machine) = &parsed.program.items[0].0 else {
         panic!("expected machine");
     };
-    assert_eq!(machine.events[0].name, "Input");
-    assert_eq!(machine.emits[0].name, "Output");
+    assert_eq!(machine.events[0].name, Ident::new("Input"));
+    assert_eq!(machine.emits[0].name, Ident::new("Output"));
     assert_eq!(machine.emits[0].fields.len(), 2);
     assert!(machine.emits[1].fields.is_empty());
     let formatted = hew_parser::fmt::format_program(&parsed.program);

@@ -14,6 +14,7 @@ use super::super::types::ImportBindingKey;
 use super::super::*;
 use super::*;
 use crate::BuiltinType;
+use hew_parser::ast::Ident;
 use hew_parser::ast::WireMetadata;
 
 impl Checker {
@@ -123,9 +124,10 @@ impl Checker {
                 let Item::Impl(id) = item else {
                     return false;
                 };
-                let TypeExpr::Named { name, .. } = &id.target_type.0 else {
+                let TypeExpr::Named { path, .. } = &id.target_type.0 else {
                     return false;
                 };
+                let name = &path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
                 receiver_names.iter().any(|receiver| name == receiver)
             })
             .collect();
@@ -269,7 +271,7 @@ impl Checker {
                 let Some(module) = graph.modules.get(module_id) else {
                     continue;
                 };
-                self.current_module = Some(module_id.path.join("."));
+                self.current_module = Some(module_id.dotted());
                 for (index, (item, span)) in module.items.iter().enumerate() {
                     self.current_module_idx =
                         indices.item_index(module_id, index).unwrap_or_default();
@@ -305,7 +307,7 @@ impl Checker {
             return;
         };
 
-        let type_def_key = self.authoritative_type_def_key(&type_decl.name);
+        let type_def_key = self.authoritative_type_def_key(type_decl.name.name.as_str());
         let Some(type_def) = self.type_defs.get(&type_def_key).cloned() else {
             return;
         };
@@ -317,7 +319,9 @@ impl Checker {
                 .body
                 .iter()
                 .find_map(|item| match item {
-                    TypeBodyItem::Field { name, ty, .. } if name == &metadata.field_name => {
+                    TypeBodyItem::Field { name, ty, .. }
+                        if name.name.as_str() == metadata.field_name =>
+                    {
                         Some(ty.1.clone())
                     }
                     _ => None,
@@ -347,16 +351,16 @@ impl Checker {
         let mut entries = HashMap::new();
         let mut seen_spans: HashMap<String, Span> = HashMap::new();
         for alias in &id.type_aliases {
-            if let Some(prev_span) = seen_spans.insert(alias.name.clone(), alias.ty.1.clone()) {
+            if let Some(prev_span) = seen_spans.insert(alias.name.to_string(), alias.ty.1.clone()) {
                 self.errors.push(TypeError::duplicate_definition(
                     alias.ty.1.clone(),
-                    &alias.name,
+                    alias.name.name.as_str(),
                     prev_span,
                 ));
                 continue;
             }
             entries.insert(
-                alias.name.clone(),
+                alias.name.to_string(),
                 ImplAliasEntry {
                     expr: alias.ty.clone(),
                     resolved: None,
@@ -365,7 +369,7 @@ impl Checker {
             );
         }
         if let Some(tb) = &id.trait_bound {
-            let trait_key = self.trait_defs_key_for_bound(&tb.name);
+            let trait_key = self.trait_defs_key_for_bound(&tb.path.to_string()); // TRANSITION(P1): deleted by A1 commit 2
             if let Some(trait_info) = self.trait_defs.get(&trait_key) {
                 for assoc in &trait_info.associated_types {
                     if entries.contains_key(&assoc.name) {
@@ -373,7 +377,7 @@ impl Checker {
                     }
                     if let Some(default) = &assoc.default {
                         entries.insert(
-                            assoc.name.clone(),
+                            Ident::new(&assoc.name).to_string(),
                             ImplAliasEntry {
                                 expr: default.clone(),
                                 resolved: None,
@@ -576,8 +580,8 @@ impl Checker {
             // reports `unknown type E` against the module's own source.
             self.collect_item_type_param_names(item);
             if let Item::TypeDecl(td) = item {
-                self.local_type_defs.insert(td.name.clone());
-                self.source_type_defs.insert(td.name.clone());
+                self.local_type_defs.insert(td.name.to_string());
+                self.source_type_defs.insert(td.name.to_string());
             }
         }
 
@@ -618,20 +622,24 @@ impl Checker {
                             self.in_stdlib_registration = true;
                             self.register_type_decl(td);
                             self.in_stdlib_registration = false;
-                            let source_def = self.type_defs.get(&td.name).cloned();
+                            let source_def = self.type_defs.get(td.name.name.as_str()).cloned();
                             self.current_module = saved_importer_module;
                             source_def
                         });
                         if let Some(source_def) = source_def.as_ref() {
                             self.register_canonical_type_def(
                                 module_full_path,
-                                &td.name,
+                                td.name.name.as_str(),
                                 source_def,
                             );
                         }
                         continue;
                     }
-                    if !self.register_type_namespace_name(Some(module_full_path), &td.name, span) {
+                    if !self.register_type_namespace_name(
+                        Some(module_full_path),
+                        td.name.name.as_str(),
+                        span,
+                    ) {
                         continue;
                     }
                     let saved_importer_module =
@@ -639,24 +647,28 @@ impl Checker {
                     self.in_stdlib_registration = true;
                     self.register_type_decl(td);
                     self.in_stdlib_registration = false;
-                    let source_def = self.type_defs.get(&td.name).cloned();
+                    let source_def = self.type_defs.get(td.name.name.as_str()).cloned();
                     self.current_module = saved_importer_module;
-                    self.known_types.insert(td.name.clone());
+                    self.known_types.insert(td.name.to_string());
                     // Qualified authority is always published, mirroring the
                     // user-module path: the qualified alias and the module-export
                     // record that drives the use-time gate's "exported by module
                     // X" diagnostic and ambiguity candidate naming.
-                    self.register_qualified_type_alias(module_short, &td.name);
+                    self.register_qualified_type_alias(module_short, td.name.name.as_str());
                     if let Some(source_def) = source_def.as_ref() {
-                        self.register_canonical_type_def(module_full_path, &td.name, source_def);
+                        self.register_canonical_type_def(
+                            module_full_path,
+                            td.name.name.as_str(),
+                            source_def,
+                        );
                     }
-                    self.record_module_type_export(module_short, &td.name);
-                    self.record_module_type_export(module_full_path, &td.name);
+                    self.record_module_type_export(module_short, td.name.name.as_str());
+                    self.record_module_type_export(module_full_path, td.name.name.as_str());
                     // The importer-scope bare binding obeys the qualified-by-
                     // default gate: `Prelude` (compiled-in bootstrap surfaces)
                     // always publishes bare; a real `import` publishes bare only
                     // on a named/glob/aliased opt-in, exactly like a user module.
-                    if let Some(binding) = import_spec.bare_binding(&td.name) {
+                    if let Some(binding) = import_spec.bare_binding(td.name.name.as_str()) {
                         let source_identity = format!("{module_full_path}.{}", td.name);
                         self.publish_stdlib_hew_type_binding(
                             module_short,
@@ -681,7 +693,7 @@ impl Checker {
                     }
                     if !self.register_machine_type_namespace_names(
                         Some(module_full_path),
-                        &md.name,
+                        md.name.name.as_str(),
                         span,
                     ) {
                         continue;
@@ -695,27 +707,31 @@ impl Checker {
                     let saved_importer_module =
                         self.current_module.replace(module_full_path.to_string());
                     self.register_machine_decl(md, span);
-                    let machine_def = self.type_defs.get(&md.name).cloned();
+                    let machine_def = self.type_defs.get(md.name.name.as_str()).cloned();
                     let event_def = self.type_defs.get(&event_name).cloned();
                     self.current_module = saved_importer_module;
-                    self.known_types.insert(md.name.clone());
+                    self.known_types.insert(md.name.to_string());
                     self.known_types.insert(event_name.clone());
-                    self.register_qualified_type_alias(module_short, &md.name);
+                    self.register_qualified_type_alias(module_short, md.name.name.as_str());
                     self.register_qualified_type_alias(module_short, &event_name);
                     if let Some(machine_def) = machine_def.as_ref() {
-                        self.register_canonical_type_def(module_full_path, &md.name, machine_def);
+                        self.register_canonical_type_def(
+                            module_full_path,
+                            md.name.name.as_str(),
+                            machine_def,
+                        );
                     }
                     if let Some(event_def) = event_def.as_ref() {
                         self.register_canonical_type_def(module_full_path, &event_name, event_def);
                     }
-                    self.record_module_type_export(module_short, &md.name);
+                    self.record_module_type_export(module_short, md.name.name.as_str());
                     self.record_module_type_export(module_short, &event_name);
-                    self.record_module_type_export(module_full_path, &md.name);
+                    self.record_module_type_export(module_full_path, md.name.name.as_str());
                     self.record_module_type_export(module_full_path, &event_name);
                     // Bare publication of the machine and its companion event
                     // enum is gated together so a named/glob import exposes both
                     // or neither; `Prelude` publishes both unconditionally.
-                    if let Some(binding) = import_spec.bare_binding(&md.name) {
+                    if let Some(binding) = import_spec.bare_binding(md.name.name.as_str()) {
                         let source_identity = format!("{module_full_path}.{}", md.name);
                         self.publish_stdlib_hew_type_binding(
                             module_short,
@@ -739,7 +755,7 @@ impl Checker {
                         for super_trait in supers {
                             self.mark_imported_trait_used_for_module_aliases(
                                 module_short,
-                                &super_trait.name,
+                                &super_trait.path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
                             );
                         }
                     }
@@ -759,7 +775,11 @@ impl Checker {
                     if !tr.visibility.is_pub() {
                         continue;
                     }
-                    if !self.register_type_namespace_name(Some(module_full_path), &tr.name, span) {
+                    if !self.register_type_namespace_name(
+                        Some(module_full_path),
+                        tr.name.name.as_str(),
+                        span,
+                    ) {
                         continue;
                     }
                     let info = Self::trait_info_from_decl(
@@ -767,7 +787,7 @@ impl Checker {
                         Some(module_full_path.to_string()),
                         self.current_module_idx,
                     );
-                    self.trait_defs.insert(tr.name.clone(), info.clone());
+                    self.trait_defs.insert(tr.name.to_string(), info.clone());
                     let qualified = format!("{module_full_path}.{}", tr.name);
                     self.trait_defs.insert(qualified, info.clone());
                     // Retain the lexical import surface as a lookup index only;
@@ -777,7 +797,8 @@ impl Checker {
                         .or_insert(info);
                 }
                 Item::Function(fd) => {
-                    let qualified = self.canonical_fn_identity(Some(module_full_path), &fd.name);
+                    let qualified =
+                        self.canonical_fn_identity(Some(module_full_path), fd.name.name.as_str());
                     let surface_qualified = format!("{module_short}.{}", fd.name);
                     // Record visibility for all functions in the visibility table.
                     self.fn_visibility
@@ -828,7 +849,7 @@ impl Checker {
                     // changes the importing binding, never the declaration
                     // identity retained in `import_fn_name_aliases`.
                     if fd.visibility.is_pub() {
-                        if let Some(binding) = import_spec.bare_binding(&fd.name) {
+                        if let Some(binding) = import_spec.bare_binding(fd.name.name.as_str()) {
                             self.publish_stdlib_hew_function_binding(
                                 binding,
                                 &format!("{module_full_path}.{}", fd.name),
@@ -839,7 +860,12 @@ impl Checker {
                     if let Some(intrinsic_key) = &fd.intrinsic {
                         let saved_importer_module =
                             self.current_module.replace(module_full_path.to_string());
-                        self.register_intrinsic_declaration(qualified, intrinsic_key, &fd.name, fd);
+                        self.register_intrinsic_declaration(
+                            qualified,
+                            intrinsic_key,
+                            fd.name.name.as_str(),
+                            fd,
+                        );
                         self.current_module = saved_importer_module;
                     }
                 }
@@ -857,12 +883,16 @@ impl Checker {
                     self.type_def_spans
                         .entry(qualified_type)
                         .or_insert_with(|| span.clone());
-                    if !self.register_type_namespace_name(Some(module_short), &ad.name, span) {
+                    if !self.register_type_namespace_name(
+                        Some(module_short),
+                        ad.name.name.as_str(),
+                        span,
+                    ) {
                         continue;
                     }
                     self.register_actor_base(ad, Some(module_short));
                     if ad.visibility.is_pub() {
-                        if let Some(binding) = import_spec.bare_binding(&ad.name) {
+                        if let Some(binding) = import_spec.bare_binding(ad.name.name.as_str()) {
                             self.publish_stdlib_hew_type_binding(
                                 module_short,
                                 binding,
@@ -911,10 +941,11 @@ impl Checker {
                     continue;
                 }
                 if let TypeExpr::Named {
-                    name: type_name,
+                    path: named_path,
                     type_args,
                 } = &id.target_type.0
                 {
+                    let type_name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
                     let saved_importer_module =
                         self.current_module.replace(module_full_path.to_string());
                     // Set current_self_type for resolving `Self` in method parameters
@@ -951,16 +982,18 @@ impl Checker {
                                 .type_params
                                 .iter()
                                 .flatten()
-                                .map(|param| param.name.clone())
+                                .map(|param| param.name.to_string())
                                 .collect();
                             if builtin == BuiltinType::Vec {
                                 if id.trait_bound.is_none() {
-                                    self.builtin_vec_method_sigs
-                                        .insert(method.name.clone(), (impl_params, sig.clone()));
+                                    self.builtin_vec_method_sigs.insert(
+                                        method.name.to_string(),
+                                        (impl_params, sig.clone()),
+                                    );
                                 }
                             } else {
                                 self.builtin_result_option_method_sigs.insert(
-                                    (builtin, method.name.clone()),
+                                    (builtin, method.name.to_string()),
                                     (impl_params, sig.clone()),
                                 );
                             }
@@ -968,33 +1001,37 @@ impl Checker {
                         // Also register on qualified type name
                         let qualified_type = format!("{module_short}.{type_name}");
                         if let Some(td) = self.lookup_type_def_mut(&qualified_type) {
-                            td.methods.insert(method.name.clone(), sig.clone());
+                            td.methods.insert(method.name.to_string(), sig.clone());
                         }
                         if let (Some(canonical), Some(tb)) =
                             (primitive_key.clone(), id.trait_bound.as_ref())
                         {
                             self.record_primitive_trait_impl_self_args(
                                 canonical.clone(),
-                                &tb.name,
+                                &tb.path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
                                 self_type_args.clone(),
                                 &id.target_type.1,
                             );
                             self.record_primitive_trait_impl_method(
                                 canonical,
-                                &tb.name,
-                                method.name.clone(),
+                                &tb.path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
+                                method.name.to_string(),
                                 sig,
                             );
                         }
                     }
                     if let Some(tb) = &id.trait_bound {
-                        self.mark_imported_trait_used_for_module_aliases(module_short, &tb.name);
+                        self.mark_imported_trait_used_for_module_aliases(
+                            module_short,
+                            &tb.path.to_string(),
+                        ); // TRANSITION(P1): deleted by A1 commit 2
                         self.record_trait_impl_methods(
                             type_name,
-                            &tb.name,
-                            id.methods.iter().map(|method| method.name.clone()),
+                            &tb.path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
+                            id.methods.iter().map(|method| method.name.to_string()),
                         );
-                        self.record_trait_impl(type_name, &tb.name);
+                        self.record_trait_impl(type_name, &tb.path.to_string());
+                        // TRANSITION(P1): deleted by A1 commit 2
                     }
 
                     // Restore previous self type
@@ -1012,13 +1049,21 @@ impl Checker {
         for (item, _span) in items {
             match item {
                 Item::TypeDecl(td) => {
-                    if let Some(source_def) = self.type_defs.get(&td.name).cloned() {
-                        self.register_canonical_type_def(module_full_path, &td.name, &source_def);
+                    if let Some(source_def) = self.type_defs.get(td.name.name.as_str()).cloned() {
+                        self.register_canonical_type_def(
+                            module_full_path,
+                            td.name.name.as_str(),
+                            &source_def,
+                        );
                     }
-                    self.retire_imported_type_keys(module_short, module_full_path, &td.name);
+                    self.retire_imported_type_keys(
+                        module_short,
+                        module_full_path,
+                        td.name.name.as_str(),
+                    );
                     if td.visibility.is_pub() {
-                        self.record_module_type_export(module_short, &td.name);
-                        self.record_module_type_export(module_full_path, &td.name);
+                        self.record_module_type_export(module_short, td.name.name.as_str());
+                        self.record_module_type_export(module_full_path, td.name.name.as_str());
                     }
                 }
                 Item::Machine(md) => {
@@ -1026,8 +1071,12 @@ impl Checker {
                         continue;
                     }
                     let event_name = format!("{}Event", md.name);
-                    if let Some(source_def) = self.type_defs.get(&md.name).cloned() {
-                        self.register_canonical_type_def(module_full_path, &md.name, &source_def);
+                    if let Some(source_def) = self.type_defs.get(md.name.name.as_str()).cloned() {
+                        self.register_canonical_type_def(
+                            module_full_path,
+                            md.name.name.as_str(),
+                            &source_def,
+                        );
                     }
                     if let Some(source_def) = self.type_defs.get(&event_name).cloned() {
                         self.register_canonical_type_def(
@@ -1036,24 +1085,28 @@ impl Checker {
                             &source_def,
                         );
                     }
-                    self.retire_imported_type_keys(module_short, module_full_path, &md.name);
+                    self.retire_imported_type_keys(
+                        module_short,
+                        module_full_path,
+                        md.name.name.as_str(),
+                    );
                     self.retire_imported_type_keys(module_short, module_full_path, &event_name);
                     // A public machine publishes its generated event enum as
                     // part of the same declaration surface.  Keep the export
                     // ledger paired with the qualified aliases so import
                     // validation, checker resolution, and HIR all agree that
                     // `module.MachineEvent::Payload` is callable.
-                    self.record_module_type_export(module_short, &md.name);
+                    self.record_module_type_export(module_short, md.name.name.as_str());
                     self.record_module_type_export(module_short, &event_name);
-                    self.record_module_type_export(module_full_path, &md.name);
+                    self.record_module_type_export(module_full_path, md.name.name.as_str());
                     self.record_module_type_export(module_full_path, &event_name);
                 }
                 Item::Actor(ad) => {
                     // The dotted `{module_short}.{name}` entry is authored
                     // directly by `register_actor_base`; only the export
                     // record is added here.
-                    self.record_module_type_export(module_short, &ad.name);
-                    self.record_module_type_export(module_full_path, &ad.name);
+                    self.record_module_type_export(module_short, ad.name.name.as_str());
+                    self.record_module_type_export(module_full_path, ad.name.name.as_str());
                 }
                 _ => {}
             }
@@ -1195,8 +1248,8 @@ impl Checker {
         let saved_source_type_defs = self.source_type_defs.clone();
         for (item, _) in items {
             if let Item::TypeDecl(td) = item {
-                self.local_type_defs.insert(td.name.clone());
-                self.source_type_defs.insert(td.name.clone());
+                self.local_type_defs.insert(td.name.to_string());
+                self.source_type_defs.insert(td.name.to_string());
             }
         }
 
@@ -1213,7 +1266,8 @@ impl Checker {
                 .unwrap_or(importer_file_idx);
             match item {
                 Item::Function(fd) => {
-                    let qualified = self.canonical_fn_identity(Some(module_full_path), &fd.name);
+                    let qualified =
+                        self.canonical_fn_identity(Some(module_full_path), fd.name.name.as_str());
                     let surface_qualified = format!("{module_short}.{}", fd.name);
                     // Record visibility for all functions in the visibility table.
                     self.fn_visibility
@@ -1276,7 +1330,7 @@ impl Checker {
                         self.register_intrinsic_declaration(
                             qualified.clone(),
                             intrinsic_key,
-                            &fd.name,
+                            fd.name.name.as_str(),
                             fd,
                         );
                         self.current_module = saved_importer_module;
@@ -1285,9 +1339,11 @@ impl Checker {
 
                     // Publish selected names as lexical bindings to this declaration.
                     // Private functions cannot be imported bare.
-                    if fd.visibility.is_pub() && Self::should_import_name(&fd.name, spec) {
-                        let binding_name = Self::resolve_import_name(spec, &fd.name)
-                            .unwrap_or_else(|| fd.name.clone());
+                    if fd.visibility.is_pub()
+                        && Self::should_import_name(fd.name.name.as_str(), spec)
+                    {
+                        let binding_name = Self::resolve_import_name(spec, fd.name.name.as_str())
+                            .unwrap_or_else(|| fd.name.to_string());
                         // Preserve the resolver-selected source declaration
                         // identity; the binding itself may be an alias.
                         self.import_fn_name_aliases.insert(
@@ -1318,7 +1374,11 @@ impl Checker {
                     self.current_module_idx = declaring_file_idx;
                     self.register_record_decl(decl);
                     if let Some(definition) = self.type_defs.get(&canonical).cloned() {
-                        self.register_canonical_type_def(module_full_path, &decl.name, &definition);
+                        self.register_canonical_type_def(
+                            module_full_path,
+                            decl.name.name.as_str(),
+                            &definition,
+                        );
                     }
                     self.current_module = saved_module;
                     self.current_module_idx = importer_file_idx;
@@ -1340,9 +1400,9 @@ impl Checker {
                         }
                     }
                     if decl.visibility.is_pub() {
-                        self.record_module_type_export(module_full_path, &decl.name);
-                        if let Some(binding) =
-                            StdlibBarePublication::Import(spec).bare_binding(&decl.name)
+                        self.record_module_type_export(module_full_path, decl.name.name.as_str());
+                        if let Some(binding) = StdlibBarePublication::Import(spec)
+                            .bare_binding(decl.name.name.as_str())
                         {
                             self.publish_stdlib_hew_type_binding(
                                 module_short,
@@ -1369,13 +1429,13 @@ impl Checker {
                     if !decl.visibility.is_pub() {
                         continue;
                     }
-                    self.record_module_type_export(module_full_path, &decl.name);
+                    self.record_module_type_export(module_full_path, decl.name.name.as_str());
                     if spec.is_none() {
-                        self.record_module_type_export(module_short, &decl.name);
+                        self.record_module_type_export(module_short, decl.name.name.as_str());
                     }
-                    if Self::should_import_name(&decl.name, spec) {
-                        let binding = Self::resolve_import_name(spec, &decl.name)
-                            .unwrap_or_else(|| decl.name.clone());
+                    if Self::should_import_name(decl.name.name.as_str(), spec) {
+                        let binding = Self::resolve_import_name(spec, decl.name.name.as_str())
+                            .unwrap_or_else(|| decl.name.to_string());
                         let source = format!("{module_full_path}.{}", decl.name);
                         self.import_type_name_aliases.insert(
                             (
@@ -1427,7 +1487,7 @@ impl Checker {
                                     self.current_module.replace(module_full_path.to_string());
                                 self.current_module_idx = declaring_file_idx;
                                 self.register_type_decl(td);
-                                let source_def = self.type_defs.get(&td.name).cloned();
+                                let source_def = self.type_defs.get(td.name.name.as_str()).cloned();
                                 self.current_module = saved_importer_module;
                                 self.current_module_idx = importer_file_idx;
                                 source_def
@@ -1435,13 +1495,17 @@ impl Checker {
                         if let Some(source_def) = source_def.as_ref() {
                             self.register_canonical_type_def(
                                 module_full_path,
-                                &td.name,
+                                td.name.name.as_str(),
                                 source_def,
                             );
                         }
                         continue;
                     }
-                    if !self.register_type_namespace_name(Some(module_full_path), &td.name, span) {
+                    if !self.register_type_namespace_name(
+                        Some(module_full_path),
+                        td.name.name.as_str(),
+                        span,
+                    ) {
                         continue;
                     }
                     // Qualified authority is always published: the source
@@ -1452,28 +1516,33 @@ impl Checker {
                         self.current_module.replace(module_full_path.to_string());
                     self.current_module_idx = declaring_file_idx;
                     self.register_type_decl(td);
-                    let source_def = self.type_defs.get(&td.name).cloned();
+                    let source_def = self.type_defs.get(td.name.name.as_str()).cloned();
                     self.current_module = saved_importer_module;
                     self.current_module_idx = importer_file_idx;
                     if spec.is_none() {
-                        self.register_qualified_type_alias(module_short, &td.name);
+                        self.register_qualified_type_alias(module_short, td.name.name.as_str());
                     }
                     if let Some(source_def) = source_def.as_ref() {
-                        self.register_canonical_type_def(module_full_path, &td.name, source_def);
+                        self.register_canonical_type_def(
+                            module_full_path,
+                            td.name.name.as_str(),
+                            source_def,
+                        );
                     }
-                    self.record_module_type_export(module_full_path, &td.name);
+                    self.record_module_type_export(module_full_path, td.name.name.as_str());
                     if spec.is_none() {
-                        self.record_module_type_export(module_short, &td.name);
+                        self.record_module_type_export(module_short, td.name.name.as_str());
                     }
                     // The importer-scope bare binding is opt-in: a plain
                     // `import m;` publishes only the qualified name, mirroring
                     // the function/trait arms. Named (`::{ T }`) and glob
                     // imports publish the bare (or aliased) binding.
-                    if Self::should_import_name(&td.name, spec) {
-                        let explicit_import_name = Self::resolve_import_name(spec, &td.name);
+                    if Self::should_import_name(td.name.name.as_str(), spec) {
+                        let explicit_import_name =
+                            Self::resolve_import_name(spec, td.name.name.as_str());
                         let binding_name = explicit_import_name
                             .clone()
-                            .unwrap_or_else(|| td.name.clone());
+                            .unwrap_or_else(|| td.name.to_string());
                         self.known_types.insert(binding_name.clone());
                         let source_identity = format!("{module_full_path}.{}", td.name);
                         self.record_published_bare_type(&binding_name, &source_identity);
@@ -1521,7 +1590,7 @@ impl Checker {
                     }
                     if !self.register_machine_type_namespace_names(
                         Some(module_full_path),
-                        &md.name,
+                        md.name.name.as_str(),
                         span,
                     ) {
                         continue;
@@ -1533,28 +1602,33 @@ impl Checker {
                         self.current_module.replace(module_full_path.to_string());
                     self.current_module_idx = declaring_file_idx;
                     self.register_machine_decl(md, span);
-                    let machine_def = self.type_defs.get(&md.name).cloned();
+                    let machine_def = self.type_defs.get(md.name.name.as_str()).cloned();
                     let event_def = self.type_defs.get(&event_name).cloned();
                     self.current_module = saved_importer_module;
                     self.current_module_idx = importer_file_idx;
-                    self.register_qualified_type_alias(module_short, &md.name);
+                    self.register_qualified_type_alias(module_short, md.name.name.as_str());
                     self.register_qualified_type_alias(module_short, &event_name);
                     if let Some(machine_def) = machine_def.as_ref() {
-                        self.register_canonical_type_def(module_full_path, &md.name, machine_def);
+                        self.register_canonical_type_def(
+                            module_full_path,
+                            md.name.name.as_str(),
+                            machine_def,
+                        );
                     }
                     if let Some(event_def) = event_def.as_ref() {
                         self.register_canonical_type_def(module_full_path, &event_name, event_def);
                     }
-                    self.record_module_type_export(module_short, &md.name);
+                    self.record_module_type_export(module_short, md.name.name.as_str());
                     self.record_module_type_export(module_short, &event_name);
-                    self.record_module_type_export(module_full_path, &md.name);
+                    self.record_module_type_export(module_full_path, md.name.name.as_str());
                     self.record_module_type_export(module_full_path, &event_name);
                     // Bare publication of the machine and its event enum is
                     // opt-in, gated together so a named/glob import exposes both
                     // or neither.
-                    if Self::should_import_name(&md.name, spec) {
-                        let machine_binding = Self::resolve_import_name(spec, &md.name)
-                            .unwrap_or_else(|| md.name.clone());
+                    if Self::should_import_name(md.name.name.as_str(), spec) {
+                        let machine_binding =
+                            Self::resolve_import_name(spec, md.name.name.as_str())
+                                .unwrap_or_else(|| md.name.to_string());
                         let event_binding = Self::resolve_import_name(spec, &event_name)
                             .unwrap_or_else(|| event_name.clone());
                         self.known_types.insert(machine_binding.clone());
@@ -1614,7 +1688,7 @@ impl Checker {
                         for super_trait in supers {
                             self.mark_imported_trait_used(
                                 Some(module_full_path),
-                                &super_trait.name,
+                                &super_trait.path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
                             );
                         }
                         self.current_module = saved_importer_module;
@@ -1645,9 +1719,9 @@ impl Checker {
                         Some(module_full_path.to_string()),
                         declaring_file_idx,
                     );
-                    let import_binding = if Self::should_import_name(&tr.name, spec) {
-                        let binding_name = Self::resolve_import_name(spec, &tr.name)
-                            .unwrap_or_else(|| tr.name.clone());
+                    let import_binding = if Self::should_import_name(tr.name.name.as_str(), spec) {
+                        let binding_name = Self::resolve_import_name(spec, tr.name.name.as_str())
+                            .unwrap_or_else(|| tr.name.to_string());
                         // The unqualified trait binding lands in the *importing*
                         // module's namespace, not the source module's.
                         let importer = self.current_module.clone();
@@ -1696,7 +1770,7 @@ impl Checker {
                                 self.current_module.clone(),
                                 self.current_module_idx,
                                 qualified_binding.clone(),
-                                method.name.clone(),
+                                method.name.to_string(),
                             ),
                             (trait_id.clone(), method_id),
                         );
@@ -1722,8 +1796,12 @@ impl Checker {
                         let super_keys: Vec<String> = supers
                             .iter()
                             .map(|s| {
-                                self.mark_imported_trait_used(Some(module_full_path), &s.name);
-                                self.resolve_super_trait_edge(module_full_path, &s.name)
+                                self.mark_imported_trait_used(
+                                    Some(module_full_path),
+                                    &s.path.to_string(),
+                                ); // TRANSITION(P1): deleted by A1 commit 2
+                                self.resolve_super_trait_edge(module_full_path, &s.path.to_string())
+                                // TRANSITION(P1): deleted by A1 commit 2
                             })
                             .collect();
                         self.current_module = saved_importer_module;
@@ -1765,7 +1843,7 @@ impl Checker {
                                     self.current_module.clone(),
                                     self.current_module_idx,
                                     binding_name.clone(),
-                                    method.name.clone(),
+                                    method.name.to_string(),
                                 ),
                                 (trait_id.clone(), method_id),
                             );
@@ -1792,9 +1870,9 @@ impl Checker {
                     self.current_module_idx = importer_file_idx;
                     let qualified = format!("{module_full_path}.{}", cd.name);
                     self.env.define(qualified, ty.clone(), false);
-                    if Self::should_import_name(&cd.name, spec) {
-                        let binding_name = Self::resolve_import_name(spec, &cd.name)
-                            .unwrap_or_else(|| cd.name.clone());
+                    if Self::should_import_name(cd.name.name.as_str(), spec) {
+                        let binding_name = Self::resolve_import_name(spec, cd.name.name.as_str())
+                            .unwrap_or_else(|| cd.name.to_string());
                         self.record_published_bare_const(
                             &binding_name,
                             &format!("{module_full_path}.{}", cd.name),
@@ -1817,11 +1895,12 @@ impl Checker {
                         self.current_module.replace(module_full_path.to_string());
                     self.current_module_idx = declaring_file_idx;
                     if let TypeExpr::Named {
-                        name: type_name,
+                        path: named_path,
                         type_args,
                     } = &id.target_type.0
                     {
-                        // Set current_self_type for resolving `Self` in method parameters
+                        let type_name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
+                                                                 // Set current_self_type for resolving `Self` in method parameters
                         let prev_self_type = self.current_self_type.take();
                         let self_type_args: Vec<Ty> =
                             self.resolve_impl_target_type_args(id, type_args.as_ref());
@@ -1850,20 +1929,21 @@ impl Checker {
                             {
                                 self.record_primitive_trait_impl_self_args(
                                     canonical.clone(),
-                                    &tb.name,
+                                    &tb.path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
                                     self_type_args.clone(),
                                     &id.target_type.1,
                                 );
                                 self.record_primitive_trait_impl_method(
                                     canonical,
-                                    &tb.name,
-                                    method.name.clone(),
+                                    &tb.path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
+                                    method.name.to_string(),
                                     sig,
                                 );
                             }
                         }
                         if let Some(tb) = &id.trait_bound {
-                            self.record_trait_impl(type_name, &tb.name);
+                            self.record_trait_impl(type_name, &tb.path.to_string());
+                            // TRANSITION(P1): deleted by A1 commit 2
                         }
 
                         // Restore previous self type
@@ -1904,7 +1984,7 @@ impl Checker {
                     if !actor_already_registered
                         && !self.register_type_namespace_name(
                             Some(module_full_path),
-                            &ad.name,
+                            ad.name.name.as_str(),
                             span,
                         )
                     {
@@ -1946,11 +2026,11 @@ impl Checker {
                     // the lexical module binding as a compatibility index for
                     // parsing `alias.Actor`, but never use it as the actor's
                     // declaration identity.
-                    self.record_module_type_export(module_full_path, &ad.name);
+                    self.record_module_type_export(module_full_path, ad.name.name.as_str());
                     // If named import or glob, also register unqualified
-                    if Self::should_import_name(&ad.name, spec) {
-                        let binding_name = Self::resolve_import_name(spec, &ad.name)
-                            .unwrap_or_else(|| ad.name.clone());
+                    if Self::should_import_name(ad.name.name.as_str(), spec) {
+                        let binding_name = Self::resolve_import_name(spec, ad.name.name.as_str())
+                            .unwrap_or_else(|| ad.name.to_string());
                         let source_identity = format!("{module_full_path}.{}", ad.name);
                         self.record_published_bare_type(&binding_name, &source_identity);
                         // Supervisor declarations retain their source spelling
@@ -1996,7 +2076,7 @@ impl Checker {
                     if !self.type_defs.contains_key(&qualified)
                         && !self.register_type_namespace_name(
                             Some(module_full_path),
-                            &sd.name,
+                            sd.name.name.as_str(),
                             span,
                         )
                     {
@@ -2008,10 +2088,10 @@ impl Checker {
                     self.register_supervisor_decl_as(sd, &qualified);
                     self.current_module = saved_importer_module;
                     self.current_module_idx = importer_file_idx;
-                    self.record_module_type_export(module_full_path, &sd.name);
-                    if Self::should_import_name(&sd.name, spec) {
-                        let binding_name = Self::resolve_import_name(spec, &sd.name)
-                            .unwrap_or_else(|| sd.name.clone());
+                    self.record_module_type_export(module_full_path, sd.name.name.as_str());
+                    if Self::should_import_name(sd.name.name.as_str(), spec) {
+                        let binding_name = Self::resolve_import_name(spec, sd.name.name.as_str())
+                            .unwrap_or_else(|| sd.name.to_string());
                         self.record_published_bare_type(&binding_name, &qualified);
                         self.import_type_name_aliases.insert(
                             (
@@ -2063,15 +2143,27 @@ impl Checker {
         for (item, _) in items {
             match item {
                 Item::TypeDecl(td) => {
-                    if let Some(source_def) = self.type_defs.get(&td.name).cloned() {
-                        self.register_canonical_type_def(module_full_path, &td.name, &source_def);
+                    if let Some(source_def) = self.type_defs.get(td.name.name.as_str()).cloned() {
+                        self.register_canonical_type_def(
+                            module_full_path,
+                            td.name.name.as_str(),
+                            &source_def,
+                        );
                     }
-                    self.retire_imported_type_keys(module_short, module_full_path, &td.name);
+                    self.retire_imported_type_keys(
+                        module_short,
+                        module_full_path,
+                        td.name.name.as_str(),
+                    );
                 }
                 Item::Machine(md) if md.visibility.is_pub() => {
                     let event_name = format!("{}Event", md.name);
-                    if let Some(source_def) = self.type_defs.get(&md.name).cloned() {
-                        self.register_canonical_type_def(module_full_path, &md.name, &source_def);
+                    if let Some(source_def) = self.type_defs.get(md.name.name.as_str()).cloned() {
+                        self.register_canonical_type_def(
+                            module_full_path,
+                            md.name.name.as_str(),
+                            &source_def,
+                        );
                     }
                     if let Some(source_def) = self.type_defs.get(&event_name).cloned() {
                         self.register_canonical_type_def(
@@ -2080,7 +2172,11 @@ impl Checker {
                             &source_def,
                         );
                     }
-                    self.retire_imported_type_keys(module_short, module_full_path, &md.name);
+                    self.retire_imported_type_keys(
+                        module_short,
+                        module_full_path,
+                        md.name.name.as_str(),
+                    );
                     self.retire_imported_type_keys(module_short, module_full_path, &event_name);
                 }
                 _ => {}
@@ -2101,7 +2197,7 @@ impl Checker {
         ad: &ActorDecl,
         module_short: &str,
     ) {
-        let identity = Self::actor_identity(Some(module_short), &ad.name);
+        let identity = Self::actor_identity(Some(module_short), ad.name.name.as_str());
         for rf in &ad.receive_fns {
             let method_name = format!("{identity}::{}", rf.name);
             let Some(current) = self
@@ -2149,7 +2245,7 @@ impl Checker {
         ad: &ActorDecl,
         module_short: Option<&str>,
     ) {
-        let identity = Self::actor_identity(module_short, &ad.name);
+        let identity = Self::actor_identity(module_short, ad.name.name.as_str());
         self.register_actor_decl_as(ad, &identity);
         self.known_types.insert(identity.clone());
         // A generic actor's own params (`actor Worker<T>`) are in scope for every

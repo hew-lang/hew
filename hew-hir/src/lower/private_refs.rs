@@ -13,7 +13,7 @@ pub(super) struct CallNames {
 }
 
 /// Collect the names of private helper functions that are referenced by direct
-/// `Expr::Call { function: Expr::Identifier(name) }` within `body` and whose
+/// `Expr::Call { function: Expr::Ident(name) }` within `body` and whose
 /// names appear in `candidate_fns`. Method-call syntax (`foo.bar()`) is not
 /// tracked — only bare identifier callees are considered. Returns a sorted,
 /// deduplicated list of matching names.
@@ -85,9 +85,13 @@ pub(super) fn collect_type_expr_named_leaves(ty: &TypeExpr, out: &mut Vec<String
     match ty {
         TypeExpr::QualifiedAssocPath(path) => {
             collect_type_expr_named_leaves(&path.base.0, out);
-            out.push(path.trait_path.source_spelling());
+            out.push(path.trait_path.to_string()); // TRANSITION(P1): deleted by A1 commit 2
         }
-        TypeExpr::Named { name, type_args } => {
+        TypeExpr::Named {
+            path: named_path,
+            type_args,
+        } => {
+            let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
             out.push(name.clone());
             for arg in type_args.as_deref().unwrap_or(&[]) {
                 collect_type_expr_named_leaves(&arg.0, out);
@@ -168,11 +172,15 @@ pub(super) fn imported_impl_signature_type_is_safe(
     is_known_registered_type: &impl Fn(&str) -> bool,
 ) -> bool {
     match ty {
-        TypeExpr::Named { name, type_args } => {
-            // A generic type parameter in scope on the impl or method is a
-            // carrier resolved at monomorphisation time; admit it (and recurse
-            // into any args, e.g. `Vec<A>`). Checked before the registered-type
-            // gate because a type param never has a backing declaration.
+        TypeExpr::Named {
+            path: named_path,
+            type_args,
+        } => {
+            let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
+                                                // A generic type parameter in scope on the impl or method is a
+                                                // carrier resolved at monomorphisation time; admit it (and recurse
+                                                // into any args, e.g. `Vec<A>`). Checked before the registered-type
+                                                // gate because a type param never has a backing declaration.
             if generic_params.contains(name) {
                 return type_args.as_ref().is_none_or(|args| {
                     args.iter().all(|arg| {
@@ -315,7 +323,7 @@ pub(super) fn collect_imported_private_fn_closure<'a>(
         .filter_map(|(item, _)| {
             if let Item::Function(func) = item {
                 if !func.visibility.is_pub() {
-                    return Some((func.name.clone(), &func.body));
+                    return Some((func.name.to_string(), &func.body));
                 }
             }
             None
@@ -489,19 +497,21 @@ pub(super) fn scan_expr_for_private_refs(
     out: &mut CallNames,
 ) {
     match expr {
-        Expr::Identifier(name) if pf.is_some_and(|candidates| candidates.contains(name)) => {
-            out.bare.push(name.clone());
+        Expr::Ident(name)
+            if pf.is_some_and(|candidates| candidates.contains(name.name.as_str())) =>
+        {
+            out.bare.push(name.to_string());
         }
         Expr::GenericApplySuffix { target, .. } => {
             scan_expr_for_private_refs(&target.0, pf, out);
         }
 
         Expr::Call { function, args, .. } => {
-            if let Expr::Identifier(name) = &function.0 {
+            if let Expr::Ident(name) = &function.0 {
                 // `pf == None` collects every bare call name; `Some(set)` records
                 // only names present in `set` (the same-module private-fn filter).
-                if pf.is_none_or(|set| set.contains(name)) {
-                    out.bare.push(name.clone());
+                if pf.is_none_or(|set| set.contains(name.name.as_str())) {
+                    out.bare.push(name.to_string());
                 }
             }
             scan_expr_for_private_refs(&function.0, pf, out);
@@ -597,7 +607,7 @@ pub(super) fn scan_expr_for_private_refs(
             method,
             args,
         } => {
-            out.methods.push(method.clone());
+            out.methods.push(method.0.to_string());
             scan_expr_for_private_refs(&receiver.0, pf, out);
             for arg in args {
                 scan_expr_for_private_refs(&arg.expr().0, pf, out);
@@ -692,16 +702,17 @@ pub(super) fn classify_unsupported_where_clause(
     let type_param_names: Vec<&str> = decl
         .type_params
         .as_ref()
-        .map(|ps| ps.iter().map(|p| p.name.as_str()).collect())
+        .map(|ps| ps.iter().map(|p| p.name.name.as_str()).collect())
         .unwrap_or_default();
     for predicate in &where_clause.predicates {
         let TypeExpr::Named {
-            name: pred_ty_name,
+            path: named_path,
             type_args,
         } = &predicate.ty.0
         else {
             return Some("where-clause predicate on non-named type".to_string());
         };
+        let pred_ty_name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
         if type_args.is_some() {
             return Some(format!(
                 "where-clause predicate on parameterised type `{pred_ty_name}<...>`"

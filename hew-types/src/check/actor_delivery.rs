@@ -11,17 +11,17 @@ impl Checker {
     /// one completes. Both are compiler builtins unless the program declares
     /// its own binding of that name.
     pub(super) fn actor_delivery_view_builtin(&self, expr: &Expr) -> Option<&'static str> {
-        let Expr::Identifier(name) = expr else {
+        let Expr::Ident(name) = expr else {
             return None;
         };
         let view = ["mailbox", "policy"]
             .into_iter()
-            .find(|view| *view == name.as_str())?;
-        (self.env.lookup_ref(name).is_none()
-            && !self.fn_def_spans.contains_key(name)
-            && !scoped_module_item_name(self.canonical_fn_owner(), name)
+            .find(|view| *view == name.name.as_str())?;
+        (self.env.lookup_ref(name.name.as_str()).is_none()
+            && !self.fn_def_spans.contains_key(name.name.as_str())
+            && !scoped_module_item_name(self.canonical_fn_owner(), name.name.as_str())
                 .is_some_and(|owner| self.fn_def_spans.contains_key(&owner))
-            && matches!(self.builtin_call_targets.get(name), Some(CallTarget::Builtin { endpoint }) if endpoint == view))
+            && matches!(self.builtin_call_targets.get(name.name.as_str()), Some(CallTarget::Builtin { endpoint }) if endpoint == view))
         .then_some(view)
     }
 
@@ -58,7 +58,7 @@ impl Checker {
             [CallArg::Positional(target), CallArg::Named { name, value }] => {
                 self.named_argument_calls
                     .insert(SpanKey::in_module(span, self.current_module_idx));
-                if name == "on_full" {
+                if name.name.as_str() == "on_full" {
                     Some((target, Some(value)))
                 } else {
                     self.report_error(
@@ -124,7 +124,7 @@ impl Checker {
         self.check_against(&value.0, &value.1, &on_full_ty);
         let policy = match &value.0 {
             Expr::ContextVariant(variant) if variant.record.is_none() => {
-                match variant.name.as_str() {
+                match variant.name.name.as_str() {
                     "Reject" => Some(SendPolicy::Reject),
                     "Wait" => Some(SendPolicy::Wait),
                     "DropNewest" => Some(SendPolicy::DropNewest),
@@ -326,7 +326,7 @@ impl Checker {
                 ));
         if !through_view
             && owns_actor_turn
-            && matches!(&receiver.0, Expr::Identifier(name) if name == "self")
+            && matches!(&receiver.0, Expr::Ident(name) if name.name.as_str() == "self")
             && !self.suspension_operands.contains(&key)
         {
             self.report_error(

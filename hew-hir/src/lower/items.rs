@@ -1,6 +1,7 @@
 //! Function, impl-block and imported item lowering.
 
 use super::*;
+use hew_parser::ast::Ident;
 
 impl LowerCtx {
     pub(super) fn lower_fn(
@@ -8,7 +9,7 @@ impl LowerCtx {
         func: &FnDecl,
         span: std::ops::Range<usize>,
     ) -> Option<HirFn> {
-        self.lower_fn_with_name(func, &func.name, span)
+        self.lower_fn_with_name(func, func.name.name.as_str(), span)
     }
 
     /// V0b: lower a top-level `impl [<TypeParams>] [Trait for] TargetType { ... }`
@@ -50,7 +51,7 @@ impl LowerCtx {
             return;
         }
         let TypeExpr::Named {
-            name: self_type_name,
+            path: named_path,
             type_args: target_type_args,
         } = &decl.target_type.0
         else {
@@ -65,12 +66,13 @@ impl LowerCtx {
             ));
             return;
         };
-        // Record the FFI-backed nominal surface of this impl BEFORE any
-        // metadata-only skip below drops the block: a record named in the
-        // signature of an `#[extern_symbol]` method is constructed/consumed
-        // behind the C ABI, which is the signal
-        // `finalize_user_record_value_classes` needs to admit a zero-field
-        // record as a pointer-width handle stand-in.
+        let self_type_name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
+                                                      // Record the FFI-backed nominal surface of this impl BEFORE any
+                                                      // metadata-only skip below drops the block: a record named in the
+                                                      // signature of an `#[extern_symbol]` method is constructed/consumed
+                                                      // behind the C ABI, which is the signal
+                                                      // `finalize_user_record_value_classes` needs to admit a zero-field
+                                                      // record as a pointer-width handle stand-in.
         for method in &decl.methods {
             if !method
                 .attributes
@@ -95,7 +97,7 @@ impl LowerCtx {
         let type_params: Vec<String> = decl
             .type_params
             .as_ref()
-            .map(|ps| ps.iter().map(|p| p.name.clone()).collect())
+            .map(|ps| ps.iter().map(|p| p.name.to_string()).collect())
             .unwrap_or_default();
         // For concrete specialised impls (`impl Describe for Wrapper<i64>`, i.e.
         // empty type_params with non-empty target type args), lower the target's
@@ -218,11 +220,12 @@ impl LowerCtx {
         let is_duration_ctor_block = builtin_impl_kind == Some(BuiltinType::Duration)
             && decl.methods.len() == duration_ctors.len()
             && decl.methods.iter().all(|m| {
-                duration_ctors.contains(&m.name.as_str())
+                duration_ctors.contains(&m.name.name.as_str())
                     && m.params.first().is_none_or(|param| {
                         !matches!(
                             &param.ty.0,
-                            TypeExpr::Named { name, .. } if name == "Self" || name == "duration"
+                            TypeExpr::Named { path, .. }
+                                if path.as_single().is_some_and(|name| matches!(name.name.as_str(), "Self" | "duration"))
                         )
                     })
             });
@@ -261,13 +264,14 @@ impl LowerCtx {
             // Read the class under the checker-resolved declaration path: the
             // source spelling is a bare leaf that a root nominal of the same
             // name also claims in `type_classes`.
-            let declared_resource_close_impl = matches!(
-                &resolved_impl_self_ty,
-                ResolvedTy::Named { name, .. }
-                    if self.type_classes.get(name).is_some_and(|(marker, _)| {
-                        *marker == ResourceMarker::Resource
-                    })
-            ) && decl.methods.iter().any(|m| m.name == "close");
+            let declared_resource_close_impl =
+                matches!(
+                    &resolved_impl_self_ty,
+                    ResolvedTy::Named { name, .. }
+                        if self.type_classes.get(name).is_some_and(|(marker, _)| {
+                            *marker == ResourceMarker::Resource
+                        })
+                ) && decl.methods.iter().any(|m| m.name == Ident::new("close"));
             if declared_resource_close_impl {
                 // `std/link_monitor.hew` is both the source declaration for the
                 // builtin `MonitorRef` nominal and the `#[resource]` close
@@ -379,11 +383,14 @@ impl LowerCtx {
                 continue;
             }
             if let Some(imp) = imported {
-                if imp.skip_methods.contains(method.name.as_str()) {
+                if imp.skip_methods.contains(method.name.name.as_str()) {
                     continue;
                 }
             }
-            let symbol = crate::node::HirImplBlock::method_symbol(&symbol_self_name, &method.name);
+            let symbol = crate::node::HirImplBlock::method_symbol(
+                &symbol_self_name,
+                method.name.name.as_str(),
+            );
             let declaration = self.impl_method_declaration_ids.get(&symbol).cloned();
             if let Some((declaration, selected)) = declaration.as_ref().and_then(|declaration| {
                 self.impl_body_plan
@@ -441,12 +448,12 @@ impl LowerCtx {
             method_item_ids.push(hir_method.id);
             items.push(HirItem::Function(hir_method));
             method_symbols.push(symbol.clone());
-            method_names.push(method.name.clone());
+            method_names.push(method.name.to_string());
             let declaring_trait = decl
                 .trait_bound
                 .as_ref()
-                .map_or(String::new(), |tb| tb.name.clone());
-            let ids = self.trait_method_identity(&declaring_trait, &method.name);
+                .map_or(String::new(), |tb| tb.path.to_string()); // TRANSITION(P1): deleted by A1 commit 2
+            let ids = self.trait_method_identity(&declaring_trait, method.name.name.as_str());
             let declaring_trait = ids.as_ref().map_or(declaring_trait, |(trait_id, _)| {
                 trait_id.full_path().to_string()
             });
@@ -462,13 +469,15 @@ impl LowerCtx {
         // `current_impl_self_ty` is already set to the concrete self type above
         // so `Self` inside the default body lowers to the correct concrete type.
         if let Some(tb) = &decl.trait_bound {
-            let overridden: HashSet<&str> = decl.methods.iter().map(|m| m.name.as_str()).collect();
-            if let Some(default_owner_key) = self.trait_declaration(&tb.name) {
+            let overridden: HashSet<&str> =
+                decl.methods.iter().map(|m| m.name.name.as_str()).collect();
+            if let Some(default_owner_key) = self.trait_declaration(&tb.path.to_string()) {
+                // TRANSITION(P1): deleted by A1 commit 2
                 if let Some(defaults) = self.trait_defaults.get(&default_owner_key).cloned() {
                     let saved_module_idx = self.current_module_idx;
                     let saved_module = self.current_module_name.clone();
                     for default_method in &defaults {
-                        if overridden.contains(default_method.method.name.as_str()) {
+                        if overridden.contains(default_method.method.name.name.as_str()) {
                             continue;
                         }
                         self.current_module_idx = default_method.file_index;
@@ -477,7 +486,7 @@ impl LowerCtx {
                         let fn_decl = trait_method_to_fn_decl(&default_method.method);
                         let symbol = crate::node::HirImplBlock::method_symbol(
                             &symbol_self_name,
-                            &fn_decl.name,
+                            fn_decl.name.name.as_str(),
                         );
                         let declaring_trait = default_method.trait_id.full_path().to_string();
                         let ids = Some((
@@ -496,7 +505,7 @@ impl LowerCtx {
                                 Self::synthetic_default_impl_body_declaration(
                                     declaring_trait,
                                     self.current_impl_self_ty.as_ref(),
-                                    &fn_decl.name,
+                                    fn_decl.name.name.as_str(),
                                 )
                             });
                         if let Some(declaration) = &synthetic_default_declaration {
@@ -551,7 +560,7 @@ impl LowerCtx {
                         method_item_ids.push(hir_method.id);
                         items.push(HirItem::Function(hir_method));
                         method_symbols.push(symbol.clone());
-                        method_names.push(fn_decl.name.clone());
+                        method_names.push(fn_decl.name.to_string());
                         let declaring_trait =
                             ids.as_ref().map_or(declaring_trait, |(trait_id, _)| {
                                 trait_id.full_path().to_string()
@@ -582,13 +591,13 @@ impl LowerCtx {
         let type_aliases: Vec<(String, ResolvedTy)> = decl
             .type_aliases
             .iter()
-            .map(|alias| (alias.name.clone(), self.lower_type(&alias.ty)))
+            .map(|alias| (alias.name.to_string(), self.lower_type(&alias.ty)))
             .collect();
 
         items.push(HirItem::Impl(crate::node::HirImplBlock {
             id: self.ids.item(),
             node: self.ids.node(),
-            trait_name: decl.trait_bound.as_ref().map(|b| b.name.clone()),
+            trait_name: decl.trait_bound.as_ref().map(|b| b.path.to_string()), // TRANSITION(P1): deleted by A1 commit 2
             self_type_name: hir_impl_self_type_name,
             self_type: impl_self_nominal,
             type_params,
@@ -740,7 +749,7 @@ impl LowerCtx {
         else {
             self.diagnostics.push(HirDiagnostic::new(
                 HirDiagnosticKind::UnknownIntrinsic {
-                    fn_name: func.name.clone(),
+                    fn_name: func.name.to_string(),
                     intrinsic_key,
                 },
                 span,
@@ -946,7 +955,7 @@ impl LowerCtx {
         let method_type_params: Vec<String> = func
             .type_params
             .as_ref()
-            .map(|params| params.iter().map(|param| param.name.clone()).collect())
+            .map(|params| params.iter().map(|param| param.name.to_string()).collect())
             .unwrap_or_default();
         let mut type_params: Vec<String> =
             Vec::with_capacity(impl_type_params.len() + method_type_params.len());
@@ -1077,20 +1086,20 @@ impl LowerCtx {
         source_module: &str,
     ) -> HashSet<String> {
         let TypeExpr::Named {
-            name: self_type_name,
-            ..
+            path: named_path, ..
         } = &impl_decl.target_type.0
         else {
             return impl_decl
                 .methods
                 .iter()
-                .map(|method| method.name.clone())
+                .map(|method| method.name.to_string())
                 .collect();
         };
+        let self_type_name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
         let impl_generic_params: HashSet<String> = impl_decl
             .type_params
             .as_ref()
-            .map(|tps| tps.iter().map(|tp| tp.name.clone()).collect())
+            .map(|tps| tps.iter().map(|tp| tp.name.to_string()).collect())
             .unwrap_or_default();
         let mut skip_methods: HashSet<String> = HashSet::new();
         for method in &impl_decl.methods {
@@ -1098,7 +1107,7 @@ impl LowerCtx {
                 .params
                 .iter()
                 .filter(|param| matches!(&param.ty.0, TypeExpr::Function { .. }))
-                .map(|param| param.name.as_str())
+                .map(|param| param.name.name.as_str())
                 .collect();
             let body_unresolvable =
                 collect_all_bare_call_names(&method.body)
@@ -1112,7 +1121,7 @@ impl LowerCtx {
                     });
             let mut method_generic_params = impl_generic_params.clone();
             if let Some(tps) = &method.type_params {
-                method_generic_params.extend(tps.iter().map(|tp| tp.name.clone()));
+                method_generic_params.extend(tps.iter().map(|tp| tp.name.to_string()));
             }
             let is_known_registered_type = |name: &str| {
                 self.enum_variants_by_name.contains_key(name)
@@ -1143,20 +1152,20 @@ impl LowerCtx {
                 )
             });
             if body_unresolvable || sig_unresolvable {
-                skip_methods.insert(method.name.clone());
+                skip_methods.insert(method.name.to_string());
             }
         }
         loop {
             let mut grew = false;
             for method in &impl_decl.methods {
-                if skip_methods.contains(&method.name) {
+                if skip_methods.contains(method.name.name.as_str()) {
                     continue;
                 }
                 if collect_all_method_call_names(&method.body)
                     .iter()
                     .any(|callee| skip_methods.contains(callee))
                 {
-                    skip_methods.insert(method.name.clone());
+                    skip_methods.insert(method.name.to_string());
                     grew = true;
                 }
             }

@@ -307,9 +307,9 @@ fn encoding_value_reexported_signature_preserves_original_owner() {
     import.resolved_items = Some(relay.clone().into());
     import.resolved_item_source_paths = vec![relay_path.clone(); relay.len()];
     import.resolved_source_paths = vec![relay_path.clone()];
-    let root = ModuleId::root();
-    let json = ModuleId::new(["std", "encoding", "json"].map(str::to_string).into());
-    let relay_id = ModuleId::new(vec!["relay".to_string()]);
+    let root = ModulePath::root();
+    let json = ModulePath::new(["std", "encoding", "json"]);
+    let relay_id = ModulePath::new(["relay"]);
     let mut graph = ModuleGraph::new(root.clone());
     graph
         .add_module(Module {
@@ -527,8 +527,8 @@ fn selected_encoding_import_preserves_result_and_option_try_payload_identity() {
             .unwrap()
             .join(format!("std/encoding/{format}/{format}.hew"))];
         let source_paths = import.resolved_source_paths.clone();
-        let root = ModuleId::root();
-        let module = ModuleId::new(vec![
+        let root = ModulePath::root();
+        let module = ModulePath::new([
             "std".to_string(),
             "encoding".to_string(),
             format.to_string(),

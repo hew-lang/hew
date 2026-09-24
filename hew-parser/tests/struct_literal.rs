@@ -1,3 +1,5 @@
+use hew_parser::ast::Ident;
+
 #[test]
 fn parse_empty_struct_literal() {
     let result = hew_parser::parse("type Foo {} fn main() { let f = Foo {}; }");
@@ -114,7 +116,7 @@ fn first_stmt(
         .items
         .iter()
         .find_map(|(item, _)| match item {
-            hew_parser::ast::Item::Function(f) if f.name == "main" => Some(f),
+            hew_parser::ast::Item::Function(f) if f.name == Ident::new("main") => Some(f),
             _ => None,
         })?;
     main.body.stmts.first()

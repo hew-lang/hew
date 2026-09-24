@@ -148,7 +148,7 @@ fn normalize_walks_a_shared_import_dag_once() {
     ];
     root_items.extend(machine.program.items.clone());
 
-    let root_id = ModuleId::root();
+    let root_id = ModulePath::root();
     let root_module = Module {
         id: root_id.clone(),
         items: root_items.clone(),
@@ -168,7 +168,7 @@ fn normalize_walks_a_shared_import_dag_once() {
     let normalized = machine_normalize::normalize(&program)
         .expect("normalization succeeds")
         .expect("a machine is present");
-    let root = &normalized.program.module_graph.as_ref().unwrap().modules[&ModuleId::root()];
+    let root = &normalized.program.module_graph.as_ref().unwrap().modules[&ModulePath::root()];
     assert_eq!(
         root.items.len(),
         normalized.program.items.len(),

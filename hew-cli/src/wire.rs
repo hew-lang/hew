@@ -153,7 +153,7 @@ fn parse_wire_decls(path: &str) -> Result<Vec<VersionedWireSchema>, String> {
                     .iter()
                     .filter_map(|item| match item {
                         TypeBodyItem::Field { name, ty, .. } => {
-                            Some((name.clone(), type_expr_to_string(&ty.0)))
+                            Some((name.to_string(), type_expr_to_string(&ty.0)))
                         }
                         _ => None,
                     })
@@ -193,7 +193,7 @@ fn parse_wire_decls(path: &str) -> Result<Vec<VersionedWireSchema>, String> {
                     .collect();
                 Some(VersionedWireSchema {
                     schema: WireSchema {
-                        name: td.name,
+                        name: td.name.to_string(),
                         kind,
                         fields,
                         variants,
@@ -434,7 +434,7 @@ fn compare_wire_enum_variant_payload(
         (VariantKind::Tuple(current_fields), VariantKind::Tuple(baseline_fields)) => {
             compare_wire_enum_payload_types(
                 wire_name,
-                &current_variant.name,
+                current_variant.name.name.as_str(),
                 current_fields
                     .iter()
                     .map(|field| type_expr_to_string(&field.0)),
@@ -572,16 +572,17 @@ fn warn_new_required_and_deprecated_fields(
 fn type_expr_to_string(te: &TypeExpr) -> String {
     match te {
         TypeExpr::Named {
-            name,
+            path: named_path,
             type_args: Some(args),
         } => {
+            let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
             let arg_strs: Vec<String> = args.iter().map(|a| type_expr_to_string(&a.0)).collect();
             format!("{name}<{}>", arg_strs.join(", "))
         }
         TypeExpr::Named {
-            name,
+            path,
             type_args: None,
-        } => name.clone(),
+        } => path.to_string(),
         TypeExpr::Option(inner) => format!("Option<{}>", type_expr_to_string(&inner.0)),
         TypeExpr::Tuple(items) => {
             let parts: Vec<String> = items.iter().map(|i| type_expr_to_string(&i.0)).collect();

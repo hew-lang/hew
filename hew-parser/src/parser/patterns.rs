@@ -177,12 +177,13 @@ impl Parser<'_> {
                 Pattern::ContextVariant(ContextVariantPattern { name, payload })
             }
             Some(Token::Identifier(name)) => {
-                let first = name.to_string();
+                let first = Ident::new(name);
+                let first_span = self.peek_span();
                 self.advance();
-                if first == "_" {
+                if first.name == sym::UNDERSCORE {
                     Pattern::Wildcard
                 } else {
-                    let mut segments = vec![first.clone()];
+                    let mut segments = vec![(first, first_span)];
                     loop {
                         match self.peek() {
                             Some(Token::Dot)
@@ -191,7 +192,7 @@ impl Parser<'_> {
                             _ => break,
                         }
                         self.advance();
-                        segments.push(self.expect_ident()?);
+                        segments.push(self.expect_ident_spanned()?);
                     }
 
                     if segments.len() == 1 {
@@ -208,16 +209,15 @@ impl Parser<'_> {
                                 }
                             }
                             self.expect(&Token::RightParen)?;
-                            Pattern::Constructor {
-                                name: first,
-                                patterns,
+                            Pattern::NominalPath {
+                                path: Path { segments },
+                                payload: Some(NominalPatternPayload::Tuple(patterns)),
                             }
                         } else if self.eat(&Token::LeftBrace) {
                             let (fields, rest) = self.parse_record_pattern_fields()?;
-                            Pattern::Struct {
-                                name: first,
-                                fields,
-                                rest,
+                            Pattern::NominalPath {
+                                path: Path { segments },
+                                payload: Some(NominalPatternPayload::Record { fields, rest }),
                             }
                         } else {
                             Pattern::Identifier(first)
@@ -341,7 +341,7 @@ impl Parser<'_> {
             Some(tok) if Self::contextual_keyword_name(tok).is_some() => {
                 let name = Self::contextual_keyword_name(self.peek().unwrap()).unwrap();
                 self.advance();
-                Pattern::Identifier(name.to_string())
+                Pattern::Identifier(Ident::new(name))
             }
             _ => {
                 let found = match self.peek() {

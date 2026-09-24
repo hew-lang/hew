@@ -507,7 +507,7 @@ impl LowerCtx {
         // legacy MIR consumer can re-infer a target from strings.
         if matches!(
             &function.0,
-            Expr::FieldAccess { object, .. } if matches!(object.0, Expr::Identifier(_))
+            Expr::FieldAccess { object, .. } if matches!(object.0, Expr::Ident(_))
         ) && matches!(
             self.ordinary_call_target(span),
             Some(CallTarget::User(_) | CallTarget::Runtime(_))
@@ -750,9 +750,9 @@ impl LowerCtx {
     /// to require a [`CallTarget`] fact and never retries this spelling.
     pub(super) fn ordinary_call_presentation_name(function: &Spanned<Expr>) -> String {
         match &function.0 {
-            Expr::Identifier(name) => name.clone(),
+            Expr::Ident(name) => name.to_string(),
             Expr::FieldAccess { object, field } => match &object.0 {
-                Expr::Identifier(owner) => format!("{owner}.{field}"),
+                Expr::Ident(owner) => format!("{owner}.{field}", field = field.0),
                 _ => "<call expression>".to_string(),
             },
             _ => "<call expression>".to_string(),
@@ -945,8 +945,8 @@ impl LowerCtx {
                 }));
             }
             let direct_extern_symbol = match &function.0 {
-                Expr::Identifier(name) if self.extern_fn_names.contains(name) => {
-                    Some(name.as_str())
+                Expr::Ident(name) if self.extern_fn_names.contains(name.name.as_str()) => {
+                    Some(name.name.as_str())
                 }
                 _ => None,
             };
@@ -994,7 +994,7 @@ impl LowerCtx {
                     Some(ResolvedTy::Named { name, .. }) => {
                         format!("{name}::{}", context.name)
                     }
-                    _ => context.name.clone(),
+                    _ => context.name.to_string(),
                 };
                 let variant_kind_for_call = self
                     .lookup_variant_ctor(&contextual_name, checker_ctor_ty.as_ref())
@@ -1022,7 +1022,7 @@ impl LowerCtx {
                             ResolvedTy::Unit,
                         )
                 }
-            } else if let Expr::Identifier(name) = &function.0 {
+            } else if let Expr::Ident(name) = &function.0 {
                 // Intercept payload-bearing variant constructors written
                 // as calls (`Shape::Line(5)`, bare `Line(5)`). The bare
                 // identifier path produces `MachineVariantCtor { payload:
@@ -1034,13 +1034,13 @@ impl LowerCtx {
                 // coverage is preserved.
                 let checker_ctor_ty = self.checker_expr_ty_if_present(&span);
                 let variant_kind_for_call = self
-                    .lookup_variant_ctor(name, checker_ctor_ty.as_ref())
+                    .lookup_variant_ctor(name.name.as_str(), checker_ctor_ty.as_ref())
                     .map(|(_, _, kind)| kind.clone());
                 if let Some(HirVariantKind::Tuple(_)) = &variant_kind_for_call {
                     let taken = std::mem::take(&mut args);
-                    self.lower_variant_ctor_tuple_call(name, taken, &span)
+                    self.lower_variant_ctor_tuple_call(name.name.as_str(), taken, &span)
                 } else if let Some(kind) = &variant_kind_for_call {
-                    self.report_variant_ctor_call_shape_mismatch(name, kind, &span);
+                    self.report_variant_ctor_call_shape_mismatch(name.name.as_str(), kind, &span);
                     // Fall through to regular-call to keep checker-stream
                     // coverage for the malformed source.
                     self.lower_regular_call(
@@ -1052,11 +1052,13 @@ impl LowerCtx {
                         &span,
                         site,
                     )
-                } else if matches!(name.as_str(), "assert_eq" | "assert_ne") {
-                    self.lower_equality_assertion(name, args, &span)
-                } else if stdlib_catalog::is_overloaded_builtin(name) {
+                } else if matches!(name.name.as_str(), "assert_eq" | "assert_ne") {
+                    self.lower_equality_assertion(name.name.as_str(), args, &span)
+                } else if stdlib_catalog::is_overloaded_builtin(name.name.as_str()) {
                     let arg_tys = args.iter().map(|arg| arg.ty.clone()).collect::<Vec<_>>();
-                    if let Some(entry) = stdlib_catalog::resolve_overload(name, &arg_tys) {
+                    if let Some(entry) =
+                        stdlib_catalog::resolve_overload(name.name.as_str(), &arg_tys)
+                    {
                         let result_ty = entry.return_ty.to_resolved();
                         let callee = self.lower_stdlib_callee(entry, function.1.clone());
                         (
@@ -1069,20 +1071,26 @@ impl LowerCtx {
                             result_ty,
                         )
                     } else {
-                        match self.try_lower_generic_display_builtin(name, args, &span) {
+                        match self.try_lower_generic_display_builtin(
+                            name.name.as_str(),
+                            args,
+                            &span,
+                        ) {
                             Ok(lowered) => lowered,
                             Err(args) => {
                                 let arg_ty = arg_tys.first().cloned().unwrap_or(ResolvedTy::Unit);
                                 self.diagnostics.push(HirDiagnostic::new(
                                         HirDiagnosticKind::UnresolvedBuiltinOverload {
-                                            name: name.clone(),
+                                            name: name.to_string(),
                                             arg_ty,
                                         },
                                         span.clone(),
                                         "builtin call has no registered monomorphic overload for this argument type",
                                     ));
-                                let callee =
-                                    self.unresolved_builtin_callee(name, function.1.clone());
+                                let callee = self.unresolved_builtin_callee(
+                                    name.name.as_str(),
+                                    function.1.clone(),
+                                );
                                 (
                                         HirExprKind::Call {
                                             target: CallTarget::Unsupported {

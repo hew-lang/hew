@@ -56,7 +56,7 @@ impl LowerCtx {
         {
             self.diagnostics.push(HirDiagnostic::new(
                 HirDiagnosticKind::ResourceGenericUnsupported {
-                    name: decl.name.clone(),
+                    name: decl.name.to_string(),
                 },
                 span.clone(),
                 "`#[resource]` / `#[linear]` types cannot have type parameters in v0.5",
@@ -86,8 +86,8 @@ impl LowerCtx {
                     return None;
                 };
                 Some(HirField {
-                    name: name.clone(),
-                    ty: self.checked_field_ty(&definition, name, field_span),
+                    name: name.to_string(),
+                    ty: self.checked_field_ty(&definition, name.name.as_str(), field_span),
                     default: None,
                     is_mutable: false,
                     deferred: false,
@@ -103,8 +103,12 @@ impl LowerCtx {
                     return None;
                 };
                 Some(HirVariant {
-                    name: variant.name.clone(),
-                    kind: self.checked_variant_kind(&definition, &variant.name, &span)?,
+                    name: variant.name.to_string(),
+                    kind: self.checked_variant_kind(
+                        &definition,
+                        variant.name.name.as_str(),
+                        &span,
+                    )?,
                 })
             })
             .collect();
@@ -134,7 +138,7 @@ impl LowerCtx {
             id,
             node: self.ids.node(),
             declaration,
-            name: decl.name.clone(),
+            name: decl.name.to_string(),
             // Root/local identity by default; the imported-module carrier
             // (`lower_imported_type_decl`) stamps `Some(module_short)` for
             // package-exported types.
@@ -142,7 +146,11 @@ impl LowerCtx {
             marker,
             is_opaque: facts.is_opaque,
             is_indirect: decl.is_indirect,
-            consuming_methods: decl.consuming_methods.clone(),
+            consuming_methods: decl
+                .consuming_methods
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
             type_params,
             fields,
             variants,
@@ -170,8 +178,12 @@ impl LowerCtx {
                 record_fields
                     .iter()
                     .map(|field| HirField {
-                        name: field.name.clone(),
-                        ty: self.checked_field_ty(&definition, &field.name, &field.span),
+                        name: field.name.to_string(),
+                        ty: self.checked_field_ty(
+                            &definition,
+                            field.name.name.as_str(),
+                            &field.span,
+                        ),
                         default: None,
                         is_mutable: false,
                         deferred: false,
@@ -214,7 +226,7 @@ impl LowerCtx {
             id,
             node: self.ids.node(),
             declaration,
-            name: decl.name.clone(),
+            name: decl.name.to_string(),
             // Imported emission stamps the declaration's source module.
             defining_module: None,
             type_params,
@@ -1270,7 +1282,11 @@ impl LowerCtx {
     )]
     pub(super) fn lower_type(&mut self, ty: &Spanned<TypeExpr>) -> ResolvedTy {
         match &ty.0 {
-            TypeExpr::Named { name, type_args } => {
+            TypeExpr::Named {
+                path: named_path,
+                type_args,
+            } => {
+                let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
                 let args: Vec<ResolvedTy> = type_args
                     .as_ref()
                     .map(|args| args.iter().map(|arg| self.lower_type(arg)).collect())

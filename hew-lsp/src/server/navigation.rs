@@ -1,3 +1,4 @@
+use hew_parser::ast::Ident;
 use std::collections::{HashMap, HashSet};
 
 use dashmap::DashMap;
@@ -59,11 +60,11 @@ pub(super) fn compute_import_path(uri: &Url, import: &ImportDecl) -> Option<std:
         return Some(file_dir.join(fp));
     }
 
-    if import.path.is_empty() {
+    if import.path.segments.is_empty() {
         return None;
     }
 
-    let relative = format!("{}.hew", import.path.join("/"));
+    let relative = format!("{}.hew", import_file_stem(&import.path));
 
     // Prefer workspace root when the file already exists there.
     if let Some(root) = find_workspace_root_for_uri(uri) {
@@ -136,9 +137,9 @@ pub(super) fn find_named_import_spans(
 
     let names_range = item_span.start + open_brace + 1..item_span.start + close_brace;
     let import_name_span =
-        find_identifier_span_in_range(source, names_range.clone(), &import_name.name)?;
+        find_identifier_span_in_range(source, names_range.clone(), import_name.name.name.as_str())?;
     let visible_name_span = match &import_name.alias {
-        Some(alias) => find_identifier_span_in_range(source, names_range, alias)?,
+        Some(alias) => find_identifier_span_in_range(source, names_range, alias.name.as_str())?,
         None => import_name_span,
     };
 
@@ -192,16 +193,15 @@ fn build_named_importer_index(documents: &DashMap<Url, DocumentState>) -> NamedI
                 };
                 let visible_name = import_name
                     .alias
-                    .as_deref()
-                    .unwrap_or(import_name.name.as_str())
+                    .map_or(import_name.name.name.as_str(), |ident| ident.name.as_str())
                     .to_string();
                 index
-                    .entry((resolved_uri.clone(), import_name.name.clone()))
+                    .entry((resolved_uri.clone(), import_name.name.to_string()))
                     .or_default()
                     .push(NamedImportMatch {
                         importer_uri: importer_uri.clone(),
                         imported_uri: resolved_uri.clone(),
-                        imported_name: import_name.name.clone(),
+                        imported_name: import_name.name.to_string(),
                         visible_name,
                         import_name_span,
                         visible_name_span,
@@ -264,8 +264,7 @@ pub(super) fn find_named_import_match(
         for import_name in names {
             let visible_name = import_name
                 .alias
-                .as_deref()
-                .unwrap_or(import_name.name.as_str());
+                .map_or(import_name.name.name.as_str(), |ident| ident.name.as_str());
             if visible_name != word {
                 continue;
             }
@@ -276,7 +275,7 @@ pub(super) fn find_named_import_match(
                 hew_analysis::definition::find_definition(
                     &target_doc.source,
                     &target_doc.parse_result,
-                    &import_name.name,
+                    import_name.name.name.as_str(),
                 )
                 .is_some()
             } else {
@@ -287,7 +286,7 @@ pub(super) fn find_named_import_match(
                         hew_analysis::definition::find_definition(
                             &file_source,
                             &file_parse,
-                            &import_name.name,
+                            import_name.name.name.as_str(),
                         )
                         .is_some()
                     } else {
@@ -310,7 +309,7 @@ pub(super) fn find_named_import_match(
             return Some(NamedImportMatch {
                 importer_uri: current_uri.clone(),
                 imported_uri,
-                imported_name: import_name.name.clone(),
+                imported_name: import_name.name.to_string(),
                 visible_name: visible_name.to_string(),
                 import_name_span,
                 visible_name_span,
@@ -1253,7 +1252,7 @@ fn scan_disk_importers_for_conflicts(
                     };
                     if !names
                         .iter()
-                        .any(|n| n.name == renamed_name && n.alias.is_none())
+                        .any(|n| n.name == Ident::new(renamed_name) && n.alias.is_none())
                     {
                         return false;
                     }
@@ -1312,7 +1311,7 @@ fn collect_unopened_sibling_importers_for_edits(
             }
 
             for import_name in names {
-                if import_name.name != renamed_name {
+                if import_name.name != Ident::new(renamed_name) {
                     continue;
                 }
                 let Some((import_name_span, visible_name_span)) =
@@ -1320,15 +1319,12 @@ fn collect_unopened_sibling_importers_for_edits(
                 else {
                     continue;
                 };
-                let visible_name = import_name
-                    .alias
-                    .clone()
-                    .unwrap_or_else(|| import_name.name.clone());
+                let visible_name = import_name.alias.unwrap_or(import_name.name);
                 matches.push(NamedImportMatch {
                     importer_uri: file_uri.clone(),
                     imported_uri: resolved_uri.clone(),
-                    imported_name: import_name.name.clone(),
-                    visible_name,
+                    imported_name: import_name.name.to_string(),
+                    visible_name: visible_name.to_string(),
                     import_name_span,
                     visible_name_span,
                 });
@@ -1390,18 +1386,19 @@ fn find_cross_file_definition_impl(
             Some(ImportSpec::Names(names)) => {
                 // Find the entry whose visible name (alias if present, otherwise
                 // the original name) matches `word`.
-                let Some(entry) = names
-                    .iter()
-                    .find(|n| n.alias.as_deref().unwrap_or(n.name.as_str()) == word)
-                else {
+                let Some(entry) = names.iter().find(|n| {
+                    n.alias
+                        .map_or(n.name.name.as_str(), |ident| ident.name.as_str())
+                        == word
+                }) else {
                     continue; // this import does not bring `word` into scope
                 };
-                &entry.name // search target file by the *original* name
+                entry.name.name.as_str() // search target file by the *original* name
             }
             None => {
                 // Bare path import (`import foo.bar`).  The last path segment
                 // is itself a navigable target (e.g. cursor on `bar`).
-                if import.path.last().map(String::as_str) == Some(word)
+                if import.path.last().map(|ident| ident.name.as_str()) == Some(word)
                     && (documents.contains_key(&target_uri) || path.exists())
                 {
                     return Some((target_uri, Range::default()));
@@ -1651,7 +1648,7 @@ pub(super) fn build_document_links(
                 continue;
             }
             if let Some(target_uri) = Url::from_file_path(&path) {
-                let relative = format!("{}.hew", import.path.join("/"));
+                let relative = format!("{}.hew", import_file_stem(&import.path));
                 links.push(DocumentLink {
                     range: span_to_range(source, lo, span),
                     target: Some(target_uri),
@@ -1662,6 +1659,15 @@ pub(super) fn build_document_links(
         }
     }
     links
+}
+
+/// The relative source-file stem an import path names (`a.b` -> `a/b`).
+fn import_file_stem(path: &hew_parser::ast::Path) -> String {
+    path.segments
+        .iter()
+        .map(|(segment, _)| segment.name.as_str())
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 #[cfg(test)]
@@ -1706,11 +1712,10 @@ mod tests {
         NamedImportMatch {
             importer_uri: source_uri.clone(),
             imported_uri: target_uri.clone(),
-            imported_name: import_name.name.clone(),
+            imported_name: import_name.name.to_string(),
             visible_name: import_name
                 .alias
-                .as_deref()
-                .unwrap_or(import_name.name.as_str())
+                .map_or(import_name.name.name.as_str(), |ident| ident.name.as_str())
                 .to_string(),
             import_name_span,
             visible_name_span,

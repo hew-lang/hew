@@ -144,12 +144,12 @@ impl Checker {
 
         if runtime_rewrite_consumes_receiver {
             self.method_call_consumes_receiver.insert(key);
-            if let Expr::Identifier(name) = &receiver.0 {
+            if let Expr::Ident(name) = &receiver.0 {
                 // The typed consumption decision overrides a surface Copy
                 // derivation. In particular, a lambda-actor handle is an
                 // opaque wrapper, but release still consumes its sole runtime
                 // handle and any later receiver use is invalid.
-                self.env.mark_moved(name, receiver.1.clone());
+                self.env.mark_moved(name.name.as_str(), receiver.1.clone());
             }
         }
 
@@ -222,8 +222,8 @@ impl Checker {
             }
         }
         // Module-qualified calls: e.g. http.listen(addr) → lookup "http.listen" in fn_sigs
-        if let Expr::Identifier(name) = &receiver.0 {
-            let receiver_is_binding = self.env.lookup_ref(name).is_some();
+        if let Expr::Ident(name) = &receiver.0 {
+            let receiver_is_binding = self.env.lookup_ref(name.name.as_str()).is_some();
             // The shared type-head resolver already selected every
             // declaration-proven nominal above. Preserve that classification
             // while deciding whether an unresolved head is a module call.
@@ -232,13 +232,13 @@ impl Checker {
                 && self.module_import_bindings.contains_key(&(
                     self.current_module.clone(),
                     self.current_module_idx,
-                    name.clone(),
+                    name.to_string(),
                 ));
             if receiver_shadows_module {
                 self.record_method_call_receiver_kind(
                     span,
                     MethodCallReceiverKind::LexicalBinding {
-                        binding_name: name.clone(),
+                        binding_name: name.to_string(),
                     },
                 );
             }
@@ -247,11 +247,11 @@ impl Checker {
             // exact source owner, so resolve the binding before every authority
             // lookup. Never recover the owner from the final path segment: two
             // nested stdlib modules may share both a leaf and a function name.
-            let canonical_owner = self.canonical_module_import_owner(name);
+            let canonical_owner = self.canonical_module_import_owner(name.name.as_str());
             let key = self.canonical_fn_identity(Some(&canonical_owner), method);
             let looks_like_module_call = !receiver_is_binding
                 && !receiver_is_known_type
-                && (self.module_binding_in_current_file(name)
+                && (self.module_binding_in_current_file(name.name.as_str())
                     || self.module_fn_exports.contains(&key)
                     || self.fn_sigs.contains_key(&key));
             if looks_like_module_call {
@@ -261,11 +261,11 @@ impl Checker {
                         module_name: canonical_owner.clone(),
                     },
                 );
-                if self.module_binding_in_current_file(name) {
+                if self.module_binding_in_current_file(name.name.as_str()) {
                     self.used_modules.borrow_mut().insert(ImportKey::in_file(
                         self.current_module.clone(),
                         self.current_module_idx,
-                        name.clone(),
+                        name.to_string(),
                     ));
                 }
                 // Cross-module enum variant construction: e.g. `fs.IoError::TimedOut(0)`.
@@ -361,7 +361,10 @@ impl Checker {
                             let (expr, sp) = arg.expr();
                             self.synthesize(expr, sp);
                         }
-                        let kind = if self.resolve_module_type(name, method).is_some() {
+                        let kind = if self
+                            .resolve_module_type(name.name.as_str(), method)
+                            .is_some()
+                        {
                             TypeErrorKind::PathKindMismatch
                         } else {
                             TypeErrorKind::PathMemberNotFound
@@ -377,19 +380,27 @@ impl Checker {
                 self.require_unsafe(&key, span);
                 // Call and value-position references share the manifest's
                 // canonical member/module capability selection.
-                self.reject_wasm_native_only_module_function(name, method, span);
+                self.reject_wasm_native_only_module_function(name.name.as_str(), method, span);
                 // crypto.random_bytes and its fallible twin depend on a
                 // native-only secure entropy source absent from the wasm32 link
                 // set; reject so secure randomness fails closed on wasm32.
-                if self.is_shipped_crypto_module(name)
+                if self.is_shipped_crypto_module(name.name.as_str())
                     && matches!(method, "random_bytes" | "try_random_bytes")
                 {
                     self.reject_wasm_feature(span, WasmUnsupportedFeature::CryptoRandom);
                 }
                 if let Some(sig) = self.fn_sigs.get(&key).cloned() {
                     self.record_call_edge(&key);
-                    self.record_module_qualified_stdlib_call_rewrite_if_any(name, method, span);
-                    self.record_module_qualified_user_call_rewrite_if_any(name, method, span);
+                    self.record_module_qualified_stdlib_call_rewrite_if_any(
+                        name.name.as_str(),
+                        method,
+                        span,
+                    );
+                    self.record_module_qualified_user_call_rewrite_if_any(
+                        name.name.as_str(),
+                        method,
+                        span,
+                    );
                     let assoc_bindings = self
                         .fn_type_param_assoc_bindings
                         .get(&key)
@@ -446,11 +457,11 @@ impl Checker {
             // for root-canonical (bare) declarations and any non-wire dotted
             // signature registered under its own spelling.
             let canonical_static_owner = self
-                .canonical_nominal_name(name)
-                .unwrap_or_else(|| name.clone());
+                .canonical_nominal_name(name.name.as_str())
+                .unwrap_or_else(|| name.to_string());
             let static_key = format!("{canonical_static_owner}.{method}");
             let static_sig = self.fn_sigs.get(&static_key).cloned().or_else(|| {
-                (canonical_static_owner != *name)
+                (canonical_static_owner != name.name.as_str())
                     .then(|| self.fn_sigs.get(&format!("{name}.{method}")).cloned())
                     .flatten()
             });
@@ -1977,11 +1988,11 @@ impl Checker {
                                 // rejected because store-back (slice 6) cannot
                                 // target them.
                                 let receiver_binding_name = match &receiver.0 {
-                                    Expr::Identifier(n) => Some(n.clone()),
+                                    Expr::Ident(n) => Some(*n),
                                     _ => None,
                                 };
                                 let receiver_is_mutable = receiver_binding_name
-                                    .as_deref()
+                                    .map(|ident| ident.name.as_str())
                                     .and_then(|n| self.env.lookup_ref(n))
                                     .is_some_and(|b| b.is_mutable);
                                 if !receiver_is_mutable {
@@ -2004,9 +2015,13 @@ impl Checker {
                                     // binding as written so the unused-mut analysis does
                                     // not flag `var lc = ...; lc.step(...)` as a
                                     // never-reassigned mutable binding.
-                                    self.env.discount_mutation_receiver_read(n);
-                                    self.env.mark_written(n);
-                                    self.reject_borrowed_parameter_mutation(n, &[], span);
+                                    self.env.discount_mutation_receiver_read(n.name.as_str());
+                                    self.env.mark_written(n.name.as_str());
+                                    self.reject_borrowed_parameter_mutation(
+                                        n.name.as_str(),
+                                        &[],
+                                        span,
+                                    );
                                 }
                                 self.machine_method_dispatch.insert(
                                     SpanKey::in_module(span, self.current_module_idx),
@@ -2071,8 +2086,11 @@ impl Checker {
                         if discharges_resource && !borrowed_refused {
                             self.method_call_discharges_receiver
                                 .insert(SpanKey::in_module(span, self.current_module_idx));
-                            if let Expr::Identifier(receiver_name) = &receiver.0 {
-                                match self.env.mark_released(receiver_name, receiver.1.clone()) {
+                            if let Expr::Ident(receiver_name) = &receiver.0 {
+                                match self
+                                    .env
+                                    .mark_released(receiver_name.name.as_str(), receiver.1.clone())
+                                {
                                     Some(Some(prior)) => {
                                         let mut error = TypeError::new(
                                             TypeErrorKind::UseAfterConsume,
@@ -2100,7 +2118,10 @@ impl Checker {
                                             MarkerTrait::Copy,
                                         ) =>
                                     {
-                                        self.env.mark_moved(receiver_name, receiver.1.clone());
+                                        self.env.mark_moved(
+                                            receiver_name.name.as_str(),
+                                            receiver.1.clone(),
+                                        );
                                     }
                                     Some(None) | None => {}
                                 }
@@ -2916,12 +2937,12 @@ impl Checker {
         message: String,
     ) {
         let mut error = TypeError::new(TypeErrorKind::UndefinedMethod, span.clone(), message);
-        if let Expr::Identifier(binding) = &receiver.0 {
-            if self.env.lookup_ref(binding).is_some()
+        if let Expr::Ident(binding) = &receiver.0 {
+            if self.env.lookup_ref(binding.name.as_str()).is_some()
                 && self.module_import_bindings.contains_key(&(
                     self.current_module.clone(),
                     self.current_module_idx,
-                    binding.clone(),
+                    binding.to_string(),
                 ))
             {
                 error = error.with_note(

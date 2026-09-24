@@ -9,6 +9,7 @@ use crate::{
     CallableCallMode, CallableCapabilities, ClosureCaptureAccess, ClosureCaptureAcquisition,
     ClosureCaptureConsumption,
 };
+use hew_parser::ast::Ident;
 
 impl Checker {
     /// Instantiate a declaration used as a value through the same signature,
@@ -218,11 +219,11 @@ impl Checker {
 
     pub(super) fn resolve_private_captures(
         &mut self,
-        captures: &[Spanned<String>],
+        captures: &[Spanned<Ident>],
     ) -> HashSet<TypeBindingId> {
         let mut bindings = HashSet::new();
         for (name, span) in captures {
-            if let Some(binding) = self.env.lookup_ref(name) {
+            if let Some(binding) = self.env.lookup_ref(name.name.as_str()) {
                 if !bindings.insert(binding.id) {
                     self.report_error(
                         TypeErrorKind::InvalidOperation,
@@ -282,7 +283,7 @@ impl Checker {
             let is_copy = self.registry.implements_marker(&fact.ty, MarkerTrait::Copy);
             if is_move && !fork_snapshot {
                 if !is_copy
-                    && !self.reject_borrowed_consumption(&Expr::Identifier(fact.name.clone()), span)
+                    && !self.reject_borrowed_consumption(&Expr::Ident(Ident::new(&fact.name)), span)
                 {
                     self.env.mark_moved(&fact.name, span.clone());
                 }
@@ -618,8 +619,9 @@ impl Checker {
                     TypeErrorKind::OwnConsumeBorrowed,
                     span,
                     format!(
-                        "E_OWN_CONSUME_BORROWED: `{method}` lends a value its collection keeps, \
-                         and this use takes ownership of it"
+                        "E_OWN_CONSUME_BORROWED: `{}` lends a value its collection keeps, \
+                         and this use takes ownership of it",
+                        method.0
                     ),
                     vec![
                         "move the value out with `remove`, or read it where the collection lends it"
@@ -774,7 +776,7 @@ impl Checker {
             let callee = (
                 Expr::FieldAccess {
                     object: Box::new(receiver.clone()),
-                    field: method.to_string(),
+                    field: (Ident::new(method), span.clone()),
                 },
                 span.clone(),
             );

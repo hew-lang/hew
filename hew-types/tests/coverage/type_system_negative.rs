@@ -1,4 +1,5 @@
 use crate::common;
+use hew_parser::ast::Ident;
 
 use common::parse_and_typecheck_isolated;
 use common::typecheck_isolated as typecheck;
@@ -60,9 +61,9 @@ fn expect_duplicate_definition_span_kind_name(source: &str, name: &str) {
 
 fn item_declares_name(item: &Item, name: &str) -> bool {
     match item {
-        Item::Trait(td) => td.name == name,
-        Item::Actor(ad) => ad.name == name,
-        Item::TypeAlias(ta) => ta.name == name,
+        Item::Trait(td) => td.name == Ident::new(name),
+        Item::Actor(ad) => ad.name == Ident::new(name),
+        Item::TypeAlias(ta) => ta.name == Ident::new(name),
         _ => false,
     }
 }

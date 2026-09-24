@@ -1,3 +1,4 @@
+use hew_parser::ast::Ident;
 use std::collections::HashMap;
 
 use hew_analysis::calls::{
@@ -28,10 +29,10 @@ pub(super) fn find_type_hierarchy_item(
                     TypeDeclKind::Struct => SymbolKind::STRUCT,
                     TypeDeclKind::Enum => SymbolKind::ENUM,
                 };
-                (td.name.as_str(), kind)
+                (td.name.name.as_str(), kind)
             }
-            Item::Actor(a) => (a.name.as_str(), SymbolKind::CLASS),
-            Item::Trait(t) => (t.name.as_str(), SymbolKind::INTERFACE),
+            Item::Actor(a) => (a.name.name.as_str(), SymbolKind::CLASS),
+            Item::Trait(t) => (t.name.name.as_str(), SymbolKind::INTERFACE),
             _ => continue,
         };
         if item_name == name {
@@ -63,11 +64,17 @@ pub(super) fn collect_supertypes(
     for (item, _) in &parse_result.program.items {
         match item {
             // For actors, collect their declared super_traits and return immediately.
-            Item::Actor(a) if a.name == name => {
+            Item::Actor(a) if a.name == Ident::new(name) => {
                 if let Some(bounds) = &a.super_traits {
                     for bound in bounds {
-                        if let Some(hi) =
-                            find_type_hierarchy_item(uri, source, lo, parse_result, &bound.name)
+                        if let Some(hi) = find_type_hierarchy_item(
+                            uri,
+                            source,
+                            lo,
+                            parse_result,
+                            &bound.path.to_string(),
+                        )
+                        // TRANSITION(P1): deleted by A1 commit 2
                         {
                             supers.push(hi);
                         }
@@ -78,13 +85,19 @@ pub(super) fn collect_supertypes(
             // For types, find impl blocks: `impl TraitName for TypeName`
             Item::Impl(impl_decl) => {
                 let target = match &impl_decl.target_type.0 {
-                    hew_parser::ast::TypeExpr::Named { name: tname, .. } => tname.as_str(),
+                    hew_parser::ast::TypeExpr::Named { path, .. } => path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
                     _ => continue,
                 };
                 if target == name {
                     if let Some(bound) = &impl_decl.trait_bound {
-                        if let Some(hi) =
-                            find_type_hierarchy_item(uri, source, lo, parse_result, &bound.name)
+                        if let Some(hi) = find_type_hierarchy_item(
+                            uri,
+                            source,
+                            lo,
+                            parse_result,
+                            &bound.path.to_string(),
+                        )
+                        // TRANSITION(P1): deleted by A1 commit 2
                         {
                             supers.push(hi);
                         }
@@ -110,13 +123,14 @@ pub(super) fn collect_subtypes(
     for (item, _) in &parse_result.program.items {
         if let Item::Impl(impl_decl) = item {
             if let Some(bound) = &impl_decl.trait_bound {
-                if bound.name == trait_name {
+                if bound.path.to_string() == trait_name {
+                    // TRANSITION(P1): deleted by A1 commit 2
                     let target = match &impl_decl.target_type.0 {
-                        hew_parser::ast::TypeExpr::Named { name: tname, .. } => tname.as_str(),
+                        hew_parser::ast::TypeExpr::Named { path, .. } => path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
                         _ => continue,
                     };
                     if let Some(hi) =
-                        find_type_hierarchy_item(uri, source, lo, parse_result, target)
+                        find_type_hierarchy_item(uri, source, lo, parse_result, &target)
                     {
                         subs.push(hi);
                     }
@@ -129,10 +143,15 @@ pub(super) fn collect_subtypes(
     for (item, _) in &parse_result.program.items {
         if let Item::Actor(a) = item {
             if let Some(bounds) = &a.super_traits {
-                if bounds.iter().any(|b| b.name == trait_name) {
-                    if let Some(hi) =
-                        find_type_hierarchy_item(uri, source, lo, parse_result, &a.name)
-                    {
+                if bounds.iter().any(|b| b.path.to_string() == trait_name) {
+                    // TRANSITION(P1): deleted by A1 commit 2
+                    if let Some(hi) = find_type_hierarchy_item(
+                        uri,
+                        source,
+                        lo,
+                        parse_result,
+                        a.name.name.as_str(),
+                    ) {
                         subs.push(hi);
                     }
                 }
@@ -153,10 +172,10 @@ pub(super) fn find_callable_at(
 ) -> Option<CallHierarchyItem> {
     for (item, item_span) in &parse_result.program.items {
         match item {
-            Item::Function(f) if f.name == name => {
+            Item::Function(f) if f.name == Ident::new(name) => {
                 let range = span_to_range(source, lo, item_span);
                 return Some(CallHierarchyItem {
-                    name: f.name.clone(),
+                    name: f.name.to_string(),
                     kind: SymbolKind::FUNCTION,
                     tags: None,
                     detail: None,
@@ -168,7 +187,7 @@ pub(super) fn find_callable_at(
             }
             Item::Actor(a) => {
                 for recv in &a.receive_fns {
-                    if recv.name == name {
+                    if recv.name == Ident::new(name) {
                         let fn_span = if recv.span.is_empty() {
                             item_span
                         } else {
@@ -176,7 +195,7 @@ pub(super) fn find_callable_at(
                         };
                         let range = span_to_range(source, lo, fn_span);
                         return Some(CallHierarchyItem {
-                            name: recv.name.clone(),
+                            name: recv.name.to_string(),
                             kind: SymbolKind::METHOD,
                             tags: None,
                             detail: Some(format!("actor {}", a.name)),
@@ -225,7 +244,7 @@ pub(super) fn find_incoming_calls(
                 let range = span_to_range(source, lo, item_span);
                 result.push(CallHierarchyIncomingCall {
                     from: CallHierarchyItem {
-                        name: f.name.clone(),
+                        name: f.name.to_string(),
                         kind: SymbolKind::FUNCTION,
                         tags: None,
                         detail: None,
@@ -286,7 +305,7 @@ pub(super) fn find_incoming_calls(
                     let range = span_to_range(source, lo, fn_span);
                     result.push(CallHierarchyIncomingCall {
                         from: CallHierarchyItem {
-                            name: recv.name.clone(),
+                            name: recv.name.to_string(),
                             kind: SymbolKind::METHOD,
                             tags: None,
                             detail: Some(format!("actor {}", a.name)),
@@ -319,7 +338,7 @@ pub(super) fn find_incoming_calls(
                     };
                     result.push(CallHierarchyIncomingCall {
                         from: CallHierarchyItem {
-                            name: method.name.clone(),
+                            name: method.name.to_string(),
                             kind: SymbolKind::METHOD,
                             tags: None,
                             detail: Some(format!("actor {}", a.name)),
@@ -337,7 +356,7 @@ pub(super) fn find_incoming_calls(
             }
             Item::Impl(i) => {
                 let impl_name = match &i.target_type.0 {
-                    hew_parser::ast::TypeExpr::Named { name: tname, .. } => tname.clone(),
+                    hew_parser::ast::TypeExpr::Named { path, .. } => path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
                     _ => "<impl>".to_string(),
                 };
                 let range = span_to_range(source, lo, item_span);
@@ -359,7 +378,7 @@ pub(super) fn find_incoming_calls(
                 let range = span_to_range(source, lo, item_span);
                 result.push(CallHierarchyIncomingCall {
                     from: CallHierarchyItem {
-                        name: td.name.clone(),
+                        name: td.name.to_string(),
                         kind: SymbolKind::STRUCT,
                         tags: None,
                         detail: None,
@@ -375,7 +394,7 @@ pub(super) fn find_incoming_calls(
                 let range = span_to_range(source, lo, item_span);
                 result.push(CallHierarchyIncomingCall {
                     from: CallHierarchyItem {
-                        name: t.name.clone(),
+                        name: t.name.to_string(),
                         kind: SymbolKind::INTERFACE,
                         tags: None,
                         detail: None,
@@ -391,7 +410,7 @@ pub(super) fn find_incoming_calls(
                 let range = span_to_range(source, lo, item_span);
                 result.push(CallHierarchyIncomingCall {
                     from: CallHierarchyItem {
-                        name: s.name.clone(),
+                        name: s.name.to_string(),
                         kind: SymbolKind::MODULE,
                         tags: None,
                         detail: None,
@@ -407,7 +426,7 @@ pub(super) fn find_incoming_calls(
                 let range = span_to_range(source, lo, item_span);
                 result.push(CallHierarchyIncomingCall {
                     from: CallHierarchyItem {
-                        name: m.name.clone(),
+                        name: m.name.to_string(),
                         kind: SymbolKind::ENUM,
                         tags: None,
                         detail: None,
@@ -423,7 +442,7 @@ pub(super) fn find_incoming_calls(
                 let range = span_to_range(source, lo, item_span);
                 result.push(CallHierarchyIncomingCall {
                     from: CallHierarchyItem {
-                        name: c.name.clone(),
+                        name: c.name.to_string(),
                         kind: SymbolKind::CONSTANT,
                         tags: None,
                         detail: None,

@@ -457,7 +457,7 @@ fn test_arity_mismatch_too_many_args() {
     // println_int takes 1 arg; call with 2
     let call = (
         Expr::Call {
-            function: Box::new((Expr::Identifier("println_int".to_string()), 0..11)),
+            function: Box::new((Expr::Ident(Ident::new("println_int")), 0..11)),
             type_args: None,
             args: vec![
                 CallArg::Positional((
@@ -493,7 +493,7 @@ fn test_arity_mismatch_too_few_args() {
     // println_int takes 1 arg; call with 0
     let call = (
         Expr::Call {
-            function: Box::new((Expr::Identifier("println_int".to_string()), 0..11)),
+            function: Box::new((Expr::Ident(Ident::new("println_int")), 0..11)),
             type_args: None,
             args: vec![],
             is_tail_call: false,
@@ -1843,12 +1843,15 @@ fn typecheck_actor_receive_fn_registered() {
 
     let recv = ReceiveFnDecl {
         is_generator: false,
-        name: "greet".to_string(),
+        name: Ident::new("greet"),
         params: vec![Param {
-            name: "name".to_string(),
+            name: Ident::new("name"),
             ty: (
                 TypeExpr::Named {
-                    name: "string".into(),
+                    path: hew_parser::ast::Path::single(
+                        hew_parser::ast::Ident::new("string"),
+                        0..0,
+                    ),
                     type_args: None,
                 },
                 0..0,
@@ -1869,7 +1872,7 @@ fn typecheck_actor_receive_fn_registered() {
     };
     let actor = ActorDecl {
         visibility: Visibility::Pub,
-        name: "Greeter".to_string(),
+        name: Ident::new("Greeter"),
         type_params: vec![],
         super_traits: None,
         init: None,
@@ -2154,8 +2157,8 @@ fn checker_reuse_does_not_leak_result_shadowing_into_stdlib() {
         "std/string.hew parse errors: {:?}",
         parsed.errors
     );
-    let root_id = ModuleId::root();
-    let mod_id = ModuleId::new(vec!["std".to_string(), "string".to_string()]);
+    let root_id = ModulePath::root();
+    let mod_id = ModulePath::new(["std", "string"]);
     let module = Module {
         id: mod_id.clone(),
         items: parsed.program.items,
@@ -2256,8 +2259,8 @@ fn checker_reuse_does_not_leak_loaded_handle_methods_into_user_module() {
         "second parse errors: {:?}",
         second.errors
     );
-    let root_id = ModuleId::root();
-    let module_id = ModuleId::new(vec!["net".to_string()]);
+    let root_id = ModulePath::root();
+    let module_id = ModulePath::new(["net"]);
     let module = Module {
         id: module_id.clone(),
         items: second.program.items,

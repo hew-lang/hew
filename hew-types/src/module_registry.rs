@@ -3,11 +3,12 @@
 //! Replaces the baked-in `stdlib_generated.rs` tables. Discovers modules
 //! by searching the filesystem and parsing `.hew` files at user compile time.
 
+use hew_parser::ast::Ident;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 
 use hew_parser::ast::Item;
-use hew_parser::module::ModuleId;
+use hew_parser::module::ModulePath;
 
 use crate::stdlib_loader::{load_module_checked, ModuleInfo};
 
@@ -32,7 +33,7 @@ fn parse_cache_key(source: &std::path::Path) -> PathBuf {
 /// Module declarations and derived metadata visible to one checked program.
 #[derive(Debug, Clone, Default)]
 struct ProgramModuleState {
-    modules: BTreeMap<ModuleId, ModuleInfo>,
+    modules: BTreeMap<ModulePath, ModuleInfo>,
     handle_types: HashSet<String>,
     drop_types: HashSet<String>,
     drop_funcs: HashMap<String, String>,
@@ -67,7 +68,7 @@ pub struct ModuleRegistry {
 #[derive(Debug, Clone, Copy)]
 pub struct LoadedModule<'a> {
     /// Canonical nominal identity selected for the active source.
-    pub module_id: &'a ModuleId,
+    pub module_id: &'a ModulePath,
     /// Parsed declarations and extracted module metadata.
     pub info: &'a ModuleInfo,
     /// Whether the source belongs to this compiler's stdlib distribution.
@@ -75,14 +76,8 @@ pub struct LoadedModule<'a> {
 }
 
 /// Parse a canonical dotted module identity at the registry boundary.
-fn module_id_from_identity(module_path: &str) -> ModuleId {
-    ModuleId::new(
-        module_path
-            .split('.')
-            .filter(|segment| !segment.is_empty())
-            .map(String::from)
-            .collect(),
-    )
+fn module_id_from_identity(module_path: &str) -> ModulePath {
+    ModulePath::new(module_path.split('.').filter(|segment| !segment.is_empty()))
 }
 
 /// Walk up the directory tree from `from`, returning the first ancestor directory
@@ -490,8 +485,8 @@ impl std::fmt::Display for ModuleError {
 impl ModuleRegistry {
     fn module_info_declares_nominal(info: &ModuleInfo, leaf: &str) -> bool {
         info.source_items.iter().any(|(item, _)| match item {
-            Item::TypeDecl(decl) => decl.name == leaf,
-            Item::Record(decl) => decl.name == leaf,
+            Item::TypeDecl(decl) => decl.name == Ident::new(leaf),
+            Item::Record(decl) => decl.name == Ident::new(leaf),
             _ => false,
         })
     }
@@ -505,7 +500,7 @@ impl ModuleRegistry {
     /// must come from the same selected source.
     fn exact_module_source_type_owner(&self, owner: &str, leaf: &str) -> Option<String> {
         let module_id = module_id_from_identity(owner);
-        let loader_path = module_id.path.join("::");
+        let loader_path = module_id.join("::");
         if let Some(info) = self
             .active
             .modules
@@ -557,7 +552,7 @@ impl ModuleRegistry {
         &self,
         name: &str,
         method_receiver: bool,
-    ) -> Option<(&ModuleId, &ModuleInfo, String)> {
+    ) -> Option<(&ModulePath, &ModuleInfo, String)> {
         let (owner, leaf) = name.rsplit_once('.')?;
         if owner.contains('.') {
             let module_id = module_id_from_identity(owner);
@@ -586,7 +581,7 @@ impl ModuleRegistry {
             })
             .map(|(module_id, info)| (module_id, info, name.to_string()))
             .collect::<Vec<_>>();
-        matches.sort_unstable_by(|left, right| left.0.path.cmp(&right.0.path));
+        matches.sort_unstable_by(|left, right| left.0.segments.cmp(&right.0.segments));
         match matches.as_slice() {
             [only] => Some((only.0, only.1, only.2.clone())),
             _ => None,
@@ -676,10 +671,10 @@ impl ModuleRegistry {
         )
     }
 
-    fn module_info_has_stdlib_authority(&self, id: &ModuleId, info: &ModuleInfo) -> bool {
-        info.source_path.as_deref().is_some_and(|source_path| {
-            self.source_has_stdlib_authority(source_path, &id.path.join("."))
-        })
+    fn module_info_has_stdlib_authority(&self, id: &ModulePath, info: &ModuleInfo) -> bool {
+        info.source_path
+            .as_deref()
+            .is_some_and(|source_path| self.source_has_stdlib_authority(source_path, &id.dotted()))
     }
 
     /// Iterate the modules active for this checked program in canonical identity
@@ -720,7 +715,7 @@ impl ModuleRegistry {
         module_path: &str,
     ) -> Result<(), CompilerModuleError> {
         let id = module_id_from_identity(module_path);
-        let loader_path = id.path.join("::");
+        let loader_path = id.join("::");
 
         if let Some(info) = self.active.modules.get(&id) {
             if !self.module_info_has_stdlib_authority(&id, info) {
@@ -761,7 +756,7 @@ impl ModuleRegistry {
         };
 
         let source_paths = info.source_path.iter().cloned().collect::<Vec<_>>();
-        let canonical_owner = canonical_source_module_identity(&id.path.join("."), &source_paths);
+        let canonical_owner = canonical_source_module_identity(&id.dotted(), &source_paths);
         let canonical_id = module_id_from_identity(&canonical_owner);
         if !self.module_info_has_stdlib_authority(&canonical_id, &info) {
             return Err(CompilerModuleError::SourceOutsideAuthority {
@@ -801,7 +796,7 @@ impl ModuleRegistry {
     ///
     pub fn load(&mut self, module_path: &str) -> Result<&ModuleInfo, ModuleError> {
         let id = module_id_from_identity(module_path);
-        let loader_path = id.path.join("::");
+        let loader_path = id.join("::");
 
         if self.active.modules.contains_key(&id) {
             return Ok(&self.active.modules[&id]);
@@ -825,8 +820,7 @@ impl ModuleRegistry {
                 info
             };
             let source_paths = info.source_path.iter().cloned().collect::<Vec<_>>();
-            let canonical_owner =
-                canonical_source_module_identity(&id.path.join("."), &source_paths);
+            let canonical_owner = canonical_source_module_identity(&id.dotted(), &source_paths);
             let canonical_id = module_id_from_identity(&canonical_owner);
             return Ok(self.activate_module(&canonical_id, info));
         }
@@ -846,7 +840,7 @@ impl ModuleRegistry {
         })
     }
 
-    fn activate_module(&mut self, id: &ModuleId, info: ModuleInfo) -> &ModuleInfo {
+    fn activate_module(&mut self, id: &ModulePath, info: ModuleInfo) -> &ModuleInfo {
         self.active
             .handle_types
             .extend(info.handle_types.iter().cloned());
@@ -880,7 +874,7 @@ impl ModuleRegistry {
         let (module_id, _, spelling) = self.registry_receiver_declaration(name, false)?;
         Some(format!(
             "{}.{}",
-            module_id.path.join("."),
+            module_id.dotted(),
             crate::short_name(&spelling)
         ))
     }
@@ -900,7 +894,7 @@ impl ModuleRegistry {
     pub fn canonical_method_receiver_identity(&self, name: &str) -> Option<String> {
         let (module_id, _, spelling) = self.registry_receiver_declaration(name, true)?;
         let leaf = crate::short_name(&spelling);
-        Some(format!("{}.{leaf}", module_id.path.join(".")))
+        Some(format!("{}.{leaf}", module_id.dotted()))
     }
 
     /// Resolve an owned registry receiver to its exact loaded source identity.
@@ -916,13 +910,7 @@ impl ModuleRegistry {
             || info.resource_wrapper_types.contains(&spelling)
             || info.drop_types.contains(&spelling)
             || info.drop_funcs.iter().any(|(ty, _)| ty == &spelling))
-        .then(|| {
-            format!(
-                "{}.{}",
-                module_id.path.join("."),
-                crate::short_name(&spelling)
-            )
-        })
+        .then(|| format!("{}.{}", module_id.dotted(), crate::short_name(&spelling)))
     }
 
     /// Project a legacy registry signature type into its exact source owner.
@@ -961,12 +949,12 @@ impl ModuleRegistry {
             };
             let import_binding = import
                 .module_alias
-                .as_deref()
-                .or_else(|| import.path.last().map(String::as_str))?;
+                .map(|ident| ident.name.as_str())
+                .or_else(|| import.path.last().map(|ident| ident.name.as_str()))?;
             if import_binding != binding {
                 return None;
             }
-            let imported_owner = import.path.join(".");
+            let imported_owner = import.path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
             self.exact_module_source_type_owner(&imported_owner, leaf)
                 .map(|canonical_owner| format!("{canonical_owner}.{leaf}"))
         })
@@ -1107,7 +1095,7 @@ impl ModuleRegistry {
         method: &str,
     ) -> Option<(String, Vec<crate::ty::Ty>, crate::ty::Ty, String)> {
         let (module_id, info, spelling) = self.registry_receiver_declaration(handle_type, true)?;
-        let canonical_owner = module_id.path.join(".");
+        let canonical_owner = module_id.dotted();
         let hm = info
             .handle_methods
             .iter()
@@ -1842,15 +1830,15 @@ mod tests {
 
         let mut reg = ModuleRegistry::new(Vec::new());
         reg.active.modules.insert(
-            ModuleId::new(vec!["vendor_a".into(), "nested".into(), "shared".into()]),
+            ModulePath::new(["vendor_a", "nested", "shared"]),
             module_info("run", "vendor_a_shared_run"),
         );
         reg.active.modules.insert(
-            ModuleId::new(vec!["vendor_b".into(), "nested".into(), "shared".into()]),
+            ModulePath::new(["vendor_b", "nested", "shared"]),
             module_info("run", "vendor_b_shared_run"),
         );
         reg.active.modules.insert(
-            ModuleId::new(vec!["vendor_c".into(), "nested".into(), "unique".into()]),
+            ModulePath::new(["vendor_c", "nested", "unique"]),
             module_info("run", "vendor_c_unique_run"),
         );
 
@@ -2124,7 +2112,7 @@ mod tests {
 
         let loaded = registry
             .loaded_modules()
-            .map(|module| module.module_id.path.join("."))
+            .map(|module| module.module_id.dotted())
             .collect::<Vec<_>>();
         assert_eq!(loaded, ["std.alpha", "std.zeta"]);
 
@@ -2248,7 +2236,7 @@ mod tests {
             1,
             "reuse must not duplicate active membership"
         );
-        assert_eq!(active[0].module_id.path, ["std", "option"]);
+        assert_eq!(active[0].module_id.dotted(), "std.option");
         assert!(active[0].compiler_owned);
         assert_eq!(
             active[0]

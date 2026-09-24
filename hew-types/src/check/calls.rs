@@ -377,7 +377,7 @@ impl Checker {
                     );
                     None
                 }
-                Some(name) => match Self::named_parameter_slot(param_names, name) {
+                Some(name) => match Self::named_parameter_slot(param_names, name.name.as_str()) {
                     Some(slot) if supplied[slot] => {
                         let how = if slot < index && args[slot].name().is_none() {
                             "positionally"
@@ -394,7 +394,7 @@ impl Checker {
                     Some(slot) => Some(slot),
                     None => {
                         let similar = crate::error::find_similar(
-                            name,
+                            name.name.as_str(),
                             param_names.iter().map(String::as_str),
                         );
                         self.report_error_with_suggestions(
@@ -490,7 +490,7 @@ impl Checker {
     /// How a diagnostic names the callee of a call expression.
     pub(super) fn callee_label(function: &Spanned<Expr>) -> String {
         match &function.0 {
-            Expr::Identifier(name) => format!("`{name}`"),
+            Expr::Ident(name) => format!("`{name}`"),
             Expr::ContextVariant(context) => format!("`.{}`", context.name),
             _ => "this callee".to_string(),
         }
@@ -667,7 +667,7 @@ impl Checker {
         // `Vec.new` before the blanket early-return for other constructors.
         let mut contextual_name = None;
         let func_name = match &func.0 {
-            Expr::Identifier(name) => name.clone(),
+            Expr::Ident(name) => name.to_string(),
             Expr::ContextVariant(context) => {
                 let Some(owner) = self.context_variant_expected_owner(expected, span) else {
                     for arg in args {
@@ -676,20 +676,20 @@ impl Checker {
                     }
                     return Some(Ty::Error);
                 };
-                contextual_name = Some(context.name.clone());
+                contextual_name = Some(context.name);
                 format!("{owner}::{}", context.name)
             }
             Expr::FieldAccess { object, field } => {
-                let Expr::Identifier(obj_name) = &object.0 else {
+                let Expr::Ident(obj_name) = &object.0 else {
                     return None;
                 };
-                format!("{obj_name}::{field}")
+                format!("{obj_name}::{}", field.0)
             }
             _ => return None,
         };
 
         let constructor_family =
-            crate::runtime_call::RuntimeCallFamily::from_checker_signature(&func_name);
+            crate::runtime_call::RuntimeCallFamily::from_checker_signature(func_name.as_str());
         // Constructors with explicit type args that are not covered here fall
         // through to the generic call resolver.
         if type_args.is_some()
@@ -707,7 +707,7 @@ impl Checker {
 
         let resolved_expected = self.subst.resolve(expected);
 
-        if let Some(context_name) = contextual_name.as_deref() {
+        if let Some(context_name) = contextual_name.map(|ident| ident.name.as_str()) {
             let owner = func_name
                 .rsplit_once("::")
                 .map_or(func_name.as_str(), |(owner, _)| owner);
@@ -955,16 +955,16 @@ impl Checker {
         }
 
         let Ok(canonical_lifecycle) =
-            self.canonicalize_source_lifecycle_value_path(&func_name, span)
+            self.canonicalize_source_lifecycle_value_path(func_name.as_str(), span)
         else {
             return Some(Ty::Error);
         };
-        let constructor_name = canonical_lifecycle.as_deref().unwrap_or(&func_name);
+        let constructor_name = canonical_lifecycle.as_deref().unwrap_or(func_name.as_str());
         if let Some((type_name, expected_params, type_params)) =
             self.lookup_variant_constructor(constructor_name)
         {
-            if contextual_name.is_none() && !func_name.contains("::") {
-                self.report_bare_variant_expr(&func_name, &format!(".{func_name}"), span);
+            if contextual_name.is_none() && !func_name.as_str().contains("::") {
+                self.report_bare_variant_expr(func_name.as_str(), &format!(".{func_name}"), span);
             }
             let mut inferred_args = self.expected_constructor_type_args(
                 &resolved_expected,
@@ -1015,14 +1015,14 @@ impl Checker {
         }
 
         let result = self.check_builtin_variant_against_expected(
-            &func_name,
+            func_name.as_str(),
             args,
             &resolved_expected,
             span,
         )?;
         // Only the bare source spelling reaches here: dotted heads check their
         // builtin constructor directly.
-        self.report_bare_variant_expr(&func_name, &format!(".{func_name}"), span);
+        self.report_bare_variant_expr(func_name.as_str(), &format!(".{func_name}"), span);
         Some(result)
     }
 
@@ -1830,9 +1830,9 @@ impl Checker {
         }
         // Get function name from expression
         let func_name = match &func.0 {
-            Expr::Identifier(name) => name.clone(),
+            Expr::Ident(name) => name.to_string(),
             Expr::FieldAccess { object, field } => {
-                if let Expr::Identifier(obj_name) = &object.0 {
+                if let Expr::Ident(obj_name) = &object.0 {
                     // When the object identifier names a live value binding,
                     // the callee is a field access on a value — not a
                     // module-qualified or type-namespaced name. Synthesise the
@@ -1845,12 +1845,12 @@ impl Checker {
                     // identifiers on the existing name-building path
                     // (`(Vec.new)(args)` → `"Vec::new"`) because type/module
                     // names are not registered as value bindings.
-                    if self.env.lookup_ref(obj_name).is_some() {
+                    if self.env.lookup_ref(obj_name.name.as_str()).is_some() {
                         let field_ty = self.synthesize(&func.0, &func.1);
                         let resolved = self.subst.resolve(&field_ty);
                         return self.check_call_with_type(&resolved, func, args, span);
                     }
-                    format!("{obj_name}::{field}")
+                    format!("{obj_name}::{}", field.0)
                 } else {
                     let func_ty = self.synthesize(&func.0, &func.1);
                     return self.check_call_with_type(&func_ty, func, args, span);
@@ -2532,7 +2532,7 @@ impl Checker {
             if matches!(
                 &func.0,
                 Expr::FieldAccess { object, .. }
-                    if matches!(object.0, Expr::Identifier(_))
+                    if matches!(object.0, Expr::Ident(_))
             ) || self.actor_method_owner(&resolved_fn_name).is_some()
             {
                 self.record_method_call_rewrite(

@@ -2,7 +2,7 @@
 
 use crate::common;
 use hew_parser::ast::*;
-use hew_parser::module::{Module, ModuleGraph, ModuleId};
+use hew_parser::module::{Module, ModuleGraph, ModulePath};
 
 use common::{isolated_checker, typecheck_isolated};
 use hew_types::error::TypeErrorKind;
@@ -27,7 +27,7 @@ fn make_machine(
 ) -> MachineDecl {
     MachineDecl {
         visibility: Visibility::Pub,
-        name: name.to_string(),
+        name: Ident::new(name),
         type_params: vec![],
         const_params: vec![],
         where_clause: None,
@@ -42,7 +42,7 @@ fn make_machine(
 
 fn unit_state(name: &str) -> MachineState {
     MachineState {
-        name: name.to_string(),
+        name: Ident::new(name),
         fields: vec![],
         entry: None,
         exit: None,
@@ -52,15 +52,18 @@ fn unit_state(name: &str) -> MachineState {
 
 fn state_with_fields(name: &str, fields: Vec<(&str, &str)>) -> MachineState {
     MachineState {
-        name: name.to_string(),
+        name: Ident::new(name),
         fields: fields
             .into_iter()
             .map(|(fname, tname)| {
                 (
-                    fname.to_string(),
+                    Ident::new(fname),
                     (
                         TypeExpr::Named {
-                            name: tname.to_string(),
+                            path: hew_parser::ast::Path::single(
+                                hew_parser::ast::Ident::new(tname),
+                                0..0,
+                            ),
                             type_args: None,
                         },
                         0..0,
@@ -76,7 +79,7 @@ fn state_with_fields(name: &str, fields: Vec<(&str, &str)>) -> MachineState {
 
 fn unit_event(name: &str) -> MachineEvent {
     MachineEvent {
-        name: name.to_string(),
+        name: Ident::new(name),
         fields: vec![],
         span: 0..0,
     }
@@ -87,9 +90,9 @@ fn transition(event: &str, source: &str, target: &str) -> MachineTransition {
     // (MACHINE-SPEC, "Rule selection and coverage"), so the body is the
     // dotted target constructor rather than the source value.
     MachineTransition {
-        event_name: event.to_string(),
-        source_state: source.to_string(),
-        target_state: target.to_string(),
+        event_name: Ident::new(event),
+        source_state: Ident::new(source),
+        target_state: Ident::new(target),
         target_is_contextual: false,
         target_composite: None,
         event_bindings: vec![],
@@ -97,7 +100,7 @@ fn transition(event: &str, source: &str, target: &str) -> MachineTransition {
         guard: None,
         body: (
             Expr::ContextVariant(ContextVariantExpr {
-                name: target.to_string(),
+                name: Ident::new(target),
                 record: None,
             }),
             0..0,
@@ -119,13 +122,13 @@ fn payload_transition(
     let mut rule = transition(event, source, target);
     rule.body = (
         Expr::ContextVariant(ContextVariantExpr {
-            name: target.to_string(),
+            name: Ident::new(target),
             record: Some(Box::new(ContextVariantRecord {
                 fields: fields
                     .iter()
                     .map(|field| {
                         (
-                            (*field).to_string(),
+                            Ident::new(field),
                             (
                                 Expr::Literal(Literal::Integer {
                                     value: 0,
@@ -146,15 +149,15 @@ fn payload_transition(
 
 fn wildcard_transition(event: &str) -> MachineTransition {
     MachineTransition {
-        event_name: event.to_string(),
-        source_state: "_".to_string(),
-        target_state: "_".to_string(),
+        event_name: Ident::new(event),
+        source_state: Ident::new("_"),
+        target_state: Ident::new("_"),
         target_is_contextual: false,
         target_composite: None,
         event_bindings: vec![],
         composite_prelude_len: 0,
         guard: None,
-        body: (Expr::Identifier("state".to_string()), 0..0),
+        body: (Expr::Ident(Ident::new("state")), 0..0),
         body_form: MachineTransitionBodyForm::Block,
         reenter: false,
         span: 0..0,
@@ -675,11 +678,11 @@ fn transition_count_equals_states_times_events() {
 fn make_generic_machine(name: &str, type_params: &[&str]) -> MachineDecl {
     MachineDecl {
         visibility: Visibility::Pub,
-        name: name.to_string(),
+        name: Ident::new(name),
         type_params: type_params
             .iter()
             .map(|n| TypeParam {
-                name: (*n).to_string(),
+                name: Ident::new(n),
                 bounds: vec![],
             })
             .collect(),
@@ -1060,7 +1063,7 @@ fn machine_event_matches_outside_a_transition() {
 
 fn module_node_with_items(id: &str, items: Vec<Spanned<Item>>) -> Module {
     Module {
-        id: ModuleId::new(vec![id.to_string()]),
+        id: ModulePath::new([id.to_string()]),
         items,
         imports: vec![],
         source_paths: Vec::new(),
@@ -1084,7 +1087,7 @@ fn imported_machine_unit_state_constructor_resolves() {
         ],
     );
 
-    let mut graph = ModuleGraph::new(ModuleId::new(vec!["root".to_string()]));
+    let mut graph = ModuleGraph::new(ModulePath::new(["root"]));
     graph
         .add_module(module_node_with_items(
             "lights",
@@ -1184,7 +1187,7 @@ fn imported_machine_payload_state_struct_literal_resolves() {
         ],
     );
 
-    let mut graph = ModuleGraph::new(ModuleId::new(vec!["root".to_string()]));
+    let mut graph = ModuleGraph::new(ModulePath::new(["root"]));
     graph
         .add_module(module_node_with_items(
             "counters",
@@ -1241,7 +1244,7 @@ fn imported_machine_exhaustiveness_runs() {
         ],
     );
 
-    let mut graph = ModuleGraph::new(ModuleId::new(vec!["root".to_string()]));
+    let mut graph = ModuleGraph::new(ModulePath::new(["root"]));
     graph
         .add_module(module_node_with_items(
             "lighting",
@@ -1280,9 +1283,9 @@ fn imported_machine_exhaustiveness_runs() {
 fn imported_generic_machine_type_params_survive_registration() {
     let md = MachineDecl {
         visibility: Visibility::Pub,
-        name: "Worker".to_string(),
+        name: Ident::new("Worker"),
         type_params: vec![TypeParam {
-            name: "T".to_string(),
+            name: Ident::new("T"),
             bounds: vec![],
         }],
         const_params: vec![],
@@ -1300,7 +1303,7 @@ fn imported_generic_machine_type_params_survive_registration() {
         composite_groups: vec![],
     };
 
-    let mut graph = ModuleGraph::new(ModuleId::new(vec!["root".to_string()]));
+    let mut graph = ModuleGraph::new(ModulePath::new(["root"]));
     graph
         .add_module(module_node_with_items(
             "workers",
@@ -1371,7 +1374,7 @@ fn two_modules_with_different_machines_no_collision() {
         ],
     );
 
-    let root_id = ModuleId::new(vec!["root".to_string()]);
+    let root_id = ModulePath::new(["root"]);
     let mut graph = ModuleGraph::new(root_id.clone());
     graph
         .add_module(module_node_with_items(
@@ -3194,7 +3197,7 @@ fn machine_composite_depth_two_is_refused() {
 /// A body-less transition (`on E: Src => Tgt;`) whose target is a bare
 /// (non-`.`-prefixed) state name must resolve against the machine's own
 /// `state` declarations and type-check cleanly. Regression for #3264: the
-/// desugared body — a bare `Expr::Identifier(Tgt)` checked against the
+/// desugared body — a bare `Expr::Ident(Tgt)` checked against the
 /// machine's own type — was wrongly routed through the general bare-variant
 /// fallback and rejected with `E_BARE_VARIANT_EXPR`, even though
 /// HEW-SPEC-2026 §3.11.3 states plainly that state names in target position

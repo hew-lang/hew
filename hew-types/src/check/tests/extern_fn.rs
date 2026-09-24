@@ -200,9 +200,9 @@ fn duplicate_extern_symbol_accepts_cross_module_alias_qualified_contracts() {
     };
     import.resolved_items = Some(stream.program.items.clone().into());
 
-    let root_id = ModuleId::root();
-    let stream_id = ModuleId::new(vec!["std".to_string(), "stream".to_string()]);
-    let net_id = ModuleId::new(vec!["std".to_string(), "net".to_string()]);
+    let root_id = ModulePath::root();
+    let stream_id = ModulePath::new(["std", "stream"]);
+    let net_id = ModulePath::new(["std", "net"]);
     let mut graph = ModuleGraph::new(root_id.clone());
     graph
         .add_module(Module {
@@ -680,9 +680,9 @@ fn check_peer_assembled_extern(divergent: bool) -> TypeCheckOutput {
     let aaa_items = hew_parser::parse(aaa_source);
     assert!(aaa_items.errors.is_empty(), "parse: {:?}", aaa_items.errors);
 
-    let root_id = ModuleId::root();
-    let pkg_id = ModuleId::new(vec!["pkg".to_string()]);
-    let aaa_id = ModuleId::new(vec!["pkg".to_string(), "aaa".to_string()]);
+    let root_id = ModulePath::root();
+    let pkg_id = ModulePath::new(["pkg"]);
+    let aaa_id = ModulePath::new(["pkg", "aaa"]);
     let mut mg = ModuleGraph::new(root_id.clone());
 
     // Module `pkg` = pkg.hew items + aaa.hew items (peer assembly).
@@ -810,8 +810,8 @@ fn divergent_same_named_peer_nominals_are_refused_as_a_redefinition() {
     let two_field_items = parsed(two_field_source);
     let three_field_items = parsed(three_field_source);
 
-    let root_id = ModuleId::root();
-    let pkg_id = ModuleId::new(vec!["pkg".to_string()]);
+    let root_id = ModulePath::root();
+    let pkg_id = ModulePath::new(["pkg"]);
     let mut mg = ModuleGraph::new(root_id.clone());
 
     let mut items = primary_items.clone();
@@ -878,8 +878,8 @@ fn distinctly_named_peer_declarations_assemble_without_a_redefinition() {
     let primary_items = parsed(primary_source);
     let peer_items = parsed(peer_source);
 
-    let root_id = ModuleId::root();
-    let pkg_id = ModuleId::new(vec!["pkg".to_string()]);
+    let root_id = ModulePath::root();
+    let pkg_id = ModulePath::new(["pkg"]);
     let mut mg = ModuleGraph::new(root_id.clone());
 
     let mut items = primary_items.clone();
@@ -964,19 +964,19 @@ fn check_import_lexical_extern(shape: &ImportLexicalShape) -> TypeCheckOutput {
     let om_items = parsed(om_source);
     let nt_items = parsed(nt_source);
 
-    let root_id = ModuleId::root();
-    let sm_id = ModuleId::new(vec!["sm".to_string()]);
-    let om_id = ModuleId::new(vec!["om".to_string()]);
-    let nt_id = ModuleId::new(vec!["nt".to_string()]);
+    let root_id = ModulePath::root();
+    let sm_id = ModulePath::new(["sm"]);
+    let om_id = ModulePath::new(["om"]);
+    let nt_id = ModulePath::new(["nt"]);
     let mut mg = ModuleGraph::new(root_id.clone());
 
     let named = |source: &str, alias: Option<&str>| {
         Some(ImportSpec::Names(vec![ImportName {
-            name: source.to_string(),
-            alias: alias.map(str::to_string),
+            name: Ident::new(source),
+            alias: alias.map(Ident::new),
         }]))
     };
-    let nt_imports: Vec<(ModuleId, Option<ImportSpec>)> = match shape {
+    let nt_imports: Vec<(ModulePath, Option<ImportSpec>)> = match shape {
         ImportLexicalShape::PlainModuleImport => vec![(sm_id.clone(), None)],
         ImportLexicalShape::AmbiguousImports => {
             vec![(sm_id.clone(), None), (om_id.clone(), None)]
@@ -989,12 +989,12 @@ fn check_import_lexical_extern(shape: &ImportLexicalShape) -> TypeCheckOutput {
     };
 
     let add_module = |mg: &mut ModuleGraph,
-                      id: &ModuleId,
+                      id: &ModulePath,
                       items: &Vec<Spanned<Item>>,
                       file: &PathBuf,
-                      imports: Vec<(ModuleId, Option<ImportSpec>)>| {
+                      imports: Vec<(ModulePath, Option<ImportSpec>)>| {
         mg.item_sources
-            .insert(id.path.join("."), vec![file.clone(); items.len()]);
+            .insert(id.dotted(), vec![file.clone(); items.len()]);
         mg.add_module(Module {
             id: id.clone(),
             items: items.clone(),

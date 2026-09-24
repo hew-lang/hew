@@ -135,7 +135,7 @@ fn _variant_coverage_guard_expr(expr: &Expr) {
         Expr::Unary { .. } => {}
         Expr::Clone(_) => {}
         Expr::Literal(_) => {}
-        Expr::Identifier(_) => {}
+        Expr::Ident(_) => {}
         Expr::ContextVariant(_) => {}
         Expr::GenericApplySuffix { .. } => {}
         Expr::RecordInitSuffix { .. } => {}
@@ -228,8 +228,6 @@ fn _variant_coverage_guard_pattern(pat: &Pattern) {
         Pattern::Identifier(_) => {}
         Pattern::NominalPath { .. } => {}
         Pattern::ContextVariant(_) => {}
-        Pattern::Constructor { .. } => {}
-        Pattern::Struct { .. } => {}
         Pattern::RecordShorthand { .. } => {}
         Pattern::Tuple(_) => {}
         Pattern::Or(_, _) => {}
@@ -390,7 +388,7 @@ fn fmt_totality_expr_literal() {
     assert_roundtrip("fn f() -> i64 {\n    42\n}\n");
 }
 
-/// `Expr::Identifier`
+/// `Expr::Ident`
 #[test]
 fn fmt_totality_expr_identifier() {
     assert_roundtrip("fn f(x: i64) -> i64 {\n    x\n}\n");

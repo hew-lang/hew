@@ -21,6 +21,7 @@ use crate::check::types::{
 };
 use crate::env::{PlaceConflict, PlacePath};
 use crate::BuiltinType;
+use hew_parser::ast::{Ident, Path};
 use std::collections::VecDeque;
 
 impl Checker {
@@ -655,7 +656,9 @@ impl Checker {
                 let Some(owner) = self.context_variant_expected_owner(expected, span) else {
                     return Ty::Error;
                 };
-                let Some(variant) = self.context_variant_definition(&owner, &context.name) else {
+                let Some(variant) =
+                    self.context_variant_definition(&owner, context.name.name.as_str())
+                else {
                     self.report_error(
                         TypeErrorKind::PathMemberNotFound,
                         span,
@@ -684,13 +687,13 @@ impl Checker {
                 let qualified_name = format!("{owner}::{}", context.name);
                 let compatibility_expr = if let Some(record) = &context.record {
                     Expr::StructInit {
-                        name: qualified_name,
+                        path: Path::single(Ident::new(&qualified_name), span.clone()), // TRANSITION(P1): deleted by A1 commit 2
                         fields: record.fields.clone(),
                         type_args: None,
                         base: record.base.clone(),
                     }
                 } else {
-                    Expr::Identifier(qualified_name)
+                    Expr::Ident(Ident::new(&qualified_name))
                 };
                 self.check_against(&compatibility_expr, span, expected)
             }
@@ -1144,8 +1147,8 @@ impl Checker {
 
             // Known compile-time numeric literal identifiers can coerce to
             // compatible numeric types using the same literal-kind rules.
-            (Expr::Identifier(name), ty) if ty.is_numeric() => {
-                if let Some(cv) = self.const_values.get(name).cloned() {
+            (Expr::Ident(name), ty) if ty.is_numeric() => {
+                if let Some(cv) = self.const_values.get(name.name.as_str()).cloned() {
                     match (&cv, expected) {
                         (ConstValue::Integer(value), ty) if ty.is_integer() => {
                             if !expected.is_numeric_literal() {
@@ -1183,14 +1186,22 @@ impl Checker {
                             // `lookup_with_depth` which tracks the scope index
                             // and pushes `lambda_capture_facts` when the binding
                             // is from an outer scope — `env.lookup` would not.
-                            self.expect_inferable_literal_binding(name, expected, span);
-                            let _ = self.synthesize_identifier(name, span);
+                            self.expect_inferable_literal_binding(
+                                name.name.as_str(),
+                                expected,
+                                span,
+                            );
+                            let _ = self.synthesize_identifier(name.name.as_str(), span);
                             self.record_type(span, expected);
                             return expected.clone();
                         }
                         (ConstValue::Integer(_), ty) if ty.is_float() => {
-                            self.expect_inferable_literal_binding(name, expected, span);
-                            let _ = self.synthesize_identifier(name, span);
+                            self.expect_inferable_literal_binding(
+                                name.name.as_str(),
+                                expected,
+                                span,
+                            );
+                            let _ = self.synthesize_identifier(name.name.as_str(), span);
                             self.record_type(span, expected);
                             return expected.clone();
                         }
@@ -1207,8 +1218,12 @@ impl Checker {
                                 );
                                 return Ty::Error;
                             }
-                            self.expect_inferable_literal_binding(name, expected, span);
-                            let _ = self.synthesize_identifier(name, span);
+                            self.expect_inferable_literal_binding(
+                                name.name.as_str(),
+                                expected,
+                                span,
+                            );
+                            let _ = self.synthesize_identifier(name.name.as_str(), span);
                             self.record_type(span, expected);
                             return expected.clone();
                         }
@@ -1264,7 +1279,7 @@ impl Checker {
             // never reach it (bare construction == bare expected).
             (
                 Expr::StructInit {
-                    name,
+                    path: named_path,
                     fields,
                     type_args,
                     base,
@@ -1274,12 +1289,12 @@ impl Checker {
                     args: expected_args,
                     ..
                 },
-            ) if name != expected_name
+            ) if named_path.to_string() != *expected_name // TRANSITION(P1): deleted by A1 commit 2
                 && expected_args.is_empty()
-                && !name.contains('.')
-                && !name.contains("::")
+                && !named_path.to_string().contains('.')
+                && !named_path.to_string().contains("::")
                 && expected_name.contains('.')
-                && crate::short_name(expected_name) == name
+                && crate::short_name(expected_name) == named_path.to_string()
                 && self.lookup_type_def(expected_name).is_some_and(|td| {
                     td.type_params.is_empty()
                         && matches!(td.kind, TypeDefKind::Struct | TypeDefKind::Record)
@@ -1312,7 +1327,7 @@ impl Checker {
             // struct/record whose short name matches the bare construction name.
             (
                 Expr::StructInit {
-                    name,
+                    path: named_path,
                     fields,
                     type_args,
                     base,
@@ -1322,12 +1337,12 @@ impl Checker {
                     args: expected_args,
                     ..
                 },
-            ) if name != expected_name
+            ) if named_path.to_string() != *expected_name // TRANSITION(P1): deleted by A1 commit 2
                 && !expected_args.is_empty()
-                && !name.contains('.')
-                && !name.contains("::")
+                && !named_path.to_string().contains('.')
+                && !named_path.to_string().contains("::")
                 && expected_name.contains('.')
-                && crate::short_name(expected_name) == name
+                && crate::short_name(expected_name) == named_path.to_string()
                 && self.lookup_type_def(expected_name).is_some_and(|td| {
                     !td.type_params.is_empty()
                         && matches!(td.kind, TypeDefKind::Struct | TypeDefKind::Record)
@@ -1338,7 +1353,7 @@ impl Checker {
                 // pins the field type args without the bare-name scope gate
                 // rejecting the legitimate annotated construction.
                 let qualified_init = Expr::StructInit {
-                    name: expected_name.clone(),
+                    path: Path::single(Ident::new(expected_name), span.clone()), // TRANSITION(P1): deleted by A1 commit 2
                     fields: fields.clone(),
                     type_args: type_args.clone(),
                     base: base.clone(),
@@ -1355,7 +1370,7 @@ impl Checker {
             // the pair falls through to ordinary coercion and is refused there.
             (
                 Expr::StructInit {
-                    name,
+                    path: named_path,
                     fields,
                     type_args,
                     ..
@@ -1365,13 +1380,14 @@ impl Checker {
                     args: expected_args,
                     builtin: expected_builtin,
                 },
-            ) if name == expected_name
+            ) if named_path.to_string() == *expected_name // TRANSITION(P1): deleted by A1 commit 2
                 && !expected_builtin.is_some_and(crate::BuiltinType::is_substrate_handle) =>
             {
-                // If the literal carries explicit type args, validate that they agree
-                // with the expected args coming from the binding site.  Conflicting
-                // annotations (`Wrapper<String>` when expected is `Wrapper<int>`) are
-                // rejected here rather than being silently dropped.
+                let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
+                                                    // If the literal carries explicit type args, validate that they agree
+                                                    // with the expected args coming from the binding site.  Conflicting
+                                                    // annotations (`Wrapper<String>` when expected is `Wrapper<int>`) are
+                                                    // rejected here rather than being silently dropped.
                 if let Some(explicit_args) = type_args {
                     if explicit_args.len() == expected_args.len() {
                         for (te, expected_arg) in explicit_args.iter().zip(expected_args.iter()) {
@@ -1421,7 +1437,7 @@ impl Checker {
                             .collect();
 
                         for (field_name, (fexpr, fs)) in fields {
-                            if let Some(declared_ty) = td.fields.get(field_name) {
+                            if let Some(declared_ty) = td.fields.get(field_name.name.as_str()) {
                                 let field_expected =
                                     declared_ty.substitute_named_params_parallel(&type_arg_map);
                                 let actual = self.check_against(fexpr, fs, &field_expected);
@@ -1442,7 +1458,7 @@ impl Checker {
                                 }
                             } else {
                                 let similar = crate::error::find_similar(
-                                    field_name,
+                                    field_name.name.as_str(),
                                     td.fields.keys().map(String::as_str),
                                 );
                                 self.report_error_with_suggestions(
@@ -1458,7 +1474,7 @@ impl Checker {
                         }
                         // Check for missing required fields
                         let provided: HashSet<&str> =
-                            fields.iter().map(|(n, _)| n.as_str()).collect();
+                            fields.iter().map(|(n, _)| n.name.as_str()).collect();
                         for declared in td.fields.keys() {
                             if !provided.contains(declared.as_str()) {
                                 self.report_error(
@@ -1522,7 +1538,7 @@ impl Checker {
             // matches when the init name is a variant, not the type itself.
             (
                 Expr::StructInit {
-                    name,
+                    path: named_path,
                     fields,
                     type_args,
                     ..
@@ -1534,10 +1550,11 @@ impl Checker {
                     ..
                 },
             ) => {
-                // Fail-closed: explicit type args on enum variant struct forms are not
-                // yet supported in the check_against path.  The expected type already
-                // provides the type args from the binding site, so there is no safe
-                // way to reconcile conflicting annotations here for this slice.
+                let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
+                                                    // Fail-closed: explicit type args on enum variant struct forms are not
+                                                    // yet supported in the check_against path.  The expected type already
+                                                    // provides the type args from the binding site, so there is no safe
+                                                    // way to reconcile conflicting annotations here for this slice.
                 if type_args.is_some() {
                     self.report_error(
                         TypeErrorKind::InvalidOperation,
@@ -1583,8 +1600,9 @@ impl Checker {
                                     .collect();
 
                                 for (field_name, (fexpr, fs)) in fields {
-                                    if let Some((_, declared_ty)) =
-                                        variant_fields.iter().find(|(n, _)| n == field_name)
+                                    if let Some((_, declared_ty)) = variant_fields
+                                        .iter()
+                                        .find(|(n, _)| n == field_name.name.as_str())
                                     {
                                         let declared_ty = declared_ty.clone();
                                         let field_expected = declared_ty
@@ -1606,7 +1624,7 @@ impl Checker {
                                         }
                                     } else {
                                         let similar = crate::error::find_similar(
-                                            field_name,
+                                            field_name.name.as_str(),
                                             variant_fields.iter().map(|(n, _)| n.as_str()),
                                         );
                                         self.report_error_with_suggestions(
@@ -1618,7 +1636,7 @@ impl Checker {
                                     }
                                 }
                                 let provided: HashSet<&str> =
-                                    fields.iter().map(|(n, _)| n.as_str()).collect();
+                                    fields.iter().map(|(n, _)| n.name.as_str()).collect();
                                 for (declared, _) in &variant_fields {
                                     if !provided.contains(declared.as_str()) {
                                         self.report_error(
@@ -1684,10 +1702,19 @@ impl Checker {
             ) => {
                 let actual = self
                     .check_dotted_type_member_call_against_expected(
-                        receiver, method, args, expected, span,
+                        receiver,
+                        method.0.name.as_str(),
+                        args,
+                        expected,
+                        span,
                     )
                     .unwrap_or_else(|| self.synthesize(expr, span));
-                self.finish_named_arguments(args, || format!("method `{method}`"), &actual, span);
+                self.finish_named_arguments(
+                    args,
+                    || format!("method `{}`", method.0),
+                    &actual,
+                    span,
+                );
                 if tail_ok_armed {
                     if let Some(coerced) = self.try_tail_ok_coercion(expected, &actual, span) {
                         return coerced;
@@ -1767,18 +1794,18 @@ impl Checker {
             // A bare builtin `None` under an expected `Option` is refused with the
             // contextual fix-it the expected type makes available.
             (
-                Expr::Identifier(name),
+                Expr::Ident(name),
                 Ty::Named {
                     builtin: Some(crate::BuiltinType::Option),
                     ..
                 },
-            ) if name == "None" => {
-                self.report_bare_variant_expr(name, ".None", span);
+            ) if name.name.as_str() == "None" => {
+                self.report_bare_variant_expr(name.name.as_str(), ".None", span);
                 self.record_type(span, expected);
                 expected.clone()
             }
             (
-                Expr::Identifier(name),
+                Expr::Ident(name),
                 Ty::Named {
                     name: expected_type_name,
                     args: expected_args,
@@ -1797,32 +1824,38 @@ impl Checker {
                 // same-leaf enums cannot merge here; a mismatched owner falls
                 // through to synthesize-and-diagnose.
                 let variant_after_owner = name
+                    .name
+                    .as_str()
                     .rsplit_once("::")
                     .filter(|(prefix, _)| !prefix.contains('.'))
-                    .filter(|_| self.variant_surface_owner_matches(name, expected))
+                    .filter(|_| self.variant_surface_owner_matches(name.name.as_str(), expected))
                     .map(|(_, variant)| variant.to_string());
                 let expected_type_def = self.lookup_type_def(expected_type_name);
                 let is_unit_variant = expected_type_def
                     .as_ref()
                     .and_then(|td| {
                         td.variants
-                            .get(variant_after_owner.as_deref().unwrap_or(name.as_str()))
+                            .get(variant_after_owner.as_deref().unwrap_or(name.name.as_str()))
                             .cloned()
                     })
                     .is_some_and(|v| matches!(v, VariantDef::Unit))
-                    && (variant_after_owner.is_some() || !name.contains("::"));
+                    && (variant_after_owner.is_some() || !name.name.as_str().contains("::"));
                 // A `machine`'s states are not enum variants in expression
                 // position (HEW-SPEC-2026 §3.11.3, "State names are not
                 // variants"): the target name after `=>` in a body-less
                 // transition (`on E: Src => Tgt;`) desugars to a bare
-                // `Expr::Identifier(Tgt)` checked against the machine's own
+                // `Expr::Ident(Tgt)` checked against the machine's own
                 // type, and resolving it here must not suggest the enum
                 // `.Variant` fix-it — that fix-it is for real enum bare
                 // variants (#3264).
                 let bare_state_here = self.machine_state_is_bare_here(expected_type_name);
                 if is_unit_variant {
-                    if !name.contains("::") && !bare_state_here {
-                        self.report_bare_variant_expr(name, &format!(".{name}"), span);
+                    if !name.name.as_str().contains("::") && !bare_state_here {
+                        self.report_bare_variant_expr(
+                            name.name.as_str(),
+                            &format!(".{name}"),
+                            span,
+                        );
                     }
                     self.enforce_type_def_instantiation_bounds(
                         expected_type_name,

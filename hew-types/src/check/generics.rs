@@ -745,7 +745,7 @@ impl Checker {
                 info.methods
                     .iter()
                     .filter(|method| method.body.is_none())
-                    .map(|method| method.name.clone())
+                    .map(|method| method.name.to_string())
                     .collect()
             })
             .unwrap_or_default();
@@ -827,7 +827,7 @@ impl Checker {
         if self
             .trait_defs
             .get(&trait_key)
-            .is_some_and(|info| info.methods.iter().any(|m| m.name == method))
+            .is_some_and(|info| info.methods.iter().any(|m| m.name == Ident::new(method)))
         {
             return Some(trait_key);
         }
@@ -845,7 +845,7 @@ impl Checker {
             if self
                 .trait_defs
                 .get(&current)
-                .is_some_and(|info| info.methods.iter().any(|m| m.name == method))
+                .is_some_and(|info| info.methods.iter().any(|m| m.name == Ident::new(method)))
             {
                 return Some(current);
             }
@@ -1445,13 +1445,13 @@ impl Checker {
         let mut surface = HashMap::new();
         let mut declared_here = HashSet::new();
         for method in &trait_info.methods {
-            declared_here.insert(method.name.clone());
+            declared_here.insert(method.name.to_string());
             let status = if method.body.is_none() {
                 StructuralMethodStatus::Required
             } else {
                 StructuralMethodStatus::Provided
             };
-            surface.insert(method.name.clone(), status);
+            surface.insert(method.name.to_string(), status);
         }
 
         // Walk super-traits — clone to release borrow. Each branch gets its own
@@ -1632,10 +1632,12 @@ impl Checker {
         skip_receiver: bool,
     ) -> Option<FnSig> {
         // Check the trait's own methods — clone data to release borrow before resolve_type_expr
-        let found_method = self
-            .trait_defs
-            .get(trait_name)
-            .and_then(|info| info.methods.iter().find(|m| m.name == method).cloned());
+        let found_method = self.trait_defs.get(trait_name).and_then(|info| {
+            info.methods
+                .iter()
+                .find(|m| m.name == Ident::new(method))
+                .cloned()
+        });
         if let Some(m) = found_method {
             let skip = if skip_receiver {
                 usize::from(m.params.first().is_some_and(|p| self.is_receiver_param(p)))
@@ -1658,12 +1660,16 @@ impl Checker {
                 .as_ref()
                 .map_or(Ty::Unit, |annotation| self.resolve_type_expr(annotation));
             self.current_trait_for_self_projection = prev_trait_self;
-            let param_names: Vec<String> =
-                m.params.iter().skip(skip).map(|p| p.name.clone()).collect();
+            let param_names: Vec<String> = m
+                .params
+                .iter()
+                .skip(skip)
+                .map(|p| p.name.to_string())
+                .collect();
             let type_params = m
                 .type_params
                 .as_ref()
-                .map(|params| params.iter().map(|tp| tp.name.clone()).collect())
+                .map(|params| params.iter().map(|tp| tp.name.to_string()).collect())
                 .unwrap_or_default();
             let type_param_bounds =
                 self.collect_type_param_bounds(m.type_params.as_ref(), m.where_clause.as_ref());
@@ -1794,7 +1800,7 @@ impl Checker {
         };
         for method in &info.methods {
             let (declaring_trait, method_id) = self
-                .trait_method_ids_for_key(key, &method.name)
+                .trait_method_ids_for_key(key, method.name.name.as_str())
                 .ok_or_else(|| format!("{spelling}.{}", method.name))?;
             if layout.iter().any(|slot| slot.method == method_id) {
                 continue;
@@ -1804,7 +1810,7 @@ impl Checker {
                 slot: DYN_VTABLE_PREFIX + position,
                 trait_key: key.to_string(),
                 trait_spelling: spelling.to_string(),
-                method_name: method.name.clone(),
+                method_name: method.name.to_string(),
                 declaring_trait,
                 method: method_id,
                 bound,
@@ -1875,7 +1881,7 @@ impl Checker {
             let declares_directly = self
                 .trait_defs
                 .get(&current)
-                .is_some_and(|info| info.methods.iter().any(|m| m.name == method));
+                .is_some_and(|info| info.methods.iter().any(|m| m.name == Ident::new(method)));
             if declares_directly {
                 out.push(current.clone());
             }
@@ -1897,10 +1903,12 @@ impl Checker {
         skip_receiver: bool,
     ) -> Option<(String, FnSig)> {
         // Check the trait's own methods first (direct declaration).
-        let found_method = self
-            .trait_defs
-            .get(trait_name)
-            .and_then(|info| info.methods.iter().find(|m| m.name == method).cloned());
+        let found_method = self.trait_defs.get(trait_name).and_then(|info| {
+            info.methods
+                .iter()
+                .find(|m| m.name == Ident::new(method))
+                .cloned()
+        });
         if let Some(m) = found_method {
             let skip = if skip_receiver {
                 usize::from(m.params.first().is_some_and(|p| self.is_receiver_param(p)))
@@ -1921,12 +1929,16 @@ impl Checker {
                 .as_ref()
                 .map_or(Ty::Unit, |annotation| self.resolve_type_expr(annotation));
             self.current_trait_for_self_projection = prev_trait_self;
-            let param_names: Vec<String> =
-                m.params.iter().skip(skip).map(|p| p.name.clone()).collect();
+            let param_names: Vec<String> = m
+                .params
+                .iter()
+                .skip(skip)
+                .map(|p| p.name.to_string())
+                .collect();
             let type_params = m
                 .type_params
                 .as_ref()
-                .map(|params| params.iter().map(|tp| tp.name.clone()).collect())
+                .map(|params| params.iter().map(|tp| tp.name.to_string()).collect())
                 .unwrap_or_default();
             let type_param_bounds =
                 self.collect_type_param_bounds(m.type_params.as_ref(), m.where_clause.as_ref());

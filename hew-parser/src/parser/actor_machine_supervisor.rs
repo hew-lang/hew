@@ -23,7 +23,7 @@ pub(crate) enum StatePatternPosition {
 /// A parsed state pattern together with the authored spelling and source span.
 pub(crate) struct StatePattern {
     /// The flat leaf state name, with any `.`/qualifier prefix stripped.
-    pub name: String,
+    pub name: Ident,
     /// True when the author wrote the contextual `.Variant` form. Only ever
     /// true in `StatePatternPosition::Target`.
     pub is_contextual: bool,
@@ -418,7 +418,7 @@ impl Parser<'_> {
                 if self.peek() == Some(&Token::LeftBrace) {
                     let block = self.parse_block()?;
                     if !block.stmts.is_empty()
-                        || !matches!(block.trailing_expr.as_deref(), Some((Expr::Identifier(name), _)) if name == "state")
+                        || !matches!(block.trailing_expr.as_deref(), Some((Expr::Ident(name), _)) if name.name.as_str() == "state")
                     {
                         self.error("machine default must be `default { state }`; use an explicit rule for computation".to_string());
                     }
@@ -487,7 +487,7 @@ impl Parser<'_> {
     ) {
         for group in composite_groups {
             for parent in &group.parent_transitions {
-                if parent.source_state != "_" {
+                if parent.source_state.name != sym::UNDERSCORE {
                     continue;
                 }
                 for member in &group.members {
@@ -500,7 +500,7 @@ impl Parser<'_> {
                         continue;
                     }
                     let mut expanded = parent.clone();
-                    expanded.source_state.clone_from(member);
+                    expanded.source_state = *member;
                     transitions.push(expanded);
                 }
             }
@@ -523,13 +523,13 @@ impl Parser<'_> {
         for group in composite_groups {
             for transition in transitions.iter_mut() {
                 if transition.target_state == group.name {
-                    transition.target_composite = Some(group.name.clone());
+                    transition.target_composite = Some(group.name);
                     transition.target_state.clone_from(&group.initial);
                     // Rewrite a bare-identifier passthrough body that named the
                     // composite to name the initial substate instead.
-                    if let Expr::Identifier(name) = &transition.body.0 {
+                    if let Expr::Ident(name) = &transition.body.0 {
                         if name == &group.name {
-                            transition.body.0 = Expr::Identifier(group.initial.clone());
+                            transition.body.0 = Expr::Ident(group.initial);
                         }
                     }
                 }
@@ -537,12 +537,12 @@ impl Parser<'_> {
         }
 
         for group in composite_groups {
-            let member_set: std::collections::HashSet<String> =
-                group.members.iter().cloned().collect();
+            let member_set: std::collections::HashSet<Ident> =
+                group.members.iter().copied().collect();
             for transition in transitions.iter_mut() {
                 Self::splice_composite_hooks(
                     transition,
-                    &transition.source_state.clone(),
+                    transition.source_state,
                     &member_set,
                     group.entry.as_ref(),
                     group.exit.as_ref(),
@@ -618,11 +618,11 @@ impl Parser<'_> {
             // asks the author to change.
             let body_expr = if target_is_contextual {
                 Expr::ContextVariant(ContextVariantExpr {
-                    name: target_state.clone(),
+                    name: target_state,
                     record: None,
                 })
             } else {
-                Expr::Identifier(target_state.clone())
+                Expr::Ident(target_state)
             };
             (
                 body_expr,
@@ -630,7 +630,7 @@ impl Parser<'_> {
                 target_span.start,
                 target_span.end,
             )
-        } else if target_state != "_" && self.is_struct_init_body() {
+        } else if target_state.name != sym::UNDERSCORE && self.is_struct_init_body() {
             let bs = self.peek_span().start;
             self.expect(&Token::LeftBrace)?;
             // The head already named the target, so the braces hold exactly a
@@ -642,12 +642,12 @@ impl Parser<'_> {
             // state enum exactly as `=> .Faulted,` does.
             let payload = if target_is_contextual {
                 Expr::ContextVariant(ContextVariantExpr {
-                    name: target_state.clone(),
+                    name: target_state,
                     record: Some(Box::new(ContextVariantRecord { fields, base })),
                 })
             } else {
                 Expr::StructInit {
-                    name: target_state.clone(),
+                    path: Path::single(target_state, target_span.clone()),
                     fields,
                     type_args: None,
                     base,
@@ -685,9 +685,7 @@ impl Parser<'_> {
 
     /// Parse the field list of a single event declaration inside `events { }`:
     /// either `;` (no fields) or `{ name: Type; … }`.
-    pub(crate) fn parse_machine_event_fields(
-        &mut self,
-    ) -> Option<Vec<(String, Spanned<TypeExpr>)>> {
+    pub(crate) fn parse_machine_event_fields(&mut self) -> Option<Vec<(Ident, Spanned<TypeExpr>)>> {
         if self.eat(&Token::LeftBrace) {
             let mut fields = Vec::new();
             while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
@@ -718,7 +716,7 @@ impl Parser<'_> {
         let state_start = self.peek_span().start;
         self.expect(&Token::State)?;
         let state_name = self.expect_ident()?;
-        let mut fields: Vec<(String, Spanned<TypeExpr>)> = Vec::new();
+        let mut fields: Vec<(Ident, Spanned<TypeExpr>)> = Vec::new();
         let mut entry_block: Option<Block> = None;
         let mut exit_block: Option<Block> = None;
 
@@ -739,7 +737,7 @@ impl Parser<'_> {
                     // composite parser, which consumes the rest of the brace.
                     return self.parse_composite_block(
                         state_start,
-                        &state_name,
+                        state_name,
                         fields,
                         entry_block,
                         exit_block,
@@ -794,8 +792,8 @@ impl Parser<'_> {
     pub(crate) fn parse_composite_block(
         &mut self,
         composite_start: usize,
-        composite_name: &str,
-        fields: Vec<(String, Spanned<TypeExpr>)>,
+        composite_name: Ident,
+        fields: Vec<(Ident, Spanned<TypeExpr>)>,
         entry: Option<Block>,
         exit: Option<Block>,
         states: &mut Vec<MachineState>,
@@ -803,8 +801,8 @@ impl Parser<'_> {
         composite_groups: &mut Vec<CompositeGroup>,
     ) -> Option<()> {
         let mut members: Vec<MachineState> = Vec::new();
-        let mut member_names: Vec<String> = Vec::new();
-        let mut initial: Option<String> = None;
+        let mut member_names: Vec<Ident> = Vec::new();
+        let mut initial: Option<Ident> = None;
         let mut parent_transitions: Vec<MachineTransition> = Vec::new();
 
         // ── Substate + parent-rule body of the composite block. ──────────────
@@ -822,9 +820,9 @@ impl Parser<'_> {
                             self.peek_span(),
                         );
                     }
-                    initial = Some(substate.name.clone());
+                    initial = Some(substate.name);
                 }
-                member_names.push(substate.name.clone());
+                member_names.push(substate.name);
                 members.push(substate);
             } else if is_initial {
                 self.error_at(
@@ -869,7 +867,7 @@ impl Parser<'_> {
         for member in &mut members {
             for (fname, fty) in &fields {
                 if !member.fields.iter().any(|(n, _)| n == fname) {
-                    member.fields.push((fname.clone(), fty.clone()));
+                    member.fields.push((*fname, fty.clone()));
                 }
             }
         }
@@ -879,13 +877,13 @@ impl Parser<'_> {
         // here. Wildcard-source parent rules are expanded per member by the
         // post-pass, once every top-level rule is also in the list.
         for pt in &parent_transitions {
-            if pt.source_state != "_" {
+            if pt.source_state.name != sym::UNDERSCORE {
                 transitions.push(pt.clone());
             }
         }
 
         composite_groups.push(CompositeGroup {
-            name: composite_name.to_string(),
+            name: composite_name,
             members: member_names,
             initial: initial_name,
             entry,
@@ -904,7 +902,7 @@ impl Parser<'_> {
     /// Parse a single substate declaration (`state Name;` /
     /// `state Name { fields; entry {} exit {} }`). A `state` inside a substate
     /// body nests deeper than one level and is refused.
-    pub(crate) fn parse_machine_substate(&mut self, composite_name: &str) -> Option<MachineState> {
+    pub(crate) fn parse_machine_substate(&mut self, composite_name: Ident) -> Option<MachineState> {
         let state_start = self.peek_span().start;
         self.expect(&Token::State)?;
         let name = self.expect_ident()?;
@@ -976,14 +974,14 @@ impl Parser<'_> {
     ///   * intra-composite moves splice nothing (both endpoints ∈ C).
     pub(crate) fn splice_composite_hooks(
         transition: &mut MachineTransition,
-        source_member: &str,
-        member_set: &std::collections::HashSet<String>,
+        source_member: Ident,
+        member_set: &std::collections::HashSet<Ident>,
         entry: Option<&Block>,
         exit: Option<&Block>,
     ) {
-        let target = &transition.target_state;
-        let source_in = member_set.contains(source_member);
-        let target_in = target != "_" && member_set.contains(target);
+        let target = transition.target_state;
+        let source_in = member_set.contains(&source_member);
+        let target_in = target.name != sym::UNDERSCORE && member_set.contains(&target);
 
         // Prepend order matters: statements pushed last end up first. For a
         // cross-composite move we want `exit-of-source-composite` before
@@ -1004,7 +1002,7 @@ impl Parser<'_> {
     /// Prepend a hook block's statements to the front of a transition body,
     /// wrapping a non-block body into a block whose tail is the original value.
     pub(crate) fn prepend_block_stmts(transition: &mut MachineTransition, hook: &Block) {
-        let body = std::mem::replace(&mut transition.body.0, Expr::Identifier(String::new()));
+        let body = std::mem::replace(&mut transition.body.0, Expr::Tuple(Vec::new()));
         let mut block = match body {
             Expr::Block(block) => block,
             other => Block {
@@ -1033,19 +1031,19 @@ impl Parser<'_> {
     /// are in scope as `let a = event.a; let b = event.b;` prelude statements.
     /// This lowers identically to writing `event.a` directly — no new HIR kind.
     pub(crate) fn apply_event_head_bindings(
-        bindings: &[String],
+        bindings: &[Ident],
         body: Expr,
         body_span: Span,
     ) -> Expr {
         let mut stmts: Vec<Spanned<Stmt>> = Vec::with_capacity(bindings.len());
         for name in bindings {
             let value = Expr::FieldAccess {
-                object: Box::new((Expr::Identifier("event".to_string()), 0..0)),
-                field: name.clone(),
+                object: Box::new((Expr::Ident(Ident::new("event")), 0..0)),
+                field: (*name, 0..0),
             };
             stmts.push((
                 Stmt::Let {
-                    pattern: (Pattern::Identifier(name.clone()), 0..0),
+                    pattern: (Pattern::Identifier(*name), 0..0),
                     ty: None,
                     value: Some((value, 0..0)),
                     else_block: None,
@@ -1085,7 +1083,7 @@ impl Parser<'_> {
         if matches!(self.peek(), Some(Token::Identifier(name)) if *name == "_") {
             self.advance();
             return Some(StatePattern {
-                name: "_".to_string(),
+                name: Ident::from_symbol(sym::UNDERSCORE),
                 is_contextual: false,
                 span: start..self.last_token_end,
             });
@@ -1330,12 +1328,7 @@ impl Parser<'_> {
                     // actor's qualified identity downstream (checker
                     // `type_defs["bank.Account"]`, MIR layout key); a bare
                     // name stays the root/local identity.
-                    let mut actor_type = self.expect_ident()?;
-                    while self.eat(&Token::Dot) {
-                        let type_name = self.expect_ident()?;
-                        actor_type.push('.');
-                        actor_type.push_str(&type_name);
-                    }
+                    let actor_type = self.parse_syntactic_path()?;
                     let type_args = if self.eat(&Token::Less) {
                         self.parse_type_args()?
                     } else {
@@ -1346,7 +1339,7 @@ impl Parser<'_> {
                     // Mirrors plain `spawn Worker(field: expr, ...)` at parser.rs:6047.
                     // Positional args (no `name:` prefix) are rejected with a migration
                     // diagnostic to guide users to the named form.
-                    let mut args: Vec<(String, Spanned<Expr>)> = Vec::new();
+                    let mut args: Vec<(Ident, Spanned<Expr>)> = Vec::new();
                     if self.eat(&Token::LeftParen) {
                         while !self.at_end() && !matches!(self.peek(), Some(Token::RightParen)) {
                             // Try to parse `ident_or_kw: expr` (named form). Speculatively
@@ -1404,7 +1397,9 @@ impl Parser<'_> {
                     // On a pool child with no arity clause it is instead the
                     // retired arity spelling; the decision needs the clause
                     // loop's result, so remember the position for now.
-                    let paren_count_pos = args.iter().position(|(name, _)| name == "count");
+                    let paren_count_pos = args
+                        .iter()
+                        .position(|(name, _)| name.name.as_str() == "count");
 
                     // A supervisor child accepts restart policy only through the
                     // `restart: <policy>` clause.
@@ -1523,10 +1518,10 @@ impl Parser<'_> {
                                 self.expect(&Token::LeftBrace)?;
                                 let mut map = std::collections::HashMap::new();
                                 while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
-                                    let key = self.expect_ident()?;
+                                    let key = self.expect_ident()?.to_string();
                                     if self.eat(&Token::Colon) {
                                         // explicit `key: sibling_name` form
-                                        let val = self.expect_ident()?;
+                                        let val = self.expect_ident()?.to_string();
                                         map.insert(key, val);
                                     } else {
                                         // shorthand `sibling_name` — key == value

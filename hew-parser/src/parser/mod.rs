@@ -9,9 +9,9 @@ pub(crate) use crate::ast::{
     ActorDecl, ActorInit, ArrayElement, AssocTypeBinding, Attribute, AttributeArg, BinaryOp, Block,
     CallArg, ChildSpec, CompositeGroup, CompoundAssignOp, ConditionItem, ConstDecl, ConstParam,
     ConstParamTy, ContextVariantExpr, ContextVariantPattern, ContextVariantRecord, ElseBlock, Expr,
-    ExternBlock, ExternFnDecl, FieldDecl, FnDecl, ImplDecl, ImplTypeAlias, ImportDecl, ImportName,
-    ImportSpec, IntRadix, Intensity, Item, LambdaParam, Literal, MachineDecl, MachineEvent,
-    MachineState, MachineTransition, MachineTransitionBodyForm, MatchArm, NamingCase,
+    ExternBlock, ExternFnDecl, FieldDecl, FnDecl, Ident, ImplDecl, ImplTypeAlias, ImportDecl,
+    ImportName, ImportSpec, IntRadix, Intensity, Item, LambdaParam, Literal, MachineDecl,
+    MachineEvent, MachineState, MachineTransition, MachineTransitionBodyForm, MatchArm, NamingCase,
     NominalPatternPayload, OverflowFallback, OverflowPolicy, Param, Path, Pattern, PatternField,
     Program, QualifiedAssocExpr, QualifiedAssocPath, ReceiveFnDecl, RecordDecl, RecordField,
     RecordKind, ResourceMarker, RestartPolicy, SelectArm, ShutdownDirective, Span, Spanned, Stmt,
@@ -20,7 +20,7 @@ pub(crate) use crate::ast::{
     TypeParam, UnaryOp, VariantDecl, VariantKind, Visibility, WhereClause, WherePredicate,
     WireFieldMeta, WireMetadata,
 };
-pub(crate) use hew_lexer::Token;
+pub(crate) use hew_lexer::{sym, Token};
 use serde::Serialize;
 use std::cell::Cell;
 use std::rc::Rc;
@@ -59,7 +59,7 @@ pub(crate) use attributes::AttrPosition;
 mod tests;
 
 pub(crate) type ParsedTraitBoundArgs = (Option<Vec<Spanned<TypeExpr>>>, Vec<AssocTypeBinding>);
-pub(crate) type StructInitFields = (Vec<(String, Spanned<Expr>)>, Option<Box<Spanned<Expr>>>);
+pub(crate) type StructInitFields = (Vec<(Ident, Spanned<Expr>)>, Option<Box<Spanned<Expr>>>);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TypeParseContext {

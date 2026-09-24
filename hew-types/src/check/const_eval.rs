@@ -13,7 +13,7 @@
 //!   literals.
 //! - `Expr::Unary { op: UnaryOp::Negate, .. }` — target-typed integer
 //!   negation.
-//! - `Expr::Identifier(name)` — resolved against the supplied
+//! - `Expr::Ident(name)` — resolved against the supplied
 //!   [`ConstEnv`] (module-level `const` bindings of integer type).
 //! - `Expr::Binary { op, lhs, rhs }` for the seven arithmetic and
 //!   shift operators `+`, `-`, `*`, `/`, `%`, `<<`, `>>`. Every operation
@@ -230,9 +230,9 @@ fn eval_inner(
                 Err(ConstEvalError::ArithmeticOverflow)
             }
         }
-        Expr::Identifier(name) => env
-            .get(name)
-            .ok_or_else(|| ConstEvalError::UnknownConst(name.clone())),
+        Expr::Ident(name) => env
+            .get(name.name.as_str())
+            .ok_or_else(|| ConstEvalError::UnknownConst(name.to_string())),
         Expr::Binary { left, op, right } => {
             let l = eval_inner(&left.0, env, target)?;
             let r = eval_inner(&right.0, env, target)?;
@@ -433,7 +433,7 @@ mod tests {
         env.insert("MAX_SIZE", 64);
         let expr = bin(
             BinaryOp::Multiply,
-            span(Expr::Identifier("MAX_SIZE".to_string())),
+            span(Expr::Ident(hew_parser::ast::Ident::new("MAX_SIZE"))),
             int(4),
         );
         // `MAX_SIZE * 4` per R268=B — the FOO * 4 acceptance case.
@@ -443,7 +443,7 @@ mod tests {
     #[test]
     fn unknown_const_rejected() {
         let env = ConstEnv::new();
-        let expr = span(Expr::Identifier("MISSING".to_string()));
+        let expr = span(Expr::Ident(hew_parser::ast::Ident::new("MISSING")));
         assert!(matches!(
             eval_const_expr(&expr, &env),
             Err(ConstEvalError::UnknownConst(_))
@@ -518,7 +518,7 @@ mod tests {
             BinaryOp::Multiply,
             bin(
                 BinaryOp::Add,
-                span(Expr::Identifier("BASE".to_string())),
+                span(Expr::Ident(hew_parser::ast::Ident::new("BASE"))),
                 int(1),
             ),
             int(2),

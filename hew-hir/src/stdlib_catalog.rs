@@ -2779,7 +2779,7 @@ mod utf8_floor_tests {
     use crate::{lower_program_host_target, HirDiagnosticKind, HirItem, ResolutionCtx};
     use hew_parser::{
         ast::Program,
-        module::{Module, ModuleGraph, ModuleId},
+        module::{Module, ModuleGraph, ModulePath},
     };
     use hew_types::{module_registry::ModuleRegistry, Checker};
 
@@ -2787,12 +2787,8 @@ mod utf8_floor_tests {
         let floor = hew_parser::parse(source);
         let root = hew_parser::parse("fn main() {}");
         assert!(floor.errors.is_empty(), "{:?}", floor.errors);
-        let floor_id = ModuleId::new(vec![
-            "std".to_string(),
-            "encoding".to_string(),
-            "utf8".to_string(),
-        ]);
-        let root_id = ModuleId::root();
+        let floor_id = ModulePath::new(["std", "encoding", "utf8"]);
+        let root_id = ModulePath::root();
         let source_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .unwrap()

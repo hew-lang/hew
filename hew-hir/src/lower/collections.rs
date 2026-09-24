@@ -1,6 +1,7 @@
 //! Tuple, array and map literal lowering and vec higher-order calls.
 
 use super::*;
+use hew_parser::ast::Ident;
 
 impl LowerCtx {
     pub(super) fn lower_tuple_literal(
@@ -657,7 +658,7 @@ impl LowerCtx {
         // `[f(); 0]` must still call `f` once and drop it once).
         let source_is_place = matches!(
             value.0,
-            Expr::Identifier(_) | Expr::FieldAccess { .. } | Expr::Index { .. }
+            Expr::Ident(_) | Expr::FieldAccess { .. } | Expr::Index { .. }
         );
 
         let value_binding_ref: Option<(String, BindingId)> = if source_is_place {
@@ -928,7 +929,7 @@ impl LowerCtx {
             let clone_call = (
                 Expr::MethodCall {
                     receiver: Box::new((receiver.0.clone(), clone_span.clone())),
-                    method: "clone".to_string(),
+                    method: (Ident::new("clone"), clone_span.clone()),
                     args: Vec::new(),
                 },
                 clone_span,

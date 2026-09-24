@@ -13,16 +13,19 @@ mod cross_module_same_name {
             origin: hew_parser::ast::DeclarationOrigin::Authored,
             visibility: Visibility::Pub,
             kind: TypeDeclKind::Struct,
-            name: name.to_string(),
+            name: Ident::new(name),
             type_params: None,
             where_clause: None,
             body: fields
                 .iter()
                 .map(|(field_name, ty_name)| TypeBodyItem::Field {
-                    name: field_name.to_string(),
+                    name: Ident::new(field_name),
                     ty: (
                         TypeExpr::Named {
-                            name: ty_name.to_string(),
+                            path: hew_parser::ast::Path::single(
+                                hew_parser::ast::Ident::new(ty_name),
+                                0..0,
+                            ),
                             type_args: None,
                         },
                         0..0,
@@ -48,7 +51,7 @@ mod cross_module_same_name {
             attributes: vec![],
             is_generator: false,
             visibility: Visibility::Pub,
-            name: "ok".to_string(),
+            name: Ident::new("ok"),
             type_params: None,
             params: vec![],
             return_type: None,
@@ -56,12 +59,15 @@ mod cross_module_same_name {
             body: Block {
                 stmts: vec![(
                     Stmt::Let {
-                        pattern: (Pattern::Identifier("thing".to_string()), 0..0),
+                        pattern: (Pattern::Identifier(Ident::new("thing")), 0..0),
                         ty: None,
                         value: Some((
                             Expr::StructInit {
-                                name: record_name.to_string(),
-                                fields: vec![(field_name.to_string(), make_int_literal(1, 0..0))],
+                                path: hew_parser::ast::Path::single(
+                                    hew_parser::ast::Ident::new(record_name),
+                                    0..0,
+                                ),
+                                fields: vec![(Ident::new(field_name), make_int_literal(1, 0..0))],
                                 type_args: None,
                                 base: None,
                             },
@@ -83,9 +89,9 @@ mod cross_module_same_name {
 
     #[test]
     fn construction_uses_module_local_same_named_record() {
-        let root_id = ModuleId::root();
-        let alpha_id = ModuleId::new(vec!["alpha".to_string()]);
-        let beta_id = ModuleId::new(vec!["beta".to_string()]);
+        let root_id = ModulePath::root();
+        let alpha_id = ModulePath::new(["alpha"]);
+        let beta_id = ModulePath::new(["beta"]);
 
         let alpha_module = Module {
             id: alpha_id.clone(),
@@ -136,9 +142,9 @@ mod cross_module_same_name {
 
     #[test]
     fn qualified_construction_uses_imported_same_named_record() {
-        let root_id = ModuleId::root();
-        let alpha_id = ModuleId::new(vec!["alpha".to_string()]);
-        let beta_id = ModuleId::new(vec!["beta".to_string()]);
+        let root_id = ModulePath::root();
+        let alpha_id = ModulePath::new(["alpha"]);
+        let beta_id = ModulePath::new(["beta"]);
 
         let alpha_module = Module {
             id: alpha_id.clone(),
@@ -196,7 +202,7 @@ mod cross_module_same_name {
         let alpha_import = make_user_import(
             &["alpha"],
             Some(ImportSpec::Names(vec![ImportName {
-                name: "Thing".to_string(),
+                name: Ident::new("Thing"),
                 alias: None,
             }])),
             vec![(Item::TypeDecl(make_record("Thing", &[("a", "i64")])), 0..10)],
@@ -204,7 +210,7 @@ mod cross_module_same_name {
         let beta_import = make_user_import(
             &["beta"],
             Some(ImportSpec::Names(vec![ImportName {
-                name: "Thing".to_string(),
+                name: Ident::new("Thing"),
                 alias: None,
             }])),
             vec![(
@@ -1514,7 +1520,7 @@ mod assoc_types_slice2 {
                 .iter()
                 .map(|name| ExternFnDecl {
                     attributes: Vec::new(),
-                    name: name.to_string(),
+                    name: Ident::new(name),
                     params: vec![],
                     return_type: None,
                     is_variadic: false,
@@ -1909,7 +1915,7 @@ mod assoc_types_slice2 {
             abi: "C".to_string(),
             functions: vec![ExternFnDecl {
                 attributes: Vec::new(),
-                name: "totally_made_up_ffi_symbol".to_string(),
+                name: Ident::new("totally_made_up_ffi_symbol"),
                 params: vec![],
                 return_type: None,
                 is_variadic: false,

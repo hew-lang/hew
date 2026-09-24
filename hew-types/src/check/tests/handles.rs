@@ -492,14 +492,17 @@ fn handle_bearing_refresh_deferred_to_single_fixpoint_pass() {
                 origin: hew_parser::ast::DeclarationOrigin::Authored,
                 visibility: hew_parser::ast::Visibility::Private,
                 kind: hew_parser::ast::TypeDeclKind::Struct,
-                name: format!("S{i}"),
+                name: Ident::new(&format!("S{i}")),
                 type_params: None,
                 where_clause: None,
                 body: vec![hew_parser::ast::TypeBodyItem::Field {
-                    name: "value".to_string(),
+                    name: Ident::new("value"),
                     ty: (
                         hew_parser::ast::TypeExpr::Named {
-                            name: "i64".to_string(),
+                            path: hew_parser::ast::Path::single(
+                                hew_parser::ast::Ident::new("i64"),
+                                0..0,
+                            ),
                             type_args: None,
                         },
                         0..0,

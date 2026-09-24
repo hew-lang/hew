@@ -1,14 +1,14 @@
 use hew_hir::{lower_program_host_target, HirDiagnosticKind, ResolutionCtx};
 use hew_parser::ast::{Item, Program};
-use hew_parser::module::{Module, ModuleGraph, ModuleId};
+use hew_parser::module::{Module, ModuleGraph, ModulePath};
 use hew_types::{module_registry::ModuleRegistry, Checker};
 
-fn parsed_module(id: ModuleId, source: &str) -> Module {
+fn parsed_module(id: ModulePath, source: &str) -> Module {
     let parsed = hew_parser::parse(source);
     assert!(
         parsed.errors.is_empty(),
         "parse errors for {}: {:?}",
-        id.path.join("."),
+        id.dotted(),
         parsed.errors
     );
 
@@ -42,9 +42,9 @@ fn main() -> i64 {
         root.errors
     );
 
-    let a_id = ModuleId::new(vec!["a".to_string()]);
-    let b_id = ModuleId::new(vec!["b".to_string()]);
-    let root_id = ModuleId::root();
+    let a_id = ModulePath::new(["a"]);
+    let b_id = ModulePath::new(["b"]);
+    let root_id = ModulePath::root();
     let root_module = Module {
         id: root_id.clone(),
         items: root.program.items.clone(),

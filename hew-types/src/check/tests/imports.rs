@@ -9,7 +9,7 @@ fn selected_import(names: &[&str]) -> ImportSpec {
         names
             .iter()
             .map(|name| ImportName {
-                name: (*name).to_string(),
+                name: Ident::new(name),
                 alias: None,
             })
             .collect(),
@@ -30,8 +30,8 @@ fn selected_actor_import(path: &[&str], alias: Option<&str>, actor_source: &str)
     make_user_import(
         path,
         Some(ImportSpec::Names(vec![ImportName {
-            name: "Worker".to_string(),
-            alias: alias.map(str::to_string),
+            name: Ident::new("Worker"),
+            alias: alias.map(Ident::new),
         }])),
         parsed_import_items(actor_source),
     )
@@ -42,8 +42,8 @@ fn colliding_import_publishes_none_of_its_other_bindings() {
     let first = make_user_import(
         &["left"],
         Some(ImportSpec::Names(vec![ImportName {
-            name: "first".to_string(),
-            alias: Some("shared".to_string()),
+            name: Ident::new("first"),
+            alias: Some(Ident::new("shared")),
         }])),
         vec![(Item::Function(make_pub_fn("first", vec![], None)), 0..5)],
     );
@@ -51,11 +51,11 @@ fn colliding_import_publishes_none_of_its_other_bindings() {
         &["right"],
         Some(ImportSpec::Names(vec![
             ImportName {
-                name: "second".to_string(),
-                alias: Some("shared".to_string()),
+                name: Ident::new("second"),
+                alias: Some(Ident::new("shared")),
             },
             ImportName {
-                name: "only_second".to_string(),
+                name: Ident::new("only_second"),
                 alias: None,
             },
         ])),
@@ -90,11 +90,11 @@ fn prelude_collision_rejects_the_entire_import() {
         &["user", "helpers"],
         Some(ImportSpec::Names(vec![
             ImportName {
-                name: "custom_print".to_string(),
-                alias: Some("Iterator".to_string()),
+                name: Ident::new("custom_print"),
+                alias: Some(Ident::new("Iterator")),
             },
             ImportName {
-                name: "safe_helper".to_string(),
+                name: Ident::new("safe_helper"),
                 alias: None,
             },
         ])),
@@ -148,8 +148,8 @@ fn peer_files_resolve_same_module_alias_from_their_own_imports() {
         import.resolved_items = Some(resolved.into());
     }
 
-    let root_id = ModuleId::root();
-    let shared_id = ModuleId::new(vec!["shared".to_string()]);
+    let root_id = ModulePath::root();
+    let shared_id = ModulePath::new(["shared"]);
     let mut graph = ModuleGraph::new(root_id.clone());
     let mut shared_items = left.program.items;
     let left_count = shared_items.len();
@@ -240,9 +240,9 @@ fn early_lifecycle_seed_uses_the_importing_peer_file_index() {
         std::iter::repeat_n(failure_path.clone(), failure.program.items.len()).collect();
     import.resolved_source_paths = vec![failure_path.clone()];
 
-    let root_id = ModuleId::root();
-    let failure_id = ModuleId::new(vec!["std".to_string(), "failure".to_string()]);
-    let consumer_id = ModuleId::new(vec!["consumer".to_string()]);
+    let root_id = ModulePath::root();
+    let failure_id = ModulePath::new(["std", "failure"]);
+    let consumer_id = ModulePath::new(["consumer"]);
     let mut consumer_items = first.program.items;
     let first_count = consumer_items.len();
     consumer_items.extend(second.program.items);
@@ -263,8 +263,8 @@ fn early_lifecycle_seed_uses_the_importing_peer_file_index() {
             imports: vec![hew_parser::module::ModuleImport {
                 target: failure_id.clone(),
                 spec: Some(ImportSpec::Names(vec![ImportName {
-                    name: "CrashKind".to_string(),
-                    alias: Some("Kind".to_string()),
+                    name: Ident::new("CrashKind"),
+                    alias: Some(Ident::new("Kind")),
                 }])),
                 span: 0..45,
             }],
@@ -387,9 +387,9 @@ fn resolved_module_copy_reenters_declaring_file_import_scope() {
         std::iter::repeat_n(consumer_path.clone(), consumer_item_count).collect();
     root_import.resolved_source_paths = vec![consumer_path.clone()];
 
-    let root_id = ModuleId::root();
-    let color_id = ModuleId::new(vec!["hew".to_string(), "aliassrc".to_string()]);
-    let consumer_id = ModuleId::new(vec!["hew".to_string(), "deepalias".to_string()]);
+    let root_id = ModulePath::root();
+    let color_id = ModulePath::new(["hew", "aliassrc"]);
+    let consumer_id = ModulePath::new(["hew", "deepalias"]);
     let mut graph = ModuleGraph::new(root_id.clone());
     graph
         .add_module(Module {
@@ -527,13 +527,11 @@ fn check_resolved_closableerr_import(
         let Item::Import(import) = item else {
             continue;
         };
-        match import.path.as_slice() {
-            [package, module] if package == "hew" && module == "closableerr" => {
+        match import.path.to_string().as_str() {
+            "hew.closableerr" => {
                 import.resolved_items = Some(primary.program.items.clone().into());
             }
-            [package, module]
-                if include_second_owner && package == "hew" && module == "closableerr2" =>
-            {
+            "hew.closableerr2" if include_second_owner => {
                 import.resolved_items = Some(secondary.program.items.clone().into());
             }
             _ => {}
@@ -544,9 +542,9 @@ fn check_resolved_closableerr_import(
     // method signature is collected from its declaring module. Mirror the
     // package loader's graph so the conformance check reads
     // `hew.closableerr.Closable::close`, never an importer-local placeholder.
-    let root_id = ModuleId::root();
-    let primary_id = ModuleId::new(vec!["hew".to_string(), "closableerr".to_string()]);
-    let secondary_id = ModuleId::new(vec!["hew".to_string(), "closableerr2".to_string()]);
+    let root_id = ModulePath::root();
+    let primary_id = ModulePath::new(["hew", "closableerr"]);
+    let secondary_id = ModulePath::new(["hew", "closableerr2"]);
     let mut module_graph = ModuleGraph::new(root_id.clone());
     module_graph
         .add_module(Module {
@@ -1048,7 +1046,12 @@ fn same_leaf_impl_methods_publish_distinct_full_declaration_ids() {
             continue;
         };
         import.resolved_items = Some(
-            if import.path.first().is_some_and(|part| part == "left") {
+            if import
+                .path
+                .segments
+                .first()
+                .is_some_and(|part| part.0.name.as_str() == "left")
+            {
                 left.program.items.clone()
             } else {
                 right.program.items.clone()
@@ -1149,11 +1152,11 @@ fn user_channel_lookalike_keeps_its_own_sender_and_receiver_identity() {
 fn should_import_name_named_match() {
     let spec = Some(ImportSpec::Names(vec![
         ImportName {
-            name: "helper".to_string(),
+            name: Ident::new("helper"),
             alias: None,
         },
         ImportName {
-            name: "parse".to_string(),
+            name: Ident::new("parse"),
             alias: None,
         },
     ]));
@@ -1170,7 +1173,7 @@ fn bare_import_registers_qualified_name() {
         "helper",
         vec![],
         Some(TypeExpr::Named {
-            name: "i32".to_string(),
+            path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("i32"), 0..0),
             type_args: None,
         }),
     );
@@ -1206,14 +1209,14 @@ fn make_pub_struct(name: &str, field: &str) -> TypeDecl {
         origin: hew_parser::ast::DeclarationOrigin::Authored,
         visibility: Visibility::Pub,
         kind: TypeDeclKind::Struct,
-        name: name.to_string(),
+        name: Ident::new(name),
         type_params: None,
         where_clause: None,
         body: vec![TypeBodyItem::Field {
-            name: field.to_string(),
+            name: Ident::new(field),
             ty: (
                 TypeExpr::Named {
-                    name: "i64".to_string(),
+                    path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("i64"), 0..0),
                     type_args: None,
                 },
                 0..0,
@@ -1277,7 +1280,7 @@ fn named_import_type_publishes_bare_binding() {
     let import = make_user_import(
         &["myapp", "mod_a"],
         Some(ImportSpec::Names(vec![ImportName {
-            name: "Reply".to_string(),
+            name: Ident::new("Reply"),
             alias: None,
         }])),
         vec![(Item::TypeDecl(reply), 0..0)],
@@ -1312,8 +1315,8 @@ fn named_import_type_alias_publishes_alias_binding() {
     let import = make_user_import(
         &["myapp", "mod_a"],
         Some(ImportSpec::Names(vec![ImportName {
-            name: "Reply".to_string(),
-            alias: Some("R".to_string()),
+            name: Ident::new("Reply"),
+            alias: Some(Ident::new("R")),
         }])),
         vec![(Item::TypeDecl(reply), 0..0)],
     );
@@ -1349,8 +1352,8 @@ fn alias_import_resolves_bare_binding_to_source_identity() {
     let import = make_user_import(
         &["myapp", "mod_a"],
         Some(ImportSpec::Names(vec![ImportName {
-            name: "Reply".to_string(),
-            alias: Some("R".to_string()),
+            name: Ident::new("Reply"),
+            alias: Some(Ident::new("R")),
         }])),
         vec![(Item::TypeDecl(reply), 0..0)],
     );
@@ -1386,8 +1389,8 @@ fn alias_import_does_not_conflate_with_same_named_export() {
     let import = make_user_import(
         &["myapp", "mod_a"],
         Some(ImportSpec::Names(vec![ImportName {
-            name: "Reply".to_string(),
-            alias: Some("Other".to_string()),
+            name: Ident::new("Reply"),
+            alias: Some(Ident::new("Other")),
         }])),
         vec![(Item::TypeDecl(reply), 0..0), (Item::TypeDecl(other), 0..0)],
     );
@@ -1510,7 +1513,7 @@ fn stdlib_named_import_publishes_bare_type() {
         "std.net.websocket",
         &[(Item::TypeDecl(server), 0..0)],
         StdlibBarePublication::Import(&Some(ImportSpec::Names(vec![ImportName {
-            name: "Server".to_string(),
+            name: Ident::new("Server"),
             alias: None,
         }]))),
     );
@@ -1556,7 +1559,7 @@ fn stdlib_type_binding_is_republished_for_each_importer_after_declaration_dedup(
     let connection = make_pub_struct("Connection", "fd");
     let resolved_items = vec![(Item::TypeDecl(connection), 0..0)];
     let plain_decl = ImportDecl {
-        path: vec!["std".to_string(), "net".to_string()],
+        path: hew_parser::ast::Path::from_spellings(&["std", "net"]),
         spec: None,
         selection_trailing_comma: false,
         module_alias: None,
@@ -1566,7 +1569,7 @@ fn stdlib_type_binding_is_republished_for_each_importer_after_declaration_dedup(
         resolved_source_paths: Vec::new(),
     };
     let named_spec = Some(ImportSpec::Names(vec![ImportName {
-        name: "Connection".to_string(),
+        name: Ident::new("Connection"),
         alias: None,
     }]));
     let named_decl = ImportDecl {
@@ -1683,14 +1686,14 @@ fn stdlib_nested_private_local_bare_type_uses_full_module_identity() {
         origin: hew_parser::ast::DeclarationOrigin::Authored,
         visibility: Visibility::Pub,
         kind: TypeDeclKind::Struct,
-        name: "Holder".to_string(),
+        name: Ident::new("Holder"),
         type_params: None,
         where_clause: None,
         body: vec![TypeBodyItem::Field {
-            name: "wrap".to_string(),
+            name: Ident::new("wrap"),
             ty: (
                 TypeExpr::Named {
-                    name: "Wrap".to_string(),
+                    path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("Wrap"), 0..0),
                     type_args: None,
                 },
                 0..0,
@@ -1864,8 +1867,8 @@ fn canonical_module_variants_shadow_builtin_variants() {
 fn same_leaf_named_imports_publish_one_resolved_ty_spelling_per_owner() {
     let selected = |alias: &str| {
         Some(ImportSpec::Names(vec![ImportName {
-            name: "Shared".to_string(),
-            alias: Some(alias.to_string()),
+            name: Ident::new("Shared"),
+            alias: Some(Ident::new(alias)),
         }]))
     };
     let left = make_user_import(
@@ -1978,7 +1981,7 @@ fn non_pub_functions_registered_for_enforcement_but_not_bare() {
         "visible",
         vec![],
         Some(TypeExpr::Named {
-            name: "i32".to_string(),
+            path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("i32"), 0..0),
             type_args: None,
         }),
     );
@@ -2016,10 +2019,10 @@ fn user_module_registers_pub_consts() {
 
     let pub_const = ConstDecl {
         visibility: Visibility::Pub,
-        name: "MAX_SIZE".to_string(),
+        name: Ident::new("MAX_SIZE"),
         ty: (
             TypeExpr::Named {
-                name: "i32".to_string(),
+                path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("i32"), 0..0),
                 type_args: None,
             },
             0..0,
@@ -2029,10 +2032,10 @@ fn user_module_registers_pub_consts() {
     };
     let priv_const = ConstDecl {
         visibility: Visibility::Private,
-        name: "INTERNAL".to_string(),
+        name: Ident::new("INTERNAL"),
         ty: (
             TypeExpr::Named {
-                name: "i32".to_string(),
+                path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("i32"), 0..0),
                 type_args: None,
             },
             0..0,
@@ -2082,10 +2085,10 @@ fn user_module_const_bare_import_qualified_only() {
 
     let pub_const = ConstDecl {
         visibility: Visibility::Pub,
-        name: "LIMIT".to_string(),
+        name: Ident::new("LIMIT"),
         ty: (
             TypeExpr::Named {
-                name: "i32".to_string(),
+                path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("i32"), 0..0),
                 type_args: None,
             },
             0..0,
@@ -2128,10 +2131,10 @@ fn module_qualified_const_field_access_resolves() {
 
     let pub_const = ConstDecl {
         visibility: Visibility::Pub,
-        name: "LIMIT".to_string(),
+        name: Ident::new("LIMIT"),
         ty: (
             TypeExpr::Named {
-                name: "i64".to_string(),
+                path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("i64"), 0..0),
                 type_args: None,
             },
             0..0,
@@ -2184,10 +2187,10 @@ fn module_qualified_const_undefined_emits_targeted_diagnostic() {
 
     let pub_const = ConstDecl {
         visibility: Visibility::Pub,
-        name: "LIMIT".to_string(),
+        name: Ident::new("LIMIT"),
         ty: (
             TypeExpr::Named {
-                name: "i64".to_string(),
+                path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("i64"), 0..0),
                 type_args: None,
             },
             0..0,
@@ -2251,14 +2254,14 @@ fn user_module_registers_types() {
         origin: hew_parser::ast::DeclarationOrigin::Authored,
         visibility: Visibility::Pub,
         kind: TypeDeclKind::Struct,
-        name: "Config".to_string(),
+        name: Ident::new("Config"),
         type_params: None,
         where_clause: None,
         body: vec![TypeBodyItem::Field {
-            name: "value".to_string(),
+            name: Ident::new("value"),
             ty: (
                 TypeExpr::Named {
-                    name: "i32".to_string(),
+                    path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("i32"), 0..0),
                     type_args: None,
                 },
                 0..0,
@@ -2298,7 +2301,7 @@ fn user_modules_set_populated() {
         "helper",
         vec![],
         Some(TypeExpr::Named {
-            name: "i32".to_string(),
+            path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("i32"), 0..0),
             type_args: None,
         }),
     );
@@ -2319,7 +2322,7 @@ fn user_modules_set_populated() {
 fn stdlib_not_in_user_modules() {
     // A stdlib import should NOT appear in user_modules
     let import = ImportDecl {
-        path: vec!["std".to_string(), "fs".to_string()],
+        path: hew_parser::ast::Path::from_spellings(&["std", "fs"]),
         spec: None,
         selection_trailing_comma: false,
         module_alias: None,
@@ -2344,10 +2347,13 @@ fn user_module_fn_sig_has_correct_types() {
         "add",
         vec![
             Param {
-                name: "a".to_string(),
+                name: Ident::new("a"),
                 ty: (
                     TypeExpr::Named {
-                        name: "i32".to_string(),
+                        path: hew_parser::ast::Path::single(
+                            hew_parser::ast::Ident::new("i32"),
+                            0..0,
+                        ),
                         type_args: None,
                     },
                     0..0,
@@ -2356,10 +2362,13 @@ fn user_module_fn_sig_has_correct_types() {
                 is_consume: false,
             },
             Param {
-                name: "b".to_string(),
+                name: Ident::new("b"),
                 ty: (
                     TypeExpr::Named {
-                        name: "i32".to_string(),
+                        path: hew_parser::ast::Path::single(
+                            hew_parser::ast::Ident::new("i32"),
+                            0..0,
+                        ),
                         type_args: None,
                     },
                     0..0,
@@ -2369,7 +2378,7 @@ fn user_module_fn_sig_has_correct_types() {
             },
         ],
         Some(TypeExpr::Named {
-            name: "i32".to_string(),
+            path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("i32"), 0..0),
             type_args: None,
         }),
     );
@@ -2399,7 +2408,7 @@ fn two_modules_same_fn_name_no_collision() {
         "run",
         vec![],
         Some(TypeExpr::Named {
-            name: "i32".to_string(),
+            path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("i32"), 0..0),
             type_args: None,
         }),
     );
@@ -2407,7 +2416,7 @@ fn two_modules_same_fn_name_no_collision() {
         "run",
         vec![],
         Some(TypeExpr::Named {
-            name: "string".to_string(),
+            path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("string"), 0..0),
             type_args: None,
         }),
     );
@@ -2440,7 +2449,7 @@ fn import_without_resolved_items_emits_unresolved_error() {
     // An import with resolved_items = None and no stdlib match (empty registry)
     // must now emit an UnresolvedImport error rather than silently dropping.
     let import = ImportDecl {
-        path: vec!["unknown".to_string(), "pkg".to_string()],
+        path: hew_parser::ast::Path::from_spellings(&["unknown", "pkg"]),
         spec: None,
         selection_trailing_comma: false,
         module_alias: None,
@@ -2480,7 +2489,7 @@ fn import_with_resolved_items_no_error() {
 #[test]
 fn stdlib_import_keeps_stream_open_stream_typed_after_fs_import() {
     let stream_import = ImportDecl {
-        path: vec!["std".to_string(), "stream".to_string()],
+        path: hew_parser::ast::Path::from_spellings(&["std", "stream"]),
         spec: None,
         selection_trailing_comma: false,
         module_alias: None,
@@ -2490,7 +2499,7 @@ fn stdlib_import_keeps_stream_open_stream_typed_after_fs_import() {
         resolved_source_paths: Vec::new(),
     };
     let fs_import = ImportDecl {
-        path: vec!["std".to_string(), "fs".to_string()],
+        path: hew_parser::ast::Path::from_spellings(&["std", "fs"]),
         spec: None,
         selection_trailing_comma: false,
         module_alias: None,
@@ -2539,7 +2548,7 @@ fn stdlib_import_keeps_stream_open_stream_typed_after_fs_import() {
 #[test]
 fn file_import_without_resolved_items_emits_unresolved_error() {
     let import = ImportDecl {
-        path: vec![],
+        path: hew_parser::ast::Path::from_spellings(&[]),
         spec: None,
         selection_trailing_comma: false,
         module_alias: None,
@@ -2574,12 +2583,12 @@ fn merged_file_import_duplicate_pub_name_rejects_the_whole_import() {
         "shared",
         vec![],
         Some(TypeExpr::Named {
-            name: "i32".to_string(),
+            path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("i32"), 0..0),
             type_args: None,
         }),
     );
     let import = ImportDecl {
-        path: vec![],
+        path: hew_parser::ast::Path::from_spellings(&[]),
         spec: None,
         selection_trailing_comma: false,
         module_alias: None,
@@ -2621,7 +2630,7 @@ fn merged_file_import_duplicate_pub_name_rejects_the_whole_import() {
 fn repeated_flat_file_import_with_same_resolved_source_does_not_reregister_items() {
     let shared_source = std::path::PathBuf::from("pkg/pkg.hew");
     let import = ImportDecl {
-        path: vec![],
+        path: hew_parser::ast::Path::from_spellings(&[]),
         spec: None,
         selection_trailing_comma: false,
         module_alias: None,
@@ -2632,7 +2641,10 @@ fn repeated_flat_file_import_with_same_resolved_source_does_not_reregister_items
                     "shared",
                     vec![],
                     Some(TypeExpr::Named {
-                        name: "i32".to_string(),
+                        path: hew_parser::ast::Path::single(
+                            hew_parser::ast::Ident::new("i32"),
+                            0..0,
+                        ),
                         type_args: None,
                     }),
                 )),
@@ -2692,8 +2704,8 @@ fn flat_file_imported_pub_fn_publishes_root_call_target() {
         std::iter::repeat_n(helper_path.clone(), helper.program.items.len()).collect();
     import.resolved_source_paths = vec![helper_path.clone()];
 
-    let root_id = ModuleId::root();
-    let helper_id = ModuleId::new(vec!["helper".to_string()]);
+    let root_id = ModulePath::root();
+    let helper_id = ModulePath::new(["helper"]);
     let mut graph = ModuleGraph::new(root_id.clone());
     graph
         .add_module(Module {
@@ -2757,7 +2769,7 @@ fn repeated_stdlib_import_does_not_duplicate_hew_items() {
     );
 
     let import = ImportDecl {
-        path: vec!["std".to_string(), "fs".to_string()],
+        path: hew_parser::ast::Path::from_spellings(&["std", "fs"]),
         spec: None,
         selection_trailing_comma: false,
         module_alias: None,
@@ -2817,14 +2829,17 @@ fn make_struct_with_field_ty(name: &str, field: &str, field_type: &str) -> TypeD
         origin: hew_parser::ast::DeclarationOrigin::Authored,
         visibility: Visibility::Pub,
         kind: TypeDeclKind::Struct,
-        name: name.to_string(),
+        name: Ident::new(name),
         type_params: None,
         where_clause: None,
         body: vec![TypeBodyItem::Field {
-            name: field.to_string(),
+            name: Ident::new(field),
             ty: (
                 TypeExpr::Named {
-                    name: field_type.to_string(),
+                    path: hew_parser::ast::Path::single(
+                        hew_parser::ast::Ident::new(field_type),
+                        0..0,
+                    ),
                     type_args: None,
                 },
                 0..0,
@@ -2862,8 +2877,8 @@ fn import_alias_in_record_field_resolves_to_source_identity() {
     let import = make_user_import(
         &["myapp", "mod_a"],
         Some(ImportSpec::Names(vec![ImportName {
-            name: "Payload".to_string(),
-            alias: Some("Tag".to_string()),
+            name: Ident::new("Payload"),
+            alias: Some(Ident::new("Tag")),
         }])),
         vec![(Item::TypeDecl(payload), 0..0)],
     );
@@ -2893,8 +2908,8 @@ fn import_alias_in_enum_payload_resolves_to_source_identity() {
     let import = make_user_import(
         &["myapp", "mod_a"],
         Some(ImportSpec::Names(vec![ImportName {
-            name: "Payload".to_string(),
-            alias: Some("Tag".to_string()),
+            name: Ident::new("Payload"),
+            alias: Some(Ident::new("Tag")),
         }])),
         vec![(Item::TypeDecl(payload), 0..0)],
     );
@@ -2902,14 +2917,14 @@ fn import_alias_in_enum_payload_resolves_to_source_identity() {
         origin: hew_parser::ast::DeclarationOrigin::Authored,
         visibility: Visibility::Pub,
         kind: TypeDeclKind::Enum,
-        name: "Wrap".to_string(),
+        name: Ident::new("Wrap"),
         type_params: None,
         where_clause: None,
         body: vec![TypeBodyItem::Variant(hew_parser::ast::VariantDecl {
-            name: "Has".to_string(),
+            name: Ident::new("Has"),
             kind: VariantKind::Tuple(vec![(
                 TypeExpr::Named {
-                    name: "Tag".to_string(),
+                    path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("Tag"), 0..0),
                     type_args: None,
                 },
                 0..0,
@@ -2956,14 +2971,17 @@ fn imported_enum_payload_keeps_its_defining_module_identity() {
         origin: hew_parser::ast::DeclarationOrigin::Authored,
         visibility: Visibility::Pub,
         kind: TypeDeclKind::Enum,
-        name: "Receive".to_string(),
+        name: Ident::new("Receive"),
         type_params: None,
         where_clause: None,
         body: vec![TypeBodyItem::Variant(hew_parser::ast::VariantDecl {
-            name: "Message".to_string(),
+            name: Ident::new("Message"),
             kind: VariantKind::Tuple(vec![(
                 TypeExpr::Named {
-                    name: "Delivery".to_string(),
+                    path: hew_parser::ast::Path::single(
+                        hew_parser::ast::Ident::new("Delivery"),
+                        0..0,
+                    ),
                     type_args: None,
                 },
                 0..0,
@@ -3016,8 +3034,8 @@ fn local_type_shadows_import_alias_in_member_position() {
     let import = make_user_import(
         &["myapp", "mod_a"],
         Some(ImportSpec::Names(vec![ImportName {
-            name: "Payload".to_string(),
-            alias: Some("Tag".to_string()),
+            name: Ident::new("Payload"),
+            alias: Some(Ident::new("Tag")),
         }])),
         vec![(Item::TypeDecl(payload), 0..0)],
     );
@@ -3051,8 +3069,8 @@ fn aliased_member_matches_qualified_member_type() {
     let import = make_user_import(
         &["myapp", "mod_a"],
         Some(ImportSpec::Names(vec![ImportName {
-            name: "Payload".to_string(),
-            alias: Some("Tag".to_string()),
+            name: Ident::new("Payload"),
+            alias: Some(Ident::new("Tag")),
         }])),
         vec![(Item::TypeDecl(payload), 0..0)],
     );
@@ -3092,13 +3110,13 @@ fn import_selected_trait_from_module() {
 
     let trait_decl = TraitDecl {
         visibility: Visibility::Pub,
-        name: "Renderable".to_string(),
+        name: Ident::new("Renderable"),
         type_params: None,
         super_traits: None,
         items: vec![TraitItem::Method(TraitMethod {
             attributes: vec![],
             consumes_self: false,
-            name: "display".to_string(),
+            name: Ident::new("display"),
             type_params: None,
             params: vec![],
             return_type: None,
@@ -3136,13 +3154,13 @@ fn import_private_trait_not_registered() {
 
     let private_trait = TraitDecl {
         visibility: Visibility::Private,
-        name: "Internal".to_string(),
+        name: Ident::new("Internal"),
         type_params: None,
         super_traits: None,
         items: vec![TraitItem::Method(TraitMethod {
             attributes: vec![],
             consumes_self: false,
-            name: "internal_op".to_string(),
+            name: Ident::new("internal_op"),
             type_params: None,
             params: vec![],
             return_type: None,
@@ -3174,13 +3192,13 @@ fn orphan_impl_emits_warning() {
     let impl_decl = ImplDecl {
         type_params: None,
         trait_bound: Some(TraitBound {
-            name: "SomeTrait".to_string(),
+            path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("SomeTrait"), 0..0),
             type_args: None,
             assoc_type_bindings: vec![],
         }),
         target_type: (
             TypeExpr::Named {
-                name: "SomeType".to_string(),
+                path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("SomeType"), 0..0),
                 type_args: None,
             },
             0..0,
@@ -3229,13 +3247,13 @@ fn noncanonical_builtin_spelling_does_not_own_intrinsic_impls() {
     let impl_decl = ImplDecl {
         type_params: None,
         trait_bound: Some(TraitBound {
-            name: "ExternalTrait".to_string(),
+            path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("ExternalTrait"), 0..0),
             type_args: None,
             assoc_type_bindings: vec![],
         }),
         target_type: (
             TypeExpr::Named {
-                name: "Vec".to_string(),
+                path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("Vec"), 0..0),
                 type_args: None,
             },
             0..0,
@@ -3305,8 +3323,8 @@ fn check_intrinsic_coherence_source(
         parsed.errors
     );
 
-    let root_id = ModuleId::root();
-    let builtins_id = ModuleId::new(vec!["std".to_string(), "builtins".to_string()]);
+    let root_id = ModulePath::root();
+    let builtins_id = ModulePath::new(["std", "builtins"]);
     let mut graph = ModuleGraph::new(root_id.clone());
     graph
         .add_module(Module {
@@ -3424,9 +3442,9 @@ fn imported_foreign_trait_impl_for_intrinsic_type_warns() {
     import.resolved_items = Some(foreign.program.items.clone().into());
     import.resolved_source_paths = vec![foreign_path.clone()];
 
-    let root_id = ModuleId::root();
-    let foreign_id = ModuleId::new(vec!["vendor".to_string()]);
-    let consumer_id = ModuleId::new(vec!["consumer".to_string()]);
+    let root_id = ModulePath::root();
+    let foreign_id = ModulePath::new(["vendor"]);
+    let consumer_id = ModulePath::new(["consumer"]);
     let mut graph = ModuleGraph::new(root_id.clone());
     graph
         .add_module(Module {
@@ -3444,7 +3462,7 @@ fn imported_foreign_trait_impl_for_intrinsic_type_warns() {
             imports: vec![hew_parser::module::ModuleImport {
                 target: foreign_id.clone(),
                 spec: Some(ImportSpec::Names(vec![ImportName {
-                    name: "ForeignTrait".to_string(),
+                    name: Ident::new("ForeignTrait"),
                     alias: None,
                 }])),
                 span: import_span,
@@ -3478,7 +3496,7 @@ fn local_type_impl_no_orphan_warning() {
         origin: hew_parser::ast::DeclarationOrigin::Authored,
         visibility: Visibility::Pub,
         kind: TypeDeclKind::Struct,
-        name: "LocalType".to_string(),
+        name: Ident::new("LocalType"),
         type_params: None,
         where_clause: None,
         body: vec![],
@@ -3493,13 +3511,13 @@ fn local_type_impl_no_orphan_warning() {
     let impl_decl = ImplDecl {
         type_params: None,
         trait_bound: Some(TraitBound {
-            name: "ExternalTrait".to_string(),
+            path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("ExternalTrait"), 0..0),
             type_args: None,
             assoc_type_bindings: vec![],
         }),
         target_type: (
             TypeExpr::Named {
-                name: "LocalType".to_string(),
+                path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("LocalType"), 0..0),
                 type_args: None,
             },
             0..0,
@@ -3532,7 +3550,7 @@ fn local_actor_impl_no_orphan_warning() {
     // the actor's name must seed `local_type_defs` like any other type.
     let actor = ActorDecl {
         visibility: Visibility::Pub,
-        name: "Counter".to_string(),
+        name: Ident::new("Counter"),
         type_params: vec![],
         super_traits: None,
         init: None,
@@ -3549,13 +3567,13 @@ fn local_actor_impl_no_orphan_warning() {
     let impl_decl = ImplDecl {
         type_params: None,
         trait_bound: Some(TraitBound {
-            name: "ExternalTrait".to_string(),
+            path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("ExternalTrait"), 0..0),
             type_args: None,
             assoc_type_bindings: vec![],
         }),
         target_type: (
             TypeExpr::Named {
-                name: "Counter".to_string(),
+                path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("Counter"), 0..0),
                 type_args: None,
             },
             0..0,
@@ -3593,7 +3611,7 @@ fn test_file_import_private_items_not_visible() {
         attributes: vec![],
         is_generator: false,
         visibility: Visibility::Private,
-        name: "private_func".to_string(),
+        name: Ident::new("private_func"),
         type_params: None,
         params: vec![],
         return_type: None,
@@ -3611,10 +3629,10 @@ fn test_file_import_private_items_not_visible() {
 
     let private_const = Item::Const(ConstDecl {
         visibility: Visibility::Private,
-        name: "PRIVATE_CONST".to_string(),
+        name: Ident::new("PRIVATE_CONST"),
         ty: (
             TypeExpr::Named {
-                name: "i64".to_string(),
+                path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("i64"), 0..0),
                 type_args: None,
             },
             0..0,
@@ -3633,7 +3651,7 @@ fn test_file_import_private_items_not_visible() {
         origin: hew_parser::ast::DeclarationOrigin::Authored,
         visibility: Visibility::Private,
         kind: TypeDeclKind::Struct,
-        name: "PrivateType".to_string(),
+        name: Ident::new("PrivateType"),
         type_params: None,
         where_clause: None,
         body: vec![],
@@ -3653,7 +3671,7 @@ fn test_file_import_private_items_not_visible() {
     ];
 
     let import_decl = ImportDecl {
-        path: vec![],
+        path: hew_parser::ast::Path::from_spellings(&[]),
         spec: None,
         selection_trailing_comma: false,
         module_alias: None,
@@ -3698,13 +3716,13 @@ fn check_qualified_variant_root(root_source: &str) -> TypeCheckOutput {
     assert!(root.errors.is_empty(), "parse: {:?}", root.errors);
     for (item, _) in &mut root.program.items {
         if let Item::Import(import) = item {
-            if import.path.as_slice() == ["m"] {
+            if import.path.to_string() == "m" {
                 import.resolved_items = Some(module.program.items.clone().into());
             }
         }
     }
-    let root_id = ModuleId::root();
-    let m_id = ModuleId::new(vec!["m".to_string()]);
+    let root_id = ModulePath::root();
+    let m_id = ModulePath::new(["m"]);
     let mut module_graph = ModuleGraph::new(root_id.clone());
     module_graph
         .add_module(Module {
@@ -3746,13 +3764,13 @@ fn check_qualified_machine_state_root(root_source: &str) -> (Checker, TypeCheckO
     assert!(root.errors.is_empty(), "parse: {:?}", root.errors);
     for (item, _) in &mut root.program.items {
         if let Item::Import(import) = item {
-            if import.path.as_slice() == ["m"] {
+            if import.path.to_string() == "m" {
                 import.resolved_items = Some(module.program.items.clone().into());
             }
         }
     }
-    let root_id = ModuleId::root();
-    let m_id = ModuleId::new(vec!["m".to_string()]);
+    let root_id = ModulePath::root();
+    let m_id = ModulePath::new(["m"]);
     let mut module_graph = ModuleGraph::new(root_id.clone());
     module_graph
         .add_module(Module {

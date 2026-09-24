@@ -4,7 +4,7 @@ use super::*;
 use hew_hir::{lower_program_host_target, ResolutionCtx};
 use hew_parser::{
     ast::Item,
-    module::{Module as SourceModule, ModuleGraph, ModuleId},
+    module::{Module as SourceModule, ModuleGraph, ModulePath},
 };
 use hew_types::{module_registry::ModuleRegistry, Checker};
 
@@ -38,8 +38,8 @@ fn resource_module(module_name: &str, source: &str, caller: &str) -> hew_sir::Se
         .parent()
         .unwrap()
         .join(source_path)];
-    let root = ModuleId::root();
-    let resource = ModuleId::new(module_name.split('.').map(str::to_string).collect());
+    let root = ModulePath::root();
+    let resource = ModulePath::new(module_name.split('.'));
     let mut graph = ModuleGraph::new(root.clone());
     graph
         .add_module(SourceModule {

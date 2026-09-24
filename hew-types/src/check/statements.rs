@@ -121,7 +121,7 @@ impl Checker {
 
     fn method_chain_root_binding(expr: &Expr) -> Option<&str> {
         match expr {
-            Expr::Identifier(name) => Some(name),
+            Expr::Ident(name) => Some(name.name.as_str()),
             Expr::MethodCall { receiver, .. } => Self::method_chain_root_binding(&receiver.0),
             _ => None,
         }
@@ -166,7 +166,7 @@ impl Checker {
         }
 
         let (root, nested_identity) = match &receiver.0 {
-            Expr::Identifier(name) => (name.clone(), false),
+            Expr::Ident(name) => (name.to_string(), false),
             Expr::MethodCall { .. } => {
                 let root =
                     self.preserve_discarded_receiver_identity_chain(&receiver.0, &receiver.1)?;
@@ -325,7 +325,7 @@ impl Checker {
         value: &Spanned<Expr>,
         target_ty: &Ty,
     ) -> Option<Ty> {
-        let Expr::Identifier(name) = target else {
+        let Expr::Ident(name) = target else {
             return None;
         };
         // `Ty::Closure` is the type of one closure literal; a written binding
@@ -341,20 +341,22 @@ impl Checker {
             return None;
         }
         let joined = self.join_callable_values(target_ty, &value_ty, &value.1);
-        self.env.widen_ty(name, joined.clone());
+        self.env.widen_ty(name.name.as_str(), joined.clone());
         Some(joined)
     }
 
     pub(super) fn assignment_root_binding_name<'a>(&self, expr: &'a Expr) -> Option<&'a str> {
         match expr {
-            Expr::Identifier(name) => Some(name.as_str()),
+            Expr::Ident(name) => Some(name.name.as_str()),
             Expr::FieldAccess { object, field } => {
                 // The receiver is not a binding: `self.items[0]` is rooted in
                 // the state binding `items`, exactly where the bare spelling
                 // roots it. Without this the mutability and written-ness rules
                 // keyed on the root would look up a binding called `self`,
                 // find none, and silently pass a write they must reject.
-                if let Some(state_field) = self.actor_self_state_field(&object.0, field) {
+                if let Some(state_field) =
+                    self.actor_self_state_field(&object.0, field.0.name.as_str())
+                {
                     return Some(state_field);
                 }
                 self.assignment_root_binding_name(&object.0)
@@ -370,7 +372,7 @@ impl Checker {
     /// the assignment were a fresh direct write.
     fn numeric_update_reads_binding(expr: &Expr, binding: &str) -> bool {
         match expr {
-            Expr::Identifier(name) => name == binding,
+            Expr::Ident(name) => name.name.as_str() == binding,
             Expr::Binary { left, right, .. }
             | Expr::Coalesce { left, right }
             | Expr::Handle {
@@ -451,7 +453,7 @@ impl Checker {
             .get(&name)
             .filter(|def| def.kind == TypeDefKind::Actor)
             .map_or(name, |def| def.name.clone());
-        Some(format!("{actor_name}::{method}"))
+        Some(format!("{actor_name}::{}", method.0))
     }
 
     /// Determine the type of the last statement in a block (the statement that
@@ -479,7 +481,7 @@ impl Checker {
             }
             Stmt::Loop { label, body } => {
                 self.check_stmt(stmt, span);
-                if hew_parser::loop_body_has_break(body, label.as_deref()) {
+                if hew_parser::loop_body_has_break(body, *label) {
                     Ty::Unit
                 } else {
                     Ty::Never
@@ -555,7 +557,7 @@ impl Checker {
                 Stmt::Loop { label, body } => {
                     self.check_stmt(stmt, span);
                     // A break-less loop diverges; mark subsequent stmts unreachable.
-                    terminated = !hew_parser::loop_body_has_break(body, label.as_deref());
+                    terminated = !hew_parser::loop_body_has_break(body, *label);
                 }
                 _ => self.check_stmt(stmt, span),
             }
@@ -963,7 +965,7 @@ impl Checker {
             } => {
                 let required_optional = else_block.is_some()
                     && matches!(&pattern.0, Pattern::Identifier(name)
-                        if !self.let_identifier_is_unit_variant(name));
+                        if !self.let_identifier_is_unit_variant(name.name.as_str()));
                 let binding_context = match &pattern.0 {
                     Pattern::Identifier(name) => format!("local binding `{name}`"),
                     _ => "local binding".to_string(),
@@ -1015,7 +1017,7 @@ impl Checker {
                         // Synthetic binding (no source span) — pre-populated for body lookup.
                         // Marked as already-used (read_count=1 in `define`) to avoid a
                         // spurious unused-variable warning at this site.
-                        self.env.define(bind_name.clone(), handle_ty, false);
+                        self.env.define(bind_name.to_string(), handle_ty, false);
                     }
                 }
                 // Set pending_let_closure_name so synthesize_identifier can
@@ -1025,7 +1027,7 @@ impl Checker {
                 if let (Pattern::Identifier(name), Some((Expr::Lambda { .. }, _))) =
                     (&pattern.0, &value)
                 {
-                    self.pending_let_closure_name = Some(name.clone());
+                    self.pending_let_closure_name = Some(name.to_string());
                 }
                 let val_ty = if let Some((val, vs)) = value {
                     if let Some(annotation) = ty {
@@ -1072,7 +1074,7 @@ impl Checker {
                     }
                     required_pattern = (
                         Pattern::ContextVariant(hew_parser::ast::ContextVariantPattern {
-                            name: "Some".to_string(),
+                            name: Ident::new("Some"),
                             payload: Some(hew_parser::ast::NominalPatternPayload::Tuple(vec![
                                 pattern.clone(),
                             ])),
@@ -1136,7 +1138,9 @@ impl Checker {
                 // mismatched value type is then a clean type error); otherwise
                 // it binds.
                 let identifier_is_unit_variant = match &pattern.0 {
-                    Pattern::Identifier(name) => self.let_identifier_is_unit_variant(name),
+                    Pattern::Identifier(name) => {
+                        self.let_identifier_is_unit_variant(name.name.as_str())
+                    }
                     _ => false,
                 };
                 // A let-position identifier that resolves to a unit variant is
@@ -1146,8 +1150,8 @@ impl Checker {
                 // which is where every other pattern form is checked.
                 if identifier_is_unit_variant {
                     if let Pattern::Identifier(name) = &pattern.0 {
-                        if !name.contains("::") {
-                            self.report_bare_variant_pattern(name, &pattern.1);
+                        if !name.name.as_str().contains("::") {
+                            self.report_bare_variant_pattern(name.name.as_str(), &pattern.1);
                         }
                     }
                 }
@@ -1166,7 +1170,8 @@ impl Checker {
                     }
                 }
                 if let Some(name) = plain_identifier {
-                    if val_ty == Ty::Unit && value.is_some() && !name.starts_with('_') {
+                    if val_ty == Ty::Unit && value.is_some() && !name.name.as_str().starts_with('_')
+                    {
                         self.warnings.push(TypeError {
                             severity: crate::error::Severity::Warning,
                             kind: TypeErrorKind::StyleSuggestion,
@@ -1177,15 +1182,15 @@ impl Checker {
                             source_module: self.current_module.clone(),
                         });
                     }
-                    self.check_shadowing(name, &pattern.1);
+                    self.check_shadowing(name.name.as_str(), &pattern.1);
                     self.env.define_with_span(
-                        name.clone(),
+                        name.to_string(),
                         val_ty.clone(),
                         false,
                         pattern.1.clone(),
                     );
                     self.env
-                        .set_collection_borrow(name, collection_borrow.clone());
+                        .set_collection_borrow(name.name.as_str(), collection_borrow.clone());
                     // Register generic lambda binding for call-site inference.
                     // Both guards must hold: the scratch field was populated
                     // AND the let value is itself (not just contains) a generic
@@ -1208,11 +1213,12 @@ impl Checker {
                             if is_integer_literal(val) {
                                 if let Some(v) = extract_integer_literal_value(val) {
                                     self.const_values
-                                        .insert(name.clone(), ConstValue::Integer(v));
+                                        .insert(name.to_string(), ConstValue::Integer(v));
                                 }
                             } else if val_ty.is_float_literal() {
                                 if let Some(v) = extract_float_literal_value(val) {
-                                    self.const_values.insert(name.clone(), ConstValue::Float(v));
+                                    self.const_values
+                                        .insert(name.to_string(), ConstValue::Float(v));
                                 }
                             }
                         }
@@ -1226,7 +1232,12 @@ impl Checker {
                     let resolved_val_ty = self.subst.resolve(&val_ty);
                     let maybe_refutable_kind = match &pattern.0 {
                         // Irrefutable product types — admitted without a gate error.
-                        Pattern::Struct { name: pat_name, .. } => {
+                        // TRANSITION(P1): deleted by A1 commit 2
+                        Pattern::NominalPath {
+                            path: one_path,
+                            payload: Some(hew_parser::ast::NominalPatternPayload::Record { .. }),
+                        } if one_path.segments.len() == 1 => {
+                            let pat_name = &one_path.to_string();
                             let type_name = resolved_val_ty.type_name();
                             match type_name {
                                 Some(tn) => {
@@ -1296,7 +1307,6 @@ impl Checker {
                             }
                         }
                         // Enum-variant constructor (e.g. `Some(x)`) — always refutable.
-                        Pattern::Constructor { .. } => Some("enum variant"),
                         // Qualified and contextual nominal paths retain their source
                         // spelling in the AST, but remain refutable variant patterns.
                         Pattern::NominalPath { .. } | Pattern::ContextVariant(_) => {
@@ -1503,10 +1513,11 @@ impl Checker {
                         more_specific_hole_vars,
                     );
                 }
-                self.check_shadowing(name, span);
+                self.check_shadowing(name.name.as_str(), span);
                 self.env
-                    .define_with_span(name.clone(), val_ty, true, span.clone());
-                self.env.set_collection_borrow(name, collection_borrow);
+                    .define_with_span(name.to_string(), val_ty, true, span.clone());
+                self.env
+                    .set_collection_borrow(name.name.as_str(), collection_borrow);
                 if value_is_direct_generic_lambda {
                     if let Some(sig) = generic_sig {
                         self.lambda_poly_sig_map
@@ -1524,11 +1535,12 @@ impl Checker {
                 let receiver_target;
                 let target = match &target.0 {
                     Expr::FieldAccess { object, field } => {
-                        match self.actor_self_state_field(&object.0, field) {
+                        match self.actor_self_state_field(&object.0, field.0.name.as_str()) {
                             Some(state_field) => {
                                 let state_field = state_field.to_string();
                                 self.record_actor_self_state_field(&target.1);
-                                receiver_target = (Expr::Identifier(state_field), target.1.clone());
+                                receiver_target =
+                                    (Expr::Ident(Ident::new(&state_field)), target.1.clone());
                                 &receiver_target
                             }
                             None => target,
@@ -1550,10 +1562,14 @@ impl Checker {
                 // so that the entry is always emitted whenever the target is syntactically
                 // valid, regardless of whether subsequent type-checking finds errors.
                 let assign_target_kind: Option<AssignTargetKind> = match &target.0 {
-                    Expr::Identifier(name) => {
-                        if self.current_actor_fields.iter().any(|f| &f.name == name) {
+                    Expr::Ident(name) => {
+                        if self
+                            .current_actor_fields
+                            .iter()
+                            .any(|f| f.name == name.name.as_str())
+                        {
                             Some(AssignTargetKind::ActorField)
-                        } else if self.env.lookup_ref(name).is_some() {
+                        } else if self.env.lookup_ref(name.name.as_str()).is_some() {
                             Some(AssignTargetKind::LocalVar)
                         } else {
                             None
@@ -1627,7 +1643,8 @@ impl Checker {
                                     "cannot assign to field `{field}` of record `{name}` through \
                                     an immutable binding; declare the binding mutable or use \
                                     functional update syntax `{name} {{ {field}: <value>, ..old }}` \
-                                    instead"
+                                    instead",
+                                    field = field.0
                                 ),
                             );
                         }
@@ -1679,7 +1696,7 @@ impl Checker {
                     );
                 }
                 let root_binding_name = match &target.0 {
-                    Expr::Identifier(_) | Expr::FieldAccess { .. } | Expr::Index { .. } => {
+                    Expr::Ident(_) | Expr::FieldAccess { .. } | Expr::Index { .. } => {
                         self.assignment_root_binding_name(&target.0)
                     }
                     _ => None,
@@ -1734,7 +1751,7 @@ impl Checker {
                     .rebind_inferred_closure_binding(&target.0, value, &target_ty)
                     .unwrap_or_else(|| self.check_against(&value.0, &value.1, &target_ty));
                 let collection_borrow = self.collection_borrow_origin(&value.0, &value.1);
-                if collection_borrow.is_none() || !matches!(target.0, Expr::Identifier(_)) {
+                if collection_borrow.is_none() || !matches!(target.0, Expr::Ident(_)) {
                     self.record_value_transfer(&value.0, &value.1);
                 }
                 // An unannotated literal binding (`var best = 0`) carries a
@@ -1750,14 +1767,14 @@ impl Checker {
                 // adopts the assigned width. A second assignment at a different
                 // width then fails `check_against`'s ordinary implicit-convert
                 // gate instead of drifting.
-                if let Expr::Identifier(name) = &target.0 {
-                    if let Some(binding) = self.env.lookup_ref(name) {
+                if let Expr::Ident(name) = &target.0 {
+                    if let Some(binding) = self.env.lookup_ref(name.name.as_str()) {
                         if let binding_ty @ Ty::Var(_) = binding.ty.clone() {
                             let value_resolved = self.subst.resolve(&value_ty);
                             if self.subst.resolve(&binding_ty).is_numeric_literal()
                                 && !value_resolved.is_numeric_literal()
                                 && value_resolved.is_numeric()
-                                && !Self::numeric_update_reads_binding(&value.0, name)
+                                && !Self::numeric_update_reads_binding(&value.0, name.name.as_str())
                             {
                                 let _ = self.try_unify_inference_with_owner_identity(
                                     &value_resolved,
@@ -1780,8 +1797,8 @@ impl Checker {
                     // A deferred field's first store initializes storage that
                     // held no value (D447); HIR carries the site so SIR emits
                     // an initializing store rather than a replacement.
-                    if let Expr::Identifier(name) = &target.0 {
-                        if self.env.deferred_field_uninitialized(name) {
+                    if let Expr::Ident(name) = &target.0 {
+                        if self.env.deferred_field_uninitialized(name.name.as_str()) {
                             self.actor_init_first_stores
                                 .insert(SpanKey::in_module(&target.1, self.current_module_idx));
                         }
@@ -1805,7 +1822,7 @@ impl Checker {
                     args: _,
                 } = expr
                 {
-                    if method == "set" {
+                    if method.0.name.as_str() == "set" {
                         if let Some(name) = self
                             .assignment_root_binding_name(&receiver.0)
                             .map(str::to_string)
@@ -1863,10 +1880,10 @@ impl Checker {
             }
             Stmt::Loop { label, body } => {
                 if let Some(lbl) = label {
-                    self.loop_labels.push(lbl.clone());
+                    self.loop_labels.push(lbl.to_string());
                 }
                 self.loop_depth += 1;
-                self.env.enter_loop(label.as_deref());
+                self.env.enter_loop(label.map(|ident| ident.name.as_str()));
                 self.check_block(body, None);
                 self.exit_loop_checked();
                 self.loop_depth -= 1;
@@ -2170,10 +2187,10 @@ impl Checker {
                 self.bind_scrutinee_pattern(pattern, &elem_ty, true, None, loan);
                 self.in_for_binding = false;
                 if let Some(lbl) = label {
-                    self.loop_labels.push(lbl.clone());
+                    self.loop_labels.push(lbl.to_string());
                 }
                 self.loop_depth += 1;
-                self.env.enter_loop(label.as_deref());
+                self.env.enter_loop(label.map(|ident| ident.name.as_str()));
                 self.check_block(body, None);
                 self.exit_loop_checked();
                 self.loop_depth -= 1;
@@ -2203,10 +2220,10 @@ impl Checker {
                 }
                 self.check_against(&condition.0, &condition.1, &Ty::Bool);
                 if let Some(lbl) = label {
-                    self.loop_labels.push(lbl.clone());
+                    self.loop_labels.push(lbl.to_string());
                 }
                 self.loop_depth += 1;
-                self.env.enter_loop(label.as_deref());
+                self.env.enter_loop(label.map(|ident| ident.name.as_str()));
                 self.check_block(body, None);
                 self.exit_loop_checked();
                 self.loop_depth -= 1;
@@ -2221,10 +2238,10 @@ impl Checker {
             } => {
                 self.check_condition(conditions);
                 if let Some(lbl) = label {
-                    self.loop_labels.push(lbl.clone());
+                    self.loop_labels.push(lbl.to_string());
                 }
                 self.loop_depth += 1;
-                self.env.enter_loop(label.as_deref());
+                self.env.enter_loop(label.map(|ident| ident.name.as_str()));
                 self.check_block(body, None);
                 self.exit_loop_checked();
                 self.loop_depth -= 1;
@@ -2234,7 +2251,7 @@ impl Checker {
                 self.env.pop_scope();
             }
             Stmt::Break { label, value } => {
-                if self.reject_deferred_loop_exit(label.as_deref(), span) {
+                if self.reject_deferred_loop_exit(label.map(|ident| ident.name.as_str()), span) {
                     return;
                 }
                 if self.loop_depth == 0 {
@@ -2244,7 +2261,11 @@ impl Checker {
                         "break used outside of a loop",
                     ));
                 } else if let Some(lbl) = label {
-                    if !self.loop_labels.contains(lbl) {
+                    if !self
+                        .loop_labels
+                        .iter()
+                        .any(|label| label == lbl.name.as_str())
+                    {
                         self.errors.push(TypeError::new(
                             TypeErrorKind::InvalidOperation,
                             span.clone(),
@@ -2256,12 +2277,13 @@ impl Checker {
                     self.synthesize(val_expr, val_span);
                 }
                 if self.loop_depth > 0 {
-                    self.recheck_loop_edge_defers(label.as_deref(), span);
-                    self.env.record_loop_exit(label.as_deref());
+                    self.recheck_loop_edge_defers(label.map(|ident| ident.name.as_str()), span);
+                    self.env
+                        .record_loop_exit(label.map(|ident| ident.name.as_str()));
                 }
             }
             Stmt::Continue { label } => {
-                if self.reject_deferred_loop_exit(label.as_deref(), span) {
+                if self.reject_deferred_loop_exit(label.map(|ident| ident.name.as_str()), span) {
                     return;
                 }
                 if self.loop_depth == 0 {
@@ -2271,7 +2293,11 @@ impl Checker {
                         "continue used outside of a loop",
                     ));
                 } else if let Some(lbl) = label {
-                    if !self.loop_labels.contains(lbl) {
+                    if !self
+                        .loop_labels
+                        .iter()
+                        .any(|label| label == lbl.name.as_str())
+                    {
                         self.errors.push(TypeError::new(
                             TypeErrorKind::InvalidOperation,
                             span.clone(),
@@ -2280,8 +2306,9 @@ impl Checker {
                     }
                 }
                 if self.loop_depth > 0 {
-                    self.recheck_loop_edge_defers(label.as_deref(), span);
-                    self.env.record_loop_exit(label.as_deref());
+                    self.recheck_loop_edge_defers(label.map(|ident| ident.name.as_str()), span);
+                    self.env
+                        .record_loop_exit(label.map(|ident| ident.name.as_str()));
                 }
             }
             Stmt::Match { scrutinee, arms } => {
@@ -2375,22 +2402,31 @@ impl Checker {
 fn aggregate_holds_refutable_element(pattern: &Pattern) -> bool {
     fn is_refutable(pattern: &Pattern) -> bool {
         match pattern {
-            Pattern::Constructor { .. }
-            | Pattern::NominalPath { .. }
+            // TRANSITION(P1): deleted by A1 commit 2
+            Pattern::NominalPath {
+                path,
+                payload: Some(hew_parser::ast::NominalPatternPayload::Record { fields, .. }),
+            } if path.segments.len() == 1 => fields
+                .iter()
+                .any(|field| field.pattern.as_ref().is_some_and(|(p, _)| is_refutable(p))),
+            Pattern::NominalPath { .. }
             | Pattern::ContextVariant(_)
             | Pattern::Literal(_)
             | Pattern::Or(_, _) => true,
             Pattern::Tuple(elements) => elements.iter().any(|(inner, _)| is_refutable(inner)),
-            Pattern::Struct { fields, .. } | Pattern::RecordShorthand { fields, .. } => fields
+            Pattern::RecordShorthand { fields, .. } => fields
                 .iter()
                 .any(|field| field.pattern.as_ref().is_some_and(|(p, _)| is_refutable(p))),
             _ => false,
         }
     }
     match pattern {
-        Pattern::Tuple(_) | Pattern::Struct { .. } | Pattern::RecordShorthand { .. } => {
-            is_refutable(pattern)
-        }
+        Pattern::Tuple(_) | Pattern::RecordShorthand { .. } => is_refutable(pattern),
+        // TRANSITION(P1): deleted by A1 commit 2
+        Pattern::NominalPath {
+            path,
+            payload: Some(hew_parser::ast::NominalPatternPayload::Record { .. }),
+        } if path.segments.len() == 1 => is_refutable(pattern),
         _ => false,
     }
 }

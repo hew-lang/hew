@@ -102,7 +102,7 @@ fn test_yield_outside_generator() {
         attributes: vec![],
         is_generator: false,
         visibility: Visibility::Private,
-        name: "not_a_gen".to_string(),
+        name: Ident::new("not_a_gen"),
         type_params: None,
         params: vec![],
         return_type: None,
@@ -133,12 +133,12 @@ fn test_receive_gen_fn_returns_stream() {
 
     let receive_fn = ReceiveFnDecl {
         is_generator: true,
-        name: "numbers".to_string(),
+        name: Ident::new("numbers"),
         type_params: None,
         params: vec![],
         return_type: Some((
             TypeExpr::Named {
-                name: "i64".to_string(),
+                path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("i64"), 0..0),
                 type_args: None,
             },
             0..0,
@@ -167,7 +167,7 @@ fn test_receive_gen_fn_returns_stream() {
 
     let actor = ActorDecl {
         visibility: Visibility::Pub,
-        name: "NumberStream".to_string(),
+        name: Ident::new("NumberStream"),
         type_params: vec![],
         super_traits: None,
         init: None,
@@ -420,15 +420,18 @@ fn test_stream_annotation_resolves_to_stream_type() {
         attributes: vec![],
         is_generator: false,
         visibility: Visibility::Private,
-        name: "foo".to_string(),
+        name: Ident::new("foo"),
         type_params: None,
         params: vec![],
         return_type: Some((
             TypeExpr::Named {
-                name: "Stream".to_string(),
+                path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("Stream"), 0..0),
                 type_args: Some(vec![(
                     TypeExpr::Named {
-                        name: "i32".to_string(),
+                        path: hew_parser::ast::Path::single(
+                            hew_parser::ast::Ident::new("i32"),
+                            0..0,
+                        ),
                         type_args: None,
                     },
                     0..0,
@@ -473,15 +476,21 @@ fn test_actor_stream_name_no_longer_aliases_stream() {
         attributes: vec![],
         is_generator: false,
         visibility: Visibility::Private,
-        name: "bar".to_string(),
+        name: Ident::new("bar"),
         type_params: None,
         params: vec![],
         return_type: Some((
             TypeExpr::Named {
-                name: "ActorStream".to_string(),
+                path: hew_parser::ast::Path::single(
+                    hew_parser::ast::Ident::new("ActorStream"),
+                    0..0,
+                ),
                 type_args: Some(vec![(
                     TypeExpr::Named {
-                        name: "i32".to_string(),
+                        path: hew_parser::ast::Path::single(
+                            hew_parser::ast::Ident::new("i32"),
+                            0..0,
+                        ),
                         type_args: None,
                     },
                     0..0,
@@ -536,15 +545,18 @@ fn test_stream_canonical_name_still_resolves_after_actor_stream_removal() {
         attributes: vec![],
         is_generator: false,
         visibility: Visibility::Private,
-        name: "baz".to_string(),
+        name: Ident::new("baz"),
         type_params: None,
         params: vec![],
         return_type: Some((
             TypeExpr::Named {
-                name: "Stream".to_string(),
+                path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("Stream"), 0..0),
                 type_args: Some(vec![(
                     TypeExpr::Named {
-                        name: "i32".to_string(),
+                        path: hew_parser::ast::Path::single(
+                            hew_parser::ast::Ident::new("i32"),
+                            0..0,
+                        ),
                         type_args: None,
                     },
                     0..0,

@@ -343,14 +343,15 @@ fn load_method_specs() -> Vec<VecMethodSpec> {
         if impl_decl.trait_bound.is_some() {
             continue;
         }
-        let TypeExpr::Named { name, .. } = &impl_decl.target_type.0 else {
+        let TypeExpr::Named { path, .. } = &impl_decl.target_type.0 else {
             continue;
         };
+        let name = &path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
         if name != "Vec" {
             continue;
         }
         for method in impl_decl.methods {
-            let Some(method_kind) = VecMethod::from_name(&method.name) else {
+            let Some(method_kind) = VecMethod::from_name(method.name.name.as_str()) else {
                 continue;
             };
             let attr = method
@@ -378,7 +379,7 @@ fn load_method_specs() -> Vec<VecMethodSpec> {
             });
             specs.push(VecMethodSpec {
                 method: method_kind,
-                name: method.name,
+                name: method.name.to_string(),
                 template,
             });
         }

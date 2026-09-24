@@ -1,5 +1,6 @@
 //! Find-all-references analysis: scope-aware identifier reference collection.
 
+use hew_parser::ast::Ident;
 use std::collections::HashMap;
 
 use hew_parser::ast::{
@@ -99,10 +100,10 @@ pub fn is_top_level_name(parse_result: &ParseResult, name: &str) -> bool {
         // Also treat actor receive handler names and field names as global —
         // they can be referenced via message sends from any scope.
         if let Item::Actor(a) = item {
-            if a.receive_fns.iter().any(|r| r.name == name) {
+            if a.receive_fns.iter().any(|r| r.name == Ident::new(name)) {
                 return true;
             }
-            if a.fields.iter().any(|f| f.name == name) {
+            if a.fields.iter().any(|f| f.name == Ident::new(name)) {
                 return true;
             }
         }
@@ -110,7 +111,7 @@ pub fn is_top_level_name(parse_result: &ParseResult, name: &str) -> bool {
             if td
                 .body
                 .iter()
-                .any(|body_item| matches!(body_item, TypeBodyItem::Field { name: field_name, .. } if field_name == name))
+                .any(|body_item| matches!(body_item, TypeBodyItem::Field { name: field_name, .. } if field_name.name.as_str() == name))
             {
                 return true;
             }
@@ -245,10 +246,10 @@ fn is_cursor_on_import_binding(
         }
         if let Item::Import(decl) = item {
             if let Some(ImportSpec::Names(names)) = &decl.spec {
-                if !names
-                    .iter()
-                    .any(|n| n.name == name || n.alias.as_deref() == Some(name))
-                {
+                if !names.iter().any(|n| {
+                    n.name == Ident::new(name)
+                        || n.alias.map(|ident| ident.name.as_str()) == Some(name)
+                }) {
                     break;
                 }
                 // Confirm the cursor is inside the `{...}` spec portion, not on a
@@ -321,7 +322,7 @@ impl<'ast> AstVisitor<'ast> for BindingStartsVisitor<'_> {
             }
             Stmt::Var {
                 name: binding_name, ..
-            } if binding_name == self.name => {
+            } if binding_name.name.as_str() == self.name => {
                 // Stmt::Var carries no dedicated name-span; use the statement span.
                 self.starts.push(span.start);
             }
@@ -338,7 +339,7 @@ impl<'ast> AstVisitor<'ast> for BindingStartsVisitor<'_> {
 
     fn visit_expr(&mut self, expr: &'ast Expr, _span: &'ast Span, _ctx: VisitContext<'ast>) {
         match expr {
-            Expr::Handle { error, .. } if error.0 == self.name => {
+            Expr::Handle { error, .. } if error.0 == Ident::new(self.name) => {
                 self.starts.push(error.1.start);
             }
             Expr::IfLet { conditions, .. } => {
@@ -373,7 +374,7 @@ fn collect_import_binding_refs(parse_result: &ParseResult, name: &str, spans: &m
         .items
         .iter()
         .filter_map(|(item, item_span)| match item {
-            Item::Actor(a) if a.fields.iter().any(|field| field.name == name) => {
+            Item::Actor(a) if a.fields.iter().any(|field| field.name == Ident::new(name)) => {
                 Some(item_span.clone())
             }
             _ => None,
@@ -418,8 +419,8 @@ impl<'ast> AstVisitor<'ast> for ImportBindingRefsVisitor<'_> {
 
 fn pattern_binds_name(pattern: &Pattern, name: &str) -> bool {
     match pattern {
-        Pattern::Identifier(ident) => ident == name,
-        Pattern::Constructor { patterns, .. } | Pattern::Tuple(patterns) => patterns
+        Pattern::Identifier(ident) => ident.name.as_str() == name,
+        Pattern::Tuple(patterns) => patterns
             .iter()
             .any(|(pattern, _)| pattern_binds_name(pattern, name)),
         Pattern::NominalPath { payload, .. } => payload
@@ -429,14 +430,12 @@ fn pattern_binds_name(pattern: &Pattern, name: &str) -> bool {
             .payload
             .as_ref()
             .is_some_and(|payload| nominal_payload_binds_name(payload, name)),
-        Pattern::Struct { fields, .. } | Pattern::RecordShorthand { fields, .. } => {
-            fields.iter().any(|field| {
-                field
-                    .pattern
-                    .as_ref()
-                    .is_some_and(|(pattern, _)| pattern_binds_name(pattern, name))
-            })
-        }
+        Pattern::RecordShorthand { fields, .. } => fields.iter().any(|field| {
+            field
+                .pattern
+                .as_ref()
+                .is_some_and(|(pattern, _)| pattern_binds_name(pattern, name))
+        }),
         Pattern::Or(left, right) => {
             pattern_binds_name(&left.0, name) || pattern_binds_name(&right.0, name)
         }
@@ -494,13 +493,24 @@ impl RefsVisitor<'_> {
     fn push_pattern_matches(&mut self, pattern: &Pattern, span: &Span) {
         match pattern {
             Pattern::Identifier(ident) => {
-                if ident == self.name {
+                if ident.name.as_str() == self.name {
                     self.spans.push(span.clone());
                 }
             }
-            Pattern::Constructor { patterns, .. } | Pattern::Tuple(patterns) => {
+            Pattern::Tuple(patterns) => {
                 for (p, s) in patterns {
                     self.push_pattern_matches(p, s);
+                }
+            }
+            // TRANSITION(P1): deleted by A1 commit 2
+            Pattern::NominalPath {
+                path,
+                payload: Some(hew_parser::ast::NominalPatternPayload::Record { fields, .. }),
+            } if path.segments.len() == 1 => {
+                for field in fields {
+                    if let Some((p, s)) = &field.pattern {
+                        self.push_pattern_matches(p, s);
+                    }
                 }
             }
             Pattern::NominalPath { payload, .. } => {
@@ -513,7 +523,7 @@ impl RefsVisitor<'_> {
                     self.push_nominal_payload_matches(payload, span);
                 }
             }
-            Pattern::Struct { fields, .. } | Pattern::RecordShorthand { fields, .. } => {
+            Pattern::RecordShorthand { fields, .. } => {
                 for field in fields {
                     if let Some((p, s)) = &field.pattern {
                         self.push_pattern_matches(p, s);
@@ -550,7 +560,7 @@ impl RefsVisitor<'_> {
                 for field in fields {
                     if let Some((pattern, pattern_span)) = &field.pattern {
                         self.push_pattern_matches(pattern, pattern_span);
-                    } else if field.name == self.name {
+                    } else if field.name == Ident::new(self.name) {
                         self.spans.push(span.clone());
                     }
                 }
@@ -583,22 +593,25 @@ impl<'ast> AstVisitor<'ast> for RefsVisitor<'_> {
 
     fn visit_expr(&mut self, expr: &'ast Expr, span: &'ast Span, _ctx: VisitContext<'ast>) {
         match expr {
-            Expr::Handle { error, .. } if error.0 == self.name => {
+            Expr::Handle { error, .. } if error.0 == Ident::new(self.name) => {
                 self.spans.push(error.1.clone());
             }
-            Expr::FieldAccess { field, .. } if field == self.name => {
-                self.spans
-                    .push(field_access_name_span(self.source, span, field));
+            Expr::FieldAccess { field, .. } if field.0.name.as_str() == self.name => {
+                self.spans.push(field_access_name_span(
+                    self.source,
+                    span,
+                    field.0.name.as_str(),
+                ));
             }
             Expr::StructInit { fields, .. } => {
                 let mut search_from = span.start;
                 for (field, val) in fields {
-                    if field == self.name {
+                    if field.name.as_str() == self.name {
                         if let Some(field_span) = struct_init_field_name_span(
                             self.source,
                             span,
                             search_from,
-                            field,
+                            field.name.as_str(),
                             &val.1,
                         ) {
                             self.spans.push(field_span);
@@ -841,8 +854,8 @@ fn count_idents_in_stmt(stmt: &Stmt, counts: &mut HashMap<String, usize>) {
 )]
 fn count_idents_in_expr(expr: &Expr, counts: &mut HashMap<String, usize>) {
     match expr {
-        Expr::Identifier(ident) => {
-            *counts.entry(ident.clone()).or_insert(0) += 1;
+        Expr::Ident(ident) => {
+            *counts.entry(ident.to_string()).or_insert(0) += 1;
         }
         Expr::Binary { left, right, .. }
         | Expr::Coalesce { left, right }
@@ -1419,7 +1432,7 @@ mod tests {
             1,
             "child w must have 1 named arg"
         );
-        assert_eq!(sup.children[0].args[0].0, "init");
+        assert_eq!(sup.children[0].args[0].0, Ident::new("init"));
     }
 
     #[test]

@@ -11,6 +11,7 @@
 //! must build a per-monomorphisation rewrite table (symbolic case).
 
 use hew_hir::{lower_program, HirItem, HirStmtKind, ResolutionCtx};
+use hew_parser::ast::Ident;
 use hew_parser::ast::Item;
 use hew_types::module_registry::ModuleRegistry;
 use hew_types::{Checker, SpanKey};
@@ -55,7 +56,7 @@ fn probe_trait_method_inside_generic_free_fn_rewrite() {
     let mut inner_call_span = None;
     for (item, _) in &parsed.program.items {
         if let Item::Function(fd) = item {
-            if fd.name == "describe" && fd.type_params.is_some() {
+            if fd.name == Ident::new("describe") && fd.type_params.is_some() {
                 if let Some(boxed) = fd.body.trailing_expr.as_ref() {
                     let (expr, span) = &**boxed;
                     if let hew_parser::ast::Expr::MethodCall { .. } = expr {

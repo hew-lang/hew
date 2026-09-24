@@ -158,7 +158,7 @@ fn expr_contains_defer(expr: &Expr) -> bool {
         | Expr::ReturnError(operand)
         | Expr::Clone(operand) => expr_contains_defer(&operand.0),
         Expr::Literal(_)
-        | Expr::Identifier(_)
+        | Expr::Ident(_)
         | Expr::QualifiedAssoc(_)
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
@@ -395,7 +395,7 @@ fn mark_expr(expr: &mut Expr, is_tail_position: bool) {
             mark_expr(&mut operand.0, false);
         }
         Expr::Literal(_)
-        | Expr::Identifier(_)
+        | Expr::Ident(_)
         | Expr::QualifiedAssoc(_)
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)

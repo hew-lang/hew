@@ -29,6 +29,7 @@
 //! - neither `i` nor `xs` may be reassigned or shadowed inside the body;
 //! - at least one real `xs[i]` / `xs.get(i)` access must be present.
 
+use hew_parser::ast::Ident;
 use hew_parser::ast::{
     condition_exprs, BinaryOp, Block, CallArg, ConditionItem, ElseBlock, Expr, Literal, MatchArm,
     Pattern, SelectArm, Spanned, Stmt, StringPart,
@@ -279,10 +280,10 @@ fn try_flag(
     else {
         return;
     };
-    if method != "len" || !args.is_empty() {
+    if method.0.name.as_str() != "len" || !args.is_empty() {
         return;
     }
-    let Expr::Identifier(coll) = &receiver.0 else {
+    let Expr::Ident(coll) = &receiver.0 else {
         return;
     };
     // `coll` must be a collection where direct iteration is executable and
@@ -300,8 +301,8 @@ fn try_flag(
     }
 
     let mut scan = BodyScan {
-        idx: idx.as_str(),
-        coll: coll.as_str(),
+        idx: idx.name.as_str(),
+        coll: coll.name.as_str(),
         ok: true,
         accesses: 0,
     };
@@ -310,7 +311,7 @@ fn try_flag(
         return;
     }
 
-    let elem = suggested_elem_name(coll);
+    let elem = suggested_elem_name(coll.name.as_str());
     ctx.emit(
         levels,
         LintId::NeedlessRangeLoop,
@@ -415,7 +416,7 @@ impl BodyScan<'_> {
                 }
             }
             Stmt::Var { name, value, .. } => {
-                if name == self.idx || name == self.coll {
+                if name.name.as_str() == self.idx || name.name.as_str() == self.coll {
                     self.ok = false;
                     return;
                 }
@@ -548,8 +549,8 @@ impl BodyScan<'_> {
             return;
         }
         match expr {
-            Expr::Identifier(name) => {
-                if name == self.idx || name == self.coll {
+            Expr::Ident(name) => {
+                if name.name.as_str() == self.idx || name.name.as_str() == self.coll {
                     self.ok = false;
                 }
             }
@@ -665,7 +666,7 @@ impl BodyScan<'_> {
             Expr::Lambda { params, body, .. } => {
                 if params
                     .iter()
-                    .any(|p| p.name == self.idx || p.name == self.coll)
+                    .any(|p| p.name == Ident::new(self.idx) || p.name == Ident::new(self.coll))
                 {
                     self.ok = false;
                     return;
@@ -675,7 +676,7 @@ impl BodyScan<'_> {
             Expr::SpawnLambdaActor { params, body, .. } => {
                 if params
                     .iter()
-                    .any(|p| p.name == self.idx || p.name == self.coll)
+                    .any(|p| p.name == Ident::new(self.idx) || p.name == Ident::new(self.coll))
                 {
                     self.ok = false;
                     return;
@@ -787,12 +788,12 @@ impl BodyScan<'_> {
                 method,
                 args,
             } => {
-                method == "get"
+                method.0.name.as_str() == "get"
                     && is_ident(&receiver.0, self.coll)
                     && args.len() == 1
                     && matches!(
                         &args[0],
-                        CallArg::Positional((Expr::Identifier(name), _)) if name == self.idx
+                        CallArg::Positional((Expr::Ident(name), _)) if name.name.as_str() == self.idx
                     )
             }
             _ => false,
@@ -817,16 +818,14 @@ impl BodyScan<'_> {
 }
 
 fn is_ident(expr: &Expr, name: &str) -> bool {
-    matches!(expr, Expr::Identifier(n) if n == name)
+    matches!(expr, Expr::Ident(n) if n.name.as_str() == name)
 }
 
 /// Whether `pattern` introduces a binding named `name`.
 fn pattern_binds(pattern: &Pattern, name: &str) -> bool {
     match pattern {
-        Pattern::Identifier(n) => n == name,
-        Pattern::Constructor { patterns, .. } | Pattern::Tuple(patterns) => {
-            patterns.iter().any(|p| pattern_binds(&p.0, name))
-        }
+        Pattern::Identifier(n) => n.name.as_str() == name,
+        Pattern::Tuple(patterns) => patterns.iter().any(|p| pattern_binds(&p.0, name)),
         Pattern::NominalPath { payload, .. } => payload
             .as_ref()
             .is_some_and(|payload| nominal_payload_binds(payload, name)),
@@ -834,10 +833,10 @@ fn pattern_binds(pattern: &Pattern, name: &str) -> bool {
             .payload
             .as_ref()
             .is_some_and(|payload| nominal_payload_binds(payload, name)),
-        Pattern::Struct { fields, .. } | Pattern::RecordShorthand { fields, .. } => {
+        Pattern::RecordShorthand { fields, .. } => {
             fields.iter().any(|field| match &field.pattern {
                 Some(sub) => pattern_binds(&sub.0, name),
-                None => field.name == name,
+                None => field.name == Ident::new(name),
             })
         }
         Pattern::Or(a, b) => pattern_binds(&a.0, name) || pattern_binds(&b.0, name),
@@ -855,7 +854,7 @@ fn nominal_payload_binds(payload: &hew_parser::ast::NominalPatternPayload, name:
                 field
                     .pattern
                     .as_ref()
-                    .map_or(field.name == name, |pattern| {
+                    .map_or(field.name == Ident::new(name), |pattern| {
                         pattern_binds(&pattern.0, name)
                     })
             })
@@ -868,7 +867,7 @@ fn nominal_payload_binds(payload: &hew_parser::ast::NominalPatternPayload, name:
 /// field access), so unexpected shapes conservatively count as a mention.
 fn expr_mentions(idx: &str, coll: &str, expr: &Expr) -> bool {
     match expr {
-        Expr::Identifier(name) => name == idx || name == coll,
+        Expr::Ident(name) => name.name.as_str() == idx || name.name.as_str() == coll,
         Expr::Index { object, index } => {
             expr_mentions(idx, coll, &object.0) || expr_mentions(idx, coll, &index.0)
         }

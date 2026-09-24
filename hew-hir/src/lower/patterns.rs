@@ -1,6 +1,7 @@
 //! Pattern flattening, match-arm planning and destructuring lowering.
 
 use super::*;
+use hew_parser::ast::Ident;
 
 /// Flatten a (potentially nested) `Pattern::Or` tree into its leaf patterns,
 /// preserving source spans. A pattern that is not an `Or` returns a
@@ -20,7 +21,7 @@ pub(super) fn flatten_or_pattern(pattern: &Spanned<Pattern>) -> Vec<Spanned<Patt
 }
 
 pub(super) fn nominal_path_leaf(path: &hew_parser::ast::Path) -> Option<&str> {
-    path.segments.last().map(String::as_str)
+    path.segments.last().map(|(ident, _)| ident.name.as_str())
 }
 
 /// Recursively push `id`'s leaves into `out`: a synthetic aggregate carrier
@@ -187,7 +188,12 @@ pub(super) fn collect_match_payload_predicates(
     scrutinee_ty: &ResolvedTy,
 ) -> Result<Vec<HirPayloadPredicate>, String> {
     match &pattern.0 {
-        Pattern::Constructor { name, patterns } => {
+        // TRANSITION(P1): deleted by A1 commit 2
+        Pattern::NominalPath {
+            path: one_path,
+            payload: Some(hew_parser::ast::NominalPatternPayload::Tuple(patterns)),
+        } if one_path.segments.len() == 1 => {
+            let name = &one_path.to_string();
             let field_tys =
                 ctx.instantiated_pattern_payload_types(name, scrutinee_ty, patterns.len())?;
             Ok(patterns
@@ -210,7 +216,11 @@ pub(super) fn collect_match_payload_predicates(
                 })
                 .collect())
         }
-        Pattern::Struct { .. } => {
+        // TRANSITION(P1): deleted by A1 commit 2
+        Pattern::NominalPath {
+            path: one_path,
+            payload: Some(hew_parser::ast::NominalPatternPayload::Record { .. }),
+        } if one_path.segments.len() == 1 => {
             let key = ctx.mk_key(&pattern.1);
             let plan = ctx.pattern_plans.get(&key).ok_or_else(|| {
                 "checker did not provide a PatternPlan for record literal predicates".to_string()
@@ -323,7 +333,7 @@ pub(super) fn collect_match_payload_predicates(
             None => Ok(Vec::new()),
             Some(hew_parser::ast::NominalPatternPayload::Tuple(patterns)) => {
                 let field_tys = ctx.instantiated_pattern_payload_types(
-                    &context.name,
+                    context.name.name.as_str(),
                     scrutinee_ty,
                     patterns.len(),
                 )?;
@@ -388,7 +398,13 @@ pub(super) fn constructor_payload_aggregate_subpatterns(pattern: &Pattern) -> bo
         return false;
     };
     patterns.iter().any(|(sub_pat, _)| {
-        matches!(sub_pat, Pattern::Struct { .. })
+        matches!(
+            sub_pat,
+            Pattern::NominalPath {
+                path,
+                payload: Some(hew_parser::ast::NominalPatternPayload::Record { .. }),
+            } if path.segments.len() == 1
+        ) // TRANSITION(P1): deleted by A1 commit 2
             || matches!(sub_pat, Pattern::Tuple(items) if !items.is_empty())
     })
 }
@@ -411,7 +427,13 @@ pub(super) fn struct_variant_payload_aggregate_subpatterns(pattern: &Pattern) ->
     };
     fields.iter().any(|pf| match &pf.pattern {
         Some((sub_pat, _)) => {
-            matches!(sub_pat, Pattern::Struct { .. })
+            matches!(
+            sub_pat,
+            Pattern::NominalPath {
+                path,
+                payload: Some(hew_parser::ast::NominalPatternPayload::Record { .. }),
+            } if path.segments.len() == 1
+        ) // TRANSITION(P1): deleted by A1 commit 2
                 || matches!(sub_pat, Pattern::Tuple(items) if !items.is_empty())
         }
         None => false,
@@ -422,14 +444,13 @@ pub(super) fn tuple_variant_pattern_parts(
     pattern: &Pattern,
 ) -> Option<(&str, &[Spanned<Pattern>])> {
     match pattern {
-        Pattern::Constructor { name, patterns } => Some((name, patterns)),
         Pattern::NominalPath {
             path,
             payload: Some(hew_parser::ast::NominalPatternPayload::Tuple(patterns)),
         } => Some((nominal_path_leaf(path)?, patterns)),
         Pattern::ContextVariant(context) => match context.payload.as_ref() {
             Some(hew_parser::ast::NominalPatternPayload::Tuple(patterns)) => {
-                Some((&context.name, patterns))
+                Some((context.name.name.as_str(), patterns))
             }
             _ => None,
         },
@@ -441,14 +462,13 @@ pub(super) fn struct_variant_pattern_parts(
     pattern: &Pattern,
 ) -> Option<(&str, &[hew_parser::ast::PatternField])> {
     match pattern {
-        Pattern::Struct { name, fields, .. } => Some((name, fields)),
         Pattern::NominalPath {
             path,
             payload: Some(hew_parser::ast::NominalPatternPayload::Record { fields, .. }),
         } => Some((nominal_path_leaf(path)?, fields)),
         Pattern::ContextVariant(context) => match context.payload.as_ref() {
             Some(hew_parser::ast::NominalPatternPayload::Record { fields, .. }) => {
-                Some((&context.name, fields))
+                Some((context.name.name.as_str(), fields))
             }
             _ => None,
         },
@@ -467,7 +487,7 @@ impl LowerCtx {
     ) {
         match &pattern.0 {
             Pattern::Identifier(name) => {
-                self.push_pattern_binding_stmt(name.clone(), value_ty, value, stmts, span);
+                self.push_pattern_binding_stmt(name.to_string(), value_ty, value, stmts, span);
             }
             Pattern::Wildcard => {
                 let name = format!("_{}", stmts.len());
@@ -476,11 +496,16 @@ impl LowerCtx {
             Pattern::Tuple(elements) => {
                 self.lower_tuple_pattern_value_into_stmts(elements, value, &value_ty, stmts, span);
             }
-            Pattern::Struct { fields, .. } | Pattern::RecordShorthand { fields, .. } => {
+            Pattern::RecordShorthand { fields, .. } => {
                 self.lower_record_pattern_value_into_stmts(fields, value, &value_ty, stmts, span);
             }
-            Pattern::Constructor { .. }
-            | Pattern::Literal(_)
+            Pattern::NominalPath {
+                path,
+                payload: Some(hew_parser::ast::NominalPatternPayload::Record { fields, .. }),
+            } if path.segments.len() == 1 => {
+                self.lower_record_pattern_value_into_stmts(fields, value, &value_ty, stmts, span);
+            }
+            Pattern::Literal(_)
             | Pattern::Or(_, _)
             | Pattern::Regex { .. }
             | Pattern::NominalPath { .. }
@@ -527,13 +552,19 @@ impl LowerCtx {
         ty: ResolvedTy,
     ) -> (Option<HirBinding>, bool) {
         let (name, nested) = match &pattern.0 {
-            Pattern::Identifier(name) => (name.clone(), false),
+            Pattern::Identifier(name) => (name.to_string(), false),
             Pattern::Wildcard => return (None, false),
-            Pattern::Tuple(_) | Pattern::Struct { .. } | Pattern::RecordShorthand { .. } => {
+            Pattern::Tuple(_) | Pattern::RecordShorthand { .. } => {
                 (format!("__destructure_{}", self.ids.binding().0), true)
             }
-            Pattern::Constructor { .. }
-            | Pattern::Literal(_)
+            // TRANSITION(P1): deleted by A1 commit 2
+            Pattern::NominalPath {
+                path,
+                payload: Some(hew_parser::ast::NominalPatternPayload::Record { .. }),
+            } if path.segments.len() == 1 => {
+                (format!("__destructure_{}", self.ids.binding().0), true)
+            }
+            Pattern::Literal(_)
             | Pattern::Or(_, _)
             | Pattern::Regex { .. }
             | Pattern::NominalPath { .. }
@@ -674,7 +705,7 @@ impl LowerCtx {
             };
             let field_pattern = match field.sub {
                 hew_types::PlanSub::Binding(name) => {
-                    (Pattern::Identifier(name), field.span.clone())
+                    (Pattern::Identifier(Ident::new(&name)), field.span.clone())
                 }
                 hew_types::PlanSub::Wildcard => (Pattern::Wildcard, field.span.clone()),
                 hew_types::PlanSub::Literal(literal) => {
@@ -683,7 +714,7 @@ impl LowerCtx {
                 hew_types::PlanSub::Nested(_) => {
                     let Some(source_pattern) = fields
                         .iter()
-                        .find(|source| source.name == field.name)
+                        .find(|source| source.name == Ident::new(&field.name))
                         .and_then(|source| source.pattern.clone())
                     else {
                         self.diagnostics.push(HirDiagnostic::new(
@@ -830,7 +861,13 @@ impl LowerCtx {
             })
             .unwrap_or_default();
         for (field_idx, (sub_pat, sub_span)) in sub_patterns.iter().enumerate() {
-            if !matches!(sub_pat, Pattern::Struct { .. })
+            if !matches!(
+            sub_pat,
+            Pattern::NominalPath {
+                path,
+                payload: Some(hew_parser::ast::NominalPatternPayload::Record { .. }),
+            } if path.segments.len() == 1
+        ) // TRANSITION(P1): deleted by A1 commit 2
                 && !matches!(sub_pat, Pattern::Tuple(items) if !items.is_empty())
             {
                 continue;
@@ -933,7 +970,13 @@ impl LowerCtx {
             let Some((sub_pat, sub_span)) = &pf.pattern else {
                 continue;
             };
-            if !matches!(sub_pat, Pattern::Struct { .. })
+            if !matches!(
+            sub_pat,
+            Pattern::NominalPath {
+                path,
+                payload: Some(hew_parser::ast::NominalPatternPayload::Record { .. }),
+            } if path.segments.len() == 1
+        ) // TRANSITION(P1): deleted by A1 commit 2
                 && !matches!(sub_pat, Pattern::Tuple(items) if !items.is_empty())
             {
                 continue;
@@ -941,7 +984,7 @@ impl LowerCtx {
             let Some((field_idx, field_ty)) = field_decls
                 .iter()
                 .enumerate()
-                .find(|(_, (name, _))| name == &pf.name)
+                .find(|(_, (name, _))| name == pf.name.name.as_str())
                 .map(|(idx, (_, ty))| (idx, ty.clone()))
             else {
                 continue;
@@ -1130,7 +1173,7 @@ impl LowerCtx {
                     // Plain lowercase-identifier pattern (`x => ...`).
                     // The scrutinee's full value is bound to `x` in the arm body.
                     let name = if let Pattern::Identifier(n) = &arm.pattern.0 {
-                        n.clone()
+                        *n
                     } else {
                         // Checker contract: Binding resolution must come from
                         // an Identifier pattern.
@@ -1150,7 +1193,7 @@ impl LowerCtx {
                     let binding_id = self.ids.binding();
                     HirMatchArmPredicate::Binding {
                         binding_id,
-                        name,
+                        name: name.to_string(),
                         ty,
                     }
                 }

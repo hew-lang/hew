@@ -1126,15 +1126,16 @@ pub fn validate_imports_against_manifest(
     let mut errors = Vec::new();
     for (item, _) in items {
         let Item::Import(decl) = item else { continue };
-        if decl.file_path.is_some() || decl.path.is_empty() {
+        if decl.file_path.is_some() || decl.path.segments.is_empty() {
             continue;
         }
-        let module_str = decl.path.join("::");
-        let source_module = decl.path.join(".");
+        let segments = import_segments(&decl.path);
+        let module_str = segments.join("::");
+        let source_module = segments.join(".");
         if is_builtin_module(&module_str) {
             continue;
         }
-        if package_name.is_some_and(|pkg| decl.path.first().is_some_and(|seg| seg == pkg)) {
+        if package_name.is_some_and(|pkg| segments.first().is_some_and(|seg| *seg == pkg)) {
             continue;
         }
         if !manifest_deps
@@ -1305,7 +1306,7 @@ fn directory_module_entry_for_peer(
         .items
         .iter()
         .filter_map(|(item, _)| match item {
-            Item::Trait(decl) => Some(decl.name.as_str()),
+            Item::Trait(decl) => Some(decl.name.name.as_str()),
             _ => None,
         })
         .collect::<HashSet<_>>();
@@ -1323,7 +1324,7 @@ fn directory_module_entry_for_peer(
         .items
         .iter()
         .filter_map(|(item, _)| match item {
-            Item::Trait(decl) => Some(decl.name.as_str()),
+            Item::Trait(decl) => Some(decl.name.name.as_str()),
             _ => None,
         })
         .collect::<HashSet<_>>();
@@ -1332,8 +1333,8 @@ fn directory_module_entry_for_peer(
             return false;
         };
         decl.trait_bound.as_ref().is_some_and(|bound| {
-            entry_traits.contains(bound.name.as_str())
-                && !local_traits.contains(bound.name.as_str())
+            entry_traits.contains(bound.path.to_string().as_str()) // TRANSITION(P1): deleted by A1 commit 2
+                && !local_traits.contains(bound.path.to_string().as_str()) // TRANSITION(P1): deleted by A1 commit 2
         })
     });
     if !needs_entry_trait {
@@ -1357,7 +1358,9 @@ fn import_directory_module_entry_for_peer(
 fn file_import(file_path: String) -> Spanned<Item> {
     (
         Item::Import(ImportDecl {
-            path: Vec::new(),
+            path: hew_parser::ast::Path {
+                segments: Vec::new(),
+            },
             spec: None,
             selection_trailing_comma: false,
             module_alias: None,
@@ -1532,13 +1535,13 @@ fn build_module_source_map(program: &Program, documents: &DocumentSet) -> Module
         let Some(path) = module.source_paths.first() else {
             // A prelude module attached without a search path carries its
             // compiled-in source instead.
-            if let [std, leaf] = mod_id.path.as_slice() {
+            if let [std, leaf] = mod_id.segments.as_slice() {
                 if let Some((_, text)) = COMPILED_PRELUDE_STD_SOURCES
                     .iter()
-                    .find(|(name, _)| std == "std" && name == leaf)
+                    .find(|(name, _)| std.as_str() == "std" && *name == leaf.as_str())
                 {
                     map.insert(
-                        mod_id.path.join("."),
+                        mod_id.dotted(),
                         ((*text).to_string(), format!("std/{leaf}.hew")),
                     );
                 }
@@ -1546,7 +1549,7 @@ fn build_module_source_map(program: &Program, documents: &DocumentSet) -> Module
             continue;
         };
         if let Ok(text) = read_source(documents, path) {
-            map.insert(mod_id.path.join("."), (text, display_path(path)));
+            map.insert(mod_id.dotted(), (text, display_path(path)));
         }
         // Per-file routing entries (rc1-F1 stage C): a directory module's
         // item spans are file-relative offsets, so the checker routes a
@@ -1853,20 +1856,20 @@ pub fn inject_implicit_imports(items: &mut Vec<Spanned<Item>>, source: &str) {
         .iter()
         .filter_map(|(item, _)| {
             if let Item::Import(decl) = item {
-                if !decl.path.is_empty() {
-                    return Some(decl.path.join("::"));
+                if !decl.path.segments.is_empty() {
+                    return Some(import_segments(&decl.path).join("::"));
                 }
             }
             None
         })
         .collect::<HashSet<_>>();
 
-    let mut needed: Vec<Vec<String>> = Vec::new();
+    let mut needed: Vec<&[&str]> = Vec::new();
     if source_contains_regex_literal(source) {
-        let path = ["std", "text", "regex"];
+        let path: &[&str] = &["std", "text", "regex"];
         let key = path.join("::");
         if !existing.contains(&key) {
-            needed.push(path.iter().map(|segment| (*segment).to_string()).collect());
+            needed.push(path);
         }
     }
 
@@ -1876,7 +1879,7 @@ pub fn inject_implicit_imports(items: &mut Vec<Spanned<Item>>, source: &str) {
         if seen.insert(key) {
             items.push((
                 Item::Import(ImportDecl {
-                    path,
+                    path: hew_parser::ast::Path::from_spellings(path),
                     spec: None,
                     selection_trailing_comma: false,
                     module_alias: None,
@@ -1904,13 +1907,13 @@ fn inject_prelude_module_loads(items: &mut Vec<Spanned<Item>>, input: &Path) {
     let path = ["std", "link_monitor"];
     let already_imported = items
         .iter()
-        .any(|(item, _)| matches!(item, Item::Import(decl) if decl.path == path));
+        .any(|(item, _)| matches!(item, Item::Import(decl) if import_segments(&decl.path) == path));
     if already_imported {
         return;
     }
     items.push((
         Item::Import(ImportDecl {
-            path: path.iter().map(|segment| (*segment).to_string()).collect(),
+            path: hew_parser::ast::Path::from_spellings(&path),
             spec: Some(hew_parser::ast::ImportSpec::Names(Vec::new())),
             selection_trailing_comma: false,
             module_alias: None,
@@ -1928,7 +1931,7 @@ fn source_contains_regex_literal(source: &str) -> bool {
         .any(|(token, _)| matches!(token, hew_lexer::Token::RegexLiteral(_)))
 }
 
-fn module_id_from_file(source_dir: &Path, canonical_path: &Path) -> hew_parser::module::ModuleId {
+fn module_id_from_file(source_dir: &Path, canonical_path: &Path) -> hew_parser::module::ModulePath {
     let without_ext = canonical_path.with_extension("");
     let rel = without_ext.strip_prefix(source_dir).unwrap_or(&without_ext);
     let mut segments = rel
@@ -1947,7 +1950,7 @@ fn module_id_from_file(source_dir: &Path, canonical_path: &Path) -> hew_parser::
         );
     }
 
-    hew_parser::module::ModuleId::new(segments)
+    hew_parser::module::ModulePath::new(segments)
 }
 
 /// Resolve a module import of a directory peer through that directory's
@@ -1997,7 +2000,7 @@ enum CandidateForm {
 /// DIRECTORY candidate instead: `std.crypto.crypto` is
 /// `std/crypto/crypto/crypto.hew`, and a module named after its own package
 /// (`probe.probe` at `probe/src/probe/probe.hew`) resolves the same way.
-fn is_directory_module_entry_alias(path: &[String], canonical: &Path, form: CandidateForm) -> bool {
+fn is_directory_module_entry_alias(path: &[&str], canonical: &Path, form: CandidateForm) -> bool {
     let Some((last, rest)) = path.split_last() else {
         return false;
     };
@@ -2006,13 +2009,20 @@ fn is_directory_module_entry_alias(path: &[String], canonical: &Path, form: Cand
         && canonical.file_stem() == canonical.parent().and_then(Path::file_name)
 }
 
+/// The spelled segments of a module import path. Mapping a module path onto
+/// source files is the one place a segment is needed as text.
+fn import_segments(path: &hew_parser::ast::Path) -> Vec<&'static str> {
+    path.segments
+        .iter()
+        .map(|(segment, _)| segment.name.as_str())
+        .collect()
+}
+
 fn canonical_direct_stdlib_module_for_source(
     source_file: &Path,
-) -> Option<hew_parser::module::ModuleId> {
+) -> Option<hew_parser::module::ModulePath> {
     let dotted = hew_types::module_registry::canonical_stdlib_module_for_source(source_file)?;
-    Some(hew_parser::module::ModuleId::new(
-        dotted.split('.').map(String::from).collect(),
-    ))
+    Some(hew_parser::module::ModulePath::new(dotted.split('.')))
 }
 
 /// Render a module-graph [`CycleError`](hew_parser::module::CycleError) into a
@@ -2136,7 +2146,7 @@ fn rewrite_direct_stdlib_module_root(
     manifest_project_dir: Option<&Path>,
     documents: &DocumentSet,
 ) -> Result<(), FrontendFailure> {
-    use hew_parser::module::{Module, ModuleId};
+    use hew_parser::module::{Module, ModulePath};
 
     let Some(stdlib_id) = canonical_direct_stdlib_module_for_source(source_file) else {
         return Ok(());
@@ -2148,7 +2158,7 @@ fn rewrite_direct_stdlib_module_root(
     };
 
     stdlib_module.id = stdlib_id.clone();
-    module_graph.root = ModuleId::root();
+    module_graph.root = ModulePath::root();
     module_graph.modules.insert(stdlib_id, stdlib_module);
     module_graph
         .add_module(Module {
@@ -2175,7 +2185,7 @@ fn build_module_graph_with_diagnostics(
     diagnostics: &mut Vec<FrontendDiagnostic>,
     mode: FrontendParseMode,
 ) -> Result<hew_parser::module::ModuleGraph, FrontendFailure> {
-    use hew_parser::module::{Module, ModuleGraph, ModuleId};
+    use hew_parser::module::{Module, ModuleGraph, ModulePath};
 
     let input_canonical =
         std::fs::canonicalize(source_file).unwrap_or_else(|_| source_file.to_path_buf());
@@ -2189,7 +2199,7 @@ fn build_module_graph_with_diagnostics(
 
     let root_id = module_id_from_file(source_dir, &input_canonical);
     let mut graph = ModuleGraph::new(root_id.clone());
-    let mut seen_ids: HashSet<ModuleId> = HashSet::from([root_id.clone()]);
+    let mut seen_ids: HashSet<ModulePath> = HashSet::from([root_id.clone()]);
 
     let root_imports = extract_module_info(
         items,
@@ -2271,9 +2281,9 @@ fn build_module_graph_with_diagnostics(
 /// Never in practice: the root module is added to a freshly created graph,
 /// and the compiled-in prelude sources parse.
 pub fn attach_prelude_std_modules(program: &mut Program) {
-    use hew_parser::module::{Module, ModuleGraph, ModuleId};
+    use hew_parser::module::{Module, ModuleGraph, ModulePath};
     let graph = program.module_graph.get_or_insert_with(|| {
-        let root = ModuleId::root();
+        let root = ModulePath::root();
         let mut graph = ModuleGraph::new(root.clone());
         graph
             .add_module(Module {
@@ -2306,9 +2316,9 @@ fn add_prelude_std_modules(
     graph: &mut hew_parser::module::ModuleGraph,
     mut source_for: impl FnMut(&str) -> Result<(Option<PathBuf>, String), FrontendFailure>,
 ) -> Result<(), FrontendFailure> {
-    use hew_parser::module::{Module, ModuleId};
+    use hew_parser::module::{Module, ModulePath};
     for (name, _) in COMPILED_PRELUDE_STD_SOURCES {
-        let id = ModuleId::new(vec!["std".to_string(), name.to_string()]);
+        let id = ModulePath::new(["std", name]);
         if graph.modules.contains_key(&id) {
             continue;
         }
@@ -2340,7 +2350,8 @@ fn add_prelude_std_modules(
                     || matches!(item, Item::Impl(decl) if decl
                         .trait_bound
                         .as_ref()
-                        .is_some_and(|bound| bound.name == "Display"))
+                        .is_some_and(|bound| bound.path.to_string() == "Display"))
+                // TRANSITION(P1): deleted by A1 commit 2
             })
             .collect();
         graph
@@ -2415,16 +2426,15 @@ fn check_ambiguous_module_import_bindings(
             let Item::Import(import) = item else {
                 continue;
             };
-            if import.path.is_empty() || import.spec.is_some() {
+            if import.path.segments.is_empty() || import.spec.is_some() {
                 continue;
             }
-            let source = import.path.join(".");
+            let source = import_segments(&import.path).join(".");
             let binding = import
                 .module_alias
-                .clone()
-                .or_else(|| import.path.last().cloned())
+                .or_else(|| import.path.last())
                 .expect("non-file module imports have a path");
-            if let Some(existing) = seen.insert(binding.clone(), source.clone()) {
+            if let Some(existing) = seen.insert(binding.to_string(), source.clone()) {
                 if existing != source {
                     return Err(format!(
                         "Error: module `{}` imports both `{existing}` and `{source}` \
@@ -2459,7 +2469,7 @@ fn check_duplicate_actor_layout_names(
         let mut seen: HashSet<&str> = HashSet::new();
         for (item, _) in &module.items {
             let Item::Actor(actor) = item else { continue };
-            if !seen.insert(actor.name.as_str()) {
+            if !seen.insert(actor.name.name.as_str()) {
                 let owner = describe_actor_module(mod_id, graph);
                 return Err(format!(
                     "Error: {owner} declares two actors named `{}`; the \
@@ -2477,7 +2487,7 @@ fn check_duplicate_actor_layout_names(
 /// Render a module id for the duplicate-actor diagnostic, naming the root
 /// program explicitly instead of the bare `(root)` placeholder.
 fn describe_actor_module(
-    id: &hew_parser::module::ModuleId,
+    id: &hew_parser::module::ModulePath,
     graph: &hew_parser::module::ModuleGraph,
 ) -> String {
     if *id == graph.root {
@@ -2523,7 +2533,7 @@ fn flatten_file_import_items(program: &mut Program) {
 fn graph_module_for_source(
     graph: &hew_parser::module::ModuleGraph,
     source: &Path,
-) -> Option<hew_parser::module::ModuleId> {
+) -> Option<hew_parser::module::ModulePath> {
     let key = std::fs::canonicalize(source).unwrap_or_else(|_| source.to_path_buf());
     graph
         .modules
@@ -2548,19 +2558,19 @@ fn extract_module_info(
     current_source: &Path,
     source_dir: &Path,
     root_source: &Path,
-    root_id: &hew_parser::module::ModuleId,
+    root_id: &hew_parser::module::ModulePath,
     documents: &DocumentSet,
     graph: &mut hew_parser::module::ModuleGraph,
-    seen_ids: &mut HashSet<hew_parser::module::ModuleId>,
+    seen_ids: &mut HashSet<hew_parser::module::ModulePath>,
 ) -> Vec<hew_parser::module::ModuleImport> {
-    use hew_parser::module::{Module, ModuleId, ModuleImport};
+    use hew_parser::module::{Module, ModuleImport, ModulePath};
 
     let mut imports = Vec::new();
 
     for (item, span) in items {
         let Item::Import(decl) = item else { continue };
 
-        let (module_id, first_source_path) = if !decl.path.is_empty() {
+        let (module_id, first_source_path) = if !decl.path.segments.is_empty() {
             // One source is one module, however the import spelled it: a
             // package-qualified `probe.lib` and a directory-relative `lib`
             // reach the same file, and a second graph node would have the
@@ -2570,12 +2580,12 @@ fn extract_module_info(
                 .first()
                 .and_then(|source| graph_module_for_source(graph, source));
             let module_id = existing.unwrap_or_else(|| {
-                let requested = decl.path.join(".");
+                let requested = import_segments(&decl.path).join(".");
                 let canonical = hew_types::module_registry::canonical_source_module_identity(
                     &requested,
                     &decl.resolved_source_paths,
                 );
-                ModuleId::new(canonical.split('.').map(String::from).collect())
+                ModulePath::new(canonical.split('.'))
             });
             (module_id, None)
         } else if let Some(file_path) = &decl.file_path {
@@ -2623,10 +2633,9 @@ fn extract_module_info(
                 // resolved items, so record it only when that parallelism
                 // holds (an absent entry means "first source path").
                 if decl.resolved_item_source_paths.len() == resolved.len() {
-                    graph.item_sources.insert(
-                        module_id.path.join("."),
-                        decl.resolved_item_source_paths.clone(),
-                    );
+                    graph
+                        .item_sources
+                        .insert(module_id.dotted(), decl.resolved_item_source_paths.clone());
                 }
                 let module = Module {
                     id: module_id,
@@ -2665,7 +2674,7 @@ fn resolve_file_imports_internal(
         .enumerate()
         .filter_map(|(index, (item, _))| {
             if let Item::Import(decl) = item {
-                if decl.file_path.is_some() || !decl.path.is_empty() {
+                if decl.file_path.is_some() || !decl.path.segments.is_empty() {
                     return Some(index);
                 }
             }
@@ -2678,7 +2687,7 @@ fn resolve_file_imports_internal(
     for idx in &import_indices {
         let is_module_import = matches!(
             &items[*idx].0,
-            Item::Import(decl) if !decl.path.is_empty()
+            Item::Import(decl) if !decl.path.segments.is_empty()
         );
         let canonical = match &items[*idx].0 {
             Item::Import(decl) if decl.file_path.is_some() => {
@@ -2693,9 +2702,10 @@ fn resolve_file_imports_internal(
                     )));
                 }
             }
-            Item::Import(decl) if !decl.path.is_empty() => {
-                let module_str = decl.path.join("::");
-                let source_module = decl.path.join(".");
+            Item::Import(decl) if !decl.path.segments.is_empty() => {
+                let segments = import_segments(&decl.path);
+                let module_str = segments.join("::");
+                let source_module = segments.join(".");
                 // A `std` module resolves only from the standard-library root
                 // (`stdlib_search_paths`), never beside the source or in cwd.
                 let is_std_import = module_str.starts_with("std::");
@@ -2705,17 +2715,16 @@ fn resolve_file_imports_internal(
                 });
                 let is_local = ctx
                     .package_name
-                    .is_some_and(|pkg| decl.path.first().is_some_and(|seg| seg == pkg));
+                    .is_some_and(|pkg| segments.first().is_some_and(|seg| *seg == pkg));
                 let rest_path: Vec<&str> = if is_local {
-                    decl.path[1..].iter().map(String::as_str).collect()
+                    segments[1..].to_vec()
                 } else {
                     Vec::new()
                 };
 
-                let rel_path = decl.path.iter().collect::<PathBuf>().with_extension("hew");
-                let last = decl.path.last().expect("path is non-empty");
-                let dir_path = decl
-                    .path
+                let rel_path = segments.iter().collect::<PathBuf>().with_extension("hew");
+                let last = *segments.last().expect("path is non-empty");
+                let dir_path = segments
                     .iter()
                     .collect::<PathBuf>()
                     .join(format!("{last}.hew"));
@@ -2755,10 +2764,9 @@ fn resolve_file_imports_internal(
                     candidates.push((cwd.join(&rel_path), CandidateForm::Flat));
                 }
 
-                let module_dir = decl.path.iter().collect::<PathBuf>();
+                let module_dir = segments.iter().collect::<PathBuf>();
                 if let Some(version) = locked_version.filter(|_| !is_std_import) {
-                    let entry_file =
-                        format!("{}.hew", decl.path.last().expect("path is non-empty"));
+                    let entry_file = format!("{}.hew", segments.last().expect("path is non-empty"));
                     let versioned_rel = module_dir.join(version).join(entry_file);
                     // The version directory sits between the module and its
                     // entry file, so this is a package root, never a flat file.
@@ -2799,12 +2807,12 @@ fn resolve_file_imports_internal(
                 if let Some(pkg) = ctx.extra_pkg_path.filter(|_| !is_std_import) {
                     candidates.push((pkg.join(&dir_path), CandidateForm::Directory));
                     candidates.push((pkg.join(&rel_path), CandidateForm::Flat));
-                    if decl.path.len() > 1 && !is_builtin_module(&module_str) {
-                        let rest_dir = decl.path[1..]
+                    if segments.len() > 1 && !is_builtin_module(&module_str) {
+                        let rest_dir = segments[1..]
                             .iter()
                             .collect::<PathBuf>()
                             .join(format!("{last}.hew"));
-                        let rest_flat = decl.path[1..]
+                        let rest_flat = segments[1..]
                             .iter()
                             .collect::<PathBuf>()
                             .with_extension("hew");
@@ -2813,9 +2821,9 @@ fn resolve_file_imports_internal(
                     }
                 }
 
-                if module_str.starts_with("hew::") && decl.path.len() > 1 {
-                    let tail = decl.path[1..].iter().collect::<PathBuf>();
-                    let tail_last = decl.path.last().expect("path is non-empty");
+                if module_str.starts_with("hew::") && segments.len() > 1 {
+                    let tail = segments[1..].iter().collect::<PathBuf>();
+                    let tail_last = segments.last().expect("path is non-empty");
                     let tail_dir = tail.join(format!("{tail_last}.hew"));
                     let tail_rel = tail.with_extension("hew");
                     if let Some(pkg) = ctx.extra_pkg_path {
@@ -2824,9 +2832,9 @@ fn resolve_file_imports_internal(
                     }
                 }
 
-                if module_str.starts_with("ecosystem::") && decl.path.len() > 1 {
-                    let tail = decl.path[1..].iter().collect::<PathBuf>();
-                    let tail_last = decl.path.last().expect("path is non-empty");
+                if module_str.starts_with("ecosystem::") && segments.len() > 1 {
+                    let tail = segments[1..].iter().collect::<PathBuf>();
+                    let tail_last = segments.last().expect("path is non-empty");
                     let tail_dir = tail.join(format!("{tail_last}.hew"));
                     let tail_rel = tail.with_extension("hew");
                     if let Some(pkg) = ctx.extra_pkg_path {
@@ -2887,14 +2895,14 @@ fn resolve_file_imports_internal(
 
                 if let Some((canonical, form)) = resolved.into_iter().next() {
                     if is_module_import
-                        && is_directory_module_entry_alias(&decl.path, &canonical, form)
+                        && is_directory_module_entry_alias(&segments, &canonical, form)
                     {
                         // A directory module is spelled by its directory, and
                         // its entry file adds no second module (spec 3.5.1).
                         // Accepting both spellings would let one compilation
                         // reach one source under two names, so refuse the
                         // longer one and name the module it aliases.
-                        let directory_module = decl.path[..decl.path.len() - 1].join(".");
+                        let directory_module = segments[..segments.len() - 1].join(".");
                         let message = format!(
                             "cannot import `{source_module}`: `{directory_module}` is a directory module and its entry file is not a module of its own; import `{directory_module}` instead"
                         );
@@ -2912,7 +2920,7 @@ fn resolve_file_imports_internal(
                         });
                     } else if is_module_import
                         && canonical_directory_module_entry_source(&canonical) != canonical
-                        && decl.path.len() >= 2
+                        && segments.len() >= 2
                     {
                         // The shipped stdlib's directory peers stay importable
                         // by file (`std.net.http.http_client`, D461); they load
@@ -2938,7 +2946,7 @@ fn resolve_file_imports_internal(
                             // hint that the fix is to import the directory
                             // module instead. Refuse here, before that isolated
                             // module ever gets built.
-                            let directory_module = decl.path[..decl.path.len() - 1].join(".");
+                            let directory_module = segments[..segments.len() - 1].join(".");
                             let message = format!(
                                 "cannot import `{source_module}` directly: peer files are reached through the directory module; import `{directory_module}` instead"
                             );
@@ -3130,10 +3138,10 @@ fn build_resolved_import_internal(
 
     if !peer_files.is_empty() {
         let module_str = if let Item::Import(decl) = import_item {
-            if decl.path.is_empty() {
+            if decl.path.segments.is_empty() {
                 canonical.display().to_string()
             } else {
-                decl.path.join(".")
+                import_segments(&decl.path).join(".")
             }
         } else {
             canonical.display().to_string()
@@ -3212,12 +3220,12 @@ fn check_duplicate_pub_names(items: &[Spanned<Item>], module_name: &str) -> Resu
     let mut seen: HashMap<&str, usize> = HashMap::new();
     for (item, _) in items {
         let name = match item {
-            Item::Function(f) if f.visibility == Visibility::Pub => Some(f.name.as_str()),
-            Item::TypeAlias(t) if t.visibility == Visibility::Pub => Some(t.name.as_str()),
-            Item::TypeDecl(t) if t.visibility == Visibility::Pub => Some(t.name.as_str()),
-            Item::Actor(a) if a.visibility == Visibility::Pub => Some(a.name.as_str()),
-            Item::Trait(t) if t.visibility == Visibility::Pub => Some(t.name.as_str()),
-            Item::Const(c) if c.visibility == Visibility::Pub => Some(c.name.as_str()),
+            Item::Function(f) if f.visibility == Visibility::Pub => Some(f.name.name.as_str()),
+            Item::TypeAlias(t) if t.visibility == Visibility::Pub => Some(t.name.name.as_str()),
+            Item::TypeDecl(t) if t.visibility == Visibility::Pub => Some(t.name.name.as_str()),
+            Item::Actor(a) if a.visibility == Visibility::Pub => Some(a.name.name.as_str()),
+            Item::Trait(t) if t.visibility == Visibility::Pub => Some(t.name.name.as_str()),
+            Item::Const(c) if c.visibility == Visibility::Pub => Some(c.name.name.as_str()),
             _ => None,
         };
         if let Some(name) = name {
@@ -4007,7 +4015,7 @@ mod tests {
             .iter()
             .enumerate()
             .find_map(|(item_ordinal, (item, span))| match item {
-                Item::Function(function) if function.name == "selected_test" => Some(
+                Item::Function(function) if function.name.name.as_str() == "selected_test" => Some(
                     hew_types::DeclarationOccurrence::new_with_synthetic_ordinal(
                         None,
                         span,
@@ -4095,7 +4103,7 @@ mod tests {
             .iter()
             .enumerate()
             .find_map(|(item_ordinal, (item, span))| match item {
-                Item::Function(function) if function.name == "selected_test" => Some(
+                Item::Function(function) if function.name.name.as_str() == "selected_test" => Some(
                     hew_types::DeclarationOccurrence::new_with_synthetic_ordinal(
                         Some(helper_module),
                         span,
@@ -4359,18 +4367,9 @@ mod tests {
                 &mut ctx,
             )
             .expect("stdlib peer imports should build a module graph");
-            let http_id = hew_parser::module::ModuleId::new(
-                ["std", "net", "http"]
-                    .into_iter()
-                    .map(String::from)
-                    .collect(),
-            );
-            let peer_id = hew_parser::module::ModuleId::new(
-                ["std", "net", "http", "http_client"]
-                    .into_iter()
-                    .map(String::from)
-                    .collect(),
-            );
+            let http_id = hew_parser::module::ModulePath::new(["std", "net", "http"]);
+            let peer_id =
+                hew_parser::module::ModulePath::new(["std", "net", "http", "http_client"]);
             let http = graph
                 .modules
                 .get(&http_id)
@@ -4397,7 +4396,7 @@ mod tests {
             assert!(
                 http.items.iter().any(|(item, _)| matches!(
                     item,
-                    Item::TypeDecl(decl) if decl.name == "Response"
+                    Item::TypeDecl(decl) if decl.name.name.as_str() == "Response"
                 )),
                 "peer-only imports must load the complete package item set"
             );
@@ -4766,7 +4765,7 @@ mod tests {
             .as_ref()
             .expect("type checking was enabled");
 
-        let is_helper = |item: &Item| matches!(item, Item::Function(f) if f.name == "helper_value");
+        let is_helper = |item: &Item| matches!(item, Item::Function(f) if f.name.name.as_str() == "helper_value");
         let in_graph = state.program.module_graph.as_ref().is_some_and(|graph| {
             graph
                 .modules
@@ -5911,8 +5910,9 @@ fn main() {
             .expect("hew-compile lives below the repository root");
         let shipped = repo_root.join("std/stream.hew");
         assert_eq!(
-            super::canonical_direct_stdlib_module_for_source(&shipped).map(|module| module.path),
-            Some(vec!["std".to_string(), "stream".to_string()]),
+            super::canonical_direct_stdlib_module_for_source(&shipped)
+                .map(|module| module.dotted()),
+            Some("std.stream".to_string()),
             "direct compilation of the shipped stream module must retain std.stream identity"
         );
 
@@ -5930,16 +5930,16 @@ fn main() {
         let shipped_net = repo_root.join("std/net/net.hew");
         assert_eq!(
             super::canonical_direct_stdlib_module_for_source(&shipped_net)
-                .map(|module| module.path),
-            Some(vec!["std".to_string(), "net".to_string()]),
+                .map(|module| module.dotted()),
+            Some("std.net".to_string()),
             "direct compilation of the shipped TCP module must retain std.net identity"
         );
 
         let shipped_lifecycle = repo_root.join("std/concurrency/lifecycle.hew");
         assert_eq!(
             super::canonical_direct_stdlib_module_for_source(&shipped_lifecycle)
-                .map(|module| module.path),
-            Some(vec!["std".to_string(), "concurrency".to_string()]),
+                .map(|module| module.dotted()),
+            Some("std.concurrency".to_string()),
             "a direct check of a canonical directory-module peer must retain std.concurrency identity"
         );
         fs::create_dir_all(dir.path().join("concurrency")).expect("create user module dir");
@@ -6261,7 +6261,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
             .items
             .iter()
             .find_map(|item| match &item.0 {
-                Item::Import(import) if import.path == ["std", "fs"] => Some(import),
+                Item::Import(import) if import.path.to_string() == "std.fs" => Some(import),
                 _ => None,
             })
             .expect("std::fs import should remain in the program");
@@ -6327,7 +6327,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
             .items
             .iter()
             .find_map(|item| match &item.0 {
-                Item::Import(import) if import.path == ["std", "fs"] => {
+                Item::Import(import) if import.path.to_string() == "std.fs" => {
                     import.resolved_source_paths.first()
                 }
                 _ => None,
@@ -6365,7 +6365,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
             .items
             .iter()
             .find_map(|item| match &item.0 {
-                Item::Import(import) if import.path == ["mypkg", "fs"] => Some(import),
+                Item::Import(import) if import.path.to_string() == "mypkg.fs" => Some(import),
                 _ => None,
             })
             .expect("mypkg::fs import should remain in the program");
@@ -6410,7 +6410,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
             .items
             .iter()
             .find_map(|item| match &item.0 {
-                Item::Import(import) if import.path == ["hew", "db", "sqlite"] => Some(import),
+                Item::Import(import) if import.path.to_string() == "hew.db.sqlite" => Some(import),
                 _ => None,
             })
             .expect("hew::db::sqlite import should remain in the program");
@@ -6455,7 +6455,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
             .items
             .iter()
             .find_map(|item| match &item.0 {
-                Item::Import(import) if import.path == ["ecosystem", "db", "postgres"] => {
+                Item::Import(import) if import.path.to_string() == "ecosystem.db.postgres" => {
                     Some(import)
                 }
                 _ => None,
@@ -6492,7 +6492,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         let Item::Import(import) = &state.program.items[0].0 else {
             panic!("expected import item");
         };
-        assert_eq!(import.path, vec!["actor", "monitor"]);
+        assert_eq!(import.path.to_string(), "actor.monitor");
         assert!(import
             .resolved_items
             .as_ref()

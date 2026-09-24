@@ -1,0 +1,24 @@
+// The source evaluates the owned first argument, then the second faults: the
+// first is released exactly once and the callee is never entered.
+#[resource]
+type Token { label: string }
+
+impl Token {
+    fn close(consume self) { println(f"close {self.label}"); }
+}
+
+fn fresh(label: string) -> Token {
+    println(f"make {label}");
+    Token { label: label.to_upper() }
+}
+
+fn divide(numerator: i64, divisor: i64) -> i64 { numerator / divisor }
+
+fn take(ratio: i64, token: Token) {
+    println("unexpected callee entry");
+    println(f"{token.label} {ratio}");
+}
+
+fn main() {
+    take(token: fresh("first"), ratio: divide(divisor: 0, numerator: 4));
+}

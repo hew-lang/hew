@@ -584,6 +584,32 @@ struct InstanceService<'a> {
 /// Both encodings of a bare parameter reference are accepted: the structural
 /// `TypeParam` and the argument-less `Named` spelling some producers still
 /// emit.
+/// Targets whose lowering reads its arguments by position; the checker binds
+/// no names for them.
+fn positional_call_target(target: &CallTarget) -> bool {
+    match target {
+        CallTarget::DeclaredRuntime {
+            actor_endpoints: Some(_),
+            ..
+        }
+        | CallTarget::Runtime(hew_types::RuntimeCallFamily::SupervisorStop) => true,
+        CallTarget::Builtin { endpoint } => {
+            matches!(endpoint.as_str(), "assert" | "sleep" | "sleep_until")
+        }
+        _ => false,
+    }
+}
+
+/// The argument indices in the order a call evaluates them. HIR leaves the
+/// order empty when it is parameter order.
+pub(crate) fn evaluation_sequence(evaluation_order: &[usize], len: usize) -> Vec<usize> {
+    if evaluation_order.is_empty() {
+        (0..len).collect()
+    } else {
+        evaluation_order.to_vec()
+    }
+}
+
 fn declared_type_param_name<'a>(ty: &'a ResolvedTy, declared: &[String]) -> Option<&'a str> {
     match ty {
         ResolvedTy::TypeParam { name } => Some(name.as_str()),
@@ -5665,10 +5691,11 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 receiver,
                 slot,
                 args,
+                evaluation_order,
                 signature,
                 ..
             } => self
-                .lower_dyn_call(expr, receiver, *slot, args, signature, true)?
+                .lower_dyn_call(expr, receiver, *slot, args, evaluation_order, signature)?
                 .ok_or_else(|| "dynamic dispatch produced no SIR value".to_string()),
             HirExprKind::ArrayLiteral { elements } => self.lower_array_make(expr, elements),
             HirExprKind::ArrayRepeat { value } => self.lower_array_repeat(expr, value),
@@ -7825,7 +7852,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         self.lower_runtime_operation_with(
             expression,
             hew_types::RuntimeCallFamily::Vector(hew_types::VecValueOp::TakeAll),
-            &[expression],
+            (&[expression], &[]),
             true,
             &[],
         )
@@ -8086,8 +8113,8 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         receiver: &HirExpr,
         slot: u32,
         args: &[HirExpr],
+        evaluation_order: &[usize],
         signature: &hew_types::FnSig,
-        value_required: bool,
     ) -> Result<Option<ValueId>, String> {
         let live_before_arguments: std::collections::HashSet<_> =
             self.owned_live.keys().copied().collect();
@@ -8104,7 +8131,8 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         } else {
             self.lower_borrowed_read(receiver, &mut loans)?.value
         };
-        let lowered_args = self.lower_user_arguments(args, &dispatch.params, &mut loans)?;
+        let lowered_args =
+            self.lower_user_arguments(args, evaluation_order, &dispatch.params, &mut loans)?;
         self.finish_user_call(
             PreparedCallee::Dyn {
                 receiver: crate::BoundaryOperand {
@@ -8117,7 +8145,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             lowered_args,
             &loans,
             &live_before_arguments,
-            value_required,
+            true,
             None,
         )
     }
@@ -8136,6 +8164,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             target,
             callee,
             args,
+            evaluation_order,
         } = &expr.kind
         else {
             return Err("user-call lowering received a non-call".to_string());
@@ -8249,8 +8278,12 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             .map(|(receiver, _)| self.expression_projection(receiver))
             .transpose()?
             .flatten();
-        let mut lowered_args =
-            self.lower_user_arguments(args, &signature.params[seats..], &mut loans)?;
+        let mut lowered_args = self.lower_user_arguments(
+            args,
+            evaluation_order,
+            &signature.params[seats..],
+            &mut loans,
+        )?;
         if let Some(actor) = actor {
             if self.callable.kind != SemCallableKind::HewActor(actor) {
                 return Err("actor method is entered only from its own actor's bodies".into());
@@ -8312,6 +8345,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             receiver,
             target,
             args,
+            evaluation_order,
             ..
         } = &expr.kind
         else {
@@ -8349,7 +8383,19 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         let live_before_arguments: std::collections::HashSet<_> =
             self.owned_live.keys().copied().collect();
         let mut loans = Vec::new();
-        let lowered_args = self.lower_user_arguments(&arguments, &signature.params, &mut loans)?;
+        let evaluation_order = if evaluation_order.is_empty() {
+            Vec::new()
+        } else {
+            std::iter::once(0)
+                .chain(evaluation_order.iter().map(|index| index + 1))
+                .collect()
+        };
+        let lowered_args = self.lower_user_arguments(
+            &arguments,
+            &evaluation_order,
+            &signature.params,
+            &mut loans,
+        )?;
         self.finish_user_call(
             PreparedCallee::Direct(callee.id),
             signature,
@@ -8361,19 +8407,28 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         )
     }
 
-    /// Capture arguments while keeping earlier consumed values live until the call.
+    /// Capture arguments in their evaluation order while keeping earlier
+    /// consumed values live until the call, and pass them in parameter order.
     fn lower_user_arguments(
         &mut self,
         args: &[HirExpr],
+        evaluation_order: &[usize],
         params: &[SemAbiParam],
         loans: &mut Vec<ValueId>,
     ) -> Result<Vec<crate::BoundaryOperand>, String> {
+        if args.len() != params.len() {
+            return Err("call arguments differ from the callee's parameters".into());
+        }
         let receiver_loan_depth = self.argument_receiver_loans.len();
         self.argument_receiver_loans.extend(loans.iter().copied());
-        let mut lowered_args = Vec::with_capacity(args.len());
-        for (index, (arg, expected)) in args.iter().zip(params).enumerate() {
+        let order = evaluation_sequence(evaluation_order, args.len());
+        let mut lowered_args = vec![None; args.len()];
+        for (position, &index) in order.iter().enumerate() {
+            let (arg, expected) = (&args[index], &params[index]);
             let loan_floor = loans.len();
-            let stable_tail = args[index + 1..].iter().all(Self::stable_argument_read);
+            let stable_tail = order[position + 1..]
+                .iter()
+                .all(|&later| Self::stable_argument_read(&args[later]));
             let operand = if expected.passing == SemParamPassing::Consume {
                 let value = self.lower_consuming_value(arg)?;
                 Operand {
@@ -8403,7 +8458,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     value: self.coerce_value(value, &expected.ty, Provenance::Site(arg.site))?,
                 }
             };
-            lowered_args.push(crate::BoundaryOperand {
+            lowered_args[index] = Some(crate::BoundaryOperand {
                 operand,
                 decision: match expected.passing {
                     SemParamPassing::ReadOnly => crate::BoundaryDecision::Copy,
@@ -8420,7 +8475,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 .extend_from_slice(&loans[loan_floor..]);
         }
         self.argument_receiver_loans.truncate(receiver_loan_depth);
-        Ok(lowered_args)
+        Ok(lowered_args.into_iter().flatten().collect())
     }
 
     /// One user-call boundary owns argument temporaries and both continuations.
@@ -8614,11 +8669,22 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         if matches!(expr.kind, HirExprKind::CallTraitMethodStatic { .. }) {
             return self.lower_static_trait_call(expr, value_required);
         }
-        let HirExprKind::Call { target, args, .. } = &expr.kind else {
+        let HirExprKind::Call {
+            target,
+            args,
+            evaluation_order,
+            ..
+        } = &expr.kind
+        else {
             return Err(
                 "internal SIR lowering error: call lowering received a non-call".to_string(),
             );
         };
+        if positional_call_target(target) && !evaluation_order.is_empty() {
+            return Err(format!(
+                "call target {target:?} takes positional arguments only"
+            ));
+        }
         match target {
             CallTarget::DeclaredRuntime {
                 family,
@@ -8643,7 +8709,13 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 declaration,
                 endpoint,
                 ..
-            } => self.lower_extern_call(expr, declaration, endpoint, args, value_required),
+            } => self.lower_extern_call(
+                expr,
+                declaration,
+                endpoint,
+                (args, evaluation_order),
+                value_required,
+            ),
             CallTarget::Runtime(hew_types::RuntimeCallFamily::SupervisorStop) => {
                 let [handle] = args.as_slice() else {
                     return Err("supervisor stop takes exactly one handle".into());
@@ -8655,11 +8727,12 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 family,
                 actor_endpoints: None,
                 ..
-            } => self.lower_runtime_operation(
+            } => self.lower_runtime_operation_with(
                 expr,
                 *family,
-                &args.iter().collect::<Vec<_>>(),
+                (&args.iter().collect::<Vec<_>>(), evaluation_order),
                 value_required,
+                &[],
             ),
             CallTarget::User(_) | CallTarget::ImplMethod(_) | CallTarget::IndirectFunctionValue => {
                 self.lower_direct_call(expr, value_required)
@@ -8671,11 +8744,12 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                             "call target {target:?} has no verified ownership-SIR operation contract"
                         )
                     })?;
-                self.lower_runtime_operation(
+                self.lower_runtime_operation_with(
                     expr,
                     family,
-                    &args.iter().collect::<Vec<_>>(),
+                    (&args.iter().collect::<Vec<_>>(), evaluation_order),
                     value_required,
+                    &[],
                 )
             }
             _ => Err(format!(
@@ -8728,7 +8802,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         self.lower_runtime_operation_with(
             expr,
             family,
-            &[receiver, handler],
+            (&[receiver, handler], &[]),
             value_required,
             &[(2, adapters[0]), (3, adapters[1])],
         )
@@ -8741,7 +8815,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         args: &[&HirExpr],
         value_required: bool,
     ) -> Result<Option<ValueId>, String> {
-        self.lower_runtime_operation_with(expr, family, args, value_required, &[])
+        self.lower_runtime_operation_with(expr, family, (args, &[]), value_required, &[])
     }
 
     /// As [`Self::lower_runtime_operation`], with `prelowered` naming argument
@@ -8759,11 +8833,13 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         &mut self,
         expr: &HirExpr,
         family: hew_types::RuntimeCallFamily,
-        args: &[&HirExpr],
+        (args, evaluation_order): (&[&HirExpr], &[usize]),
         value_required: bool,
         prelowered: &[(usize, ValueId)],
     ) -> Result<Option<ValueId>, String> {
         use hew_types::{RuntimeArgumentEffect, RuntimeResultEffect};
+
+        let order = evaluation_sequence(evaluation_order, args.len());
 
         if matches!(
             family,
@@ -8813,14 +8889,19 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             };
             let signature = self.actor_signature(&operation)?;
             self.service.require_type_facts(&signature.return_ty)?;
-            let mut values = Vec::with_capacity(args.len());
-            for arg in args {
-                values.push(self.lower_expr(arg)?);
+            let mut values = vec![None; args.len()];
+            for &index in &order {
+                let value = self.lower_expr(args[index])?;
                 if !self.is_open() {
-                    return Ok(values.pop());
+                    return Ok(Some(value));
                 }
+                values[index] = Some(value);
             }
-            return self.emit_actor_call(operation, signature, values);
+            return self.emit_actor_call(
+                operation,
+                signature,
+                values.into_iter().flatten().collect(),
+            );
         }
         if let Some(kind) = observation {
             let [target] = args else {
@@ -8838,6 +8919,9 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         }
 
         if let hew_types::RuntimeCallFamily::AsyncIo(operation) = family {
+            if !evaluation_order.is_empty() {
+                return Err("native I/O takes positional arguments only".into());
+            }
             return self.lower_native_io(expr, operation, args);
         }
         if matches!(
@@ -8845,8 +8929,8 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             hew_types::RuntimeCallFamily::StreamSendLayout
                 | hew_types::RuntimeCallFamily::StreamTrySendLayout
         ) {
-            let [sink, value] = args else {
-                return Err("stream write takes one sink and one element".into());
+            let ([sink, value], []) = (args, evaluation_order) else {
+                return Err("stream write takes one sink and one element, in order".into());
             };
             let park = family == hew_types::RuntimeCallFamily::StreamSendLayout;
             return self.lower_sink_write(expr, sink, value, park).map(Some);
@@ -8990,7 +9074,23 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             .iter()
             .all(|effect| *effect != RuntimeArgumentEffect::Move);
         let argument_loan_depth = self.argument_receiver_loans.len();
-        for (index, effect) in effects.into_iter().enumerate() {
+        // Source arguments run in their evaluation order; synthesized
+        // operands beyond them follow.
+        let sequence: Vec<usize> = order
+            .iter()
+            .copied()
+            .chain(args.len()..argument_count)
+            .collect();
+        let mut placed: Vec<Option<crate::BoundaryOperand>> =
+            (0..argument_count).map(|_| None).collect();
+        for (position, &index) in sequence.iter().enumerate() {
+            let effect = effects[index];
+            let later = || {
+                sequence[position + 1..]
+                    .iter()
+                    .filter_map(|&later| args.get(later))
+                    .all(|arg| Self::stable_argument_read(arg))
+            };
             if let Some(&(_, value)) = prelowered.iter().find(|(at, _)| *at == index) {
                 let decision = match effect {
                     RuntimeArgumentEffect::Move => crate::BoundaryDecision::Move,
@@ -8999,7 +9099,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                         crate::BoundaryDecision::Copy
                     }
                 };
-                lowered_args.push(crate::BoundaryOperand {
+                placed[index] = Some(crate::BoundaryOperand {
                     operand: Operand { value },
                     decision,
                 });
@@ -9011,9 +9111,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 match effect {
                     RuntimeArgumentEffect::Value => unreachable!("value ingress was resolved"),
                     RuntimeArgumentEffect::Borrow => {
-                        let stable_tail = args[index + 1..]
-                            .iter()
-                            .all(|arg| Self::stable_argument_read(arg));
+                        let stable_tail = later();
                         let operand =
                             self.lower_call_read(arg, &mut loans, stable_tail, read_only)?;
                         (operand.value, crate::BoundaryDecision::Borrow)
@@ -9023,9 +9121,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                             &parameter_types[index],
                             self.service.checked_facts.rows(),
                         )? == OwnKind::None;
-                        let stable_tail = args[index + 1..]
-                            .iter()
-                            .all(|arg| Self::stable_argument_read(arg));
+                        let stable_tail = later();
                         let operand = self.lower_call_read(
                             arg,
                             &mut loans,
@@ -9091,13 +9187,14 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 };
                 (value, decision)
             };
-            lowered_args.push(crate::BoundaryOperand {
+            placed[index] = Some(crate::BoundaryOperand {
                 operand: Operand { value },
                 decision,
             });
             self.argument_receiver_loans
                 .extend_from_slice(&loans[loan_floor..]);
         }
+        lowered_args.extend(placed.into_iter().flatten());
         self.argument_receiver_loans.truncate(argument_loan_depth);
 
         // Preserve arguments borrowing the receiver's owner before its take.
@@ -9656,7 +9753,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         expr: &HirExpr,
         declaration: &hew_types::DefId,
         endpoint: &str,
-        args: &[HirExpr],
+        (args, evaluation_order): (&[HirExpr], &[usize]),
         value_required: bool,
     ) -> Result<Option<ValueId>, String> {
         let signature = self.extern_signature(declaration, endpoint)?;
@@ -9706,19 +9803,23 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             .all(|decision| *decision != crate::BoundaryDecision::Move);
         let live_before_arguments: std::collections::HashSet<_> =
             self.owned_live.keys().copied().collect();
-        let mut lowered_args = Vec::with_capacity(args.len());
+        let mut placed: Vec<Option<crate::BoundaryOperand>> = args.iter().map(|_| None).collect();
         let mut loans = Vec::new();
         let argument_loan_depth = self.argument_receiver_loans.len();
-        for (index, (arg, decision)) in args.iter().zip(&decisions).enumerate() {
+        let order = evaluation_sequence(evaluation_order, args.len());
+        for (position, &index) in order.iter().enumerate() {
+            let (arg, decision) = (&args[index], &decisions[index]);
             let loan_floor = loans.len();
             let value = if *decision == crate::BoundaryDecision::Move {
                 self.lower_consuming_value(arg)?
             } else {
-                let stable_tail = args[index + 1..].iter().all(Self::stable_argument_read);
+                let stable_tail = order[position + 1..]
+                    .iter()
+                    .all(|&later| Self::stable_argument_read(&args[later]));
                 self.lower_call_read(arg, &mut loans, stable_tail, read_only)?
                     .value
             };
-            lowered_args.push(crate::BoundaryOperand {
+            placed[index] = Some(crate::BoundaryOperand {
                 operand: Operand { value },
                 decision: *decision,
             });
@@ -9726,6 +9827,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 .extend_from_slice(&loans[loan_floor..]);
         }
         self.argument_receiver_loans.truncate(argument_loan_depth);
+        let lowered_args: Vec<_> = placed.into_iter().flatten().collect();
         let argument_temporaries: Vec<_> = self
             .owned_live
             .keys()

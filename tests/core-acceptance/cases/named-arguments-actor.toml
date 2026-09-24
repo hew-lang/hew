@@ -1,0 +1,10 @@
+[[case]]
+id = "named-arguments-actor"
+intent = "Actor completion calls and mailbox submissions bind named arguments by the receive handler's parameter names and evaluate them in source order."
+source = "cases/named-arguments-actor.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "eval b\neval a\na/b\neval r\neval l\nnote l/r\nnote x/y\nc/d\n"
+exit = 0

@@ -1,0 +1,14 @@
+[[case]]
+id = "named-argument-after-positional-gap"
+intent = "A positional argument after a named one is a parse error rather than a guess at the slot it fills."
+source = "cases/named-argument-after-positional-gap.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "Other"
+line = 5
+column = 23
+message = "positional arguments must come before named arguments"

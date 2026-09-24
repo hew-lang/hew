@@ -416,7 +416,8 @@ impl Checker {
             None,
             args,
             span,
-            SignatureArgApplication::PositionalOnly {
+            SignatureArgApplication::FunctionLike {
+                param_names: &sig.param_names,
                 arity_context: format!("associated function `{method}`"),
             },
             true,

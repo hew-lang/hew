@@ -1,0 +1,15 @@
+// An impl keeps its trait's parameter names, so a named call binds alike
+// through the trait and on the concrete type.
+trait Shape {
+    fn scaled(self, factor: i64) -> i64;
+}
+
+type Square { side: i64 }
+
+impl Shape for Square {
+    fn scaled(self, ratio: i64) -> i64 { self.side * ratio }
+}
+
+fn main() {
+    println(Square { side: 2 }.scaled(3));
+}

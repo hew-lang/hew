@@ -151,7 +151,7 @@ impl Builder<'_, '_> {
                 .lower_runtime_operation_with(
                     &step.expression,
                     step.read,
-                    &[source, index],
+                    (&[source, index], &[]),
                     true,
                     &[(0, container), (1, step.index)],
                 )?
@@ -234,7 +234,7 @@ impl Builder<'_, '_> {
                 .lower_runtime_operation_with(
                     &operation,
                     step.update,
-                    &[source, index, &step.expression],
+                    (&[source, index, &step.expression], &[]),
                     false,
                     &[(0, container), (1, step.index), (2, updated)],
                 )?

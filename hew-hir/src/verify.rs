@@ -296,12 +296,73 @@ impl Verifier {
         self.current_expr_parent = parent;
     }
 
+    /// A call evaluates each of its arguments exactly once.
+    fn evaluation_order(&mut self, expr: &HirExpr) {
+        let (HirExprKind::Call {
+            args,
+            evaluation_order: order,
+            ..
+        }
+        | HirExprKind::CallDynMethod {
+            args,
+            evaluation_order: order,
+            ..
+        }
+        | HirExprKind::CallTraitMethodStatic {
+            args,
+            evaluation_order: order,
+            ..
+        }
+        | HirExprKind::VarSelfMethodCall {
+            args,
+            evaluation_order: order,
+            ..
+        }
+        | HirExprKind::ActorAsk {
+            args,
+            evaluation_order: order,
+            ..
+        }
+        | HirExprKind::ActorMessage {
+            args,
+            evaluation_order: order,
+            ..
+        }
+        | HirExprKind::ActorGenStream {
+            args,
+            evaluation_order: order,
+            ..
+        }) = &expr.kind
+        else {
+            return;
+        };
+        if order.is_empty() {
+            return;
+        }
+        let mut sorted = order.clone();
+        sorted.sort_unstable();
+        if !sorted.iter().copied().eq(0..args.len()) {
+            self.diagnostics.push(self.diagnostic(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: "call evaluation order".to_string(),
+                    reason: format!(
+                        "evaluation order {order:?} is not a permutation of {} arguments",
+                        args.len()
+                    ),
+                },
+                expr.span.clone(),
+                "a call must evaluate each argument exactly once",
+            ));
+        }
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "exhaustive match remains in one structural HIR walker"
     )]
     fn expr_inner(&mut self, expr: &HirExpr) {
         self.node(expr.node, expr.span.clone());
+        self.evaluation_order(expr);
         self.site(expr.site, expr.span.clone());
 
         match &expr.kind {
@@ -524,6 +585,7 @@ impl Verifier {
                 target,
                 callee,
                 args,
+                ..
             } => {
                 self.executable_call_target(target, expr);
 
@@ -1255,6 +1317,7 @@ mod tests {
                 target: unsupported("ordinary call"),
                 callee: Box::new(ordinary_callee),
                 args: Vec::new(),
+                evaluation_order: Vec::new(),
             },
         );
         let indirect_callee = unit_expr(&mut ids);
@@ -1264,6 +1327,7 @@ mod tests {
                 target: CallTarget::IndirectFunctionValue,
                 callee: Box::new(indirect_callee),
                 args: Vec::new(),
+                evaluation_order: Vec::new(),
             },
         );
         let dynamic_receiver = unit_expr(&mut ids);
@@ -1276,6 +1340,7 @@ mod tests {
                 method_name: "m".to_string(),
                 slot: 0,
                 args: Vec::new(),
+                evaluation_order: Vec::new(),
                 ret_ty: ResolvedTy::Unit,
                 signature: Box::default(),
             },
@@ -1303,6 +1368,7 @@ mod tests {
                 target: unsupported("static trait call"),
                 receiver_type_param: "T".to_string(),
                 args: Vec::new(),
+                evaluation_order: Vec::new(),
                 ret_ty: ResolvedTy::Unit,
             },
         );
@@ -1315,6 +1381,7 @@ mod tests {
                 call_target: unsupported("var-self method call"),
                 target: HirVarSelfMethodTarget::Direct,
                 args: Vec::new(),
+                evaluation_order: Vec::new(),
                 ret_ty: ResolvedTy::Unit,
                 receiver_ty: ResolvedTy::Unit,
             },
@@ -1352,6 +1419,44 @@ mod tests {
                 "unsupported var-self method call",
             ],
             "every executable HIR call carrier must reject an Unsupported checker target, while a valid indirect function-value call remains executable"
+        );
+    }
+
+    #[test]
+    fn call_evaluation_order_must_name_each_argument_once() {
+        let mut ids = IdGen::default();
+        let call = |ids: &mut IdGen, evaluation_order: Vec<usize>| {
+            let callee = unit_expr(ids);
+            let args = vec![unit_expr(ids), unit_expr(ids)];
+            executable_expr(
+                ids,
+                HirExprKind::Call {
+                    target: CallTarget::IndirectFunctionValue,
+                    callee: Box::new(callee),
+                    args,
+                    evaluation_order,
+                },
+            )
+        };
+        let reordered = call(&mut ids, vec![1, 0]);
+        let repeated = call(&mut ids, vec![0, 0]);
+        let short = call(&mut ids, vec![1]);
+        let module = module(vec![
+            function_with_tail(&mut ids, "reordered", reordered),
+            function_with_tail(&mut ids, "repeated", repeated),
+            function_with_tail(&mut ids, "short", short),
+        ]);
+        let rejected = verify_hir(&module)
+            .iter()
+            .filter(|diagnostic| {
+                matches!(&diagnostic.kind,
+                    crate::HirDiagnosticKind::CheckerBoundaryViolation { name, .. }
+                        if name == "call evaluation order")
+            })
+            .count();
+        assert_eq!(
+            rejected, 2,
+            "a permutation verifies; a repeated or missing argument does not"
         );
     }
 }

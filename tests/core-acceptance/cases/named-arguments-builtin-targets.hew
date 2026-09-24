@@ -1,0 +1,34 @@
+// Named arguments to intrinsics, generic math and an extern evaluate in the
+// order written and bind to the parameter they name.
+import std.math;
+
+extern "C" {
+    fn hew_string_compare(a: string, b: string) -> i32;
+}
+
+fn tf(label: string, value: f64) -> f64 {
+    println(f"eval {label}");
+    value
+}
+
+fn ti(label: string, value: i64) -> i64 {
+    println(f"eval {label}");
+    value
+}
+
+fn ts(label: string) -> string {
+    println(f"eval {label}");
+    label.to_upper()
+}
+
+fn main() {
+    println(math.copysign(y: tf("y", -1.0), x: tf("x", 3.0)));
+    println(math.pow(exp: tf("exp", 2.0), base: tf("base", 3.0)));
+    println(math.atan2(x: tf("x", 1.0), y: tf("y", 0.0)));
+    println(math.min(b: ti("b", 1), a: ti("a", 2)));
+    println(math.max(b: tf("b", 1.5), a: tf("a", 2.5)));
+    println(math.fma(c: tf("c", 1.0), a: tf("a", 2.0), b: tf("b", 3.0)));
+    println(unsafe {
+        hew_string_compare(b: ts("b"), a: ts("a"))
+    });
+}

@@ -1,0 +1,27 @@
+// A receive handler binds named arguments by name, and the caller evaluates
+// them in the order written, for completion calls and one-way submissions.
+fn trace(label: string) -> string {
+    println(f"eval {label}");
+    label
+}
+
+actor Journal {
+    receive fn pair(first: string, second: string) -> string {
+        f"{first}/{second}"
+    }
+    receive fn note(left: string, right: string) {
+        println(f"note {left}/{right}");
+    }
+}
+
+fn main() {
+    let journal = spawn Journal;
+    println(journal.pair(second: trace("b"), first: trace("a")).expect("pair"));
+    journal.note(right: trace("r"), left: trace("l")).expect("note");
+    let outbox = mailbox(journal, on_full: .Wait);
+    outbox.note(right: "y", left: "x").expect("submit");
+    // The next completion call is queued behind the submission, so its
+    // reply follows the submitted note.
+    println(journal.pair(second: "d", first: "c").expect("pair"));
+    close(journal);
+}

@@ -1,0 +1,18 @@
+// A resource passed by name to a borrowing parameter stays with the caller
+// and closes once, at the caller's scope end.
+#[resource]
+type Token { label: string }
+
+impl Token {
+    fn close(consume self) { println(f"close {self.label}"); }
+}
+
+fn inspect(count: i64, token: Token) {
+    println(f"inspect {token.label} {count}");
+}
+
+fn main() {
+    let token = Token { label: "held".to_upper() };
+    inspect(token: token, count: 2);
+    println(f"after {token.label}");
+}

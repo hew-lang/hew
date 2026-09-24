@@ -1,0 +1,13 @@
+// Std Option, Result and iterator methods are ordinary methods: their
+// arguments bind by the declared parameter names.
+fn main() {
+    let a: Option<i64> = .None;
+    println(a.unwrap_or(fallback: 7));
+    let b: Result<i64, string> = .Err("x");
+    println(b.unwrap_or_else(f: |e: string| e.len()));
+    let c: Option<string> = .Some("hi");
+    println(c.expect(reason: "present"));
+    let v = [1, 2, 3, 4];
+    println(v.iter().any(pred: |x: i64| x > 3));
+    println(v.iter().take(n: 2).any(pred: |x: i64| x == 2));
+}

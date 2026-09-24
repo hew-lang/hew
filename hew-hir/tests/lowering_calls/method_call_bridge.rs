@@ -79,6 +79,7 @@ fn dotted_static_paths_lower_without_a_runtime_receiver() {
                     target,
                     callee,
                     args,
+                    ..
                 } => match &callee.kind {
                     HirExprKind::BindingRef { name, .. } => {
                         Some((target, name.as_str(), args.len()))
@@ -284,6 +285,7 @@ fn method_call_with_rewrite_produces_hir_call() {
                 target,
                 callee,
                 args,
+                ..
             } = &expr.kind
             {
                 // Callee should be a BindingRef named "hew_sink_finish"

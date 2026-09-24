@@ -545,6 +545,7 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
             receiver,
             method,
             args,
+            ..
         } => {
             writeln!(out, "{pad}  actor-gen-stream {method}").expect("write to string");
             dump_expr(out, receiver, indent + 4);
@@ -949,6 +950,7 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
             receiver_type_param,
             args,
             ret_ty,
+            ..
         } => {
             let target_label = match target {
                 hew_types::CallTarget::StaticTraitMethod { method, .. } => {

@@ -238,20 +238,18 @@ fn actor_delivery_named_arguments_preserve_protocol_order() {
         fn main() { let worker = spawn Worker(); let _ = worker.process(text: "work", number: 7); }"#,
     );
     assert!(output.errors.is_empty(), "{:?}", output.errors);
-    let dispatch = output
-        .actor_method_dispatch
+    let slots = output
+        .call_argument_slots
         .values()
         .next()
-        .expect("message constructor");
-    assert!(
-        matches!(dispatch, crate::ActorMethodKind::Ask { argument_order, .. } if argument_order == &[1, 0])
-    );
+        .expect("reordered call records its parameter slots");
+    assert_eq!(slots, &[1, 0]);
     let output = check_source("actor Worker { receive fn process(first: i64, second: i64) {} } fn main() { let worker = spawn Worker(); let _ = worker.process(first: 1, first: 2); }");
     assert!(
         output
             .errors
             .iter()
-            .any(|error| error.message.contains("exactly once")),
+            .any(|error| error.kind == crate::error::TypeErrorKind::NamedArgDuplicate),
         "{:?}",
         output.errors
     );

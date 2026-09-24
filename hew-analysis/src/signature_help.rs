@@ -9,7 +9,73 @@ use crate::{ParameterInfo, SignatureHelpResult, SignatureInfo};
 struct CallContext {
     callee: String,
     receiver_end: Option<usize>,
-    active_param: usize,
+    /// Source text of each argument up to the cursor; the last is the one
+    /// the cursor is in.
+    args: Vec<String>,
+}
+
+impl CallContext {
+    /// The parameter the cursor's argument fills: the one it names, or its
+    /// position when it names none.
+    fn active_param(&self, sig: &FnSig) -> usize {
+        let current = self.args.last().map_or("", String::as_str);
+        argument_label(current)
+            .and_then(|name| sig.param_names.iter().position(|param| param == name))
+            .unwrap_or(self.args.len().saturating_sub(1))
+    }
+}
+
+/// The parameter name an argument's text starts with, as in `timeout: 5s`.
+fn argument_label(text: &str) -> Option<&str> {
+    let text = text.trim_start();
+    let end = text
+        .find(|c: char| !(c.is_alphanumeric() || c == '_'))
+        .unwrap_or(text.len());
+    let rest = text[end..].trim_start();
+    (end > 0 && rest.starts_with(':') && !rest.starts_with("::")).then(|| &text[..end])
+}
+
+/// `name: ` completions for the parameters the call under the cursor has not
+/// yet supplied, offered where an argument starts.
+#[must_use]
+pub fn named_argument_completions(
+    source: &str,
+    tc: &TypeCheckOutput,
+    offset: usize,
+) -> Vec<crate::CompletionItem> {
+    let Some(context) = find_call_context(source, offset) else {
+        return Vec::new();
+    };
+    let current = context.args.last().map_or("", String::as_str).trim_start();
+    if !current.chars().all(|c| c.is_alphanumeric() || c == '_') {
+        return Vec::new();
+    }
+    let Some(sig) = find_call_sig(&context, tc) else {
+        return Vec::new();
+    };
+    let earlier = &context.args[..context.args.len() - 1];
+    let positional = earlier
+        .iter()
+        .take_while(|arg| argument_label(arg).is_none())
+        .count();
+    let named: Vec<&str> = earlier
+        .iter()
+        .filter_map(|arg| argument_label(arg))
+        .collect();
+    sig.param_names
+        .iter()
+        .skip(positional)
+        .filter(|name| !name.starts_with('_') && !named.contains(&name.as_str()))
+        .map(|name| crate::CompletionItem {
+            label: format!("{name}:"),
+            kind: crate::CompletionKind::Variable,
+            detail: Some("named argument".to_string()),
+            documentation: None,
+            insert_text: Some(format!("{name}: ")),
+            insert_text_is_snippet: false,
+            sort_text: Some(format!("0_{name}")),
+        })
+        .collect()
 }
 
 /// Build signature help at the given byte offset within `source`.
@@ -28,6 +94,7 @@ pub fn build_signature_help(
 ) -> Option<SignatureHelpResult> {
     let context = find_call_context(source, offset)?;
     let sig = find_call_sig(&context, tc)?;
+    let active_param = context.active_param(&sig);
     let label = format_sig_label(&context.callee, &sig);
 
     // Build parameter infos with byte-offset ranges within the label string.
@@ -49,7 +116,7 @@ pub fn build_signature_help(
             parameters: params,
         }],
         active_signature: Some(0),
-        active_parameter: Some(context.active_param as u32),
+        active_parameter: Some(active_param as u32),
     })
 }
 
@@ -101,11 +168,11 @@ fn find_module_qualified_fn_sig(callee: &str, tc: &TypeCheckOutput) -> Option<Fn
     tc.fn_sigs.get(&format!("{owner}.{leaf}")).cloned()
 }
 
-/// Find the function name and active parameter index at the cursor offset.
+/// Find the call the cursor is inside and its arguments up to the cursor.
 fn find_call_context(source: &str, offset: usize) -> Option<CallContext> {
     let bytes = &source.as_bytes()[..offset];
     let mut depth: i32 = 0;
-    let mut comma_count: usize = 0;
+    let mut commas = Vec::new();
     let mut i = bytes.len();
 
     while i > 0 {
@@ -115,10 +182,18 @@ fn find_call_context(source: &str, offset: usize) -> Option<CallContext> {
             b'(' => {
                 if depth == 0 {
                     let (callee, receiver_end) = extract_fn_name_before(source, i)?;
+                    let bounds: Vec<usize> = std::iter::once(i)
+                        .chain(commas.into_iter().rev())
+                        .chain(std::iter::once(offset))
+                        .collect();
+                    let args = bounds
+                        .windows(2)
+                        .map(|pair| source[pair[0] + 1..pair[1]].to_string())
+                        .collect();
                     return Some(CallContext {
                         callee,
                         receiver_end,
-                        active_param: comma_count,
+                        args,
                     });
                 }
                 depth -= 1;
@@ -129,7 +204,7 @@ fn find_call_context(source: &str, offset: usize) -> Option<CallContext> {
                 }
                 depth -= 1;
             }
-            b',' if depth == 0 => comma_count += 1,
+            b',' if depth == 0 => commas.push(i),
             _ => {}
         }
     }
@@ -353,6 +428,54 @@ mod tests {
         let tc = make_tc_with_fn("greet", vec!["name"], vec![Ty::String], Ty::Unit);
         let result = build_signature_help(source, &tc, source.len());
         assert!(result.is_none(), "no signature help outside function call");
+    }
+
+    #[test]
+    fn sig_help_follows_a_named_argument() {
+        let source = "span(end: 9, start: ";
+        let tc = make_tc_with_fn(
+            "span",
+            vec!["start", "end"],
+            vec![Ty::I64, Ty::I64],
+            Ty::String,
+        );
+        let sh = build_signature_help(source, &tc, source.len()).expect("signature help");
+        assert_eq!(
+            sh.active_parameter,
+            Some(0),
+            "`start:` names the first parameter"
+        );
+        let sh = build_signature_help(source, &tc, "span(end: ".len()).expect("signature help");
+        assert_eq!(
+            sh.active_parameter,
+            Some(1),
+            "`end:` names the second parameter"
+        );
+    }
+
+    #[test]
+    fn named_argument_completions_offer_unsupplied_parameters() {
+        let tc = make_tc_with_fn(
+            "connect",
+            vec!["host", "port", "timeout", "_trace"],
+            vec![Ty::String, Ty::I64, Ty::I64, Ty::Bool],
+            Ty::Unit,
+        );
+        let source = "connect(\"db\", timeout: 5, ";
+        let labels: Vec<String> = named_argument_completions(source, &tc, source.len())
+            .into_iter()
+            .map(|item| item.label)
+            .collect();
+        assert_eq!(
+            labels,
+            vec!["port:"],
+            "host is positional, timeout named, _trace hidden"
+        );
+        let inside_value = "connect(\"db\", timeout: 5";
+        assert!(
+            named_argument_completions(inside_value, &tc, inside_value.len()).is_empty(),
+            "no labels are offered inside an argument's value"
+        );
     }
 
     #[test]

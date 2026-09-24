@@ -509,6 +509,7 @@ fn mutable_callable_field_call_keeps_the_selected_projection() {
         target: hew_types::CallTarget::IndirectFunctionValue,
         callee,
         args,
+        ..
     } = &call.kind
     else {
         panic!("direct field invocation: {:?}", call.kind);

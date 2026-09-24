@@ -1,0 +1,25 @@
+// An impl may mark a trait parameter unused as `_depth`; callers label it
+// with the trait's name on the concrete type and through the trait.
+trait Probe {
+    fn reach(self, depth: i64, width: i64) -> i64;
+}
+
+type Flat {
+    base: i64,
+}
+
+impl Probe for Flat {
+    fn reach(self, _depth: i64, width: i64) -> i64 {
+        self.base + width
+    }
+}
+
+fn through<T: Probe>(probe: T) -> i64 {
+    probe.reach(width: 4, depth: 9)
+}
+
+fn main() {
+    let flat = Flat { base: 1 };
+    println(flat.reach(width: 2, depth: 9));
+    println(through(flat));
+}

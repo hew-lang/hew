@@ -1314,7 +1314,11 @@ pub enum HirExprKind {
         /// authority used to reconstruct this identity.
         target: hew_types::CallTarget,
         callee: Box<HirExpr>,
+        /// Arguments in parameter order.
         args: Vec<HirExpr>,
+        /// The index into `args` of each argument in the order the source
+        /// evaluates them; empty when that is parameter order.
+        evaluation_order: Vec<usize>,
     },
     /// `spawn Actor(field: value, ...)` — named-actor spawn. The checker owns
     /// the result type (`Actor`'s own actor-handle type); HIR carries only the
@@ -1327,9 +1331,12 @@ pub enum HirExprKind {
     ActorMessage {
         receiver: Box<HirExpr>,
         method_id: String,
+        /// Arguments in parameter order.
         args: Vec<HirExpr>,
+        /// The index into `args` of each argument in the order the source
+        /// evaluates them; empty when that is parameter order.
+        evaluation_order: Vec<usize>,
         policy: hew_types::actor_delivery::SendPolicy,
-        argument_order: Vec<usize>,
     },
     /// Checker-selected policy, destination change or submission operation.
     ActorDelivery {
@@ -1343,9 +1350,11 @@ pub enum HirExprKind {
     ActorAsk {
         receiver: Box<HirExpr>,
         method_id: String,
+        /// Arguments in parameter order.
         args: Vec<HirExpr>,
-        /// Source arguments stay ordered; this maps protocol slots to sources.
-        argument_order: Vec<usize>,
+        /// The index into `args` of each argument in the order the source
+        /// evaluates them; empty when that is parameter order.
+        evaluation_order: Vec<usize>,
         reply_ty: ResolvedTy,
         /// How this call's own admission behaves when the destination mailbox
         /// is full: `Wait` for a bare handle, whatever the `policy(..)` view
@@ -1370,7 +1379,11 @@ pub enum HirExprKind {
     ActorGenStream {
         receiver: Box<HirExpr>,
         method: String,
+        /// Arguments in parameter order.
         args: Vec<HirExpr>,
+        /// The index into `args` of each argument in the order the source
+        /// evaluates them; empty when that is parameter order.
+        evaluation_order: Vec<usize>,
     },
     /// Cross-node request/reply dispatch on `RemotePid<T>::ask(msg, timeout_ms)`.
     ///
@@ -1718,7 +1731,11 @@ pub enum HirExprKind {
         trait_name: String,
         method_name: String,
         slot: u32,
+        /// Arguments in parameter order.
         args: Vec<HirExpr>,
+        /// The index into `args` of each argument in the order the source
+        /// evaluates them; empty when that is parameter order.
+        evaluation_order: Vec<usize>,
         ret_ty: ResolvedTy,
         /// Caller-side method signature after the checker substituted
         /// trait type parameters and associated-type bindings from the
@@ -1750,7 +1767,11 @@ pub enum HirExprKind {
         target: hew_types::CallTarget,
         /// Type-parameter name that carries the bound (e.g. "T").
         receiver_type_param: String,
+        /// Arguments in parameter order.
         args: Vec<HirExpr>,
+        /// The index into `args` of each argument in the order the source
+        /// evaluates them; empty when that is parameter order.
+        evaluation_order: Vec<usize>,
         ret_ty: ResolvedTy,
     },
     /// Var-self method dispatch using the Slice-1 dual-return ABI.
@@ -1771,7 +1792,11 @@ pub enum HirExprKind {
         /// Structured direct or static-trait target carried from checking.
         call_target: hew_types::CallTarget,
         target: HirVarSelfMethodTarget,
+        /// Arguments in parameter order.
         args: Vec<HirExpr>,
+        /// The index into `args` of each argument in the order the source
+        /// evaluates them; empty when that is parameter order.
+        evaluation_order: Vec<usize>,
         ret_ty: ResolvedTy,
         receiver_ty: ResolvedTy,
     },

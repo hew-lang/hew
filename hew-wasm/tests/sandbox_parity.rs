@@ -17,6 +17,12 @@ const PARITY_CASES: &[ParityCase] = &[
         source_rel: "examples/sandbox-graduation/closure_values.hew",
     },
     ParityCase {
+        // Named arguments bind by parameter name and evaluate as written, on
+        // functions, methods, a trait object and an actor handler.
+        test_name: "named_arguments",
+        source_rel: "examples/sandbox-graduation/named_arguments.hew",
+    },
+    ParityCase {
         // Deferred work runs as the scope ends, in reverse registration order.
         test_name: "defer_order",
         source_rel: "examples/sandbox-graduation/defer_order.hew",

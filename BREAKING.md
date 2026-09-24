@@ -9,6 +9,20 @@ syntax and semantics, and the [language guide](docs/hew-language-guide.md)
 for examples. The release-labelled entries below preserve migration history;
 old spellings and ABI layouts in them are not current programming guidance.
 
+## Named arguments bind by name in v0.6.0
+
+- A named argument binds to the parameter it names. Earlier builds bound
+  named arguments by position, so `sub(b: 3, a: 10)` passed `3` as `a`; such
+  calls now compute what they say.
+- Duplicate, unknown and missing named arguments are errors, as are names on
+  closures, function values, tuple constructors and builtin methods.
+- An `impl` of a trait method must use the trait's parameter names
+  (`E_IMPL_PARAM_NAME_MISMATCH`). Rename the impl's parameters to match.
+- `std.misc.log` functions no longer accept extra named arguments
+  (`log.info("x", user: 3)`), which failed to compile before this change.
+
+---
+
 ## Distributed identity and remote PIDs in v0.6.0-rc1
 
 - Node identity is derived from the stable authenticated Noise key or TLS SPKI.

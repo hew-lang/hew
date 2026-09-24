@@ -1,0 +1,70 @@
+[[case]]
+id = "named-arguments-rejected"
+intent = "Duplicate, unknown and missing named arguments are refused, and names on a function value, a tuple variant, a tuple record, a builtin method and the retired log keyword form are refused rather than bound by position."
+source = "cases/named-arguments-rejected.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "E_NAMED_ARG_DUPLICATE"
+line = 17
+column = 26
+message = "already supplied by name"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "E_NAMED_ARG_DUPLICATE"
+line = 18
+column = 23
+message = "already supplied positionally"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "E_NAMED_ARG_UNKNOWN"
+line = 19
+column = 20
+message = "unknown named argument `c`"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "E_NAMED_ARG_MISSING"
+line = 20
+column = 13
+message = "does not supply `a`"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "E_NAMED_ARG_UNNAMED_CALLEE"
+line = 21
+column = 22
+message = "function value"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "E_NAMED_ARG_UNNAMED_CALLEE"
+line = 22
+column = 36
+message = "`.Level`"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "E_NAMED_ARG_UNNAMED_CALLEE"
+line = 23
+column = 24
+message = "positional arguments only"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "E_NAMED_ARG_UNNAMED_CALLEE"
+line = 24
+column = 22
+message = "method `push`"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "E_NAMED_ARG_UNKNOWN"
+line = 25
+column = 31
+message = "unknown named argument `user`"

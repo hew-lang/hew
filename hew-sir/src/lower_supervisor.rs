@@ -483,7 +483,7 @@ impl Builder<'_, '_> {
         self.lower_runtime_operation_with(
             expression,
             hew_types::RuntimeCallFamily::SupervisorPool(operation),
-            &[receiver, index, &bound],
+            (&[receiver, index, &bound], &[]),
             true,
             &[(2, members)],
         )?

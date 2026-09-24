@@ -647,27 +647,22 @@ pub(super) struct StartedActorCall {
 }
 
 impl Builder<'_, '_> {
-    /// Evaluate payloads in source order, applying the same value coercions as
-    /// ordinary calls, then arrange the resulting owners in protocol order.
-    /// Earlier owners stay live until all later arguments have succeeded.
+    /// Evaluate payloads in the call's evaluation order, applying the same
+    /// value coercions as ordinary calls, and return the owners in protocol
+    /// order. Earlier owners stay live until all later arguments have
+    /// succeeded.
     fn lower_actor_payload(
         &mut self,
         args: &[HirExpr],
         parameters: &[ResolvedTy],
-        argument_order: &[usize],
+        evaluation_order: &[usize],
     ) -> Result<std::ops::ControlFlow<ValueId, Vec<ValueId>>, String> {
-        if parameters.len() != args.len()
-            || argument_order.len() != args.len()
-            || argument_order.iter().copied().collect::<BTreeSet<_>>() != (0..args.len()).collect()
-        {
-            return Err("actor payload argument order differs from its protocol".into());
+        if parameters.len() != args.len() {
+            return Err("actor payload differs from its protocol".into());
         }
-        let mut expected_by_source = vec![None; args.len()];
-        for (expected, source_index) in parameters.iter().zip(argument_order) {
-            expected_by_source[*source_index] = Some(expected);
-        }
-        let mut values = Vec::with_capacity(args.len());
-        for (source, expected) in args.iter().zip(expected_by_source) {
+        let mut values = vec![None; args.len()];
+        for index in crate::lower::evaluation_sequence(evaluation_order, args.len()) {
+            let source = &args[index];
             let value = lower_initial_value_transfer(
                 self,
                 source,
@@ -677,14 +672,14 @@ impl Builder<'_, '_> {
             if !self.is_open() {
                 return Ok(std::ops::ControlFlow::Break(value));
             }
-            values.push(self.coerce_value(
+            values[index] = Some(self.coerce_value(
                 value,
-                expected.expect("validated protocol permutation"),
+                &parameters[index],
                 crate::Provenance::Site(source.site),
             )?);
         }
         Ok(std::ops::ControlFlow::Continue(
-            argument_order.iter().map(|index| values[*index]).collect(),
+            values.into_iter().flatten().collect(),
         ))
     }
 
@@ -700,8 +695,8 @@ impl Builder<'_, '_> {
             receiver,
             method_id,
             args,
+            evaluation_order,
             reply_ty: _,
-            argument_order,
             policy,
             deadline_ns,
         } = &expression.kind
@@ -758,7 +753,7 @@ impl Builder<'_, '_> {
             operand: Operand { value: target },
             decision: crate::BoundaryDecision::Borrow,
         });
-        let values = match self.lower_actor_payload(args, &parameters, argument_order)? {
+        let values = match self.lower_actor_payload(args, &parameters, evaluation_order)? {
             std::ops::ControlFlow::Continue(values) => values,
             std::ops::ControlFlow::Break(value) => {
                 return Ok(ActorRequestPreparation::Diverged(value))
@@ -1381,8 +1376,8 @@ impl Builder<'_, '_> {
             receiver,
             method_id,
             args,
+            evaluation_order,
             policy,
-            argument_order,
         } = &expression.kind
         else {
             unreachable!()
@@ -1420,7 +1415,7 @@ impl Builder<'_, '_> {
         if ty.to_ty() != expected {
             return Err("message description changes its checked value type".into());
         }
-        let values = match self.lower_actor_payload(args, &handler.params, argument_order)? {
+        let values = match self.lower_actor_payload(args, &handler.params, evaluation_order)? {
             std::ops::ControlFlow::Continue(values) => values,
             std::ops::ControlFlow::Break(value) => return Ok(value),
         };
@@ -1638,6 +1633,7 @@ impl Builder<'_, '_> {
             receiver,
             method,
             args,
+            evaluation_order,
         } = &expression.kind
         else {
             unreachable!()
@@ -1664,12 +1660,14 @@ impl Builder<'_, '_> {
         {
             return Err("stream request disagrees with its producer protocol".into());
         }
-        let argument_order = (0..args.len()).collect::<Vec<_>>();
-        let mut values =
-            match self.lower_actor_payload(args, &handler.params[..args.len()], &argument_order)? {
-                std::ops::ControlFlow::Continue(values) => values,
-                std::ops::ControlFlow::Break(value) => return Ok(value),
-            };
+        let mut values = match self.lower_actor_payload(
+            args,
+            &handler.params[..args.len()],
+            evaluation_order,
+        )? {
+            std::ops::ControlFlow::Continue(values) => values,
+            std::ops::ControlFlow::Break(value) => return Ok(value),
+        };
         let provenance = crate::Provenance::Site(expression.site);
         let (stream, sink) = self.emit_stream_pipe(&stream_ty, sink_ty, provenance.clone())?;
         values.push(sink);

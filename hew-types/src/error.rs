@@ -1307,6 +1307,17 @@ pub enum TypeErrorKind {
     ///
     /// Envelope code: `E_LET_ELSE_FALLTHROUGH`.
     LetElseDoesNotDiverge,
+    /// A named call argument matches no parameter of the resolved callee.
+    NamedArgUnknown,
+    /// A call supplies one parameter twice, by name or by name after position.
+    NamedArgDuplicate,
+    /// A call that names arguments leaves parameters unsupplied.
+    NamedArgMissing,
+    /// A callee whose parameters carry no names (a function value, a tuple
+    /// constructor or a positional builtin) received a named argument.
+    NamedArgUnnamedCallee,
+    /// An impl method renames a parameter its trait declares.
+    ImplParamNameMismatch,
     /// A function carrying `#[intrinsic("…")]` was declared outside the
     /// designated stdlib-floor modules.
     ///
@@ -1574,6 +1585,11 @@ impl TypeErrorKind {
             Self::IntrinsicSignatureMismatch { .. } => "E_INTRINSIC_SIGNATURE_MISMATCH",
             Self::RefutableLetPattern { .. } => "E_REFUTABLE_LET",
             Self::LetElseDoesNotDiverge => "E_LET_ELSE_FALLTHROUGH",
+            Self::NamedArgUnknown => "E_NAMED_ARG_UNKNOWN",
+            Self::NamedArgDuplicate => "E_NAMED_ARG_DUPLICATE",
+            Self::NamedArgMissing => "E_NAMED_ARG_MISSING",
+            Self::NamedArgUnnamedCallee => "E_NAMED_ARG_UNNAMED_CALLEE",
+            Self::ImplParamNameMismatch => "E_IMPL_PARAM_NAME_MISMATCH",
             Self::OpaqueDirectConstruct { .. } => "OpaqueDirectConstruct",
             Self::OpaqueMessagePayload { .. } => "OpaqueMessagePayload",
             Self::StreamAdapterNotSupported { .. } => "StreamAdapterNotSupported",

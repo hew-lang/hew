@@ -874,6 +874,23 @@ fn main() { println(add(2, 3)); println(square(5)); }   // 5, 25
 
 Prefer the bare trailing expression (no semicolon) as the return value; reserve explicit `return expr;` for early exits. A trailing semicolon turns the last expression into unit.
 
+### Named arguments
+
+```hew
+fn span(start: i64, end: i64) -> string { f"{start}..{end}" }
+fn main() {
+    println(span(2, 9));                 // 2..9
+    println(span(end: 9, start: 2));     // 2..9
+    println(span(2, end: 9));            // 2..9
+}
+```
+
+A call can name its arguments with the parameter names, after any positional
+ones and in any order. The arguments still run left to right as written. Every
+parameter is still required, and a closure or function value takes positional
+arguments only. An `impl` keeps its trait's parameter names, so renaming a
+parameter is a change callers can see (HEW-SPEC-2026 §12.7).
+
 ### A `var` parameter is the callee's own copy
 
 ```hew

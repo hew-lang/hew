@@ -353,6 +353,380 @@ fn comments_inside_wire_declarations() {
     );
 }
 
+#[test]
+fn trailing_comment_on_last_argument_and_element() {
+    assert_faithful(
+        r#"fn f(a: i64, b: i64) -> i64 {
+    a + b
+}
+
+fn main() {
+    let x = f(
+        1,
+        2, // last arg
+    );
+    let xs = [
+        1,
+        2, // last element
+    ];
+    println(x + xs.len());
+}
+"#,
+    );
+}
+
+#[test]
+fn trailing_comment_on_last_parameter_and_field() {
+    assert_faithful(
+        r#"fn f(
+    a: i64,
+    b: i64, // last param
+) -> i64 {
+    a + b
+}
+
+type P {
+    x: i64,
+    y: i64,
+}
+
+fn main() {
+    let p = P {
+        x: 1,
+        y: 2, // last field
+    };
+    println(f(p.x, p.y));
+}
+"#,
+    );
+}
+
+#[test]
+fn comment_between_closing_brace_and_else() {
+    assert_faithful(
+        r#"fn main() {
+    let a = 1;
+    if a > 0 {
+        println("pos");
+    }
+    // about the else
+    else {
+        println("neg");
+    }
+}
+"#,
+    );
+}
+
+#[test]
+fn comment_between_loop_header_and_brace() {
+    assert_faithful(
+        r#"fn main() {
+    var c = 3;
+    while c > 0 /* still going */ {
+        c = c - 1;
+    }
+    for i in 0..3 /* three */ {
+        println(i);
+    }
+    if c == 0 /* done */ {
+        println("done");
+    }
+}
+"#,
+    );
+}
+
+#[test]
+fn comments_in_signature_and_where_clause() {
+    assert_faithful(
+        r#"fn f(a: i64) /* returns */ -> i64 {
+    a
+}
+
+fn g<T>(x: T) -> T // generic
+where
+    T: Clone, // needs clone
+{
+    x
+}
+
+fn main() {
+    println(f(1));
+}
+"#,
+    );
+}
+
+#[test]
+fn comments_inside_import_selection() {
+    assert_faithful(
+        r#"import std.fs; // files
+// the next import
+import std.{
+    // time next
+    time,
+};
+
+fn main() {}
+"#,
+    );
+}
+
+#[test]
+fn comments_around_or_patterns_and_guards() {
+    assert_faithful(
+        r#"fn main() {
+    let v = 3;
+    match v {
+        1 // one
+        | 2 => println("small"),
+        n if n > 10 // big
+        => println("big"),
+        _ // anything
+        => println("other"),
+    }
+}
+"#,
+    );
+}
+
+#[test]
+fn comment_after_trailing_record_base() {
+    assert_faithful(
+        r#"type P {
+    x: i64,
+    y: i64,
+}
+
+fn f(b: P) -> P {
+    P { x: 1, ..b /* rest */ }
+}
+
+fn main() {
+    println(f(P { x: 0, y: 0 }).y);
+}
+"#,
+    );
+}
+
+#[test]
+fn comment_before_statement_semicolon() {
+    assert_faithful(
+        r#"fn main() {
+    let a = 1 // a note
+    ;
+    let c = a /* mid */ ;
+    println(a + c);
+}
+"#,
+    );
+}
+
+#[test]
+fn comment_inside_empty_argument_list() {
+    assert_faithful(
+        r#"fn f() -> i64 {
+    1
+}
+
+fn main() {
+    let x = f(
+        // nothing to pass
+    );
+    let xs: Vec<i64> = [
+        // empty for now
+    ];
+    println(x + xs.len());
+}
+"#,
+    );
+}
+
+#[test]
+fn comment_before_supervisor_strategy() {
+    assert_faithful(
+        r#"actor Ping {
+    receive fn ping() {}
+}
+
+supervisor App {
+    // restart one at a time
+    strategy: one_for_one,
+    // the only child
+    child a: Ping,
+}
+
+fn main() {}
+"#,
+    );
+}
+
+#[test]
+fn comments_between_machine_members() {
+    assert_faithful(
+        r#"machine Door {
+    // Input-event vocabulary
+    events {
+        Open,
+        Close,
+    }
+    state Closed,
+    state Opened,
+    on Open: Closed => Opened, // opens it
+    on Close: Opened => Closed,
+    // nothing else
+    default { state }
+}
+
+fn main() {}
+"#,
+    );
+}
+
+#[test]
+fn spec_machine_with_trailing_comments_on_rules() {
+    assert_faithful(
+        r#"machine Session {
+    events {
+        Open,
+        Authed,
+        Close,
+    }
+
+    emits {
+        Trace { text: string },
+    }
+
+    state Closed,
+    state Kicked,
+
+    state Live {
+        entry {
+            emit Trace { text: "Live.entry" };
+        }
+        exit {
+            emit Trace { text: "Live.exit" };
+        }
+
+        initial state Authing,
+        state Active,
+
+        on Close: _ => Closed,
+    },
+
+    on Open: Closed => Live,          // enters Authing
+    on Authed: Authing => Active,     // no composite hook
+    on Close: Active => Kicked,       // beats the parent Close rule
+
+    default { state }
+}
+"#,
+    );
+}
+
+// The lexer is the one source of comments, so text inside raw strings,
+// f-string interpolations and characters is never taken for one.
+
+#[test]
+fn comment_after_raw_string_ending_in_backslash_is_kept() {
+    assert_faithful("fn main() {\n    let p = r\"C:\\\";\n    // comment\n    println(p);\n}\n");
+}
+
+#[test]
+fn comment_after_fstring_with_quoted_interpolation_is_kept() {
+    assert_faithful(
+        "fn main() {\n    let q = f\"{\"\\\"\"}\";\n    // vanishes\n    println(q); // also vanishes\n}\n",
+    );
+}
+
+#[test]
+fn url_inside_fstring_interpolation_is_not_a_comment() {
+    let source = "fn g(s: string) -> string {\n    s\n}\n\nfn main() {\n    let u = f\"{g(\"http://x\")}\";\n    // keep me\n    println(u);\n}\n";
+    assert_faithful(source);
+    let formatted = format_source(source, &parse(source).program);
+    assert_eq!(
+        formatted.matches("//").count(),
+        2,
+        "one real comment, one URL"
+    );
+}
+
+#[test]
+fn crlf_source_formats_to_crlf() {
+    let source = "fn main() {\r\n    // own\r\n    let a = 1; // trail\r\n    println(a);\r\n}\r\n";
+    assert_faithful(source);
+    let formatted = format_source(source, &parse(source).program);
+    assert!(
+        !formatted.replace("\r\n", "").contains('\n'),
+        "every line ends in CRLF"
+    );
+}
+
+#[test]
+fn mixed_line_endings_in_output_are_rejected() {
+    let source = "fn main() {\r\n    let a = 1;\r\n}\r\n";
+    let mixed = "fn main() {\r\n    let a = 1;\n}\r\n";
+    assert!(matches!(
+        check(source, mixed),
+        Err(FidelityError::LineEnding { .. })
+    ));
+}
+
+#[test]
+fn a_comment_moved_across_a_separator_is_rejected() {
+    let source = "fn f(a: i64, b: i64) -> i64 {\n    a\n}\n\nfn main() {\n    let x = f(1 /* one */, 2);\n}\n";
+    let moved = "fn f(a: i64, b: i64) -> i64 {\n    a\n}\n\nfn main() {\n    let x = f(1, /* one */ 2);\n}\n";
+    assert!(matches!(
+        check(source, moved),
+        Err(FidelityError::TraceChanged { .. })
+    ));
+}
+
+#[test]
+fn a_comment_moved_across_an_operator_is_rejected() {
+    let source = "fn main() {\n    let x = 1 /* one */ + 2;\n}\n";
+    let moved = "fn main() {\n    let x = 1 + /* one */ 2;\n}\n";
+    assert!(matches!(
+        check(source, moved),
+        Err(FidelityError::TraceChanged { .. })
+    ));
+}
+
+#[test]
+fn a_comment_moved_out_of_parentheses_is_rejected() {
+    let source = "fn main() {\n    println(1 /* one */);\n}\n";
+    let moved = "fn main() {\n    println(1); /* one */\n}\n";
+    assert!(matches!(
+        check(source, moved),
+        Err(FidelityError::TraceChanged { .. })
+    ));
+}
+
+#[test]
+fn a_dropped_grouping_parenthesis_is_rejected() {
+    let source = "fn main() {\n    let x = (1 + 2) * 3;\n    let y = (4 + 5);\n}\n";
+    let dropped = "fn main() {\n    let x = (1 + 2) * 3;\n    let y = 4 + 5;\n}\n";
+    assert!(matches!(
+        check(source, dropped),
+        Err(FidelityError::TraceChanged { .. })
+    ));
+}
+
+#[test]
+fn a_separator_the_formatter_adds_beside_a_comment_is_accepted() {
+    let source = "fn f(a: i64) -> i64 {\n    a\n}\n\nfn main() {\n    let x = f(\n        1 // one\n    );\n}\n";
+    let added = "fn f(a: i64) -> i64 {\n    a\n}\n\nfn main() {\n    let x = f(\n        1, // one\n    );\n}\n";
+    assert_eq!(check(source, added), Ok(()));
+}
+
+#[test]
+fn grouping_parentheses_and_empty_argument_lists_are_kept() {
+    assert_faithful(
+        "actor W {\n    receive fn go() {}\n}\n\nfn main() {\n    let w = spawn W();\n    let x = (1 + 2);\n    let y = -(-(3));\n    println(x + y);\n}\n",
+    );
+}
+
 // ── Negative controls ────────────────────────────────────────────────────
 
 const ACTOR: &str = "actor W {\n    var n: i64,\n\n    // starts it\n    #[on(start)]\n    fn started() {}\n\n    receive fn boom() {}\n}\n";

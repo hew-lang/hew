@@ -1,17 +1,19 @@
 //! Source-fidelity oracle for the formatter.
 //!
-//! `hew fmt` may change whitespace and punctuation, and nothing else.
-//! [`check`] proves that for one input by comparing:
+//! `hew fmt` may change layout and separators, and nothing else. [`check`]
+//! proves that for one input by comparing:
 //!
 //! - the parsed programs, ignoring spans;
-//! - the trivia trace: every significant token and every comment in source
-//!   order, with each comment marked as trailing (code before it on its line)
-//!   or own-line. Punctuation other than braces is left out: choosing it is
-//!   the formatter's job, and the AST comparison covers its meaning.
+//! - the trace: every word, literal, bracket and comment in source order,
+//!   with each comment marked as trailing (code before it on its line) or
+//!   own-line, and anchored by the punctuation on either side of it;
+//! - the line endings, which must all follow the source's first one.
 //!
 //! The AST comparison proves the program means the same thing. The trace
-//! proves that declarations and members kept their order and that each comment
-//! stayed between the same two tokens with the same attachment.
+//! proves that declarations and members kept their order and that each
+//! comment stayed where it was: a comment may gain or lose an adjacent `,` or
+//! `;` that the formatter adds or drops, but it may not cross one, an
+//! operator or any other token.
 
 use std::fmt::Write as _;
 
@@ -20,11 +22,59 @@ use hew_lexer::Token;
 use super::extract_comments;
 use crate::ast_eq::program_eq_ignoring_spans;
 
-/// One element of a source's trivia trace.
+/// One element of a source's trace.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum TraceItem {
     Token(String),
-    Comment { text: String, trailing: bool },
+    Comment {
+        text: String,
+        trailing: bool,
+        /// Untraced punctuation between the previous traced item and the comment.
+        before: Vec<String>,
+        /// Untraced punctuation between the comment and the next traced item.
+        after: Vec<String>,
+    },
+}
+
+impl TraceItem {
+    /// Whether `found` reprints `self` in the same place.
+    fn same_place(&self, found: &TraceItem) -> bool {
+        match (self, found) {
+            (TraceItem::Token(a), TraceItem::Token(b)) => a == b,
+            (
+                TraceItem::Comment {
+                    text,
+                    trailing,
+                    before,
+                    after,
+                },
+                TraceItem::Comment {
+                    text: found_text,
+                    trailing: found_trailing,
+                    before: found_before,
+                    after: found_after,
+                },
+            ) => {
+                let is_separator = |t: &&String| matches!(t.as_str(), "," | ";");
+                let operators = |side: &[String]| -> Vec<String> {
+                    side.iter().filter(|t| !is_separator(t)).cloned().collect()
+                };
+                let has_separator = |side: &[String]| side.iter().any(|t| is_separator(&t));
+                let crossed = (has_separator(before)
+                    && !has_separator(found_before)
+                    && has_separator(found_after))
+                    || (has_separator(after)
+                        && !has_separator(found_after)
+                        && has_separator(found_before));
+                text == found_text
+                    && trailing == found_trailing
+                    && operators(before) == operators(found_before)
+                    && operators(after) == operators(found_after)
+                    && !crossed
+            }
+            _ => false,
+        }
+    }
 }
 
 impl std::fmt::Display for TraceItem {
@@ -33,12 +83,16 @@ impl std::fmt::Display for TraceItem {
             TraceItem::Token(t) => f.write_str(t),
             TraceItem::Comment {
                 text,
-                trailing: true,
-            } => write!(f, "trailing comment {text:?}"),
-            TraceItem::Comment {
-                text,
-                trailing: false,
-            } => write!(f, "own-line comment {text:?}"),
+                trailing,
+                before,
+                after,
+            } => write!(
+                f,
+                "{} comment {text:?} after `{}` before `{}`",
+                if *trailing { "trailing" } else { "own-line" },
+                before.join(" "),
+                after.join(" "),
+            ),
         }
     }
 }
@@ -59,6 +113,11 @@ pub enum FidelityError {
         /// What the formatted text has at the divergence.
         found: String,
     },
+    /// A line break in the formatted text does not use the source's style.
+    LineEnding {
+        /// Byte offset of the first line break in the wrong style.
+        formatted_offset: usize,
+    },
 }
 
 impl std::fmt::Display for FidelityError {
@@ -74,14 +133,26 @@ impl std::fmt::Display for FidelityError {
                 f,
                 "formatted output diverges at byte {formatted_offset}: expected {expected}, found {found}"
             ),
+            FidelityError::LineEnding { formatted_offset } => write!(
+                f,
+                "formatted output mixes line endings at byte {formatted_offset}"
+            ),
         }
     }
 }
 
 impl std::error::Error for FidelityError {}
 
+/// Whether `source` ends its lines with `\r\n`, judged by its first line.
+#[must_use]
+pub fn uses_crlf(source: &str) -> bool {
+    source
+        .find('\n')
+        .is_some_and(|i| source[..i].ends_with('\r'))
+}
+
 /// Prove that `formatted` reprints `source` without changing its program,
-/// its token order or the placement of any comment.
+/// its token order, the placement of any comment or its line-ending style.
 ///
 /// # Errors
 ///
@@ -105,57 +176,91 @@ pub fn check(source: &str, formatted: &str) -> Result<(), FidelityError> {
     let mismatch = expected
         .iter()
         .zip(&found)
-        .position(|(e, f)| e.0 != f.0)
+        .position(|(e, f)| !e.0.same_place(&f.0))
         .or_else(|| (expected.len() != found.len()).then(|| expected.len().min(found.len())));
-    let Some(index) = mismatch else {
-        return Ok(());
-    };
-    let describe = |items: &[(TraceItem, usize)]| {
-        let mut out = String::new();
-        for (item, _) in items.iter().skip(index).take(3) {
-            if !out.is_empty() {
-                out.push(' ');
+    if let Some(index) = mismatch {
+        let describe = |items: &[(TraceItem, usize)]| {
+            let mut out = String::new();
+            for (item, _) in items.iter().skip(index).take(3) {
+                if !out.is_empty() {
+                    out.push(' ');
+                }
+                let _ = write!(out, "{item}");
             }
-            let _ = write!(out, "{item}");
-        }
-        if out.is_empty() {
-            out.push_str("end of file");
-        }
-        out
-    };
-    Err(FidelityError::TraceChanged {
-        formatted_offset: found.get(index).map_or(formatted.len(), |(_, at)| *at),
-        expected: describe(&expected),
-        found: describe(&found),
-    })
+            if out.is_empty() {
+                out.push_str("end of file");
+            }
+            out
+        };
+        return Err(FidelityError::TraceChanged {
+            formatted_offset: found.get(index).map_or(formatted.len(), |(_, at)| *at),
+            expected: describe(&expected),
+            found: describe(&found),
+        });
+    }
+    check_line_endings(formatted, uses_crlf(source))
 }
 
-/// Whether a token takes part in the trace: words, literals and braces.
-/// Other punctuation is the formatter's to choose, and the AST comparison
-/// already proves it kept the program's meaning. Braces stay so a comment
-/// cannot silently cross a block boundary.
+/// Every line break between tokens of `formatted` must be `\r\n` when `crlf`
+/// and `\n` otherwise. Breaks inside literals are the program's content.
+fn check_line_endings(formatted: &str, crlf: bool) -> Result<(), FidelityError> {
+    let mut gap_start = 0;
+    let spans = hew_lexer::Lexer::new(formatted)
+        .map(|(_, span)| (span.start, span.end))
+        .chain(std::iter::once((formatted.len(), formatted.len())));
+    for (start, end) in spans {
+        let gap = &formatted.as_bytes()[gap_start..start];
+        for (i, &b) in gap.iter().enumerate() {
+            let preceded_by_cr = i > 0 && gap[i - 1] == b'\r';
+            let wrong = match b {
+                b'\n' => crlf != preceded_by_cr,
+                b'\r' => !crlf || gap.get(i + 1) != Some(&b'\n'),
+                _ => false,
+            };
+            if wrong {
+                return Err(FidelityError::LineEnding {
+                    formatted_offset: gap_start + i,
+                });
+            }
+        }
+        gap_start = end;
+    }
+    Ok(())
+}
+
+/// Whether a token takes part in the trace: words, literals and brackets.
+/// Separators and operators are anchors of the comments beside them.
 fn is_traced(text: &str) -> bool {
-    text.starts_with(|c: char| c.is_alphanumeric() || matches!(c, '_' | '"' | '\'' | '{' | '}'))
+    text.starts_with(|c: char| {
+        c.is_alphanumeric()
+            || matches!(
+                c,
+                '_' | '"' | '\'' | '{' | '}' | '(' | ')' | '[' | ']' | '#'
+            )
+    })
 }
 
 /// A token or comment of the source, in position order.
 struct Lexeme<'s> {
     token: Option<Token<'s>>,
     item: Option<TraceItem>,
+    /// The token's text when it is punctuation outside the trace.
+    punctuation: Option<String>,
     at: usize,
 }
 
 /// Tokens and comments of `source` in order, each with its byte offset.
 fn trace(source: &str) -> Vec<(TraceItem, usize)> {
-    let mut lexemes: Vec<Lexeme<'_>> = hew_lexer::lex(source)
-        .into_iter()
+    let mut lexemes: Vec<Lexeme<'_>> = hew_lexer::Lexer::new(source)
         .map(|(token, span)| {
-            let text = match token {
+            let text = &source[span.start..span.end];
+            let traced = match token {
                 Token::DocComment(t) | Token::InnerDocComment(t) => Some(t.trim_end()),
-                _ => Some(&source[span.start..span.end]).filter(|t| is_traced(t)),
+                _ => Some(text).filter(|t| is_traced(t)),
             };
             Lexeme {
-                item: text.map(|t| TraceItem::Token(t.to_string())),
+                punctuation: traced.is_none().then(|| text.to_string()),
+                item: traced.map(|t| TraceItem::Token(t.to_string())),
                 token: Some(token),
                 at: span.start,
             }
@@ -163,18 +268,47 @@ fn trace(source: &str) -> Vec<(TraceItem, usize)> {
         .collect();
     lexemes.extend(extract_comments(source, false).into_iter().map(|c| Lexeme {
         token: None,
+        punctuation: None,
         item: Some(TraceItem::Comment {
-            text: c.text.trim_end().to_string(),
+            text: c.text.trim_end().replace("\r\n", "\n"),
             trailing: super::is_trailing_comment(source, c.span.start),
+            before: Vec::new(),
+            after: Vec::new(),
         }),
         at: c.span.start,
     }));
     lexemes.sort_by_key(|l| l.at);
     hoist_record_bases(&mut lexemes);
-    lexemes
-        .into_iter()
-        .filter_map(|l| l.item.map(|item| (item, l.at)))
-        .collect()
+
+    let mut items: Vec<(TraceItem, usize)> = Vec::new();
+    let mut punctuation: Vec<String> = Vec::new();
+    // Comments still collecting the punctuation that follows them.
+    let mut open_comments: Vec<usize> = Vec::new();
+    for lexeme in lexemes {
+        if let Some(text) = lexeme.punctuation {
+            for &index in &open_comments {
+                if let TraceItem::Comment { after, .. } = &mut items[index].0 {
+                    after.push(text.clone());
+                }
+            }
+            punctuation.push(text);
+            continue;
+        }
+        let Some(mut item) = lexeme.item else {
+            continue;
+        };
+        if let TraceItem::Comment { before, .. } = &mut item {
+            *before = std::mem::take(&mut punctuation);
+            // A comment ends the punctuation run of the comments before it.
+            open_comments.clear();
+            open_comments.push(items.len());
+        } else {
+            punctuation.clear();
+            open_comments.clear();
+        }
+        items.push((item, lexeme.at));
+    }
+    items
 }
 
 /// Move each record literal's `..base` to the front of its braces.

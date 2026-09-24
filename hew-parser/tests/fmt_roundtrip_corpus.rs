@@ -6,15 +6,27 @@
 //! output must also be a fixed point of the formatter.
 //!
 //! `HEW_FMT_FIDELITY_ROOTS` adds directories outside the workspace, such as
-//! sibling example and ecosystem checkouts, as a platform path list.
+//! sibling example and ecosystem checkouts, as a platform path list; each
+//! named root must exist.
+//!
+//! A workspace file that does not parse is not formatter input. Those files
+//! are listed in `fmt_unparsed_files.txt`, and the list only shrinks: a new
+//! unparsable file, or a listed file that now parses, fails the test.
 
 use hew_parser::fmt::{fidelity, format_source};
 use hew_parser::{parse, Severity};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
 /// A walk that finds fewer files than this has lost a root.
 const MIN_WORKSPACE_FILES: usize = 2000;
+
+fn unparsed_list_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fmt_unparsed_files.txt")
+}
 
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -76,7 +88,13 @@ fn every_hew_file_reprints_faithfully() {
     }
 
     let mut failures = Vec::new();
+    let mut workspace_unparsed = BTreeSet::new();
     for dir in &roots {
+        assert!(
+            dir.is_dir(),
+            "fidelity root {} does not exist",
+            dir.display()
+        );
         let files = hew_files(dir);
         if dir == &root {
             assert!(
@@ -89,7 +107,11 @@ fn every_hew_file_reprints_faithfully() {
         }
         let (mut checked, mut unparsed) = (0usize, 0usize);
         for path in &files {
-            let shown = path.strip_prefix(dir).unwrap_or(path).display().to_string();
+            let shown = path
+                .strip_prefix(dir)
+                .unwrap_or(path)
+                .to_string_lossy()
+                .replace('\\', "/");
             let source = match std::fs::read_to_string(path) {
                 Ok(source) => source,
                 Err(e) => {
@@ -99,7 +121,12 @@ fn every_hew_file_reprints_faithfully() {
             };
             match reprint(&source) {
                 Outcome::Faithful => checked += 1,
-                Outcome::Unparsed => unparsed += 1,
+                Outcome::Unparsed => {
+                    unparsed += 1;
+                    if dir == &root {
+                        workspace_unparsed.insert(shown);
+                    }
+                }
                 Outcome::Failed(why) => failures.push(format!("{shown}: {why}")),
             }
         }
@@ -115,5 +142,20 @@ fn every_hew_file_reprints_faithfully() {
         "{} file(s) do not reprint faithfully:\n{}",
         failures.len(),
         failures.join("\n")
+    );
+
+    let listed: BTreeSet<String> = std::fs::read_to_string(unparsed_list_path())
+        .expect("read the unparsed-file list")
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .map(str::to_string)
+        .collect();
+    let new: Vec<_> = workspace_unparsed.difference(&listed).collect();
+    let gone: Vec<_> = listed.difference(&workspace_unparsed).collect();
+    assert!(
+        new.is_empty() && gone.is_empty(),
+        "fmt_unparsed_files.txt is out of date.\nNew files that do not parse: {new:?}\n\
+         Listed files that now parse or no longer exist (remove them): {gone:?}"
     );
 }

@@ -471,26 +471,30 @@ pub(crate) fn folding_range(
     non_empty(lsp_ranges)
 }
 
+/// Format the document as one whole-document edit. `Err` carries the
+/// message to show when the formatter refuses to rewrite the document, so
+/// the refusal reaches the user instead of passing silently.
 pub(crate) fn formatting(
     server: &HewLanguageServer,
     params: &DocumentFormattingParams,
-) -> Option<Vec<TextEdit>> {
+) -> std::result::Result<Option<Vec<TextEdit>>, String> {
     let uri = &params.text_document.uri;
-    let doc = server.documents.get(uri)?;
-    // A document the formatter cannot reprint faithfully (a parse error, or
-    // a formatter defect) gets no edits rather than a corrupted one.
-    let formatted = hew_parser::fmt::format_checked(&doc.source, &doc.parse_result.program).ok()?;
+    let Some(doc) = server.documents.get(uri) else {
+        return Ok(None);
+    };
+    let formatted = hew_parser::fmt::format_checked(&doc.source, &doc.parse_result.program)
+        .map_err(|e| format!("hew fmt left the file unchanged: {e}"))?;
     if formatted == doc.source {
         // Already canonical: signal success with an empty edit list.
-        return Some(vec![]);
+        return Ok(Some(vec![]));
     }
     // Whole-document replacement. Use offset_range_to_lsp — not doc.source.len() as raw bytes —
     // so that the LSP Position::character field is UTF-16 code units, as the spec requires.
     let range = offset_range_to_lsp(&doc.source, &doc.line_offsets, 0, doc.source.len());
-    Some(vec![TextEdit {
+    Ok(Some(vec![TextEdit {
         range,
         new_text: formatted,
-    }])
+    }]))
 }
 
 #[cfg(test)]

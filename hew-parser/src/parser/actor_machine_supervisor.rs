@@ -360,12 +360,14 @@ impl Parser<'_> {
                 self.advance();
                 self.expect(&Token::LeftBrace)?;
                 while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
+                    let event_start = self.peek_span().start;
                     let event_name = self.expect_ident()?;
                     let fields = self.parse_machine_event_fields()?;
                     self.expect_structural_separator();
                     events.push(MachineEvent {
                         name: event_name,
                         fields,
+                        span: event_start..self.last_token_end,
                     });
                 }
                 self.expect(&Token::RightBrace)?;
@@ -374,12 +376,14 @@ impl Parser<'_> {
                 self.advance();
                 self.expect(&Token::LeftBrace)?;
                 while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
+                    let emitted_start = self.peek_span().start;
                     let emitted = self.expect_ident()?;
                     let fields = self.parse_machine_event_fields()?;
                     self.expect_structural_separator();
                     emits.push(MachineEvent {
                         name: emitted,
                         fields,
+                        span: emitted_start..self.last_token_end,
                     });
                 }
                 self.expect(&Token::RightBrace)?;
@@ -547,6 +551,7 @@ impl Parser<'_> {
     /// surface, with optional `on E(bindings):` head binding). Used both at the
     /// top level of a machine body and inside composite blocks.
     pub(crate) fn parse_machine_transition(&mut self) -> Option<MachineTransition> {
+        let rule_start = self.peek_span().start;
         self.expect(&Token::On)?;
         let event_name = self.expect_ident()?;
 
@@ -670,6 +675,7 @@ impl Parser<'_> {
             body: (body, body_start..body_end),
             body_form,
             reenter,
+            span: rule_start..self.last_token_end,
         })
     }
 
@@ -705,6 +711,7 @@ impl Parser<'_> {
         transitions: &mut Vec<MachineTransition>,
         composite_groups: &mut Vec<CompositeGroup>,
     ) -> Option<()> {
+        let state_start = self.peek_span().start;
         self.expect(&Token::State)?;
         let state_name = self.expect_ident()?;
         let mut fields: Vec<(String, Spanned<TypeExpr>)> = Vec::new();
@@ -727,6 +734,7 @@ impl Parser<'_> {
                     // already-parsed prefix (fields, entry, exit) to the
                     // composite parser, which consumes the rest of the brace.
                     return self.parse_composite_block(
+                        state_start,
                         &state_name,
                         fields,
                         entry_block,
@@ -752,6 +760,7 @@ impl Parser<'_> {
             fields,
             entry: entry_block,
             exit: exit_block,
+            span: state_start..self.last_token_end,
         });
         Some(())
     }
@@ -780,6 +789,7 @@ impl Parser<'_> {
     )]
     pub(crate) fn parse_composite_block(
         &mut self,
+        composite_start: usize,
         composite_name: &str,
         fields: Vec<(String, Spanned<TypeExpr>)>,
         entry: Option<Block>,
@@ -878,6 +888,7 @@ impl Parser<'_> {
             exit,
             fields,
             parent_transitions,
+            span: composite_start..self.last_token_end,
         });
 
         for member in members {
@@ -890,6 +901,7 @@ impl Parser<'_> {
     /// `state Name { fields; entry {} exit {} }`). A `state` inside a substate
     /// body nests deeper than one level and is refused.
     pub(crate) fn parse_machine_substate(&mut self, composite_name: &str) -> Option<MachineState> {
+        let state_start = self.peek_span().start;
         self.expect(&Token::State)?;
         let name = self.expect_ident()?;
         let mut fields = Vec::new();
@@ -943,6 +955,7 @@ impl Parser<'_> {
             fields,
             entry: entry_block,
             exit: exit_block,
+            span: state_start..self.last_token_end,
         })
     }
 

@@ -1848,6 +1848,9 @@ pub struct CompositeGroup {
     /// composite rather than as the N expanded flat copies.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub parent_transitions: Vec<MachineTransition>,
+    /// Byte span of the whole `state Name { … }` block.
+    #[serde(default)]
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1860,12 +1863,18 @@ pub struct MachineState {
     /// Optional `exit { ... }` lifecycle block executed when leaving this state.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exit: Option<Block>,
+    /// Byte span of the declaration; empty for a synthesized state.
+    #[serde(default)]
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MachineEvent {
     pub name: String,
     pub fields: Vec<(String, Spanned<TypeExpr>)>,
+    /// Byte span of the declaration inside its `events`/`emits` header.
+    #[serde(default)]
+    pub span: Span,
 }
 
 /// Authored syntax used for a machine transition body.
@@ -1941,4 +1950,8 @@ pub struct MachineTransition {
     /// Moore-style rule that self-loops must be annotated or empty).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub reenter: bool,
+    /// Byte span from `on` through the rule's end; shared by the per-member
+    /// rules a composite's parent rule expands to.
+    #[serde(default)]
+    pub span: Span,
 }

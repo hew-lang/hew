@@ -1607,11 +1607,11 @@ test-build-harness:
 
 # Python and shell only; no artifacts.
 
-# Every .hew file in the workspace, plus sibling example and ecosystem
-# checkouts when they sit beside this one, must reprint through `hew fmt` to
-# the same program with every token and comment in place, and reach a fixed
-# point. Pass other roots as a path list in HEW_FMT_FIDELITY_ROOTS.
-HEW_FMT_FIDELITY_ROOTS ?= $(subst $(eval) ,:,$(wildcard $(CURDIR)/../examples $(CURDIR)/../ecosystem))
+# Every .hew file in the workspace must reprint through `hew fmt` to the same
+# program with every token and comment in place, and reach a fixed point.
+# Other checkouts join only when named, as a path list that must exist:
+#   make hew-fmt-fidelity HEW_FMT_FIDELITY_ROOTS=../examples:../ecosystem
+HEW_FMT_FIDELITY_ROOTS ?=
 hew-fmt-fidelity: ## Check: prove every .hew source reprints faithfully through hew fmt
 	HEW_FMT_FIDELITY_ROOTS="$(HEW_FMT_FIDELITY_ROOTS)" cargo test -p hew-parser \
 		--test fmt_roundtrip_corpus --test fmt_fidelity -- --nocapture

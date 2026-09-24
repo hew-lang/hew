@@ -1534,9 +1534,10 @@ fn build_module_source_map(program: &Program, documents: &DocumentSet) -> Module
             continue;
         };
         let Some(path) = module.source_paths.first() else {
-            // An injected prelude module carries its embedded source instead.
+            // A prelude module attached without a search path carries its
+            // compiled-in source instead.
             if let [std, leaf] = mod_id.path.as_slice() {
-                if let Some((_, text)) = PRELUDE_STD_SOURCES
+                if let Some((_, text)) = COMPILED_PRELUDE_STD_SOURCES
                     .iter()
                     .find(|(name, _)| std == "std" && name == leaf)
                 {
@@ -2232,7 +2233,8 @@ fn build_module_graph_with_diagnostics(
     }
 
     add_prelude_std_modules(&mut graph, |name| {
-        resolve_prelude_std_source(ctx, &input_canonical, name).map(|(path, source)| (Some(path), source))
+        resolve_prelude_std_source(ctx, &input_canonical, name)
+            .map(|(path, source)| (Some(path), source))
     })?;
 
     rewrite_direct_stdlib_module_root(
@@ -2321,9 +2323,10 @@ fn add_prelude_std_modules(
             continue;
         }
         let (path, source) = source_for(name)?;
-        let filename = path
-            .as_ref()
-            .map_or_else(|| format!("std/{name}.hew"), |path| path.display().to_string());
+        let filename = path.as_ref().map_or_else(
+            || format!("std/{name}.hew"),
+            |path| path.display().to_string(),
+        );
         let parsed = hew_parser::parse(&source);
         if parsed
             .errors

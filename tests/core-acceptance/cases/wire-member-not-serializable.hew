@@ -29,6 +29,6 @@ type Fine {
 fn main() {
     let hp = HasPlain { p: Plain { a: 1 } };
     println(hp.to_json());
-    let fine = Fine { names: ["a"], tag: None };
+    let fine = Fine { names: ["a"], tag: .None };
     println(fine.to_json());
 }

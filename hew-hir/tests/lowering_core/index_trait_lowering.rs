@@ -51,7 +51,7 @@ fn index_trait_user_impl_lowers_to_at_call() {
             type Output = i32;
 
             fn get(g: Grid, index: i32) -> Option<i32> {
-                Some(g.bias + index)
+                .Some(g.bias + index)
             }
 
             fn at(g: Grid, index: i32) -> i32 {

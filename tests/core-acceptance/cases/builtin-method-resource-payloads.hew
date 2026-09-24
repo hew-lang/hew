@@ -20,20 +20,20 @@ fn make(n: i64) -> Buf {
 }
 
 fn main() {
-    let none: Option<Buf> = None;
+    let none: Option<Buf> = .None;
     none.unwrap_or(make(1)).close();
-    let some: Option<Buf> = Some(make(2));
+    let some: Option<Buf> = .Some(make(2));
     some.unwrap_or(make(3)).close();
-    let failed: Result<Buf, string> = Err("bad");
+    let failed: Result<Buf, string> = .Err("bad");
     failed.unwrap_or(make(4)).close();
-    let present: Option<Buf> = Some(make(5));
+    let present: Option<Buf> = .Some(make(5));
     present.expect("present").close();
-    let missing: Option<i64> = None;
+    let missing: Option<i64> = .None;
     match missing.ok_or(make(6)) {
         .Ok(value) => println(value),
         .Err(buf) => buf.close(),
     }
-    let found: Option<i64> = Some(7);
+    let found: Option<i64> = .Some(7);
     match found.ok_or(make(8)) {
         .Ok(value) => println(value),
         .Err(buf) => buf.close(),

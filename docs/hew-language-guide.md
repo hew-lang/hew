@@ -142,7 +142,7 @@ fn main() {
     let point = Point { x: 7, label: "west" };
     var scores: Vec<i64> = Vec.new();
     scores.push(5);
-    println(f"{point:?} {scores:?} {Some(3):?}");
+    println(f"{point:?} {scores:?} {Option.Some(3):?}");
     // Point { x: 7, label: west } [5] Some(3)
 }
 ```
@@ -1110,9 +1110,9 @@ type Node {
 }
 
 fn main() {
-    let root = Rc.new(Node { label: "root", parent: None });
+    let root = Rc.new(Node { label: "root", parent: .None });
     let weak = root.downgrade();
-    root.set(Node { label: "child", parent: Some(weak.clone()) });
+    root.set(Node { label: "child", parent: .Some(weak.clone()) });
 
     match weak.upgrade() {
         .Some(owner) => println(owner.strong_count()),
@@ -1345,7 +1345,7 @@ fn main() {
 
 Use `EnumName.Variant` to qualify construction or disambiguate across modules. In a match, use the contextual `.Variant` pattern when the scrutinee type selects the enum.
 
-The bare spelling — a variant name with neither the dot nor the type qualifier — is not the language. Since v0.6.0 it is rejected in expression position with `E_BARE_VARIANT_EXPR` and in pattern position with `E_BARE_VARIANT_PATTERN`, each with a fix-it that inserts the dot. `hew fmt --migrate` applies both across a source tree.
+The bare spelling — a variant name with neither the dot nor the type qualifier — is not the language, and `Option` and `Result` are no exception: write `.Some(x)` or `.None` where the expected type selects the enum and `Option.Some(x)` where nothing does. Since v0.6.0 the bare spelling is rejected in expression position with `E_BARE_VARIANT_EXPR` and in pattern position with `E_BARE_VARIANT_PATTERN`, each with a fix-it that inserts the dot or the type. `hew fmt --migrate` applies both across a source tree.
 
 ### Self-referential recursive enum (indirect)
 
@@ -2731,7 +2731,7 @@ also callable directly: `val.fmt()` returns the string representation.
 
 ```hew
 fn divide(a: i64, b: i64) -> Result<i64, string> {
-    if b == 0 { Err("division by zero") } else { Ok(a / b) }
+    if b == 0 { .Err("division by zero") } else { .Ok(a / b) }
 }
 fn main() {
     match divide(10, 2) { .Ok(v) => println(f"ok: {v}"), .Err(e) => println(f"err: {e}") }
@@ -2739,33 +2739,33 @@ fn main() {
 }
 ```
 
-Construct with bare `Ok(v)`/`Err(e)`; consume with `match` covering both arms. The type is inferred from the function's declared return type.
+Construct with `.Ok(v)`/`.Err(e)` where the expected type selects `Result` (here the function's declared return type), or `Result.Ok(v)` where nothing does; consume with `match` covering both arms.
 
 ### Option construction and matching
 
 ```hew
 fn first_positive(a: i64) -> Option<i64> {
-    if a > 0 { Some(a) } else { None }
+    if a > 0 { .Some(a) } else { .None }
 }
 fn main() {
     match first_positive(5) { .Some(v) => println(f"some: {v}"), .None => println("none") }
-    let n: Option<i64> = None;
+    let n: Option<i64> = .None;
     match n { .Some(v) => println(f"some: {v}"), .None => println("none") }
 }
 ```
 
-`Some(7)` infers `Option<i64>` on its own. A standalone `None` needs an annotation — `let n: Option<i64> = None`.
+`Option.Some(7)` infers `Option<i64>` on its own. A standalone none needs an annotation — `let n: Option<i64> = .None`.
 
 ### ? operator for propagation (Result and Option)
 
 ```hew
 fn divide(a: i64, b: i64) -> Result<i64, string> {
-    if b == 0 { Err("division by zero") } else { Ok(a / b) }
+    if b == 0 { .Err("division by zero") } else { .Ok(a / b) }
 }
 fn chain(a: i64, b: i64, c: i64) -> Result<i64, string> {
     let x = divide(a, b)?;
     let y = divide(x, c)?;
-    Ok(y)
+    .Ok(y)
 }
 fn main() {
     match chain(100, 5, 2) { .Ok(v) => println(f"ok: {v}"), .Err(e) => println(f"err: {e}") }
@@ -2780,11 +2780,11 @@ Use `?` to unwrap-or-early-return inside a fn that itself returns Result/Option;
 ```hew
 fn first(o: Option<i64>) -> Option<i64> {
     let v = o?;
-    Some(v + 1)
+    .Some(v + 1)
 }
 fn main() {
-    match first(Some(5)) { .Some(v) => println(f"some: {v}"), .None => println("none") }
-    let n: Option<i64> = None;
+    match first(.Some(5)) { .Some(v) => println(f"some: {v}"), .None => println("none") }
+    let n: Option<i64> = .None;
     match first(n) { .Some(v) => println(f"some: {v}"), .None => println("none") }
 }
 ```
@@ -2798,8 +2798,8 @@ fn unwrap_or(r: Result<i64, string>, fallback: i64) -> i64 {
     match r { .Ok(v) => v, .Err(_) => fallback }
 }
 fn main() {
-    let ok: Result<i64, string> = Ok(42);
-    let err: Result<i64, string> = Err("bad");
+    let ok: Result<i64, string> = .Ok(42);
+    let err: Result<i64, string> = .Err("bad");
     println(unwrap_or(ok, 0));    // 42
     println(unwrap_or(err, -1));  // -1
 }
@@ -2814,8 +2814,8 @@ with the combinators in "Option and Result methods" below.
 
 ```hew
 fn main() -> i64 {
-    let a: Option<i64> = Some(5);
-    let b: Option<i64> = None;
+    let a: Option<i64> = .Some(5);
+    let b: Option<i64> = .None;
     if a.is_some() == false { return 1; }
     if b.is_none() == false { return 3; }
     println("option method predicates ok");
@@ -2829,14 +2829,14 @@ For Option presence checks, `.is_some()`/`.is_none()` read cleanly and return `b
 
 ```hew
 fn main() {
-    let some_five: Option<i64> = Some(5);
-    let none_i64: Option<i64> = None;
+    let some_five: Option<i64> = .Some(5);
+    let none_i64: Option<i64> = .None;
     println(some_five.map(|x: i64| x * 2).unwrap_or(0));  // 10
     println(none_i64.unwrap_or_else(|| 99));              // 99
 
-    let ok: Result<i64, string> = Ok(10);
+    let ok: Result<i64, string> = .Ok(10);
     match ok.map(|x: i64| x + 1) { .Ok(v) => println(v), .Err(_) => {} }  // 11
-    let missing: Option<i64> = None;
+    let missing: Option<i64> = .None;
     let port: Result<i64, string> = missing.ok_or("no port");
     println(port.is_err());                               // true
 }
@@ -2854,7 +2854,7 @@ or error argument as well.
 
 ```hew
 fn main() {
-    var pending: Option<string> = Some("job");
+    var pending: Option<string> = .Some("job");
     let job = pending.take();
     println(job.unwrap_or("none"));     // job
     println(pending.is_none());         // true
@@ -2873,9 +2873,9 @@ fn classify(o: Option<i64>) -> string {
     }
 }
 fn main() {
-    println(classify(Some(5)));
-    println(classify(Some(-1)));
-    let n: Option<i64> = None;
+    println(classify(.Some(5)));
+    println(classify(.Some(-1)));
+    let n: Option<i64> = .None;
     println(classify(n));
 }
 ```
@@ -2886,7 +2886,7 @@ Each arm yields a value and the whole `match` is the function's return value. Ar
 
 ```hew
 fn validate(x: i64) -> Result<i64, string> {
-    if x < 0 { Err("negative") } else { Ok(0) }
+    if x < 0 { .Err("negative") } else { .Ok(0) }
 }
 fn main() {
     match validate(5)  { .Ok(_) => println("valid"), .Err(e) => println(f"err: {e}") }
@@ -2920,7 +2920,7 @@ impl Display for PortError {
 impl Error for PortError {}
 
 fn parse_port(text: string) -> Result<i64, PortError> {
-    Err(PortError.NotANumber(text))
+    .Err(PortError.NotANumber(text))
 }
 
 fn load_port(path: string) -> i64 fails dyn Error {
@@ -3187,13 +3187,13 @@ You may add trait impls for builtin nominal types like `Vec`. (A bare inherent `
 
 ```hew
 fn main() {
-    let x = Some(42);
+    let x = Option.Some(42);
     let v = match x { .Some(n) => n, .None => 0 };
     println(v);   // 42
-    let r: Result<i64, i64> = Ok(7);
+    let r: Result<i64, i64> = .Ok(7);
     let w = match r { .Ok(n) => n, .Err(e) => e };
     println(w);   // 7
-    let y: Option<i64> = None;
+    let y: Option<i64> = .None;
     println(match y { .Some(n) => n, .None => -1 });   // -1
 }
 ```
@@ -3204,12 +3204,12 @@ Option/Result and their constructors are builtin — do not import `std.option`/
 
 ```hew
 fn try_parse(s: string) -> Result<i64, string> {
-    if s == "bad" { Err("bad input") } else { Ok(10) }
+    if s == "bad" { .Err("bad input") } else { .Ok(10) }
 }
 fn parse_add(a: string, b: string) -> Result<i64, string> {
     let x = try_parse(a)?;
     let y = try_parse(b)?;
-    Ok(x + y)
+    .Ok(x + y)
 }
 fn main() {
     match parse_add("a", "b") { .Ok(n) => println(n), .Err(e) => println(e) }       // 20

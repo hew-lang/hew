@@ -17,17 +17,17 @@ fn main() -> i64 {
     let miss = lookup(entries.clone(), "gamma").map(|entry: Entry| entry.key);
     println(miss.unwrap_or("fallback".to_upper()));
     let chained: Result<string, string> = lookup(entries.clone(), "ALPHA").and_then(|entry: Entry| if entry.tags.len() > 1 {
-        Some(entry.key)
+        .Some(entry.key)
     } else {
-        None
+        .None
     }).ok_or("no alpha".to_upper());
     println(chained.map(|key: string| f"{key}!").unwrap_or_else(|error: string| error));
     let failed: Result<string, string> = lookup(entries.clone(), "none").map(|entry: Entry| entry.key).ok_or("missing".to_upper());
     println(failed.map_err(|error: string| f"{error}?").err().unwrap_or("ok".to_upper()));
     let keys = entries.into_iter().filter(|entry: Entry| !entry.tags.is_empty()).map(|entry: Entry| entry.key).collect();
     println(keys.len());
-    var slot: Option<string> = Some("taken".to_upper());
-    println(slot.take().or_else(|| Some("empty".to_upper())).expect("a value"));
-    println(slot.or_else(|| Some("empty".to_upper())).expect("a value"));
+    var slot: Option<string> = .Some("taken".to_upper());
+    println(slot.take().or_else(|| .Some("empty".to_upper())).expect("a value"));
+    println(slot.or_else(|| .Some("empty".to_upper())).expect("a value"));
     0
 }

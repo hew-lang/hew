@@ -16,8 +16,8 @@ fn main() {
     println(totals[2]);
     println(find_note(orders.clone(), 2).unwrap_or("none"));
     println(find_note(orders, 9).unwrap_or_else(|| "missing"));
-    let parsed: Result<i64, string> = Some("42").map(|text: string| text.len()).ok_or("empty");
+    let parsed: Result<i64, string> = Option.Some("42").map(|text: string| text.len()).ok_or("empty");
     println(parsed.map(|n: i64| n + 1).unwrap_or(0));
-    let failed: Result<i64, string> = Err("bad");
+    let failed: Result<i64, string> = .Err("bad");
     println(failed.map_err(|e: string| f"{e}!").err().unwrap_or("ok"));
 }

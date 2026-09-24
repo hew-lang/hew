@@ -16,7 +16,7 @@ fn show<T: Serializable>(values: Vec<T>) -> string {
 }
 
 fn main() {
-    let config = Config { name: "svc", ports: [80, 443], tag: None };
+    let config = Config { name: "svc", ports: [80, 443], tag: .None };
     let text = wire.to_json(config);
     println(text);
     match wire.from_json<Config>(text) {
@@ -30,6 +30,6 @@ fn main() {
     println(f"{unpacked.len()}");
 
     print(to_yaml(["a", "b"]));
-    println(show([Config { name: "x", ports: [], tag: Some("t") }]));
+    println(show([Config { name: "x", ports: [], tag: .Some("t") }]));
     println(show([true, false]));
 }

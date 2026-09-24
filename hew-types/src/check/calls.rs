@@ -1014,8 +1014,12 @@ impl Checker {
             return Some(Ty::Error);
         }
 
-        let result =
-            self.check_builtin_variant_against_expected(&func_name, args, &resolved_expected, span)?;
+        let result = self.check_builtin_variant_against_expected(
+            &func_name,
+            args,
+            &resolved_expected,
+            span,
+        )?;
         // Only the bare source spelling reaches here: dotted heads check their
         // builtin constructor directly.
         self.report_bare_variant_expr(&func_name, &format!(".{func_name}"), span);

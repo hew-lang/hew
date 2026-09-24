@@ -705,19 +705,20 @@ impl ModuleRegistry {
     ///
     /// Module search paths are intentionally excluded: projects, cwd, `HEWPATH`,
     /// and `HEW_STD` may affect resolution but cannot confer compiler authority.
-    /// A missing compiler-owned root returns `false`.
+    /// A host with no filesystem has no compiler-owned root; there the
+    /// sources compiled into the host are the authority, named by their
+    /// shipped spelling. A missing root on a host with a filesystem returns
+    /// `false`.
     pub(crate) fn source_has_stdlib_authority(
         &self,
         source_file: &std::path::Path,
         dotted_module: &str,
     ) -> bool {
-        self.compiler_stdlib_root.as_ref().is_some_and(|root| {
-            canonical_stdlib_module_source_in_roots(
-                source_file,
-                dotted_module,
-                std::slice::from_ref(root),
-            )
-        })
+        canonical_stdlib_module_source_in_roots(
+            source_file,
+            dotted_module,
+            self.compiler_stdlib_root.as_slice(),
+        )
     }
 
     fn module_info_has_stdlib_authority(&self, id: &ModuleId, info: &ModuleInfo) -> bool {

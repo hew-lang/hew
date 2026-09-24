@@ -1,0 +1,5 @@
+trait Lookup { fn at(self, i: i64) -> i64; }
+type Box { v: i64 }
+impl Box { fn at(self, i: i64) -> i64 { 20 } }
+impl Lookup for Box { fn at(self, i: i64) -> i64 { -1 } }
+fn main() { let b = Box { v: 1 }; println(b.at(0)); }

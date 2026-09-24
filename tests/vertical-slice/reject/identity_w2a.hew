@@ -1,0 +1,9 @@
+trait Send { fn ping(self) -> i64; }
+type P { r: Rc<i64> }
+impl Send for P { fn ping(self) -> i64 { self.r.get() } }
+actor W { receive fn take(p: dyn Send) -> i64 { p.ping() } }
+fn main() {
+    let w = spawn W;
+    let d: dyn Send = P { r: Rc.new(5) };
+    println(w.take(d).unwrap_or(-1));
+}

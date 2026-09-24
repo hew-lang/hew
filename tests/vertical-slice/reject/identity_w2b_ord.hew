@@ -1,0 +1,7 @@
+trait Ord { fn cmp(self, o: i64) -> i64; }
+trait PartialOrd { fn pcmp(self, o: i64) -> i64; }
+type T { v: i64 }
+impl Ord for T { fn cmp(self, o: i64) -> i64 { self.v } }
+fn need<X: PartialOrd>(x: X) -> i64 { x.pcmp(0) }
+fn has<X: Ord>(x: X) -> i64 { need(x) }
+fn main() { println(has(T { v: 5 })); }

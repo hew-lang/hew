@@ -1,0 +1,49 @@
+id: no-format-symbol
+language: rust
+severity: warning
+message: >-
+  A `Symbol` or semantic map key is minted from a `format!`-built string
+  instead of the resolver's interned/minted identity.
+note: >-
+  Identity-authority batch (plans/identity-authority-final.md section 4.2).
+  Replaces `no-format-map-key`. Once `Symbol::intern` and `DefTable` land,
+  `Symbol::intern(&format!(...))`, and `.get`/`.insert`/`.entry`/`.remove` on
+  a semantic map keyed by a `format!`-built string, rebuild an identity from
+  a rendered spelling instead of consuming the id the resolver already
+  minted. The one named exemption is `machine_event_spelling` in
+  `check/scope.rs` (the one compiler-minted spelling, section 4.1). Severity
+  is `warning` during L0 scaffolding; L0-final raises it to `error`.
+files:
+  - "hew-types/src/**"
+  - "hew-hir/src/**"
+  - "hew-sir/src/**"
+  - "hew-mir/src/**"
+  - "hew-analysis/src/**"
+  - "hew-lsp/src/**"
+  - "hew-wasm/src/sandbox/**"
+  - "hew-compile/src/**"
+  - "hew-parser/src/**"
+ignores:
+  - "**/tests/**"
+  - "**/test/**"
+  - "**/*_test.rs"
+  - "**/*_tests.rs"
+  - "**/tests.rs"
+rule:
+  all:
+    - kind: call_expression
+      regex: '^(Symbol::intern\(&?format!|\w*(map|table|registry|cache|index|defs|scope)\w*\.(get|contains_key|insert|entry|remove)\(&?format!)'
+    - not:
+        inside:
+          kind: function_item
+          stopBy: end
+          has:
+            field: name
+            regex: "^machine_event_spelling$"
+    - not:
+        inside:
+          kind: mod_item
+          stopBy: end
+          follows:
+            kind: attribute_item
+            regex: 'cfg\(.*\btest\b'

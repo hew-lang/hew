@@ -1,0 +1,14 @@
+machine Slot {
+    events {
+        Fill,
+    }
+
+    state Idle,
+    state Filling,
+
+    on Fill: Idle => Filling,
+
+    default { state }
+}
+type SlotEvent { n: i64 }
+fn main() { println(1); }

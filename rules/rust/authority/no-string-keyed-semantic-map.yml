@@ -1,0 +1,46 @@
+id: no-string-keyed-semantic-map
+language: rust
+severity: warning
+message: >-
+  A semantic map or set is keyed by a rendered string instead of a
+  resolver-minted identity (DefId, NominalId, TypeParamId, ModuleId, Symbol).
+note: >-
+  Identity-authority batch (plans/identity-authority-final.md section 4.2).
+  Once the DefId/Symbol carriers land, key semantic tables by the resolver's
+  identity; a String/&str (or Cow<str>, Box<str>, Rc<str>, Arc<str>) key is a
+  name join waiting to diverge across modules. Severity is `warning` during
+  L0 scaffolding; L0-final raises it to `error` once the carriers exist.
+files:
+  - "hew-types/src/**"
+  - "hew-hir/src/**"
+  - "hew-sir/src/**"
+  - "hew-mir/src/**"
+  - "hew-analysis/src/**"
+  - "hew-lsp/src/**"
+  - "hew-wasm/src/sandbox/**"
+  - "hew-compile/src/**"
+ignores:
+  - "**/tests/**"
+  - "**/test/**"
+  - "**/*_test.rs"
+  - "**/*_tests.rs"
+  - "**/tests.rs"
+  - "**/dump.rs"
+  - "hew-types/src/check/diagnostics.rs"
+  - "hew-types/src/runtime_call.rs"
+  - "hew-types/src/extern_table.rs"
+  - "hew-types/src/extern_symbol.rs"
+  - "hew-types/src/vec_authority.rs"
+rule:
+  any:
+    - kind: field_declaration
+      regex: '(HashMap|HashSet|BTreeMap|BTreeSet|IndexMap|IndexSet)\s*<\s*(&(\s*''\w+\s*)?str|String|Cow\s*<\s*str\s*>|Box\s*<\s*str\s*>|Rc\s*<\s*str\s*>|Arc\s*<\s*str\s*>)\s*[,>]'
+    - kind: let_declaration
+      regex: '(HashMap|HashSet|BTreeMap|BTreeSet|IndexMap|IndexSet)\s*<\s*(&(\s*''\w+\s*)?str|String|Cow\s*<\s*str\s*>|Box\s*<\s*str\s*>|Rc\s*<\s*str\s*>|Arc\s*<\s*str\s*>)\s*[,>]'
+  not:
+    inside:
+      kind: mod_item
+      stopBy: end
+      follows:
+        kind: attribute_item
+        regex: 'cfg\(.*\btest\b'

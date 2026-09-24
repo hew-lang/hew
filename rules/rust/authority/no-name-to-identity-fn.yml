@@ -1,0 +1,35 @@
+id: no-name-to-identity-fn
+language: rust
+severity: warning
+message: >-
+  A function turns a rendered name/spelling into a semantic identity or
+  decision outside the resolver.
+note: >-
+  Identity-authority batch (plans/identity-authority-final.md section 4.2).
+  `Scope::resolve`/`resolve_prefix` (check/scope.rs) is meant to be the only
+  function that turns an identifier into an identity once the carriers land.
+  A second `fn f(name: &str) -> Option<TypeDef | FnSig | DefId | ...>` is a
+  second resolver. Severity is `warning` during L0 scaffolding; L0-final
+  raises it to `error`.
+files:
+  - "hew-types/src/check/**"
+  - "hew-hir/src/**"
+  - "hew-analysis/src/**"
+ignores:
+  - "**/tests/**"
+  - "**/test/**"
+  - "**/*_test.rs"
+  - "**/*_tests.rs"
+  - "**/tests.rs"
+  - "hew-types/src/check/scope.rs"
+  - "hew-types/src/check/diagnostics.rs"
+rule:
+  kind: function_item
+  regex: 'fn\s+\w+\s*\([^{]*\b\w*(name|key|path|spelling|ident)\w*\s*:\s*(&(\s*''\w+\s*)?str|String|Symbol)\b[^{]*\)\s*->\s*(Option\s*<\s*&?\s*(TypeDef|FnSig|TraitInfo|DefId|NominalId|TypeParamId|ModuleId|CallTarget|MarkerTrait|BuiltinType|Ty|Binding|Resolution)|bool)\b'
+  not:
+    inside:
+      kind: mod_item
+      stopBy: end
+      follows:
+        kind: attribute_item
+        regex: 'cfg\(.*\btest\b'

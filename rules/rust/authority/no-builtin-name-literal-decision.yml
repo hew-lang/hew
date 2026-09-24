@@ -1,0 +1,63 @@
+id: no-builtin-name-literal-decision
+language: rust
+severity: warning
+message: >-
+  A semantic decision is made by comparing a name/spelling against a literal
+  instead of a typed identity.
+note: >-
+  Identity-authority batch (plans/identity-authority-final.md section 4.2).
+  Extends `no-qualified-identity-literal-comparison.yml` to bare capitalized
+  or dotted literal compares (`x == "Vec"`, `matches!(name, "sleep" | ...)`)
+  and, once `Symbol` lands, `sym::` compares outside the spelling tables.
+  Severity is `warning` during L0 scaffolding; L0-final raises it to `error`.
+files:
+  - "hew-types/src/**"
+  - "hew-hir/src/**"
+  - "hew-sir/src/**"
+  - "hew-mir/src/**"
+  - "hew-analysis/src/**"
+  - "hew-lsp/src/**"
+  - "hew-wasm/src/sandbox/**"
+  - "hew-compile/src/**"
+ignores:
+  - "**/tests/**"
+  - "**/test/**"
+  - "**/*_test.rs"
+  - "**/*_tests.rs"
+  - "**/tests.rs"
+  - "hew-types/src/builtin_type.rs"
+  - "hew-types/src/stdlib_catalog.rs"
+  - "hew-types/src/stdlib_authority.rs"
+  - "hew-types/src/check/scope.rs"
+  - "hew-types/src/check/diagnostics.rs"
+  - "hew-lexer/src/symbol.rs"
+rule:
+  any:
+    - kind: binary_expression
+      all:
+        - regex: "(==|!=)"
+        - has:
+            kind: string_literal
+            regex: '^"[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)*"$'
+        - has:
+            field: left
+            regex: "(?i)(name|ident|key|path|spelling|leaf)"
+    - kind: macro_invocation
+      all:
+        - has:
+            field: macro
+            regex: "^matches$"
+        - regex: '"[A-Za-z][A-Za-z0-9_]*"\s*\|'
+    - kind: binary_expression
+      all:
+        - regex: "(==|!=)"
+        - has:
+            kind: scoped_identifier
+            regex: "^sym::"
+  not:
+    inside:
+      kind: mod_item
+      stopBy: end
+      follows:
+        kind: attribute_item
+        regex: 'cfg\(.*\btest\b'

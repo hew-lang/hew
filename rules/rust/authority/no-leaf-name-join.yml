@@ -1,0 +1,57 @@
+id: no-leaf-name-join
+language: rust
+severity: warning
+message: >-
+  A name/path-shaped receiver is split, stripped or joined as a spelling
+  instead of going through the resolver.
+note: >-
+  Identity-authority batch (plans/identity-authority-final.md section 4.2).
+  `short_name`, `strip_module_qualifier`, `strip_module_prefix`,
+  `names_match_qualified`, and split/rsplit/contains/join on a
+  name-shaped receiver re-derive qualification syntactically (W9) instead of
+  consuming the resolver's `Path`/`Scope::resolve` output. Severity is
+  `warning` during L0 scaffolding; L0-final raises it to `error`.
+files:
+  - "hew-parser/src/**"
+  - "hew-types/src/**"
+  - "hew-hir/src/**"
+  - "hew-sir/src/**"
+  - "hew-mir/src/**"
+  - "hew-analysis/src/**"
+  - "hew-lsp/src/**"
+  - "hew-wasm/src/sandbox/**"
+  - "hew-compile/src/**"
+  - "hew-cli/src/**"
+ignores:
+  - "**/tests/**"
+  - "**/test/**"
+  - "**/*_test.rs"
+  - "**/*_tests.rs"
+  - "**/tests.rs"
+  - "**/dump.rs"
+  - "hew-types/src/check/diagnostics.rs"
+  - "hew-parser/src/fmt.rs"
+rule:
+  any:
+    - kind: call_expression
+      has:
+        field: function
+        regex: "^(short_name|strip_module_qualifier|strip_module_prefix|names_match_qualified)$"
+    - kind: call_expression
+      has:
+        field: function
+        kind: field_expression
+        all:
+          - has:
+              field: field
+              regex: "^(rsplit_once|rsplit|split_once|split|contains|starts_with|strip_prefix|join)$"
+          - has:
+              field: value
+              regex: "(?i)(name|ident|key|path|spelling|leaf|owner|symbol|trait|module|binding|callee|target|segments)"
+  not:
+    inside:
+      kind: mod_item
+      stopBy: end
+      follows:
+        kind: attribute_item
+        regex: 'cfg\(.*\btest\b'

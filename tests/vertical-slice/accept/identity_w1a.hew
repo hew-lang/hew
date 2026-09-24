@@ -1,0 +1,14 @@
+trait Show { fn show(self) -> string; }
+trait Label { fn show(self) -> string; }
+type T { v: i64 }
+impl T { fn show(self) -> string { "inherent" } }
+impl Show for T { fn show(self) -> string { "show" } }
+impl Label for T { fn show(self) -> string { "label" } }
+fn via_show<X: Show>(x: X) -> string { x.show() }
+fn via_dyn(x: dyn Label) -> string { x.show() }
+fn main() {
+    let t = T { v: 1 };
+    println(t.show());
+    println(via_show(t));
+    println(via_dyn(t));
+}

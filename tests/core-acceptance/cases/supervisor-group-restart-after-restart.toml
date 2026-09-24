@@ -1,0 +1,11 @@
+[[case]]
+id = "supervisor-group-restart-after-restart"
+intent = "A crash after an earlier rest_for_one restart has finished starts its own restart, so the later roles restart once per crash."
+source = "cases/supervisor-group-restart-after-restart.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "start a\nstart b\nstart c\nstop c\nstart b\nstart c\nrestarted b\nstop c\nstart a\nstart b\nstart c\nrestarted a\nstop c\nstopped\n"
+stderr = "hew: failure: UserPanic (212): worker failed\nhew: actor crash in Worker.boom (actor 2): UserPanic\nhew: failure: UserPanic (212): worker failed\nhew: actor crash in Worker.boom (actor 1): UserPanic\n"
+exit = 0

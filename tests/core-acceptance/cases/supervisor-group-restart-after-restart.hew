@@ -1,0 +1,41 @@
+// A crash that arrives after an earlier group restart has finished starts a
+// restart of its own: b and c restart once for b's crash and again for a's.
+// This is the ordering supervisor-group-restart-joins-second-crash rules out
+// by crashing a while that restart still waits on c.
+actor Worker {
+    var name: string,
+    receive fn boom() {
+        panic("worker failed");
+    }
+    #[on(start)]
+    fn started() {
+        println("start " + name);
+    }
+    #[on(stop)]
+    fn stopping() {
+        if name == "c" {
+            println("stop c");
+        }
+    }
+}
+
+supervisor App {
+    strategy: rest_for_one,
+    intensity: 10 within 60s,
+
+    child a: Worker(name: "a"),
+    child b: Worker(name: "b"),
+    child c: Worker(name: "c"),
+}
+
+fn main() {
+    let app = spawn App;
+    let _ = app.b.boom();
+    let _b = await_restart app.b;
+    println("restarted b");
+    let _ = app.a.boom();
+    let _a = await_restart app.a;
+    println("restarted a");
+    supervisor_stop(app);
+    println("stopped");
+}

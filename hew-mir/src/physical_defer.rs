@@ -32,7 +32,7 @@ pub(super) struct Active {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(super) struct State {
+pub(crate) struct State {
     pub pending: Vec<Pending>,
     pub active: Vec<Active>,
     invalid_join: bool,
@@ -97,7 +97,7 @@ impl State {
     }
 }
 
-pub(super) struct Region {
+pub(crate) struct Region {
     defer: DeferId,
     blocks: BTreeSet<BlockId>,
     locals: BTreeSet<StorageId>,

@@ -6,6 +6,10 @@
 
 use logos::Logos;
 
+pub mod symbol;
+
+pub use symbol::{sym, Symbol, SyntaxContext};
+
 /// Byte-offset span within source text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Span {

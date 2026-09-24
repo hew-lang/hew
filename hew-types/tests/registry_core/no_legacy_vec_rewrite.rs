@@ -4,32 +4,61 @@
 //! `check_vec_method` would silently restore the legacy dual-emit shape and
 //! break the `lifecycle-symmetry` (P0) invariant — keep this test load-bearing.
 //!
-//! The test reads `hew-types/src/check/methods.rs`, isolates
-//! `check_vec_method`'s body (between its signature and the first column-4
-//! closing brace that follows), and counts whitespace-tolerant matches of
+//! The test reads the `hew-types/src/check/methods/` submodules (`methods.rs`
+//! was split into a directory of part files; `check_vec_method` lives in
+//! whichever one currently holds it), isolates `check_vec_method`'s body
+//! (between its signature and the first column-4 closing brace that
+//! follows), and counts whitespace-tolerant matches of
 //! `record_runtime_method_call_rewrite`.  Zero matches is the only passing
 //! outcome.
 
 use std::fs;
 use std::path::PathBuf;
 
+/// Find the part file (or, if never split again, `methods.rs` itself) that
+/// declares `check_vec_method`, and return its contents.
 fn methods_source() -> String {
-    let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    path.push("src/check/methods.rs");
-    let source =
-        fs::read_to_string(&path).unwrap_or_else(|err| panic!("read {}: {err}", path.display()));
-    // The end-of-body scan keys on bare-LF line endings; a CRLF checkout
-    // (Windows autocrlf) would otherwise never match the closing brace.
-    source.replace("\r\n", "\n")
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let signature_needle = "fn check_vec_method(";
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    let flat = manifest_dir.join("src/check/methods.rs");
+    if flat.is_file() {
+        candidates.push(flat);
+    }
+    let split_dir = manifest_dir.join("src/check/methods");
+    if let Ok(entries) = fs::read_dir(&split_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().is_some_and(|ext| ext == "rs") {
+                candidates.push(path);
+            }
+        }
+    }
+    for path in &candidates {
+        let source =
+            fs::read_to_string(path).unwrap_or_else(|err| panic!("read {}: {err}", path.display()));
+        if source.contains(signature_needle) {
+            // The end-of-body scan keys on bare-LF line endings; a CRLF
+            // checkout (Windows autocrlf) would otherwise never match the
+            // closing brace.
+            return source.replace("\r\n", "\n");
+        }
+    }
+    panic!(
+        "could not find a `{signature_needle}` declaration under src/check/methods.rs or \
+         src/check/methods/*.rs"
+    );
 }
 
 fn extract_check_vec_method_body(source: &str) -> &str {
-    // Locate the function signature.  The signature is intentionally written
-    // with `pub(super) fn check_vec_method(` on a single line.
-    let signature = "pub(super) fn check_vec_method(";
+    // Locate the function signature. Visibility varies with how the checker
+    // module is currently split (`pub(super)`, `pub(in crate::check)`, …),
+    // so match on the bare `fn check_vec_method(` token instead of a fixed
+    // visibility prefix.
+    let signature = "fn check_vec_method(";
     let sig_idx = source
         .find(signature)
-        .expect("could not locate `pub(super) fn check_vec_method(` in methods.rs");
+        .expect("could not locate `fn check_vec_method(` in the located methods source");
     let after_sig = &source[sig_idx..];
     // Function bodies in this file are indented one level inside an `impl`;
     // the closing brace therefore sits at column 4 (`"    }"`).  Match the

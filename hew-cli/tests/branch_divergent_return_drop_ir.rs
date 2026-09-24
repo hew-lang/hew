@@ -15,7 +15,7 @@ const SOURCE_TAKE_X: &str = r#"
 fn choose(take_x: bool) -> Result<string, string> {
     let x = f"x={1}";
     let y = f"y={2}";
-    if take_x { Err(x) } else { Ok(y) }
+    if take_x { .Err(x) } else { .Ok(y) }
 }
 
 fn main() -> i64 {
@@ -32,7 +32,7 @@ const SOURCE_TAKE_Y: &str = r#"
 fn choose(take_x: bool) -> Result<string, string> {
     let x = f"x={1}";
     let y = f"y={2}";
-    if take_x { Err(x) } else { Ok(y) }
+    if take_x { .Err(x) } else { .Ok(y) }
 }
 
 fn main() -> i64 {

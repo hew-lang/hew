@@ -1237,7 +1237,7 @@ fn constructor_payload_nested_ctor_inner_binding_recorded() {
     let output = check_source(
         r"
 fn doubly() -> Result<Result<i64, string>, string> {
-    Ok(Ok(42))
+    .Ok(.Ok(42))
 }
 fn main() -> i64 {
     match doubly() {
@@ -1271,7 +1271,7 @@ fn tuple_element_nested_ctor_is_accepted_and_recorded() {
     let output = check_source(
         r"
 fn pair() -> (Option<i64>, i64) {
-    (Some(1), 2)
+    (.Some(1), 2)
 }
 fn main() -> i64 {
     match pair() {
@@ -1319,7 +1319,7 @@ fn record_field_nested_ctor_is_accepted_and_recorded() {
         r"
 type Slot { tag: i64, load: Option<i64> }
 fn main() -> i64 {
-    let slot = Slot { tag: 1, load: Some(2) };
+    let slot = Slot { tag: 1, load: .Some(2) };
     match slot {
         Slot { tag: tag, load: .Some(v) } => tag + v,
         Slot { tag: tag, load: _ } => tag,
@@ -1350,7 +1350,7 @@ fn tuple_element_nested_ctor_of_wrong_enum_errors() {
         r"
 enum Other { Raw(i64), Gone }
 fn pair() -> (Option<i64>, i64) {
-    (Some(1), 2)
+    (.Some(1), 2)
 }
 fn main() -> i64 {
     match pair() {

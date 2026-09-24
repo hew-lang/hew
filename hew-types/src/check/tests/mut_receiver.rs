@@ -106,7 +106,7 @@ fn q297_user_iterator_impl_records_mut_receiver_flag_in_both_tables() {
         impl Iterator for Counter {
             type Item = i32;
             fn next(var self) -> Option<i32> {
-                Some(self.val)
+                .Some(self.val)
             }
         }
         ",

@@ -180,7 +180,7 @@ fn local_handler_keeps_loop_control_lexical() {
 
 #[test]
 fn local_handler_question_mark_uses_the_enclosing_return_type() {
-    let checked = check_source("fn f(value: Result<i64, string>, fallback: Option<i64>) -> Result<i64, string> { let number = value handle problem { fallback? }; Ok(number) }");
+    let checked = check_source("fn f(value: Result<i64, string>, fallback: Option<i64>) -> Result<i64, string> { let number = value handle problem { fallback? }; .Ok(number) }");
     assert!(
         checked
             .errors
@@ -194,8 +194,8 @@ fn local_handler_question_mark_uses_the_enclosing_return_type() {
 #[test]
 fn propagation_rejects_absence_error_conflation() {
     for source in [
-        "fn f(value: Option<i64>) -> Result<i64, string> { Ok(value?) }",
-        "fn f(value: Result<i64, string>) -> Option<i64> { Some(value?) }",
+        "fn f(value: Option<i64>) -> Result<i64, string> { .Ok(value?) }",
+        "fn f(value: Result<i64, string>) -> Option<i64> { .Some(value?) }",
     ] {
         let checked = check_source(source);
         assert!(
@@ -212,8 +212,8 @@ fn propagation_rejects_absence_error_conflation() {
 #[test]
 fn propagation_accepts_same_container_with_different_success_type() {
     for source in [
-        "fn f(value: Option<i64>) -> Option<string> { value?; Some(\"done\") }",
-        "fn f(value: Result<i64, string>) -> Result<bool, string> { value?; Ok(true) }",
+        "fn f(value: Option<i64>) -> Option<string> { value?; .Some(\"done\") }",
+        "fn f(value: Result<i64, string>) -> Result<bool, string> { value?; .Ok(true) }",
     ] {
         let checked = check_source(source);
         assert!(checked.errors.is_empty(), "{source}: {:?}", checked.errors);

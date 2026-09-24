@@ -184,7 +184,7 @@ fn used_delivery_outcomes_outside_statement_position_are_accepted() {
     for signature_and_body in [
         "fn main() -> Result<i64, AskError> { let d = spawn Doubler; d.process(5) }",
         "fn main() -> Result<(), AskError> { let d = spawn Doubler; \
-         let _ = d.process(5)?; Ok(()) }",
+         let _ = d.process(5)?; .Ok(()) }",
     ] {
         let source = format!("{ACTOR} {signature_and_body}");
         let output = check_source(&source);

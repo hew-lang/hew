@@ -1925,7 +1925,7 @@ fn actor_receive_fn_option_reply_accepted() {
         actor Queue {
             let items: Vec<i64>,
             receive fn dequeue() -> Option<i64> {
-                None
+                .None
             }
         }
 
@@ -2227,7 +2227,7 @@ fn rc_nested_payload_construction_ok() {
 #[test]
 fn rc_owned_option_payload_supported() {
     assert_inline_typechecks_cleanly(
-        r#"fn main() { let _rc = Rc.new(Some("hello")); }"#,
+        r#"fn main() { let _rc = Rc.new(Option.Some("hello")); }"#,
         "Rc::new with Option<string> should use aggregate clone/drop support",
     );
 }
@@ -3424,7 +3424,7 @@ fn rc_param_some_wrap_errors_borrowed_rc() {
     let output = typecheck_inline(
         r"
         fn wrap(r: Rc<i64>) -> Option<Rc<i64>> {
-            Some(r)
+            .Some(r)
         }
         fn main() {}
         ",
@@ -3496,7 +3496,7 @@ fn rc_param_some_clone_no_error() {
     let output = typecheck_inline(
         r"
         fn wrap(r: Rc<i64>) -> Option<Rc<i64>> {
-            Some(r.clone())
+            .Some(r.clone())
         }
         fn main() {}
         ",
@@ -3540,7 +3540,7 @@ fn rc_param_explicit_return_some_errors_borrowed_rc() {
     let output = typecheck_inline(
         r"
         fn wrap(r: Rc<i64>) -> Option<Rc<i64>> {
-            return Some(r);
+            return .Some(r);
         }
         fn main() {}
         ",
@@ -3670,7 +3670,7 @@ fn rc_aggregate_alias_return_errors() {
     let output = typecheck_inline(
         r"
         fn bad(r: Rc<i64>) -> Option<Rc<i64>> {
-            let v = Some(r);
+            let v = Option.Some(r);
             v
         }
         fn main() {}
@@ -4166,7 +4166,7 @@ fn rc_nested_in_vec_element_typechecks() {
         fn main() {
             var v = Vec.new();
             let r = Rc.new(42);
-            v.push(Some(r));
+            v.push(Option.Some(r));
         }",
         "Vec.push(Option<Rc<i64>>) has an exact element type",
     );
@@ -5403,7 +5403,7 @@ fn call_type_args_failed_generic_call_pruned_at_boundary() {
         fn id<T>(x: T) -> T { x }
 
         fn main() {
-            let _ = id(None);
+            let _ = id(Option.None);
         }
     ";
 

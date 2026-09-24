@@ -53,7 +53,7 @@ pub type Counter {{
 impl Iterator for Counter {{
     type Item = i64;
     fn next(it: Counter) -> Option<i64> {{
-        if it.n >= it.limit {{ None }} else {{ Some(it.n) }}
+        if it.n >= it.limit {{ .None }} else {{ .Some(it.n) }}
     }}
 }}
 "
@@ -166,7 +166,7 @@ pub type Boxed<T> {
 impl<T> Container for Boxed<T> {
     type Item = T;
     fn items(value: Boxed<T>) -> Vec<Option<T>> {
-        [Some(value.value)]
+        [.Some(value.value)]
     }
 }
 ";
@@ -193,7 +193,7 @@ pub type Counter {
 impl Container for Counter {
     type Item = i64;
     fn item(counter: Counter) -> Option<string> {
-        None
+        .None
     }
 }
 ";
@@ -285,7 +285,7 @@ pub type Counter {{
 impl Iterator for Counter {{
     type Item = i64;
     fn next(it: i64) -> Option<i64> {{
-        None
+        .None
     }}
 }}
 "
@@ -312,7 +312,7 @@ pub type Counter {{
 impl Iterator for Counter {{
     type Item = i64;
     fn next(it: Counter, extra: i64) -> Option<i64> {{
-        None
+        .None
     }}
 }}
 "

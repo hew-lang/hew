@@ -6,10 +6,10 @@ use crate::support::checker_pipeline;
 #[test]
 fn scope_recovery_keeps_result_values_and_owned_failure_binding() {
     let source = r"fn main() {
-        let value: Result<i64, string> = scope within 2s { Ok(42) } handle failure {
+        let value: Result<i64, string> = scope within 2s { Result.Ok(42) } handle failure {
             match failure {
-                .Deadline { message } => Err(message),
-                .Fault { message } => Err(message),
+                .Deadline { message } => .Err(message),
+                .Fault { message } => .Err(message),
             }
         };
     }";

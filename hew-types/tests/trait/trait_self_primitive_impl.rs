@@ -291,7 +291,7 @@ fn nested_self_in_option_return_i64_typechecks() {
 
         impl Wrap for i64 {
             fn wrap(a: i64) -> Option<i64> {
-                Some(a)
+                .Some(a)
             }
         }
         ",

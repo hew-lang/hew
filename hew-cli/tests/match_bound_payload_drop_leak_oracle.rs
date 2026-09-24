@@ -62,9 +62,9 @@ use support::{describe_output, require_codegen, run_bounded_command};
 const G63_MATCH_BOUND_SCRIBBLE_SOURCE: &str = "\
 fn make(n: i64) -> Option<string> {\n\
 \x20   if n > 0 {\n\
-\x20       Some(\"g63-match-heap-payload\".to_upper())\n\
+\x20       .Some(\"g63-match-heap-payload\".to_upper())\n\
 \x20   } else {\n\
-\x20       None\n\
+\x20       .None\n\
 \x20   }\n\
 }\n\
 \n\
@@ -159,7 +159,7 @@ fn match_bound_loop_source(frames: usize) -> String {
 fn iflet_bound_loop_source(frames: usize) -> String {
     format!(
         "fn make(n: i64) -> Option<string> {{\n\
-         \x20   if n > 0 {{ Some(\"g63-iflet-heap-payload\".to_upper()) }} else {{ None }}\n\
+         \x20   if n > 0 {{ .Some(\"g63-iflet-heap-payload\".to_upper()) }} else {{ .None }}\n\
          }}\n\
          \n\
          fn run_cycle(n: i64) -> i64 {{\n\

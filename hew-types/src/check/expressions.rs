@@ -2466,6 +2466,8 @@ else needs `impl Display for {rendered}`)"
             // A bare enum variant used as a value (`let c = Red;`,
             // `xs.map(Wrap)`) is refused like its call form; nothing here
             // selects the enum, so the fix-it qualifies it.
+            // Machine states are not variants at the surface (§3.11.3), even
+            // though their companion enum is one internally.
             if !surface_name.contains("::") {
                 if let Some((owner, _, _)) =
                     self.lookup_variant_constructor(name)
@@ -2473,6 +2475,10 @@ else needs `impl Display for {rendered}`)"
                             self.type_defs
                                 .get(owner)
                                 .is_some_and(|td| td.kind == TypeDefKind::Enum)
+                                && !self.lookup_declaration(owner).is_some_and(|def| {
+                                    self.identity.declaration_kind_by_path(def.full_path())
+                                        == Some(crate::DeclarationKind::Machine)
+                                })
                         })
                 {
                     let replacement =
@@ -6798,19 +6804,19 @@ else needs `impl Display for {rendered}`)"
     /// is no longer a false miss (a real aggregate escape that the old uppercase
     /// heuristic silently dropped).
     pub(super) fn callee_is_aggregate_constructor(&self, function: &Expr) -> bool {
-        let Expr::Identifier(name) = function else {
+        let name = match function {
+            Expr::Identifier(name) => name,
+            // A contextual variant (`.Some(r)`, `.Wrap(r)`) always constructs
+            // and embeds its payload.
+            Expr::ContextVariant(_) => return true,
             // Calling a function-valued field or closure (`(obj.f)(arg)`) passes
             // the argument as a borrow; it is never an aggregate constructor.
-            return false;
+            _ => return false,
         };
         // `Type::assoc` / `E::Variant` paths construct or wrap a value and may
         // embed the argument (`Rc::new(r)`, `MyEnum::Variant(r)`).  Fail-closed:
         // descend on every qualified call so an aggregate escape is never missed.
         if name.contains("::") {
-            return true;
-        }
-        // Builtin Option/Result variant constructors embed their payload.
-        if matches!(name.as_str(), "Some" | "Ok" | "Err" | "None") {
             return true;
         }
         // User enum / struct tuple-variant constructors, resolved by name

@@ -662,9 +662,9 @@ fn direct_main_observations_require_actor_context() {
 fn a_declared_closed_keeps_its_signature_beside_the_handle_builtin() {
     let source = "actor Worker { receive fn ping() {} }\n\
          pub fn closed(value: i64, names: string) -> Result<(), string> {\n\
-             if value > 0 { Ok(()) } else { Err(names) }\n\
+             if value > 0 { .Ok(()) } else { .Err(names) }\n\
          }\n\
-         fn check() -> Result<(), string> { closed(7, \"ok\")?; Ok(()) }\n\
+         fn check() -> Result<(), string> { closed(7, \"ok\")?; .Ok(()) }\n\
          fn main() {\n\
              let worker = spawn Worker();\n\
              let _sent = worker.ping();\n\

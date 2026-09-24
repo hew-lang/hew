@@ -737,7 +737,7 @@ fn borrowed_param_escape_uppercase_variant_constructor_flagged() {
 fn borrowed_param_escape_builtin_variant_constructor_flagged() {
     // Builtin Option/Result variant constructors must remain classified as
     // aggregate constructors so an embedded borrow param is still flagged.
-    let (errors, _) = parse_and_check("fn f(r: Rc<i64>) -> Option<Rc<i64>> { Some(r) }\n");
+    let (errors, _) = parse_and_check("fn f(r: Rc<i64>) -> Option<Rc<i64>> { .Some(r) }\n");
     assert!(
         errors
             .iter()
@@ -1294,8 +1294,8 @@ fn generic_enum_constructor_expected_context_coerces_payload_literal() {
 fn builtin_result_constructors_materialize_output_types_without_call_type_args() {
     let source = concat!(
         "fn main() -> i64 {\n",
-        "    Ok(7);\n",
-        "    Err(9);\n",
+        "    Result.Ok(7);\n",
+        "    Result.Err(9);\n",
         "    0\n",
         "}\n",
     );
@@ -1315,11 +1315,12 @@ fn builtin_result_constructors_materialize_output_types_without_call_type_args()
             _ => None,
         })
         .expect("main function should exist");
-    let Stmt::Expression((Expr::Call { .. }, ok_call_span)) = &main_fn.body.stmts[0].0 else {
-        panic!("expected first statement to be `Ok(...)`");
+    let Stmt::Expression((Expr::MethodCall { .. }, ok_call_span)) = &main_fn.body.stmts[0].0 else {
+        panic!("expected first statement to be `Result.Ok(...)`");
     };
-    let Stmt::Expression((Expr::Call { .. }, err_call_span)) = &main_fn.body.stmts[1].0 else {
-        panic!("expected second statement to be `Err(...)`");
+    let Stmt::Expression((Expr::MethodCall { .. }, err_call_span)) = &main_fn.body.stmts[1].0
+    else {
+        panic!("expected second statement to be `Result.Err(...)`");
     };
 
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
@@ -1360,8 +1361,8 @@ fn builtin_result_constructors_materialize_output_types_without_call_type_args()
 #[test]
 fn result_constructors_accept_unit_payloads() {
     let source = concat!(
-        "fn ok_unit() -> Result<(), i64> { Ok(()) }\n",
-        "fn err_unit() -> Result<i64, ()> { Err(()) }\n",
+        "fn ok_unit() -> Result<(), i64> { .Ok(()) }\n",
+        "fn err_unit() -> Result<i64, ()> { .Err(()) }\n",
     );
     let result = hew_parser::parse(source);
     assert!(
@@ -1384,7 +1385,7 @@ fn ok_unit_match_pattern_accepted() {
     // `Ok(())` as a match arm pattern against `Result<(), E>` must not error.
     let (errors, _) = parse_and_check(concat!(
         "fn main() {\n",
-        "    let r: Result<(), string> = Ok(());\n",
+        "    let r: Result<(), string> = .Ok(());\n",
         "    let _ = match r {\n",
         "        .Ok(()) => 0,\n",
         "        .Err(_) => 1,\n",
@@ -1402,7 +1403,7 @@ fn err_unit_match_pattern_accepted() {
     // `Err(())` as a match arm pattern against `Result<T, ()>` must not error.
     let (errors, _) = parse_and_check(concat!(
         "fn main() {\n",
-        "    let r: Result<i64, ()> = Err(());\n",
+        "    let r: Result<i64, ()> = .Err(());\n",
         "    let _ = match r {\n",
         "        .Ok(n) => n,\n",
         "        .Err(()) => 0,\n",
@@ -1438,7 +1439,7 @@ fn ok_unit_pattern_rejected_against_non_unit_ok_payload() {
     // type is `i64`, not unit, so the empty-tuple pattern is a mismatch.
     let (errors, _) = parse_and_check(concat!(
         "fn main() {\n",
-        "    let r: Result<i64, string> = Ok(1);\n",
+        "    let r: Result<i64, string> = .Ok(1);\n",
         "    let _ = match r {\n",
         "        Ok(()) => 0,\n",
         "        Err(_) => 1,\n",
@@ -1455,8 +1456,8 @@ fn ok_unit_pattern_rejected_against_non_unit_ok_payload() {
 fn builtin_result_constructor_composite_output_type_fallbacks_materialize() {
     let source = concat!(
         "fn main() -> i64 {\n",
-        "    Ok(Some(7));\n",
-        "    Err(Some(9));\n",
+        "    Result.Ok(Option.Some(7));\n",
+        "    Result.Err(Option.Some(9));\n",
         "    0\n",
         "}\n",
     );
@@ -1476,11 +1477,12 @@ fn builtin_result_constructor_composite_output_type_fallbacks_materialize() {
             _ => None,
         })
         .expect("main function should exist");
-    let Stmt::Expression((Expr::Call { .. }, ok_call_span)) = &main_fn.body.stmts[0].0 else {
-        panic!("expected first statement to be `Ok(...)`");
+    let Stmt::Expression((Expr::MethodCall { .. }, ok_call_span)) = &main_fn.body.stmts[0].0 else {
+        panic!("expected first statement to be `Result.Ok(...)`");
     };
-    let Stmt::Expression((Expr::Call { .. }, err_call_span)) = &main_fn.body.stmts[1].0 else {
-        panic!("expected second statement to be `Err(...)`");
+    let Stmt::Expression((Expr::MethodCall { .. }, err_call_span)) = &main_fn.body.stmts[1].0
+    else {
+        panic!("expected second statement to be `Result.Err(...)`");
     };
 
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
@@ -1527,7 +1529,7 @@ fn typecheck_tuple_payload_destructure_is_exhaustive() {
     let (errors, _) = parse_and_check(
         r"
 fn main() {
-    let x: Option<(i64, i64)> = Some((1, 2));
+    let x: Option<(i64, i64)> = .Some((1, 2));
     let r = match x {
         .Some((a, b)) => a + b,
         .None => 0,
@@ -1607,7 +1609,7 @@ fn typecheck_tuple_payload_with_literal_element_still_non_exhaustive() {
     let (errors, warnings) = parse_and_check(
         r"
 fn main() {
-    let x: Option<(i64, i64)> = Some((1, 2));
+    let x: Option<(i64, i64)> = .Some((1, 2));
     match x {
         .Some((1, b)) => b,
         .None => 0,
@@ -1642,7 +1644,7 @@ fn typecheck_tuple_payload_arity_mismatch_still_non_exhaustive() {
     let (errors, _) = parse_and_check(
         r"
 fn main() {
-    let x: Option<(i64, i64)> = Some((1, 2));
+    let x: Option<(i64, i64)> = .Some((1, 2));
     match x {
         .Some((a, b, c)) => a,
         .None => 0,
@@ -1672,7 +1674,7 @@ fn typecheck_nested_tuple_payload_destructure_is_exhaustive() {
     let (errors, _) = parse_and_check(
         r"
 fn main() {
-    let x: Option<(i64, (i64, i64))> = Some((1, (2, 3)));
+    let x: Option<(i64, (i64, i64))> = .Some((1, (2, 3)));
     let r = match x {
         .Some((a, (b, c))) => a + b + c,
         .None => 0,

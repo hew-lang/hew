@@ -125,7 +125,7 @@ fn user_hashmap_iter_shadow_cannot_capture_the_compiler_cursor_impl() {
 type HashMapIter<T> { value: Option<T>, }
 impl<T> Iterator for HashMapIter<T> {
     type Item = T;
-    fn next(var self) -> Option<T> { None }
+    fn next(var self) -> Option<T> { .None }
 }
 fn main() -> i64 { 0 }
 ",
@@ -170,7 +170,7 @@ fn user_map_shadow_does_not_capture_imported_iter_map_dispatch() {
 type Map<T> { value: Option<T>, }
 impl<T> Iterator for Map<T> {
     type Item = T;
-    fn next(var self) -> Option<T> { None }
+    fn next(var self) -> Option<T> { .None }
 }
 fn main() -> i64 { 0 }
 ",

@@ -40,11 +40,11 @@ impl Stepper for Countdown {
 
     fn next(var self) -> Option<i64> {
         if self.n <= 0 {
-            None
+            .None
         } else {
             let cur = self.n;
             self.n = self.n - 1;
-            Some(cur)
+            .Some(cur)
         }
     }
 }

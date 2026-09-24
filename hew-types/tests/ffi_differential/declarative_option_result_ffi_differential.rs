@@ -63,11 +63,11 @@ fn existing_option_result_module_helpers_still_typecheck() {
         import std.result;
 
         fn main() {
-            let opt: Option<i64> = Some(42);
+            let opt: Option<i64> = .Some(42);
             let _: bool = option.is_some_int(opt);
             let _: i64 = option.unwrap_or_int(opt, 0);
 
-            let res: Result<i64, i64> = Ok(7);
+            let res: Result<i64, i64> = .Ok(7);
             let _: bool = result.is_ok_int(res);
             let _: i64 = result.unwrap_or_int(res, 0);
         }

@@ -145,7 +145,7 @@ fn actor_ask_task_boundaries_preserve_reply_and_transport_errors() {
     let source = r"
 actor Worker {
     receive fn value() -> i64 { 41 }
-    receive fn checked() -> Result<i64, string> { Ok(41) }
+    receive fn checked() -> Result<i64, string> { .Ok(41) }
 }
 fn main() {
     let worker = spawn Worker();
@@ -630,10 +630,10 @@ fn scopes_produce_their_body_value() {
 fn scope_recovery_preserves_an_ordinary_result_value() {
     let output = check_source(
         r"fn main() {
-        let value: Result<i64, string> = scope { Ok(42) } handle failure {
+        let value: Result<i64, string> = scope { Result.Ok(42) } handle failure {
             match failure {
-                .Deadline { message } => Err(message),
-                .Fault { message } => Err(message),
+                .Deadline { message } => .Err(message),
+                .Fault { message } => .Err(message),
             }
         };
     }",

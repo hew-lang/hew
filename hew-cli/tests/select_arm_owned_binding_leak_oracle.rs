@@ -278,7 +278,7 @@ fn record_unused_binding_loop_source(frames: usize) -> String {
 const OPT_STRING_ESCAPE_SCRIBBLE_SOURCE: &str = "\
 actor Maker {\n\
 \x20   receive fn make() -> Option<string> {\n\
-\x20       Some(\"opt-escape-owned-reply\".to_upper())\n\
+\x20       .Some(\"opt-escape-owned-reply\".to_upper())\n\
 \x20   }\n\
 }\n\
 \n\

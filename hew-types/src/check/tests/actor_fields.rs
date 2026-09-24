@@ -678,7 +678,8 @@ mod every_attribute {
         // `let Some(x) = opt;` — refutable enum variant in let position.
         // Must emit exactly one RefutableLetPattern error; binders must still exist
         // for error-recovery (no UnresolvedSymbol cascade on subsequent uses of `x`).
-        let output = check_source("fn main() -> i64 { let opt = Some(5); let Some(x) = opt; x }");
+        let output =
+            check_source("fn main() -> i64 { let opt = Option.Some(5); let Some(x) = opt; x }");
         let refutable_errors: Vec<_> = output
             .errors
             .iter()
@@ -749,7 +750,7 @@ mod every_attribute {
         // `let Ok(n) = r else { return … };` — a refutable Ok-pattern is
         // admitted when an else clause is present and the else diverges.
         let output = check_source(
-            "fn f(r: Result<i64, string>) -> Result<i64, string> {              let Ok(n) = r else { return Err(\"bad\") }; Ok(n) }",
+            "fn f(r: Result<i64, string>) -> Result<i64, string> {              let Ok(n) = r else { return .Err(\"bad\") }; .Ok(n) }",
         );
         let refutable: Vec<_> = output
             .errors
@@ -779,7 +780,7 @@ mod every_attribute {
         // block AFTER the let-else statement. If it did not escape, the use of
         // `n` would cascade into UndefinedVariable.
         let output = check_source(
-            "fn f(r: Result<i64, string>) -> Result<i64, string> {              let .Ok(n) = r else { return Err(\"bad\") }; Ok(n + 1) }",
+            "fn f(r: Result<i64, string>) -> Result<i64, string> {              let .Ok(n) = r else { return .Err(\"bad\") }; .Ok(n + 1) }",
         );
         let unresolved: Vec<_> = output
             .errors
@@ -841,7 +842,8 @@ mod every_attribute {
     fn refutable_let_no_else_message_suggests_else_clause() {
         // The reworded no-else diagnostic must point users at the `else` clause
         // (now that let-else exists), while still mentioning if-let / match.
-        let output = check_source("fn main() -> i64 { let opt = Some(5); let Some(x) = opt; x }");
+        let output =
+            check_source("fn main() -> i64 { let opt = Option.Some(5); let Some(x) = opt; x }");
         let refutable: Vec<_> = output
             .errors
             .iter()
@@ -870,7 +872,7 @@ mod every_attribute {
         let output = check_source(
             "enum E { A, B(i64), }
              fn make_e(g: bool) -> E { if g { E.A } else { E.B(3) } }
-             fn f(g: bool) -> Result<i64, string> { let E.A = make_e(g) else { return Err(\"x\") }; Ok(1) }",
+             fn f(g: bool) -> Result<i64, string> { let E.A = make_e(g) else { return .Err(\"x\") }; .Ok(1) }",
         );
         assert!(
             output.errors.is_empty(),
@@ -896,7 +898,7 @@ mod every_attribute {
         // variant) rides the same refutable-unit-variant path and type-checks
         // cleanly with a diverging else.
         let output = check_source(
-            "fn f(r: Option<i64>) -> Result<i64, string> { let .None = r else { return Err(\"some\") }; Ok(0) }",
+            "fn f(r: Option<i64>) -> Result<i64, string> { let .None = r else { return .Err(\"some\") }; .Ok(0) }",
         );
         assert!(
             output.errors.is_empty(),
@@ -1660,7 +1662,7 @@ mod reserved_names {
             }
 
             fn check_timeout(s: Status) -> bool {
-                s == Timeout
+                s == Status.Timeout
             }
 
             fn main() {
@@ -1726,7 +1728,7 @@ mod reserved_names {
             enum B { Conflict, }
 
             fn main() {
-                let _x = Conflict;
+                let _x = B.Conflict;
             }
             ",
         );

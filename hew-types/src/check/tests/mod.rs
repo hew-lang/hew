@@ -441,7 +441,7 @@ fn test_empty_program() {
 #[test]
 fn result_field_access_requires_handling_the_result() {
     let output = check_source(
-        "type Record { value: i64 } fn main() { let result: Result<Record, string> = Ok(Record { value: 3 }); let _value = result.value; }",
+        "type Record { value: i64 } fn main() { let result: Result<Record, string> = .Ok(Record { value: 3 }); let _value = result.value; }",
     );
     assert!(
         output.errors.iter().any(|error| {

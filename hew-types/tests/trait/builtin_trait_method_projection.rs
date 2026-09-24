@@ -44,7 +44,7 @@ fn vec_generic_trait_method_projects_output() {
         }
         impl<T> Acc for Vec<T> {
             type Output = T;
-            fn fetch(self, key: i64) -> Option<T> { None }
+            fn fetch(self, key: i64) -> Option<T> { .None }
         }
         fn takes_int(x: i64) {}
         fn main() {
@@ -72,7 +72,7 @@ fn user_record_control_still_projects() {
         type Box2<T> { inner: T, }
         impl<T> Acc for Box2<T> {
             type Output = T;
-            fn fetch(self, key: i64) -> Option<T> { Some(self.inner) }
+            fn fetch(self, key: i64) -> Option<T> { .Some(self.inner) }
         }
         fn takes_int(x: i64) {}
         fn main() {
@@ -99,7 +99,7 @@ fn hashmap_generic_trait_method_projects_value() {
         }
         impl<K, V> Lookup for HashMap<K, V> {
             type Output = V;
-            fn grab(self, key: string) -> Option<V> { None }
+            fn grab(self, key: string) -> Option<V> { .None }
         }
         fn takes_int(x: i64) {}
         fn main() {
@@ -126,7 +126,7 @@ fn vec_string_element_projects() {
         }
         impl<T> Acc for Vec<T> {
             type Output = T;
-            fn fetch(self, key: i64) -> Option<T> { None }
+            fn fetch(self, key: i64) -> Option<T> { .None }
         }
         fn takes_str(s: string) {}
         fn main() {
@@ -153,7 +153,7 @@ fn vec_owned_record_element_projects() {
         }
         impl<T> Acc for Vec<T> {
             type Output = T;
-            fn fetch(self, key: i64) -> Option<T> { None }
+            fn fetch(self, key: i64) -> Option<T> { .None }
         }
         type Point { x: i64, y: i64, }
         fn takes_int(x: i64) {}
@@ -183,7 +183,7 @@ fn unresolvable_element_fails_closed() {
         }
         impl<T> Acc for Vec<T> {
             type Output = T;
-            fn fetch(self, key: i64) -> Option<T> { None }
+            fn fetch(self, key: i64) -> Option<T> { .None }
         }
         fn main() {
             let v = [];
@@ -217,7 +217,7 @@ fn concrete_self_impl_not_overapplied_to_mismatched_element() {
         }
         impl Acc for Vec<i64> {
             type Output = i64;
-            fn fetch(self, key: i64) -> Option<i64> { None }
+            fn fetch(self, key: i64) -> Option<i64> { .None }
         }
         fn main() {
             let v: Vec<string> = ["a"];
@@ -248,7 +248,7 @@ fn constrained_key_impl_not_overapplied_to_mismatched_key() {
         }
         impl<V> Lookup for HashMap<string, V> {
             type Output = V;
-            fn grab(self, key: i64) -> Option<V> { None }
+            fn grab(self, key: i64) -> Option<V> { .None }
         }
         fn main() {
             let m: HashMap<i64, bool> = HashMap.new();
@@ -280,10 +280,10 @@ fn nested_self_constructor_mismatch_does_not_bind() {
         }
         impl<T> Acc for Vec<Vec<T>> {
             type Output = T;
-            fn fetch(self, key: i64) -> Option<T> { None }
+            fn fetch(self, key: i64) -> Option<T> { .None }
         }
         fn main() {
-            let v: Vec<Option<i64>> = [Some(1)];
+            let v: Vec<Option<i64>> = [.Some(1)];
             let r = v.fetch(0);
         }
         ",
@@ -311,7 +311,7 @@ fn concrete_self_impl_projects_for_matching_receiver() {
         }
         impl Acc for Vec<i64> {
             type Output = i64;
-            fn fetch(self, key: i64) -> Option<i64> { None }
+            fn fetch(self, key: i64) -> Option<i64> { .None }
         }
         fn takes_int(x: i64) {}
         fn main() {
@@ -344,11 +344,11 @@ fn overlapping_builtin_impls_rejected() {
         }
         impl<T> Acc for Vec<T> {
             type Output = T;
-            fn fetch(self, key: i64) -> Option<T> { None }
+            fn fetch(self, key: i64) -> Option<T> { .None }
         }
         impl Acc for Vec<i64> {
             type Output = i64;
-            fn fetch(self, key: i64) -> Option<i64> { None }
+            fn fetch(self, key: i64) -> Option<i64> { .None }
         }
         fn main() {}
         ",
@@ -381,11 +381,11 @@ fn overlapping_user_record_impls_rejected() {
         type Box2<T> { inner: T, }
         impl<T> Acc for Box2<T> {
             type Output = T;
-            fn fetch(self, key: i64) -> Option<T> { Some(self.inner) }
+            fn fetch(self, key: i64) -> Option<T> { .Some(self.inner) }
         }
         impl Acc for Box2<i64> {
             type Output = i64;
-            fn fetch(self, key: i64) -> Option<i64> { Some(self.inner) }
+            fn fetch(self, key: i64) -> Option<i64> { .Some(self.inner) }
         }
         fn main() {}
         ",

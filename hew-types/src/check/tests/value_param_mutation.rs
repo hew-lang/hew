@@ -128,7 +128,7 @@ fn option_of_value_aggregate_supports_private_replacement() {
         "type Account { balance: i64, }\n",
         "fn withdraw(var acc: Option<Account>, amount: i64) -> i64 {\n",
         "    let current = acc.expect(\"the account is present\");\n",
-        "    acc = Some(Account { balance: current.balance - amount });\n",
+        "    acc = .Some(Account { balance: current.balance - amount });\n",
         "    return acc.expect(\"the account is present\").balance;\n",
         "}\n",
     ));
@@ -139,7 +139,7 @@ fn result_of_value_aggregate_supports_private_replacement() {
     assert_check_clean(concat!(
         "type Account { balance: i64, }\n",
         "fn replace(var acc: Result<Account, string>) {\n",
-        "    acc = Ok(Account { balance: 60 });\n",
+        "    acc = .Ok(Account { balance: 60 });\n",
         "}\n",
     ));
 }
@@ -149,7 +149,7 @@ fn nested_option_result_value_aggregate_supports_private_replacement() {
     assert_check_clean(concat!(
         "type Account { balance: i64, }\n",
         "fn replace(var acc: Option<Result<(Account, i64), string>>) {\n",
-        "    acc = Some(Ok((Account { balance: 60 }, 1)));\n",
+        "    acc = .Some(.Ok((Account { balance: 60 }, 1)));\n",
         "}\n",
     ));
 }
@@ -255,7 +255,7 @@ fn record_handle_mutable_receiver_call_supports_private_mutation() {
 /// still a write to the callee's private wrapper storage.
 #[test]
 fn option_handle_root_supports_private_replacement() {
-    assert_check_clean("fn replace(var items: Option<Vec<i64>>) { items = Some([1, 2]); }\n");
+    assert_check_clean("fn replace(var items: Option<Vec<i64>>) { items = .Some([1, 2]); }\n");
 }
 
 #[test]
@@ -362,7 +362,7 @@ fn immutable_option_value_param_assignment_suggests_var() {
         concat!(
             "type Account { balance: i64, }\n",
             "fn replace(acc: Option<Account>) {\n",
-            "    acc = Some(Account { balance: 60 });\n",
+            "    acc = .Some(Account { balance: 60 });\n",
             "}\n",
         ),
         "acc",

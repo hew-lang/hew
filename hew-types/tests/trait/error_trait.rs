@@ -97,9 +97,9 @@ fn error_impl_coerces_to_dyn_error_at_every_error_position() {
 
         fn wrapped(text: string) -> Result<i64, dyn Error> {
             if text == "" {
-                return Err(ParseFailure { detail: "empty" })
+                return .Err(ParseFailure { detail: "empty" })
             }
-            return Ok(1)
+            return .Ok(1)
         }
         "#,
     );

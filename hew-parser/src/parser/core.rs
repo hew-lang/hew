@@ -212,6 +212,32 @@ impl<'src> Parser<'src> {
         )
     }
 
+    /// Whether the current position is a block or `unsafe` block whose closing
+    /// brace is followed by `.`.
+    pub(crate) fn statement_block_precedes_dot(&self) -> bool {
+        let open = match self.peek() {
+            Some(Token::LeftBrace) => self.pos,
+            Some(Token::Unsafe) if self.peek_at(self.pos + 1) == Some(&Token::LeftBrace) => {
+                self.pos + 1
+            }
+            _ => return false,
+        };
+        let mut depth = 0usize;
+        for index in open..self.tokens.len() {
+            match self.peek_at(index) {
+                Some(Token::LeftBrace) => depth += 1,
+                Some(Token::RightBrace) => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return self.peek_at(index + 1) == Some(&Token::Dot);
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+
     pub(crate) fn at_end(&self) -> bool {
         self.pos >= self.tokens.len()
     }

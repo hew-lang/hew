@@ -15,32 +15,32 @@ pub(super) use super::*;
 // `Named{Option, args:[]}` → codegen D10. The v1 root cause (a no-op in the HIR
 // walker `try_register_enum_instantiation`) was REFUTED: that walker works.
 
-/// Bare builtin `None` under an `Option<i64>` return must leave a resolvable
+/// Contextual `.None` under an `Option<i64>` return must leave a resolvable
 /// `expr_types` entry that finalizes to the POST-SUBSTITUTION concrete
 /// `Option<i64>` — not `Option<Var>` and not absent.
 #[test]
 fn builtin_none_records_option_type_at_span() {
-    let src = "fn f() -> Option<i64> { None }\nfn main() { let _x = f(); }";
+    let src = "fn f() -> Option<i64> { .None }\nfn main() { let _x = f(); }";
     let out = check_source(src);
     assert!(
         out.errors.is_empty(),
         "unexpected type errors: {:#?}",
         out.errors
     );
-    let none_start = src.find("None").expect("source must contain `None`");
+    let none_start = src.find(".None").expect("source must contain `.None`");
     // The AST identifier span keys the `expr_types` entry; match on its start
     // offset (the exact span end is a parser detail) and require exactly one
     // entry begins there.
     let mut matches = out.expr_types.iter().filter(|(k, _)| k.start == none_start);
     let (_, recorded) = matches.next().unwrap_or_else(|| {
         panic!(
-            "no expr_types entry for the bare `None` at offset {none_start}; entries: {:#?}",
+            "no expr_types entry for `.None` at offset {none_start}; entries: {:#?}",
             out.expr_types
         )
     });
     assert!(
         matches.next().is_none(),
-        "expected exactly one expr_types entry starting at the `None` offset"
+        "expected exactly one expr_types entry starting at the `.None` offset"
     );
     match recorded {
         Ty::Named { name, args, .. } => {
@@ -64,7 +64,7 @@ fn builtin_none_records_option_type_at_span() {
 /// Stage 2 record change must NOT paper this over with a bogus literal default.
 #[test]
 fn unconstrained_none_is_inference_error() {
-    let out = check_source("fn main() { let x = None; }");
+    let out = check_source("fn main() { let x = Option.None; }");
     assert!(
         out.errors
             .iter()

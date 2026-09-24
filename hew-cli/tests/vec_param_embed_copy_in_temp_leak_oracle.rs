@@ -219,14 +219,14 @@ type Wrap { f: Option<string> }
 
 fn pushParam(p: string) -> i64 {
     var v: Vec<Wrap> = [];
-    v.push(Wrap { f: Some(p) });
+    v.push(Wrap { f: .Some(p) });
     v.len()
 }
 
 fn setParam(p: string) -> i64 {
     var v: Vec<Wrap> = [];
-    v.push(Wrap { f: None });
-    v.set(0, Wrap { f: Some(p) });
+    v.push(Wrap { f: .None });
+    v.set(0, Wrap { f: .Some(p) });
     v.len()
 }
 
@@ -404,7 +404,7 @@ type MixedWrap { s: string, items: Vec<string> }
 
 fn pushParam(p: Holder) {
     var v: Vec<Wrap> = [];
-    v.push(Wrap { f: Some(p) });
+    v.push(Wrap { f: .Some(p) });
 }
 
 fn pushMixed(p: string, h: Holder) {

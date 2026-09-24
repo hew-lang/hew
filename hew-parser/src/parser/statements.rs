@@ -144,6 +144,21 @@ impl Parser<'_> {
                 continue;
             }
 
+            // A block at statement start is never a method receiver: when a
+            // `.` follows its closing brace, the block ends the statement and
+            // the `.Some(x)` after it begins the next expression.
+            if self.statement_block_precedes_dot() {
+                let start = self.peek_span().start;
+                let block = if self.eat(&Token::Unsafe) {
+                    Expr::UnsafeBlock(Box::new(self.parse_block()?))
+                } else {
+                    Expr::Block(self.parse_block()?)
+                };
+                let span = start..self.peek_span().start;
+                stmts.push((Stmt::Expression((block, span.clone())), span));
+                continue;
+            }
+
             // Try as expression
             if let Some(expr) = self.parse_expr() {
                 // Check for assignment
@@ -748,12 +763,19 @@ impl Parser<'_> {
             }
             Some(Token::Defer) => {
                 self.advance();
-                let expr = self.parse_expr()?;
-                // Block expressions don't need a trailing semicolon
-                // (consistent with if/while/for).
-                if !matches!(expr.0, Expr::Block(_)) {
+                // A block body ends the statement, as for if/while/for, so a
+                // following `.Ok(x)` tail starts a new expression rather than
+                // calling a method on the deferred block.
+                let expr = if self.peek() == Some(&Token::LeftBrace) {
+                    let start = self.peek_span().start;
+                    let block = self.parse_block()?;
+                    let end = self.peek_span().start;
+                    (Expr::Block(block), start..end)
+                } else {
+                    let expr = self.parse_expr()?;
                     self.expect(&Token::Semicolon)?;
-                }
+                    expr
+                };
                 Stmt::Defer(Box::new(expr))
             }
             _ => {

@@ -96,7 +96,7 @@ fn enum_reuse_source(frames: usize) -> String {
          fn main() -> i64 {{\n\
          \x20   var total: i64 = 0;\n\
          \x20   for i in 0..{frames} {{\n\
-         \x20       let e: Result<string, string> = Ok(\"a\" + \"b\");\n\
+         \x20       let e: Result<string, string> = .Ok(\"a\" + \"b\");\n\
          \x20       let a = ef(e);\n\
          \x20       let b = eg(e);\n\
          \x20       total = total + a + b;\n\

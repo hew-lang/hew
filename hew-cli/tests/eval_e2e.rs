@@ -2786,9 +2786,9 @@ fn run_result_ok_err_ctors_and_match_arms_dispatch_per_variant() {
         &hew_src,
         "fn parse_positive(n: i64) -> Result<i64, i64> {\n\
          \x20   if n == 42 {\n\
-         \x20       Ok(42)\n\
+         \x20       .Ok(42)\n\
          \x20   } else {\n\
-         \x20       Err(0)\n\
+         \x20       .Err(0)\n\
          \x20   }\n\
          }\n\
          \n\
@@ -2839,7 +2839,7 @@ fn match_wrong_variant_against_result_scrutinee_is_compile_time_type_error() {
     std::fs::write(
         &hew_src,
         "fn main() {\n\
-         \x20   let r: Result<i64, string> = Ok(1);\n\
+         \x20   let r: Result<i64, string> = .Ok(1);\n\
          \x20   match r {\n\
          \x20       .Some(x) => println(x),\n\
          \x20       None => println(0),\n\
@@ -3080,7 +3080,7 @@ fn trait_bound_probe3_where_clause_impl_dispatch_runs() {
          impl<T> Iterator for Pair<T> where T: Display {\n\
          \x20   type Item = T;\n\
          \x20   fn next(var p: Pair<T>) -> Option<T> {\n\
-         \x20       Some(p.left)\n\
+         \x20       .Some(p.left)\n\
          \x20   }\n\
          }\n\
          fn main() {\n\
@@ -3137,7 +3137,7 @@ fn var_self_concrete_receiver_trait_dispatch_option_abi_and_writeback() {
          \x20   fn next(var c: Counter<T>) -> Option<T> {\n\
          \x20       let out = c.current;\n\
          \x20       c.current = c.step;\n\
-         \x20       Some(out)\n\
+         \x20       .Some(out)\n\
          \x20   }\n\
          }\n\
          fn main() {\n\

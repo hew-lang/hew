@@ -15,7 +15,7 @@ fn test_non_exhaustive_match() {
             }
         }
         fn main() {
-            check(Red);
+            check(.Red);
         }
     ",
     );
@@ -43,7 +43,7 @@ fn test_non_exhaustive_match_stmt() {
         r"
         enum Colour { Red, Green, Blue, }
         fn main() {
-            let colour: Colour = Red;
+            let colour: Colour = .Red;
             match colour {
                 .Red => {},
                 .Green => {},
@@ -80,7 +80,7 @@ fn test_exhaustive_or_option_match() {
             }
         }
         fn main() {
-            check(Some(1));
+            check(.Some(1));
         }
     ",
     );
@@ -116,7 +116,7 @@ fn test_non_exhaustive_option_match() {
             }
         }
         fn main() {
-            check(Some(1));
+            check(.Some(1));
         }
     ",
     );
@@ -187,7 +187,7 @@ fn test_exhaustive_or_result_match() {
             }
         }
         fn main() {
-            check(Ok(1));
+            check(.Ok(1));
         }
     ",
     );
@@ -223,7 +223,7 @@ fn test_exhaustive_or_enum_match() {
             }
         }
         fn main() {
-            check(Red);
+            check(.Red);
         }
     ",
     );

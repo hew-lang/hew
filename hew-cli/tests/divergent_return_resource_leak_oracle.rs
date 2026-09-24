@@ -85,12 +85,12 @@ fn choose_or_error(bail: bool, c: bool) -> Result<Pipe, string> {
     let (s1, r1) = match stream.pipe(8) { .Ok(pair) => pair, .Err(error) => panic(error), };
     let (s2, r2) = match stream.pipe(8) { .Ok(pair) => pair, .Err(error) => panic(error), };
     if bail {
-        return Err("bailed");
+        return .Err("bailed");
     }
     if c {
-        Ok(Pipe { sink: s1, input: r1 })
+        .Ok(Pipe { sink: s1, input: r1 })
     } else {
-        Ok(Pipe { sink: s2, input: r2 })
+        .Ok(Pipe { sink: s2, input: r2 })
     }
 }
 
@@ -143,12 +143,12 @@ fn error_before_transfer(bail: bool, c: bool) -> Result<Pipe, string> {
     let (s1, r1) = match stream.pipe(8) { .Ok(pair) => pair, .Err(error) => panic(error), };
     let (s2, r2) = match stream.pipe(8) { .Ok(pair) => pair, .Err(error) => panic(error), };
     if bail {
-        return Err("bailed");
+        return .Err("bailed");
     }
     if c {
-        Ok(Pipe { sink: s1, input: r1 })
+        .Ok(Pipe { sink: s1, input: r1 })
     } else {
-        Ok(Pipe { sink: s2, input: r2 })
+        .Ok(Pipe { sink: s2, input: r2 })
     }
 }
 

@@ -463,7 +463,7 @@ mod non_root_module_inference_scope {
 
     #[test]
     fn unresolved_inferred_return_through_none_fails_closed() {
-        let source = "fn maybe() -> _ { None }";
+        let source = "fn maybe() -> _ { Option.None }";
         let result = hew_parser::parse(source);
         assert!(
             result.errors.is_empty(),

@@ -771,7 +771,7 @@ mod for_loop_iterable_fail_closed {
             impl Iterator for Counter {
                 type Item = i32;
                 fn next(var self) -> Option<i32> {
-                    Some(self.val)
+                    .Some(self.val)
                 }
             }
 
@@ -799,7 +799,7 @@ mod for_loop_iterable_fail_closed {
             impl Iterator for Counter {
                 type Item = i32;
                 fn next(var self) -> Option<i32> {
-                    Some(self.val)
+                    .Some(self.val)
                 }
             }
 

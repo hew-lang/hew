@@ -10,7 +10,7 @@ fn deferred_bodies_reject_escaping_exits_before_codegen() {
         ("return", "fn main() { defer { return; } }"),
         ("break", "fn main() { loop { defer { break; } break; } }"),
         ("continue", "fn main() { for i in 0..2 { defer { continue; } } }"),
-        ("try", "fn bad() -> Result<i64, string> { defer { let n = Ok(4)?; } Ok(1) } fn main() { let result = bad(); }"),
+        ("try", "fn bad() -> Result<i64, string> { defer { let n = Ok(4)?; } .Ok(1) } fn main() { let result = bad(); }"),
         ("scope", "fn main() { defer { scope { return; } } }"),
     ];
     for (name, source) in cases {

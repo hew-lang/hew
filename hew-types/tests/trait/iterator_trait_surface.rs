@@ -193,9 +193,9 @@ impl Iterator for FakeCounter {{
 
     fn next(it: FakeCounter) -> Option<i64> {{
         if it.n >= it.limit {{
-            None
+            .None
         }} else {{
-            Some(it.n)
+            .Some(it.n)
         }}
     }}
 }}
@@ -223,7 +223,7 @@ pub type BadCounter {{
 impl Iterator for BadCounter {{
     // BUG: missing `type Item = i64;`. Must surface as a checker error.
     fn next(it: BadCounter) -> Option<i64> {{
-        None
+        .None
     }}
 }}
 "

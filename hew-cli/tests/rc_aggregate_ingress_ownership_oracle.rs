@@ -122,7 +122,7 @@ type Node {{ id: i64, }}
 
 fn frame(seed: i64) -> i64 {{
     let shared: Rc<Node> = Rc.new(Node {{ id: seed }});
-    let held: Option<Rc<Node>> = Some(shared);
+    let held: Option<Rc<Node>> = .Some(shared);
     match held.is_some() {{
         true => 1,
         false => 0,
@@ -148,7 +148,7 @@ type Node {{ id: i64, }}
 
 fn frame(seed: i64) -> Option<Rc<Node>> {{
     let shared: Rc<Node> = Rc.new(Node {{ id: seed }});
-    Some(shared)
+    .Some(shared)
 }}
 
 fn main() -> i64 {{
@@ -174,7 +174,7 @@ type Node {{ id: i64, }}
 
 fn frame(seed: i64) -> i64 {{
     let shared: Rc<Node> = Rc.new(Node {{ id: seed }});
-    let held: Result<Rc<Node>, string> = Ok(shared);
+    let held: Result<Rc<Node>, string> = .Ok(shared);
     match held.is_ok() {{
         true => 1,
         false => 0,
@@ -200,7 +200,7 @@ type Node {{ id: i64, }}
 
 fn frame(seed: i64) -> Result<Rc<Node>, string> {{
     let shared: Rc<Node> = Rc.new(Node {{ id: seed }});
-    Ok(shared)
+    .Ok(shared)
 }}
 
 fn main() -> i64 {{

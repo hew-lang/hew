@@ -232,7 +232,7 @@ fn tuple_numeric_field_access_out_of_bounds_fails_closed_in_hir() {
 fn unit_tuple_in_result_lowers_and_verifies_cleanly() {
     let source = r"
 fn fallible() -> Result<(), i64> {
-    Ok(())
+    .Ok(())
 }
 
 fn main() -> i64 {

@@ -148,14 +148,7 @@ impl Parser<'_> {
             // `.` follows its closing brace, the block ends the statement and
             // the `.Some(x)` after it begins the next expression.
             if self.statement_block_precedes_dot() {
-                let start = self.peek_span().start;
-                let block = if self.eat(&Token::Unsafe) {
-                    Expr::UnsafeBlock(Box::new(self.parse_block()?))
-                } else {
-                    Expr::Block(self.parse_block()?)
-                };
-                let span = start..self.peek_span().start;
-                stmts.push((Stmt::Expression((block, span.clone())), span));
+                stmts.push(self.parse_statement_block()?);
                 continue;
             }
 
@@ -234,6 +227,18 @@ impl Parser<'_> {
             stmts,
             trailing_expr,
         })
+    }
+
+    /// Parse a block or `unsafe` block as a whole expression statement.
+    fn parse_statement_block(&mut self) -> Option<Spanned<Stmt>> {
+        let start = self.peek_span().start;
+        let block = if self.eat(&Token::Unsafe) {
+            Expr::UnsafeBlock(Box::new(self.parse_block()?))
+        } else {
+            Expr::Block(self.parse_block()?)
+        };
+        let span = start..self.peek_span().start;
+        Some((Stmt::Expression((block, span.clone())), span))
     }
 
     /// Parse the arm after an `if let`'s `else`, which the caller has already

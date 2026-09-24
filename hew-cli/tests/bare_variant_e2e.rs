@@ -553,7 +553,7 @@ fn migrate_rewrites_bare_builtin_variants_and_is_idempotent() {
         "let inferred = Option.Some(1);",
         "let annotated: Option<i64> = .None;",
         "show(.Some(2))",
-        "{ .Some(n) }",
+        "-> Option<i64> {\n        .Some(n)\n    };",
         "let colour = Colour.Red;",
     ] {
         assert!(

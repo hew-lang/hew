@@ -3331,7 +3331,7 @@ fn repl_fragment_no_unused_lints_for_stdlib_chunk() {
         "import std.iter;\n",
         "fn stdlib_demo() -> string {\n",
         "    let s = string.from_int(42);\n",
-        "    let opt = option.map_int(Some(20), |v: i64| v + 22);\n",
+        "    let opt = option.map_int(.Some(20), |v: i64| v + 22);\n",
         "    let v: Vec<string> = [\"a\", \"bb\"];\n",
         "    let mapped = iter.map(v.into_iter(), |x: string| string.from_int(x.len()));\n",
         "    let lens: Vec<string> = iter.collect(mapped);\n",

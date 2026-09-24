@@ -137,7 +137,7 @@ pub(super) fn display_callees(
 /// A recipe's identity is reserved before its parts are resolved, so a type
 /// that reaches itself through an indirect enum terminates here.
 #[derive(Debug, Default)]
-pub(super) struct StructuralGlue {
+pub(crate) struct StructuralGlue {
     ids: BTreeMap<StructuralType, PhysicalStructuralId>,
     glue: Vec<Option<PhysicalStructuralGlue>>,
 }

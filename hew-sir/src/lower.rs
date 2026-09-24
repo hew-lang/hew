@@ -9214,18 +9214,15 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 transformed_target = Some(target);
                 field
             } else {
-                // A state seat leaves by take, and the call publishes a
-                // receiver back into it on every edge the call owns: the
-                // updated one where the contract keeps it, and a fresh empty
-                // collection where the runtime consumed it. The seat never
-                // needs a copy of its own value and never stays uninitialized.
-                let seat_taken = matches!(
-                    self.places[projected.0 as usize].origin,
-                    crate::PlaceOrigin::ActorState { .. }
-                );
+                // The receiver leaves its place by take, and the call
+                // re-initializes the place on every edge the call owns: with
+                // the updated receiver, or the input where the contract keeps
+                // it on failure. A state seat the runtime consumed keeps the
+                // empty carrier the take left in it. The place never needs a
+                // copy of its own value.
                 transformed_target = Some(WritableRoot::Place {
                     leaf: projected,
-                    taken: seat_taken,
+                    taken: true,
                 });
                 failure_target = Some(WritableRoot::Place {
                     leaf: projected,

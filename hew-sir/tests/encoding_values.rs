@@ -123,6 +123,6 @@ fn insertion_transfers_both_owners_and_free_consumes_an_immutable_binding() {
             .blocks
             .iter()
             .flat_map(|block| &block.ops)
-            .any(|op| matches!(op.kind, SemOpKind::StoreAssign { .. })));
+            .any(|op| matches!(op.kind, SemOpKind::StoreInit { .. })));
     }
 }

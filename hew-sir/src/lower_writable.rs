@@ -26,7 +26,8 @@ pub(super) struct Writeback {
 
 /// Where a writable path publishes its updated leaf.
 pub(super) enum WritableRoot {
-    /// A place of this body. `taken` marks a state seat the mutation took.
+    /// A place of this body. `taken` marks a place the mutation took, which
+    /// is re-initialized rather than assigned.
     Place { leaf: PlaceId, taken: bool },
     /// A field beneath a whole owner. The mutation ran on a copy of the
     /// field, which is assigned back through the owner.

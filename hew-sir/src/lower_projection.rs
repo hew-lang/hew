@@ -16,7 +16,6 @@ use std::collections::{BTreeMap, BTreeSet};
 #[derive(Clone)]
 pub(super) struct OpenOwner {
     root: PlaceId,
-    owned: bool,
     levels: Vec<(ResolvedTy, AggregateShapeRef, usize, Vec<crate::ValueDef>)>,
 }
 
@@ -141,32 +140,25 @@ impl Builder<'_, '_> {
     }
 
     /// Take the owner `place` is rooted at whole and take it apart down to the
-    /// field `place` names, which is returned. A plain owner is copied rather
-    /// than taken. The caller closes the owner again with
-    /// [`Self::close_owner`] before anything but the one mutation it opened
-    /// the owner for can fault, and on every edge that mutation leaves by.
+    /// field `place` names, which is returned. The caller closes the owner
+    /// again with [`Self::close_owner`] before anything but the one mutation
+    /// it opened the owner for can fault, and on every edge that mutation
+    /// leaves by.
     pub(super) fn open_owner(
         &mut self,
         root: PlaceId,
         place: &BindingPlace,
         provenance: &Provenance,
     ) -> Result<(ValueId, OpenOwner), String> {
-        let owned =
-            OwnKind::of_ty(&place.root_ty, self.service.checked_facts.rows())? == OwnKind::Owned;
         let mut value = self.emit_typed(
             provenance.clone(),
             &place.root_ty,
-            if owned {
-                SemOpKind::LoadTake { place: root }
-            } else {
-                SemOpKind::LoadCopy { place: root }
-            },
+            SemOpKind::LoadTake { place: root },
         )?;
-        if owned
-            && (matches!(
-                self.places[root.0 as usize].origin,
-                PlaceOrigin::ActorState { .. }
-            ) || self.in_var_self_receiver(root))
+        if matches!(
+            self.places[root.0 as usize].origin,
+            PlaceOrigin::ActorState { .. }
+        ) || self.in_var_self_receiver(root)
         {
             self.state_taken.insert(root);
         }
@@ -176,14 +168,7 @@ impl Builder<'_, '_> {
             value = fields[*index].id;
             levels.push((ty.clone(), *shape, *index, fields));
         }
-        Ok((
-            value,
-            OpenOwner {
-                root,
-                owned,
-                levels,
-            },
-        ))
+        Ok((value, OpenOwner { root, levels }))
     }
 
     /// Rebuild an opened owner around `field` and re-initialize its seat.
@@ -211,11 +196,7 @@ impl Builder<'_, '_> {
                 SemOpKind::AggregateMake { shape, fields },
             )?;
         }
-        if owner.owned {
-            self.restore_taken_place(owner.root, rebuilt, provenance)
-        } else {
-            self.store_projected(owner.root, rebuilt, provenance)
-        }
+        self.restore_taken_place(owner.root, rebuilt, provenance)
     }
 
     /// An owned copy of the field `place` names beneath a whole owner, read

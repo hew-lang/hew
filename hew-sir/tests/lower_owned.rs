@@ -266,7 +266,7 @@ fn bytes_runtime_transform_and_failure_edges_are_explicit_and_checked() {
         })
         .expect("the mutable source binding must have stable storage");
     assert!(main.blocks[push_normal.0 as usize].ops.iter().any(|op| matches!(&op.kind,
-        SemOpKind::StoreAssign { place, value } if *place == copy && value.value == push_continuation)),
+        SemOpKind::StoreInit { place, value } if *place == copy && value.value == push_continuation)),
         "the transformed receiver must return to the same local storage");
 
     let index_unwind = main

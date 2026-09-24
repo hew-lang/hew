@@ -585,8 +585,8 @@ fn runtime_block(function: &hew_sir::SemFunction, family: RuntimeCallFamily) -> 
 
 fn returned_receiver_store(block: &hew_sir::SemBlock, place: hew_sir::PlaceId) -> usize {
     block.ops.iter().position(|op| matches!(&op.kind,
-        SemOpKind::StoreAssign { place: p, value } if *p == place && value.value == block.args[0].value))
-        .expect("store the returned receiver into the same projected field")
+        SemOpKind::StoreInit { place: p, value } if *p == place && value.value == block.args[0].value))
+        .expect("re-initialize the taken field with the returned receiver")
 }
 
 fn assert_root_cleanup(block: &hew_sir::SemBlock, root: hew_sir::PlaceId) {

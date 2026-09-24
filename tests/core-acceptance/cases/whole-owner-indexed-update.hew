@@ -1,0 +1,59 @@
+import std.failure;
+
+type Row {
+    x: i64,
+    name: string,
+}
+
+type Table {
+    rows: [Row],
+    cells: [i64],
+    tag: string,
+}
+
+actor Keeper {
+    var table: Table,
+
+    receive fn poke() -> string {
+        table.cells[0] = 5;
+        table.rows[0].x = 7;
+        table.rows[0].name = "renamed";
+        table.tag = "poked";
+        f"{table.tag} {table.cells[0]} {table.rows[0].x} {table.rows[0].name}"
+    }
+
+    receive fn out_of_bounds() -> i64 {
+        table.rows[0].x = 99;
+        table.rows[9].x = 1;
+        0
+    }
+
+    #[on(crash)]
+    fn crashed(info: CrashInfo) -> CrashAction {
+        println(f"hook sees {table.tag} {table.rows.len()} {table.rows[0].x} {table.rows[0].name}");
+        CrashAction.Restart
+    }
+}
+
+supervisor Group {
+    intensity: 1 within 60s,
+    child keeper: Keeper(table: Table { rows: [Row { x: 1, name: "a" }], cells: [0, 0], tag: "new" }),
+}
+
+fn main() {
+    let group = spawn Group;
+    println(group.keeper.poke().expect("poke"));
+    let _ = group.keeper.out_of_bounds();
+    let _ = await_restart group.keeper;
+    close(group);
+
+    let t = Table { rows: [Row { x: 1, name: "a" }], cells: [0], tag: "captured" };
+    var step = capture(var t) || {
+        t.cells[0] = t.cells[0] + 1;
+        t.rows[0].x = t.rows[0].x + 10;
+        t.rows.push(Row { x: 0, name: "b" });
+        println(f"{t.tag} {t.cells[0]} {t.rows[0].x} {t.rows.len()}");
+    };
+    step();
+    step();
+}

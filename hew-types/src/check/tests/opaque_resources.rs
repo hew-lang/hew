@@ -1429,10 +1429,12 @@ fn machine_state_phantom_generic_resource_arg_is_admitted() {
     );
 }
 
-/// D528: an `#[opaque]` handle field of a `#[resource]` is released by that
+/// D528: an `#[opaque]` handle a `#[resource]` holds is released by that
 /// resource's `close`, so reading it out by value anywhere else would leave
-/// two owners of one handle. `close` may read it, FFI calls borrow it, and the
-/// suggestion names the destructure that hands it out without `close`.
+/// two owners of one handle - whether it is a direct field, sits in a plain
+/// record below the resource or inside an `Option`. `close` may read it, FFI
+/// calls borrow it, and the suggestion names the destructure that hands it out
+/// without `close`.
 #[test]
 fn resource_handle_field_is_affine_outside_close() {
     let prelude = r#"
@@ -1442,20 +1444,58 @@ fn resource_handle_field_is_affine_outside_close() {
             fn hew_deque_len(dq: Dq) -> i64;
             fn hew_deque_free(consume dq: Dq);
         }
-        #[resource]
-        type Value { handle: Dq }
         type Pair { a: Dq }
+        #[resource]
+        type Value { handle: Dq, inner: Pair, spare: Option<Dq> }
     "#;
-    for method in [
-        "fn release(consume self) -> Dq { self.handle }",
-        "fn peek(self) -> Dq { self.handle }",
-        "fn bind(self) -> i64 { let h = self.handle; 1 }",
-        "fn wrap(self) -> Pair { Pair { a: self.handle } }",
-        "fn free(self) { unsafe { hew_deque_free(self.handle) }; }",
+    let close = "fn close(consume self) {
+        unsafe { hew_deque_free(self.handle) };
+        unsafe { hew_deque_free(self.inner.a) };
+        if let .Some(h) = self.spare { unsafe { hew_deque_free(h) }; }
+    }";
+    for (method, place, destructure) in [
+        (
+            "fn release(consume self) -> Dq { self.handle }",
+            "self.handle",
+            "let Value { handle } = self; handle",
+        ),
+        (
+            "fn peek(self) -> Dq { self.handle }",
+            "self.handle",
+            "let Value { handle } = self; handle",
+        ),
+        (
+            "fn bind(self) -> i64 { let h = self.handle; 1 }",
+            "self.handle",
+            "let Value { handle } = self; handle",
+        ),
+        (
+            "fn wrap(self) -> Pair { Pair { a: self.handle } }",
+            "self.handle",
+            "let Value { handle } = self; handle",
+        ),
+        (
+            "fn free(self) { unsafe { hew_deque_free(self.handle) }; }",
+            "self.handle",
+            "let Value { handle } = self; handle",
+        ),
+        (
+            "fn nested(self) -> Dq { self.inner.a }",
+            "self.inner.a",
+            "let Value { inner } = self; inner.a",
+        ),
+        (
+            "fn record(self) -> Pair { self.inner }",
+            "self.inner",
+            "let Value { inner } = self; inner",
+        ),
+        (
+            "fn optional(self) -> Option<Dq> { self.spare }",
+            "self.spare",
+            "let Value { spare } = self; spare",
+        ),
     ] {
-        let output = check_source(&format!(
-            "{prelude} impl Value {{ fn close(consume self) {{ unsafe {{ hew_deque_free(self.handle) }}; }} {method} }}"
-        ));
+        let output = check_source(&format!("{prelude} impl Value {{ {close} {method} }}"));
         let refusals: Vec<_> = output
             .errors
             .iter()
@@ -1465,11 +1505,11 @@ fn resource_handle_field_is_affine_outside_close() {
         assert!(
             refusals[0]
                 .message
-                .contains("cannot read `self.handle` by value: `Value` releases")
+                .contains(&format!("cannot read `{place}` by value: `Value` releases"))
                 && refusals[0]
                     .suggestions
                     .iter()
-                    .any(|hint| hint.contains("`let Value { handle } = self; handle`")),
+                    .any(|hint| hint.contains(&format!("`{destructure}`"))),
             "{method}: {:#?}",
             refusals[0]
         );
@@ -1477,9 +1517,16 @@ fn resource_handle_field_is_affine_outside_close() {
 
     let accepted = check_source(&format!(
         "{prelude} impl Value {{
-            fn close(consume self) {{ let h = self.handle; unsafe {{ hew_deque_free(h) }}; }}
+            {close}
             fn len(self) -> i64 {{ unsafe {{ hew_deque_len(self.handle) }} }}
-            fn release(consume self) -> Dq {{ let Value {{ handle }} = self; handle }}
+            fn inner_len(self) -> i64 {{ unsafe {{ hew_deque_len(self.inner.a) }} }}
+            fn has_spare(self) -> bool {{ self.spare.is_some() }}
+            fn release(consume self) -> Dq {{
+                let Value {{ handle, inner, spare }} = self;
+                unsafe {{ hew_deque_free(inner.a) }};
+                if let .Some(h) = spare {{ unsafe {{ hew_deque_free(h) }}; }}
+                handle
+            }}
         }}
         fn count(v: Value) -> i64 {{ unsafe {{ hew_deque_len(v.handle) }} }}
         fn plain(p: Pair) -> Dq {{ p.a }}"

@@ -1568,52 +1568,82 @@ else needs `impl Display for {rendered}`)"
         }
     }
 
-    /// Whether `expr` names an `#[opaque]` handle field of a `#[resource]`
-    /// record (D528). The handle itself classes as a bit copy so FFI calls can
-    /// borrow it, but the enclosing resource's `close` releases it: reading it
-    /// out by value anywhere but that `close` would leave two owners of one
-    /// handle, so such a read is a transfer and the partial-consume rule
-    /// decides it.
+    /// Whether `expr` reads a value carrying an `#[opaque]` handle out of a
+    /// `#[resource]` record (D528). The handle itself classes as a bit copy so
+    /// FFI calls can borrow it, but the enclosing resource's `close` releases
+    /// it: reading it out by value anywhere but that `close` - directly, in a
+    /// plain record below the resource or inside an `Option` - would leave two
+    /// owners of one handle, so such a read is a transfer and the
+    /// partial-consume rule decides it.
     pub(super) fn reads_resource_handle_field(&self, expr: &Expr) -> bool {
-        let Some((root, path)) = self.expr_place(expr) else {
-            return false;
-        };
-        let Some((field, parents)) = path.split_last() else {
-            return false;
-        };
-        let Some(binding) = self.env.lookup_ref(&root) else {
-            return false;
-        };
-        let mut parent = self.subst.resolve(&binding.ty);
-        for step in parents {
-            let Some(selected) = self.project_named_field(&parent, step) else {
-                return false;
-            };
-            parent = self.subst.resolve(&selected);
-        }
-        self.is_resource_handle_field(&parent, field)
+        self.expr_place(expr)
+            .is_some_and(|(root, path)| self.resource_handle_owner(&root, &path).is_some())
     }
 
-    /// Whether `field` of `parent` is a marker-free `#[opaque]` handle held by
-    /// a `#[resource]` record.
-    fn is_resource_handle_field(&self, parent: &Ty, field: &str) -> bool {
-        let Ty::Named { name, .. } = parent else {
-            return false;
-        };
-        if !self.registry.is_resource(name) {
-            return false;
+    /// The depth of the nearest `#[resource]` record on `path` whose `close`
+    /// releases a handle the selected value carries.
+    fn resource_handle_owner(&self, root: &str, path: &[String]) -> Option<usize> {
+        let binding = self.env.lookup_ref(root)?;
+        let mut parent = self.subst.resolve(&binding.ty);
+        let mut owner = None;
+        for (depth, step) in path.iter().enumerate() {
+            if matches!(&parent, Ty::Named { name, .. } if self.registry.is_resource(name)) {
+                owner = Some(depth);
+            }
+            let selected = match &parent {
+                Ty::Tuple(items) => items.get(step.parse::<usize>().ok()?).cloned(),
+                _ => self.project_named_field(&parent, step),
+            };
+            parent = self.subst.resolve(&selected?);
         }
-        let Some(Ty::Named { name: handle, .. }) = self
-            .project_named_field(parent, field)
-            .map(|ty| self.subst.resolve(&ty))
-        else {
-            return false;
-        };
-        crate::value_class::ClassDeclarations::declared_type(&self.class_declarations(), &handle)
-            .is_some_and(|declaration| {
-                declaration.is_opaque
-                    && declaration.marker == crate::value_class::DeclarationMarker::None
-            })
+        owner.filter(|_| self.carries_resource_handle(&parent, &mut HashSet::new()))
+    }
+
+    /// Whether a value of `ty` holds a marker-free `#[opaque]` handle that is
+    /// not itself owned by a nested `#[resource]`.
+    fn carries_resource_handle(&self, ty: &Ty, visiting: &mut HashSet<String>) -> bool {
+        match ty {
+            Ty::Named { name, args, .. } => {
+                if self.registry.is_resource(name) {
+                    return false;
+                }
+                if crate::value_class::ClassDeclarations::declared_type(
+                    &self.class_declarations(),
+                    name,
+                )
+                .is_some_and(|declaration| {
+                    declaration.is_opaque
+                        && declaration.marker == crate::value_class::DeclarationMarker::None
+                }) {
+                    return true;
+                }
+                if args
+                    .iter()
+                    .any(|arg| self.carries_resource_handle(&self.subst.resolve(arg), visiting))
+                {
+                    return true;
+                }
+                let Some(members) = self.registry.member_types(name) else {
+                    return false;
+                };
+                if !visiting.insert(name.clone()) {
+                    return false;
+                }
+                let carries = members
+                    .to_vec()
+                    .iter()
+                    .any(|member| self.carries_resource_handle(member, visiting));
+                visiting.remove(name);
+                carries
+            }
+            Ty::Tuple(elements) => elements
+                .iter()
+                .any(|element| self.carries_resource_handle(element, visiting)),
+            Ty::Array(element, _) | Ty::Slice(element) => {
+                self.carries_resource_handle(element, visiting)
+            }
+            _ => false,
+        }
     }
 
     /// Mark an identifier binding moved, unconditionally.
@@ -1697,8 +1727,9 @@ else needs `impl Display for {rendered}`)"
                 continue;
             }
             let Some(selected) = self.independent_record_or_tuple_field(&parent, field) else {
-                if depth + 1 == path.len() && self.is_resource_handle_field(&parent, field) {
+                if self.resource_handle_owner(root, path) == Some(depth) {
                     let record = Self::render_place(root, &path[..depth]);
+                    let handed_out = Self::render_place(field, &path[depth + 1..]);
                     let resource = parent.user_facing().to_string();
                     let short = parent
                         .type_name()
@@ -1709,14 +1740,14 @@ else needs `impl Display for {rendered}`)"
                         TypeErrorKind::OwnPartialConsume,
                         span,
                         format!(
-                            "cannot read `{}` by value: `{resource}` releases this `#[opaque]` \
-                             handle in its `close`, so outside `close` the field cannot be \
+                            "cannot read `{}` by value: `{resource}` releases the `#[opaque]` \
+                             handle it carries in its `close`, so outside `close` it cannot be \
                              copied or moved out",
                             Self::render_place(root, path),
                         ),
                         vec![format!(
                             "destructure the resource to hand the handle out without running \
-                             `close`: `let {short} {{ {field} }} = {record}; {field}`"
+                             `close`: `let {short} {{ {field} }} = {record}; {handed_out}`"
                         )],
                     );
                     return true;

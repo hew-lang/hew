@@ -56,6 +56,7 @@ impl Parser<'_> {
         let mut methods = Vec::new();
         let mut mailbox_capacity = None;
         let mut overflow_policy = None;
+        let mut mailbox_span = None;
 
         while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
             // Collect doc comments and attributes in either order.
@@ -64,6 +65,7 @@ impl Parser<'_> {
             if doc_comment.is_none() {
                 doc_comment = self.collect_doc_comments();
             }
+            let member_start = self.peek_span().start;
 
             if self.peek() == Some(&Token::Init) {
                 // No attribute is legal on an `init` block.
@@ -73,7 +75,11 @@ impl Parser<'_> {
                 let params = self.parse_params();
                 self.expect(&Token::RightParen)?;
                 let body = self.parse_block()?;
-                init = Some(ActorInit { params, body });
+                init = Some(ActorInit {
+                    params,
+                    body,
+                    span: member_start..self.last_token_end,
+                });
             } else if self.peek() == Some(&Token::Receive) {
                 self.validate_attributes_for(&attrs, AttrPosition::ActorReceiveFn);
                 let recv_start = self.peek_span().start;
@@ -160,6 +166,7 @@ impl Parser<'_> {
                     is_mutable: false,
                     default,
                     doc_comment,
+                    span: member_start..self.last_token_end,
                 });
             } else if self.peek() == Some(&Token::Var) {
                 self.validate_attributes_for(&attrs, AttrPosition::Unsupported);
@@ -179,6 +186,7 @@ impl Parser<'_> {
                     is_mutable: true,
                     default,
                     doc_comment,
+                    span: member_start..self.last_token_end,
                 });
             } else if matches!(self.peek(), Some(Token::Identifier(s)) if *s == "mailbox") {
                 self.validate_attributes_for(&attrs, AttrPosition::Unsupported);
@@ -198,6 +206,7 @@ impl Parser<'_> {
                     overflow_policy = self.parse_overflow_policy();
                 }
                 self.expect_structural_separator();
+                mailbox_span = Some(member_start..self.last_token_end);
             } else if self.peek_is_field_decl() {
                 self.validate_attributes_for(&attrs, AttrPosition::Unsupported);
                 let field_name = self.expect_ident()?;
@@ -215,6 +224,7 @@ impl Parser<'_> {
                     is_mutable: false,
                     default,
                     doc_comment,
+                    span: member_start..self.last_token_end,
                 });
             } else {
                 self.error(format!("unexpected token in actor body: {:?}", self.peek()));
@@ -235,6 +245,7 @@ impl Parser<'_> {
             methods,
             mailbox_capacity,
             overflow_policy,
+            mailbox_span,
             is_isolated: false,
             doc_comment: None,
             max_heap_bytes: None, // set by parse_item from outer #[max_heap] attr

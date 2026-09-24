@@ -1464,12 +1464,17 @@ impl Parser<'_> {
                                 .to_string(),
                         );
                     }
+                    let alias_start = self.peek_span().start;
                     self.advance();
                     let name = self.expect_ident()?;
                     self.expect(&Token::Equal)?;
                     let ty = self.parse_type()?;
                     self.expect(&Token::Semicolon)?;
-                    type_aliases.push(ImplTypeAlias { name, ty });
+                    type_aliases.push(ImplTypeAlias {
+                        name,
+                        ty,
+                        span: alias_start..self.last_token_end,
+                    });
                 }
                 Some(Token::Fn) => {
                     let fn_start = self.peek_span().start;

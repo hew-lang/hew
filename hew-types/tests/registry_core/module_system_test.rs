@@ -1147,6 +1147,7 @@ fn make_actor(name: &str, receive_fns: Vec<ReceiveFnDecl>) -> ActorDecl {
         methods: vec![],
         mailbox_capacity: None,
         overflow_policy: None,
+        mailbox_span: None,
         is_isolated: false,
         doc_comment: None,
         max_heap_bytes: None,

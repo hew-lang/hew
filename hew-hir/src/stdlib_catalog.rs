@@ -2572,6 +2572,62 @@ const HANDWRITTEN_CATALOG: &[BuiltinEntry] = &[
         &[BuiltinTy::Pointer, BuiltinTy::Pointer, BuiltinTy::U64],
         BuiltinTy::Unit,
         BuiltinLinkage::CalleeNameDispatchOnly,
+    ), // The generic `std.encoding.wire` facade. Each call lowers through its
+    // checker-recorded `GenericWireCodec` rewrite; these rows only register
+    // the bodyless declarations.
+    direct(
+        "wire.encode",
+        BuiltinClass::ClassB,
+        &[BuiltinTy::Pointer],
+        BuiltinTy::Bytes,
+        BuiltinLinkage::CompilerIntrinsic {
+            intrinsic: "wire.encode",
+        },
+    ),
+    direct(
+        "wire.decode",
+        BuiltinClass::ClassB,
+        &[BuiltinTy::Bytes],
+        BuiltinTy::Pointer,
+        BuiltinLinkage::CompilerIntrinsic {
+            intrinsic: "wire.decode",
+        },
+    ),
+    direct(
+        "wire.to_json",
+        BuiltinClass::ClassB,
+        &[BuiltinTy::Pointer],
+        BuiltinTy::String,
+        BuiltinLinkage::CompilerIntrinsic {
+            intrinsic: "wire.to_json",
+        },
+    ),
+    direct(
+        "wire.from_json",
+        BuiltinClass::ClassB,
+        &[BuiltinTy::String],
+        BuiltinTy::Pointer,
+        BuiltinLinkage::CompilerIntrinsic {
+            intrinsic: "wire.from_json",
+        },
+    ),
+    direct(
+        "wire.to_yaml",
+        BuiltinClass::ClassB,
+        &[BuiltinTy::Pointer],
+        BuiltinTy::String,
+        BuiltinLinkage::CompilerIntrinsic {
+            intrinsic: "wire.to_yaml",
+        },
+    ),
+    direct(
+        "wire.from_yaml",
+        BuiltinClass::ClassB,
+        &[BuiltinTy::String],
+        BuiltinTy::Pointer,
+        BuiltinLinkage::CompilerIntrinsic {
+            intrinsic: "wire.from_yaml",
+        },
     ),
 ];
 

@@ -3,7 +3,7 @@
 
 use super::Checker;
 use crate::actor_protocol::ActorProtocolDescriptor;
-use crate::{BuiltinType, ResolvedTy, Ty};
+use crate::{ResolvedTy, Ty};
 
 const ACTOR_MSG: &str = "std.builtins.ActorMsg";
 
@@ -24,7 +24,7 @@ impl Checker {
                 .param_tys
                 .iter()
                 .chain((handler.return_ty != ResolvedTy::Unit).then_some(&handler.return_ty))
-                .all(|ty| self.is_wire_portable(ty));
+                .all(|ty| self.is_serializable(ty));
         }
         self.actor_protocol_descriptors = protocols;
     }
@@ -63,7 +63,7 @@ impl Checker {
         };
         let mut ok = true;
         for ty in std::iter::once(&msg).chain(ask.then_some(&reply)) {
-            if *ty == ResolvedTy::Unit || self.is_wire_portable(ty) {
+            if *ty == ResolvedTy::Unit || self.is_serializable(ty) {
                 continue;
             }
             // A record or enum can declare its schema; any other value has
@@ -112,53 +112,6 @@ impl Checker {
             ok = false;
         }
         ok
-    }
-
-    /// Mirrors the SIR wire schema walk: scalars, collections of portable
-    /// values, and declarations with a checked `#[wire]` layout.
-    pub(super) fn is_wire_portable(&self, ty: &ResolvedTy) -> bool {
-        match ty {
-            ResolvedTy::I8
-            | ResolvedTy::I16
-            | ResolvedTy::I32
-            | ResolvedTy::I64
-            | ResolvedTy::U8
-            | ResolvedTy::U16
-            | ResolvedTy::U32
-            | ResolvedTy::U64
-            | ResolvedTy::Isize
-            | ResolvedTy::Usize
-            | ResolvedTy::F32
-            | ResolvedTy::F64
-            | ResolvedTy::Bool
-            | ResolvedTy::Char
-            | ResolvedTy::Duration
-            | ResolvedTy::String
-            | ResolvedTy::Bytes => true,
-            ResolvedTy::Named {
-                builtin: Some(builtin),
-                args,
-                ..
-            } => match (builtin, args.as_slice()) {
-                (BuiltinType::Vec | BuiltinType::HashSet, [element]) => {
-                    self.is_wire_portable(element)
-                }
-                (BuiltinType::HashMap, [key, value]) => {
-                    self.is_wire_portable(key) && self.is_wire_portable(value)
-                }
-                (BuiltinType::Option, [value]) => {
-                    !value.is_builtin(BuiltinType::Option) && self.is_wire_portable(value)
-                }
-                _ => false,
-            },
-            ResolvedTy::Named {
-                name,
-                builtin: None,
-                args,
-                is_opaque: false,
-            } => args.is_empty() && self.wire_layouts.contains_key(name),
-            _ => false,
-        }
     }
 }
 

@@ -612,6 +612,12 @@ impl Checker {
                      or render the parts that already have one",
                     resolved_arg.user_facing()
                 )]
+            } else if MarkerTrait::from_name(bound) == Some(MarkerTrait::Serializable) {
+                vec![
+                    "only scalars, `Vec`, `HashMap`, `HashSet` and `Option` of serializable \
+                     values, and `#[wire]` types with tagged fields have a wire encoding"
+                        .to_string(),
+                ]
             } else {
                 self.diagnose_bound_failure_suggestions(resolved_arg, bound)
             };
@@ -1079,6 +1085,10 @@ impl Checker {
         vec![]
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one dispatch over every marker and nominal bound kind"
+    )]
     pub(super) fn type_satisfies_trait_bound(&mut self, ty: &Ty, trait_name: &str) -> bool {
         // One authority decides Display: the impl lookup f-string interpolation
         // already uses. The structural marker derivation would grant it to
@@ -1115,6 +1125,9 @@ impl Checker {
             return self
                 .parameter_clone_kind(ty)
                 .is_some_and(|clone| clone != crate::type_facts::CloneKind::None);
+        }
+        if MarkerTrait::from_name(trait_name) == Some(MarkerTrait::Serializable) {
+            return self.satisfies_serializable(ty);
         }
         if MarkerTrait::from_name(trait_name) == Some(MarkerTrait::Send) {
             return self.registry.implements_marker_with_bounds(

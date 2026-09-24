@@ -1139,8 +1139,7 @@ impl Checker {
             Some(GenericCallee::Function { key: &key }),
         );
         self.record_generic_wire_codec_rewrite(
-            &canonical_owner,
-            method,
+            &key,
             &applied_sig.params,
             &applied_sig.return_type,
             span,
@@ -1178,12 +1177,8 @@ impl Checker {
     /// produced during canonical-floor registration.  The source spelling may
     /// be an imported module alias or a named-import alias, but both paths
     /// retain the declaring key; never infer an intrinsic from a callee leaf.
-    pub(super) fn intrinsic_runtime_target_for_signature(
-        &self,
-        signature_key: &str,
-    ) -> Option<crate::runtime_call::RuntimeCallFamily> {
-        let intrinsic_key = self
-            .intrinsic_declarations
+    pub(super) fn intrinsic_key_for_signature(&self, signature_key: &str) -> Option<&str> {
+        self.intrinsic_declarations
             .get(signature_key)
             .or_else(|| {
                 let (surface_module, source_leaf) = signature_key.rsplit_once('.')?;
@@ -1202,13 +1197,21 @@ impl Checker {
                     signature_key.to_string(),
                 ))?;
                 self.intrinsic_declarations.get(source_key)
-            })?;
+            })
+            .map(String::as_str)
+    }
+
+    pub(super) fn intrinsic_runtime_target_for_signature(
+        &self,
+        signature_key: &str,
+    ) -> Option<crate::runtime_call::RuntimeCallFamily> {
+        let intrinsic_key = self.intrinsic_key_for_signature(signature_key)?;
 
         // `abs`/`min`/`max` are a single source/catalog identity with a
         // closed overload chosen from the resolved operand type. Their
         // `GenericMathIntrinsic` rewrite carries that type-directed choice;
         // never freeze one of the overloads here.
-        if matches!(intrinsic_key.as_str(), "math.abs" | "math.min" | "math.max") {
+        if matches!(intrinsic_key, "math.abs" | "math.min" | "math.max") {
             return None;
         }
         if let Some(family) =
@@ -1230,28 +1233,8 @@ impl Checker {
         &self,
         signature_key: &str,
     ) -> Option<crate::MathGenericOp> {
-        let intrinsic_key = self
-            .intrinsic_declarations
-            .get(signature_key)
-            .or_else(|| {
-                let (surface_module, source_leaf) = signature_key.rsplit_once('.')?;
-                let source_module = self.module_import_bindings.get(&(
-                    self.current_module.clone(),
-                    self.current_module_idx,
-                    surface_module.to_string(),
-                ))?;
-                self.intrinsic_declarations
-                    .get(&format!("{source_module}.{source_leaf}"))
-            })
-            .or_else(|| {
-                let source_key = self.import_fn_name_aliases.get(&(
-                    self.current_module.clone(),
-                    self.current_module_idx,
-                    signature_key.to_string(),
-                ))?;
-                self.intrinsic_declarations.get(source_key)
-            })?;
-        match intrinsic_key.as_str() {
+        let intrinsic_key = self.intrinsic_key_for_signature(signature_key)?;
+        match intrinsic_key {
             "math.abs" => Some(crate::MathGenericOp::Abs),
             "math.min" => Some(crate::MathGenericOp::Min),
             "math.max" => Some(crate::MathGenericOp::Max),
@@ -2281,6 +2264,15 @@ impl Checker {
                 Some(GenericCallee::Function {
                     key: &resolved_fn_name,
                 }),
+            );
+
+            // A codec imported by name (`import std.encoding.wire.{to_json}`)
+            // is the same compiler operation as `wire.to_json(..)`.
+            self.record_generic_wire_codec_rewrite(
+                &resolved_fn_name,
+                &applied_sig.params,
+                &applied_sig.return_type,
+                span,
             );
 
             let target = self.call_target_for_signature(&resolved_fn_name);

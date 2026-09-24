@@ -203,6 +203,12 @@ pub enum Intrinsic {
     MemDealloc,
     MemPtrOffset,
     MemPtrCopy,
+    WireEncode,
+    WireDecode,
+    WireToJson,
+    WireFromJson,
+    WireToYaml,
+    WireFromYaml,
 }
 
 impl Intrinsic {
@@ -246,6 +252,12 @@ impl Intrinsic {
             Self::MemDealloc => "mem.dealloc",
             Self::MemPtrOffset => "mem.ptr_offset",
             Self::MemPtrCopy => "mem.ptr_copy",
+            Self::WireEncode => "wire.encode",
+            Self::WireDecode => "wire.decode",
+            Self::WireToJson => "wire.to_json",
+            Self::WireFromJson => "wire.from_json",
+            Self::WireToYaml => "wire.to_yaml",
+            Self::WireFromYaml => "wire.from_yaml",
         }
     }
 

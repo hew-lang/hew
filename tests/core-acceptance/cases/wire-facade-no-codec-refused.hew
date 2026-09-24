@@ -1,0 +1,28 @@
+// A value without a codec is refused where the facade is called: a plain type
+// inside a collection, a resource and a tuple have no wire encoding, and a
+// plain type carries no per-type codec methods.
+import std.encoding.wire;
+
+type Plain {
+    a: i64,
+    b: string,
+}
+
+#[resource]
+type Handle {
+    fd: i64,
+}
+
+impl Handle {
+    fn close(consume self) {}
+}
+
+fn main() {
+    let plains: Vec<Plain> = [Plain { a: 1, b: "x" }];
+    println(wire.to_json(plains));
+    let handle = Handle { fd: 3 };
+    println(wire.to_json(handle));
+    println(wire.to_json((1, "a")));
+    let plain = Plain { a: 2, b: "y" };
+    println(plain.to_json());
+}

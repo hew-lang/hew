@@ -255,8 +255,16 @@ const FAILURE_HEW: &str = include_str!("../../../std/failure.hew");
 ///   These are ordinary typed Hew declarations whose exact canonical source
 ///   identity selects a closed runtime operation; the raw status/out ABI is
 ///   not exposed to source programs.
-const INTRINSIC_FLOOR_MODULES: &[&str] =
-    &["std.math", "std.mem", "std.encoding.utf8", "std.stream"];
+/// - `std.encoding.wire` — the generic codec facade. Every call carries a
+///   checker-recorded `GenericWireCodec` rewrite; the declarations have no
+///   body to fall back to.
+const INTRINSIC_FLOOR_MODULES: &[&str] = &[
+    "std.math",
+    "std.mem",
+    "std.encoding.utf8",
+    "std.encoding.wire",
+    "std.stream",
+];
 
 #[must_use]
 pub fn intrinsic_floor_modules() -> &'static [&'static str] {
@@ -1028,7 +1036,7 @@ impl Checker {
             .map(str::to_string)
     }
 
-    fn structural_member_types_for_type(type_def: &TypeDef) -> Vec<Ty> {
+    pub(super) fn structural_member_types_for_type(type_def: &TypeDef) -> Vec<Ty> {
         let mut member_types: Vec<Ty> = type_def.fields.values().cloned().collect();
         for variant in type_def.variants.values() {
             match variant {
@@ -1054,13 +1062,6 @@ impl Checker {
     /// this admission-facing copy is normalized.
     fn expand_for_marker_registration(&self, types: &[Ty]) -> Vec<Ty> {
         types.iter().map(|ty| self.normalize_for_use(ty)).collect()
-    }
-
-    fn register_serializable_members_for_type(&mut self, type_name: &str, type_def: &TypeDef) {
-        let member_types =
-            self.expand_for_marker_registration(&Self::structural_member_types_for_type(type_def));
-        self.registry
-            .register_serializable_type(type_name.to_string(), member_types);
     }
 
     #[expect(
@@ -3012,10 +3013,6 @@ impl Checker {
         self.exit_primary_sig_scope(scope);
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "mirrors register_type_decl's member resolution and derivation tail"
-    )]
     fn reresolve_type_decl_members_in_scope(&mut self, td: &TypeDecl) {
         let kind = match td.kind {
             TypeDeclKind::Struct => TypeDefKind::Struct,
@@ -3102,18 +3099,7 @@ impl Checker {
             type_def.fields.values().cloned().collect()
         };
         let field_types = self.expand_for_marker_registration(&field_types);
-        let all_fields_encodable = td.wire.is_none()
-            && kind == TypeDefKind::Struct
-            && field_types
-                .iter()
-                .all(|f| self.registry.implements_marker(f, MarkerTrait::Encode));
         self.registry.register_type(td.name.clone(), field_types);
-        // Product `type` declarations inherit the former `record`
-        // Serializable derivation. A resource marker is an explicit exclusion:
-        // an empty resource type must not be admitted vacuously.
-        if td.resource_marker != hew_parser::ast::ResourceMarker::Resource {
-            self.register_serializable_members_for_type(&td.name, &type_def);
-        }
         self.seed_qualified_type_markers_for_current_module(&td.name);
         self.commit_reresolved_type_def(&td.name, type_def);
 
@@ -3127,9 +3113,6 @@ impl Checker {
                 })
                 .collect();
             self.register_wire_methods(&td.name, wire, &variant_order);
-        }
-        if all_fields_encodable {
-            self.register_encode_methods(&td.name);
         }
     }
 
@@ -3181,10 +3164,7 @@ impl Checker {
                 };
                 let field_types: Vec<Ty> = type_def.fields.values().cloned().collect();
                 let field_types = self.expand_for_marker_registration(&field_types);
-                self.registry
-                    .register_type(stored_key.clone(), field_types.clone());
-                self.registry
-                    .register_serializable_type(stored_key, field_types);
+                self.registry.register_type(stored_key, field_types);
                 self.commit_reresolved_type_def(&rd.name, type_def);
             }
             RecordKind::Tuple(positional_types) => {
@@ -3206,10 +3186,7 @@ impl Checker {
                     return;
                 }
                 let expanded_param_tys = self.expand_for_marker_registration(&param_tys);
-                self.registry
-                    .register_type(canonical.clone(), expanded_param_tys.clone());
-                self.registry
-                    .register_serializable_type(canonical, expanded_param_tys);
+                self.registry.register_type(canonical, expanded_param_tys);
                 self.handle_bearing_dirty = true;
             }
         }
@@ -3531,12 +3508,6 @@ impl Checker {
         self.registry.register_type(td.name.clone(), field_types);
         self.registry
             .register_type_params(td.name.clone(), type_def.type_params.clone());
-        // Product `type` declarations inherit the former `record`
-        // Serializable derivation. A resource marker is an explicit exclusion:
-        // an empty resource type must not be admitted vacuously.
-        if td.resource_marker != hew_parser::ast::ResourceMarker::Resource {
-            self.register_serializable_members_for_type(&td.name, &type_def);
-        }
         // Mirror the markers under the module-qualified key so a same-bare-name
         // reply from another package cannot clobber this type's Send derivation
         // at the ask-reply gate.
@@ -3853,21 +3824,10 @@ impl Checker {
             type_def.fields.values().cloned().collect()
         };
         let field_types = self.expand_for_marker_registration(&field_types);
-        let all_fields_encodable = td.wire.is_none()
-            && kind == TypeDefKind::Struct
-            && field_types
-                .iter()
-                .all(|f| self.registry.implements_marker(f, MarkerTrait::Encode));
 
         self.registry.register_type(td.name.clone(), field_types);
         self.registry
             .register_type_params(td.name.clone(), type_param_names.clone());
-        // Product `type` declarations inherit the former `record`
-        // Serializable derivation. A resource marker is an explicit exclusion:
-        // an empty resource type must not be admitted vacuously.
-        if td.resource_marker != hew_parser::ast::ResourceMarker::Resource {
-            self.register_serializable_members_for_type(&td.name, &type_def);
-        }
         // Mirror the markers under the module-qualified key (when this type is
         // declared in a non-root module) so a same-bare-name reply from another
         // package cannot clobber this type's Send derivation at the ask-reply
@@ -3883,12 +3843,6 @@ impl Checker {
         if let Some(ref wire) = td.wire {
             self.register_wire_methods(&td.name, wire, &variant_order);
             self.validate_wire_version_constraints(&td.name, wire);
-        }
-
-        // For non-wire struct types: if all fields are Encode, register
-        // serialization methods (to_json, from_json, to_yaml, from_yaml, to_toml, from_toml)
-        if all_fields_encodable {
-            self.register_encode_methods(&td.name);
         }
     }
 
@@ -4003,14 +3957,12 @@ impl Checker {
         };
         let field_types = self.expand_for_marker_registration(&field_types);
         self.registry
-            .register_type(declaration_name.clone(), field_types.clone());
+            .register_type(declaration_name.clone(), field_types);
         self.registry
             .register_type_params(declaration_name.clone(), type_param_names.clone());
         // Mark this as a record type so implements_marker applies the correct
         // value-type semantics (Resource always false; all other markers field-driven).
         self.registry.register_record_type(declaration_name.clone());
-        self.registry
-            .register_serializable_type(declaration_name.clone(), field_types);
 
         self.type_defs.insert(declaration_name.clone(), type_def);
         self.record_type_def_inference_holes(&declaration_name, hole_vars);
@@ -4125,7 +4077,6 @@ impl Checker {
         // text-format `from_json`/`from_yaml` parsers can fail on arbitrary
         // user input (config files, HTTP bodies), so they return
         // `Result<Self, string>` — the only honest shape for a fallible parse.
-        // This matches the non-wire `Encode` path (`register_encode_methods`).
         let from_result_ty = Ty::result(self_ty.clone(), Ty::String);
         let static_methods = if is_wire_struct || is_serial_wire_enum {
             vec![
@@ -4224,65 +4175,6 @@ impl Checker {
             min_version: wire.min_version,
             fields,
             variants,
-        }
-    }
-
-    /// Register serialization methods for a struct type that implements `Encode`.
-    ///
-    /// Adds `to_json`, `to_yaml`, `to_toml` instance methods and
-    /// `from_json`, `from_yaml`, `from_toml` static methods.
-    ///
-    /// The `from_*` static methods return `Result<Self, String>`.  Errors are
-    /// returned for: (1) top-level parse failure, (2) missing required field,
-    /// (3) a string field that is not a string at runtime, and (4) a scalar
-    /// (int/bool/float) field whose runtime type code does not match the
-    /// expected kind for the format.
-    pub(super) fn register_encode_methods(&mut self, type_name: &str) {
-        let self_ty = Ty::Named {
-            builtin: None,
-            name: type_name.to_string(),
-            args: vec![],
-        };
-
-        // Instance methods: to_json(self) -> String, to_yaml(self) -> String, to_toml(self) -> String
-        let instance_methods = [
-            ("to_json", Ty::String),
-            ("to_yaml", Ty::String),
-            ("to_toml", Ty::String),
-        ];
-
-        if let Some(type_def) = self.type_defs.get_mut(type_name) {
-            for (method_name, return_type) in instance_methods {
-                type_def.methods.insert(
-                    method_name.to_string(),
-                    FnSig {
-                        return_type,
-                        ..FnSig::default()
-                    },
-                );
-            }
-        }
-
-        // Static methods: TypeName.from_json(String) -> Result<Self, String>, etc.
-        // Returns Result so callers can distinguish valid input from a malformed document
-        // without a runtime panic.
-        let result_ty = Ty::result(self_ty.clone(), Ty::String);
-        let static_methods = [
-            ("from_json", vec![Ty::String], result_ty.clone()),
-            ("from_yaml", vec![Ty::String], result_ty.clone()),
-            ("from_toml", vec![Ty::String], result_ty),
-        ];
-
-        for (method_name, params, return_type) in static_methods {
-            let qualified_name = format!("{type_name}.{method_name}");
-            self.fn_sigs.insert(
-                qualified_name,
-                FnSig {
-                    params,
-                    return_type,
-                    ..FnSig::default()
-                },
-            );
         }
     }
 
@@ -7150,9 +7042,13 @@ impl Checker {
                 {
                     crate::type_facts::ImplMethodObligation::Display
                 } else {
-                    crate::type_facts::ImplMethodObligation::Marker(MarkerTrait::from_name(
-                        &identity,
-                    )?)
+                    // `Serializable` needs the checker's wire layouts, which the
+                    // registry-backed obligation cannot see; such an impl is
+                    // refused rather than admitted on a partial answer.
+                    crate::type_facts::ImplMethodObligation::Marker(
+                        MarkerTrait::from_name(&identity)
+                            .filter(|marker| *marker != MarkerTrait::Serializable)?,
+                    )
                 };
                 obligations.push((name.to_string(), obligation));
             }

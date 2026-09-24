@@ -1973,8 +1973,7 @@ pub enum MethodCallRewrite {
     ///
     /// The binary directions (`Encode`/`Decode`) drive the CBOR codec; the text
     /// directions (`ToJson`/`FromJson`/`ToYaml`/`FromYaml`) drive the CBOR↔text
-    /// bridge (reuse the binary walk + a generic transcode). `to_toml`/
-    /// `from_toml` remain fail-closed (`MethodCallNoRewrite`) until TOML lands.
+    /// bridge (reuse the binary walk + a generic transcode).
     WireCodec {
         direction: WireCodecDirection,
         value_ty: crate::resolved_ty::ResolvedTy,
@@ -2752,6 +2751,18 @@ pub(super) struct DeferredMonomorphicSite {
     pub(super) more_specific_hole_vars: Vec<TypeVar>,
     /// Diagnostic routing token captured while the source item was active.
     pub(super) source_module: Option<String>,
+}
+
+/// A `std.encoding.wire` facade call whose value type was still unsettled
+/// when the call was checked. It is recorded, or refused, once inference and
+/// literal defaulting settle.
+#[derive(Debug, Clone)]
+pub(super) struct DeferredWireCodec {
+    pub(super) key: SpanKey,
+    pub(super) span: Span,
+    pub(super) source_module: Option<String>,
+    pub(super) direction: WireCodecDirection,
+    pub(super) value_ty: Ty,
 }
 
 #[derive(Debug, Clone)]
@@ -3788,6 +3799,8 @@ pub struct Checker {
     pub(super) builtin_result_output_type_args: HashMap<SpanKey, (Ty, Ty)>,
     /// Trait-bound checks deferred until inference/defaulting settles.
     pub(super) deferred_bound_checks: Vec<DeferredBoundCheck>,
+    /// Wire facade calls awaiting a settled value type.
+    pub(super) deferred_wire_codecs: Vec<DeferredWireCodec>,
     /// Maps a let-binding's definition span to the generic lambda call
     /// signature captured when that binding was type-checked. Used to freshen
     /// type variables per call site and populate `call_type_args`.
@@ -4223,6 +4236,7 @@ impl Checker {
             record_init_type_args: HashMap::new(),
             builtin_result_output_type_args: HashMap::new(),
             deferred_bound_checks: Vec::new(),
+            deferred_wire_codecs: Vec::new(),
             lambda_poly_sig_map: HashMap::new(),
             last_lambda_generic_sig: None,
             deferred_range_bounds: Vec::new(),

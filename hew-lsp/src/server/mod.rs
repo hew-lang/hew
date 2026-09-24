@@ -681,7 +681,15 @@ impl LanguageServer for HewLanguageServer {
     }
 
     async fn formatting(&self, params: DocumentFormattingParams) -> Result<Option<Vec<TextEdit>>> {
-        Ok(handlers::language_features::formatting(self, &params))
+        match handlers::language_features::formatting(self, &params) {
+            Ok(edits) => Ok(edits),
+            Err(message) => {
+                self.client
+                    .show_message(MessageType::WARNING, message)
+                    .await;
+                Ok(None)
+            }
+        }
     }
 }
 

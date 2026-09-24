@@ -1470,6 +1470,9 @@ pub struct ImplDecl {
 pub struct ImplTypeAlias {
     pub name: String,
     pub ty: Spanned<TypeExpr>,
+    /// Byte span from the `type` keyword through the `;`.
+    #[serde(default)]
+    pub span: Span,
 }
 
 /// Naming case convention for JSON/YAML struct-level key transformation.
@@ -1557,6 +1560,9 @@ pub struct ActorDecl {
     pub methods: Vec<FnDecl>,
     pub mailbox_capacity: Option<u32>,
     pub overflow_policy: Option<OverflowPolicy>,
+    /// Byte span of the `mailbox` clause, when the actor declares one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mailbox_span: Option<Span>,
     pub is_isolated: bool,
     pub doc_comment: Option<String>,
     /// Maximum heap bytes this actor may allocate from its arena.
@@ -1597,6 +1603,9 @@ pub enum OverflowFallback {
 pub struct ActorInit {
     pub params: Vec<Param>,
     pub body: Block,
+    /// Byte span from the `init` keyword through the closing `}`.
+    #[serde(default)]
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1610,6 +1619,9 @@ pub struct FieldDecl {
     pub default: Option<Spanned<Expr>>,
     #[serde(default)]
     pub doc_comment: Option<String>,
+    /// Byte span from the field's first token through its separator.
+    #[serde(default)]
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1836,6 +1848,9 @@ pub struct CompositeGroup {
     /// composite rather than as the N expanded flat copies.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub parent_transitions: Vec<MachineTransition>,
+    /// Byte span of the whole `state Name { … }` block.
+    #[serde(default)]
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1848,12 +1863,18 @@ pub struct MachineState {
     /// Optional `exit { ... }` lifecycle block executed when leaving this state.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exit: Option<Block>,
+    /// Byte span of the declaration; empty for a synthesized state.
+    #[serde(default)]
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MachineEvent {
     pub name: String,
     pub fields: Vec<(String, Spanned<TypeExpr>)>,
+    /// Byte span of the declaration inside its `events`/`emits` header.
+    #[serde(default)]
+    pub span: Span,
 }
 
 /// Authored syntax used for a machine transition body.
@@ -1929,4 +1950,8 @@ pub struct MachineTransition {
     /// Moore-style rule that self-loops must be annotated or empty).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub reenter: bool,
+    /// Byte span from `on` through the rule's end; shared by the per-member
+    /// rules a composite's parent rule expands to.
+    #[serde(default)]
+    pub span: Span,
 }

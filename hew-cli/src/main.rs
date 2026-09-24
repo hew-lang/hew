@@ -2598,7 +2598,13 @@ fn format_for_display(input_name: &str, source: &str) -> Option<String> {
         return None;
     }
 
-    Some(hew_parser::fmt::format_source(source, &result.program))
+    match hew_parser::fmt::format_checked(source, &result.program) {
+        Ok(formatted) => Some(formatted),
+        Err(e) => {
+            eprintln!("Error: {input_name}: formatter refused to rewrite the file: {e}");
+            None
+        }
+    }
 }
 
 /// `hew init` — the single, manifest-first project scaffold.

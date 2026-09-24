@@ -1,5 +1,7 @@
 //! Pretty-printer that converts an AST back to canonical Hew source text.
 
+pub mod fidelity;
+
 use std::fmt::Write as _;
 use std::ops::Range;
 
@@ -11,10 +13,10 @@ use crate::ast::{
     FieldDecl, FnDecl, ImplDecl, ImportDecl, ImportSpec, IntRadix, Item, LambdaParam, Literal,
     MachineDecl, MachineState, MachineTransition, MachineTransitionBodyForm, MatchArm, NamingCase,
     NominalPatternPayload, OverflowPolicy, Param, Path, Pattern, PatternField, Program,
-    ReceiveFnDecl, RecordDecl, RecordKind, RestartPolicy, SelectArm, ShutdownDirective, Spanned,
-    Stmt, StringPart, SupervisorDecl, SupervisorStrategy, TimeoutClause, TraitBound, TraitDecl,
-    TraitItem, TraitMethod, TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr,
-    TypeParam, UnaryOp, VariantDecl, VariantKind, Visibility, WhereClause, WireMetadata,
+    ReceiveFnDecl, RecordDecl, RecordKind, RestartPolicy, SelectArm, ShutdownDirective, Span,
+    Spanned, Stmt, StringPart, SupervisorDecl, SupervisorStrategy, TimeoutClause, TraitBound,
+    TraitDecl, TraitItem, TraitMethod, TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind,
+    TypeExpr, TypeParam, UnaryOp, VariantDecl, VariantKind, Visibility, WhereClause, WireMetadata,
 };
 
 /// Format a duration in nanoseconds to the most natural unit suffix.
@@ -48,11 +50,47 @@ pub fn format_program(program: &Program) -> String {
 /// Format an AST [`Program`] as canonical Hew source text, preserving comments from `source`.
 #[must_use]
 pub fn format_source(source: &str, program: &Program) -> String {
-    let comments = extract_comments(source, false);
+    // Doc comments travel with the other comments, so they keep their place
+    // among attributes and declarations exactly as written.
+    let comments = extract_comments(source, true);
     let mut f = Formatter::new(source, comments);
     f.format_program(program);
     f.flush_comments_before(usize::MAX);
-    f.output
+    with_line_endings(&f.output, fidelity::uses_crlf(source))
+}
+
+/// `text` with every line break between its tokens written as `\r\n` when
+/// `crlf`, else `\n`. Breaks inside literals are program content and stay.
+fn with_line_endings(text: &str, crlf: bool) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut gap_start = 0;
+    let spans = hew_lexer::Lexer::new(text)
+        .map(|(_, span)| (span.start, span.end))
+        .chain(std::iter::once((text.len(), text.len())));
+    for (start, end) in spans {
+        let gap = text[gap_start..start].replace("\r\n", "\n");
+        if crlf {
+            out.push_str(&gap.replace('\n', "\r\n"));
+        } else {
+            out.push_str(&gap);
+        }
+        out.push_str(&text[start..end]);
+        gap_start = end;
+    }
+    out
+}
+
+/// Format `program` with the comments of `source`, refusing any output that
+/// would not reprint `source` faithfully.
+///
+/// # Errors
+///
+/// Returns the [`fidelity::FidelityError`] describing how the formatted text
+/// would differ from `source` beyond layout.
+pub fn format_checked(source: &str, program: &Program) -> Result<String, fidelity::FidelityError> {
+    let formatted = format_source(source, program);
+    fidelity::check(source, &formatted)?;
+    Ok(formatted)
 }
 
 /// A checker-approved replacement for a legacy bare enum variant.
@@ -164,6 +202,18 @@ struct Formatter<'a> {
     output: String,
     indent: usize,
     source: &'a str,
+    /// The source's tokens, from the lexer that also yields its comments.
+    tokens: Vec<(hew_lexer::Token<'a>, Range<usize>)>,
+    /// For each opening bracket token, the index of its closing token.
+    closers: std::collections::HashMap<usize, usize>,
+    /// For each closing bracket token, the index of its opening token.
+    openers: std::collections::HashMap<usize, usize>,
+    /// Opening parentheses already printed, or owned as syntax by the
+    /// expression's parent (a call's parentheses around a sole argument).
+    printed_parens: std::collections::HashSet<usize>,
+    /// Depth of f-string interpolations being printed; their expressions sit
+    /// inside one string token, so the formatter chooses their parentheses.
+    interpolation_depth: usize,
     comments: Vec<Comment>,
     next_comment: usize,
     prev_source_pos: usize,
@@ -171,14 +221,188 @@ struct Formatter<'a> {
 
 impl<'a> Formatter<'a> {
     fn new(source: &'a str, comments: Vec<Comment>) -> Self {
+        let tokens: Vec<_> = hew_lexer::Lexer::new(source)
+            .map(|(token, span)| (token, span.start..span.end))
+            .collect();
+        let mut closers = std::collections::HashMap::new();
+        let mut open = Vec::new();
+        for (index, (token, _)) in tokens.iter().enumerate() {
+            match token {
+                hew_lexer::Token::LeftParen
+                | hew_lexer::Token::LeftBracket
+                | hew_lexer::Token::LeftBrace
+                | hew_lexer::Token::HashBracket => open.push(index),
+                hew_lexer::Token::RightParen
+                | hew_lexer::Token::RightBracket
+                | hew_lexer::Token::RightBrace => {
+                    if let Some(opener) = open.pop() {
+                        closers.insert(opener, index);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let openers = closers
+            .iter()
+            .map(|(&open, &close)| (close, open))
+            .collect();
         Self {
             output: String::new(),
             indent: 0,
             source,
+            tokens,
+            closers,
+            openers,
+            printed_parens: std::collections::HashSet::new(),
+            interpolation_depth: 0,
             comments,
             next_comment: 0,
             prev_source_pos: 0,
         }
+    }
+
+    /// Index of the first source token starting at or after `pos`.
+    fn token_at_or_after(&self, pos: usize) -> usize {
+        self.tokens.partition_point(|(_, span)| span.start < pos)
+    }
+
+    /// Start of the first source token at or after `from` and before `to`
+    /// that satisfies `wanted`.
+    fn find_token(
+        &self,
+        from: usize,
+        to: usize,
+        wanted: impl Fn(&hew_lexer::Token<'_>) -> bool,
+    ) -> Option<usize> {
+        self.tokens[self.token_at_or_after(from)..]
+            .iter()
+            .take_while(|(_, span)| span.start < to)
+            .find(|(token, _)| wanted(token))
+            .map(|(_, span)| span.start)
+    }
+
+    /// The grouping parentheses the source wraps around the expression at
+    /// `span`, outermost first, as (open token, open, close) positions. The
+    /// AST drops them, so the formatter reads them back from the tokens. A
+    /// span may stop short of the `)` that closes a parenthesized last
+    /// operand, so a layer's `)` may follow further `)` opened inside it.
+    fn source_parens(&self, span: &Span) -> Vec<(usize, usize, usize)> {
+        let mut layers = Vec::new();
+        if self.source.is_empty() || span.start >= span.end || self.interpolation_depth > 0 {
+            return layers;
+        }
+        let first = self.token_at_or_after(span.start);
+        let end = self.token_at_or_after(span.end);
+        if first == 0 || first >= end {
+            return layers;
+        }
+        // The expression's last token; a span may reach just past a `)` it
+        // does not own, or stop short of one it does.
+        let mut last = end - 1;
+        let mut open = first - 1;
+        loop {
+            if !matches!(self.tokens[open].0, hew_lexer::Token::LeftParen)
+                || self.printed_parens.contains(&open)
+                || self.is_call_paren(open)
+            {
+                break;
+            }
+            let Some(&close) = self.closers.get(&open) else {
+                break;
+            };
+            if close < last {
+                // A span can start inside its first operand's parentheses:
+                // this group belongs to that operand, so look further out.
+                if open == 0 {
+                    break;
+                }
+                open -= 1;
+                continue;
+            }
+            // Between the expression's last token and this `)`, only the
+            // closers of parentheses opened inside the expression.
+            let encloses = close >= last
+                && (last + 1..close).all(|i| {
+                    matches!(self.tokens[i].0, hew_lexer::Token::RightParen)
+                        && self.openers.get(&i).is_some_and(|&o| o > open)
+                });
+            if !encloses {
+                break;
+            }
+            layers.push((open, self.tokens[open].1.start, self.tokens[close].1.start));
+            last = close;
+            if open == 0 {
+                break;
+            }
+            open -= 1;
+        }
+        layers.reverse();
+        layers
+    }
+
+    /// Whether the source already parenthesizes the expression at `span`,
+    /// so the formatter must not add its own layer.
+    fn source_parenthesizes(&self, span: &Span) -> bool {
+        !self.source_parens(span).is_empty()
+    }
+
+    /// Whether the formatter chooses parentheses for the expression at
+    /// `span` from precedence. An expression read from source keeps exactly
+    /// the parentheses written around it, since they parsed to this very
+    /// tree; only a synthesized expression needs the formatter to decide.
+    fn chooses_parens(&self, span: &Span) -> bool {
+        self.source.is_empty() || span.start >= span.end || self.interpolation_depth > 0
+    }
+
+    /// Mark the argument parentheses of the call at `span`, its last `)`,
+    /// as the call's own syntax rather than grouping.
+    fn own_call_parens(&mut self, span: &Span) {
+        let end = self.token_at_or_after(span.end);
+        if end == 0 || !matches!(self.tokens[end - 1].0, hew_lexer::Token::RightParen) {
+            return;
+        }
+        if let Some(&open) = self.openers.get(&(end - 1)) {
+            self.printed_parens.insert(open);
+        }
+    }
+
+    /// Whether the `(` token at `open` opens a call's argument list: it
+    /// directly follows a name or a closing bracket, where a grouping
+    /// parenthesis cannot stand.
+    fn is_call_paren(&self, open: usize) -> bool {
+        let Some((previous, _)) = open.checked_sub(1).map(|i| &self.tokens[i]) else {
+            return false;
+        };
+        let after_dot = open >= 2 && matches!(self.tokens[open - 2].0, hew_lexer::Token::Dot);
+        crate::parser::Parser::is_ident_token(previous)
+            || matches!(
+                previous,
+                hew_lexer::Token::RightParen
+                    | hew_lexer::Token::RightBracket
+                    | hew_lexer::Token::Question
+            )
+            || (after_dot
+                && self.source[self.tokens[open - 1].1.clone()].starts_with(char::is_alphabetic))
+    }
+
+    /// Whether the last source token inside `span` is `)`.
+    fn span_ends_with_paren(&self, span: &Span) -> bool {
+        let after = self.token_at_or_after(span.end);
+        after > 0
+            && self.tokens[after - 1].1.start >= span.start
+            && matches!(self.tokens[after - 1].0, hew_lexer::Token::RightParen)
+    }
+
+    /// The first `{` at or after `from`, before `to`.
+    fn find_open_brace(&self, from: usize, to: usize) -> Option<usize> {
+        self.find_token(from, to, |t| matches!(t, hew_lexer::Token::LeftBrace))
+    }
+
+    /// The first `}` at or after `from`, before `before`; `before` when none.
+    fn find_block_close(&self, from: usize, before: usize) -> usize {
+        let end = before.min(self.source.len());
+        self.find_token(from, end, |t| matches!(t, hew_lexer::Token::RightBrace))
+            .unwrap_or(end)
     }
 
     fn has_comments(&self) -> bool {
@@ -189,8 +413,43 @@ impl<'a> Formatter<'a> {
     // Helpers
     // ------------------------------------------------------------------
 
+    /// Append `s`. Each token of `s` that is the formatter's copy of the
+    /// next source token first emits the comments written before that
+    /// token, so a comment keeps its place between the same two tokens.
     fn write(&mut self, s: &str) {
-        self.output.push_str(s);
+        if self.source.is_empty() || !s.contains(|c: char| !c.is_whitespace()) {
+            self.output.push_str(s);
+            return;
+        }
+        let mut written = 0;
+        for (_, span) in hew_lexer::Lexer::new(s) {
+            let index = self.token_at_or_after(self.prev_source_pos);
+            let Some(source_span) = self.tokens.get(index).map(|(_, span)| span.clone()) else {
+                break;
+            };
+            if self.source[source_span.clone()] != s[span.start..span.end] {
+                continue;
+            }
+            let pending = self
+                .comments
+                .get(self.next_comment)
+                .is_some_and(|c| c.span.start < source_span.start);
+            if pending {
+                self.output.push_str(&s[written..span.start]);
+                self.flush_inline_comments(source_span.start);
+                written = if self.output.ends_with(char::is_whitespace) {
+                    span.start
+                } else {
+                    // Keep the space the fragment put before this token.
+                    s[written..span.start].trim_end().len() + written
+                };
+                if self.output.ends_with(char::is_whitespace) {
+                    written = span.start;
+                }
+            }
+            self.prev_source_pos = source_span.end;
+        }
+        self.output.push_str(&s[written..]);
     }
 
     fn writeln(&mut self, s: &str) {
@@ -213,10 +472,185 @@ impl<'a> Formatter<'a> {
     fn comma_sep<T>(&mut self, items: &[T], mut fmt_item: impl FnMut(&mut Self, &T)) {
         for (i, item) in items.iter().enumerate() {
             if i > 0 {
-                self.write(", ");
+                self.write_token(", ", |t| matches!(t, hew_lexer::Token::Comma));
             }
             fmt_item(self, item);
         }
+    }
+
+    /// Write `open`, the items separated by commas, then `close`. When the
+    /// source list between the bracket tokens `bounds` holds comments, the
+    /// list breaks one item per line so every comment stays beside the item
+    /// it annotates; `angles` counts `<…>` as nesting (type lists). The
+    /// broken layout ends the last item with a comma when `last_comma`.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one list printer for every bracket kind"
+    )]
+    fn delimited_list<T>(
+        &mut self,
+        open: &str,
+        close: &str,
+        items: &[T],
+        bounds: Option<(usize, usize)>,
+        angles: bool,
+        last_comma: bool,
+        mut fmt_item: impl FnMut(&mut Self, &T),
+    ) {
+        let layout = bounds.and_then(|(open_token, close_token)| {
+            let commented = self.list_has_line_comment(open_token, close_token);
+            let starts = self.list_item_starts(open_token, close_token, angles);
+            (commented && starts.len() == items.len()).then_some((starts, open_token, close_token))
+        });
+        let Some((starts, open_token, close_token)) = layout else {
+            self.write(open);
+            self.comma_sep(items, fmt_item);
+            if let Some((_, close_token)) = bounds {
+                // The cursor stops at the closer; writing it moves past.
+                let close_pos = self.tokens[close_token].1.start;
+                self.flush_inline_comments(close_pos);
+                self.prev_source_pos = self.prev_source_pos.max(close_pos);
+            }
+            self.write(close);
+            return;
+        };
+        self.write(open.trim_end());
+        self.newline();
+        self.indent += 1;
+        self.prev_source_pos = self.tokens[open_token].1.end;
+        let last = items.len().saturating_sub(1);
+        for (i, (item, start)) in items.iter().zip(starts).enumerate() {
+            self.begin_member(start, false);
+            self.write_indent();
+            fmt_item(self, item);
+            if i < last || last_comma {
+                self.write(",");
+            }
+            self.newline();
+        }
+        let close_pos = self.tokens[close_token].1.start;
+        self.flush_comments_before(close_pos);
+        self.indent -= 1;
+        self.write_indent();
+        self.prev_source_pos = self.prev_source_pos.max(close_pos);
+        // Every item already ends with its comma.
+        self.write(close.trim_start().trim_start_matches(','));
+    }
+
+    /// Whether a line comment (or a block comment spanning lines) sits
+    /// directly in the list between the bracket tokens `open` and `close`,
+    /// outside any nested bracket group, which lays out its own comments.
+    /// A block comment on one line stays inline beside its item.
+    fn list_has_line_comment(&self, open: usize, close: usize) -> bool {
+        let breaks_line = |c: &Comment| c.text.starts_with("//") || c.text.contains('\n');
+        let mut index = open;
+        while index < close {
+            // `index` is a token at the list's own level; the next one
+            // follows its nested group, when it opens one.
+            let after = self
+                .closers
+                .get(&index)
+                .filter(|_| index != open)
+                .copied()
+                .unwrap_or(index);
+            let gap = self.tokens[after].1.end..self.tokens[after + 1].1.start;
+            let commented = self.comments[self.next_comment..]
+                .iter()
+                .take_while(|c| c.span.start < gap.end)
+                .any(|c| gap.contains(&c.span.start) && breaks_line(c));
+            if commented {
+                return true;
+            }
+            index = after + 1;
+        }
+        false
+    }
+
+    /// Start of each comma-separated item between the bracket tokens `open`
+    /// and `close`, skipping nested brackets, lambda parameter lists and,
+    /// with `angles`, type argument lists. A trailing comma adds no item.
+    fn list_item_starts(&self, open: usize, close: usize, angles: bool) -> Vec<usize> {
+        let mut starts = Vec::new();
+        let mut index = open + 1;
+        let mut at_item_start = true;
+        let mut angle_depth = 0usize;
+        while index < close {
+            let token = &self.tokens[index].0;
+            if at_item_start {
+                starts.push(self.tokens[index].1.start);
+                at_item_start = false;
+                // A lambda's `|a, b|` parameters hold commas of their own.
+                let mut lambda = index;
+                if matches!(token, hew_lexer::Token::Move) {
+                    lambda += 1;
+                }
+                if lambda < close && matches!(self.tokens[lambda].0, hew_lexer::Token::Pipe) {
+                    index = lambda + 1;
+                    while index < close && !matches!(self.tokens[index].0, hew_lexer::Token::Pipe) {
+                        index += 1;
+                    }
+                    index += 1;
+                    continue;
+                }
+            }
+            match token {
+                hew_lexer::Token::Comma if angle_depth == 0 => at_item_start = true,
+                hew_lexer::Token::Less if angles => angle_depth += 1,
+                hew_lexer::Token::Greater if angles && angle_depth > 0 => angle_depth -= 1,
+                hew_lexer::Token::GreaterGreater if angles => {
+                    angle_depth = angle_depth.saturating_sub(2);
+                }
+                _ => {
+                    if let Some(&closer) = self.closers.get(&index) {
+                        index = closer;
+                    }
+                }
+            }
+            index += 1;
+        }
+        starts
+    }
+
+    /// The bracket tokens of the list that ends the expression at `span`
+    /// (a call's `(…)`, an array's `[…]`, a record literal's `{…}`).
+    fn trailing_list(&self, span: &Span, closer: &str) -> Option<(usize, usize)> {
+        let first = self.token_at_or_after(span.start);
+        let end = self.token_at_or_after(span.end);
+        // A span may stop just before its closer or run just past it.
+        [end.checked_sub(1), Some(end)]
+            .into_iter()
+            .flatten()
+            .filter(|&close| {
+                close < self.tokens.len() && self.source[self.tokens[close].1.clone()] == *closer
+            })
+            .find_map(|close| {
+                self.openers
+                    .get(&close)
+                    .filter(|&&open| open >= first)
+                    .map(|&open| (open, close))
+            })
+    }
+
+    /// The bracket tokens of the first `(…)` at or after `from`, outside any
+    /// `<…>` generic parameter list: a declaration's parameter list.
+    fn params_list(&self, from: usize) -> Option<(usize, usize)> {
+        if self.source.is_empty() {
+            return None;
+        }
+        let mut angle_depth = 0usize;
+        for index in self.token_at_or_after(from)..self.tokens.len() {
+            match self.tokens[index].0 {
+                hew_lexer::Token::Less => angle_depth += 1,
+                hew_lexer::Token::Greater => angle_depth = angle_depth.saturating_sub(1),
+                hew_lexer::Token::GreaterGreater => angle_depth = angle_depth.saturating_sub(2),
+                hew_lexer::Token::LeftParen if angle_depth == 0 => {
+                    return self.closers.get(&index).map(|&close| (index, close));
+                }
+                hew_lexer::Token::LeftBrace | hew_lexer::Token::Semicolon => return None,
+                _ => {}
+            }
+        }
+        None
     }
 
     /// `{ ..base, name: value, ... }` — the one record-literal body spelling.
@@ -226,20 +660,26 @@ impl<'a> Formatter<'a> {
         &mut self,
         fields: &[(String, Spanned<Expr>)],
         base: Option<&Spanned<Expr>>,
+        bounds: Option<(usize, usize)>,
     ) {
-        self.write(" { ");
-        if let Some(base) = base {
-            self.write("..");
-            self.format_expr(&base.0);
-            if !fields.is_empty() {
-                self.write(", ");
-            }
-        }
-        self.comma_sep(fields, |f, (name, value)| {
+        let write_field = |f: &mut Self, (name, value): &(String, Spanned<Expr>)| {
             f.write(name);
             f.write(": ");
-            f.format_expr(&value.0);
-        });
+            f.format_expr(value);
+        };
+        let Some(base) = base else {
+            self.delimited_list(" { ", " }", fields, bounds, false, true, write_field);
+            return;
+        };
+        self.write(" { ..");
+        self.format_expr(base);
+        // Comments written after a trailing base belong with it.
+        self.flush_comments_before_token_after(base.1.end);
+        if !fields.is_empty() {
+            self.trim_trailing_spaces();
+            self.write(", ");
+        }
+        self.comma_sep(fields, write_field);
         self.write(" }");
     }
 
@@ -274,7 +714,12 @@ impl<'a> Formatter<'a> {
         }
     }
 
+    /// Emit a declaration's doc comment from the AST. With source, doc
+    /// comments are flushed in place like any other comment instead.
     fn write_outer_doc(&mut self, doc: Option<&String>) {
+        if !self.source.is_empty() {
+            return;
+        }
         if let Some(d) = doc {
             self.write_doc_comment(d, "///");
         }
@@ -292,25 +737,9 @@ impl<'a> Formatter<'a> {
         }
     }
 
-    fn enter_block_scope(&mut self, scope_end: usize) {
-        if self.has_comments() {
-            let from = self.prev_source_pos.min(self.source.len());
-            let to = scope_end.min(self.source.len());
-            if from < to {
-                if let Some(off) = self.source[from..to].find('{') {
-                    self.prev_source_pos = from + off + 1;
-                }
-            }
-        }
-    }
-
     fn flush_block_end_comments(&mut self, scope_end: usize) {
         if self.has_comments() {
-            let brace = find_block_close(
-                self.source,
-                self.prev_source_pos,
-                scope_end.min(self.source.len()),
-            );
+            let brace = self.find_block_close(self.prev_source_pos, scope_end);
             // Comments in `[prev_source_pos, brace)` whose source column is at
             // or before the closing `}`'s column are typed at outer indent and
             // logically document the next branch in an `if/else if/else` chain
@@ -337,8 +766,9 @@ impl<'a> Formatter<'a> {
                     self.flush_one_comment();
                 }
             }
+            // The cursor stops at the `}` itself; writing it moves past.
             if brace < self.source.len() {
-                self.prev_source_pos = brace + 1;
+                self.prev_source_pos = brace;
             }
         }
     }
@@ -375,13 +805,6 @@ impl<'a> Formatter<'a> {
         self.next_comment += 1;
     }
 
-    fn find_keyword_after(&self, keyword: &str, after: usize) -> usize {
-        let from = after.min(self.source.len());
-        self.source[from..]
-            .find(keyword)
-            .map_or(self.source.len(), |off| from + off)
-    }
-
     fn flush_comments_and_separate(&mut self, pos: usize, needs_blank_line: bool) {
         let had_comments = self.next_comment;
         self.flush_comments_before(pos);
@@ -389,6 +812,313 @@ impl<'a> Formatter<'a> {
         if needs_blank_line && !flushed_comments && !self.output.ends_with("\n\n") {
             self.newline();
         }
+        if flushed_comments {
+            self.keep_blank_line_before(pos);
+        }
+    }
+
+    /// After flushing comments, keep a blank line the author left between
+    /// the last of them and the declaration at `pos`.
+    fn keep_blank_line_before(&mut self, pos: usize) {
+        let gap = self.source.get(self.prev_source_pos..pos).unwrap_or("");
+        if gap.matches('\n').count() > 1 && !self.output.ends_with("\n\n") {
+            self.newline();
+        }
+    }
+
+    /// Emit the comments before `pos` from inside an expression. The
+    /// expression continues after them on a continuation line, so a comment
+    /// keeps its place between the same two tokens: a trailing comment stays
+    /// on the line it trails and an own-line comment gets its own line.
+    fn flush_inline_comments(&mut self, pos: usize) {
+        if self
+            .comments
+            .get(self.next_comment)
+            .is_none_or(|c| c.span.start >= pos)
+        {
+            return;
+        }
+        while let Some(comment) = self.comments.get(self.next_comment) {
+            if comment.span.start >= pos {
+                break;
+            }
+            let text = comment.text.clone();
+            let trailing = is_trailing_comment(self.source, comment.span.start);
+            let line_comment = text.starts_with("//") || text.contains('\n');
+            self.prev_source_pos = comment.span.end;
+            self.next_comment += 1;
+            while self.output.ends_with(' ') {
+                self.output.pop();
+            }
+            if trailing && !self.output.ends_with('\n') {
+                self.write(" ");
+            } else {
+                if !self.output.ends_with('\n') {
+                    self.newline();
+                }
+                self.indent += 1;
+                self.write_indent();
+                self.indent -= 1;
+            }
+            self.write(&text);
+            if line_comment {
+                self.newline();
+            } else {
+                self.write(" ");
+            }
+        }
+        if self.output.ends_with('\n') {
+            self.indent += 1;
+            self.write_indent();
+            self.indent -= 1;
+        }
+    }
+
+    /// Emit, inside an expression, the comments before the first token at
+    /// or after `pos`: those between a receiver and its `.member`.
+    fn flush_comments_before_token_after(&mut self, pos: usize) {
+        if let Some(rest) = self.source.get(pos..) {
+            if let Some((_, span)) = hew_lexer::Lexer::new(rest).next() {
+                self.flush_inline_comments(pos + span.start);
+            }
+        }
+    }
+
+    /// When the next source token after the cursor satisfies `wanted`, emit
+    /// the comments before it inside the current expression and move the
+    /// cursor past it, so the formatter's copy of that token keeps its place.
+    fn flush_before_next_token(&mut self, wanted: impl Fn(&hew_lexer::Token<'_>) -> bool) {
+        let index = self.token_at_or_after(self.prev_source_pos);
+        if let Some((token, span)) = self.tokens.get(index) {
+            if wanted(token) {
+                let start = span.start;
+                self.flush_inline_comments(start);
+                // The cursor stays at the token; writing it moves past.
+                self.prev_source_pos = start;
+            }
+        }
+    }
+
+    /// Drop spaces at the end of the output, unless they are the indent of
+    /// an otherwise empty line.
+    fn trim_trailing_spaces(&mut self) {
+        let line_start = self.output.rfind('\n').map_or(0, |i| i + 1);
+        if !self.output[line_start..].trim().is_empty() {
+            let kept = self.output.trim_end_matches(' ').len();
+            self.output.truncate(kept);
+        }
+    }
+
+    /// Write ` else ` for the next `else`. A comment the author put between
+    /// the closing `}` and `else` keeps its line, so `else` starts its own.
+    fn write_else(&mut self) {
+        let index = self.token_at_or_after(self.prev_source_pos);
+        let Some((hew_lexer::Token::Else, span)) = self.tokens.get(index) else {
+            self.write(" else ");
+            return;
+        };
+        let (start, end) = (span.start, span.end);
+        if self
+            .comments
+            .get(self.next_comment)
+            .is_some_and(|c| c.span.start < start)
+        {
+            self.newline();
+            self.flush_comments_before(start);
+            self.write_indent();
+            self.write("else ");
+        } else {
+            self.write(" else ");
+        }
+        self.prev_source_pos = end;
+    }
+
+    /// Write `text`, the formatter's copy of the next source token when that
+    /// token satisfies `wanted`, after the comments that precede the token.
+    fn write_token(&mut self, text: &str, wanted: impl Fn(&hew_lexer::Token<'_>) -> bool) {
+        self.flush_before_next_token(wanted);
+        // After a flushed comment the output already ends in a space.
+        let text = if self.output.ends_with(' ') {
+            text.trim_start()
+        } else {
+            text
+        };
+        if text.starts_with([';', ',']) {
+            self.trim_trailing_spaces();
+        }
+        self.write(text);
+    }
+
+    /// Start a member of a declaration body whose first source token is at
+    /// `start`, emitting the comments before it. With source, the member is
+    /// preceded by a blank line exactly when the author left one before it
+    /// (or before its leading comments); a synthesized program uses
+    /// `canonical_blank_line` instead.
+    fn begin_member(&mut self, start: usize, canonical_blank_line: bool) {
+        if self.source.is_empty() {
+            if canonical_blank_line && !self.output.ends_with("\n\n") {
+                self.newline();
+            }
+            return;
+        }
+        // A trailing comment stays on the line of the member before.
+        while self
+            .comments
+            .get(self.next_comment)
+            .is_some_and(|c| c.span.start < start && is_trailing_comment(self.source, c.span.start))
+        {
+            self.flush_one_comment();
+        }
+        let lead = self
+            .comments
+            .get(self.next_comment)
+            .map_or(start, |c| c.span.start.min(start));
+        if blank_line_before(self.source, lead)
+            && !self.output.ends_with("\n\n")
+            && !self.output.ends_with("{\n")
+        {
+            self.newline();
+        }
+        if lead < start {
+            self.flush_comments_before(start);
+            self.keep_blank_line_before(start);
+        }
+        self.prev_source_pos = self.prev_source_pos.max(start);
+    }
+
+    /// Finish a member that ends at `end` without a block of its own, so a
+    /// comment gap after it is measured from its last token.
+    fn end_member(&mut self, end: usize) {
+        self.prev_source_pos = self.prev_source_pos.max(end);
+    }
+
+    /// The source spelling of the literal at `span`: exactly one literal
+    /// token, optionally negated. `None` when there is no source or the span
+    /// does not cover a literal token (a node the parser synthesized).
+    fn literal_spelling(&self, span: &Span) -> Option<String> {
+        let text = self.source.get(span.clone())?;
+        let tokens = hew_lexer::lex(text);
+        let (negated, literal) = match tokens.as_slice() {
+            [(literal, _)] => (false, literal),
+            [(hew_lexer::Token::Minus, _), (literal, _)] => (true, literal),
+            _ => return None,
+        };
+        let spelling = match literal {
+            hew_lexer::Token::Integer(t)
+            | hew_lexer::Token::Float(t)
+            | hew_lexer::Token::Duration(t)
+            | hew_lexer::Token::StringLit(t)
+            | hew_lexer::Token::RawString(t)
+            | hew_lexer::Token::ByteStringLit(t)
+            | hew_lexer::Token::RegexLiteral(t)
+            | hew_lexer::Token::InterpolatedString(t)
+            | hew_lexer::Token::CharLit(t) => *t,
+            hew_lexer::Token::True => "true",
+            hew_lexer::Token::False => "false",
+            _ => return None,
+        };
+        Some(if negated {
+            format!("-{spelling}")
+        } else {
+            spelling.to_string()
+        })
+    }
+
+    /// Reprint the attributes that open the item starting at `item_start`,
+    /// in source order and spelling. Declarations that fold their attributes
+    /// into flags use this so `#[resource] #[opaque]` and `#[max_heap(64 kb)]`
+    /// survive as written. Returns `false` when there is no source to read.
+    fn format_item_attributes(&mut self, item_start: usize) -> bool {
+        let Some(rest) = self
+            .source
+            .get(item_start..)
+            .filter(|_| !self.source.is_empty())
+        else {
+            return false;
+        };
+        let mut tokens = hew_lexer::Lexer::new(rest).peekable();
+        loop {
+            match tokens.peek() {
+                // A doc comment prints in place with the other comments.
+                Some((hew_lexer::Token::DocComment(_), _)) => {
+                    tokens.next();
+                }
+                Some((hew_lexer::Token::HashBracket, span)) => {
+                    let start = item_start + span.start;
+                    let mut depth = 0usize;
+                    let mut end = start;
+                    for (token, span) in tokens.by_ref() {
+                        match token {
+                            hew_lexer::Token::HashBracket | hew_lexer::Token::LeftBracket => {
+                                depth += 1;
+                            }
+                            hew_lexer::Token::RightBracket => depth -= 1,
+                            _ => {}
+                        }
+                        end = item_start + span.end;
+                        if depth == 0 {
+                            break;
+                        }
+                    }
+                    self.flush_comments_before(start);
+                    let text = self.attribute_text(&(start..end));
+                    self.write_indent();
+                    self.write(&text);
+                    self.newline();
+                }
+                Some((_, span)) => {
+                    // Doc comments between the attributes and the keyword.
+                    self.flush_comments_before(item_start + span.start);
+                    return true;
+                }
+                None => return true,
+            }
+        }
+    }
+
+    /// The attribute at `span` with canonical spacing and its source
+    /// spelling (`#[timeout(1000ms)]` stays in milliseconds).
+    fn attribute_text(&self, span: &Span) -> String {
+        let mut out = String::new();
+        let mut previous: Option<&str> = None;
+        for (_, token) in hew_lexer::lex(&self.source[span.clone()]) {
+            let text = &self.source[span.start + token.start..span.start + token.end];
+            if let Some(previous) = previous {
+                let tight = matches!(previous, "#[" | "(" | ".")
+                    || matches!(text, ")" | "]" | "," | "(" | ".");
+                if previous == "," || !tight {
+                    out.push(' ');
+                }
+            }
+            out.push_str(text);
+            previous = Some(text);
+        }
+        out
+    }
+
+    /// Whether the expression at `span` is a `break` or `continue` written
+    /// without braces in expression position.
+    fn is_bare_control_flow(&self, span: &Span) -> bool {
+        self.source.get(span.clone()).is_some_and(|text| {
+            matches!(
+                hew_lexer::Lexer::new(text).next(),
+                Some((hew_lexer::Token::Break | hew_lexer::Token::Continue, _))
+            )
+        })
+    }
+
+    /// The source spelling of each element of the `bytes [..]` literal at
+    /// `span`, when the source holds exactly `len` integer elements.
+    fn byte_array_spellings(&self, span: &Span, len: usize) -> Option<Vec<String>> {
+        let text = self.source.get(span.clone())?;
+        let elements: Vec<String> = hew_lexer::lex(text)
+            .into_iter()
+            .filter_map(|(token, _)| match token {
+                hew_lexer::Token::Integer(t) => Some(t.to_string()),
+                _ => None,
+            })
+            .collect();
+        (elements.len() == len).then_some(elements)
     }
 
     // ------------------------------------------------------------------
@@ -396,7 +1126,11 @@ impl<'a> Formatter<'a> {
     // ------------------------------------------------------------------
 
     fn format_program(&mut self, program: &Program) {
-        if let Some(doc) = &program.module_doc {
+        if let Some(doc) = program
+            .module_doc
+            .as_ref()
+            .filter(|_| self.source.is_empty())
+        {
             for line in doc.split('\n') {
                 if line.is_empty() {
                     self.write("//!\n");
@@ -413,7 +1147,7 @@ impl<'a> Formatter<'a> {
         for (i, item) in program.items.iter().enumerate() {
             self.flush_comments_and_separate(item.1.start, i > 0);
             self.prev_source_pos = item.1.start;
-            self.format_item(&item.0, item.1.end);
+            self.format_item(&item.0, item.1.start, item.1.end);
             // Only advance if format_item didn't already advance past the item
             // (block-containing items advance via flush_block_end_comments).
             if self.prev_source_pos < item.1.start {
@@ -426,24 +1160,24 @@ impl<'a> Formatter<'a> {
     // Items
     // ------------------------------------------------------------------
 
-    fn format_item(&mut self, item: &Item, span_end: usize) {
+    fn format_item(&mut self, item: &Item, span_start: usize, span_end: usize) {
         match item {
-            Item::Import(decl) => self.format_import(decl),
+            Item::Import(decl) => self.format_import(decl, span_start..span_end),
             Item::Const(decl) => self.format_const(decl),
-            Item::TypeDecl(decl) => self.format_type_decl(decl, span_end),
+            Item::TypeDecl(decl) => self.format_type_decl(decl, span_start, span_end),
             Item::TypeAlias(decl) => self.format_type_alias(decl),
-            Item::Trait(decl) => self.format_trait(decl, span_end),
+            Item::Trait(decl) => self.format_trait(decl, span_start, span_end),
             Item::Impl(decl) => self.format_impl(decl, span_end),
             Item::Function(decl) => self.format_fn(decl, span_end),
             Item::ExternBlock(decl) => self.format_extern_block(decl, span_end),
-            Item::Actor(decl) => self.format_actor(decl, span_end),
-            Item::Supervisor(decl) => self.format_supervisor(decl),
-            Item::Machine(decl) => self.format_machine(decl, span_end),
+            Item::Actor(decl) => self.format_actor(decl, span_start, span_end),
+            Item::Supervisor(decl) => self.format_supervisor(decl, span_start, span_end),
+            Item::Machine(decl) => self.format_machine(decl, span_start, span_end),
             Item::Record(decl) => self.format_record(decl),
         }
     }
 
-    fn format_import(&mut self, decl: &ImportDecl) {
+    fn format_import(&mut self, decl: &ImportDecl, span: Span) {
         self.write_indent();
         self.write("import ");
         if let Some(file_path) = &decl.file_path {
@@ -462,18 +1196,30 @@ impl<'a> Formatter<'a> {
                 self.write(".");
                 match spec {
                     ImportSpec::Names(names) => {
-                        self.write("{");
-                        self.comma_sep(names, |f, n| {
-                            f.write(&n.name);
-                            if let Some(alias) = &n.alias {
-                                f.write(" as ");
-                                f.write(alias);
-                            }
-                        });
-                        if decl.selection_trailing_comma {
-                            self.write(",");
-                        }
-                        self.write("}");
+                        let bounds = self
+                            .find_open_brace(span.start, span.end)
+                            .map(|open| self.token_at_or_after(open))
+                            .and_then(|open| self.closers.get(&open).map(|&close| (open, close)));
+                        let close = if decl.selection_trailing_comma {
+                            ",}"
+                        } else {
+                            "}"
+                        };
+                        self.delimited_list(
+                            "{",
+                            close,
+                            names,
+                            bounds,
+                            false,
+                            decl.selection_trailing_comma,
+                            |f, n| {
+                                f.write(&n.name);
+                                if let Some(alias) = &n.alias {
+                                    f.write(" as ");
+                                    f.write(alias);
+                                }
+                            },
+                        );
                     }
                 }
             }
@@ -485,7 +1231,7 @@ impl<'a> Formatter<'a> {
                 self.write(alias);
             }
         }
-        self.write(";\n");
+        self.write_token(";\n", |t| matches!(t, hew_lexer::Token::Semicolon));
     }
 
     fn format_const(&mut self, decl: &ConstDecl) {
@@ -497,8 +1243,8 @@ impl<'a> Formatter<'a> {
         self.write(": ");
         self.format_type_expr(&decl.ty.0);
         self.write(" = ");
-        self.format_expr(&decl.value.0);
-        self.write(";\n");
+        self.format_expr(&decl.value);
+        self.write_token(";\n", |t| matches!(t, hew_lexer::Token::Semicolon));
     }
 
     fn format_type_alias(&mut self, decl: &TypeAliasDecl) {
@@ -510,7 +1256,7 @@ impl<'a> Formatter<'a> {
         self.format_opt_type_params(decl.type_params.as_ref());
         self.write(" = ");
         self.format_type_expr(&decl.ty.0);
-        self.write(";\n");
+        self.write_token(";\n", |t| matches!(t, hew_lexer::Token::Semicolon));
     }
 
     fn format_record(&mut self, decl: &RecordDecl) {
@@ -553,32 +1299,14 @@ impl<'a> Formatter<'a> {
         }
     }
 
-    fn format_type_decl(&mut self, decl: &TypeDecl, _span_end: usize) {
+    fn format_type_decl(&mut self, decl: &TypeDecl, span_start: usize, span_end: usize) {
         if let Some(wire) = &decl.wire {
-            self.format_wire_type_decl(decl, wire);
+            self.format_wire_type_decl(decl, wire, span_start, span_end);
             return;
         }
         self.write_outer_doc(decl.doc_comment.as_ref());
-        match decl.resource_marker {
-            crate::ast::ResourceMarker::None => {}
-            crate::ast::ResourceMarker::Resource => {
-                self.write_indent();
-                self.write("#[resource]\n");
-            }
-            crate::ast::ResourceMarker::Linear => {
-                self.write_indent();
-                self.write("#[linear]\n");
-            }
-        }
-        if decl.is_opaque {
-            self.write_indent();
-            self.write("#[opaque]\n");
-        }
-        if let Some(lang_item) = &decl.lang_item {
-            self.write_indent();
-            self.write("#[lang_item(\"");
-            self.write(lang_item);
-            self.write("\")]\n");
+        if !self.format_item_attributes(span_start) {
+            self.format_type_decl_attributes(decl);
         }
         self.write_indent();
         self.write_visibility(decl.visibility);
@@ -621,7 +1349,7 @@ impl<'a> Formatter<'a> {
                     // first token of the next item (or closing brace), so any
                     // comment between content and span.end is captured here
                     self.flush_comments_before(span.end);
-                    self.prev_source_pos = span.end;
+                    self.prev_source_pos = self.prev_source_pos.max(span.end);
                 }
                 TypeBodyItem::Variant(v) => {
                     // flush inline comments that appear before this variant
@@ -635,23 +1363,47 @@ impl<'a> Formatter<'a> {
                     // the first token of the next item (or closing brace), so
                     // any comment between content and v.span.end is captured
                     self.flush_comments_before(v.span.end);
-                    self.prev_source_pos = v.span.end;
+                    self.prev_source_pos = self.prev_source_pos.max(v.span.end);
                 }
                 TypeBodyItem::Method(f) => {
-                    let pos = if self.has_comments() {
-                        self.find_keyword_after(&format!("fn {}", f.name), self.prev_source_pos)
-                    } else {
-                        usize::MAX
-                    };
-                    self.flush_comments_before(pos);
+                    self.begin_member(member_start(&f.attributes, f.fn_span.start), false);
                     let has_consuming_self =
                         decl.consuming_methods.iter().any(|name| name == &f.name);
-                    self.format_type_body_method(f, self.source.len(), has_consuming_self);
+                    self.format_type_body_method(f, f.fn_span.end, has_consuming_self);
                 }
             }
         }
+        if self.has_comments() {
+            self.flush_block_end_comments(span_end);
+        }
         self.indent -= 1;
         self.writeln("}");
+    }
+
+    /// The attributes a type declaration folds into flags, for a program
+    /// with no source to reprint them from.
+    fn format_type_decl_attributes(&mut self, decl: &TypeDecl) {
+        match decl.resource_marker {
+            crate::ast::ResourceMarker::None => {}
+            crate::ast::ResourceMarker::Resource => {
+                self.write_indent();
+                self.write("#[resource]\n");
+            }
+            crate::ast::ResourceMarker::Linear => {
+                self.write_indent();
+                self.write("#[linear]\n");
+            }
+        }
+        if decl.is_opaque {
+            self.write_indent();
+            self.write("#[opaque]\n");
+        }
+        if let Some(lang_item) = &decl.lang_item {
+            self.write_indent();
+            self.write("#[lang_item(\"");
+            self.write(lang_item);
+            self.write("\")]\n");
+        }
     }
 
     fn format_type_body_method(
@@ -688,7 +1440,93 @@ impl<'a> Formatter<'a> {
         self.newline();
     }
 
-    fn format_wire_type_decl(&mut self, decl: &TypeDecl, wire: &WireMetadata) {
+    fn format_wire_type_decl(
+        &mut self,
+        decl: &TypeDecl,
+        wire: &WireMetadata,
+        span_start: usize,
+        span_end: usize,
+    ) {
+        if !self.format_item_attributes(span_start) {
+            self.format_wire_attributes(decl, wire);
+        }
+        self.write_indent();
+        self.write_visibility(decl.visibility);
+        match decl.kind {
+            TypeDeclKind::Struct => self.write("type "),
+            TypeDeclKind::Enum => self.write("enum "),
+        }
+        self.write(&decl.name);
+        self.write(" {\n");
+        self.indent += 1;
+        match decl.kind {
+            TypeDeclKind::Struct => {
+                for (i, item) in decl.body.iter().enumerate() {
+                    if let TypeBodyItem::Field { name, ty, span, .. } = item {
+                        self.flush_comments_before(span.start);
+                        self.prev_source_pos = span.start;
+                        self.write_indent();
+                        self.write(name);
+                        self.write(": ");
+                        self.format_type_expr(&ty.0);
+                        // Emit wire field metadata
+                        if let Some(meta) = wire.field_meta.get(i) {
+                            self.write(" @");
+                            self.write(&meta.field_number.to_string());
+                            self.format_wire_field_modifiers(
+                                meta.is_optional,
+                                meta.is_deprecated,
+                                meta.is_repeated,
+                                meta.since,
+                                meta.json_name.as_deref(),
+                                meta.yaml_name.as_deref(),
+                            );
+                        }
+                        self.write(",");
+                        self.newline();
+                        self.flush_comments_before(span.end);
+                        self.prev_source_pos = self.prev_source_pos.max(span.end);
+                    }
+                }
+                // Emit reserved field numbers
+                if !wire.reserved_numbers.is_empty() {
+                    self.write_indent();
+                    self.write("reserved ");
+                    for (i, n) in wire.reserved_numbers.iter().enumerate() {
+                        if i > 0 {
+                            self.write(", ");
+                        }
+                        self.write("@");
+                        self.write(&n.to_string());
+                    }
+                    self.write_token(";\n", |t| matches!(t, hew_lexer::Token::Semicolon));
+                }
+            }
+            TypeDeclKind::Enum => {
+                // Variant bodies are tagged by variant index, not by per-field
+                // `@N`; reserved tags do not apply.  Delegate to the regular
+                // variant formatter to handle unit / tuple / struct payloads.
+                for item in &decl.body {
+                    if let TypeBodyItem::Variant(v) = item {
+                        self.flush_comments_before(v.span.start);
+                        self.prev_source_pos = v.span.start;
+                        self.format_variant(v, true);
+                        self.flush_comments_before(v.span.end);
+                        self.prev_source_pos = self.prev_source_pos.max(v.span.end);
+                    }
+                }
+            }
+        }
+        if self.has_comments() {
+            self.flush_block_end_comments(span_end);
+        }
+        self.indent -= 1;
+        self.writeln("}");
+    }
+
+    /// The attributes a wire declaration folds into its metadata, for a
+    /// program with no source to reprint them from.
+    fn format_wire_attributes(&mut self, decl: &TypeDecl, wire: &WireMetadata) {
         if let Some(lang_item) = &decl.lang_item {
             self.write_indent();
             self.write("#[lang_item(\"");
@@ -716,67 +1554,6 @@ impl<'a> Formatter<'a> {
         } else {
             self.write("#[wire]\n");
         }
-        self.write_indent();
-        self.write_visibility(decl.visibility);
-        match decl.kind {
-            TypeDeclKind::Struct => self.write("type "),
-            TypeDeclKind::Enum => self.write("enum "),
-        }
-        self.write(&decl.name);
-        self.write(" {\n");
-        self.indent += 1;
-        match decl.kind {
-            TypeDeclKind::Struct => {
-                for (i, item) in decl.body.iter().enumerate() {
-                    if let TypeBodyItem::Field { name, ty, .. } = item {
-                        self.write_indent();
-                        self.write(name);
-                        self.write(": ");
-                        self.format_type_expr(&ty.0);
-                        // Emit wire field metadata
-                        if let Some(meta) = wire.field_meta.get(i) {
-                            self.write(" @");
-                            self.write(&meta.field_number.to_string());
-                            self.format_wire_field_modifiers(
-                                meta.is_optional,
-                                meta.is_deprecated,
-                                meta.is_repeated,
-                                meta.since,
-                                meta.json_name.as_deref(),
-                                meta.yaml_name.as_deref(),
-                            );
-                        }
-                        self.write(",");
-                        self.newline();
-                    }
-                }
-                // Emit reserved field numbers
-                if !wire.reserved_numbers.is_empty() {
-                    self.write_indent();
-                    self.write("reserved ");
-                    for (i, n) in wire.reserved_numbers.iter().enumerate() {
-                        if i > 0 {
-                            self.write(", ");
-                        }
-                        self.write("@");
-                        self.write(&n.to_string());
-                    }
-                    self.write(";\n");
-                }
-            }
-            TypeDeclKind::Enum => {
-                // Variant bodies are tagged by variant index, not by per-field
-                // `@N`; reserved tags do not apply.  Delegate to the regular
-                // variant formatter to handle unit / tuple / struct payloads.
-                for item in &decl.body {
-                    if let TypeBodyItem::Variant(v) = item {
-                        self.format_variant(v, true);
-                    }
-                }
-            }
-        }
-        self.indent -= 1;
-        self.writeln("}");
     }
 
     fn format_naming_attr(&mut self, attr_name: &str, case: Option<NamingCase>) {
@@ -861,11 +1638,13 @@ impl<'a> Formatter<'a> {
         self.newline();
     }
 
-    fn format_trait(&mut self, decl: &TraitDecl, _span_end: usize) {
+    fn format_trait(&mut self, decl: &TraitDecl, span_start: usize, span_end: usize) {
         self.write_outer_doc(decl.doc_comment.as_ref());
-        if let Some(key) = &decl.lang_item {
-            self.write_indent();
-            self.write(&format!("#[lang_item(\"{key}\")]\n"));
+        if !self.format_item_attributes(span_start) {
+            if let Some(key) = &decl.lang_item {
+                self.write_indent();
+                self.write(&format!("#[lang_item(\"{key}\")]\n"));
+            }
         }
         self.write_indent();
         self.write_visibility(decl.visibility);
@@ -881,26 +1660,17 @@ impl<'a> Formatter<'a> {
         for (i, item) in decl.items.iter().enumerate() {
             match item {
                 TraitItem::Method(m) => {
-                    let pos = if self.has_comments() {
-                        self.find_keyword_after(&format!("fn {}", m.name), self.prev_source_pos)
-                    } else {
-                        usize::MAX
-                    };
-                    self.flush_comments_and_separate(pos, i > 0);
+                    self.begin_member(member_start(&m.attributes, m.span.start), i > 0);
                     self.format_trait_method(m);
+                    self.end_member(m.span.end);
                 }
                 TraitItem::AssociatedType {
                     name,
                     bounds,
                     default,
-                    ..
+                    span,
                 } => {
-                    let pos = if self.has_comments() {
-                        self.find_keyword_after(&format!("type {name}"), self.prev_source_pos)
-                    } else {
-                        usize::MAX
-                    };
-                    self.flush_comments_and_separate(pos, i > 0);
+                    self.begin_member(span.start, i > 0);
                     self.write_indent();
                     self.write("type ");
                     self.write(name);
@@ -912,9 +1682,13 @@ impl<'a> Formatter<'a> {
                         self.write(" = ");
                         self.format_type_expr(&def.0);
                     }
-                    self.write(";\n");
+                    self.write_token(";\n", |t| matches!(t, hew_lexer::Token::Semicolon));
+                    self.end_member(span.end);
                 }
             }
+        }
+        if self.has_comments() {
+            self.flush_block_end_comments(span_end);
         }
         self.indent -= 1;
         self.writeln("}");
@@ -930,6 +1704,7 @@ impl<'a> Formatter<'a> {
         } else {
             self.format_attributes(&m.attributes);
         }
+        self.flush_after_attributes(&m.attributes);
         self.write_indent();
         self.write("fn ");
         self.write(&m.name);
@@ -949,6 +1724,7 @@ impl<'a> Formatter<'a> {
             self.format_opt_where_clause(m.where_clause.as_ref());
         } else {
             self.format_fn_signature(
+                m.span.start,
                 m.type_params.as_ref(),
                 &m.params,
                 m.return_type.as_ref(),
@@ -957,10 +1733,10 @@ impl<'a> Formatter<'a> {
         }
         if let Some(body) = &m.body {
             self.write(" ");
-            self.format_block(body, self.source.len());
+            self.format_block(body, m.span.end);
             self.newline();
         } else {
-            self.write(";\n");
+            self.write_token(";\n", |t| matches!(t, hew_lexer::Token::Semicolon));
         }
     }
 
@@ -978,35 +1754,33 @@ impl<'a> Formatter<'a> {
         self.format_opt_where_clause(decl.where_clause.as_ref());
         self.write(" {\n");
         self.indent += 1;
-        if !decl.type_aliases.is_empty() {
-            for (i, alias) in decl.type_aliases.iter().enumerate() {
-                if self.has_comments() {
-                    let pos = self
-                        .find_keyword_after(&format!("type {}", alias.name), self.prev_source_pos);
-                    self.flush_comments_before(pos);
-                } else if i > 0 {
-                    self.newline();
+        // Aliases and methods print in source order; the AST keeps them in
+        // separate lists.
+        let mut members: Vec<(usize, Result<&crate::ast::ImplTypeAlias, &FnDecl>)> = decl
+            .type_aliases
+            .iter()
+            .map(|alias| (alias.span.start, Ok(alias)))
+            .chain(
+                decl.methods
+                    .iter()
+                    .map(|m| (member_start(&m.attributes, m.fn_span.start), Err(m))),
+            )
+            .collect();
+        members.sort_by_key(|(start, _)| *start);
+        for (i, (start, member)) in members.iter().enumerate() {
+            self.begin_member(*start, i > 0);
+            match member {
+                Ok(alias) => {
+                    self.write_indent();
+                    self.write("type ");
+                    self.write(&alias.name);
+                    self.write(" = ");
+                    self.format_type_expr(&alias.ty.0);
+                    self.write_token(";\n", |t| matches!(t, hew_lexer::Token::Semicolon));
+                    self.end_member(alias.span.end);
                 }
-                self.write_indent();
-                self.write("type ");
-                self.write(&alias.name);
-                self.write(" = ");
-                self.format_type_expr(&alias.ty.0);
-                self.write(";\n");
+                Err(method) => self.format_fn(method, span_end),
             }
-            if !self.has_comments() && !decl.methods.is_empty() {
-                self.newline();
-            }
-        }
-        for (i, method) in decl.methods.iter().enumerate() {
-            if self.has_comments() {
-                let pos =
-                    self.find_keyword_after(&format!("fn {}", method.name), self.prev_source_pos);
-                self.flush_comments_before(pos);
-            } else if i > 0 {
-                self.newline();
-            }
-            self.format_fn(method, span_end);
         }
         if self.has_comments() {
             self.flush_block_end_comments(span_end);
@@ -1033,7 +1807,7 @@ impl<'a> Formatter<'a> {
             // is the first byte after the trailing `;`, so any same-line
             // comment falls in the range [f.span.start, f.span.end)
             self.flush_comments_before(f.span.end);
-            self.prev_source_pos = f.span.end;
+            self.prev_source_pos = self.prev_source_pos.max(f.span.end);
         }
         if self.has_comments() {
             self.flush_block_end_comments(span_end);
@@ -1060,15 +1834,16 @@ impl<'a> Formatter<'a> {
             self.write(" -> ");
             self.format_type_expr(&ret.0);
         }
-        self.write(";\n");
+        self.write_token(";\n", |t| matches!(t, hew_lexer::Token::Semicolon));
     }
 
-    #[expect(clippy::too_many_lines, reason = "actor formatting has many sections")]
-    fn format_actor(&mut self, decl: &ActorDecl, span_end: usize) {
+    fn format_actor(&mut self, decl: &ActorDecl, span_start: usize, span_end: usize) {
         self.write_outer_doc(decl.doc_comment.as_ref());
-        if let Some(bytes) = decl.max_heap_bytes {
-            self.write_indent();
-            self.write(&format!("#[max_heap({bytes})]\n"));
+        if !self.format_item_attributes(span_start) {
+            if let Some(bytes) = decl.max_heap_bytes {
+                self.write_indent();
+                self.write(&format!("#[max_heap({bytes})]\n"));
+            }
         }
         self.write_indent();
         self.write_visibility(decl.visibility);
@@ -1096,93 +1871,57 @@ impl<'a> Formatter<'a> {
         }
         self.write(" {\n");
         self.indent += 1;
-        let mut has_body_item = false;
-
-        for field in &decl.fields {
-            if self.has_comments() {
-                let kw = if field.is_mutable { "var" } else { "let" };
-                let pos =
-                    self.find_keyword_after(&format!("{kw} {}", field.name), self.prev_source_pos);
-                self.flush_comments_before(pos);
-            }
-            self.format_field_decl(field);
-            has_body_item = true;
+        // Members print in source order. The AST groups them by kind, so the
+        // spans recover the order the author wrote; with no source (a
+        // synthesized program) the stable sort keeps the grouping.
+        let mut members: Vec<(usize, ActorMember<'_>)> = Vec::new();
+        members.extend(
+            decl.fields
+                .iter()
+                .map(|f| (f.span.start, ActorMember::Field(f))),
+        );
+        if let Some(span) = &decl.mailbox_span {
+            members.push((span.start, ActorMember::Mailbox));
+        } else if decl.mailbox_capacity.is_some() {
+            members.push((0, ActorMember::Mailbox));
         }
+        if let Some(init) = &decl.init {
+            members.push((init.span.start, ActorMember::Init(init)));
+        }
+        members.extend(decl.receive_fns.iter().map(|r| {
+            (
+                member_start(&r.attributes, r.span.start),
+                ActorMember::Receive(r),
+            )
+        }));
+        members.extend(decl.methods.iter().map(|m| {
+            (
+                member_start(&m.attributes, m.fn_span.start),
+                ActorMember::Method(m),
+            )
+        }));
+        members.sort_by_key(|(start, _)| *start);
 
-        if let Some(cap) = &decl.mailbox_capacity {
-            if has_body_item {
-                self.newline();
-            }
-            self.write_indent();
-            self.write("mailbox ");
-            self.write(&cap.to_string());
-            if let Some(policy) = &decl.overflow_policy {
-                self.write(" overflow ");
-                match policy {
-                    OverflowPolicy::DropNew => self.write("drop_new"),
-                    OverflowPolicy::DropOld => self.write("drop_old"),
-                    OverflowPolicy::Block => self.write("block"),
-                    OverflowPolicy::Fail => self.write("fail"),
-                    OverflowPolicy::Coalesce {
-                        key_field,
-                        fallback,
-                    } => {
-                        self.write("coalesce(");
-                        self.write(key_field);
-                        self.write(")");
-                        if let Some(fb) = fallback {
-                            self.write(" fallback ");
-                            match fb {
-                                crate::ast::OverflowFallback::DropNew => self.write("drop_new"),
-                                crate::ast::OverflowFallback::DropOld => self.write("drop_old"),
-                                crate::ast::OverflowFallback::Block => self.write("block"),
-                                crate::ast::OverflowFallback::Fail => self.write("fail"),
-                            }
-                        }
+        let mut previous_was_field = false;
+        for (i, (start, member)) in members.iter().enumerate() {
+            let is_field = matches!(member, ActorMember::Field(_));
+            self.begin_member(*start, i > 0 && !(is_field && previous_was_field));
+            previous_was_field = is_field;
+            match member {
+                ActorMember::Field(field) => {
+                    self.format_field_decl(field);
+                    self.end_member(field.span.end);
+                }
+                ActorMember::Mailbox => {
+                    self.format_actor_mailbox(decl);
+                    if let Some(span) = &decl.mailbox_span {
+                        self.end_member(span.end);
                     }
                 }
+                ActorMember::Init(init) => self.format_actor_init(init, span_end),
+                ActorMember::Receive(recv) => self.format_receive_fn(recv, span_end),
+                ActorMember::Method(method) => self.format_fn(method, span_end),
             }
-            self.write(",\n");
-            has_body_item = true;
-        }
-
-        if let Some(init) = &decl.init {
-            if self.has_comments() {
-                let pos = self.find_keyword_after("init(", self.prev_source_pos);
-                self.flush_comments_before(pos);
-            } else if has_body_item {
-                self.newline();
-            }
-            self.format_actor_init(init, span_end);
-            has_body_item = true;
-        }
-
-        for recv in &decl.receive_fns {
-            if self.has_comments() {
-                let kw = if recv.is_generator {
-                    format!("receive gen fn {}", recv.name)
-                } else {
-                    format!("receive fn {}", recv.name)
-                };
-                let pos = self.find_keyword_after(&kw, self.prev_source_pos);
-                self.flush_comments_before(pos);
-            } else if has_body_item {
-                self.newline();
-            }
-            self.format_receive_fn(recv, span_end);
-            has_body_item = true;
-        }
-
-        for method in &decl.methods {
-            if self.has_comments() {
-                let pos =
-                    self.find_keyword_after(&format!("fn {}", method.name), self.prev_source_pos);
-                self.flush_comments_before(pos);
-            } else if has_body_item {
-                self.newline();
-            }
-            self.format_fn(method, span_end);
-            has_body_item = true;
         }
 
         if self.has_comments() {
@@ -1192,8 +1931,44 @@ impl<'a> Formatter<'a> {
         self.writeln("}");
     }
 
+    fn format_actor_mailbox(&mut self, decl: &ActorDecl) {
+        let Some(cap) = &decl.mailbox_capacity else {
+            return;
+        };
+        self.write_indent();
+        self.write("mailbox ");
+        self.write(&cap.to_string());
+        if let Some(policy) = &decl.overflow_policy {
+            self.write(" overflow ");
+            match policy {
+                OverflowPolicy::DropNew => self.write("drop_new"),
+                OverflowPolicy::DropOld => self.write("drop_old"),
+                OverflowPolicy::Block => self.write("block"),
+                OverflowPolicy::Fail => self.write("fail"),
+                OverflowPolicy::Coalesce {
+                    key_field,
+                    fallback,
+                } => {
+                    self.write("coalesce(");
+                    self.write(key_field);
+                    self.write(")");
+                    if let Some(fb) = fallback {
+                        self.write(" fallback ");
+                        match fb {
+                            crate::ast::OverflowFallback::DropNew => self.write("drop_new"),
+                            crate::ast::OverflowFallback::DropOld => self.write("drop_old"),
+                            crate::ast::OverflowFallback::Block => self.write("block"),
+                            crate::ast::OverflowFallback::Fail => self.write("fail"),
+                        }
+                    }
+                }
+            }
+        }
+        self.write(",\n");
+    }
+
     #[expect(clippy::too_many_lines, reason = "machine formatting has many clauses")]
-    fn format_machine(&mut self, decl: &MachineDecl, span_end: usize) {
+    fn format_machine(&mut self, decl: &MachineDecl, span_start: usize, span_end: usize) {
         self.write_indent();
         self.write_visibility(decl.visibility);
         self.write("machine ");
@@ -1234,42 +2009,6 @@ impl<'a> Formatter<'a> {
         self.write(" {\n");
         self.indent += 1;
 
-        // `events { … }` header — the input-event vocabulary.
-        let mut emitted_section = false;
-        if !decl.events.is_empty() {
-            self.write_indent();
-            self.write("events {\n");
-            self.indent += 1;
-            for event in &decl.events {
-                self.write_indent();
-                self.write(&event.name);
-                self.format_machine_field_list(&event.fields);
-                self.write("\n");
-            }
-            self.indent -= 1;
-            self.write_indent();
-            self.write("}\n");
-            emitted_section = true;
-        }
-
-        // `emits { … }` Mealy-output manifest (optional).
-        if !decl.emits.is_empty() {
-            self.newline();
-            self.write_indent();
-            self.write("emits {\n");
-            self.indent += 1;
-            for output in &decl.emits {
-                self.write_indent();
-                self.write(&output.name);
-                self.format_machine_field_list(&output.fields);
-                self.write("\n");
-            }
-            self.indent -= 1;
-            self.write_indent();
-            self.write("}\n");
-            emitted_section = true;
-        }
-
         // Composite-group membership: substates owned by a composite are
         // re-emitted inside their `state Composite { … }` block (driven by the
         // side-table), not as flat top-level states.
@@ -1278,26 +2017,6 @@ impl<'a> Formatter<'a> {
             .iter()
             .flat_map(|g| g.members.iter().map(String::as_str))
             .collect();
-
-        if !decl.states.is_empty() {
-            if emitted_section {
-                self.newline();
-            }
-            for state in &decl.states {
-                if composite_members.contains(state.name.as_str()) {
-                    continue;
-                }
-                self.format_machine_leaf_state(state);
-            }
-            emitted_section = true;
-        }
-
-        // Composite blocks (depth-1) reconstructed from the grouping side-table.
-        for group in &decl.composite_groups {
-            self.newline();
-            self.format_machine_composite(decl, group, span_end);
-            emitted_section = true;
-        }
 
         // Top-level transitions, excluding those that belong to a composite's
         // parent-rule block (those are re-emitted inside the composite).
@@ -1313,40 +2032,141 @@ impl<'a> Formatter<'a> {
             })
             .collect();
 
-        let top_transitions: Vec<&MachineTransition> = decl
-            .transitions
-            .iter()
-            .filter(|t| {
-                !parent_rule_keys.contains(&(
-                    t.source_state.clone(),
-                    t.event_name.clone(),
-                    t.target_state.clone(),
-                ))
-            })
-            .collect();
-
-        if !top_transitions.is_empty() {
-            if emitted_section {
-                self.newline();
-            }
-            for transition in &top_transitions {
-                self.write_indent();
-                self.format_machine_transition(transition, span_end);
-                self.newline();
-            }
-            emitted_section = true;
+        // Sections and members print in source order; a synthesized machine
+        // keeps the canonical order the list is built in.
+        let mut members: Vec<(usize, MachineMember<'_>)> = Vec::new();
+        if !decl.events.is_empty() {
+            let at = self.machine_section(span_start, span_end, "events");
+            members.push((at, MachineMember::Events));
+        }
+        if !decl.emits.is_empty() {
+            let at = self.machine_section(span_start, span_end, "emits");
+            members.push((at, MachineMember::Emits));
+        }
+        members.extend(
+            decl.states
+                .iter()
+                .filter(|state| !composite_members.contains(state.name.as_str()))
+                .map(|state| (state.span.start, MachineMember::State(state))),
+        );
+        members.extend(
+            decl.composite_groups
+                .iter()
+                .map(|group| (group.span.start, MachineMember::Composite(group))),
+        );
+        members.extend(
+            decl.transitions
+                .iter()
+                .filter(|t| {
+                    !parent_rule_keys.contains(&(
+                        t.source_state.clone(),
+                        t.event_name.clone(),
+                        t.target_state.clone(),
+                    ))
+                })
+                .map(|t| (t.span.start, MachineMember::Transition(t))),
+        );
+        if decl.has_default {
+            let at = self.machine_section(span_start, span_end, "default");
+            members.push((at, MachineMember::Default));
+        }
+        // Without source the section keywords have no position, so keep the
+        // canonical order the list was built in.
+        if !self.source.is_empty() {
+            members.sort_by_key(|(start, _)| *start);
         }
 
-        if decl.has_default {
-            if emitted_section {
-                self.newline();
+        let mut previous: Option<std::mem::Discriminant<MachineMember<'_>>> = None;
+        for (start, member) in &members {
+            let kind = std::mem::discriminant(member);
+            // Canonically, a blank line separates sections and composites.
+            let canonical = previous
+                .is_some_and(|p| p != kind || matches!(member, MachineMember::Composite(_)));
+            previous = Some(kind);
+            self.begin_member(*start, canonical);
+            match member {
+                MachineMember::Events => {
+                    self.format_machine_events("events", &decl.events, span_end);
+                }
+                MachineMember::Emits => self.format_machine_events("emits", &decl.emits, span_end),
+                MachineMember::State(state) => {
+                    self.format_machine_leaf_state(state);
+                    self.end_member(state.span.end);
+                }
+                MachineMember::Composite(group) => {
+                    self.format_machine_composite(decl, group, span_end);
+                    self.end_member(group.span.end);
+                }
+                MachineMember::Transition(transition) => {
+                    self.write_indent();
+                    self.format_machine_transition(transition, span_end);
+                    self.newline();
+                    self.end_member(transition.span.end);
+                }
+                MachineMember::Default => {
+                    self.write_indent();
+                    self.write("default { state }\n");
+                    let close = self.find_block_close(*start, span_end);
+                    self.end_member(close + 1);
+                }
             }
-            self.write_indent();
-            self.write("default { state }\n");
+        }
+        if self.has_comments() {
+            self.flush_block_end_comments(span_end);
         }
 
         self.indent -= 1;
         self.writeln("}");
+    }
+
+    /// Start of the machine-body section keyword `word` (`events`, `emits`,
+    /// `default`) directly inside the machine's braces; 0 without source.
+    fn machine_section(&self, start: usize, end: usize, word: &str) -> usize {
+        let mut depth = 0usize;
+        for (token, span) in &self.tokens[self.token_at_or_after(start)..] {
+            if span.start >= end {
+                break;
+            }
+            match token {
+                hew_lexer::Token::LeftBrace => depth += 1,
+                hew_lexer::Token::RightBrace => depth = depth.saturating_sub(1),
+                _ if depth == 1 && self.source[span.clone()] == *word => return span.start,
+                _ => {}
+            }
+        }
+        0
+    }
+
+    /// Emit an `events { … }` or `emits { … }` header, placing each
+    /// comment before the declaration it precedes.
+    fn format_machine_events(
+        &mut self,
+        keyword: &str,
+        events: &[crate::ast::MachineEvent],
+        span_end: usize,
+    ) {
+        let open = self.find_open_brace(self.prev_source_pos, span_end);
+        self.write_indent();
+        self.write(keyword);
+        self.write(" {\n");
+        if let Some(open) = open {
+            self.prev_source_pos = open + 1;
+        }
+        self.indent += 1;
+        for event in events {
+            self.begin_member(event.span.start, false);
+            self.write_indent();
+            self.write(&event.name);
+            self.format_machine_field_list(&event.fields);
+            self.write("\n");
+            self.end_member(event.span.end);
+        }
+        if self.has_comments() {
+            self.flush_block_end_comments(span_end);
+        }
+        self.indent -= 1;
+        self.write_indent();
+        self.write("}\n");
     }
 
     /// Emit `{ name: Type, … }` after an event/state name, or `,` when empty.
@@ -1439,7 +2259,7 @@ impl<'a> Formatter<'a> {
         // which is not the authority for it and does not exist in the
         // block/payload-shorthand forms.
         self.write(&transition.source_state);
-        self.write(" => ");
+        self.write_token(" => ", |t| matches!(t, hew_lexer::Token::FatArrow));
         if transition.target_is_contextual {
             self.write(".");
         }
@@ -1454,7 +2274,7 @@ impl<'a> Formatter<'a> {
         }
         if let Some(guard) = &transition.guard {
             self.write(" when ");
-            self.format_expr(&guard.0);
+            self.format_expr(guard);
         }
         // Re-emit the AUTHORED body: strip the composite entry/exit hook
         // prelude (D2/D3 splices, counted by `composite_prelude_len`) first,
@@ -1504,7 +2324,7 @@ impl<'a> Formatter<'a> {
                     // after the value they override (D488).
                     if let Some(base) = base {
                         self.write("..");
-                        self.format_expr(&base.0);
+                        self.format_expr(base);
                         if !fields.is_empty() {
                             self.write(", ");
                         }
@@ -1515,12 +2335,12 @@ impl<'a> Formatter<'a> {
                         }
                         self.write(fname);
                         self.write(": ");
-                        self.format_expr(&fval.0);
+                        self.format_expr(fval);
                     }
                     self.write(" }");
                 } else {
                     self.write(" { ");
-                    self.format_expr(body_expr);
+                    self.format_expr(&(body_expr.clone(), transition.body.1.clone()));
                     self.write(" }");
                 }
             }
@@ -1530,7 +2350,7 @@ impl<'a> Formatter<'a> {
                     self.format_block(block, span_end);
                 } else {
                     self.write("{ ");
-                    self.format_expr(body_expr);
+                    self.format_expr(&(body_expr.clone(), transition.body.1.clone()));
                     self.write(" }");
                 }
             }
@@ -1641,10 +2461,33 @@ impl<'a> Formatter<'a> {
             self.newline();
         }
 
-        for member_name in &group.members {
-            let Some(state) = decl.states.iter().find(|s| &s.name == member_name) else {
-                continue;
+        let mut inner: Vec<(usize, Result<&MachineState, &MachineTransition>)> = group
+            .members
+            .iter()
+            .filter_map(|member| decl.states.iter().find(|s| &s.name == member))
+            .map(|state| (state.span.start, Ok(state)))
+            .chain(
+                group
+                    .parent_transitions
+                    .iter()
+                    .map(|pt| (pt.span.start, Err(pt))),
+            )
+            .collect();
+        inner.sort_by_key(|(start, _)| *start);
+        for (start, item) in inner {
+            let state = match item {
+                Ok(state) => state,
+                Err(pt) => {
+                    self.begin_member(start, false);
+                    self.write_indent();
+                    self.format_machine_transition(pt, span_end);
+                    self.newline();
+                    self.end_member(pt.span.end);
+                    continue;
+                }
             };
+            let member_name = &state.name;
+            self.begin_member(start, false);
             self.write_indent();
             if &group.initial == member_name {
                 self.write("initial ");
@@ -1657,12 +2500,10 @@ impl<'a> Formatter<'a> {
                 .filter(|(fname, _)| !group.fields.iter().any(|(gn, _)| gn == fname))
                 .collect();
             self.format_machine_substate(&state.name, &own_fields, state, span_end);
+            self.end_member(state.span.end);
         }
-
-        for pt in &group.parent_transitions {
-            self.write_indent();
-            self.format_machine_transition(pt, span_end);
-            self.newline();
+        if self.has_comments() {
+            self.flush_block_end_comments(group.span.end);
         }
 
         self.indent -= 1;
@@ -1725,13 +2566,25 @@ impl<'a> Formatter<'a> {
     fn format_field_decl(&mut self, f: &FieldDecl) {
         self.write_outer_doc(f.doc_comment.as_ref());
         self.write_indent();
-        self.write(if f.is_mutable { "var " } else { "let " });
+        // An immutable field may be written without `let`; keep the author's
+        // spelling.
+        let bare = self.source.get(f.span.clone()).is_some_and(|text| {
+            matches!(
+                hew_lexer::Lexer::new(text).next(),
+                Some((hew_lexer::Token::Identifier(_), _))
+            )
+        });
+        if f.is_mutable {
+            self.write("var ");
+        } else if !bare {
+            self.write("let ");
+        }
         self.write(&f.name);
         self.write(": ");
         self.format_type_expr(&f.ty.0);
         if let Some(default) = &f.default {
             self.write(" = ");
-            self.format_expr(&default.0);
+            self.format_expr(default);
         }
         self.write(",\n");
     }
@@ -1745,8 +2598,36 @@ impl<'a> Formatter<'a> {
         self.newline();
     }
 
+    /// Emit, each on its own line, the comments between a declaration's
+    /// attributes and its first keyword.
+    fn flush_after_attributes(&mut self, attrs: &[Attribute]) {
+        if let Some(end) = attrs.iter().map(|a| a.span.end).max() {
+            let keyword = self.find_token(end, self.source.len(), |t| {
+                !matches!(
+                    t,
+                    hew_lexer::Token::DocComment(_) | hew_lexer::Token::InnerDocComment(_)
+                )
+            });
+            if let Some(start) = keyword {
+                self.flush_comments_before(start);
+            }
+        }
+    }
+
     fn format_attributes(&mut self, attrs: &[Attribute]) {
         for attr in attrs {
+            self.flush_comments_before(attr.span.start);
+            if self
+                .source
+                .get(attr.span.clone())
+                .is_some_and(|t| t.starts_with("#["))
+            {
+                let text = self.attribute_text(&attr.span);
+                self.write_indent();
+                self.write(&text);
+                self.newline();
+                continue;
+            }
             self.write_indent();
             self.write("#[");
             self.write(&attr.name);
@@ -1802,6 +2683,7 @@ impl<'a> Formatter<'a> {
     fn format_receive_fn(&mut self, recv: &ReceiveFnDecl, scope_end: usize) {
         self.write_outer_doc(recv.doc_comment.as_ref());
         self.format_attributes(&recv.attributes);
+        self.flush_after_attributes(&recv.attributes);
         self.write_indent();
 
         if recv.is_generator {
@@ -1811,6 +2693,7 @@ impl<'a> Formatter<'a> {
         }
         self.write(&recv.name);
         self.format_fn_signature(
+            recv.span.start,
             recv.type_params.as_ref(),
             &recv.params,
             recv.return_type.as_ref(),
@@ -1821,7 +2704,7 @@ impl<'a> Formatter<'a> {
         self.newline();
     }
 
-    fn format_supervisor(&mut self, decl: &SupervisorDecl) {
+    fn format_supervisor(&mut self, decl: &SupervisorDecl, span_start: usize, span_end: usize) {
         self.write_indent();
         self.write_visibility(decl.visibility);
         self.write("supervisor ");
@@ -1840,39 +2723,90 @@ impl<'a> Formatter<'a> {
         self.write(" {\n");
         self.indent += 1;
 
-        // Write `strategy:` only when the declaration carries one. Materializing
-        // the default here rewrote the program instead of formatting it: the
-        // reformatted source reparsed with `Some(OneForOne)` where the author
-        // wrote nothing, so the output was not the same AST.
-        if let Some(strategy) = decl.strategy {
-            self.write_indent();
-            self.write("strategy: ");
-            match strategy {
-                SupervisorStrategy::OneForOne => self.write("one_for_one"),
-                SupervisorStrategy::OneForAll => self.write("one_for_all"),
-                SupervisorStrategy::RestForOne => self.write("rest_for_one"),
-                SupervisorStrategy::SimpleOneForOne => self.write("simple_one_for_one"),
-            }
-            self.write(",\n");
+        // Clauses and children print in source order. Write `strategy:` only
+        // when the declaration carries one: materializing the default would
+        // rewrite the program instead of formatting it.
+        let mut clauses: Vec<(usize, Option<&ChildSpec>, &str)> = Vec::new();
+        if decl.strategy.is_some() {
+            clauses.push((
+                self.machine_section(span_start, span_end, "strategy"),
+                None,
+                "strategy",
+            ));
         }
-        if let Some(intensity) = &decl.intensity {
-            self.write_indent();
-            self.write("intensity: ");
-            self.write(&intensity.restarts.to_string());
-            self.write(" within ");
-            self.write(&intensity.window);
-            self.write(",\n");
+        if decl.intensity.is_some() {
+            clauses.push((
+                self.machine_section(span_start, span_end, "intensity"),
+                None,
+                "intensity",
+            ));
         }
+        clauses.extend(
+            decl.children
+                .iter()
+                .map(|c| (c.span.start, Some(c), "child")),
+        );
+        clauses.sort_by_key(|(start, _, _)| *start);
 
-        if !decl.children.is_empty() {
-            self.newline();
-            for child in &decl.children {
+        let mut previous_was_child = false;
+        for (i, (start, child, clause)) in clauses.into_iter().enumerate() {
+            let canonical = child.is_some() && (i == 0 || !previous_was_child);
+            previous_was_child = child.is_some();
+            self.begin_member(start, canonical);
+            if let Some(child) = child {
                 self.format_child_spec(child);
+                self.end_member(child.span.end);
+                continue;
             }
+            self.write_indent();
+            if clause == "strategy" {
+                self.write("strategy: ");
+                match decl.strategy {
+                    Some(SupervisorStrategy::OneForOne) => self.write("one_for_one"),
+                    Some(SupervisorStrategy::OneForAll) => self.write("one_for_all"),
+                    Some(SupervisorStrategy::RestForOne) => self.write("rest_for_one"),
+                    Some(SupervisorStrategy::SimpleOneForOne) => self.write("simple_one_for_one"),
+                    None => {}
+                }
+            } else if let Some(intensity) = &decl.intensity {
+                self.write("intensity: ");
+                self.write(&intensity.restarts.to_string());
+                self.write(" within ");
+                self.write(&intensity.window);
+            }
+            self.write(",\n");
+        }
+        if self.has_comments() {
+            self.flush_block_end_comments(span_end);
         }
 
         self.indent -= 1;
         self.writeln("}");
+    }
+
+    /// Whether the source writes `child name: Actor()` with an empty
+    /// argument list, which means the same as leaving it out.
+    fn child_writes_parens(&self, spec: &ChildSpec) -> bool {
+        let mut index = self.token_at_or_after(spec.span.start);
+        let end = self.token_at_or_after(spec.span.end);
+        while index < end
+            && !matches!(&self.tokens[index].0, hew_lexer::Token::Identifier(name) if *name == spec.actor_type)
+        {
+            index += 1;
+        }
+        index += 1;
+        let mut depth = 0usize;
+        while index < end {
+            match self.tokens[index].0 {
+                hew_lexer::Token::Less => depth += 1,
+                hew_lexer::Token::Greater if depth > 0 => depth -= 1,
+                hew_lexer::Token::LeftParen if depth == 0 => return true,
+                _ if depth == 0 => return false,
+                _ => {}
+            }
+            index += 1;
+        }
+        false
     }
 
     fn format_child_spec(&mut self, spec: &ChildSpec) {
@@ -1891,12 +2825,12 @@ impl<'a> Formatter<'a> {
             });
             self.write(">");
         }
-        if !spec.args.is_empty() {
+        if !spec.args.is_empty() || self.child_writes_parens(spec) {
             self.write("(");
             self.comma_sep(&spec.args, |f, (field_name, arg)| {
                 f.write(field_name);
                 f.write(": ");
-                f.format_expr(&arg.0);
+                f.format_expr(arg);
             });
             self.write(")");
         }
@@ -1905,7 +2839,7 @@ impl<'a> Formatter<'a> {
         // parentheses just described.
         if let Some(count) = &spec.count {
             self.write(" count: ");
-            self.format_expr(&count.0);
+            self.format_expr(count);
         }
         if let Some(restart) = &spec.restart {
             self.write(" restart: ");
@@ -1945,6 +2879,7 @@ impl<'a> Formatter<'a> {
     fn format_fn(&mut self, decl: &FnDecl, span_end: usize) {
         self.write_outer_doc(decl.doc_comment.as_ref());
         self.format_attributes(&decl.attributes);
+        self.flush_after_attributes(&decl.attributes);
         self.write_indent();
         self.write_visibility(decl.visibility);
 
@@ -1972,6 +2907,7 @@ impl<'a> Formatter<'a> {
             self.format_opt_where_clause(decl.where_clause.as_ref());
         } else {
             self.format_fn_signature(
+                decl.fn_span.start,
                 decl.type_params.as_ref(),
                 &decl.params,
                 decl.return_type.as_ref(),
@@ -1998,7 +2934,13 @@ impl<'a> Formatter<'a> {
         self.write("(");
         self.comma_sep(params, |f, p| f.format_type_expr(&p.0));
         self.write(")");
-        if !matches!(return_type.0, TypeExpr::Tuple(ref elems) if elems.is_empty()) {
+        // An omitted return type is unit; keep a unit the author wrote out.
+        let written_unit = self
+            .source
+            .get(return_type.1.clone())
+            .is_some_and(|t| t.split_whitespace().collect::<String>() == "()");
+        if written_unit || !matches!(return_type.0, TypeExpr::Tuple(ref elems) if elems.is_empty())
+        {
             self.write(" -> ");
             self.format_type_expr(&return_type.0);
         }
@@ -2101,20 +3043,24 @@ impl<'a> Formatter<'a> {
     }
 
     /// Format `<type_params>(params) -> return_type where clause`.
+    /// Write a signature whose declaration starts at `from` in the source.
     fn format_fn_signature(
         &mut self,
+        from: usize,
         type_params: Option<&Vec<TypeParam>>,
         params: &[Param],
         return_type: Option<&Spanned<TypeExpr>>,
         where_clause: Option<&WhereClause>,
     ) {
         self.format_opt_type_params(type_params);
-        self.write("(");
-        self.format_params(params);
-        self.write(")");
+        let bounds = self.params_list(from);
+        self.delimited_list("(", ")", params, bounds, true, true, Self::format_param);
         if let Some(ret) = return_type {
-            self.write(" -> ");
+            self.write_token(" -> ", |t| matches!(t, hew_lexer::Token::Arrow));
             self.format_type_expr(&ret.0);
+            if ret.1.start < ret.1.end {
+                self.prev_source_pos = self.prev_source_pos.max(ret.1.end);
+            }
         }
         self.format_opt_where_clause(where_clause);
     }
@@ -2171,8 +3117,9 @@ impl<'a> Formatter<'a> {
 
     fn format_opt_where_clause(&mut self, clause: Option<&WhereClause>) {
         if let Some(clause) = clause {
-            self.write(" where ");
+            self.write_token(" where ", |t| matches!(t, hew_lexer::Token::Where));
             self.comma_sep(&clause.predicates, |f, pred| {
+                f.flush_inline_comments(pred.ty.1.start);
                 f.format_type_expr(&pred.ty.0);
                 f.write(": ");
                 f.format_trait_bound_list(&pred.bounds);
@@ -2181,38 +3128,40 @@ impl<'a> Formatter<'a> {
     }
 
     fn format_params(&mut self, params: &[Param]) {
-        self.comma_sep(params, |f, p| {
-            if p.name == "self"
-                && matches!(
-                    &p.ty.0,
-                    TypeExpr::Named {
-                        name,
-                        type_args: None,
-                    } if name == "Self"
-                )
-            {
-                if p.is_mutable {
-                    f.write("var ");
-                }
-                f.write("self");
-                return;
-            }
-            // `consume` precedes `var` in the surface grammar
-            // (`fn sink(consume var c: Conn)`); emit it first so the
-            // formatted output reparses to the same ownership disposition.
-            // The `self` fast-path above never reaches here, and `consume
-            // self` is rejected by the parser, so an affine receiver is
-            // never mis-printed with a `consume` modifier.
-            if p.is_consume {
-                f.write("consume ");
-            }
+        self.comma_sep(params, Self::format_param);
+    }
+
+    fn format_param(&mut self, p: &Param) {
+        if p.name == "self"
+            && matches!(
+                &p.ty.0,
+                TypeExpr::Named {
+                    name,
+                    type_args: None,
+                } if name == "Self"
+            )
+        {
             if p.is_mutable {
-                f.write("var ");
+                self.write("var ");
             }
-            f.write(&p.name);
-            f.write(": ");
-            f.format_type_expr(&p.ty.0);
-        });
+            self.write("self");
+            return;
+        }
+        // `consume` precedes `var` in the surface grammar
+        // (`fn sink(consume var c: Conn)`); emit it first so the
+        // formatted output reparses to the same ownership disposition.
+        // The `self` fast-path above never reaches here, and `consume
+        // self` is rejected by the parser, so an affine receiver is
+        // never mis-printed with a `consume` modifier.
+        if p.is_consume {
+            self.write("consume ");
+        }
+        if p.is_mutable {
+            self.write("var ");
+        }
+        self.write(&p.name);
+        self.write(": ");
+        self.format_type_expr(&p.ty.0);
     }
 
     // ------------------------------------------------------------------
@@ -2220,6 +3169,11 @@ impl<'a> Formatter<'a> {
     // ------------------------------------------------------------------
 
     fn format_block(&mut self, block: &Block, scope_end: usize) {
+        // A comment between a header and its `{` stays before the brace.
+        let open = self.find_open_brace(self.prev_source_pos, scope_end);
+        if let Some(open) = open {
+            self.flush_inline_comments(open);
+        }
         // Empty-block fast path: render `{}` on a single line when the block
         // has no statements, no trailing expression, and no comments fall
         // inside the block's source range. Multi-line `{\n}` is semantically
@@ -2242,9 +3196,8 @@ impl<'a> Formatter<'a> {
             let to = if to_raw > from { to_raw } else { bytes.len() };
             if from < to {
                 // Locate this block's opening `{` and matching `}` in source.
-                let open = self.source[from..to].find('{').map(|o| from + o);
-                if let Some(open_idx) = open {
-                    let close_idx = find_block_close(self.source, open_idx + 1, to);
+                if let Some(open_idx) = self.find_open_brace(from, to) {
+                    let close_idx = self.find_block_close(open_idx + 1, to);
                     // find_block_close returns `to` when no `}` was found in
                     // range; only collapse when we actually located the brace.
                     if close_idx < to {
@@ -2278,18 +3231,20 @@ impl<'a> Formatter<'a> {
         }
         self.write("{\n");
         self.indent += 1;
-        self.enter_block_scope(scope_end);
+        if let Some(open) = open {
+            self.prev_source_pos = open + 1;
+        }
         for stmt in &block.stmts {
             self.flush_comments_before(stmt.1.start);
             self.format_stmt(&stmt.0);
-            self.prev_source_pos = stmt.1.end;
+            self.prev_source_pos = self.prev_source_pos.max(stmt.1.end);
         }
         if let Some(trailing) = &block.trailing_expr {
             self.flush_comments_before(trailing.1.start);
             self.write_indent();
-            self.format_expr(&trailing.0);
+            self.format_expr(trailing);
             self.newline();
-            self.prev_source_pos = trailing.1.end;
+            self.prev_source_pos = self.prev_source_pos.max(trailing.1.end);
         }
         self.flush_block_end_comments(scope_end);
         self.indent -= 1;
@@ -2334,8 +3289,8 @@ impl<'a> Formatter<'a> {
 
     fn next_block_bounds(&self) -> Option<(usize, usize)> {
         let from = self.prev_source_pos.min(self.source.len());
-        let open = self.source[from..].find('{').map(|off| from + off)?;
-        let close = find_block_close(self.source, open + 1, self.source.len());
+        let open = self.find_open_brace(from, self.source.len())?;
+        let close = self.find_block_close(open + 1, self.source.len());
         (close < self.source.len()).then_some((open, close))
     }
 
@@ -2499,7 +3454,7 @@ impl<'a> Formatter<'a> {
                 self.format_stmt_inline(stmt);
                 self.write(" ");
             }
-            if let Some((expr, _)) = body.trailing_expr.as_deref() {
+            if let Some(expr) = body.trailing_expr.as_deref() {
                 self.format_expr(expr);
                 self.write(" ");
             }
@@ -2516,17 +3471,17 @@ impl<'a> Formatter<'a> {
                 else_block,
             } => {
                 self.write("let ");
-                self.format_pattern(&pattern.0);
+                self.format_pattern(pattern);
                 if let Some(ty) = ty {
                     self.write(": ");
                     self.format_type_expr(&ty.0);
                 }
-                if let Some((expr, _)) = value {
+                if let Some(expr) = value {
                     self.write(" = ");
                     self.format_expr(expr);
                 }
                 if let Some(else_block) = else_block {
-                    self.write(" else ");
+                    self.write_else();
                     self.format_block(else_block, self.source.len());
                 }
                 self.write(";");
@@ -2538,14 +3493,14 @@ impl<'a> Formatter<'a> {
                     self.write(": ");
                     self.format_type_expr(&ty.0);
                 }
-                if let Some((expr, _)) = value {
+                if let Some(expr) = value {
                     self.write(" = ");
                     self.format_expr(expr);
                 }
                 self.write(";");
             }
             Stmt::Assign { target, op, value } => {
-                self.format_expr(&target.0);
+                self.format_expr(target);
                 if let Some(op) = op {
                     self.write(" ");
                     self.write(compound_assign_op_str(*op));
@@ -2553,7 +3508,7 @@ impl<'a> Formatter<'a> {
                 } else {
                     self.write(" = ");
                 }
-                self.format_expr(&value.0);
+                self.format_expr(value);
                 self.write(";");
             }
             Stmt::Break { label, value } => {
@@ -2562,7 +3517,7 @@ impl<'a> Formatter<'a> {
                     self.write(" @");
                     self.write(label);
                 }
-                if let Some((expr, _)) = value {
+                if let Some(expr) = value {
                     self.write(" ");
                     self.format_expr(expr);
                 }
@@ -2578,7 +3533,7 @@ impl<'a> Formatter<'a> {
             }
             Stmt::Return(value) => {
                 self.write("return");
-                if let Some((expr, _)) = value {
+                if let Some(expr) = value {
                     self.write(" ");
                     self.format_expr(expr);
                 }
@@ -2586,11 +3541,11 @@ impl<'a> Formatter<'a> {
             }
             Stmt::Defer(expr) => {
                 self.write("defer ");
-                self.format_expr(&expr.0);
+                self.format_expr(expr);
                 self.write(";");
             }
             Stmt::Expression(expr) => {
-                self.format_expr(&expr.0);
+                self.format_expr(expr);
                 self.write(";");
             }
             Stmt::If { .. }
@@ -2616,20 +3571,20 @@ impl<'a> Formatter<'a> {
             } => {
                 self.write_indent();
                 self.write("let ");
-                self.format_pattern(&pattern.0);
+                self.format_pattern(pattern);
                 if let Some(ty) = ty {
                     self.write(": ");
                     self.format_type_expr(&ty.0);
                 }
                 if let Some(val) = value {
                     self.write(" = ");
-                    self.format_expr(&val.0);
+                    self.format_expr(val);
                 }
                 if let Some(else_block) = else_block {
-                    self.write(" else ");
+                    self.write_else();
                     self.format_block(else_block, self.source.len());
                 }
-                self.write(";\n");
+                self.write_token(";\n", |t| matches!(t, hew_lexer::Token::Semicolon));
             }
             Stmt::Var { name, ty, value } => {
                 self.write_indent();
@@ -2641,13 +3596,13 @@ impl<'a> Formatter<'a> {
                 }
                 if let Some(val) = value {
                     self.write(" = ");
-                    self.format_expr(&val.0);
+                    self.format_expr(val);
                 }
-                self.write(";\n");
+                self.write_token(";\n", |t| matches!(t, hew_lexer::Token::Semicolon));
             }
             Stmt::Assign { target, op, value } => {
                 self.write_indent();
-                self.format_expr(&target.0);
+                self.format_expr(target);
                 if let Some(op) = op {
                     self.write(" ");
                     self.write(compound_assign_op_str(*op));
@@ -2655,8 +3610,8 @@ impl<'a> Formatter<'a> {
                 } else {
                     self.write(" = ");
                 }
-                self.format_expr(&value.0);
-                self.write(";\n");
+                self.format_expr(value);
+                self.write_token(";\n", |t| matches!(t, hew_lexer::Token::Semicolon));
             }
             Stmt::If {
                 condition,
@@ -2665,7 +3620,7 @@ impl<'a> Formatter<'a> {
             } => {
                 self.write_indent();
                 self.write("if ");
-                self.format_cond_expr(&condition.0);
+                self.format_cond_expr(condition);
                 self.write(" ");
                 self.format_block(then_block, self.source.len());
                 if let Some(eb) = else_block {
@@ -2684,15 +3639,15 @@ impl<'a> Formatter<'a> {
                 self.write(" ");
                 self.format_block(body, self.source.len());
                 if let Some(else_block) = else_body {
-                    self.write(" else ");
-                    self.format_expr(&else_block.0);
+                    self.write_else();
+                    self.format_expr(else_block);
                 }
                 self.newline();
             }
             Stmt::Match { scrutinee, arms } => {
                 self.write_indent();
                 self.write("match ");
-                self.format_cond_expr(&scrutinee.0);
+                self.format_cond_expr(scrutinee);
                 self.write(" {\n");
                 self.indent += 1;
                 // advance past the opening `{` so the blank-line heuristic in
@@ -2703,21 +3658,20 @@ impl<'a> Formatter<'a> {
                     let search_to = arms
                         .first()
                         .map_or(self.source.len(), |a| a.pattern.1.start);
-                    if let Some(off) = self.source[search_from..search_to].find('{') {
-                        self.prev_source_pos = search_from + off + 1;
+                    if let Some(open) = self.find_open_brace(search_from, search_to) {
+                        self.prev_source_pos = open + 1;
                     }
                 }
                 for arm in arms {
                     self.flush_comments_before(arm.pattern.1.start);
                     self.format_match_arm(arm);
-                    self.prev_source_pos = arm.body.1.end;
+                    self.prev_source_pos = self.prev_source_pos.max(arm.body.1.end);
                 }
                 if self.has_comments() {
-                    let close =
-                        find_block_close(self.source, self.prev_source_pos, self.source.len());
+                    let close = self.find_block_close(self.prev_source_pos, self.source.len());
                     self.flush_comments_before(close);
                     if close < self.source.len() {
-                        self.prev_source_pos = close + 1;
+                        self.prev_source_pos = close;
                     }
                 }
                 self.indent -= 1;
@@ -2748,9 +3702,9 @@ impl<'a> Formatter<'a> {
                     self.write(": ");
                 }
                 self.write("for ");
-                self.format_pattern(&pattern.0);
+                self.format_pattern(pattern);
                 self.write(" in ");
-                self.format_expr(&iterable.0);
+                self.format_expr(iterable);
                 self.write(" ");
                 self.format_block(body, self.source.len());
                 self.newline();
@@ -2767,7 +3721,7 @@ impl<'a> Formatter<'a> {
                     self.write(": ");
                 }
                 self.write("while ");
-                self.format_cond_expr(&condition.0);
+                self.format_cond_expr(condition);
                 self.write(" ");
                 self.format_block(body, self.source.len());
                 self.newline();
@@ -2798,9 +3752,9 @@ impl<'a> Formatter<'a> {
                 }
                 if let Some(val) = value {
                     self.write(" ");
-                    self.format_expr(&val.0);
+                    self.format_expr(val);
                 }
-                self.write(";\n");
+                self.write_token(";\n", |t| matches!(t, hew_lexer::Token::Semicolon));
             }
             Stmt::Continue { label } => {
                 self.write_indent();
@@ -2809,31 +3763,31 @@ impl<'a> Formatter<'a> {
                     self.write(" @");
                     self.write(label);
                 }
-                self.write(";\n");
+                self.write_token(";\n", |t| matches!(t, hew_lexer::Token::Semicolon));
             }
             Stmt::Return(val) => {
                 self.write_indent();
                 self.write("return");
                 if let Some(val) = val {
                     self.write(" ");
-                    self.format_expr(&val.0);
+                    self.format_expr(val);
                 }
-                self.write(";\n");
+                self.write_token(";\n", |t| matches!(t, hew_lexer::Token::Semicolon));
             }
             Stmt::Expression(expr) => {
                 self.write_indent();
-                self.format_expr(&expr.0);
-                self.write(";\n");
+                self.format_expr(expr);
+                self.write_token(";\n", |t| matches!(t, hew_lexer::Token::Semicolon));
             }
             Stmt::Defer(expr) => {
                 self.write_indent();
                 self.write("defer ");
-                self.format_expr(&expr.0);
+                self.format_expr(expr);
                 // Block expressions already end with `}`, no semicolon.
                 if matches!(expr.0, Expr::Block(_)) {
                     self.write("\n");
                 } else {
-                    self.write(";\n");
+                    self.write_token(";\n", |t| matches!(t, hew_lexer::Token::Semicolon));
                 }
             }
         }
@@ -2842,7 +3796,7 @@ impl<'a> Formatter<'a> {
     fn format_else_block(&mut self, eb: &ElseBlock) {
         if eb.is_if {
             if let Some(if_stmt) = &eb.if_stmt {
-                self.write(" else ");
+                self.write_else();
                 // Print the inner `if` without leading indent (it's on the same line).
                 // Only `Stmt::If` and `Stmt::IfLet` are valid here by parser construction
                 // (see parser.rs: `else if`/`else if let` branches). Every other `Stmt`
@@ -2856,7 +3810,7 @@ impl<'a> Formatter<'a> {
                         else_block,
                     } => {
                         self.write("if ");
-                        self.format_expr(&condition.0);
+                        self.format_expr(condition);
                         self.write(" ");
                         self.format_block(then_block, self.source.len());
                         if let Some(eb) = else_block {
@@ -2873,8 +3827,8 @@ impl<'a> Formatter<'a> {
                         self.write(" ");
                         self.format_block(body, self.source.len());
                         if let Some(else_block) = else_body {
-                            self.write(" else ");
-                            self.format_expr(&else_block.0);
+                            self.write_else();
+                            self.format_expr(else_block);
                         }
                     }
                     Stmt::Let { .. }
@@ -2905,20 +3859,20 @@ impl<'a> Formatter<'a> {
                 }
             }
         } else if let Some(block) = &eb.block {
-            self.write(" else ");
+            self.write_else();
             self.format_block(block, self.source.len());
         }
     }
 
     fn format_match_arm(&mut self, arm: &MatchArm) {
         self.write_indent();
-        self.format_pattern(&arm.pattern.0);
+        self.format_pattern(&arm.pattern);
         if let Some(guard) = &arm.guard {
             self.write(" if ");
-            self.format_expr(&guard.0);
+            self.format_expr(guard);
         }
-        self.write(" => ");
-        self.format_expr(&arm.body.0);
+        self.write_token(" => ", |t| matches!(t, hew_lexer::Token::FatArrow));
+        self.format_expr(&arm.body);
         self.write(",");
         self.newline();
     }
@@ -2961,8 +3915,8 @@ impl<'a> Formatter<'a> {
     /// Format an expression that appears as the object/receiver of a postfix
     /// operation (`.`, `[]`, `?`), adding parentheses when required for correct
     /// re-parsing.
-    fn format_receiver(&mut self, expr: &Expr) {
-        if Self::needs_receiver_parens(expr) {
+    fn format_receiver(&mut self, expr: &Spanned<Expr>) {
+        if Self::needs_receiver_parens(&expr.0) && self.chooses_parens(&expr.1) {
             self.write("(");
             self.format_expr(expr);
             self.write(")");
@@ -2992,17 +3946,17 @@ impl<'a> Formatter<'a> {
             match item {
                 ConditionItem::Let { pattern, expr } => {
                     self.write("let ");
-                    self.format_pattern(&pattern.0);
+                    self.format_pattern(pattern);
                     self.write(" = ");
-                    self.format_expr(&expr.0);
+                    self.format_expr(expr);
                 }
-                ConditionItem::Expr(expr) => self.format_cond_expr(&expr.0),
+                ConditionItem::Expr(expr) => self.format_cond_expr(expr),
             }
         }
     }
 
-    fn format_cond_expr(&mut self, expr: &Expr) {
-        if matches!(expr, Expr::StructInit { .. }) {
+    fn format_cond_expr(&mut self, expr: &Spanned<Expr>) {
+        if matches!(expr.0, Expr::StructInit { .. }) && self.chooses_parens(&expr.1) {
             self.write("(");
             self.format_expr(expr);
             self.write(")");
@@ -3015,41 +3969,54 @@ impl<'a> Formatter<'a> {
     ///
     /// `parent_prec` is the precedence of the enclosing binary operator (0 at top level).
     /// `is_right` indicates this expression is the right operand of its parent binary op.
-    fn format_expr_prec(&mut self, expr: &Expr, parent_prec: u8, is_right: bool) {
-        if let Expr::Binary { left, op, right } = expr {
+    fn format_expr_prec(&mut self, expr: &Spanned<Expr>, parent_prec: u8, is_right: bool) {
+        if self.source_parenthesizes(&expr.1) {
+            self.format_expr(expr);
+        } else {
+            self.format_expr_prec_bare(expr, parent_prec, is_right);
+        }
+    }
+
+    /// [`Self::format_expr_prec`] for an expression the source does not
+    /// parenthesize.
+    fn format_expr_prec_bare(&mut self, expr: &Spanned<Expr>, parent_prec: u8, is_right: bool) {
+        if let Expr::Binary { left, op, right } = &expr.0 {
             let prec = binop_precedence(*op);
             // Need parens when:
             // 1. Our precedence is lower than the parent (tighter parent binds first)
             // 2. Same precedence AND we're on the right side (handles non-associative like a-b-c)
-            let needs_parens = prec < parent_prec || (prec == parent_prec && is_right);
+            let needs_parens = (prec < parent_prec || (prec == parent_prec && is_right))
+                && self.chooses_parens(&expr.1);
             if needs_parens {
                 self.write("(");
             }
-            self.format_expr_prec(&left.0, prec, false);
+            self.format_expr_prec(left, prec, false);
             self.write(" ");
             self.write(binary_op_str(*op));
             self.write(" ");
-            self.format_expr_prec(&right.0, prec, true);
+            self.format_expr_prec(right, prec, true);
             if needs_parens {
                 self.write(")");
             }
-        } else if let Expr::Is { lhs, rhs } = expr {
+        } else if let Expr::Is { lhs, rhs } = &expr.0 {
             let prec = binop_precedence(BinaryOp::Equal);
-            let needs_parens = prec < parent_prec || (prec == parent_prec && is_right);
+            let needs_parens = (prec < parent_prec || (prec == parent_prec && is_right))
+                && self.chooses_parens(&expr.1);
             if needs_parens {
                 self.write("(");
             }
-            self.format_expr_prec(&lhs.0, prec, false);
+            self.format_expr_prec(lhs, prec, false);
             self.write(" is ");
-            self.format_expr_prec(&rhs.0, prec, true);
+            self.format_expr_prec(rhs, prec, true);
             if needs_parens {
                 self.write(")");
             }
         } else {
             let needs_parens = matches!(
-                expr,
+                expr.0,
                 Expr::Coalesce { .. } | Expr::Handle { .. } | Expr::ReturnError(_)
-            ) && parent_prec > 0;
+            ) && parent_prec > 0
+                && self.chooses_parens(&expr.1);
             if needs_parens {
                 self.write("(");
             }
@@ -3060,16 +4027,39 @@ impl<'a> Formatter<'a> {
         }
     }
 
+    fn format_expr(&mut self, expr: &Spanned<Expr>) {
+        let parens = self.source_parens(&expr.1);
+        for &(token, open, _) in &parens {
+            self.printed_parens.insert(token);
+            self.flush_inline_comments(open);
+            self.write("(");
+        }
+        self.format_expr_unparenthesized(expr);
+        for &(_, _, close) in parens.iter().rev() {
+            self.flush_inline_comments(close);
+            self.write(")");
+            self.prev_source_pos = self.prev_source_pos.max(close + 1);
+        }
+        if expr.1.start < expr.1.end {
+            self.prev_source_pos = self.prev_source_pos.max(expr.1.end);
+        }
+    }
+
     #[expect(clippy::too_many_lines, reason = "match on all Expr variants")]
-    fn format_expr(&mut self, expr: &Expr) {
-        match expr {
+    fn format_expr_unparenthesized(&mut self, expr: &Spanned<Expr>) {
+        // A block flushes its own comments statement by statement, and its
+        // span can start inside the braces.
+        if !matches!(expr.0, Expr::Block(_)) {
+            self.flush_inline_comments(expr.1.start);
+        }
+        match &expr.0 {
             Expr::Binary { left, op, right } => {
                 let prec = binop_precedence(*op);
-                self.format_expr_prec(&left.0, prec, false);
+                self.format_expr_prec(left, prec, false);
                 self.write(" ");
                 self.write(binary_op_str(*op));
                 self.write(" ");
-                self.format_expr_prec(&right.0, prec, true);
+                self.format_expr_prec(right, prec, true);
             }
             Expr::Unary { op, operand } => {
                 match op {
@@ -3085,22 +4075,22 @@ impl<'a> Formatter<'a> {
                         | Expr::Coalesce { .. }
                         | Expr::Handle { .. }
                         | Expr::ReturnError(_)
-                );
+                ) && self.chooses_parens(&operand.1);
                 if needs_parens {
                     self.write("(");
                 }
-                self.format_expr(&operand.0);
+                self.format_expr(operand);
                 if needs_parens {
                     self.write(")");
                 }
             }
-            Expr::Literal(lit) => self.format_literal(lit),
+            Expr::Literal(lit) => self.format_literal(lit, &expr.1),
             Expr::Identifier(name) => self.write(name),
             Expr::ContextVariant(context) => {
                 self.write(".");
                 self.write(&context.name);
                 if let Some(record) = &context.record {
-                    self.format_record_literal_body(&record.fields, record.base.as_deref());
+                    self.format_record_literal_body(&record.fields, record.base.as_deref(), None);
                 }
             }
             Expr::GenericApplySuffix { target, type_args } => {
@@ -3111,9 +4101,9 @@ impl<'a> Formatter<'a> {
                         | Expr::QualifiedAssoc(_)
                         | Expr::GenericApplySuffix { .. }
                 ) {
-                    self.format_expr(&target.0);
+                    self.format_expr(target);
                 } else {
-                    self.format_receiver(&target.0);
+                    self.format_receiver(target);
                 }
                 self.write("<");
                 self.comma_sep(type_args, |f, ty| f.format_type_expr(&ty.0));
@@ -3124,8 +4114,12 @@ impl<'a> Formatter<'a> {
                 fields,
                 base,
             } => {
-                self.format_receiver(&target.0);
-                self.format_record_literal_body(fields, base.as_deref());
+                self.format_receiver(target);
+                self.format_record_literal_body(
+                    fields,
+                    base.as_deref(),
+                    self.trailing_list(&expr.1, "}"),
+                );
             }
             Expr::QualifiedAssoc(assoc) => {
                 self.write("<");
@@ -3140,29 +4134,48 @@ impl<'a> Formatter<'a> {
             }
             Expr::Clone(operand) => {
                 self.write("clone ");
-                self.format_expr(&operand.0);
+                self.format_expr(operand);
             }
             Expr::Tuple(elems) => {
-                self.write("(");
-                self.comma_sep(elems, |f, elem| f.format_expr(&elem.0));
-                self.write(")");
+                let bounds = self.trailing_list(&expr.1, ")");
+                self.delimited_list("(", ")", elems, bounds, false, true, Formatter::format_expr);
             }
             Expr::Array(elements) => {
-                self.write("[");
-                self.comma_sep(elements, |f, element| {
+                let bounds = self.trailing_list(&expr.1, "]");
+                self.delimited_list("[", "]", elements, bounds, false, true, |f, element| {
                     if element.is_spread() {
                         f.write("..");
                     }
-                    f.format_expr(&element.expr().0);
+                    f.format_expr(element.expr());
                 });
-                self.write("]");
             }
             Expr::ArrayRepeat { value, count } => {
                 self.write("[");
-                self.format_expr(&value.0);
+                self.format_expr(value);
                 self.write("; ");
-                self.format_expr(&count.0);
+                self.format_expr(count);
                 self.write("]");
+            }
+            Expr::Block(block) if self.is_bare_control_flow(&expr.1) => {
+                // `=> break` desugars to a one-statement block; the source
+                // wrote the keyword alone, so print it that way.
+                match block.stmts.first().map(|(stmt, _)| stmt) {
+                    Some(Stmt::Break { label, .. }) => {
+                        self.write("break");
+                        if let Some(label) = label {
+                            self.write(" @");
+                            self.write(label);
+                        }
+                    }
+                    Some(Stmt::Continue { label }) => {
+                        self.write("continue");
+                        if let Some(label) = label {
+                            self.write(" @");
+                            self.write(label);
+                        }
+                    }
+                    _ => self.format_block(block, self.source.len()),
+                }
             }
             Expr::Block(block) => {
                 self.format_block(block, self.source.len());
@@ -3173,12 +4186,12 @@ impl<'a> Formatter<'a> {
                 else_block,
             } => {
                 self.write("if ");
-                self.format_cond_expr(&condition.0);
+                self.format_cond_expr(condition);
                 self.write(" ");
-                self.format_expr(&then_block.0);
+                self.format_expr(then_block);
                 if let Some(eb) = else_block {
-                    self.write(" else ");
-                    self.format_expr(&eb.0);
+                    self.write_else();
+                    self.format_expr(eb);
                 }
             }
             Expr::IfLet {
@@ -3191,13 +4204,13 @@ impl<'a> Formatter<'a> {
                 self.write(" ");
                 self.format_block(body, self.source.len());
                 if let Some(else_block) = else_body {
-                    self.write(" else ");
-                    self.format_expr(&else_block.0);
+                    self.write_else();
+                    self.format_expr(else_block);
                 }
             }
             Expr::Match { scrutinee, arms } => {
                 self.write("match ");
-                self.format_cond_expr(&scrutinee.0);
+                self.format_cond_expr(scrutinee);
                 self.write(" {\n");
                 self.indent += 1;
                 // advance past the opening `{` so the blank-line heuristic in
@@ -3208,21 +4221,20 @@ impl<'a> Formatter<'a> {
                     let search_to = arms
                         .first()
                         .map_or(self.source.len(), |a| a.pattern.1.start);
-                    if let Some(off) = self.source[search_from..search_to].find('{') {
-                        self.prev_source_pos = search_from + off + 1;
+                    if let Some(open) = self.find_open_brace(search_from, search_to) {
+                        self.prev_source_pos = open + 1;
                     }
                 }
                 for arm in arms {
                     self.flush_comments_before(arm.pattern.1.start);
                     self.format_match_arm(arm);
-                    self.prev_source_pos = arm.body.1.end;
+                    self.prev_source_pos = self.prev_source_pos.max(arm.body.1.end);
                 }
                 if self.has_comments() {
-                    let close =
-                        find_block_close(self.source, self.prev_source_pos, self.source.len());
+                    let close = self.find_block_close(self.prev_source_pos, self.source.len());
                     self.flush_comments_before(close);
                     if close < self.source.len() {
-                        self.prev_source_pos = close + 1;
+                        self.prev_source_pos = close;
                     }
                 }
                 self.indent -= 1;
@@ -3257,8 +4269,8 @@ impl<'a> Formatter<'a> {
                         self.write(" -> ");
                         self.format_type_expr(&ret.0);
                     }
-                    self.write(" => ");
-                    self.format_expr(&body.0);
+                    self.write_token(" => ", |t| matches!(t, hew_lexer::Token::FatArrow));
+                    self.format_expr(body);
                 } else {
                     self.write("|");
                     self.format_lambda_params(params);
@@ -3268,15 +4280,15 @@ impl<'a> Formatter<'a> {
                         self.format_type_expr(&ret.0);
                         self.write(" ");
                         if matches!(body.0, Expr::Block(_)) {
-                            self.format_expr(&body.0);
+                            self.format_expr(body);
                         } else {
                             self.write("{ ");
-                            self.format_expr(&body.0);
+                            self.format_expr(body);
                             self.write(" }");
                         }
                     } else {
                         self.write(" ");
-                        self.format_expr(&body.0);
+                        self.format_expr(body);
                     }
                 }
             }
@@ -3286,7 +4298,7 @@ impl<'a> Formatter<'a> {
                 args,
             } => {
                 self.write("spawn ");
-                self.format_expr(&target.0);
+                self.format_expr(target);
                 if !type_args.is_empty() {
                     self.write("<");
                     self.comma_sep(type_args, |f, (te, _)| {
@@ -3294,13 +4306,16 @@ impl<'a> Formatter<'a> {
                     });
                     self.write(">");
                 }
-                if !args.is_empty() {
+                // `spawn Worker()` and `spawn Worker` are the same spawn;
+                // keep the empty argument list when the author wrote one.
+                if !args.is_empty() || self.span_ends_with_paren(&expr.1) {
                     self.write("(");
                     self.comma_sep(args, |f, (name, value)| {
                         f.write(name);
                         f.write(": ");
-                        f.format_expr(&value.0);
+                        f.format_expr(value);
                     });
+                    self.flush_inline_comments(expr.1.end);
                     self.write(")");
                 }
             }
@@ -3322,7 +4337,7 @@ impl<'a> Formatter<'a> {
                     self.format_type_expr(&ret.0);
                 }
                 self.write(" ");
-                self.format_expr(&body.0);
+                self.format_expr(body);
             }
             Expr::Scope { body } => {
                 self.write("scope ");
@@ -3330,7 +4345,7 @@ impl<'a> Formatter<'a> {
             }
             Expr::ForkChild { expr } => {
                 self.write("fork ");
-                self.format_expr(&expr.0);
+                self.format_expr(expr);
             }
             Expr::ForkBlock { body } => {
                 self.write("fork ");
@@ -3338,25 +4353,34 @@ impl<'a> Formatter<'a> {
             }
             Expr::ScopeDeadline { duration, body } => {
                 self.write("scope within ");
-                self.format_expr(&duration.0);
+                self.format_expr(duration);
                 self.write(" ");
                 self.format_block(body, self.source.len());
             }
             Expr::InterpolatedString(parts) => {
+                // The source spelling keeps escapes and interpolation layout.
+                if let Some(spelling) = self.literal_spelling(&expr.1) {
+                    self.write(&spelling);
+                    return;
+                }
                 self.write("f\"");
                 for part in parts {
                     match part {
                         StringPart::Literal(s) => {
                             self.write(&escape_fstring_literal(s));
                         }
-                        StringPart::Expr((expr, _)) => {
+                        StringPart::Expr(expr) => {
                             self.write("{");
+                            self.interpolation_depth += 1;
                             self.format_expr(expr);
+                            self.interpolation_depth -= 1;
                             self.write("}");
                         }
-                        StringPart::StructuralExpr((expr, _)) => {
+                        StringPart::StructuralExpr(expr) => {
                             self.write("{");
+                            self.interpolation_depth += 1;
                             self.format_expr(expr);
+                            self.interpolation_depth -= 1;
                             self.write(":?}");
                         }
                     }
@@ -3374,12 +4398,13 @@ impl<'a> Formatter<'a> {
                 // re-parses as `Call { FieldAccess }`, not as a `MethodCall`. The two forms
                 // are syntactically distinct (different AST nodes, different checker paths);
                 // normalising them would break the round-trip property.
-                let needs_callee_parens = matches!(function.0, Expr::Lambda { .. })
-                    || (type_args.is_none() && matches!(function.0, Expr::FieldAccess { .. }));
+                let needs_callee_parens = (matches!(function.0, Expr::Lambda { .. })
+                    || (type_args.is_none() && matches!(function.0, Expr::FieldAccess { .. })))
+                    && self.chooses_parens(&function.1);
                 if needs_callee_parens {
                     self.write("(");
                 }
-                self.format_expr(&function.0);
+                self.format_expr(function);
                 if needs_callee_parens {
                     self.write(")");
                 }
@@ -3388,21 +4413,22 @@ impl<'a> Formatter<'a> {
                     self.comma_sep(type_args, |f, ta| f.format_type_expr(&ta.0));
                     self.write(">");
                 }
-                self.write("(");
-                self.format_call_args(args);
-                self.write(")");
+                self.own_call_parens(&expr.1);
+                let bounds = self.trailing_list(&expr.1, ")");
+                self.format_call_args(args, bounds);
             }
             Expr::MethodCall {
                 receiver,
                 method,
                 args,
             } => {
-                self.format_receiver(&receiver.0);
+                self.format_receiver(receiver);
+                self.flush_comments_before_token_after(receiver.1.end);
                 self.write(".");
                 self.write(method);
-                self.write("(");
-                self.format_call_args(args);
-                self.write(")");
+                self.own_call_parens(&expr.1);
+                let bounds = self.trailing_list(&expr.1, ")");
+                self.format_call_args(args, bounds);
             }
             Expr::StructInit {
                 name,
@@ -3416,7 +4442,11 @@ impl<'a> Formatter<'a> {
                     self.comma_sep(type_args, |f, ta| f.format_type_expr(&ta.0));
                     self.write(">");
                 }
-                self.format_record_literal_body(fields, base.as_deref());
+                self.format_record_literal_body(
+                    fields,
+                    base.as_deref(),
+                    self.trailing_list(&expr.1, "}"),
+                );
             }
             Expr::Select { arms, timeout } => {
                 self.write("select {\n");
@@ -3436,7 +4466,7 @@ impl<'a> Formatter<'a> {
                 self.indent += 1;
                 for e in exprs {
                     self.write_indent();
-                    self.format_expr(&e.0);
+                    self.format_expr(e);
                     self.write(",\n");
                 }
                 self.indent -= 1;
@@ -3451,19 +4481,19 @@ impl<'a> Formatter<'a> {
                 self.write("yield");
                 if let Some(val) = val {
                     self.write(" ");
-                    self.format_expr(&val.0);
+                    self.format_expr(val);
                 }
             }
             Expr::Return(val) => {
                 self.write("return");
                 if let Some(val) = val {
                     self.write(" ");
-                    self.format_expr(&val.0);
+                    self.format_expr(val);
                 }
             }
             Expr::ReturnError(value) => {
                 self.write("return error ");
-                self.format_expr(&value.0);
+                self.format_expr(value);
             }
             Expr::FieldAccess { object, field } => {
                 // Consecutive numeric fields otherwise merge into a float
@@ -3475,40 +4505,44 @@ impl<'a> Formatter<'a> {
                     Expr::Literal(Literal::Integer { .. }) => true,
                     _ => false,
                 };
-                if numeric_receiver && field.starts_with(|c: char| c.is_ascii_digit()) {
+                if numeric_receiver
+                    && field.starts_with(|c: char| c.is_ascii_digit())
+                    && self.chooses_parens(&object.1)
+                {
                     self.write("(");
-                    self.format_expr(&object.0);
+                    self.format_expr(object);
                     self.write(")");
                 } else {
-                    self.format_receiver(&object.0);
+                    self.format_receiver(object);
                 }
+                self.flush_comments_before_token_after(object.1.end);
                 self.write(".");
                 self.write(field);
             }
             Expr::Index { object, index } => {
-                self.format_receiver(&object.0);
+                self.format_receiver(object);
                 self.write("[");
-                self.format_expr(&index.0);
+                self.format_expr(index);
                 self.write("]");
             }
             Expr::Cast { expr, ty } => {
-                self.format_receiver(&expr.0);
+                self.format_receiver(expr);
                 self.write(" as ");
                 self.format_type_expr(&ty.0);
             }
             Expr::PostfixTry(expr) => {
-                self.format_receiver(&expr.0);
+                self.format_receiver(expr);
                 self.write("?");
             }
             Expr::Coalesce { left, right } => {
-                self.format_expr_prec(&left.0, 1, false);
+                self.format_expr_prec(left, 1, false);
                 self.write(" ?? ");
                 if matches!(right.0, Expr::Handle { .. }) {
                     self.write("(");
-                    self.format_expr(&right.0);
+                    self.format_expr(right);
                     self.write(")");
                 } else {
-                    self.format_expr(&right.0);
+                    self.format_expr(right);
                 }
             }
             Expr::Handle {
@@ -3516,11 +4550,11 @@ impl<'a> Formatter<'a> {
                 error,
                 body,
             } => {
-                self.format_expr_prec(&operand.0, 1, false);
+                self.format_expr_prec(operand, 1, false);
                 self.write(" handle ");
                 self.write(&error.0);
                 self.write(" ");
-                self.format_expr(&body.0);
+                self.format_expr(body);
             }
             Expr::Range {
                 start,
@@ -3528,7 +4562,7 @@ impl<'a> Formatter<'a> {
                 inclusive,
             } => {
                 if let Some(s) = start {
-                    self.format_expr(&s.0);
+                    self.format_expr(s);
                 }
                 if *inclusive {
                     self.write("..=");
@@ -3536,16 +4570,22 @@ impl<'a> Formatter<'a> {
                     self.write("..");
                 }
                 if let Some(e) = end {
-                    self.format_expr(&e.0);
+                    self.format_expr(e);
                 }
             }
             Expr::Await(inner) => {
                 self.write("await ");
-                self.format_expr_prec(&inner.0, 25, false);
+                self.format_expr_prec(inner, 25, false);
             }
             Expr::AwaitRestart(inner) => {
                 self.write("await_restart ");
-                self.format_expr(&inner.0);
+                self.format_expr(inner);
+            }
+            Expr::RegexLiteral(_) | Expr::ByteStringLiteral(_)
+                if self.literal_spelling(&expr.1).is_some() =>
+            {
+                let spelling = self.literal_spelling(&expr.1).unwrap_or_default();
+                self.write(&spelling);
             }
             Expr::RegexLiteral(pattern) => {
                 self.write("re\"");
@@ -3558,25 +4598,30 @@ impl<'a> Formatter<'a> {
                 self.write("\"");
             }
             Expr::ByteArrayLiteral(data) => {
+                // Each element prints as the source spelled it (`4`, `0x04`).
+                let spelled = self.byte_array_spellings(&expr.1, data.len());
                 self.write("bytes [");
                 for (i, &b) in data.iter().enumerate() {
                     if i > 0 {
                         self.write(", ");
                     }
-                    self.write(&format!("0x{b:02x}"));
+                    match &spelled {
+                        Some(elements) => self.write(&elements[i]),
+                        None => self.write(&format!("0x{b:02x}")),
+                    }
                 }
                 self.write("]");
             }
             Expr::MapLiteral { entries } => {
                 self.write("{");
                 self.comma_sep(entries, |f, (key, value)| {
-                    f.format_expr(&key.0);
+                    f.format_expr(key);
                     f.write(": ");
-                    f.format_expr(&value.0);
+                    f.format_expr(value);
                 });
                 self.write("}");
             }
-            Expr::Is { .. } => self.format_expr_prec(expr, 0, false),
+            Expr::Is { .. } => self.format_expr_prec_bare(expr, 0, false),
             Expr::MachineEmit { event_name, fields } => {
                 self.write("emit ");
                 self.write(event_name);
@@ -3590,7 +4635,7 @@ impl<'a> Formatter<'a> {
                         }
                         self.write(name);
                         self.write(": ");
-                        self.format_expr(&val.0);
+                        self.format_expr(val);
                     }
                     self.write(" }");
                 }
@@ -3602,34 +4647,44 @@ impl<'a> Formatter<'a> {
     }
 
     fn format_select_arm(&mut self, arm: &SelectArm) {
+        self.flush_comments_before(arm.binding.1.start);
         self.write_indent();
-        self.format_pattern(&arm.binding.0);
+        self.format_pattern(&arm.binding);
         self.write(" from ");
-        self.format_expr(&arm.source.0);
-        self.write(" => ");
-        self.format_expr(&arm.body.0);
+        self.format_expr(&arm.source);
+        self.write_token(" => ", |t| matches!(t, hew_lexer::Token::FatArrow));
+        self.format_expr(&arm.body);
         self.write(",");
         self.newline();
     }
 
     fn format_timeout(&mut self, tc: &TimeoutClause) {
+        if let Some((hew_lexer::Token::After, span)) = self
+            .tokens
+            .get(self.token_at_or_after(self.prev_source_pos))
+        {
+            let start = span.start;
+            self.flush_comments_before(start);
+        }
         self.write_indent();
         self.write("after ");
-        self.format_expr(&tc.duration.0);
-        self.write(" => ");
-        self.format_expr(&tc.body.0);
+        self.format_expr(&tc.duration);
+        self.write_token(" => ", |t| matches!(t, hew_lexer::Token::FatArrow));
+        self.format_expr(&tc.body);
         self.write(",");
         self.newline();
     }
 
-    fn format_call_args(&mut self, args: &[CallArg]) {
-        self.comma_sep(args, |f, arg| match arg {
+    /// Write a call's parenthesized arguments; `bounds` are the source's
+    /// `(` and `)` tokens.
+    fn format_call_args(&mut self, args: &[CallArg], bounds: Option<(usize, usize)>) {
+        self.delimited_list("(", ")", args, bounds, false, true, |f, arg| match arg {
             CallArg::Named { name, value } => {
                 f.write(name);
                 f.write(": ");
-                f.format_expr(&value.0);
+                f.format_expr(value);
             }
-            CallArg::Positional(e) => f.format_expr(&e.0),
+            CallArg::Positional(e) => f.format_expr(e),
         });
     }
 
@@ -3643,8 +4698,15 @@ impl<'a> Formatter<'a> {
         });
     }
 
-    fn format_literal(&mut self, lit: &Literal) {
+    /// Print a literal as the source spelled it (`0x04`, `1_000`, `3000ms`,
+    /// `"\u{3000}"`); the AST holds only its value. A synthesized literal
+    /// with no source token prints its canonical spelling.
+    fn format_literal(&mut self, lit: &Literal, span: &Span) {
         use std::fmt::Write;
+        if let Some(spelling) = self.literal_spelling(span) {
+            self.write(&spelling);
+            return;
+        }
         match lit {
             Literal::Integer { value, radix } => {
                 // Radix forms print the magnitude with an explicit sign: the
@@ -3710,10 +4772,18 @@ impl<'a> Formatter<'a> {
     // Patterns
     // ------------------------------------------------------------------
 
-    fn format_pattern(&mut self, pat: &Pattern) {
-        match pat {
+    fn format_pattern(&mut self, pat: &Spanned<Pattern>) {
+        self.flush_inline_comments(pat.1.start);
+        self.format_pattern_kind(pat);
+        if pat.1.start < pat.1.end {
+            self.prev_source_pos = self.prev_source_pos.max(pat.1.end);
+        }
+    }
+
+    fn format_pattern_kind(&mut self, pat: &Spanned<Pattern>) {
+        match &pat.0 {
             Pattern::Wildcard => self.write("_"),
-            Pattern::Literal(lit) => self.format_literal(lit),
+            Pattern::Literal(lit) => self.format_literal(lit, &pat.1),
             Pattern::Identifier(name) => self.write(name),
             Pattern::NominalPath { path, payload } => {
                 self.format_path(path);
@@ -3728,7 +4798,7 @@ impl<'a> Formatter<'a> {
                 self.write(name);
                 if !patterns.is_empty() {
                     self.write("(");
-                    self.comma_sep(patterns, |f, p| f.format_pattern(&p.0));
+                    self.comma_sep(patterns, Formatter::format_pattern);
                     self.write(")");
                 }
             }
@@ -3742,13 +4812,13 @@ impl<'a> Formatter<'a> {
             }
             Pattern::Tuple(patterns) => {
                 self.write("(");
-                self.comma_sep(patterns, |f, p| f.format_pattern(&p.0));
+                self.comma_sep(patterns, Formatter::format_pattern);
                 self.write(")");
             }
             Pattern::Or(left, right) => {
-                self.format_pattern(&left.0);
-                self.write(" | ");
-                self.format_pattern(&right.0);
+                self.format_pattern(left);
+                self.write_token(" | ", |t| matches!(t, hew_lexer::Token::Pipe));
+                self.format_pattern(right);
             }
             Pattern::Regex { pattern, .. } => {
                 self.write("re\"");
@@ -3763,7 +4833,7 @@ impl<'a> Formatter<'a> {
             None => {}
             Some(NominalPatternPayload::Tuple(patterns)) => {
                 self.write("(");
-                self.comma_sep(patterns, |f, pattern| f.format_pattern(&pattern.0));
+                self.comma_sep(patterns, Formatter::format_pattern);
                 self.write(")");
             }
             Some(NominalPatternPayload::Record { fields, rest }) => {
@@ -3777,7 +4847,7 @@ impl<'a> Formatter<'a> {
         self.write(&f.name);
         if let Some(pat) = &f.pattern {
             self.write(": ");
-            self.format_pattern(&pat.0);
+            self.format_pattern(pat);
         }
     }
 
@@ -4172,91 +5242,127 @@ fn escape_char_literal(c: char, out: &mut String) {
 // Comment extraction
 // ---------------------------------------------------------------------------
 
+/// One member of a machine body, in the order the source declares it.
+enum MachineMember<'a> {
+    Events,
+    Emits,
+    State(&'a MachineState),
+    Composite(&'a crate::ast::CompositeGroup),
+    Transition(&'a MachineTransition),
+    Default,
+}
+
+/// One member of an actor body, in the order the source declares it.
+enum ActorMember<'a> {
+    Field(&'a FieldDecl),
+    Mailbox,
+    Init(&'a ActorInit),
+    Receive(&'a ReceiveFnDecl),
+    Method(&'a FnDecl),
+}
+
+/// First source byte of a declaration whose keyword starts at `keyword`,
+/// counting any attributes written before it.
+fn member_start(attributes: &[Attribute], keyword: usize) -> usize {
+    attributes
+        .iter()
+        .map(|a| a.span.start)
+        .chain(std::iter::once(keyword))
+        .min()
+        .unwrap_or(keyword)
+}
+
 #[derive(Debug, Clone)]
 pub struct Comment {
     pub text: String,
     pub span: Range<usize>,
 }
 
-/// Scan source text and extract all comments with their byte positions.
-///
-/// When `include_doc_comments` is false, doc-comments (`///` and `//!`) are
-/// skipped because the parser captures their content into AST fields
-/// (`doc_comment` / `module_doc`) and the formatter re-emits them via
-/// `write_outer_doc` / `format_program`.
+/// The comments of `source` with their byte positions, taken from the
+/// lexer: the trivia between its tokens, plus doc-comment tokens when
+/// `include_doc_comments` is set. Strings, raw strings, characters and
+/// f-string interpolations can therefore never be mistaken for comments.
 #[must_use]
 pub fn extract_comments(source: &str, include_doc_comments: bool) -> Vec<Comment> {
     let mut comments = Vec::new();
-    let bytes = source.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'/' if i + 1 < bytes.len() => match bytes[i + 1] {
-                b'/' => {
-                    let start = i;
-                    let is_doc_comment =
-                        i + 2 < bytes.len() && (bytes[i + 2] == b'/' || bytes[i + 2] == b'!');
+    let mut gap_start = 0;
+    for (token, span) in hew_lexer::Lexer::new(source) {
+        trivia_comments(source, gap_start, span.start, &mut comments);
+        if include_doc_comments
+            && matches!(
+                token,
+                hew_lexer::Token::DocComment(_) | hew_lexer::Token::InnerDocComment(_)
+            )
+        {
+            let text = source[span.start..span.end].trim_end_matches('\r');
+            comments.push(Comment {
+                text: text.to_string(),
+                span: span.start..span.start + text.len(),
+            });
+        }
+        gap_start = span.end;
+    }
+    trivia_comments(source, gap_start, source.len(), &mut comments);
+    comments
+}
+
+/// The comments in `source[start..end]`, a gap the lexer skipped, which
+/// holds only whitespace and comments.
+fn trivia_comments(source: &str, start: usize, end: usize, out: &mut Vec<Comment>) {
+    let gap = &source.as_bytes()[..end];
+    let mut i = start;
+    while i < end {
+        if gap[i..].starts_with(b"//") {
+            let len = gap[i..].iter().position(|&b| b == b'\n').unwrap_or(end - i);
+            let text = source[i..i + len].trim_end_matches('\r');
+            out.push(Comment {
+                text: text.to_string(),
+                span: i..i + text.len(),
+            });
+            i += len;
+        } else if gap[i..].starts_with(b"/*") {
+            let comment_start = i;
+            let mut depth = 0usize;
+            while i < end {
+                if gap[i..].starts_with(b"/*") {
+                    depth += 1;
                     i += 2;
-                    while i < bytes.len() && bytes[i] != b'\n' {
-                        i += 1;
-                    }
-                    if include_doc_comments || !is_doc_comment {
-                        comments.push(Comment {
-                            text: source[start..i].to_string(),
-                            span: start..i,
-                        });
-                    }
-                }
-                b'*' => {
-                    let start = i;
+                } else if gap[i..].starts_with(b"*/") {
+                    depth -= 1;
                     i += 2;
-                    let mut depth = 1u32;
-                    while i + 1 < bytes.len() && depth > 0 {
-                        if bytes[i] == b'/' && bytes[i + 1] == b'*' {
-                            depth += 1;
-                            i += 2;
-                        } else if bytes[i] == b'*' && bytes[i + 1] == b'/' {
-                            depth -= 1;
-                            i += 2;
-                        } else {
-                            i += 1;
-                        }
+                    if depth == 0 {
+                        break;
                     }
-                    comments.push(Comment {
-                        text: source[start..i].to_string(),
-                        span: start..i,
-                    });
-                }
-                _ => i += 1,
-            },
-            b'"' => {
-                i += 1;
-                while i < bytes.len() && bytes[i] != b'"' {
-                    if bytes[i] == b'\\' {
-                        i += 1;
-                    }
-                    i += 1;
-                }
-                if i < bytes.len() {
+                } else {
                     i += 1;
                 }
             }
-            b'\'' => {
-                i += 1;
-                while i < bytes.len() && bytes[i] != b'\'' {
-                    if bytes[i] == b'\\' {
-                        i += 1;
-                    }
-                    i += 1;
-                }
-                if i < bytes.len() {
-                    i += 1;
-                }
-            }
-            _ => i += 1,
+            out.push(Comment {
+                text: source[comment_start..i].to_string(),
+                span: comment_start..i,
+            });
+        } else {
+            i += 1;
         }
     }
-    comments
+}
+
+/// Whether the author left a blank line directly before `pos`, or before
+/// the doc comment that opens the declaration at `pos`.
+fn blank_line_before(source: &str, pos: usize) -> bool {
+    let mut before = source[..pos.min(source.len())].trim_end();
+    loop {
+        let line_start = before.rfind('\n').map_or(0, |i| i + 1);
+        if !before[line_start..].trim_start().starts_with("///") {
+            break;
+        }
+        before = before[..line_start].trim_end();
+    }
+    let end = before.len();
+    let gap = &source[end..pos.min(source.len())];
+    // The gap runs to the declaration; only its leading whitespace counts.
+    let leading = &gap[..gap.len() - gap.trim_start().len()];
+    leading.matches('\n').count() > 1
 }
 
 fn is_trailing_comment(source: &str, comment_start: usize) -> bool {
@@ -4281,38 +5387,6 @@ fn source_column(source: &str, pos: usize) -> usize {
         i -= 1;
     }
     end - i
-}
-
-fn find_block_close(source: &str, from: usize, before: usize) -> usize {
-    let bytes = source.as_bytes();
-    let end = before.min(bytes.len());
-    let mut i = from.min(end);
-    while i < end {
-        match bytes[i] {
-            b'}' => return i,
-            b'/' if i + 1 < end => match bytes[i + 1] {
-                b'/' => {
-                    i += 2;
-                    while i < end && bytes[i] != b'\n' {
-                        i += 1;
-                    }
-                }
-                b'*' => {
-                    i += 2;
-                    while i + 1 < end {
-                        if bytes[i] == b'*' && bytes[i + 1] == b'/' {
-                            i += 2;
-                            break;
-                        }
-                        i += 1;
-                    }
-                }
-                _ => i += 1,
-            },
-            _ => i += 1,
-        }
-    }
-    end
 }
 
 #[cfg(test)]

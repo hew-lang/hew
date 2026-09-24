@@ -8,6 +8,6 @@ kind = "reject"
 
 [[case.expected.diagnostics]]
 code = "MachineExhaustivenessError"
-line = 24
+line = 22
 column = 40
 message = "machine `Session` state `Active` field `h` holds `Handle`, which has no independent value copy"

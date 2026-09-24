@@ -138,7 +138,10 @@ does, not the types its state holds: an `Rc`, an actor handle or a
 `#[resource]` payload moves through transitions as an ordinary value. The
 checker proves each selected call through its declaration identity or a closed
 pure runtime operation; unknown and indirect calls have no such proof and are
-rejected. The compiler does not infer purity from function names.
+rejected. Releasing a `#[resource]` runs its `close`, so the checker proves the
+`close` of every resource a transition's values, its helpers' values or a
+concrete instantiation's states and events can reach, the same way. The
+compiler does not infer purity from function names.
 
 A step stages an independent copy of its machine, so a state payload must
 support one. A `#[resource]` held directly has none and is refused at the

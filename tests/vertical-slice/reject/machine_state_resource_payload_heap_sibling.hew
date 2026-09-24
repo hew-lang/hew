@@ -6,9 +6,7 @@ type Handle {
 }
 
 impl Handle {
-    fn close(consume self) {
-        println(f"CLOSE fd={self.fd}");
-    }
+    fn close(consume self) {}
 }
 
 machine Mixed {

@@ -2525,6 +2525,22 @@ impl Checker {
         } else {
             (TypeFactContext::default(), BTreeMap::new())
         };
+        // Machine purity follows each resource's release into its `close`.
+        let resource_closes: HashMap<String, crate::DefId> = if normalized_machines.is_some() {
+            self.registry
+                .resource_type_names()
+                .iter()
+                .filter_map(|name| {
+                    self.inherent_impl_method_declaration(
+                        &Ty::named(name.clone(), Vec::new()),
+                        "close",
+                    )
+                    .map(|close| (name.clone(), close))
+                })
+                .collect()
+        } else {
+            HashMap::new()
+        };
         let mut output = TypeCheckOutput {
             normalized_machines: normalized_machines.clone(),
             select_sources: std::mem::take(&mut self.select_sources),
@@ -2658,7 +2674,9 @@ impl Checker {
         }
         output.cycle_capable_actors = cycle_capable;
         if output.errors.is_empty() {
-            output.errors.extend(machine_effects::validate(&output));
+            output
+                .errors
+                .extend(machine_effects::validate(&output, &resource_closes));
         }
         if let Some(normalized) = &normalized_machines {
             for diagnostic in output.errors.iter_mut().chain(output.warnings.iter_mut()) {

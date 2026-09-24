@@ -1811,6 +1811,72 @@ fn generic_machine_instantiated_with_a_value_type_is_admitted() {
     );
 }
 
+/// Releasing a `#[resource]` runs its authored `close`, so the purity proof
+/// judges that `close` wherever a transition, one of its helpers or a concrete
+/// instantiation's states and events can reach the resource. An effect-free
+/// `close` keeps the machine pure.
+#[test]
+fn machine_release_proves_the_resource_close() {
+    let source = |close: &str, rest: &str| {
+        format!(
+            "
+        #[resource]
+        type Tag {{ id: i64 }}
+        impl Tag {{ fn close(consume self) {{ {close} }} }}
+        {rest}
+        "
+        )
+    };
+    let helper = "
+        fn weigh(n: i64) -> i64 { let t = Tag { id: n }; t.id + 1 }
+        machine Counter {
+            events { Bump }
+            state Idle,
+            state Live { n: i64 },
+            on Bump: Idle => Live { n: weigh(1) }
+            on Bump: Live => Live reenter { n: state.n + 1 }
+            default { state }
+        }
+        fn main() { var c: Counter = .Idle; let _ = c.step(.Bump); }
+    ";
+    let payload = "
+        machine Link {
+            events { Open { id: i64 }, Shut }
+            state Idle,
+            state Live { tag: Rc<Tag> },
+            on Open(id): Idle => Live { tag: Rc.new(Tag { id: id }) }
+            on Shut: Live => Idle,
+            default { state }
+        }
+        fn main() { var l: Link = .Idle; let _ = l.step(.Open { id: 1 }); }
+    ";
+    let generic = "
+        machine Slot<T> {
+            events { Put { value: T }, Clear }
+            state Empty,
+            state Full { value: T },
+            on Put: Empty => Full { value: event.value }
+            on Clear: Full => Empty,
+            default { state }
+        }
+        fn main() { var slot: Slot<Rc<Tag>> = .Empty; let _ = slot.step(.Clear); }
+    ";
+    for rest in [helper, payload, generic] {
+        let refused = typecheck_isolated(&source("println(f\"close {self.id}\");", rest));
+        assert!(
+            refused.errors.iter().any(|error| error.message.contains(
+                "not demonstrably pure: releasing `Tag` runs its `close`: `println(...)` is not admitted"
+            ) || error.message.contains(
+                "not demonstrably pure: call to `weigh`: releasing `Tag` runs its `close`: `println(...)` is not admitted"
+            )),
+            "{rest}: {:#?}",
+            refused.errors
+        );
+        let accepted = typecheck_isolated(&source("", rest));
+        assert!(accepted.errors.is_empty(), "{rest}: {:#?}", accepted.errors);
+    }
+}
+
 #[test]
 fn machine_transition_supervisor_spawn_refused_as_impure() {
     // Spawning a supervisor from a transition body is refused by machine

@@ -8,12 +8,12 @@ kind = "reject"
 
 [[case.expected.diagnostics]]
 code = "MachineExhaustivenessError"
-line = 24
+line = 22
 column = 40
 message = "machine `Mixed` state `Active` field `h` holds `Handle`, which has no independent value copy"
 
 [[case.expected.diagnostics]]
 code = "MachineExhaustivenessError"
-line = 39
+line = 37
 column = 22
 message = "machine `Plain` state `Live` field `h` holds `Handle`, which has no independent value copy"

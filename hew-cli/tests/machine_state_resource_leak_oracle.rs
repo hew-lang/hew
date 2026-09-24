@@ -9,7 +9,8 @@
 //! `machine-rc-resource-payload` core-acceptance case.
 //!
 //! This oracle pins that fail-closed floor: both shapes must stop in the
-//! checker and leave no native artifacts behind. When a step can take an
+//! checker and leave no native artifacts behind. Each `close` is effect-free,
+//! so the staging refusal, not the purity proof of `close`, is what fires. When a step can take an
 //! affine receiver and hand it back on a pre-commit fault, these revert to
 //! leak-slope oracles proving the exactly-once close.
 
@@ -25,7 +26,7 @@ const REENTER_CARRY_SOURCE: &str = r#"
 type Handle { id: i64, }
 
 impl Handle {
-    fn close(consume self) { print("C"); }
+    fn close(consume self) {}
 }
 
 machine Session {
@@ -54,7 +55,7 @@ const RELEASE_PATH_SOURCE: &str = r#"
 type Handle { id: i64, }
 
 impl Handle {
-    fn close(consume self) { print("C"); }
+    fn close(consume self) {}
 }
 
 machine Mixed {

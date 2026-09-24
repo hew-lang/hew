@@ -1,10 +1,10 @@
 [[case]]
 id = "machine-rc-resource-payload"
-intent = "An Rc payload owning a resource moves through machine transitions and closes exactly once, when the machine leaves the state and at scope exit."
+intent = "An Rc payload owning a resource with an effect-free close moves through machine transitions and is released when the machine leaves the state and at scope exit."
 source = "cases/machine-rc-resource-payload.hew"
 suites = ["acceptance", "safety"]
 timeout_seconds = 30
 
 [case.expected]
-stdout = "Live\nParked\nclose 7\nshut\nend\nclose 8\n"
+stdout = "Live\nParked\nIdle\nLive\n"
 exit = 0

@@ -5,9 +5,10 @@
 //! declaration identity, runtime calls use the selected typed family, and
 //! unknown calls, sends, spawns and I/O cannot acquire a purity promise by
 //! spelling. `Rc` and `#[resource]` payloads move through transitions as
-//! ordinary values.
+//! ordinary values, but releasing one runs its authored `close`, so every
+//! `#[resource]` a helper's values can reach adds that `close` to the proof.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use hew_parser::ast::{
     DeclarationOrigin, Expr, FnDecl, Item, Program, Span, Spanned, Stmt, StringPart,
@@ -18,8 +19,8 @@ use super::lints::{self, NodeVisitor};
 use super::{MethodCallRewrite, SpanKey, TypeCheckOutput, UserComparisonDispatch};
 use crate::error::{TypeError, TypeErrorKind};
 use crate::{
-    CloneKind, DeclarationKind, DeclarationOccurrence, DefId, ResolvedTy, RuntimeCallFamily,
-    TypeFactService,
+    CloneKind, DeclarationKind, DeclarationMarker, DeclarationOccurrence, DefId, ResolvedTy,
+    RuntimeCallFamily, TypeFactService,
 };
 
 struct Body<'a> {
@@ -31,8 +32,15 @@ struct Body<'a> {
 #[derive(Default)]
 struct Summary {
     calls: Vec<(DefId, Span)>,
+    /// Authored `close` bodies a release of this helper's values can run,
+    /// with the resource they release.
+    releases: Vec<(DefId, String, Span)>,
     refusal: Option<(Span, String)>,
 }
+
+/// The declared `#[resource]` types whose authored `close` a release of a
+/// value of each type can run, memoized across helpers.
+type ReleaseCache = HashMap<ResolvedTy, BTreeSet<String>>;
 
 /// The surface identity a machine is instantiated through.
 #[derive(Debug, Clone, Default)]
@@ -41,7 +49,11 @@ struct MachineShape {
     type_params: Vec<String>,
 }
 
-pub(super) fn validate(output: &TypeCheckOutput) -> Vec<TypeError> {
+/// `resource_closes` names each `#[resource]` type's inherent `close`.
+pub(super) fn validate(
+    output: &TypeCheckOutput,
+    resource_closes: &HashMap<String, DefId>,
+) -> Vec<TypeError> {
     let Some(normalized) = &output.normalized_machines else {
         return Vec::new();
     };
@@ -68,11 +80,14 @@ pub(super) fn validate(output: &TypeCheckOutput) -> Vec<TypeError> {
             .collect();
     }
     let mut summaries = HashMap::new();
+    let mut release_cache = ReleaseCache::new();
     for (declaration, body) in &bodies {
         let mut visitor = EffectVisitor {
             output,
+            resource_closes,
             module_idx: body.module_idx,
             summary: Summary::default(),
+            release_cache: &mut release_cache,
         };
         if body.function.is_generator
             || body.function.intrinsic.is_some()
@@ -99,9 +114,21 @@ pub(super) fn validate(output: &TypeCheckOutput) -> Vec<TypeError> {
             .and_then(|body| body.source_module.clone());
         let mut visiting = HashSet::new();
         let mut proven = HashSet::new();
-        match prove(&declaration, &summaries, &mut visiting, &mut proven) {
+        let sites = instantiation_sites(&shape, output);
+        let proof = prove(&declaration, &summaries, &mut visiting, &mut proven).and_then(|()| {
+            prove_instantiation_releases(
+                &sites,
+                output,
+                resource_closes,
+                &summaries,
+                &mut release_cache,
+                &mut proven,
+            )
+        });
+        match proof {
             Ok(()) => errors.extend(staging_refusals(
                 &shape,
+                &sites,
                 source_module.as_deref(),
                 output,
                 normalized,
@@ -136,40 +163,26 @@ pub(super) fn validate(output: &TypeCheckOutput) -> Vec<TypeError> {
 /// earliest span that names the instantiation.
 fn staging_refusals(
     shape: &MachineShape,
+    sites: &BTreeMap<ResolvedTy, Span>,
     source_module: Option<&str>,
     output: &TypeCheckOutput,
     normalized: &super::machine_normalize::NormalizedMachines,
     facts: &mut TypeFactService,
 ) -> Vec<TypeError> {
-    let mut sites: BTreeMap<ResolvedTy, Span> = BTreeMap::new();
-    for (key, ty) in &output.resolved_expr_types {
-        let mut found = Vec::new();
-        collect_instantiations(ty, shape, output, &mut found);
-        for machine in found {
-            let span = key.start..key.end;
-            sites
-                .entry(machine)
-                .and_modify(|earliest| {
-                    if span.start < earliest.start {
-                        *earliest = span.clone();
-                    }
-                })
-                .or_insert(span);
-        }
-    }
     let transitions = normalized.transitions.get(&(
         source_module.unwrap_or("(root)").to_string(),
         shape.type_name.clone(),
     ));
     let mut errors = Vec::new();
     for (machine, site) in sites {
+        let site = site.clone();
         if facts
-            .require(&machine)
+            .require(machine)
             .is_ok_and(|facts| facts.clone != CloneKind::None)
         {
             continue;
         }
-        let Some((state, field, field_ty)) = unstageable_field(&machine, output, facts) else {
+        let Some((state, field, field_ty)) = unstageable_field(machine, output, facts) else {
             continue;
         };
         let span = transitions
@@ -198,6 +211,130 @@ fn staging_refusals(
         errors.push(error);
     }
     errors
+}
+
+/// Every concrete instantiation of the machine the checked program produces,
+/// with the earliest span that names it.
+fn instantiation_sites(
+    shape: &MachineShape,
+    output: &TypeCheckOutput,
+) -> BTreeMap<ResolvedTy, Span> {
+    let mut sites: BTreeMap<ResolvedTy, Span> = BTreeMap::new();
+    for (key, ty) in &output.resolved_expr_types {
+        let mut found = Vec::new();
+        collect_instantiations(ty, shape, output, &mut found);
+        for machine in found {
+            let span = key.start..key.end;
+            sites
+                .entry(machine)
+                .and_modify(|earliest| {
+                    if span.start < earliest.start {
+                        *earliest = span.clone();
+                    }
+                })
+                .or_insert(span);
+        }
+    }
+    sites
+}
+
+/// A step releases the states and events it replaces or consumes. A generic
+/// machine's helpers see only its parameters, so each concrete instantiation
+/// proves the authored `close` of every `#[resource]` its states and events
+/// can reach.
+fn prove_instantiation_releases(
+    sites: &BTreeMap<ResolvedTy, Span>,
+    output: &TypeCheckOutput,
+    resource_closes: &HashMap<String, DefId>,
+    summaries: &HashMap<DefId, Summary>,
+    cache: &mut ReleaseCache,
+    proven: &mut HashSet<DefId>,
+) -> Result<(), (Span, String)> {
+    for (machine, site) in sites {
+        let ResolvedTy::Named { name, args, .. } = machine else {
+            continue;
+        };
+        let event = ResolvedTy::Named {
+            name: format!("{name}Event"),
+            args: args.clone(),
+            builtin: None,
+            is_opaque: false,
+        };
+        for ty in [machine, &event] {
+            for resource in released_resources(ty, output, cache) {
+                let Some(close) = resource_closes.get(&resource).cloned() else {
+                    return Err((site.clone(), unknown_close(&resource)));
+                };
+                prove(&close, summaries, &mut HashSet::new(), proven)
+                    .map_err(|(_, reason)| (site.clone(), releasing(&resource, &reason)))?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The declared `#[resource]` types whose authored `close` releasing a value
+/// of `ty` can run: the type itself and everything it holds, through `Rc`,
+/// collections, records and enum payloads. A builtin handle's release is a
+/// closed runtime operation, not an authored body.
+fn released_resources(
+    ty: &ResolvedTy,
+    output: &TypeCheckOutput,
+    cache: &mut ReleaseCache,
+) -> BTreeSet<String> {
+    if let Some(found) = cache.get(ty) {
+        return found.clone();
+    }
+    let mut found = BTreeSet::new();
+    collect_released_resources(ty, output, &mut found, &mut HashSet::new());
+    cache.insert(ty.clone(), found.clone());
+    found
+}
+
+fn collect_released_resources(
+    ty: &ResolvedTy,
+    output: &TypeCheckOutput,
+    found: &mut BTreeSet<String>,
+    seen: &mut HashSet<ResolvedTy>,
+) {
+    if !seen.insert(ty.clone()) {
+        return;
+    }
+    match ty {
+        ResolvedTy::Named { name, args, .. } => {
+            for arg in args {
+                collect_released_resources(arg, output, found, seen);
+            }
+            let Some(declaration) = output.type_fact_context.declarations().get(name.as_str())
+            else {
+                return;
+            };
+            if declaration.builtin.is_none() && declaration.marker == DeclarationMarker::Resource {
+                found.insert(name.clone());
+            }
+            for member in &declaration.members {
+                let member = crate::value_class::substitute(member, &declaration.type_params, args);
+                collect_released_resources(&member, output, found, seen);
+            }
+        }
+        ResolvedTy::Tuple(elements) => {
+            for element in elements {
+                collect_released_resources(element, output, found, seen);
+            }
+        }
+        ResolvedTy::Array(element, _) | ResolvedTy::Slice(element) | ResolvedTy::Task(element) => {
+            collect_released_resources(element, output, found, seen);
+        }
+        _ => {}
+    }
+}
+
+fn unknown_close(resource: &str) -> String {
+    format!("releasing `{resource}` runs a `close` with no inspectable checked body")
+}
+
+fn releasing(resource: &str, reason: &str) -> String {
+    format!("releasing `{resource}` runs its `close`: {reason}")
 }
 
 /// The first `(state, field, type)` of a machine whose payload has no
@@ -455,6 +592,11 @@ fn prove(
             ));
         }
     }
+    for (close, resource, span) in &summary.releases {
+        if let Err((_, reason)) = prove(close, summaries, visiting, proven) {
+            return Err((span.clone(), releasing(resource, &reason)));
+        }
+    }
     visiting.remove(declaration);
     proven.insert(declaration.clone());
     Ok(())
@@ -462,14 +604,37 @@ fn prove(
 
 struct EffectVisitor<'a> {
     output: &'a TypeCheckOutput,
+    resource_closes: &'a HashMap<String, DefId>,
     module_idx: u32,
     summary: Summary,
+    release_cache: &'a mut ReleaseCache,
 }
 
 impl EffectVisitor<'_> {
     fn refuse(&mut self, span: &Span, reason: impl Into<String>) {
         if self.summary.refusal.is_none() {
             self.summary.refusal = Some((span.clone(), reason.into()));
+        }
+    }
+    /// A value of the expression's type may be released in this helper,
+    /// running the `close` of every `#[resource]` it can reach.
+    fn releases(&mut self, key: &SpanKey, span: &Span) {
+        let Some(ty) = self.output.resolved_expr_types.get(key) else {
+            return;
+        };
+        for resource in released_resources(ty, self.output, self.release_cache) {
+            if self
+                .summary
+                .releases
+                .iter()
+                .any(|(_, known, _)| *known == resource)
+            {
+                continue;
+            }
+            match self.resource_closes.get(&resource).cloned() {
+                Some(close) => self.summary.releases.push((close, resource, span.clone())),
+                None => self.refuse(span, unknown_close(&resource)),
+            }
         }
     }
     /// `call` is the source spelling of the callee, as the programmer wrote it.
@@ -539,6 +704,7 @@ impl NodeVisitor for EffectVisitor<'_> {
     }
     fn visit_expr(&mut self, expr: &Expr, span: &Span) {
         let key = SpanKey::in_module(span, self.module_idx);
+        self.releases(&key, span);
         if let Some(dispatch) = self.output.user_comparison_dispatch.get(&key) {
             let (UserComparisonDispatch::Eq { method }
             | UserComparisonDispatch::Ord { method }

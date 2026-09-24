@@ -56,6 +56,8 @@ impl Checker {
         match args {
             [CallArg::Positional(target)] => Some((target, None)),
             [CallArg::Positional(target), CallArg::Named { name, value }] => {
+                self.named_argument_calls
+                    .insert(SpanKey::in_module(span, self.current_module_idx));
                 if name == "on_full" {
                     Some((target, Some(value)))
                 } else {
@@ -276,53 +278,13 @@ impl Checker {
         )))
     }
 
-    /// Pair each call argument with its receive parameter position, so every
-    /// downstream stage consumes declaration order rather than call order.
-    fn receive_argument_order(
-        &mut self,
-        method_id: &str,
-        args: &[CallArg],
-        span: &Span,
-    ) -> Option<Vec<usize>> {
-        let signature = self.fn_sigs.get(method_id)?;
-        let mut argument_order = vec![None; signature.params.len()];
-        for (index, arg) in args.iter().enumerate() {
-            let position = match arg.name() {
-                Some(name) => signature
-                    .param_names
-                    .iter()
-                    .position(|parameter| parameter == name),
-                None => Some(index),
-            };
-            let slot = position.and_then(|index| argument_order.get_mut(index))?;
-            if slot.replace(index).is_some() {
-                self.report_error(
-                    TypeErrorKind::InvalidOperation,
-                    span,
-                    "message arguments must supply each receive parameter exactly once".to_string(),
-                );
-                return None;
-            }
-        }
-        let order = argument_order.into_iter().collect::<Option<Vec<_>>>();
-        if order.is_none() {
-            self.report_error(
-                TypeErrorKind::InvalidOperation,
-                span,
-                "message arguments must supply every receive parameter".to_string(),
-            );
-        }
-        order
-    }
-
     #[expect(
         clippy::too_many_lines,
-        reason = "one receive boundary records argument order, admission and completion"
+        reason = "one receive boundary records admission and completion"
     )]
     pub(super) fn finish_actor_receive_call(
         &mut self,
         receiver: &Spanned<Expr>,
-        args: &[CallArg],
         span: &Span,
         result: Ty,
     ) -> Ty {
@@ -353,9 +315,6 @@ impl Checker {
         let receiver_ty = self.subst.resolve(receiver_ty);
         let submitting_view = delivery::sender_parts(&receiver_ty);
         let (target, policy) = submitting_view.unwrap_or((&receiver_ty, SendPolicy::Reject));
-        let Some(argument_order) = self.receive_argument_order(&method_id, args, span) else {
-            return Ty::Error;
-        };
         let through_view = submitting_view.is_some();
         // Private actor methods share the caller's state seat. Deferred closure
         // and generator bodies have their own effect identity and do not inherit it.
@@ -422,7 +381,6 @@ impl Checker {
                         method_id,
                         reply_ty,
                         policy: completion_policy,
-                        argument_order,
                     },
                 );
                 return completion;
@@ -446,20 +404,13 @@ impl Checker {
                     method_id,
                     reply_ty: Ty::Unit,
                     policy: completion_policy,
-                    argument_order,
                 },
             );
             self.record_submission_suspension(span, true);
             return completion;
         }
-        self.actor_method_dispatch.insert(
-            key,
-            ActorMethodKind::Message {
-                method_id,
-                policy,
-                argument_order,
-            },
-        );
+        self.actor_method_dispatch
+            .insert(key, ActorMethodKind::Message { method_id, policy });
         // The call is the send: a `receive fn` without a reply submits at its
         // call site, under the policy its receiver view carries.
         self.record_submission_suspension(span, policy.may_suspend());

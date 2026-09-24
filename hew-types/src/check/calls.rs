@@ -11,8 +11,7 @@ pub(super) enum SignatureArgApplication<'a> {
     },
     FunctionLike {
         param_names: &'a [String],
-        accepts_kwargs: bool,
-        module_qualified: bool,
+        arity_context: String,
     },
 }
 
@@ -321,6 +320,183 @@ impl Checker {
         );
     }
 
+    /// Bind each call argument to a parameter slot. Positional arguments fill
+    /// the leading parameters; a named argument fills the parameter it names.
+    /// Every parameter must be supplied exactly once. Returns the slot of each
+    /// argument that found one, and records the slots when they differ from
+    /// the source order so later stages bind by parameter and still evaluate
+    /// in source order.
+    pub(super) fn bind_call_arguments(
+        &mut self,
+        args: &[CallArg],
+        param_names: &[String],
+        param_count: usize,
+        arity_context: &str,
+        span: &Span,
+    ) -> Vec<Option<usize>> {
+        let key = SpanKey::in_module(span, self.current_module_idx);
+        let positional = || {
+            (0..args.len())
+                .map(|index| (index < param_count).then_some(index))
+                .collect()
+        };
+        if args.iter().all(|arg| arg.name().is_none()) {
+            self.check_arity(args, param_count, arity_context, span);
+            return positional();
+        }
+        // A signature registered without its declaration carries no names.
+        if param_names.len() != param_count {
+            self.refuse_named_arguments(args, arity_context, span);
+            return vec![None; args.len()];
+        }
+        self.named_argument_calls.insert(key.clone());
+        let mut supplied = vec![false; param_names.len()];
+        let mut slots = Vec::with_capacity(args.len());
+        let mut bound = true;
+        for (index, arg) in args.iter().enumerate() {
+            let slot = match arg.name() {
+                None if index < param_names.len() => Some(index),
+                None => {
+                    self.report_error(
+                        TypeErrorKind::ArityMismatch,
+                        &arg.expr().1,
+                        format!(
+                            "{arity_context} takes {} argument(s) but {} were supplied",
+                            param_names.len(),
+                            args.len()
+                        ),
+                    );
+                    None
+                }
+                Some(name) => match param_names.iter().position(|param| param == name) {
+                    Some(slot) if supplied[slot] => {
+                        let how = if slot < index && args[slot].name().is_none() {
+                            "positionally"
+                        } else {
+                            "by name"
+                        };
+                        self.report_error(
+                            TypeErrorKind::NamedArgDuplicate,
+                            &arg.expr().1,
+                            format!("argument `{name}` is already supplied {how}"),
+                        );
+                        None
+                    }
+                    Some(slot) => Some(slot),
+                    None => {
+                        let similar = crate::error::find_similar(
+                            name,
+                            param_names.iter().map(String::as_str),
+                        );
+                        self.report_error_with_suggestions(
+                            TypeErrorKind::NamedArgUnknown,
+                            &arg.expr().1,
+                            format!("unknown named argument `{name}`"),
+                            similar
+                                .into_iter()
+                                .map(|candidate| format!("did you mean `{candidate}`?"))
+                                .collect(),
+                        );
+                        None
+                    }
+                },
+            };
+            match slot {
+                Some(slot) => supplied[slot] = true,
+                None => bound = false,
+            }
+            slots.push(slot);
+        }
+        let missing = param_names
+            .iter()
+            .zip(&supplied)
+            .filter(|(_, supplied)| !**supplied)
+            .map(|(name, _)| format!("`{name}`"))
+            .collect::<Vec<_>>();
+        if bound && !missing.is_empty() {
+            self.report_error(
+                TypeErrorKind::NamedArgMissing,
+                span,
+                format!("this call does not supply {}", missing.join(", ")),
+            );
+            bound = false;
+        }
+        let in_order = slots
+            .iter()
+            .enumerate()
+            .all(|(index, slot)| *slot == Some(index));
+        if bound && !in_order {
+            self.call_argument_slots
+                .insert(key, slots.iter().copied().map(Option::unwrap).collect());
+        }
+        slots
+    }
+
+    /// Refuse named arguments on a callee whose parameters carry no names
+    /// for a call to bind: a function value, a tuple constructor or a
+    /// positional builtin. Returns whether any argument was named; the caller
+    /// then types the arguments without binding them.
+    pub(super) fn refuse_named_arguments(
+        &mut self,
+        args: &[CallArg],
+        callee: &str,
+        span: &Span,
+    ) -> bool {
+        let Some(named) = args.iter().find(|arg| arg.name().is_some()) else {
+            return false;
+        };
+        self.named_argument_calls
+            .insert(SpanKey::in_module(span, self.current_module_idx));
+        self.report_error(
+            TypeErrorKind::NamedArgUnnamedCallee,
+            &named.expr().1,
+            format!("{callee} takes positional arguments only"),
+        );
+        true
+    }
+
+    /// Type every argument of a refused call on its own, so the refusal does
+    /// not cascade into positional mismatches.
+    fn synthesize_call_arguments(&mut self, args: &[CallArg]) {
+        for arg in args {
+            let (expr, sp) = arg.expr();
+            self.synthesize(expr, sp);
+        }
+    }
+
+    /// How a diagnostic names the callee of a call expression.
+    pub(super) fn callee_label(function: &Spanned<Expr>) -> String {
+        match &function.0 {
+            Expr::Identifier(name) => format!("`{name}`"),
+            Expr::ContextVariant(context) => format!("`.{}`", context.name),
+            _ => "this callee".to_string(),
+        }
+    }
+
+    /// A call whose named arguments no callee rule bound or refused reached a
+    /// callee without parameter names; refuse it rather than bind by position.
+    pub(super) fn finish_named_arguments(
+        &mut self,
+        args: &[CallArg],
+        callee: impl FnOnce() -> String,
+        result: &Ty,
+        span: &Span,
+    ) {
+        let key = SpanKey::in_module(span, self.current_module_idx);
+        // An unresolved callee has already been reported.
+        if self.named_argument_calls.contains(&key) || matches!(result, Ty::Error) {
+            return;
+        }
+        if let Some(named) = args.iter().find(|arg| arg.name().is_some()) {
+            self.named_argument_calls.insert(key);
+            self.report_error(
+                TypeErrorKind::NamedArgUnnamedCallee,
+                &named.expr().1,
+                format!("{} takes positional arguments only", callee()),
+            );
+        }
+    }
+
     #[expect(
         clippy::too_many_arguments,
         reason = "call application needs the signature, source args, span, arity mode, and the callee identity that makes generic obligations discoverable"
@@ -350,7 +526,6 @@ impl Checker {
 
     #[expect(
         clippy::too_many_arguments,
-        clippy::too_many_lines,
         reason = "call application needs the signature, its associated-type side table, source args, span, and arity mode"
     )]
     pub(super) fn apply_instantiated_call_signature_with_assoc(
@@ -375,81 +550,38 @@ impl Checker {
 
         match arg_application {
             SignatureArgApplication::PositionalOnly { arity_context } => {
-                self.check_arity(args, freshened_params.len(), &arity_context, span);
-                for (i, arg) in args.iter().enumerate() {
-                    if let Some(param_ty) = freshened_params.get(i) {
-                        let (expr, sp) = arg.expr();
-                        self.check_against(expr, sp, param_ty);
-                        self.record_declared_argument_consumption(sig, i, expr, sp);
+                if self.refuse_named_arguments(args, &arity_context, span) {
+                    self.synthesize_call_arguments(args);
+                } else {
+                    self.check_arity(args, freshened_params.len(), &arity_context, span);
+                    for (i, arg) in args.iter().enumerate() {
+                        if let Some(param_ty) = freshened_params.get(i) {
+                            let (expr, sp) = arg.expr();
+                            self.check_against(expr, sp, param_ty);
+                            self.record_declared_argument_consumption(sig, i, expr, sp);
+                        }
                     }
                 }
             }
             SignatureArgApplication::FunctionLike {
                 param_names,
-                accepts_kwargs,
-                module_qualified,
+                arity_context,
             } => {
-                let positional_count = args.iter().take_while(|arg| arg.name().is_none()).count();
-                let positional_args = &args[..positional_count];
-                let named_args = &args[positional_count..];
-
-                if !accepts_kwargs && args.len() != freshened_params.len() {
-                    let message = if module_qualified {
-                        format!(
-                            "expected {} arguments, found {}",
-                            freshened_params.len(),
-                            args.len()
-                        )
-                    } else {
-                        format!(
-                            "this function takes {} argument(s) but {} were supplied",
-                            freshened_params.len(),
-                            args.len()
-                        )
-                    };
-                    self.report_error(TypeErrorKind::ArityMismatch, span, message);
-                } else if accepts_kwargs && positional_count < freshened_params.len() {
-                    let message = if module_qualified {
-                        format!(
-                            "expected at least {} positional arguments, found {}",
-                            freshened_params.len(),
-                            positional_count
-                        )
-                    } else {
-                        format!(
-                            "this function takes at least {} positional argument(s) but {} were supplied",
-                            freshened_params.len(),
-                            positional_count
-                        )
-                    };
-                    self.report_error(TypeErrorKind::ArityMismatch, span, message);
-                }
-
-                for (i, arg) in positional_args.iter().enumerate() {
-                    if let Some(param_ty) = freshened_params.get(i) {
-                        let (expr, sp) = arg.expr();
-                        self.check_against(expr, sp, param_ty);
-                        self.record_declared_argument_consumption(sig, i, expr, sp);
-                    }
-                }
-
-                for arg in named_args {
-                    if let Some(name) = arg.name() {
-                        if let Some(idx) = param_names.iter().position(|param| param == name) {
-                            if let Some(param_ty) = freshened_params.get(idx) {
-                                let (expr, sp) = arg.expr();
-                                self.check_against(expr, sp, param_ty);
-                                self.record_declared_argument_consumption(sig, idx, expr, sp);
-                            }
-                        } else if !accepts_kwargs {
-                            let (_, sp) = arg.expr();
-                            self.report_error(
-                                TypeErrorKind::InvalidOperation,
-                                sp,
-                                format!("unknown named argument `{name}`"),
-                            );
-                        } else {
-                            let (expr, sp) = arg.expr();
+                let slots = self.bind_call_arguments(
+                    args,
+                    param_names,
+                    freshened_params.len(),
+                    &arity_context,
+                    span,
+                );
+                for (i, arg) in args.iter().enumerate() {
+                    let (expr, sp) = arg.expr();
+                    match slots.get(i).copied().flatten() {
+                        Some(slot) => {
+                            self.check_against(expr, sp, &freshened_params[slot]);
+                            self.record_declared_argument_consumption(sig, slot, expr, sp);
+                        }
+                        None => {
                             self.synthesize(expr, sp);
                         }
                     }
@@ -1193,8 +1325,7 @@ impl Checker {
             span,
             SignatureArgApplication::FunctionLike {
                 param_names: &sig.param_names,
-                accepts_kwargs: sig.accepts_kwargs,
-                module_qualified: true,
+                arity_context: "this function".to_string(),
             },
             true,
             Some(GenericCallee::Function { key: &key }),
@@ -2279,8 +2410,7 @@ impl Checker {
                 span,
                 SignatureArgApplication::FunctionLike {
                     param_names: &sig.param_names,
-                    accepts_kwargs: sig.accepts_kwargs,
-                    module_qualified: false,
+                    arity_context: "this function".to_string(),
                 },
                 // Record the resolved type arguments at every generic call
                 // site — whether the args were inferred (from an argument or
@@ -2404,10 +2534,9 @@ impl Checker {
                         type_args,
                         args,
                         span,
-                        SignatureArgApplication::FunctionLike {
-                            param_names: &sig.call_sig.param_names,
-                            accepts_kwargs: sig.call_sig.accepts_kwargs,
-                            module_qualified: false,
+                        // A function value's type carries no parameter names.
+                        SignatureArgApplication::PositionalOnly {
+                            arity_context: "this function".to_string(),
                         },
                         // Record at every generic call site, turbofish or
                         // inferred — see the resolved-fn path above.
@@ -2482,6 +2611,10 @@ impl Checker {
                 if let Some(sig) = self.lookup_trait_method_inner(trait_name, method_name, false) {
                     // The trait sig includes all non-receiver params.
                     // For qualified calls the first positional arg is the receiver.
+                    if self.refuse_named_arguments(args, &format!("`{func_name}`"), span) {
+                        self.synthesize_call_arguments(args);
+                        return sig.return_type;
+                    }
                     self.check_arity(args, sig.params.len(), &format!("`{func_name}`"), span);
                     for (i, arg) in args.iter().enumerate() {
                         if let Some(param_ty) = sig.params.get(i) {
@@ -2650,6 +2783,10 @@ impl Checker {
         let resolved = self.normalize_for_use(func_ty);
         match resolved {
             Ty::Function { params, ret, .. } | Ty::Closure { params, ret, .. } => {
+                if self.refuse_named_arguments(args, "a function value", span) {
+                    self.synthesize_call_arguments(args);
+                    return *ret;
+                }
                 self.check_arity(args, params.len(), "this function", span);
                 for (i, arg) in args.iter().enumerate() {
                     if let Some(param) = params.get(i) {
@@ -2777,7 +2914,6 @@ impl Checker {
             vec![msg_ty]
         };
         let method_id = crate::actor_protocol::LAMBDA_ACTOR_METHOD_ID.to_string();
-        let argument_order = (0..args.len()).collect();
         let key = SpanKey::in_module(span, self.current_module_idx);
         let Some((policy, one_way)) = view else {
             // `handle(msg)` is the completion call: it waits for the
@@ -2789,7 +2925,6 @@ impl Checker {
                     method_id,
                     reply_ty: reply_ty.clone(),
                     policy: crate::actor_delivery::SendPolicy::Wait,
-                    argument_order,
                 },
             );
             return Ty::result(reply_ty, Ty::actor_error(Ty::never_type()));
@@ -2803,7 +2938,6 @@ impl Checker {
                     method_id,
                     reply_ty: reply_ty.clone(),
                     policy,
-                    argument_order,
                 },
             );
             self.record_submission_suspension(span, true);
@@ -2822,14 +2956,8 @@ impl Checker {
             );
             return Ty::Error;
         }
-        self.actor_method_dispatch.insert(
-            key,
-            ActorMethodKind::Message {
-                method_id,
-                policy,
-                argument_order,
-            },
-        );
+        self.actor_method_dispatch
+            .insert(key, ActorMethodKind::Message { method_id, policy });
         self.record_submission_suspension(span, policy.may_suspend());
         crate::actor_delivery::result_type(crate::actor_delivery::message_type(
             target.clone(),

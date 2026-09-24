@@ -531,14 +531,22 @@ else needs `impl Display for {rendered}`)"
                 type_args,
                 args,
                 is_tail_call: _,
-            } => self.check_call(function, type_args.as_deref(), args, span),
+            } => {
+                let ty = self.check_call(function, type_args.as_deref(), args, span);
+                self.finish_named_arguments(args, || Self::callee_label(function), &ty, span);
+                ty
+            }
 
             // Method call
             Expr::MethodCall {
                 receiver,
                 method,
                 args,
-            } => self.check_method_call(receiver, method, args, span),
+            } => {
+                let ty = self.check_method_call(receiver, method, args, span);
+                self.finish_named_arguments(args, || format!("method `{method}`"), &ty, span);
+                ty
+            }
 
             // Field access
             Expr::FieldAccess { object, field } => self.check_field_access(object, field, span),
@@ -5019,6 +5027,7 @@ else needs `impl Display for {rendered}`)"
                         receiver, method, args, expected, span,
                     )
                     .unwrap_or_else(|| self.synthesize(expr, span));
+                self.finish_named_arguments(args, || format!("method `{method}`"), &actual, span);
                 if tail_ok_armed {
                     if let Some(coerced) = self.try_tail_ok_coercion(expected, &actual, span) {
                         return coerced;
@@ -5049,6 +5058,12 @@ else needs `impl Display for {rendered}`)"
                     expected,
                     span,
                 ) {
+                    self.finish_named_arguments(
+                        args,
+                        || Self::callee_label(function),
+                        &actual,
+                        span,
+                    );
                     actual
                 } else {
                     let actual = self.synthesize(expr, span);

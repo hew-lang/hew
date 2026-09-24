@@ -786,7 +786,6 @@ impl Checker {
             ActorMethodKind::Message {
                 method_id,
                 policy: crate::actor_delivery::SendPolicy::Reject,
-                argument_order: Vec::new(),
             }
         } else {
             // Ask-shaped: the reply value crosses the actor boundary back to the
@@ -849,7 +848,6 @@ impl Checker {
                 method_id,
                 reply_ty: reply_ty.clone(),
                 policy: crate::actor_delivery::SendPolicy::Wait,
-                argument_order: Vec::new(),
             }
         };
         let call_ty = match &dispatch {
@@ -2372,20 +2370,9 @@ impl Checker {
                 None,
                 args,
                 span,
-                if sig.return_type == Ty::Unit
-                    && self
-                        .actor_receive_methods
-                        .contains(&format!("{canonical_name}::{method}"))
-                {
-                    SignatureArgApplication::FunctionLike {
-                        param_names: &sig.param_names,
-                        accepts_kwargs: false,
-                        module_qualified: false,
-                    }
-                } else {
-                    SignatureArgApplication::PositionalOnly {
-                        arity_context: format!("method `{method}`"),
-                    }
+                SignatureArgApplication::FunctionLike {
+                    param_names: &sig.param_names,
+                    arity_context: format!("method `{method}`"),
                 },
                 true,
                 Some(GenericCallee::Method {
@@ -6464,7 +6451,7 @@ impl Checker {
         span: &Span,
     ) -> Ty {
         let result = self.check_method_call_inner(receiver, method, args, span);
-        let result = self.finish_actor_receive_call(receiver, args, span, result);
+        let result = self.finish_actor_receive_call(receiver, span, result);
         let key = SpanKey::in_module(span, self.current_module_idx);
         self.check_method_callable_place(receiver, method, span);
         let runtime_rewrite_consumes_receiver = matches!(
@@ -6782,8 +6769,7 @@ impl Checker {
                         span,
                         SignatureArgApplication::FunctionLike {
                             param_names: &sig.param_names,
-                            accepts_kwargs: sig.accepts_kwargs,
-                            module_qualified: true,
+                            arity_context: "this function".to_string(),
                         },
                         true,
                         Some(GenericCallee::Function { key: &key }),
@@ -7869,8 +7855,7 @@ impl Checker {
                             span,
                             SignatureArgApplication::FunctionLike {
                                 param_names: &sig.param_names,
-                                accepts_kwargs: false,
-                                module_qualified: false,
+                                arity_context: format!("method `{method}`"),
                             },
                             true,
                             Some(GenericCallee::Method {
@@ -8277,16 +8262,9 @@ impl Checker {
                         None,
                         args,
                         span,
-                        if is_actor_receive_dispatch {
-                            SignatureArgApplication::FunctionLike {
-                                param_names: &sig.param_names,
-                                accepts_kwargs: false,
-                                module_qualified: false,
-                            }
-                        } else {
-                            SignatureArgApplication::PositionalOnly {
-                                arity_context: format!("method `{method}`"),
-                            }
+                        SignatureArgApplication::FunctionLike {
+                            param_names: &sig.param_names,
+                            arity_context: format!("method `{method}`"),
                         },
                         true,
                         Some(GenericCallee::Method {
@@ -8787,7 +8765,8 @@ impl Checker {
                             None,
                             args,
                             span,
-                            SignatureArgApplication::PositionalOnly {
+                            SignatureArgApplication::FunctionLike {
+                                param_names: &trait_sig.param_names,
                                 arity_context: format!("method `{method}`"),
                             },
                             true,
@@ -9130,7 +9109,8 @@ impl Checker {
                         None,
                         args,
                         span,
-                        SignatureArgApplication::PositionalOnly {
+                        SignatureArgApplication::FunctionLike {
+                            param_names: &sig.param_names,
                             arity_context: format!("method `{method}`"),
                         },
                         true,

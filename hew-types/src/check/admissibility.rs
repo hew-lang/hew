@@ -2334,7 +2334,6 @@ mod tests {
                     args: vec![],
                 }],
                 return_type: Ty::Unit,
-                accepts_kwargs: false,
                 doc_comment: None,
                 extern_symbol: None,
                 requires_mutable_receiver: false,

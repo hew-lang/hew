@@ -8993,6 +8993,27 @@ impl Checker {
             return;
         }
 
+        // A parameter name is part of the method's API: a named call through
+        // the trait and one on the concrete type must bind alike.
+        if let Some((trait_param, impl_param)) = trait_sig
+            .param_names
+            .iter()
+            .zip(&impl_sig.param_names)
+            .find(|(trait_param, impl_param)| trait_param != impl_param)
+        {
+            self.report_error_with_note(
+                TypeErrorKind::ImplParamNameMismatch,
+                &report_span,
+                format!(
+                    "impl method `{type_name}.{}` names parameter `{impl_param}` where trait `{trait_name}` names it `{trait_param}`",
+                    method.name,
+                ),
+                &trait_method.span,
+                format!("trait method `{trait_name}.{}` declared here", method.name),
+            );
+            return;
+        }
+
         // Receiver-mutability axis (Q297 Stage 1): when both sides declare a
         // receiver, the `is_mutable` flag must match. A trait declaring
         // `fn next(var self)` and an impl declaring `fn next(self)` (or vice
@@ -10586,8 +10607,6 @@ impl Checker {
 
                     // Register extern C function signatures
                     for func in functions {
-                        let accepts_kwargs = module_path == "std.misc.log"
-                            && Self::LOG_KWARGS_FUNCTIONS.contains(&func.name.as_str());
                         let sig = FnSig {
                             params: func
                                 .params
@@ -10601,7 +10620,6 @@ impl Checker {
                                 &canonical_owner,
                                 &[],
                             ),
-                            accepts_kwargs,
                             ..FnSig::default()
                         };
                         self.declare_contractless_extern(
@@ -10614,8 +10632,6 @@ impl Checker {
 
                     // Register wrapper pub fn signatures
                     for wfn in wrapper_fns {
-                        let accepts_kwargs = module_path == "std.misc.log"
-                            && Self::LOG_KWARGS_FUNCTIONS.contains(&wfn.name.as_str());
                         let sig = FnSig {
                             params: wfn
                                 .params
@@ -10635,7 +10651,6 @@ impl Checker {
                             ),
                             type_params: wfn.type_params,
                             type_param_bounds: wfn.type_param_bounds,
-                            accepts_kwargs,
                             ..FnSig::default()
                         };
                         // Wrapper functions belong to the imported module;
@@ -11275,10 +11290,6 @@ impl Checker {
                     // Rebuild the complete signature in the source owner's
                     // scope on every first-source registration, independent of
                     // whether a registry slot already exists.
-                    let registry_accepts_kwargs = self
-                        .fn_sigs
-                        .get(&qualified)
-                        .is_some_and(|sig| sig.accepts_kwargs);
                     let saved_importer_module =
                         self.current_module.replace(module_full_path.to_string());
                     let (mut sig, assoc_bindings) = self.build_fn_sig_from_decl_with_assoc(fd);
@@ -11299,11 +11310,6 @@ impl Checker {
                         module_full_path,
                         &sig.type_params,
                     );
-                    // `accepts_kwargs` is transport metadata supplied by the
-                    // registry for the log wrapper; it does not carry a type
-                    // identity, so retain it while replacing every semantic
-                    // signature field with the parsed source declaration.
-                    sig.accepts_kwargs |= registry_accepts_kwargs;
                     if fd.visibility == hew_parser::ast::Visibility::Pub {
                         self.module_fn_exports.insert(qualified.clone());
                     }

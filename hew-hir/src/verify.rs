@@ -296,12 +296,73 @@ impl Verifier {
         self.current_expr_parent = parent;
     }
 
+    /// A call evaluates each of its arguments exactly once.
+    fn evaluation_order(&mut self, expr: &HirExpr) {
+        let (HirExprKind::Call {
+            args,
+            evaluation_order: order,
+            ..
+        }
+        | HirExprKind::CallDynMethod {
+            args,
+            evaluation_order: order,
+            ..
+        }
+        | HirExprKind::CallTraitMethodStatic {
+            args,
+            evaluation_order: order,
+            ..
+        }
+        | HirExprKind::VarSelfMethodCall {
+            args,
+            evaluation_order: order,
+            ..
+        }
+        | HirExprKind::ActorAsk {
+            args,
+            evaluation_order: order,
+            ..
+        }
+        | HirExprKind::ActorMessage {
+            args,
+            evaluation_order: order,
+            ..
+        }
+        | HirExprKind::ActorGenStream {
+            args,
+            evaluation_order: order,
+            ..
+        }) = &expr.kind
+        else {
+            return;
+        };
+        if order.is_empty() {
+            return;
+        }
+        let mut sorted = order.clone();
+        sorted.sort_unstable();
+        if !sorted.iter().copied().eq(0..args.len()) {
+            self.diagnostics.push(self.diagnostic(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: "call evaluation order".to_string(),
+                    reason: format!(
+                        "evaluation order {order:?} is not a permutation of {} arguments",
+                        args.len()
+                    ),
+                },
+                expr.span.clone(),
+                "a call must evaluate each argument exactly once",
+            ));
+        }
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "exhaustive match remains in one structural HIR walker"
     )]
     fn expr_inner(&mut self, expr: &HirExpr) {
         self.node(expr.node, expr.span.clone());
+        self.evaluation_order(expr);
         self.site(expr.site, expr.span.clone());
 
         match &expr.kind {
@@ -524,6 +585,7 @@ impl Verifier {
                 target,
                 callee,
                 args,
+                ..
             } => {
                 self.executable_call_target(target, expr);
 

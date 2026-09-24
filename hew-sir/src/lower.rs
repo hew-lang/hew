@@ -584,6 +584,16 @@ struct InstanceService<'a> {
 /// Both encodings of a bare parameter reference are accepted: the structural
 /// `TypeParam` and the argument-less `Named` spelling some producers still
 /// emit.
+/// The argument indices in the order a call evaluates them. HIR leaves the
+/// order empty when it is parameter order.
+pub(crate) fn evaluation_sequence(evaluation_order: &[usize], len: usize) -> Vec<usize> {
+    if evaluation_order.is_empty() {
+        (0..len).collect()
+    } else {
+        evaluation_order.to_vec()
+    }
+}
+
 fn declared_type_param_name<'a>(ty: &'a ResolvedTy, declared: &[String]) -> Option<&'a str> {
     match ty {
         ResolvedTy::TypeParam { name } => Some(name.as_str()),
@@ -5665,10 +5675,11 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 receiver,
                 slot,
                 args,
+                evaluation_order,
                 signature,
                 ..
             } => self
-                .lower_dyn_call(expr, receiver, *slot, args, signature, true)?
+                .lower_dyn_call(expr, receiver, *slot, args, evaluation_order, signature)?
                 .ok_or_else(|| "dynamic dispatch produced no SIR value".to_string()),
             HirExprKind::ArrayLiteral { elements } => self.lower_array_make(expr, elements),
             HirExprKind::ArrayRepeat { value } => self.lower_array_repeat(expr, value),
@@ -8086,8 +8097,8 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         receiver: &HirExpr,
         slot: u32,
         args: &[HirExpr],
+        evaluation_order: &[usize],
         signature: &hew_types::FnSig,
-        value_required: bool,
     ) -> Result<Option<ValueId>, String> {
         let live_before_arguments: std::collections::HashSet<_> =
             self.owned_live.keys().copied().collect();
@@ -8104,7 +8115,8 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         } else {
             self.lower_borrowed_read(receiver, &mut loans)?.value
         };
-        let lowered_args = self.lower_user_arguments(args, &dispatch.params, &mut loans)?;
+        let lowered_args =
+            self.lower_user_arguments(args, evaluation_order, &dispatch.params, &mut loans)?;
         self.finish_user_call(
             PreparedCallee::Dyn {
                 receiver: crate::BoundaryOperand {
@@ -8117,7 +8129,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             lowered_args,
             &loans,
             &live_before_arguments,
-            value_required,
+            true,
             None,
         )
     }
@@ -8136,6 +8148,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             target,
             callee,
             args,
+            evaluation_order,
         } = &expr.kind
         else {
             return Err("user-call lowering received a non-call".to_string());
@@ -8249,8 +8262,12 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             .map(|(receiver, _)| self.expression_projection(receiver))
             .transpose()?
             .flatten();
-        let mut lowered_args =
-            self.lower_user_arguments(args, &signature.params[seats..], &mut loans)?;
+        let mut lowered_args = self.lower_user_arguments(
+            args,
+            evaluation_order,
+            &signature.params[seats..],
+            &mut loans,
+        )?;
         if let Some(actor) = actor {
             if self.callable.kind != SemCallableKind::HewActor(actor) {
                 return Err("actor method is entered only from its own actor's bodies".into());
@@ -8312,6 +8329,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             receiver,
             target,
             args,
+            evaluation_order,
             ..
         } = &expr.kind
         else {
@@ -8349,7 +8367,19 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         let live_before_arguments: std::collections::HashSet<_> =
             self.owned_live.keys().copied().collect();
         let mut loans = Vec::new();
-        let lowered_args = self.lower_user_arguments(&arguments, &signature.params, &mut loans)?;
+        let evaluation_order = if evaluation_order.is_empty() {
+            Vec::new()
+        } else {
+            std::iter::once(0)
+                .chain(evaluation_order.iter().map(|index| index + 1))
+                .collect()
+        };
+        let lowered_args = self.lower_user_arguments(
+            &arguments,
+            &evaluation_order,
+            &signature.params,
+            &mut loans,
+        )?;
         self.finish_user_call(
             PreparedCallee::Direct(callee.id),
             signature,
@@ -8361,19 +8391,28 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         )
     }
 
-    /// Capture arguments while keeping earlier consumed values live until the call.
+    /// Capture arguments in their evaluation order while keeping earlier
+    /// consumed values live until the call, and pass them in parameter order.
     fn lower_user_arguments(
         &mut self,
         args: &[HirExpr],
+        evaluation_order: &[usize],
         params: &[SemAbiParam],
         loans: &mut Vec<ValueId>,
     ) -> Result<Vec<crate::BoundaryOperand>, String> {
+        if args.len() != params.len() {
+            return Err("call arguments differ from the callee's parameters".into());
+        }
         let receiver_loan_depth = self.argument_receiver_loans.len();
         self.argument_receiver_loans.extend(loans.iter().copied());
-        let mut lowered_args = Vec::with_capacity(args.len());
-        for (index, (arg, expected)) in args.iter().zip(params).enumerate() {
+        let order = evaluation_sequence(evaluation_order, args.len());
+        let mut lowered_args = vec![None; args.len()];
+        for (position, &index) in order.iter().enumerate() {
+            let (arg, expected) = (&args[index], &params[index]);
             let loan_floor = loans.len();
-            let stable_tail = args[index + 1..].iter().all(Self::stable_argument_read);
+            let stable_tail = order[position + 1..]
+                .iter()
+                .all(|&later| Self::stable_argument_read(&args[later]));
             let operand = if expected.passing == SemParamPassing::Consume {
                 let value = self.lower_consuming_value(arg)?;
                 Operand {
@@ -8403,7 +8442,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     value: self.coerce_value(value, &expected.ty, Provenance::Site(arg.site))?,
                 }
             };
-            lowered_args.push(crate::BoundaryOperand {
+            lowered_args[index] = Some(crate::BoundaryOperand {
                 operand,
                 decision: match expected.passing {
                     SemParamPassing::ReadOnly => crate::BoundaryDecision::Copy,
@@ -8420,7 +8459,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 .extend_from_slice(&loans[loan_floor..]);
         }
         self.argument_receiver_loans.truncate(receiver_loan_depth);
-        Ok(lowered_args)
+        Ok(lowered_args.into_iter().flatten().collect())
     }
 
     /// One user-call boundary owns argument temporaries and both continuations.

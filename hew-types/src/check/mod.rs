@@ -762,18 +762,6 @@ impl Checker {
         class_is_non_owning(ty, &self.class_declarations())
     }
 
-    /// Log function names that accept keyword arguments for structured fields.
-    const LOG_KWARGS_FUNCTIONS: &'static [&'static str] = &[
-        // C extern (used by codegen interception for legacy compatibility)
-        "hew_log_emit",
-        // Wrapper function (clean) names from log.hew
-        "error",
-        "warn",
-        "info",
-        "debug",
-        "trace",
-    ];
-
     pub(super) fn record_root_value_binding(&mut self, name: &str) {
         if self.current_module.is_none() {
             self.root_value_bindings.insert(name.to_string());
@@ -2239,25 +2227,17 @@ impl Checker {
             .into_iter()
             .map(|(k, kind)| {
                 let resolved_kind = match kind {
-                    ActorMethodKind::Message {
-                        method_id,
-                        policy,
-                        argument_order,
-                    } => ActorMethodKind::Message {
-                        method_id,
-                        policy,
-                        argument_order,
-                    },
+                    ActorMethodKind::Message { method_id, policy } => {
+                        ActorMethodKind::Message { method_id, policy }
+                    }
                     ActorMethodKind::Ask {
                         method_id,
                         reply_ty,
                         policy,
-                        argument_order,
                     } => ActorMethodKind::Ask {
                         method_id,
                         reply_ty: self.finalize_type_for_handoff(&reply_ty),
                         policy,
-                        argument_order,
                     },
                     ActorMethodKind::StreamProducer(method_id, elem_ty) => {
                         ActorMethodKind::StreamProducer(
@@ -2549,6 +2529,7 @@ impl Checker {
             select_sources: std::mem::take(&mut self.select_sources),
             suspension_effects,
             recovery_kinds: std::mem::take(&mut self.recovery_kinds),
+            call_argument_slots: std::mem::take(&mut self.call_argument_slots),
             expr_types: resolved_expr_types,
             interpolation_display_types: std::mem::take(&mut self.interpolation_display_types),
             user_comparison_dispatch: std::mem::take(&mut self.user_comparison_dispatch),

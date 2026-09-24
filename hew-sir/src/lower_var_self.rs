@@ -42,6 +42,7 @@ impl Builder<'_, '_> {
             receiver_update,
             call_target,
             args,
+            evaluation_order,
             ret_ty,
             receiver_ty,
             ..
@@ -129,7 +130,8 @@ impl Builder<'_, '_> {
         let mut live_before_arguments: std::collections::HashSet<ValueId> =
             self.owned_live.keys().copied().collect();
         let mut loans = Vec::new();
-        let mut arguments = self.lower_user_arguments(args, &signature.params[1..], &mut loans)?;
+        let mut arguments =
+            self.lower_user_arguments(args, evaluation_order, &signature.params[1..], &mut loans)?;
 
         // Later arguments may replace this binding or one of its sibling fields.
         // Acquire its current value only after those effects have completed.

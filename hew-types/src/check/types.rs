@@ -347,6 +347,10 @@ pub struct TypeCheckOutput {
     pub select_sources: HashMap<SpanKey, Vec<CheckedSelectSource>>,
     /// Checked local recovery semantics; HIR must consume this fact.
     pub recovery_kinds: HashMap<SpanKey, RecoveryKind>,
+    /// The parameter slot of each source argument, for every call whose
+    /// named arguments bind in an order other than the one written. A call
+    /// absent here binds its arguments to parameters in source order.
+    pub call_argument_slots: HashMap<SpanKey, Vec<usize>>,
     pub expr_types: HashMap<SpanKey, Ty>,
     /// Interpolation operands whose rendering selected an explicit `Display`
     /// implementation. The value preserves alias identity for HIR dispatch.
@@ -1441,6 +1445,7 @@ impl Default for TypeCheckOutput {
         Self {
             normalized_machines: None,
             recovery_kinds: HashMap::new(),
+            call_argument_slots: HashMap::new(),
             expr_types: HashMap::new(),
             interpolation_display_types: HashMap::new(),
             user_comparison_dispatch: HashMap::new(),
@@ -2159,7 +2164,6 @@ pub enum ActorMethodKind {
     Message {
         method_id: String,
         policy: crate::actor_delivery::SendPolicy,
-        argument_order: Vec<usize>,
     },
     /// A completion call: dispatch to an actor receive handler and wait for
     /// its outcome. `policy` is how the call's own admission behaves when the
@@ -2169,7 +2173,6 @@ pub enum ActorMethodKind {
         method_id: String,
         reply_ty: Ty,
         policy: crate::actor_delivery::SendPolicy,
-        argument_order: Vec<usize>,
     },
     /// Dispatch to a `receive gen fn` handler: a per-call, channel-backed
     /// `Stream<T>` whose producer runs inside the actor. The carried `Ty` is
@@ -2540,7 +2543,7 @@ pub struct ImplMethodProvenance {
 #[allow(
     clippy::struct_excessive_bools,
     reason = "FnSig is the canonical fn-signature record; each bool encodes \
-              a distinct cross-cutting attribute (kwargs/mutable-receiver) \
+              a distinct cross-cutting attribute (mutable/consuming receiver) \
               that downstream passes need to query individually — collapsing into \
               an enum would force per-flag enum-variant matches at every read site"
 )]
@@ -2554,7 +2557,6 @@ pub struct FnSig {
     /// Callable value types cannot preserve consuming slots, so erasure is refused.
     pub param_ownership: Vec<crate::env::ParameterOwnership>,
     pub return_type: Ty,
-    pub accepts_kwargs: bool,
     pub doc_comment: Option<String>,
     /// Structured `#[extern_symbol("…")]` attribute attached to the
     /// declaration that produced this signature, if any.
@@ -2634,7 +2636,6 @@ impl Default for FnSig {
             params: vec![],
             param_ownership: vec![],
             return_type: Ty::Unit,
-            accepts_kwargs: false,
             doc_comment: None,
             extern_symbol: None,
             requires_mutable_receiver: false,
@@ -2996,6 +2997,12 @@ pub struct Checker {
     pub(super) file_import_const_exports: HashMap<String, BTreeSet<String>>,
     /// Per-call target facts for ordinary `Expr::Call` expressions.
     pub(super) recovery_kinds: HashMap<SpanKey, RecoveryKind>,
+    /// See [`TypeCheckOutput::call_argument_slots`].
+    pub(super) call_argument_slots: HashMap<SpanKey, Vec<usize>>,
+    /// Calls whose named arguments a callee rule has bound or refused. A
+    /// call with named arguments outside this set reached a callee that
+    /// takes positional arguments only.
+    pub(super) named_argument_calls: HashSet<SpanKey>,
     pub(super) effect_graph: super::effects::EffectGraph,
     pub(super) direct_call_targets: HashMap<SpanKey, crate::check::dispatch::CallTarget>,
     /// Checker-owned canonical declaration ids for trait methods. Keys are
@@ -4044,6 +4051,8 @@ impl Checker {
             published_bare_const_owners: HashMap::new(),
             file_import_const_exports: HashMap::new(),
             recovery_kinds: HashMap::new(),
+            call_argument_slots: HashMap::new(),
+            named_argument_calls: HashSet::new(),
             effect_graph: super::effects::EffectGraph::default(),
             direct_call_targets: HashMap::new(),
             trait_method_ids: HashMap::new(),

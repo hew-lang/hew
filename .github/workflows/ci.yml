@@ -196,6 +196,8 @@ jobs:
           make hew-native
           mkdir -p compiled-hew/debug
           cp target/debug/hew target/debug/libhew.a compiled-hew/debug/
+          # Relocated toolchain layout: the binary finds std at <exe_dir>/../std.
+          cp -R std compiled-hew/std
           tar -czf compiled-hew-linux.tar.gz compiled-hew
 
       - name: Upload compiled Hew bundle

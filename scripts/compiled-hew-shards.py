@@ -347,6 +347,12 @@ def run_shard(compiler: Path, partition: str, output_dir: Path) -> None:
             stderr,
             environment,
         )
+        if report.stat().st_size == 0:
+            diagnostic = stderr.read_text(encoding="utf-8", errors="replace").strip()
+            die(
+                f"{label.upper()} runner exited {returncode} without a JUnit report "
+                f"for {partition}:\n{diagnostic or '(no stderr output)'}"
+            )
         outcomes = parse_junit(report)
         if set(outcomes) != expected:
             die(

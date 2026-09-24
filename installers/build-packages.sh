@@ -604,7 +604,6 @@ COPY --from=fetch /tmp/hew-install/hew/bin/hew-lsp       /usr/local/bin/hew-lsp
 COPY --from=fetch /tmp/hew-install/hew/bin/hew-observe   /usr/local/bin/hew-observe
 COPY --from=fetch /tmp/hew-install/hew/lib               /usr/local/lib/hew/
 COPY --from=fetch /tmp/hew-install/hew/std               /usr/local/share/hew/std/
-ENV HEW_STD=/usr/local/share/hew/std
 WORKDIR /work
 ENTRYPOINT ["/usr/local/bin/hew"]
 CMD ["--help"]

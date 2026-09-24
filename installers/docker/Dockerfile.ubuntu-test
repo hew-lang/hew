@@ -14,7 +14,7 @@
 #   ./installers/docker/run-ubuntu-test.sh
 #
 # What this tests (full end-to-end):
-#   1. Module resolution — HEW_STD env var and FHS path (../share/hew) are used
+#   1. Module resolution — the FHS layout (../share/hew beside bin/) is used
 #      to find stdlib .hew sources; checks std::string, std::fs, std::net::url.
 #   2. libhew.a — verifies the combined library is present in /usr/local/lib/
 #      (needed for linking Hew programs).
@@ -42,10 +42,6 @@ RUN apt-get update \
 COPY --from=tarball bin/hew           /usr/local/bin/hew
 COPY --from=tarball lib/libhew.a      /usr/local/lib/libhew.a
 COPY --from=tarball std/              /usr/local/share/hew/std/
-
-# HEW_STD tells hew where the standard library lives.
-# With binaries at /usr/local/bin/, hew also searches ../share/hew for std/.
-ENV HEW_STD=/usr/local/share/hew/std
 
 WORKDIR /work
 COPY installers/docker/test-stdlib.hew /work/test.hew

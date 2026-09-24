@@ -825,7 +825,7 @@ fn only_the_record_base_may_move() {
 #[test]
 fn parenthesized_statement_blocks_keep_their_parentheses() {
     assert_faithful(
-        r#"fn f(v: Vec<i64>) -> i64 {
+        r"fn f(v: Vec<i64>) -> i64 {
     (unsafe { v })[0]
 }
 
@@ -840,6 +840,6 @@ fn main() {
     ({ 7 }) - 1;
     println(f([1]));
 }
-"#,
+",
     );
 }

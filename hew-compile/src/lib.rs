@@ -974,7 +974,7 @@ fn configured_stdlib_roots(options: &FrontendOptions) -> Vec<PathBuf> {
     options
         .module_search_paths
         .clone()
-        .unwrap_or_else(|| hew_types::module_registry::stdlib_search_paths())
+        .unwrap_or_else(hew_types::module_registry::stdlib_search_paths)
         .into_iter()
         .map(|root| root.join("std"))
         .collect()

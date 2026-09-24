@@ -39,7 +39,7 @@ use std::path::Path;
 use std::process::Command;
 
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
-use support::{hew_binary, require_codegen, run_bounded_command, tempdir, try_run_bounded_command};
+use support::{hew_binary, require_codegen, tempdir, try_run_bounded_command};
 
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 const SHADOW_SRC: &str = "\
@@ -287,6 +287,38 @@ fn warm_debug_symbols(binary: &Path) {
     );
 }
 
+/// Wall-clock budget for a single measured gdb/lldb query, once
+/// [`warm_debug_symbols`] has already paid the cold-DWARF-parse cost.
+///
+/// The shared harness's `DEFAULT_EXEC_TIMEOUT` (30s) was tight enough that a
+/// loaded host - concurrent `make test` builds competing for CPU and I/O -
+/// intermittently starved these queries past the deadline even though the
+/// debugger itself was making real progress (spawn, load, `run`, hit
+/// breakpoint, `print`), not hung. A generous, dedicated budget separates
+/// "the debugger is slow because the machine is busy" from "the debugger is
+/// stuck" the same way `warm_debug_symbols` already does for the DWARF parse.
+/// `HEW_DEBUGGER_TEST_TIMEOUT_SECS` overrides it for unusually loaded hosts
+/// without editing the source.
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+fn debugger_query_timeout() -> std::time::Duration {
+    std::env::var("HEW_DEBUGGER_TEST_TIMEOUT_SECS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .map_or(std::time::Duration::from_mins(2), |secs| {
+            std::time::Duration::from_secs(secs)
+        })
+}
+
+/// Run a measured gdb/lldb query under [`debugger_query_timeout`] instead of
+/// the shared harness's default 30s deadline, and panic with the harness's
+/// own clear timeout diagnostic (command, configured deadline, elapsed time,
+/// captured output) rather than a bare assertion failure.
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+fn run_debugger_query(command: Command, label: impl Into<String>) -> std::process::Output {
+    try_run_bounded_command(command, label, debugger_query_timeout())
+        .unwrap_or_else(|error| panic!("{error}"))
+}
+
 /// First available batch debugger, preferring each platform's native one.
 /// `lldb -b -o ...` and `gdb --batch -ex ...` both run a script
 /// non-interactively.
@@ -402,7 +434,7 @@ fn read_first_at_line(debugger: &str, binary: &Path, src: &Path, line: u32) -> S
         ]);
         c
     };
-    let out = run_bounded_command(cmd, format!("{debugger} @ line {line}"));
+    let out = run_debugger_query(cmd, format!("{debugger} @ line {line}"));
     let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
     if !out.stderr.is_empty() {
         text.push_str("\n[stderr]\n");
@@ -527,7 +559,7 @@ fn debugger_hits_await_body_before_and_after_suspend_with_live_local() {
         ]);
         command
     };
-    let out = run_bounded_command(cmd, format!("{dbg} await pre/post suspend"));
+    let out = run_debugger_query(cmd, format!("{dbg} await pre/post suspend"));
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(
         out.status.success(),
@@ -608,7 +640,7 @@ fn debugger_reports_unstored_post_suspend_local_unavailable_not_wrong() {
         ]);
         command
     };
-    let out = run_bounded_command(cmd, format!("{dbg} honest post-suspend local"));
+    let out = run_debugger_query(cmd, format!("{dbg} honest post-suspend local"));
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(
         out.status.success(),
@@ -827,7 +859,7 @@ fn debugger_never_reads_reassigned_reference_local_as_interior_null() {
     // Stop 1: `println(s)` (line 8), immediately after both reassignments.
     // Stop 2: `println(k)` (line 9), where `s`'s replacement range has begun.
     let cmd = two_stop_reassign_cmd(dbg, &src, bin);
-    let out = run_bounded_command(cmd, format!("{dbg} reassigned reference local"));
+    let out = run_debugger_query(cmd, format!("{dbg} reassigned reference local"));
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(
         out.status.success(),
@@ -949,7 +981,7 @@ fn debugger_reports_untaken_conditional_reassignment_unavailable_not_wrong() {
         ]);
         command
     };
-    let out = run_bounded_command(cmd, format!("{dbg} untaken conditional reassignment"));
+    let out = run_debugger_query(cmd, format!("{dbg} untaken conditional reassignment"));
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
@@ -1020,7 +1052,7 @@ fn debugger_names_suspended_actor_handler_frame_at_runtime_boundary() {
         ]);
         command
     };
-    let out = run_bounded_command(cmd, format!("{dbg} handler backtrace"));
+    let out = run_debugger_query(cmd, format!("{dbg} handler backtrace"));
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(
         out.status.success(),
@@ -1098,7 +1130,7 @@ fn debugger_renders_only_active_enum_variant_payload() {
         ]);
         command
     };
-    let out = run_bounded_command(cmd, format!("{dbg} enum rendering"));
+    let out = run_debugger_query(cmd, format!("{dbg} enum rendering"));
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(
         out.status.success(),
@@ -1113,5 +1145,78 @@ fn debugger_renders_only_active_enum_variant_payload() {
     assert!(
         !text.contains("Idle =") && !text.contains("Idle {"),
         "debugger must not render the inactive Idle variant (ran {identity}):\n{text}"
+    );
+}
+
+/// A program that never reaches its breakpoint spins forever before it, so
+/// `run` never returns control to the batch script. This is the negative
+/// control for [`run_debugger_query`]'s generous, host-load-tolerant budget:
+/// a genuine hang must still fail, and fail with a clear diagnostic, rather
+/// than being mistaken for slow-but-progressing debugger work.
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+const NEVER_REACHED_SRC: &str = "\
+fn main() {
+    var n: i64 = 0;
+    loop {
+        n = n + 1;
+    }
+    println(n);
+}
+";
+
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+#[test]
+fn debugger_hang_before_breakpoint_times_out_with_clear_diagnostic() {
+    require_codegen();
+    let dbg = require_debugger();
+    let fixture = build_debug_fixture("never-reached", NEVER_REACHED_SRC);
+    let src = debugger_quote(fixture.src.to_str().expect("src path utf8"));
+    let bin = fixture.binary.to_str().expect("bin path utf8");
+
+    // Break on a line the infinite loop never reaches, so `run` blocks
+    // forever instead of stopping. A short, explicit deadline here (not the
+    // generous `debugger_query_timeout`) keeps this control fast to run.
+    let command = if dbg == "lldb" {
+        let mut command = Command::new("lldb");
+        command.args([
+            "-b",
+            "-o",
+            &format!("breakpoint set --file {src} --line 6"),
+            "-o",
+            "run",
+            "-o",
+            "quit",
+            bin,
+        ]);
+        command
+    } else {
+        let mut command = Command::new("gdb");
+        command.args([
+            "--batch",
+            "-ex",
+            &format!("break {src}:6"),
+            "-ex",
+            "run",
+            bin,
+        ]);
+        command
+    };
+
+    let result = try_run_bounded_command(
+        command,
+        format!("{dbg} hang-before-breakpoint control"),
+        std::time::Duration::from_secs(3),
+    );
+    let error = result.expect_err(
+        "a program that never reaches its breakpoint must time out, not report success",
+    );
+    assert!(
+        error.is_timeout(),
+        "the hang control must fail as a timeout, not another kind of error: {error}"
+    );
+    let message = error.to_string();
+    assert!(
+        message.contains("wall-clock deadline") && message.contains("process tree was killed"),
+        "timeout diagnostic must name the deadline and confirm cleanup: {message}"
     );
 }

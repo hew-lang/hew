@@ -1,5 +1,10 @@
 //! Query methods on `RuntimeCallFamily`: symbol lookup, consume verdicts, suspension.
 
+#![allow(
+    clippy::wildcard_imports,
+    reason = "sibling split of one module; shares its item set"
+)]
+
 use super::descriptors::*;
 use super::family::RuntimeCallFamily;
 use super::family::RuntimeCapability;

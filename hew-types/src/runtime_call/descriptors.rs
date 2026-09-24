@@ -1,5 +1,10 @@
 //! Runtime call/drop descriptors and row-table support types.
 
+#![allow(
+    clippy::wildcard_imports,
+    reason = "sibling split of one module; shares its item set"
+)]
+
 use super::family::RuntimeCallFamily;
 use super::value_kinds::*;
 use super::{ArrayValueOp, AsyncIoOp, FileReadOp, SupervisorPoolOp, TcpOp};

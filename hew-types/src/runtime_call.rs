@@ -20,6 +20,7 @@ pub use async_io::{AsyncIoLoan, AsyncIoOp, AsyncIoResume, IoHandleKind};
 mod tcp;
 pub use tcp::TcpOp;
 mod file_resources;
+#[cfg(test)]
 use crate::{BuiltinType, ResolvedTy};
 pub use file_resources::{FileReadHandleKind, FileReadOp};
 

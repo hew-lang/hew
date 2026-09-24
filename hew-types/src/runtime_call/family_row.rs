@@ -1,5 +1,10 @@
 //! The declarative operation-row table for every `RuntimeCallFamily` variant.
 
+#![allow(
+    clippy::wildcard_imports,
+    reason = "sibling split of one module; shares its item set"
+)]
+
 use super::descriptors::*;
 use super::family::RuntimeCallFamily;
 use super::value_kinds::*;

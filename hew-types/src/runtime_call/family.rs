@@ -1,5 +1,10 @@
 //! `RuntimeCallFamily` definition, capability/extern tables, and its checker-facing constructors.
 
+#![allow(
+    clippy::wildcard_imports,
+    reason = "sibling split of one module; shares its item set"
+)]
+
 use super::value_kinds::*;
 use super::{declared, ArrayValueOp, AsyncIoOp, FileReadOp, SupervisorPoolOp, TcpOp};
 use crate::ResolvedTy;

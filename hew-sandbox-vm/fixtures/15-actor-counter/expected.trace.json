@@ -147,7 +147,7 @@
     }
   ],
   "final_state": {
-    "budget_remaining": 984,
+    "budget_remaining": 979,
     "diagnostics": [],
     "exit_code": 0,
     "globals": [],
@@ -168,7 +168,7 @@
     "stdout": [
       "5\n"
     ],
-    "step_count": 16,
+    "step_count": 21,
     "virtual_clock": {
       "current_ms": 0,
       "epoch_ms": 0,

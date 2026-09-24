@@ -1,10 +1,12 @@
 //! Exact source contracts for native TCP handles and synchronous operations.
 
-use super::{
-    runtime_semantic_contract, Deserialize, EnumIter, IntoEnumIterator, IoHandleKind, ResolvedTy,
-    RuntimeArgumentContract, RuntimeArgumentEffect, RuntimeCallFamily, RuntimeResultEffect,
-    RuntimeSemanticContract, RuntimeValueKind, Serialize,
+use crate::runtime_call::{
+    runtime_semantic_contract, IoHandleKind, RuntimeArgumentContract, RuntimeArgumentEffect,
+    RuntimeCallFamily, RuntimeResultEffect, RuntimeSemanticContract, RuntimeValueKind,
 };
+use crate::ResolvedTy;
+use serde::{Deserialize, Serialize};
+use strum::{EnumIter, IntoEnumIterator};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, EnumIter, Default)]
 pub enum TcpOp {

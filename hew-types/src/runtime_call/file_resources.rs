@@ -1,10 +1,12 @@
 //! Synchronous file-read operations over the existing runtime owners.
 
-use super::{
-    runtime_semantic_contract, BuiltinType, Deserialize, EnumIter, IntoEnumIterator, ResolvedTy,
-    RuntimeArgumentContract, RuntimeArgumentEffect, RuntimeCallFamily, RuntimeResultEffect,
-    RuntimeSemanticContract, RuntimeValueKind, Serialize,
+use crate::runtime_call::{
+    runtime_semantic_contract, RuntimeArgumentContract, RuntimeArgumentEffect, RuntimeCallFamily,
+    RuntimeResultEffect, RuntimeSemanticContract, RuntimeValueKind,
 };
+use crate::{BuiltinType, ResolvedTy};
+use serde::{Deserialize, Serialize};
+use strum::{EnumIter, IntoEnumIterator};
 
 /// Exact handle relationship carried by a file-read operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

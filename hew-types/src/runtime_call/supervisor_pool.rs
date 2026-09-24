@@ -5,7 +5,7 @@
 //! member count is a declaration fact the caller supplies, so an accessor is
 //! arithmetic and a bounds test with no runtime lookup of its own.
 
-use super::{
+use crate::runtime_call::{
     runtime_semantic_contract, RuntimeArgumentContract, RuntimeArgumentEffect,
     RuntimeLogicalFailure, RuntimeResultEffect, RuntimeSemanticContract, RuntimeValueKind,
 };

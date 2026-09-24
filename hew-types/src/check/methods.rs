@@ -9030,10 +9030,15 @@ impl Checker {
                             TypeErrorKind::AmbiguousTraitMethod,
                             span,
                             format!(
-                                "ambiguous trait method `{method}` on `{}`: method is declared by \
-                                 multiple traits ({}); qualify the call to disambiguate",
+                                "ambiguous trait method `{method}` on `{}`: traits {} each \
+                                 declare it, and a call on a trait object cannot name one \
+                                 trait; rename the method in all but one of them",
                                 resolved.user_facing(),
-                                declaring_traits.join(", ")
+                                declaring_traits
+                                    .iter()
+                                    .map(|name| format!("`{name}`"))
+                                    .collect::<Vec<_>>()
+                                    .join(" and ")
                             ),
                         );
                         return Ty::Error;

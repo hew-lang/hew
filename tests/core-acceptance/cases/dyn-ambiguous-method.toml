@@ -11,11 +11,11 @@ severity = "error"
 code = "AmbiguousTraitMethod"
 line = 49
 column = 13
-message = "ambiguous trait method `name` on `dyn (Alpha + Beta)`"
+message = "ambiguous trait method `name` on `dyn (Alpha + Beta)`: traits `Alpha` and `Beta` each declare it, and a call on a trait object cannot name one trait; rename the method in all but one of them"
 
 [[case.expected.diagnostics]]
 severity = "error"
 code = "AmbiguousTraitMethod"
 line = 51
 column = 13
-message = "ambiguous trait method `label` on `dyn Sub`"
+message = "ambiguous trait method `label` on `dyn Sub`: traits `Base` and `Sub` each declare it, and a call on a trait object cannot name one trait; rename the method in all but one of them"

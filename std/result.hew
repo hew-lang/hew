@@ -11,11 +11,11 @@
 //! import std.result;
 //!
 //! fn main() {
-//!     let x: Result<i64, i64> = Ok(42);
+//!     let x: Result<i64, i64> = .Ok(42);
 //!     println(result.is_ok_int(x));          // true
 //!     println(result.unwrap_or_int(x, 0));   // 42
 //!
-//!     let y: Result<i64, i64> = Err(1);
+//!     let y: Result<i64, i64> = .Err(1);
 //!     println(result.is_err_int(y));          // true
 //!     println(result.unwrap_or_int(y, -1));   // -1
 //! }

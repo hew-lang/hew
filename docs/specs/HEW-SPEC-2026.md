@@ -620,7 +620,7 @@ import std.fs;
 fn read_file(path: string) -> Result<string, fs.IoError> {
     let content = fs.read(path)?;  // Early return on error
     fs.write("copy.txt", content)?;
-    Ok(content)
+    .Ok(content)
 }
 ```
 
@@ -714,11 +714,10 @@ qualifier — is **not** part of edition 2026:
 
 - In pattern position it is a hard error, `E_BARE_VARIANT_PATTERN`, for every
   enum including `Option` and `Result`.
-- In expression position it is `E_BARE_VARIANT_EXPR`, enforced for
-  user-defined enums. The four builtin variants (`Some`, `None`, `Ok`, `Err`)
-  still type-check bare in expression position at v0.6.0: the checker's
-  builtin-name dispatch resolves them before the rule can fire. Closing that
-  gap is tracked by issue #3240.
+- In expression position it is a hard error, `E_BARE_VARIANT_EXPR`, for
+  every enum including `Option` and `Result`, whether the variant is called
+  (`Some(x)`) or used as a value (`None`, `Red`), and whether or not an
+  expected type is present.
 
 Both diagnostics carry a machine-applicable fix-it that replaces `X` with
 `.X` where the context selects the enum, and with `Type.X` where it does not.
@@ -1264,7 +1263,7 @@ pub enum ConnectError {
 }
 
 pub fn connect(addr: string) -> Result<Connection, ConnectError> {
-    Ok(Connection { address: addr, internal_state: 0 })
+    .Ok(Connection { address: addr, internal_state: 0 })
 }
 
 fn helper() {  // private to this module
@@ -2038,9 +2037,9 @@ type Node {
 }
 
 fn main() {
-    let root = Rc.new(Node { label: "root", parent: None });
+    let root = Rc.new(Node { label: "root", parent: .None });
     let weak = root.downgrade();
-    root.set(Node { label: "child", parent: Some(weak.clone()) });
+    root.set(Node { label: "child", parent: .Some(weak.clone()) });
 }
 ```
 
@@ -2217,7 +2216,7 @@ The compile error for forgetting to consume (illustrative):
 fn forgot_to_commit(db: Database) -> Result<(), DbError> {
     let tx = db.begin_transaction()?;
     tx.debit(account, money)?;
-    Ok(())
+    .Ok(())
     // ERROR: `tx` of type Transaction (#[linear]) is not consumed at scope exit.
     //        #[linear] values must be consumed via one of: commit, rollback.
 }
@@ -2865,7 +2864,7 @@ fn main() {
     var seed: HashMap<string, i64> = HashMap.new();
     seed.insert("answer", 42);
     let cache = spawn Cache(entries: seed);   // K = string, V = i64
-    let found = cache.lookup("answer") handle error { None };
+    let found = cache.lookup("answer") handle error { .None };
     match found {
         .Some(v) => println(v),
         .None => println("miss"),
@@ -3052,9 +3051,9 @@ fn allocate_buffer(size: usize) -> *mut u8 {
 fn safe_read(fd: i32, buf: *mut u8, count: usize) -> Result<usize, string> {
     let result = unsafe { read(fd, buf, count) };
     if result < 0 {
-        Err("read failed")
+        .Err("read failed")
     } else {
-        Ok(result as usize)
+        .Ok(result as usize)
     }
 }
 ```
@@ -3088,9 +3087,9 @@ impl File {
         let c_path = path.to_c_string();
         let fd = unsafe { open(c_path.as_ptr(), O_RDONLY) };
         if fd < 0 {
-            Err("open failed")
+            .Err("open failed")
         } else {
-            Ok(File { fd })
+            .Ok(File { fd })
         }
     }
 
@@ -3399,7 +3398,7 @@ fn main() {
     let hit = m["answer"];   // i64 — 42
     let miss = m.get("absent");  // Option<i64> — None (m["absent"] would trap)
     assert(hit == 42);
-    assert(miss == None);
+    assert(miss == Option.None);
 }
 ```
 
@@ -6657,12 +6656,12 @@ import std.string;
 
 fn port(config: HashMap<string, string>) -> Result<i64, string> {
     let .Some(raw) = config.get("port") else {
-        return Err("port missing");
+        return .Err("port missing");
     };
     let .Ok(port) = string.to_int(raw) else {
-        return Err(f"port is not a number: {raw}");
+        return .Err(f"port is not a number: {raw}");
     };
-    Ok(port)
+    .Ok(port)
 }
 ```
 

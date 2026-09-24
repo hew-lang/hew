@@ -11,11 +11,11 @@
 //! import std.option;
 //!
 //! fn main() {
-//!     let x = Some(42);
+//!     let x = Option.Some(42);
 //!     println(option.is_some_int(x));        // true
 //!     println(option.unwrap_or_int(x, 0));   // 42
 //!
-//!     let y: Option<i64> = None;
+//!     let y: Option<i64> = .None;
 //!     println(option.is_none_int(y));         // true
 //!     println(option.unwrap_or_int(y, -1));   // -1
 //! }

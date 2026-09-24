@@ -547,7 +547,13 @@ fn prelude_impl_diagnostics_name_the_selected_std_file() {
     copy_tree(&repo_root().join("std"), &std_copy);
     let option = std_copy.join("option.hew");
     let source = std::fs::read_to_string(&option).expect("read std option");
-    assert!(source.contains("self = .None;"), "fixture anchor moved");
+    let anchor = source.find("self = .None;").expect("fixture anchor moved");
+    let line = source[..anchor].matches('\n').count() + 1;
+    let column = anchor
+        - source[..anchor]
+            .rfind('\n')
+            .map_or(0, |newline| newline + 1)
+        + 8;
     std::fs::write(&option, source.replace("self = .None;", "self = None;"))
         .expect("break std option copy");
     let project = dir.path().join("project");
@@ -567,7 +573,7 @@ fn prelude_impl_diagnostics_name_the_selected_std_file() {
     );
     assert!(
         stderr.contains(&format!(
-            "{}:213:16: error: E_BARE_VARIANT_EXPR",
+            "{}:{line}:{column}: error: E_BARE_VARIANT_EXPR",
             std::fs::canonicalize(&option)
                 .expect("canonical std option path")
                 .display()

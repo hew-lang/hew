@@ -2762,12 +2762,13 @@ impl Checker {
                 // site does — never the bare spelling in isolation.
                 let trait_is_local = self.trait_ref_is_local(&tb.name);
                 // hew-compile loads the prelude's Display impls as the
-                // std.builtins module. Only the running compiler's own shipped
-                // source holds that authority; a project, cwd or `HEW_STD`
-                // copy of std/builtins.hew does not.
-                let is_embedded_builtins_impl = self.current_module.as_deref()
-                    == Some("std.builtins")
-                    && self.current_item_source.as_ref().is_some_and(|source| {
+                // std.builtins module: from the running compiler's own shipped
+                // source, or source-less from the compiled-in text for an
+                // analysis with no search path. A project, cwd or `HEW_STD`
+                // copy of std/builtins.hew holds no such authority.
+                let is_embedded_builtins_impl = self
+                    .checking_canonical_stdlib_source("std.builtins")
+                    && self.current_item_source.as_ref().is_none_or(|source| {
                         self.module_registry
                             .source_has_stdlib_authority(source, "std.builtins")
                     });

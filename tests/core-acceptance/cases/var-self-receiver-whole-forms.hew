@@ -44,7 +44,7 @@ impl Touch for Holder {
     }
 }
 fn main() {
-    var holder = Holder { conn: Conn { fd: 1 }, count: 0, spare: Some(Conn { fd: 5 }), items: [1, 2] };
+    var holder = Holder { conn: Conn { fd: 1 }, count: 0, spare: .Some(Conn { fd: 5 }), items: [1, 2] };
     println(holder.swap(2));
     println(holder.take_spare());
     holder.bump();

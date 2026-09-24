@@ -28,7 +28,7 @@ fn main() {
     let v = Value {
         handle: unsafe { hew_deque_new() },
         inner: Inner { h: unsafe { hew_deque_new() } },
-        spare: None,
+        spare: .None,
     };
     let h = v.release();
     unsafe { hew_deque_free(h) };

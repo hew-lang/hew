@@ -2,6 +2,6 @@ pub fn imported_option<T>(consume opt: Option<T>) -> T {
     opt.expect("opt is present")
 }
 
-pub fn imported_result<T, E>(consume res: Result<T, E>, fallback: T) -> T {
+pub fn imported_result<T, E>(consume res: Result<T, E>, consume fallback: T) -> T {
     res.unwrap_or(fallback)
 }

@@ -2833,7 +2833,7 @@ fn builtin_option_extractors_consume_the_receiver() {
             value.expect("the value is present")
         }
 
-        fn take_or(consume value: Option<string>, fallback: string) -> string {
+        fn take_or(consume value: Option<string>, consume fallback: string) -> string {
             value.unwrap_or(fallback)
         }
         "#,

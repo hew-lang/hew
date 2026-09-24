@@ -8994,12 +8994,16 @@ impl Checker {
         }
 
         // A parameter name is part of the method's API: a named call through
-        // the trait and one on the concrete type must bind alike.
+        // the trait and one on the concrete type must bind alike. An impl may
+        // mark a parameter unused as `_name`; callers still label it `name`.
         if let Some((trait_param, impl_param)) = trait_sig
             .param_names
             .iter()
             .zip(&impl_sig.param_names)
-            .find(|(trait_param, impl_param)| trait_param != impl_param)
+            .find(|(trait_param, impl_param)| {
+                trait_param != impl_param
+                    && impl_param.strip_prefix('_') != Some(trait_param.as_str())
+            })
         {
             self.report_error_with_note(
                 TypeErrorKind::ImplParamNameMismatch,

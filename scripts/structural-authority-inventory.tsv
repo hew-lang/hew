@@ -51,6 +51,7 @@ hir-ast-boundary	expr-use:fold_const_expr	hew-hir/src/lower.rs	stage-2	D486 stag
 hir-ast-boundary	expr-use:for_in_iterable_is_place	hew-hir/src/lower.rs	stage-2	D486 stage one freeze: matches hew_parser::ast::Expr variants directly instead of the checker's typed HirExprKind shape
 hir-ast-boundary	expr-use:lower_builtin_hashmap_into_iter	hew-hir/src/lower.rs	stage-2	D486 stage one freeze: matches hew_parser::ast::Expr variants directly instead of the checker's typed HirExprKind shape
 hir-ast-boundary	expr-use:lower_builtin_vec_higher_order	hew-hir/src/lower.rs	stage-2	D486 stage one freeze: matches hew_parser::ast::Expr variants directly instead of the checker's typed HirExprKind shape
+hir-ast-boundary	expr-use:lower_call_expr	hew-hir/src/lower.rs	stage-2	D486 stage one freeze: call arm moved out of lower_expr_inner to keep its recursive frame small; matches hew_parser::ast::Expr variants directly instead of the checker's typed HirExprKind shape
 hir-ast-boundary	expr-use:lower_checked_select_source	hew-hir/src/lower.rs	stage-2	D486 stage one freeze: matches hew_parser::ast::Expr variants directly instead of the checker's typed HirExprKind shape
 hir-ast-boundary	expr-use:lower_expr_inner	hew-hir/src/lower.rs	stage-2	D486 stage one freeze: matches hew_parser::ast::Expr variants directly instead of the checker's typed HirExprKind shape
 hir-ast-boundary	expr-use:lower_for_iter_desugar	hew-hir/src/lower.rs	stage-2	D486 stage one freeze: matches hew_parser::ast::Expr variants directly instead of the checker's typed HirExprKind shape

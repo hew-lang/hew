@@ -1,10 +1,18 @@
 // Named arguments bind to the parameter they name and evaluate in the order
-// written, on functions, methods, trait objects and actor handlers alike.
+// written, on functions, methods, trait objects, math intrinsics and actor
+// handlers alike.
+import std.math;
+
 fn sub(a: i64, b: i64) -> i64 {
     a - b
 }
 
 fn trace(label: string, value: i64) -> i64 {
+    println(f"eval {label}");
+    value
+}
+
+fn tf(label: string, value: f64) -> f64 {
     println(f"eval {label}");
     value
 }
@@ -53,6 +61,9 @@ fn main() {
     let card = Card { h: 1 };
     println(card.describe(suffix: "]", prefix: "["));
     println(through_dyn(Square { side: 2 }));
+    println(math.copysign(y: tf("y", -1.0), x: tf("x", 3.0)));
+    println(math.pow(exp: tf("exp", 2.0), base: tf("base", 3.0)));
+    println(math.min(b: trace("b", 1), a: trace("a", 2)));
     let journal = spawn Journal;
     println(journal.pair(second: "b", first: "a").expect("pair"));
     close(journal);

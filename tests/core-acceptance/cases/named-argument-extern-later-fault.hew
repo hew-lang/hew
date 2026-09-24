@@ -1,0 +1,20 @@
+// An extern call evaluates its named arguments as written: the owned string
+// the first one produces is released once when the second faults.
+extern "C" {
+    fn hew_string_compare(a: string, b: string) -> i32;
+}
+
+fn owned(label: string) -> string {
+    println(f"make {label}");
+    label.to_upper()
+}
+
+fn fail() -> string {
+    panic("later extern argument");
+}
+
+fn main() {
+    println(unsafe {
+        hew_string_compare(b: owned("b"), a: fail())
+    });
+}

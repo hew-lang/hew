@@ -6,5 +6,5 @@ suites = ["acceptance"]
 timeout_seconds = 30
 
 [case.expected]
-stdout = "eval b\neval a\na/b\neval r\neval l\nnote l/r\nnote x/y\n"
+stdout = "eval b\neval a\na/b\neval r\neval l\nnote l/r\nnote x/y\nc/d\n"
 exit = 0

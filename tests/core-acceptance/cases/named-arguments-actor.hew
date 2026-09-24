@@ -6,8 +6,12 @@ fn trace(label: string) -> string {
 }
 
 actor Journal {
-    receive fn pair(first: string, second: string) -> string { f"{first}/{second}" }
-    receive fn note(left: string, right: string) { println(f"note {left}/{right}"); }
+    receive fn pair(first: string, second: string) -> string {
+        f"{first}/{second}"
+    }
+    receive fn note(left: string, right: string) {
+        println(f"note {left}/{right}");
+    }
 }
 
 fn main() {
@@ -16,5 +20,8 @@ fn main() {
     journal.note(right: trace("r"), left: trace("l")).expect("note");
     let outbox = mailbox(journal, on_full: .Wait);
     outbox.note(right: "y", left: "x").expect("submit");
+    // The next completion call is queued behind the submission, so its
+    // reply follows the submitted note.
+    println(journal.pair(second: "d", first: "c").expect("pair"));
     close(journal);
 }

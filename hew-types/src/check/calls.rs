@@ -368,7 +368,7 @@ impl Checker {
                     );
                     None
                 }
-                Some(name) => match param_names.iter().position(|param| param == name) {
+                Some(name) => match Self::named_parameter_slot(param_names, name) {
                     Some(slot) if supplied[slot] => {
                         let how = if slot < index && args[slot].name().is_none() {
                             "positionally"
@@ -430,6 +430,20 @@ impl Checker {
                 .insert(key, slots.iter().copied().map(Option::unwrap).collect());
         }
         slots
+    }
+
+    /// The parameter a call label names. An unused parameter `_depth` is
+    /// labelled `depth`, which keeps an impl's call sites aligned with its
+    /// trait.
+    fn named_parameter_slot(param_names: &[String], name: &str) -> Option<usize> {
+        param_names
+            .iter()
+            .position(|param| param == name)
+            .or_else(|| {
+                param_names
+                    .iter()
+                    .position(|param| param.strip_prefix('_') == Some(name))
+            })
     }
 
     /// Refuse named arguments on a callee whose parameters carry no names

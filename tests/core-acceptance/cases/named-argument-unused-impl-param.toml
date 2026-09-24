@@ -1,0 +1,10 @@
+[[case]]
+id = "named-argument-unused-impl-param"
+intent = "An impl parameter spelled `_` plus the trait's name is admitted, and named calls use the trait's name on the concrete type and through a bound."
+source = "cases/named-argument-unused-impl-param.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "3\n5\n"
+exit = 0

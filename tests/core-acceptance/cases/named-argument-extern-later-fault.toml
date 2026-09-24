@@ -1,0 +1,11 @@
+[[case]]
+id = "named-argument-extern-later-fault"
+intent = "A fault in a later named extern argument releases the owned string an earlier one produced exactly once, and the extern is never entered."
+source = "cases/named-argument-extern-later-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "make b\n"
+stderr = "hew: failure: UserPanic (212): later extern argument\n"
+exit = 1

@@ -1,0 +1,10 @@
+[[case]]
+id = "named-arguments-std-methods"
+intent = "Named arguments bind on the std Option, Result and iterator method bodies by their declared parameter names."
+source = "cases/named-arguments-std-methods.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "7\n1\nhi\ntrue\ntrue\n"
+exit = 0

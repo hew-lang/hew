@@ -16411,6 +16411,303 @@ impl LowerCtx {
         }
     }
 
+    /// Lower a call expression. An early-complete call returns its finished
+    /// expression; every other shape returns its kind and type for the
+    /// caller to finish. Kept out of `lower_expr_inner` so its locals do not
+    /// enlarge that recursive frame.
+    #[inline(never)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "call lowering selects one of many checked call shapes"
+    )]
+    fn lower_call_expr(
+        &mut self,
+        function: &Spanned<Expr>,
+        args: &[CallArg],
+        span: Span,
+        site: SiteId,
+        intent: IntentKind,
+    ) -> Result<(HirExprKind, ResolvedTy), Box<HirExpr>> {
+        let lowered = {
+            let rewrite_key = self.mk_key(&span);
+            // `handle(msg)` on a lambda actor is a completion call, not a
+            // callable-value invocation: the checker records it as an ask.
+            if let Some(ActorMethodKind::Ask {
+                method_id,
+                reply_ty,
+                policy,
+            }) = self
+                .actor_method_dispatch
+                .get(&rewrite_key)
+                .filter(|dispatch| {
+                    matches!(dispatch, ActorMethodKind::Ask { method_id, .. }
+                            if method_id == hew_types::actor_protocol::LAMBDA_ACTOR_METHOD_ID)
+                })
+                .cloned()
+            {
+                let (kind, ty) = self
+                    .lower_lambda_actor_call(function, args, &method_id, &reply_ty, policy, &span);
+                return Err(Box::new(HirExpr {
+                    node: self.ids.node(),
+                    site,
+                    ty,
+                    intent,
+                    kind,
+                    span,
+                }));
+            }
+            // `mailbox(handle, ..)(msg)` submits one way: the checker
+            // records the same lambda dispatch as a `Message`.
+            if let Some(ActorMethodKind::Message { method_id, policy }) = self
+                .actor_method_dispatch
+                .get(&rewrite_key)
+                .filter(|dispatch| {
+                    matches!(dispatch, ActorMethodKind::Message { method_id, .. }
+                            if method_id == hew_types::actor_protocol::LAMBDA_ACTOR_METHOD_ID)
+                })
+                .cloned()
+            {
+                let (kind, ty) =
+                    self.lower_lambda_actor_submission(function, args, &method_id, policy, &span);
+                return Err(Box::new(HirExpr {
+                    node: self.ids.node(),
+                    site,
+                    ty,
+                    intent,
+                    kind,
+                    span,
+                }));
+            }
+            if let Some(MethodCallRewrite::GenericWireCodec {
+                direction,
+                value_ty,
+            }) = self.method_call_rewrites.get(&rewrite_key).cloned()
+            {
+                let (kind, ty) =
+                    self.lower_generic_wire_codec(args, direction, value_ty, span.clone());
+                return Err(Box::new(HirExpr {
+                    node: self.ids.node(),
+                    site,
+                    ty,
+                    intent,
+                    kind,
+                    span,
+                }));
+            }
+            if let Some(MethodCallRewrite::RcIntrinsic {
+                op: RcIntrinsicOp::New,
+                payload_ty,
+            }) = self.method_call_rewrites.get(&rewrite_key).cloned()
+            {
+                let result_ty = self
+                    .resolved_expr_types
+                    .get(&rewrite_key)
+                    .cloned()
+                    .unwrap_or_else(|| ResolvedTy::Named {
+                        name: "Rc".to_string(),
+                        args: vec![payload_ty.clone()],
+                        builtin: Some(BuiltinType::Rc),
+                        is_opaque: false,
+                    });
+                let value = args
+                    .first()
+                    .map(|arg| Box::new(self.lower_expr(arg.expr(), IntentKind::Consume)));
+                return Err(Box::new(HirExpr {
+                    node: self.ids.node(),
+                    site,
+                    ty: result_ty.clone(),
+                    intent,
+                    kind: HirExprKind::RcIntrinsic {
+                        op: RcIntrinsicOp::New,
+                        payload_ty,
+                        receiver: None,
+                        value,
+                        result_ty,
+                    },
+                    span,
+                }));
+            }
+            let direct_extern_symbol = match &function.0 {
+                Expr::Identifier(name) if self.extern_fn_names.contains(name) => {
+                    Some(name.as_str())
+                }
+                _ => None,
+            };
+            let LoweredCallArgs {
+                mut args,
+                evaluation_order,
+            } = self.lower_call_args_for_callee(args, &span, direct_extern_symbol);
+            if matches!(
+                self.method_call_rewrites.get(&rewrite_key),
+                Some(MethodCallRewrite::VecFrom)
+            ) {
+                if args.len() == 1 {
+                    return Err(Box::new(self.subsumed_value(
+                        site,
+                        &span,
+                        intent,
+                        args.remove(0),
+                    )));
+                }
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: "Vec.from".to_string(),
+                        reason: format!(
+                            "checker selected Vec.from rewrite with {} argument(s)",
+                            args.len()
+                        ),
+                    },
+                    span.clone(),
+                    "Vec.from lowering requires exactly one checked source value",
+                ));
+                return Err(Box::new(
+                    self.unsupported_expr(span, "Vec.from has invalid arity"),
+                ));
+            }
+            // Hew array literals already lower to the owned `Vec<T>`
+            // construction sequence. `Vec::from([..])` is therefore an
+            // identity at HIR: preserve that one canonical construction
+            // path rather than fabricating a second Vec-from-array ABI.
+            // The checker accepts only the array/Vec source forms, so any
+            // other source form is a clean checker diagnostic before this
+            // lowering boundary.
+            if let Expr::ContextVariant(context) = &function.0 {
+                let checker_ctor_ty = self.checker_expr_ty_if_present(&span);
+                let contextual_name = match &checker_ctor_ty {
+                    Some(ResolvedTy::Named { name, .. }) => {
+                        format!("{name}::{}", context.name)
+                    }
+                    _ => context.name.clone(),
+                };
+                let variant_kind_for_call = self
+                    .lookup_variant_ctor(&contextual_name, checker_ctor_ty.as_ref())
+                    .map(|(_, _, kind)| kind.clone());
+                if let Some(HirVariantKind::Tuple(_)) = &variant_kind_for_call {
+                    let taken = std::mem::take(&mut args);
+                    self.lower_variant_ctor_tuple_call(&contextual_name, taken, &span)
+                } else {
+                    if let Some(kind) = &variant_kind_for_call {
+                        self.report_variant_ctor_call_shape_mismatch(&contextual_name, kind, &span);
+                    } else {
+                        self.diagnostics.push(HirDiagnostic::new(
+                                HirDiagnosticKind::CheckerBoundaryViolation {
+                                    name: contextual_name.clone(),
+                                    reason: "missing contextual variant constructor".to_string(),
+                                },
+                                span.clone(),
+                                "checker admitted a contextual variant call without an exact constructor",
+                            ));
+                    }
+                    (
+                            HirExprKind::Unsupported(format!(
+                                "contextual variant call `{contextual_name}` is not a tuple constructor"
+                            )),
+                            ResolvedTy::Unit,
+                        )
+                }
+            } else if let Expr::Identifier(name) = &function.0 {
+                // Intercept payload-bearing variant constructors written
+                // as calls (`Shape::Line(5)`, bare `Line(5)`). The bare
+                // identifier path produces `MachineVariantCtor { payload:
+                // None }`; the call form must capture the args into
+                // `payload: Some(...)`. Mismatched ctor shape (calling a
+                // unit variant with args, or calling a struct variant
+                // positionally) emits a structured diagnostic and falls
+                // through to the regular-call path so checker-stream
+                // coverage is preserved.
+                let checker_ctor_ty = self.checker_expr_ty_if_present(&span);
+                let variant_kind_for_call = self
+                    .lookup_variant_ctor(name, checker_ctor_ty.as_ref())
+                    .map(|(_, _, kind)| kind.clone());
+                if let Some(HirVariantKind::Tuple(_)) = &variant_kind_for_call {
+                    let taken = std::mem::take(&mut args);
+                    self.lower_variant_ctor_tuple_call(name, taken, &span)
+                } else if let Some(kind) = &variant_kind_for_call {
+                    self.report_variant_ctor_call_shape_mismatch(name, kind, &span);
+                    // Fall through to regular-call to keep checker-stream
+                    // coverage for the malformed source.
+                    self.lower_regular_call(
+                        function,
+                        LoweredCallArgs {
+                            args,
+                            evaluation_order,
+                        },
+                        &span,
+                        site,
+                    )
+                } else if matches!(name.as_str(), "assert_eq" | "assert_ne") {
+                    self.lower_equality_assertion(name, args, &span)
+                } else if stdlib_catalog::is_overloaded_builtin(name) {
+                    let arg_tys = args.iter().map(|arg| arg.ty.clone()).collect::<Vec<_>>();
+                    if let Some(entry) = stdlib_catalog::resolve_overload(name, &arg_tys) {
+                        let result_ty = entry.return_ty.to_resolved();
+                        let callee = self.lower_stdlib_callee(entry, function.1.clone());
+                        (
+                            HirExprKind::Call {
+                                target: self.registered_symbol_target(entry.name),
+                                callee: Box::new(callee),
+                                args,
+                                evaluation_order: Vec::new(),
+                            },
+                            result_ty,
+                        )
+                    } else {
+                        match self.try_lower_generic_display_builtin(name, args, &span) {
+                            Ok(lowered) => lowered,
+                            Err(args) => {
+                                let arg_ty = arg_tys.first().cloned().unwrap_or(ResolvedTy::Unit);
+                                self.diagnostics.push(HirDiagnostic::new(
+                                        HirDiagnosticKind::UnresolvedBuiltinOverload {
+                                            name: name.clone(),
+                                            arg_ty,
+                                        },
+                                        span.clone(),
+                                        "builtin call has no registered monomorphic overload for this argument type",
+                                    ));
+                                let callee =
+                                    self.unresolved_builtin_callee(name, function.1.clone());
+                                (
+                                        HirExprKind::Call {
+                                            target: CallTarget::Unsupported {
+                                                reason: format!(
+                                                    "builtin overload `{name}` was rejected by the checker"
+                                                ),
+                                            },
+                                            callee: Box::new(callee),
+                                            args,
+                                            evaluation_order: Vec::new(),
+                                        },
+                                        ResolvedTy::Unit,
+                                    )
+                            }
+                        }
+                    }
+                } else {
+                    self.lower_regular_call(
+                        function,
+                        LoweredCallArgs {
+                            args,
+                            evaluation_order,
+                        },
+                        &span,
+                        site,
+                    )
+                }
+            } else {
+                self.lower_regular_call(
+                    function,
+                    LoweredCallArgs {
+                        args,
+                        evaluation_order,
+                    },
+                    &span,
+                    site,
+                )
+            }
+        };
+        Ok(lowered)
+    }
+
     #[allow(
         clippy::too_many_lines,
         clippy::single_match_else,
@@ -16944,279 +17241,9 @@ impl LowerCtx {
             }
             Expr::Unary { op, operand } => self.lower_unary_expr(*op, operand, &span),
             Expr::Call { function, args, .. } => {
-                let rewrite_key = self.mk_key(&span);
-                // `handle(msg)` on a lambda actor is a completion call, not a
-                // callable-value invocation: the checker records it as an ask.
-                if let Some(ActorMethodKind::Ask {
-                    method_id,
-                    reply_ty,
-                    policy,
-                }) = self
-                    .actor_method_dispatch
-                    .get(&rewrite_key)
-                    .filter(|dispatch| {
-                        matches!(dispatch, ActorMethodKind::Ask { method_id, .. }
-                            if method_id == hew_types::actor_protocol::LAMBDA_ACTOR_METHOD_ID)
-                    })
-                    .cloned()
-                {
-                    let (kind, ty) = self.lower_lambda_actor_call(
-                        function, args, &method_id, &reply_ty, policy, &span,
-                    );
-                    return HirExpr {
-                        node: self.ids.node(),
-                        site,
-                        ty,
-                        intent,
-                        kind,
-                        span,
-                    };
-                }
-                // `mailbox(handle, ..)(msg)` submits one way: the checker
-                // records the same lambda dispatch as a `Message`.
-                if let Some(ActorMethodKind::Message { method_id, policy }) = self
-                    .actor_method_dispatch
-                    .get(&rewrite_key)
-                    .filter(|dispatch| {
-                        matches!(dispatch, ActorMethodKind::Message { method_id, .. }
-                            if method_id == hew_types::actor_protocol::LAMBDA_ACTOR_METHOD_ID)
-                    })
-                    .cloned()
-                {
-                    let (kind, ty) = self
-                        .lower_lambda_actor_submission(function, args, &method_id, policy, &span);
-                    return HirExpr {
-                        node: self.ids.node(),
-                        site,
-                        ty,
-                        intent,
-                        kind,
-                        span,
-                    };
-                }
-                if let Some(MethodCallRewrite::GenericWireCodec {
-                    direction,
-                    value_ty,
-                }) = self.method_call_rewrites.get(&rewrite_key).cloned()
-                {
-                    let (kind, ty) =
-                        self.lower_generic_wire_codec(args, direction, value_ty, span.clone());
-                    return HirExpr {
-                        node: self.ids.node(),
-                        site,
-                        ty,
-                        intent,
-                        kind,
-                        span,
-                    };
-                }
-                if let Some(MethodCallRewrite::RcIntrinsic {
-                    op: RcIntrinsicOp::New,
-                    payload_ty,
-                }) = self.method_call_rewrites.get(&rewrite_key).cloned()
-                {
-                    let result_ty = self
-                        .resolved_expr_types
-                        .get(&rewrite_key)
-                        .cloned()
-                        .unwrap_or_else(|| ResolvedTy::Named {
-                            name: "Rc".to_string(),
-                            args: vec![payload_ty.clone()],
-                            builtin: Some(BuiltinType::Rc),
-                            is_opaque: false,
-                        });
-                    let value = args
-                        .first()
-                        .map(|arg| Box::new(self.lower_expr(arg.expr(), IntentKind::Consume)));
-                    return HirExpr {
-                        node: self.ids.node(),
-                        site,
-                        ty: result_ty.clone(),
-                        intent,
-                        kind: HirExprKind::RcIntrinsic {
-                            op: RcIntrinsicOp::New,
-                            payload_ty,
-                            receiver: None,
-                            value,
-                            result_ty,
-                        },
-                        span,
-                    };
-                }
-                let direct_extern_symbol = match &function.0 {
-                    Expr::Identifier(name) if self.extern_fn_names.contains(name) => {
-                        Some(name.as_str())
-                    }
-                    _ => None,
-                };
-                let LoweredCallArgs {
-                    mut args,
-                    evaluation_order,
-                } = self.lower_call_args_for_callee(args, &span, direct_extern_symbol);
-                if matches!(
-                    self.method_call_rewrites.get(&rewrite_key),
-                    Some(MethodCallRewrite::VecFrom)
-                ) {
-                    if args.len() == 1 {
-                        return self.subsumed_value(site, &span, intent, args.remove(0));
-                    }
-                    self.diagnostics.push(HirDiagnostic::new(
-                        HirDiagnosticKind::CheckerBoundaryViolation {
-                            name: "Vec.from".to_string(),
-                            reason: format!(
-                                "checker selected Vec.from rewrite with {} argument(s)",
-                                args.len()
-                            ),
-                        },
-                        span.clone(),
-                        "Vec.from lowering requires exactly one checked source value",
-                    ));
-                    return self.unsupported_expr(span, "Vec.from has invalid arity");
-                }
-                // Hew array literals already lower to the owned `Vec<T>`
-                // construction sequence. `Vec::from([..])` is therefore an
-                // identity at HIR: preserve that one canonical construction
-                // path rather than fabricating a second Vec-from-array ABI.
-                // The checker accepts only the array/Vec source forms, so any
-                // other source form is a clean checker diagnostic before this
-                // lowering boundary.
-                if let Expr::ContextVariant(context) = &function.0 {
-                    let checker_ctor_ty = self.checker_expr_ty_if_present(&span);
-                    let contextual_name = match &checker_ctor_ty {
-                        Some(ResolvedTy::Named { name, .. }) => {
-                            format!("{name}::{}", context.name)
-                        }
-                        _ => context.name.clone(),
-                    };
-                    let variant_kind_for_call = self
-                        .lookup_variant_ctor(&contextual_name, checker_ctor_ty.as_ref())
-                        .map(|(_, _, kind)| kind.clone());
-                    if let Some(HirVariantKind::Tuple(_)) = &variant_kind_for_call {
-                        let taken = std::mem::take(&mut args);
-                        self.lower_variant_ctor_tuple_call(&contextual_name, taken, &span)
-                    } else {
-                        if let Some(kind) = &variant_kind_for_call {
-                            self.report_variant_ctor_call_shape_mismatch(
-                                &contextual_name,
-                                kind,
-                                &span,
-                            );
-                        } else {
-                            self.diagnostics.push(HirDiagnostic::new(
-                                HirDiagnosticKind::CheckerBoundaryViolation {
-                                    name: contextual_name.clone(),
-                                    reason: "missing contextual variant constructor".to_string(),
-                                },
-                                span.clone(),
-                                "checker admitted a contextual variant call without an exact constructor",
-                            ));
-                        }
-                        (
-                            HirExprKind::Unsupported(format!(
-                                "contextual variant call `{contextual_name}` is not a tuple constructor"
-                            )),
-                            ResolvedTy::Unit,
-                        )
-                    }
-                } else if let Expr::Identifier(name) = &function.0 {
-                    // Intercept payload-bearing variant constructors written
-                    // as calls (`Shape::Line(5)`, bare `Line(5)`). The bare
-                    // identifier path produces `MachineVariantCtor { payload:
-                    // None }`; the call form must capture the args into
-                    // `payload: Some(...)`. Mismatched ctor shape (calling a
-                    // unit variant with args, or calling a struct variant
-                    // positionally) emits a structured diagnostic and falls
-                    // through to the regular-call path so checker-stream
-                    // coverage is preserved.
-                    let checker_ctor_ty = self.checker_expr_ty_if_present(&span);
-                    let variant_kind_for_call = self
-                        .lookup_variant_ctor(name, checker_ctor_ty.as_ref())
-                        .map(|(_, _, kind)| kind.clone());
-                    if let Some(HirVariantKind::Tuple(_)) = &variant_kind_for_call {
-                        let taken = std::mem::take(&mut args);
-                        self.lower_variant_ctor_tuple_call(name, taken, &span)
-                    } else if let Some(kind) = &variant_kind_for_call {
-                        self.report_variant_ctor_call_shape_mismatch(name, kind, &span);
-                        // Fall through to regular-call to keep checker-stream
-                        // coverage for the malformed source.
-                        self.lower_regular_call(
-                            function,
-                            LoweredCallArgs {
-                                args,
-                                evaluation_order,
-                            },
-                            &span,
-                            site,
-                        )
-                    } else if matches!(name.as_str(), "assert_eq" | "assert_ne") {
-                        self.lower_equality_assertion(name, args, &span)
-                    } else if stdlib_catalog::is_overloaded_builtin(name) {
-                        let arg_tys = args.iter().map(|arg| arg.ty.clone()).collect::<Vec<_>>();
-                        if let Some(entry) = stdlib_catalog::resolve_overload(name, &arg_tys) {
-                            let result_ty = entry.return_ty.to_resolved();
-                            let callee = self.lower_stdlib_callee(entry, function.1.clone());
-                            (
-                                HirExprKind::Call {
-                                    target: self.registered_symbol_target(entry.name),
-                                    callee: Box::new(callee),
-                                    args,
-                                    evaluation_order: Vec::new(),
-                                },
-                                result_ty,
-                            )
-                        } else {
-                            match self.try_lower_generic_display_builtin(name, args, &span) {
-                                Ok(lowered) => lowered,
-                                Err(args) => {
-                                    let arg_ty =
-                                        arg_tys.first().cloned().unwrap_or(ResolvedTy::Unit);
-                                    self.diagnostics.push(HirDiagnostic::new(
-                                        HirDiagnosticKind::UnresolvedBuiltinOverload {
-                                            name: name.clone(),
-                                            arg_ty,
-                                        },
-                                        span.clone(),
-                                        "builtin call has no registered monomorphic overload for this argument type",
-                                    ));
-                                    let callee =
-                                        self.unresolved_builtin_callee(name, function.1.clone());
-                                    (
-                                        HirExprKind::Call {
-                                            target: CallTarget::Unsupported {
-                                                reason: format!(
-                                                    "builtin overload `{name}` was rejected by the checker"
-                                                ),
-                                            },
-                                            callee: Box::new(callee),
-                                            args,
-                                            evaluation_order: Vec::new(),
-                                        },
-                                        ResolvedTy::Unit,
-                                    )
-                                }
-                            }
-                        }
-                    } else {
-                        self.lower_regular_call(
-                            function,
-                            LoweredCallArgs {
-                                args,
-                                evaluation_order,
-                            },
-                            &span,
-                            site,
-                        )
-                    }
-                } else {
-                    self.lower_regular_call(
-                        function,
-                        LoweredCallArgs {
-                            args,
-                            evaluation_order,
-                        },
-                        &span,
-                        site,
-                    )
+                match self.lower_call_expr(function, args, span.clone(), site, intent) {
+                    Ok(lowered) => lowered,
+                    Err(done) => return *done,
                 }
             }
             Expr::Block(block) if block.stmts.is_empty() && block.trailing_expr.is_none() => {
@@ -25084,6 +25111,217 @@ impl LowerCtx {
         })
     }
 
+    /// Lower a method call the checker dispatched to an actor receive handler.
+    /// Kept out of `lower_method_call` so its locals do not enlarge that frame.
+    #[inline(never)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one actor dispatch selects message, ask or stream lowering"
+    )]
+    fn lower_actor_method_call(
+        &mut self,
+        dispatch: ActorMethodKind,
+        receiver: &Spanned<Expr>,
+        method: &str,
+        args: &[hew_parser::ast::CallArg],
+        span: &Span,
+    ) -> (HirExprKind, ResolvedTy) {
+        let span = span.clone();
+        let key = self.mk_key(&span);
+        let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
+        // A lambda dispatch on method-call syntax is a call on a stored
+        // handle: `job.run(3)` addresses the handle in the field, so the
+        // field read is the delivery receiver.
+        let lowered_receiver = if matches!(&dispatch,
+                ActorMethodKind::Ask { method_id, .. } | ActorMethodKind::Message { method_id, .. }
+                    if method_id == hew_types::actor_protocol::LAMBDA_ACTOR_METHOD_ID)
+        {
+            match self.method_call_rewrites.get(&key).cloned() {
+                Some(MethodCallRewrite::RecordFnFieldCall { field_ty }) => self.make_expr(
+                    HirExprKind::FieldAccess {
+                        object: Box::new(lowered_receiver),
+                        field: method.to_string(),
+                    },
+                    field_ty,
+                    IntentKind::Read,
+                    span.clone(),
+                ),
+                // `handle.send(msg)` addresses the handle itself, so the
+                // receiver is already the delivery target.
+                _ => lowered_receiver,
+            }
+        } else {
+            lowered_receiver
+        };
+        let LoweredCallArgs {
+            args: lowered_args,
+            evaluation_order,
+        } = self.lower_call_args_by_slot(args, &span, |this, _, arg| {
+            // A single-owner value crossing an actor message boundary
+            // transfers ownership to the receiving handler — the
+            // mailbox copies the handle/resource, not the underlying
+            // thing it owns. Lower such args with `IntentKind::Consume`
+            // so the move-checker marks the caller binding consumed: a
+            // later use (`rx.close()`, `s.detach()`, a second send)
+            // would race the new owner and free the value twice. Every
+            // other arg keeps `Read` — CoW boundary copy semantics.
+            //
+            // The predicate is RECURSIVE: a direct handle/resource arg
+            // AND any arg whose type transitively carries one (e.g. a
+            // tuple `(Stream<T>, string)`) both transfer the owned
+            // pointer. Without the recursive check a nested-handle arg
+            // is lowered as `Read` (CowShare in MIR), the caller
+            // binding stays live, and a subsequent close silently
+            // double-frees.
+            this.actor_message_arg_intent(&arg.1)
+        });
+        match dispatch {
+            ActorMethodKind::Message { method_id, policy } => {
+                let method_id = self.qualify_imported_actor_method_id(method_id);
+                let Some(ty) = self.checker_expr_ty_if_present(&span) else {
+                    return (
+                        HirExprKind::Unsupported("message submission has no checked type".into()),
+                        ResolvedTy::Unit,
+                    );
+                };
+                // The call IS the send: a `receive fn` without a reply
+                // builds its addressed description and submits it at the
+                // same site. The description is an internal temporary.
+                let Some(message_ty) = Self::submitted_message_ty(&ty) else {
+                    return (
+                        HirExprKind::Unsupported(
+                            "message submission has no checked message type".into(),
+                        ),
+                        ResolvedTy::Unit,
+                    );
+                };
+                self.try_register_enum_instantiation_ty(&ty, &span);
+                let message = HirExpr {
+                    node: self.ids.node(),
+                    site: self.ids.site(),
+                    ty: message_ty,
+                    intent: IntentKind::Consume,
+                    kind: HirExprKind::ActorMessage {
+                        receiver: Box::new(lowered_receiver),
+                        method_id,
+                        args: lowered_args,
+                        evaluation_order,
+                        policy,
+                    },
+                    span: span.clone(),
+                };
+                (
+                    HirExprKind::ActorDelivery {
+                        receiver: Box::new(message),
+                        args: Vec::new(),
+                        operation: hew_types::actor_delivery::ActorDeliveryCall::Submit { policy },
+                    },
+                    ty,
+                )
+            }
+            ActorMethodKind::Ask {
+                method_id,
+                reply_ty,
+                policy,
+            } => {
+                let method_id = self.qualify_imported_actor_method_id(method_id);
+                let Some(result_ty) = self.checked_actor_ask_result_ty(&span, &method_id) else {
+                    return (
+                        HirExprKind::Unsupported("actor ask has no checked result".to_string()),
+                        ResolvedTy::Unit,
+                    );
+                };
+                match ResolvedTy::from_ty(&reply_ty) {
+                    Ok(reply_ty) => {
+                        // Owner-qualify the ask-reply record identity to the
+                        // ASKED actor's declaring module when it collides, so
+                        // this reply type and the actor-handler layout return
+                        // type (qualified in `lower_imported_actor` under the
+                        // same collision gate) both resolve to the SAME
+                        // qualified identity the MIR record layout is keyed by.
+                        // `method_id` is `{module}.{Actor}::{method}` for an
+                        // imported actor; a bare/root actor has no leading module
+                        // segment and is left unqualified (#2208).
+                        let reply_ty = Self::actor_module_short_of_method_id(&method_id)
+                            .map_or_else(
+                                || reply_ty.clone(),
+                                |module_short| {
+                                    self.qualify_colliding_module_record_ty(&reply_ty, module_short)
+                                },
+                            );
+                        (
+                            HirExprKind::ActorAsk {
+                                receiver: Box::new(lowered_receiver),
+                                method_id,
+                                args: lowered_args,
+                                evaluation_order,
+                                reply_ty: reply_ty.clone(),
+                                policy,
+                                deadline_ns: None,
+                            },
+                            result_ty,
+                        )
+                    }
+                    Err(err) => {
+                        self.diagnostics.push(HirDiagnostic::new(
+                            HirDiagnosticKind::CheckerBoundaryViolation {
+                                name: format!("actor method `.{method}`"),
+                                reason: err.to_string(),
+                            },
+                            span.clone(),
+                            "checker-authoritative actor_method_dispatch reply type failed boundary conversion",
+                        ));
+                        (
+                            HirExprKind::Unsupported(format!(
+                                "actor method `.{method}` has poisoned dispatch reply type"
+                            )),
+                            ResolvedTy::Unit,
+                        )
+                    }
+                }
+            }
+            ActorMethodKind::StreamProducer(method_id, elem_ty) => {
+                let method_id = self.qualify_imported_actor_method_id(method_id);
+                match ResolvedTy::from_ty(&elem_ty) {
+                    Ok(elem_ty) => {
+                        let stream_ty = ResolvedTy::named_builtin(
+                            "Stream",
+                            hew_types::BuiltinType::Stream,
+                            vec![elem_ty],
+                        );
+                        (
+                            HirExprKind::ActorGenStream {
+                                receiver: Box::new(lowered_receiver),
+                                method: method_id,
+                                args: lowered_args,
+                                evaluation_order,
+                            },
+                            stream_ty,
+                        )
+                    }
+                    Err(err) => {
+                        self.diagnostics.push(HirDiagnostic::new(
+                            HirDiagnosticKind::CheckerBoundaryViolation {
+                                name: format!("actor method `.{method}`"),
+                                reason: err.to_string(),
+                            },
+                            span.clone(),
+                            "checker-authoritative actor_method_dispatch stream element \
+                                 type failed boundary conversion",
+                        ));
+                        (
+                            HirExprKind::Unsupported(format!(
+                                "actor method `.{method}` has poisoned dispatch stream \
+                                     element type"
+                            )),
+                            ResolvedTy::Unit,
+                        )
+                    }
+                }
+            }
+        }
+    }
+
     /// Lower `receiver.method(args)` using the checker's method-call side-tables.
     ///
     /// Fail-closed per `checker-output-boundary` (LESSONS P0): a missing entry for
@@ -25381,206 +25619,7 @@ impl LowerCtx {
             );
         }
         if let Some(dispatch) = self.actor_method_dispatch.get(&key).cloned() {
-            let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
-            // A lambda dispatch on method-call syntax is a call on a stored
-            // handle: `job.run(3)` addresses the handle in the field, so the
-            // field read is the delivery receiver.
-            let lowered_receiver = if matches!(&dispatch,
-                ActorMethodKind::Ask { method_id, .. } | ActorMethodKind::Message { method_id, .. }
-                    if method_id == hew_types::actor_protocol::LAMBDA_ACTOR_METHOD_ID)
-            {
-                match self.method_call_rewrites.get(&key).cloned() {
-                    Some(MethodCallRewrite::RecordFnFieldCall { field_ty }) => self.make_expr(
-                        HirExprKind::FieldAccess {
-                            object: Box::new(lowered_receiver),
-                            field: method.to_string(),
-                        },
-                        field_ty,
-                        IntentKind::Read,
-                        span.clone(),
-                    ),
-                    // `handle.send(msg)` addresses the handle itself, so the
-                    // receiver is already the delivery target.
-                    _ => lowered_receiver,
-                }
-            } else {
-                lowered_receiver
-            };
-            let LoweredCallArgs {
-                args: lowered_args,
-                evaluation_order,
-            } = self.lower_call_args_by_slot(args, &span, |this, _, arg| {
-                // A single-owner value crossing an actor message boundary
-                // transfers ownership to the receiving handler — the
-                // mailbox copies the handle/resource, not the underlying
-                // thing it owns. Lower such args with `IntentKind::Consume`
-                // so the move-checker marks the caller binding consumed: a
-                // later use (`rx.close()`, `s.detach()`, a second send)
-                // would race the new owner and free the value twice. Every
-                // other arg keeps `Read` — CoW boundary copy semantics.
-                //
-                // The predicate is RECURSIVE: a direct handle/resource arg
-                // AND any arg whose type transitively carries one (e.g. a
-                // tuple `(Stream<T>, string)`) both transfer the owned
-                // pointer. Without the recursive check a nested-handle arg
-                // is lowered as `Read` (CowShare in MIR), the caller
-                // binding stays live, and a subsequent close silently
-                // double-frees.
-                this.actor_message_arg_intent(&arg.1)
-            });
-            return match dispatch {
-                ActorMethodKind::Message { method_id, policy } => {
-                    let method_id = self.qualify_imported_actor_method_id(method_id);
-                    let Some(ty) = self.checker_expr_ty_if_present(&span) else {
-                        return (
-                            HirExprKind::Unsupported(
-                                "message submission has no checked type".into(),
-                            ),
-                            ResolvedTy::Unit,
-                        );
-                    };
-                    // The call IS the send: a `receive fn` without a reply
-                    // builds its addressed description and submits it at the
-                    // same site. The description is an internal temporary.
-                    let Some(message_ty) = Self::submitted_message_ty(&ty) else {
-                        return (
-                            HirExprKind::Unsupported(
-                                "message submission has no checked message type".into(),
-                            ),
-                            ResolvedTy::Unit,
-                        );
-                    };
-                    self.try_register_enum_instantiation_ty(&ty, &span);
-                    let message = HirExpr {
-                        node: self.ids.node(),
-                        site: self.ids.site(),
-                        ty: message_ty,
-                        intent: IntentKind::Consume,
-                        kind: HirExprKind::ActorMessage {
-                            receiver: Box::new(lowered_receiver),
-                            method_id,
-                            args: lowered_args,
-                            evaluation_order,
-                            policy,
-                        },
-                        span: span.clone(),
-                    };
-                    (
-                        HirExprKind::ActorDelivery {
-                            receiver: Box::new(message),
-                            args: Vec::new(),
-                            operation: hew_types::actor_delivery::ActorDeliveryCall::Submit {
-                                policy,
-                            },
-                        },
-                        ty,
-                    )
-                }
-                ActorMethodKind::Ask {
-                    method_id,
-                    reply_ty,
-                    policy,
-                } => {
-                    let method_id = self.qualify_imported_actor_method_id(method_id);
-                    let Some(result_ty) = self.checked_actor_ask_result_ty(&span, &method_id)
-                    else {
-                        return (
-                            HirExprKind::Unsupported("actor ask has no checked result".to_string()),
-                            ResolvedTy::Unit,
-                        );
-                    };
-                    match ResolvedTy::from_ty(&reply_ty) {
-                        Ok(reply_ty) => {
-                            // Owner-qualify the ask-reply record identity to the
-                            // ASKED actor's declaring module when it collides, so
-                            // this reply type and the actor-handler layout return
-                            // type (qualified in `lower_imported_actor` under the
-                            // same collision gate) both resolve to the SAME
-                            // qualified identity the MIR record layout is keyed by.
-                            // `method_id` is `{module}.{Actor}::{method}` for an
-                            // imported actor; a bare/root actor has no leading module
-                            // segment and is left unqualified (#2208).
-                            let reply_ty = Self::actor_module_short_of_method_id(&method_id)
-                                .map_or_else(
-                                    || reply_ty.clone(),
-                                    |module_short| {
-                                        self.qualify_colliding_module_record_ty(
-                                            &reply_ty,
-                                            module_short,
-                                        )
-                                    },
-                                );
-                            (
-                                HirExprKind::ActorAsk {
-                                    receiver: Box::new(lowered_receiver),
-                                    method_id,
-                                    args: lowered_args,
-                                    evaluation_order,
-                                    reply_ty: reply_ty.clone(),
-                                    policy,
-                                    deadline_ns: None,
-                                },
-                                result_ty,
-                            )
-                        }
-                        Err(err) => {
-                            self.diagnostics.push(HirDiagnostic::new(
-                            HirDiagnosticKind::CheckerBoundaryViolation {
-                                name: format!("actor method `.{method}`"),
-                                reason: err.to_string(),
-                            },
-                            span.clone(),
-                            "checker-authoritative actor_method_dispatch reply type failed boundary conversion",
-                        ));
-                            (
-                                HirExprKind::Unsupported(format!(
-                                    "actor method `.{method}` has poisoned dispatch reply type"
-                                )),
-                                ResolvedTy::Unit,
-                            )
-                        }
-                    }
-                }
-                ActorMethodKind::StreamProducer(method_id, elem_ty) => {
-                    let method_id = self.qualify_imported_actor_method_id(method_id);
-                    match ResolvedTy::from_ty(&elem_ty) {
-                        Ok(elem_ty) => {
-                            let stream_ty = ResolvedTy::named_builtin(
-                                "Stream",
-                                hew_types::BuiltinType::Stream,
-                                vec![elem_ty],
-                            );
-                            (
-                                HirExprKind::ActorGenStream {
-                                    receiver: Box::new(lowered_receiver),
-                                    method: method_id,
-                                    args: lowered_args,
-                                    evaluation_order,
-                                },
-                                stream_ty,
-                            )
-                        }
-                        Err(err) => {
-                            self.diagnostics.push(HirDiagnostic::new(
-                                HirDiagnosticKind::CheckerBoundaryViolation {
-                                    name: format!("actor method `.{method}`"),
-                                    reason: err.to_string(),
-                                },
-                                span.clone(),
-                                "checker-authoritative actor_method_dispatch stream element \
-                                 type failed boundary conversion",
-                            ));
-                            (
-                                HirExprKind::Unsupported(format!(
-                                    "actor method `.{method}` has poisoned dispatch stream \
-                                     element type"
-                                )),
-                                ResolvedTy::Unit,
-                            )
-                        }
-                    }
-                }
-            };
+            return self.lower_actor_method_call(dispatch, receiver, method, args, &span);
         }
         if matches!(
             self.method_call_receiver_kinds.get(&key),
@@ -26216,7 +26255,10 @@ impl LowerCtx {
                 (call, ret_ty)
             }
             Some(MethodCallRewrite::GenericMathIntrinsic { op }) => {
-                let lowered_args = self.lower_positional_call_args(args, &span);
+                let LoweredCallArgs {
+                    args: lowered_args,
+                    evaluation_order,
+                } = self.lower_call_args(args, &span);
                 let checked_ret_ty = self
                     .expr_types
                     .get(&key)
@@ -26292,7 +26334,7 @@ impl LowerCtx {
                         target: self.registered_symbol_target(symbol),
                         callee: Box::new(callee),
                         args: lowered_args,
-                        evaluation_order: Vec::new(),
+                        evaluation_order,
                     },
                     ret_ty,
                 )

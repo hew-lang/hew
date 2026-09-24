@@ -1,0 +1,10 @@
+[[case]]
+id = "named-arguments-builtin-targets"
+intent = "Reordered named arguments to math intrinsics, generic math intrinsics and an extern evaluate in source order and bind by name."
+source = "cases/named-arguments-builtin-targets.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "eval y\neval x\n-3\neval exp\neval base\n9\neval x\neval y\n0\neval b\neval a\n1\neval b\neval a\n2.5\neval c\neval a\neval b\n7\neval b\neval a\n-1\n"
+exit = 0

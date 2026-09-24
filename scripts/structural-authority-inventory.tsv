@@ -53,7 +53,6 @@ hir-ast-boundary	expr-use:lower_builtin_hashmap_into_iter	hew-hir/src/lower.rs	s
 hir-ast-boundary	expr-use:lower_builtin_vec_higher_order	hew-hir/src/lower.rs	stage-2	D486 stage one freeze: matches hew_parser::ast::Expr variants directly instead of the checker's typed HirExprKind shape
 hir-ast-boundary	expr-use:lower_checked_select_source	hew-hir/src/lower.rs	stage-2	D486 stage one freeze: matches hew_parser::ast::Expr variants directly instead of the checker's typed HirExprKind shape
 hir-ast-boundary	expr-use:lower_expr_inner	hew-hir/src/lower.rs	stage-2	D486 stage one freeze: matches hew_parser::ast::Expr variants directly instead of the checker's typed HirExprKind shape
-hir-ast-boundary	expr-use:lower_fluent_vec_iter_receiver	hew-hir/src/lower.rs	stage-2	D486 stage one freeze: matches hew_parser::ast::Expr variants directly instead of the checker's typed HirExprKind shape
 hir-ast-boundary	expr-use:lower_for_iter_desugar	hew-hir/src/lower.rs	stage-2	D486 stage one freeze: matches hew_parser::ast::Expr variants directly instead of the checker's typed HirExprKind shape
 hir-ast-boundary	expr-use:lower_hashmap_for_in_init	hew-hir/src/lower.rs	stage-2	D486 stage one freeze: matches hew_parser::ast::Expr variants directly instead of the checker's typed HirExprKind shape
 hir-ast-boundary	expr-use:lower_index_assignment	hew-hir/src/lower.rs	stage-2	Indexed assignment consumes the checker-selected mutation and source operands; typed source-shape handoff remains part of D486
@@ -136,6 +135,8 @@ signature-application	check_block	hew-types/src/check/statements.rs	stage-1	bloc
 signature-application	check_lambda_actor_call	hew-types/src/check/calls.rs	stage-1	the one argument-check path for a lambda actor call, shared by the bare handle, the delivery views and a record field holding a handle
 signature-application	check_call	hew-types/src/check/calls.rs	stage-1	call-shape paths that check a callee value or constructor operand, not a named signature's parameters
 signature-application	check_call_against_expected_constructor	hew-types/src/check/calls.rs	stage-1	constructor payloads checked against the expected enum or record shape
+signature-application	check_builtin_variant_against_expected	hew-types/src/check/calls.rs	stage-1	builtin Some/Ok/Err payloads checked against the expected Option or Result shape
+signature-application	check_builtin_variant_call	hew-types/src/check/calls.rs	stage-1	builtin Some/Ok/Err payloads checked against fresh Option or Result parameters
 signature-application	check_call_with_type	hew-types/src/check/calls.rs	stage-1	explicitly annotated call operands checked against the annotation
 signature-application	check_collection_args	hew-types/src/check/methods.rs	stage-1	builtin collection arguments checked against an ArgTemplate instantiated from the receiver, which binds no user signature
 signature-application	check_condition	hew-types/src/check/patterns.rs	stage-1	pattern conditions (12.5): each let operand binds its pattern against the synthesized scrutinee through bind_pattern and the match resolution table; boolean operands check against bool

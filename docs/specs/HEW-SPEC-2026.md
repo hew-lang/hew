@@ -3282,6 +3282,14 @@ enum Result<T, E> {
 `None` in it. It mutates the place instead of consuming it, so like any
 `var self` method it needs a `var` binding, field or actor state field.
 
+Both types carry their methods in every program, with no import, like
+`.len()`. `Option<T>` has `is_some`, `is_none`, `expect`, `unwrap_or`,
+`unwrap_or_else`, `map`, `and_then`, `or_else`, `ok_or` and `take`;
+`Result<T, E>` has `is_ok`, `is_err`, `expect`, `unwrap_or`,
+`unwrap_or_else`, `ok`, `err`, `map`, `map_err`, `and_then` and `or_else`.
+The predicates borrow their receiver; `take` mutates it; the others consume
+it. `unwrap_or` and `ok_or` also consume their fallback or error argument.
+
 User-authored functions may return `Result<T, E>` or `Option<T>` and use `?`
 for propagation. Any error type `E` may be used with `Result<T, E>`. Each module defines its own structured error enum, as demonstrated by the canonical `std.fs.IoError`:
 
@@ -3510,7 +3518,10 @@ Important current details:
   `Vec<T>` through it via `.iter()` or `.into_iter()`. These adapters and
   terminal helpers consume the iterator: constructors store it, and terminal
   operations finish or release it. The iterator cannot be reused after the
-  call. Callable arguments retain their own declared consume/borrow contract
+  call. Callable arguments retain their own declared consume/borrow contract.
+  The same adapters and terminals are methods on `VecIter<T>` and on each
+  adapter, available without an import:
+  `v.into_iter().filter(p).map(f).collect()`
 - `std.sort` generic helpers — one `sort<T: Ord>` and one
   `reverse<T>` over `Vec<T>` are the intended surface, preserving an
   independent input value. The current std source still contains specialized

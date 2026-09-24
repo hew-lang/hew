@@ -3,7 +3,7 @@ use crate::support;
 #[test]
 fn dotted_type_member_shapes_lower_from_checker_facts() {
     let output = support::checker_pipeline::lower_through_checker(
-        r#"
+        r"
 machine Lifecycle {
     events { Reset, }
     state Start,
@@ -20,9 +20,10 @@ fn main() -> i64 {
     var set: HashSet<i64> = HashSet<i64>.new();
     let explicit: Option<i64> = Option<i64>.Some(7);
     set.insert(8);
-    some.expect("some is present") + ok.expect("ok succeeds") + explicit.expect("explicit is present") + set.len()
+    let ok_value = match ok { .Ok(value) => value, .Err(_) => 0 };
+    (some ?? 0) + ok_value + (explicit ?? 0) + set.len()
 }
-"#,
+",
     );
 
     assert!(

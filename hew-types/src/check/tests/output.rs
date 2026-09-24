@@ -186,7 +186,6 @@ fn checker_output_contract_prunes_orphaned_method_call_metadata() {
             c_symbol: "hew_bar_method".to_string(),
             descriptor: None,
             extern_identity: None,
-            elem_ty: None,
             consumes_receiver: false,
             requires_mutable_receiver: false,
             receiver_update: crate::ReceiverUpdate::Replace,

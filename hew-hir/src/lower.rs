@@ -16,9 +16,8 @@ use hew_types::BuiltinType;
 use hew_types::{
     ActorMethodKind, ActorStateGuard, AssignTargetKind, AssignTargetShape, CallTarget, ChildSlot,
     ClosureCaptureFact, ClosureEscapeFact, ExecutionContextReader, LoweringFact,
-    MethodCallReceiverKind, MethodCallRewrite, OptionResultMethod, PatternKind, RcIntrinsicOp,
-    ResolvedTraitBound, ResolvedTy, SpanKey, Ty, TypeCheckOutput, UserComparisonDispatch,
-    WireCodecDirection,
+    MethodCallReceiverKind, MethodCallRewrite, PatternKind, RcIntrinsicOp, ResolvedTraitBound,
+    ResolvedTy, SpanKey, Ty, TypeCheckOutput, UserComparisonDispatch, WireCodecDirection,
 };
 
 use crate::builtin_type_classes::seed_builtin_type_classes;
@@ -594,7 +593,8 @@ fn literal_to_hir(lit: &Literal) -> (HirLiteral, ResolvedTy) {
 #[derive(Debug, Clone)]
 enum ForIterNextCall {
     BuiltinVecIter,
-    VarSelf(HirVarSelfMethodTarget),
+    /// A concrete iterator's own `next(var self)` impl method.
+    VarSelf,
     /// `for x in stream` over `Stream<T>` — each iteration borrows the
     /// stream binding and emits the layout-witness runtime recv call
     /// (`hew_stream_next_layout`), reusing MIR's existing
@@ -12393,14 +12393,8 @@ impl LowerCtx {
         // failure site. Trait impls (`impl MyTrait for Vec<T>`) are not
         // covered here — orphan-rule policing is a separate concern.
         //
-        // Exception: builtin receiver metadata. The `impl<T> Option<T>` /
-        // `impl<T, E> Result<T, E>` blocks in `std/option.hew` /
-        // `std/result.hew` declare the user-facing methods whose call sites are
-        // consumed by checker side-tables (`BuiltinOptionResult`) and lowered to
-        // generic-enum matches. Their panic-stub bodies must never become
-        // callable `<SelfType>::<method>` functions. Older declarative receiver
-        // FFI blocks with all-`#[extern_symbol]` methods are also metadata-only.
-        // Skip these blocks as already-consumed metadata.
+        // Exception: declarative receiver FFI blocks whose methods are all
+        // `#[extern_symbol]` are metadata-only; skip them as already consumed.
         //
         // The `duration` constructor block (`from_nanos`/`from_micros`/
         // `from_millis`/`from_secs`, each taking a non-receiver `i64`) is the
@@ -12422,13 +12416,17 @@ impl LowerCtx {
                         )
                     })
             });
-        // `std::iter` owns the fluent VecIter methods, but VecIter itself is a
-        // compiler-owned synthetic cursor.  Admit precisely that standard
-        // library implementation through the normal impl-body pipeline so
-        // its methods remain thin calls into the existing iterator functions.
-        // User-source inherent impls on VecIter still take the guard below.
-        let is_std_iter_vec_iter_extension = builtin_impl_kind == Some(BuiltinType::VecIter)
-            && self.current_module_name.as_deref() == Some("std.iter");
+        // The standard-library module that owns a builtin type's method
+        // surface (`std.option` for `Option`, `std.result` for `Result`,
+        // `std.iter` for the `VecIter` cursor) lowers its inherent impl
+        // through the normal impl-body pipeline. User-source inherent impls on
+        // builtin nominals still take the guard below.
+        let is_std_method_surface = matches!(
+            (builtin_impl_kind, self.current_module_name.as_deref()),
+            (Some(BuiltinType::Option), Some("std.option"))
+                | (Some(BuiltinType::Result), Some("std.result"))
+                | (Some(BuiltinType::VecIter), Some("std.iter"))
+        );
         // Encoding values retain a compiler representation, but their methods
         // are ordinary source bodies in the checked declaration's own module.
         let is_declaring_encoding_impl = builtin_impl_kind
@@ -12443,15 +12441,9 @@ impl LowerCtx {
                         })
                 })
             });
-        // `std.option` owns `Option`'s source-bodied methods (`take`). They
-        // lower as ordinary impl methods; the checker-marker methods beside
-        // them stay metadata and are skipped below.
-        let is_std_option_impl = builtin_impl_kind == Some(BuiltinType::Option)
-            && self.current_module_name.as_deref() == Some("std.option");
         if !target_is_alias
             && !is_duration_ctor_block
-            && !is_std_option_impl
-            && !is_std_iter_vec_iter_extension
+            && !is_std_method_surface
             && !is_declaring_encoding_impl
             && decl.trait_bound.is_none()
             && builtin_impl_kind.is_some()
@@ -12479,20 +12471,7 @@ impl LowerCtx {
                         .methods
                         .iter()
                         .all(|m| m.attributes.iter().any(|a| a.name == "extern_symbol"));
-                let all_methods_are_option_result_markers = !decl.methods.is_empty()
-                    && match builtin_impl_kind {
-                        Some(BuiltinType::Option) => decl.methods.iter().all(|m| {
-                            matches!(
-                                m.name.as_str(),
-                                "is_some" | "is_none" | "expect" | "unwrap_or"
-                            )
-                        }),
-                        Some(BuiltinType::Result) => decl.methods.iter().all(|m| {
-                            matches!(m.name.as_str(), "is_ok" | "is_err" | "expect" | "unwrap_or")
-                        }),
-                        _ => false,
-                    };
-                if all_methods_are_extern_symbol_ffi || all_methods_are_option_result_markers {
+                if all_methods_are_extern_symbol_ffi {
                     return;
                 }
                 self.diagnostics.push(HirDiagnostic::new(
@@ -12587,9 +12566,6 @@ impl LowerCtx {
         self.current_impl_self_ty = Some(resolved_impl_self_ty);
         for method in &decl.methods {
             if pub_only && !method.visibility.is_pub() {
-                continue;
-            }
-            if is_std_option_impl && Self::is_option_result_marker_method_name(&method.name) {
                 continue;
             }
             if let Some(imp) = imported {
@@ -23221,7 +23197,7 @@ impl LowerCtx {
         &mut self,
         iter_ty: &ResolvedTy,
         span: &Span,
-    ) -> Option<(ResolvedTy, HirVarSelfMethodTarget)> {
+    ) -> Option<ResolvedTy> {
         let ResolvedTy::Named {
             name,
             args,
@@ -23252,7 +23228,7 @@ impl LowerCtx {
             );
             return None;
         };
-        Some((elem_ty, HirVarSelfMethodTarget::Direct))
+        Some(elem_ty)
     }
 
     fn for_iter_next_call_for_ty(
@@ -23271,7 +23247,7 @@ impl LowerCtx {
             }
         }
         self.generic_iterator_next_shape(iter_ty, span)
-            .map(|(elem_ty, target)| (elem_ty, ForIterNextCall::VarSelf(target)))
+            .map(|elem_ty| (elem_ty, ForIterNextCall::VarSelf))
     }
 
     fn make_direct_method_call(
@@ -23389,43 +23365,6 @@ impl LowerCtx {
         let receiver_hir = self.lower_expr(receiver, IntentKind::Consume);
         let iter_expr = self.make_vec_iter_init(receiver_hir, elem_ty, span);
         (iter_expr.kind, iter_expr.ty)
-    }
-
-    /// Lower the receiver of a checker-selected fluent `VecIter` method.
-    ///
-    /// The method rewrite proves that the receiver is `VecIter<T>`. When its
-    /// source spelling is `Vec::into_iter()`, build that cursor directly from
-    /// the checked element type so an outer method rewrite cannot hide the
-    /// nested call's own rewrite entry. Other `VecIter` values (notably a
-    /// let-bound cursor) retain the ordinary expression path.
-    fn lower_fluent_vec_iter_receiver(
-        &mut self,
-        receiver: &Spanned<Expr>,
-        elem_ty: ResolvedTy,
-        intent: IntentKind,
-    ) -> HirExpr {
-        if let Expr::MethodCall {
-            receiver: source,
-            method,
-            args,
-        } = &receiver.0
-        {
-            if method == "into_iter"
-                && args.is_empty()
-                && matches!(
-                    self.checked_ty(&source.1),
-                    Some(ResolvedTy::Named {
-                        builtin: Some(BuiltinType::Vec),
-                        ..
-                    })
-                )
-            {
-                let (kind, ty) =
-                    self.lower_builtin_vec_into_iter(source, elem_ty, receiver.1.clone());
-                return self.make_expr(kind, ty, IntentKind::Read, receiver.1.clone());
-            }
-        }
-        self.lower_expr(receiver, intent)
     }
 
     /// Construct an ordinary cursor value. SIR copies a surviving source
@@ -23745,13 +23684,7 @@ impl LowerCtx {
             IntentKind::Read,
             iterable_span.clone(),
         );
-        let next_call = self
-            .generic_iterator_next_shape(&iter_ty, iterable_span)
-            .map_or(
-                ForIterNextCall::VarSelf(HirVarSelfMethodTarget::Direct),
-                |(_elem, target)| ForIterNextCall::VarSelf(target),
-            );
-        (iter_init, iter_ty, elem_ty, next_call)
+        (iter_init, iter_ty, elem_ty, ForIterNextCall::VarSelf)
     }
 
     #[expect(
@@ -24780,15 +24713,9 @@ impl LowerCtx {
                     self.generic_into_iter_init(lowered_iterable.clone(), &iterable.1)
                 {
                     shape
-                } else if let Some((elem_ty, target)) =
-                    self.generic_iterator_next_shape(&other, &iterable.1)
+                } else if let Some(elem_ty) = self.generic_iterator_next_shape(&other, &iterable.1)
                 {
-                    (
-                        lowered_iterable,
-                        other,
-                        elem_ty,
-                        ForIterNextCall::VarSelf(target),
-                    )
+                    (lowered_iterable, other, elem_ty, ForIterNextCall::VarSelf)
                 } else {
                     self.unsupported(
                     iterable.1.clone(),
@@ -24824,48 +24751,23 @@ impl LowerCtx {
                     self.lower_builtin_vec_iter_next(&next_receiver, &elem_ty, iterable.1.clone());
                 self.make_expr(next_kind, next_ty, IntentKind::Read, iterable.1.clone())
             }
-            ForIterNextCall::VarSelf(target) => {
+            ForIterNextCall::VarSelf => {
                 let option_ty = Self::resolved_option_ty(elem_ty.clone());
                 self.register_option_layout(&elem_ty, &iterable.1, "generic Iterator::next");
-                let (call_target, target_label) = match &target {
-                    HirVarSelfMethodTarget::Direct => {
-                        let symbol = match &iter_ty {
-                            ResolvedTy::Named {
-                                builtin:
-                                    Some(builtin @ (BuiltinType::VecIter | BuiltinType::HashMapIter)),
-                                ..
-                            } => crate::node::HirImplBlock::method_symbol(
-                                injected_builtin_impl_symbol_owner(builtin.canonical_name()),
-                                "next",
-                            ),
-                            ResolvedTy::Named { name, .. } => {
-                                crate::node::HirImplBlock::method_symbol(name, "next")
-                            }
-                            _ => String::new(),
-                        };
-                        (self.registered_symbol_target(&symbol), symbol)
-                    }
-                    HirVarSelfMethodTarget::StaticTrait {
-                        declaring_trait,
-                        method_name,
+                let target_label = match &iter_ty {
+                    ResolvedTy::Named {
+                        builtin: Some(builtin @ (BuiltinType::VecIter | BuiltinType::HashMapIter)),
                         ..
-                    } => {
-                        let label = format!("{declaring_trait}::{method_name}");
-                        let call_target = self
-                            .trait_method_identity(declaring_trait, method_name)
-                            .map_or_else(
-                                || CallTarget::Unsupported {
-                                    reason: format!(
-                                        "synthetic static-trait call `{label}` has no checker-owned target"
-                                    ),
-                                },
-                                |(trait_id, method_id)| {
-                                    CallTarget::static_trait(trait_id, method_id)
-                                },
-                            );
-                        (call_target, label)
+                    } => crate::node::HirImplBlock::method_symbol(
+                        injected_builtin_impl_symbol_owner(builtin.canonical_name()),
+                        "next",
+                    ),
+                    ResolvedTy::Named { name, .. } => {
+                        crate::node::HirImplBlock::method_symbol(name, "next")
                     }
+                    _ => String::new(),
                 };
+                let call_target = self.registered_symbol_target(&target_label);
                 if !self.ensure_executable_target(&call_target, &target_label, &iterable.1) {
                     self.make_expr(
                         HirExprKind::Unsupported(
@@ -24878,14 +24780,13 @@ impl LowerCtx {
                 } else {
                     let next_receiver = (Expr::Identifier(iter_name), iterable.1.clone());
                     let lowered_receiver = self.lower_expr(&next_receiver, IntentKind::Consume);
-                    let is_direct = matches!(target, HirVarSelfMethodTarget::Direct);
                     let receiver_ty = iter_ty.clone();
                     let next = self.make_expr(
                         HirExprKind::VarSelfMethodCall {
                             receiver_update: hew_types::ReceiverUpdate::Replace,
                             receiver: Box::new(lowered_receiver),
                             call_target,
-                            target,
+                            target: HirVarSelfMethodTarget::Direct,
                             args: Vec::new(),
                             ret_ty: option_ty.clone(),
                             receiver_ty,
@@ -24894,20 +24795,17 @@ impl LowerCtx {
                         IntentKind::Read,
                         iterable.1.clone(),
                     );
-                    if is_direct {
-                        // Key the instantiation on the CALL's site, not the
-                        // receiver's: SIR resolves a var-self direct call from
-                        // the call expression's own site
-                        // (`hew-sir/src/lower_var_self.rs`), so a generic
-                        // iterator's `next` is otherwise reported as missing
-                        // its checker-resolved type arguments.
-                        self.record_var_self_direct_monomorphisation(
-                            &target_label,
-                            &iter_ty,
-                            &iterable.1,
-                            next.site,
-                        );
-                    }
+                    // Key the instantiation on the CALL's site, not the
+                    // receiver's: SIR resolves a var-self direct call from the
+                    // call expression's own site (`hew-sir/src/lower_var_self.rs`),
+                    // so a generic iterator's `next` is otherwise reported as
+                    // missing its checker-resolved type arguments.
+                    self.record_var_self_direct_monomorphisation(
+                        &target_label,
+                        &iter_ty,
+                        &iterable.1,
+                        next.site,
+                    );
                     // This call root is compiler-generated and therefore has
                     // no authored checker span. Keep its fact in the disjoint
                     // generated-site domain. The closed builtin cursors clone
@@ -25927,9 +25825,6 @@ impl LowerCtx {
                 direction,
                 value_ty,
             }) => self.lower_generic_wire_codec(args, direction, value_ty, span),
-            Some(MethodCallRewrite::BuiltinOptionResult { method }) => {
-                self.lower_builtin_option_result_method(method, receiver, args, span)
-            }
             Some(MethodCallRewrite::RemoteActorSend) => {
                 self.try_register_enum_instantiation(&span);
                 let ret_ty = self
@@ -26035,7 +25930,6 @@ impl LowerCtx {
                 requires_mutable_receiver,
                 receiver_update,
                 returns_receiver_identity,
-                elem_ty,
                 ..
             }) => {
                 if !self.ensure_executable_target(&target, &c_symbol, &span) {
@@ -26153,12 +26047,7 @@ impl LowerCtx {
                     && self.method_call_preserves_receiver_identity.contains(&key);
                 let receiver_intent =
                     self.method_receiver_intent(&key, consumes_receiver, preserves_receiver);
-                let lowered_receiver = match elem_ty {
-                    Some(elem_ty) => {
-                        self.lower_fluent_vec_iter_receiver(receiver, elem_ty, receiver_intent)
-                    }
-                    None => self.lower_expr(receiver, receiver_intent),
-                };
+                let lowered_receiver = self.lower_expr(receiver, receiver_intent);
                 // `c_symbol` is either projected from the exact selected impl
                 // declaration above or carried by a typed runtime/user target.
                 // Never rediscover an imported owner from receiver/name leaf
@@ -26398,9 +26287,6 @@ impl LowerCtx {
             Some(MethodCallRewrite::StaticTraitDispatch {
                 target,
                 receiver_type_param,
-                bound_trait,
-                declaring_trait,
-                method_name,
                 requires_mutable_receiver,
                 consumes_receiver,
                 returns_receiver_identity,
@@ -26434,12 +26320,23 @@ impl LowerCtx {
                 // This bypasses `CallTraitMethodStatic` entirely for the
                 // default-body context and lets MIR treat it as an ordinary
                 // concrete call.
-                if receiver_type_param == "Self" {
+                // The checker-selected trait method declaration names the
+                // member; its `Owner::method` path carries the method leaf.
+                let trait_method_leaf = match &target {
+                    CallTarget::StaticTraitMethod { method, .. } => method
+                        .full_path()
+                        .rsplit_once("::")
+                        .map(|(_, leaf)| leaf.to_string()),
+                    _ => None,
+                };
+                if let (true, Some(method_leaf)) =
+                    (receiver_type_param == "Self", trait_method_leaf)
+                {
                     if let Some(self_ty) = self.current_impl_self_ty.clone() {
                         if let Some(self_type) = self_ty.impl_receiver_instance() {
                             let c_symbol = crate::node::HirImplBlock::method_symbol(
                                 self_type.nominal.declaration().full_path(),
-                                &method_name,
+                                &method_leaf,
                             );
                             let concrete_target = self.registered_symbol_target(&c_symbol);
                             if !self.ensure_executable_target(&concrete_target, &c_symbol, &span) {
@@ -26547,9 +26444,6 @@ impl LowerCtx {
                             call_target: target,
                             target: HirVarSelfMethodTarget::StaticTrait {
                                 receiver_type_param,
-                                bound_trait,
-                                declaring_trait,
-                                method_name,
                             },
                             args: lowered_args,
                             ret_ty: ret_ty.clone(),
@@ -26662,34 +26556,6 @@ impl LowerCtx {
                         return (
                             HirExprKind::Unsupported(format!(
                                 "module call `{module_name}.{method}` has no rewrite entry"
-                            )),
-                            ResolvedTy::Unit,
-                        );
-                    }
-                }
-                if Self::is_option_result_marker_method_name(method) {
-                    let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
-                    if matches!(
-                        lowered_receiver.ty,
-                        ResolvedTy::Named {
-                            builtin: Some(BuiltinType::Option | BuiltinType::Result),
-                            ..
-                        }
-                    ) {
-                        self.diagnostics.push(HirDiagnostic::new(
-                            HirDiagnosticKind::NotYetImplemented {
-                                construct: format!(
-                                    "builtin Option/Result method `.{method}` without checker marker"
-                                ),
-                                owning_pass: "generic-enum-method-dispatch".to_string(),
-                            },
-                            span,
-                            "builtin Option/Result method dispatch must be covered by the \
-                             checker-produced generic-enum method marker",
-                        ));
-                        return (
-                            HirExprKind::Unsupported(format!(
-                                "builtin Option/Result method `.{method}` missing checker marker"
                             )),
                             ResolvedTy::Unit,
                         );
@@ -27013,365 +26879,6 @@ impl LowerCtx {
             },
             span: span.clone(),
         }
-    }
-
-    fn synthetic_bool(&mut self, value: bool, span: &std::ops::Range<usize>) -> HirExpr {
-        self.make_expr(
-            HirExprKind::Literal(HirLiteral::Bool(value)),
-            ResolvedTy::Bool,
-            IntentKind::Read,
-            span.clone(),
-        )
-    }
-
-    fn option_result_method_arity(method: OptionResultMethod) -> usize {
-        match method {
-            OptionResultMethod::OptionExpect
-            | OptionResultMethod::OptionUnwrapOr
-            | OptionResultMethod::ResultExpect
-            | OptionResultMethod::ResultUnwrapOr => 1,
-            OptionResultMethod::OptionIsSome
-            | OptionResultMethod::OptionIsNone
-            | OptionResultMethod::ResultIsOk
-            | OptionResultMethod::ResultIsErr => 0,
-        }
-    }
-
-    fn is_option_result_marker_method_name(method: &str) -> bool {
-        matches!(
-            method,
-            "is_some" | "is_none" | "is_ok" | "is_err" | "expect" | "unwrap_or"
-        )
-    }
-
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the eight closed Option/Result methods share one synthetic-match builder; splitting would obscure the marker-to-arm mapping"
-    )]
-    fn lower_builtin_option_result_method(
-        &mut self,
-        method: OptionResultMethod,
-        receiver: &Spanned<Expr>,
-        args: &[hew_parser::ast::CallArg],
-        span: Span,
-    ) -> (HirExprKind, ResolvedTy) {
-        let expected_args = Self::option_result_method_arity(method);
-        if args.len() != expected_args {
-            self.diagnostics.push(HirDiagnostic::new(
-                HirDiagnosticKind::CheckerBoundaryViolation {
-                    name: "Option/Result builtin method".to_string(),
-                    reason: format!(
-                        "checker marker {:?} expected {expected_args} argument(s), found {}",
-                        method,
-                        args.len()
-                    ),
-                },
-                span.clone(),
-                "builtin Option/Result method lowering received an invalid argument count",
-            ));
-            return (
-                HirExprKind::Unsupported("invalid Option/Result method arity".into()),
-                ResolvedTy::Unit,
-            );
-        }
-
-        let ret_ty = self.checker_expr_ty_if_present(&span).unwrap_or_else(|| {
-            self.diagnostics.push(HirDiagnostic::new(
-                HirDiagnosticKind::CheckerBoundaryViolation {
-                    name: "Option/Result builtin method".to_string(),
-                    reason: "missing or poisoned checker result type".to_string(),
-                },
-                span.clone(),
-                "builtin Option/Result method lowering requires the checker result type",
-            ));
-            ResolvedTy::Unit
-        });
-
-        let receiver_intent = match method {
-            OptionResultMethod::OptionExpect
-            | OptionResultMethod::OptionUnwrapOr
-            | OptionResultMethod::ResultExpect
-            | OptionResultMethod::ResultUnwrapOr => IntentKind::Consume,
-            OptionResultMethod::OptionIsSome
-            | OptionResultMethod::OptionIsNone
-            | OptionResultMethod::ResultIsOk
-            | OptionResultMethod::ResultIsErr => IntentKind::Read,
-        };
-        let scrutinee = self.lower_expr(receiver, receiver_intent);
-        self.try_register_enum_instantiation_ty(&scrutinee.ty, &span);
-
-        let variant = |this: &mut Self,
-                       builtin: BuiltinType,
-                       variant_name: &str|
-         -> Option<HirMatchArmPredicate> {
-            this.builtin_variant_predicate(builtin, variant_name, &span)
-                .map(|(predicate, _)| predicate)
-        };
-
-        let arms = match method {
-            OptionResultMethod::OptionIsSome => {
-                let Some(some) = variant(self, BuiltinType::Option, "Some") else {
-                    return self.unsupported_postfix_try(&span, "Option.Some predicate");
-                };
-                let Some(none) = variant(self, BuiltinType::Option, "None") else {
-                    return self.unsupported_postfix_try(&span, "Option.None predicate");
-                };
-                vec![
-                    HirMatchArm {
-                        scope: None,
-                        predicate: some,
-                        bindings: Vec::new(),
-                        payload_predicates: Vec::new(),
-                        payload_variant_predicates: Vec::new(),
-                        guard: None,
-                        body: self.synthetic_bool(true, &span),
-                        span: span.clone(),
-                    },
-                    HirMatchArm {
-                        scope: None,
-                        predicate: none,
-                        bindings: Vec::new(),
-                        payload_predicates: Vec::new(),
-                        payload_variant_predicates: Vec::new(),
-                        guard: None,
-                        body: self.synthetic_bool(false, &span),
-                        span: span.clone(),
-                    },
-                ]
-            }
-            OptionResultMethod::OptionIsNone => {
-                let Some(some) = variant(self, BuiltinType::Option, "Some") else {
-                    return self.unsupported_postfix_try(&span, "Option.Some predicate");
-                };
-                let Some(none) = variant(self, BuiltinType::Option, "None") else {
-                    return self.unsupported_postfix_try(&span, "Option.None predicate");
-                };
-                vec![
-                    HirMatchArm {
-                        scope: None,
-                        predicate: some,
-                        bindings: Vec::new(),
-                        payload_predicates: Vec::new(),
-                        payload_variant_predicates: Vec::new(),
-                        guard: None,
-                        body: self.synthetic_bool(false, &span),
-                        span: span.clone(),
-                    },
-                    HirMatchArm {
-                        scope: None,
-                        predicate: none,
-                        bindings: Vec::new(),
-                        payload_predicates: Vec::new(),
-                        payload_variant_predicates: Vec::new(),
-                        guard: None,
-                        body: self.synthetic_bool(true, &span),
-                        span: span.clone(),
-                    },
-                ]
-            }
-            OptionResultMethod::ResultIsOk => {
-                let Some(ok) = variant(self, BuiltinType::Result, "Ok") else {
-                    return self.unsupported_postfix_try(&span, "Result.Ok predicate");
-                };
-                let Some(err) = variant(self, BuiltinType::Result, "Err") else {
-                    return self.unsupported_postfix_try(&span, "Result.Err predicate");
-                };
-                vec![
-                    HirMatchArm {
-                        scope: None,
-                        predicate: ok,
-                        bindings: Vec::new(),
-                        payload_predicates: Vec::new(),
-                        payload_variant_predicates: Vec::new(),
-                        guard: None,
-                        body: self.synthetic_bool(true, &span),
-                        span: span.clone(),
-                    },
-                    HirMatchArm {
-                        scope: None,
-                        predicate: err,
-                        bindings: Vec::new(),
-                        payload_predicates: Vec::new(),
-                        payload_variant_predicates: Vec::new(),
-                        guard: None,
-                        body: self.synthetic_bool(false, &span),
-                        span: span.clone(),
-                    },
-                ]
-            }
-            OptionResultMethod::ResultIsErr => {
-                let Some(ok) = variant(self, BuiltinType::Result, "Ok") else {
-                    return self.unsupported_postfix_try(&span, "Result.Ok predicate");
-                };
-                let Some(err) = variant(self, BuiltinType::Result, "Err") else {
-                    return self.unsupported_postfix_try(&span, "Result.Err predicate");
-                };
-                vec![
-                    HirMatchArm {
-                        scope: None,
-                        predicate: ok,
-                        bindings: Vec::new(),
-                        payload_predicates: Vec::new(),
-                        payload_variant_predicates: Vec::new(),
-                        guard: None,
-                        body: self.synthetic_bool(false, &span),
-                        span: span.clone(),
-                    },
-                    HirMatchArm {
-                        scope: None,
-                        predicate: err,
-                        bindings: Vec::new(),
-                        payload_predicates: Vec::new(),
-                        payload_variant_predicates: Vec::new(),
-                        guard: None,
-                        body: self.synthetic_bool(true, &span),
-                        span: span.clone(),
-                    },
-                ]
-            }
-            OptionResultMethod::OptionExpect | OptionResultMethod::ResultExpect => {
-                let (builtin, variant_name, empty_variant, binding_name) = match method {
-                    OptionResultMethod::OptionExpect => {
-                        (BuiltinType::Option, "Some", "None", "__option_expect_value")
-                    }
-                    OptionResultMethod::ResultExpect => {
-                        (BuiltinType::Result, "Ok", "Err", "__result_expect_value")
-                    }
-                    _ => unreachable!("handled by outer match"),
-                };
-                let type_name = builtin.canonical_name();
-                let Some(payload_predicate) = variant(self, builtin, variant_name) else {
-                    return self.unsupported_postfix_try(
-                        &span,
-                        format!("{type_name}.{variant_name} predicate"),
-                    );
-                };
-                let Some(empty_predicate) = variant(self, builtin, empty_variant) else {
-                    return self.unsupported_postfix_try(
-                        &span,
-                        format!("{type_name}.{empty_variant} predicate"),
-                    );
-                };
-                let payload_binding = self.ids.binding();
-                // Build `panic("expect failed: " + reason)` as the failure-arm
-                // body. The call diverges (return type Never) so the match is
-                // type-correct even though the failure arm never produces a
-                // value of `ret_ty`. The reason is the caller's argument, so it
-                // is lowered here rather than baked into a literal.
-                let prefix =
-                    self.build_string_literal_expr("expect failed: ".to_string(), span.clone());
-                let reason = self.lower_expr(args[0].expr(), IntentKind::Consume);
-                let panic_msg_expr =
-                    self.build_catalog_call("string_concat", vec![prefix, reason], span.clone());
-                let panic_call =
-                    self.build_catalog_call("panic", vec![panic_msg_expr], span.clone());
-                let payload = self.synthetic_binding_ref(
-                    binding_name,
-                    payload_binding,
-                    ret_ty.clone(),
-                    &span,
-                );
-
-                vec![
-                    HirMatchArm {
-                        scope: Some(self.ids.scope()),
-                        predicate: payload_predicate,
-                        bindings: vec![HirMatchArmBinding {
-                            span: span.clone(),
-                            binding: payload_binding,
-                            field_idx: 0,
-                            name: binding_name.to_string(),
-                            ty: ret_ty.clone(),
-                        }],
-                        payload_predicates: Vec::new(),
-                        payload_variant_predicates: Vec::new(),
-                        guard: None,
-                        body: payload,
-                        span: span.clone(),
-                    },
-                    HirMatchArm {
-                        scope: None,
-                        predicate: empty_predicate,
-                        bindings: Vec::new(),
-                        payload_predicates: Vec::new(),
-                        payload_variant_predicates: Vec::new(),
-                        guard: None,
-                        body: panic_call,
-                        span: span.clone(),
-                    },
-                ]
-            }
-            OptionResultMethod::OptionUnwrapOr | OptionResultMethod::ResultUnwrapOr => {
-                let (builtin, payload_variant, empty_variant, binding_name) = match method {
-                    OptionResultMethod::OptionUnwrapOr => (
-                        BuiltinType::Option,
-                        "Some",
-                        "None",
-                        "__option_unwrap_or_value",
-                    ),
-                    OptionResultMethod::ResultUnwrapOr => {
-                        (BuiltinType::Result, "Ok", "Err", "__result_unwrap_or_value")
-                    }
-                    _ => unreachable!("handled by outer match"),
-                };
-                let type_name = builtin.canonical_name();
-                let Some(payload_predicate) = variant(self, builtin, payload_variant) else {
-                    return self.unsupported_postfix_try(
-                        &span,
-                        format!("{type_name}.{payload_variant} predicate"),
-                    );
-                };
-                let Some(empty_predicate) = variant(self, builtin, empty_variant) else {
-                    return self.unsupported_postfix_try(
-                        &span,
-                        format!("{type_name}.{empty_variant} predicate"),
-                    );
-                };
-                let payload_binding = self.ids.binding();
-                let fallback = self.lower_expr(args[0].expr(), IntentKind::Consume);
-                vec![
-                    HirMatchArm {
-                        scope: Some(self.ids.scope()),
-                        predicate: payload_predicate,
-                        bindings: vec![HirMatchArmBinding {
-                            span: span.clone(),
-                            binding: payload_binding,
-                            field_idx: 0,
-                            name: binding_name.to_string(),
-                            ty: ret_ty.clone(),
-                        }],
-                        payload_predicates: Vec::new(),
-                        payload_variant_predicates: Vec::new(),
-                        guard: None,
-                        body: self.synthetic_binding_ref(
-                            binding_name,
-                            payload_binding,
-                            ret_ty.clone(),
-                            &span,
-                        ),
-                        span: span.clone(),
-                    },
-                    HirMatchArm {
-                        scope: None,
-                        predicate: empty_predicate,
-                        bindings: Vec::new(),
-                        payload_predicates: Vec::new(),
-                        payload_variant_predicates: Vec::new(),
-                        guard: None,
-                        body: fallback,
-                        span: span.clone(),
-                    },
-                ]
-            }
-        };
-
-        (
-            HirExprKind::Match {
-                scrutinee: Box::new(scrutinee),
-                arms,
-            },
-            ret_ty,
-        )
     }
 
     fn synthetic_variant_ctor(
@@ -35522,7 +35029,26 @@ impl Widget {
                 doc: None,
             })
             .unwrap();
-        graph.topo_order = vec![module, root];
+        // Every compiled program carries the std Option/Result method bodies.
+        let mut order = Vec::new();
+        for (name, prelude_source) in [
+            ("option", include_str!("../../std/option.hew")),
+            ("result", include_str!("../../std/result.hew")),
+        ] {
+            let id = ModuleId::new(vec!["std".into(), name.into()]);
+            graph
+                .add_module(Module {
+                    id: id.clone(),
+                    items: hew_parser::parse(prelude_source).program.items,
+                    imports: Vec::new(),
+                    source_paths: Vec::new(),
+                    doc: None,
+                })
+                .unwrap();
+            order.push(id);
+        }
+        order.extend([module, root]);
+        graph.topo_order = order;
         program.module_graph = Some(graph);
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let tco = checker.check_program(&program);
@@ -35556,19 +35082,19 @@ impl Widget {
                     let child = value?;
                     Some(child)
                 }}
-                fn result_expect_probe(value: Result<Value, string>) -> Value {{
+                fn result_expect_probe(consume value: Result<Value, string>) -> Value {{
                     let child = value.expect("the payload decoded");
                     child
                 }}
-                fn option_expect_probe(value: Option<Value>) -> Value {{
+                fn option_expect_probe(consume value: Option<Value>) -> Value {{
                     let child = value.expect("the payload is present");
                     child
                 }}
-                fn result_unwrap_or_probe(value: Result<Value, string>, fallback: Value) -> Value {{
+                fn result_unwrap_or_probe(consume value: Result<Value, string>, consume fallback: Value) -> Value {{
                     let child = value.unwrap_or(fallback);
                     child
                 }}
-                fn option_unwrap_or_probe(value: Option<Value>, fallback: Value) -> Value {{
+                fn option_unwrap_or_probe(consume value: Option<Value>, consume fallback: Value) -> Value {{
                     let child = value.unwrap_or(fallback);
                     child
                 }}
@@ -35598,9 +35124,19 @@ impl Widget {
             };
             let required = function_named(&lowered, "required_field");
             assert_eq!(required.params[0].ty, expected);
+            // `?` desugars to a match whose payload binding keeps the
+            // selected encoding identity.
+            for name in ["result_probe", "option_probe"] {
+                let expression = first_let_value(function_named(&lowered, name));
+                let HirExprKind::Match { arms, .. } = &expression.kind else {
+                    panic!("payload extraction must lower to a match: {expression:#?}")
+                };
+                assert_eq!(expression.ty, expected);
+                assert_eq!(arms[0].bindings[0].ty, expected);
+                assert_eq!(arms[0].body.ty, expected);
+            }
+            // The std Option/Result methods are calls whose result keeps it.
             for name in [
-                "result_probe",
-                "option_probe",
                 "result_expect_probe",
                 "option_expect_probe",
                 "result_unwrap_or_probe",
@@ -35608,27 +35144,17 @@ impl Widget {
                 "field_probe",
             ] {
                 let expression = first_let_value(function_named(&lowered, name));
-                let HirExprKind::Match { scrutinee, arms } = &expression.kind else {
-                    panic!("payload extraction must lower to a match: {expression:#?}")
+                let HirExprKind::Call { args, .. } = &expression.kind else {
+                    panic!("payload extraction must lower to a method call: {expression:#?}")
                 };
                 assert_eq!(expression.ty, expected);
-                assert_eq!(arms[0].bindings[0].ty, expected);
-                assert_eq!(arms[0].body.ty, expected);
-                if name.ends_with("unwrap_or_probe") {
-                    assert_eq!(arms[1].body.ty, expected);
-                }
                 if name == "field_probe" {
                     let option = ResolvedTy::named_builtin(
                         "Option",
                         BuiltinType::Option,
                         vec![expected.clone()],
                     );
-                    let HirExprKind::Match { arms, .. } = &scrutinee.kind else {
-                        panic!("expected the nested Result unwrap: {scrutinee:#?}")
-                    };
-                    assert_eq!(scrutinee.ty, option);
-                    assert_eq!(arms[0].bindings[0].ty, option);
-                    assert_eq!(arms[0].body.ty, option);
+                    assert_eq!(args[0].ty, option);
                 }
             }
         }

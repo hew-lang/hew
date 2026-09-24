@@ -1,0 +1,23 @@
+// Option, Result and iterator methods come from std source bodies that every
+// program sees without an import; both engines run the same method bodies.
+type Order {
+    id: i64,
+    note: string,
+}
+
+fn find_note(orders: Vec<Order>, id: i64) -> Option<string> {
+    orders.into_iter().find(|order: Order| order.id == id).map(|order: Order| order.note)
+}
+
+fn main() {
+    let orders = [Order { id: 1, note: "first" }, Order { id: 2, note: "second" }];
+    let totals = [3, 8, 1, 6].into_iter().filter(|n: i64| n > 2).map(|n: i64| n * 10).collect();
+    println(totals.len());
+    println(totals[2]);
+    println(find_note(orders.clone(), 2).unwrap_or("none"));
+    println(find_note(orders, 9).unwrap_or_else(|| "missing"));
+    let parsed: Result<i64, string> = Some("42").map(|text: string| text.len()).ok_or("empty");
+    println(parsed.map(|n: i64| n + 1).unwrap_or(0));
+    let failed: Result<i64, string> = Err("bad");
+    println(failed.map_err(|e: string| f"{e}!").err().unwrap_or("ok"));
+}

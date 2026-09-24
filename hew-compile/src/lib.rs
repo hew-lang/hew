@@ -4,7 +4,7 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use hew_parser::ast::{ImportDecl, Item, Program, Spanned, TypeExpr};
+use hew_parser::ast::{ImportDecl, Item, Program, Spanned};
 use serde::{de::DeserializeOwned, Deserialize};
 
 mod host;
@@ -1526,6 +1526,18 @@ fn build_module_source_map(program: &Program, documents: &DocumentSet) -> Module
             continue;
         };
         let Some(path) = module.source_paths.first() else {
+            // An injected prelude module carries its embedded source instead.
+            if let [std, leaf] = mod_id.path.as_slice() {
+                if let Some((_, text)) = PRELUDE_STD_SOURCES
+                    .iter()
+                    .find(|(name, _)| std == "std" && name == leaf)
+                {
+                    map.insert(
+                        mod_id.path.join("."),
+                        ((*text).to_string(), format!("std/{leaf}.hew")),
+                    );
+                }
+            }
             continue;
         };
         if let Ok(text) = read_source(documents, path) {
@@ -2211,31 +2223,7 @@ fn build_module_graph_with_diagnostics(
         ));
     }
 
-    // The prelude is loaded out of band, so expose only its Display impls to
-    // the ordinary imported-impl path. Its other declarations retain their
-    // existing compiler-owned registration.
-    add_embedded_impl_module(
-        &mut graph,
-        "builtins",
-        include_str!("../../std/builtins.hew"),
-        |decl| {
-            decl.trait_bound
-                .as_ref()
-                .is_some_and(|bound| bound.name == "Display")
-        },
-    );
-    // `Option` methods with source bodies, such as `take`, lower through the
-    // same imported-impl path; the checker-marker methods beside them stay
-    // metadata (see `lower_impl_block`).
-    add_embedded_impl_module(
-        &mut graph,
-        "option",
-        include_str!("../../std/option.hew"),
-        |decl| {
-            decl.trait_bound.is_none()
-                && matches!(&decl.target_type.0, TypeExpr::Named { name, .. } if name == "Option")
-        },
-    );
+    add_prelude_std_modules(&mut graph);
 
     rewrite_direct_stdlib_module_root(
         &mut graph,
@@ -2271,13 +2259,70 @@ fn build_module_graph_with_diagnostics(
     Ok(graph)
 }
 
-/// Add the selected impls of an embedded `std.<name>` source as a module of
+/// Give a single-source program, parsed without import resolution, the same
+/// standard-library modules [`build_module_graph`] adds to every program, so
+/// an editor analysis lowers builtin-type methods exactly as a build does.
+///
+/// # Panics
+///
+/// Never in practice: the root module is added to a freshly created graph.
+pub fn attach_prelude_std_modules(program: &mut Program) {
+    use hew_parser::module::{Module, ModuleGraph, ModuleId};
+    let graph = program.module_graph.get_or_insert_with(|| {
+        let root = ModuleId::root();
+        let mut graph = ModuleGraph::new(root.clone());
+        graph
+            .add_module(Module {
+                id: root.clone(),
+                items: program.items.clone(),
+                imports: Vec::new(),
+                source_paths: Vec::new(),
+                doc: program.module_doc.clone(),
+            })
+            .expect("a fresh graph has no root module");
+        graph.topo_order.push(root);
+        graph
+    });
+    add_prelude_std_modules(graph);
+}
+
+/// Methods on builtin types are always available, like `.len()`: the
+/// standard-library modules that own them join every program as ordinary
+/// modules unless the program already imports them. The builtins prelude is
+/// loaded out of band, so only its Display impls take this path; its other
+/// declarations retain their compiler-owned registration.
+fn add_prelude_std_modules(graph: &mut hew_parser::module::ModuleGraph) {
+    for (name, source) in PRELUDE_STD_SOURCES {
+        if name == "builtins" {
+            add_embedded_std_module(graph, name, source, |item| {
+                matches!(item, Item::Impl(decl) if decl
+                    .trait_bound
+                    .as_ref()
+                    .is_some_and(|bound| bound.name == "Display"))
+            });
+        } else {
+            add_embedded_std_module(graph, name, source, |_| true);
+        }
+    }
+}
+
+/// The embedded standard-library sources [`add_prelude_std_modules`] injects,
+/// by `std.<name>` leaf. They have no on-disk path, so diagnostics inside them
+/// render against this text.
+const PRELUDE_STD_SOURCES: [(&str, &str); 4] = [
+    ("builtins", include_str!("../../std/builtins.hew")),
+    ("option", include_str!("../../std/option.hew")),
+    ("result", include_str!("../../std/result.hew")),
+    ("iter", include_str!("../../std/iter.hew")),
+];
+
+/// Add the selected items of an embedded `std.<name>` source as a module of
 /// their own, unless the program already imports that module.
-fn add_embedded_impl_module(
+fn add_embedded_std_module(
     graph: &mut hew_parser::module::ModuleGraph,
     name: &str,
     source: &str,
-    keep: impl Fn(&hew_parser::ast::ImplDecl) -> bool,
+    keep: impl Fn(&Item) -> bool,
 ) {
     use hew_parser::module::{Module, ModuleId};
     let id = ModuleId::new(vec!["std".to_string(), name.to_string()]);
@@ -2294,7 +2339,7 @@ fn add_embedded_impl_module(
         .program
         .items
         .into_iter()
-        .filter(|(item, _)| matches!(item, Item::Impl(decl) if keep(decl)))
+        .filter(|(item, _)| keep(item))
         .collect();
     graph
         .add_module(Module {

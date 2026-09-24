@@ -1,0 +1,10 @@
+[[case]]
+id = "prelude-binder-shadow"
+intent = "User types named like prelude type parameters leave the prelude's impls conforming and its methods generic."
+source = "cases/prelude-binder-shadow/main.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "2\n30\ny\nmissing\n"
+exit = 0

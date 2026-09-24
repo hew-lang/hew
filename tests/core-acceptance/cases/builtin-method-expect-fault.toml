@@ -1,0 +1,11 @@
+[[case]]
+id = "builtin-method-expect-fault"
+intent = "A failed Option `expect` std body releases the drained iterator chain and caller siblings before propagating its reason-bearing panic."
+source = "cases/builtin-method-expect-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "CALLER OWNER\nCALLEE OWNER\n"
+stderr = "hew: failure: UserPanic (212): expect failed: a long word was present\n"
+exit = 1

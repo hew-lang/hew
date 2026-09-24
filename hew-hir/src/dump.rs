@@ -986,12 +986,13 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                 },
                 crate::node::HirVarSelfMethodTarget::StaticTrait {
                     receiver_type_param,
-                    declaring_trait,
-                    method_name,
-                    ..
-                } => format!(
-                    "{declaring_trait}::{method_name} [receiver_param={receiver_type_param}]"
-                ),
+                } => match call_target {
+                    hew_types::CallTarget::StaticTraitMethod { method, .. } => format!(
+                        "{} [receiver_param={receiver_type_param}]",
+                        method.full_path()
+                    ),
+                    other => format!("invalid-static-target:{other:?}"),
+                },
             };
             writeln!(
                 out,

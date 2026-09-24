@@ -565,6 +565,11 @@ fn var_self_receiver_stays_whole_wherever_it_can_fail() {
             "let conn = self.conn; self.pool.clear(); self.conn = conn; 0",
             "`clear(...)`",
         ),
+        // Option predicates are std source bodies, and a source callee can fail.
+        (
+            "let conn = self.conn; let spare = self.spare.is_some(); self.conn = conn; if spare { 1 } else { 0 }",
+            "`is_some(...)`",
+        ),
     ] {
         let output = check_source(&format!(
             "{declarations} impl Touch for Holder {{ fn touch(var self, divisor: i64) -> i64 {{ {body} }} }}"
@@ -601,7 +606,7 @@ fn var_self_receiver_stays_whole_wherever_it_can_fail() {
         // A runtime operation fails only where its contract says so.
         "let conn = self.conn; self.count = self.items.len(); self.conn = conn; 0",
         "let conn = self.conn; let label = f\"{divisor}\"; self.count = label.len(); self.conn = conn; 0",
-        "let conn = self.conn; let spare = self.spare.is_some(); self.conn = conn; if spare { 1 } else { 0 }",
+        "let spare = self.spare.is_some(); let conn = self.conn; self.conn = conn; if spare { 1 } else { 0 }",
         "let conn = self.conn; self.items.clear(); self.conn = conn; 0",
     ] {
         let output = check_source(&format!(

@@ -567,7 +567,8 @@ fn collect_semantic_diagnostics(
 }
 
 fn parse_and_type_check(source: &str) -> AnalyzedSource {
-    let parse_result = hew_parser::parse(source);
+    let mut parse_result = hew_parser::parse(source);
+    hew_compile::attach_prelude_std_modules(&mut parse_result.program);
     let (type_output, hir_diagnostics, semantic_diagnostics) = if parse_result.errors.is_empty() {
         let mut checker = hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(
             hew_types::module_registry::build_module_search_paths(),

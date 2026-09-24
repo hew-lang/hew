@@ -972,7 +972,6 @@ impl Checker {
                 c_symbol,
                 descriptor: Some(descriptor),
                 extern_identity: None,
-                elem_ty: None,
                 consumes_receiver,
                 requires_mutable_receiver: false,
                 receiver_update: crate::ReceiverUpdate::Replace,
@@ -1002,7 +1001,6 @@ impl Checker {
                         c_symbol,
                         descriptor: None,
                         extern_identity: None,
-                        elem_ty: None,
                         consumes_receiver: false,
                         requires_mutable_receiver: false,
                         receiver_update: crate::ReceiverUpdate::Replace,
@@ -1020,7 +1018,6 @@ impl Checker {
                     c_symbol,
                     descriptor: None,
                     extern_identity: None,
-                    elem_ty: None,
                     consumes_receiver: false,
                     requires_mutable_receiver: false,
                     receiver_update: crate::ReceiverUpdate::Replace,
@@ -1081,7 +1078,6 @@ impl Checker {
                 c_symbol,
                 descriptor: None,
                 extern_identity: Some(extern_identity),
-                elem_ty: None,
                 consumes_receiver,
                 requires_mutable_receiver: false,
                 receiver_update: crate::ReceiverUpdate::Replace,
@@ -1181,7 +1177,6 @@ impl Checker {
                 c_symbol,
                 descriptor: None,
                 extern_identity: Some(extern_identity),
-                elem_ty: None,
                 consumes_receiver,
                 requires_mutable_receiver: false,
                 receiver_update: crate::ReceiverUpdate::Replace,
@@ -1350,82 +1345,6 @@ impl Checker {
         true
     }
 
-    fn record_builtin_option_result_method_rewrite_if_any(
-        &mut self,
-        receiver_builtin: BuiltinType,
-        receiver_type_name: &str,
-        type_args: &[Ty],
-        method: &str,
-        span: &Span,
-    ) -> bool {
-        use crate::check::OptionResultMethod as M;
-        use MethodCallRewrite::BuiltinOptionResult;
-
-        let Some(marker) = (match (receiver_builtin, method) {
-            (BuiltinType::Option, "is_some") => Some(M::OptionIsSome),
-            (BuiltinType::Option, "is_none") => Some(M::OptionIsNone),
-            (BuiltinType::Option, "expect") => Some(M::OptionExpect),
-            (BuiltinType::Option, "unwrap_or") => Some(M::OptionUnwrapOr),
-            (BuiltinType::Result, "is_ok") => Some(M::ResultIsOk),
-            (BuiltinType::Result, "is_err") => Some(M::ResultIsErr),
-            (BuiltinType::Result, "expect") => Some(M::ResultExpect),
-            (BuiltinType::Result, "unwrap_or") => Some(M::ResultUnwrapOr),
-            _ => None,
-        }) else {
-            return false;
-        };
-
-        let expected_args = if receiver_builtin == BuiltinType::Option {
-            1
-        } else {
-            2
-        };
-        if type_args.len() != expected_args {
-            if type_args
-                .iter()
-                .any(|ty| matches!(ty, Ty::Error | Ty::Var(_)))
-            {
-                return true;
-            }
-            self.report_error(
-                TypeErrorKind::InvalidOperation,
-                span,
-                format!(
-                    "cannot lower {receiver_type_name}::{method}: expected {expected_args} \
-                     receiver type argument(s), found {}",
-                    type_args.len()
-                ),
-            );
-            return true;
-        }
-
-        if type_args.iter().any(|ty| {
-            let resolved = self.subst.resolve(ty);
-            matches!(resolved, Ty::Error | Ty::Var(_))
-        }) {
-            return true;
-        }
-
-        self.record_method_call_rewrite(span, BuiltinOptionResult { method: marker });
-        true
-    }
-
-    fn is_builtin_option_result_marker_method(
-        receiver_builtin: Option<BuiltinType>,
-        method: &str,
-    ) -> bool {
-        matches!(
-            (receiver_builtin, method),
-            (
-                Some(BuiltinType::Option),
-                "is_some" | "is_none" | "expect" | "unwrap_or"
-            ) | (
-                Some(BuiltinType::Result),
-                "is_ok" | "is_err" | "expect" | "unwrap_or"
-            )
-        )
-    }
-
     fn dispatch_monomorphic_extern_symbol_method(
         &mut self,
         receiver_type_name: &str,
@@ -1554,11 +1473,7 @@ impl Checker {
         };
         self.record_method_call_rewrite(
             span,
-            MethodCallRewrite::RewriteModuleQualifiedToFunction {
-                target,
-                c_symbol,
-                elem_ty: None,
-            },
+            MethodCallRewrite::RewriteModuleQualifiedToFunction { target, c_symbol },
         );
     }
 
@@ -1843,7 +1758,6 @@ impl Checker {
                         .expect("declared runtime family has no element parameter"),
                 ),
                 extern_identity: None,
-                elem_ty: None,
                 consumes_receiver: contract.consumes_receiver,
                 requires_mutable_receiver: false,
                 receiver_update: crate::ReceiverUpdate::Replace,
@@ -1881,7 +1795,6 @@ impl Checker {
                 MethodCallRewrite::RewriteModuleQualifiedToFunction {
                     target: CallTarget::Runtime(target),
                     c_symbol: method.to_string(),
-                    elem_ty: None,
                 },
             );
             return;
@@ -2383,11 +2296,14 @@ impl Checker {
                             params: params
                                 .iter()
                                 .map(|ty| {
-                                    self.canonicalize_registry_signature(ty, &canonical_owner)
+                                    self.canonicalize_registry_signature(ty, &canonical_owner, &[])
                                 })
                                 .collect(),
-                            return_type: self
-                                .canonicalize_registry_signature(&return_type, &canonical_owner),
+                            return_type: self.canonicalize_registry_signature(
+                                &return_type,
+                                &canonical_owner,
+                                &[],
+                            ),
                             ..FnSig::default()
                         }
                     })
@@ -2414,25 +2330,17 @@ impl Checker {
         type_args: &[Ty],
         method: &str,
     ) -> Option<FnSig> {
-        let sig = self
+        let (impl_params, sig) = self
             .builtin_result_option_method_sigs
             .get(&(builtin, method.to_string()))?;
-        Some(instantiate_stdlib_method_sig(
-            sig,
-            &sig.type_params,
-            type_args,
-        ))
+        Some(instantiate_stdlib_method_sig(sig, impl_params, type_args))
     }
 
     /// Resolve a runtime-backed Vec method from the compiled-in stdlib source,
     /// never from user-shadowable `Vec::<method>` keys.
     fn lookup_builtin_vec_method_sig(&self, type_args: &[Ty], method: &str) -> Option<FnSig> {
-        let sig = self.builtin_vec_method_sigs.get(method)?;
-        Some(instantiate_stdlib_method_sig(
-            sig,
-            &sig.type_params,
-            type_args,
-        ))
+        let (impl_params, sig) = self.builtin_vec_method_sigs.get(method)?;
+        Some(instantiate_stdlib_method_sig(sig, impl_params, type_args))
     }
 
     /// Try to resolve a method call on a named type via `type_defs` and `fn_sigs`.
@@ -2588,7 +2496,6 @@ impl Checker {
                 c_symbol: dispatch_key,
                 descriptor: None,
                 extern_identity: None,
-                elem_ty: None,
                 consumes_receiver,
                 requires_mutable_receiver: sig.requires_mutable_receiver,
                 receiver_update: sig.receiver_update,
@@ -6187,7 +6094,6 @@ impl Checker {
                     // catalog does not enumerate user-defined method keys.
                     descriptor: None,
                     extern_identity: None,
-                    elem_ty: None,
                     // Primitive trait-impl dispatch is a user-fn call; it never
                     // consumes the receiver as a handle release.
                     consumes_receiver: sig.consumes_receiver,
@@ -6568,15 +6474,6 @@ impl Checker {
                 ..
             })
         );
-        let builtin_option_result_consumes_receiver = matches!(
-            self.method_call_rewrites.get(&key),
-            Some(MethodCallRewrite::BuiltinOptionResult {
-                method: OptionResultMethod::OptionExpect
-                    | OptionResultMethod::OptionUnwrapOr
-                    | OptionResultMethod::ResultExpect
-                    | OptionResultMethod::ResultUnwrapOr,
-            })
-        );
         let runtime_rewrite_updates_receiver = matches!(
             self.method_call_rewrites.get(&key),
             Some(MethodCallRewrite::RewriteToFunction {
@@ -6624,7 +6521,7 @@ impl Checker {
             );
         }
 
-        if runtime_rewrite_consumes_receiver || builtin_option_result_consumes_receiver {
+        if runtime_rewrite_consumes_receiver {
             self.method_call_consumes_receiver.insert(key);
             if let Expr::Identifier(name) = &receiver.0 {
                 // The typed consumption decision overrides a surface Copy
@@ -6954,7 +6851,6 @@ impl Checker {
                         MethodCallRewrite::RewriteModuleQualifiedToFunction {
                             target: target.clone(),
                             c_symbol: impl_key.clone(),
-                            elem_ty: None,
                         },
                     );
                     self.record_direct_call_target(span, target);
@@ -8550,22 +8446,7 @@ impl Checker {
                         || self.named_type_method_consumes_receiver(name, method)
                         || self.named_type_inherent_close_consumes_receiver(
                             name, *builtin, method, &sig,
-                        )
-                        || (matches!(*builtin, Some(BuiltinType::VecIter))
-                            && matches!(
-                                method,
-                                "map"
-                                    | "filter"
-                                    | "fold"
-                                    | "any"
-                                    | "all"
-                                    | "find"
-                                    | "count"
-                                    | "enumerate"
-                                    | "take"
-                                    | "skip"
-                                    | "collect"
-                            ));
+                        );
                     if consumes_receiver {
                         self.method_call_consumes_receiver
                             .insert(SpanKey::in_module(span, self.current_module_idx));
@@ -8627,19 +8508,6 @@ impl Checker {
                         }
                     }
                     self.record_handle_method_call_rewrite_if_any(&resolved, method, args, span);
-                    let builtin_option_result_marker =
-                        Self::is_builtin_option_result_marker_method(*builtin, method);
-                    if let Some(receiver_builtin @ (BuiltinType::Result | BuiltinType::Option)) =
-                        *builtin
-                    {
-                        self.record_builtin_option_result_method_rewrite_if_any(
-                            receiver_builtin,
-                            name,
-                            type_args,
-                            method,
-                            span,
-                        );
-                    }
                     self.record_named_extern_symbol_rewrite_if_any(
                         &canonical_receiver_name,
                         type_args,
@@ -8666,8 +8534,7 @@ impl Checker {
                     // `step`/`state_name`, actor send/ask, dyn-trait,
                     // resolved-impl call kernel).
                     let span_key = SpanKey::in_module(span, self.current_module_idx);
-                    let already_rewritten = builtin_option_result_marker
-                        || self.method_call_rewrites.contains_key(&span_key)
+                    let already_rewritten = self.method_call_rewrites.contains_key(&span_key)
                         || self.machine_method_dispatch.contains_key(&span_key)
                         || self.actor_method_dispatch.contains_key(&span_key)
                         || self.dyn_trait_method_calls.contains_key(&span_key)
@@ -8793,16 +8660,25 @@ impl Checker {
                                         |m| format!("{m}::{method}"),
                                     )
                             };
+                            // A builtin Option/Result receiver resolved its
+                            // signature from the std snapshot, which carries its
+                            // declaration; the bare `Result::<method>` key can
+                            // name a same-spelled user method instead.
+                            let declaration = match *builtin {
+                                Some(BuiltinType::Option | BuiltinType::Result) => sig
+                                    .impl_method
+                                    .as_ref()
+                                    .map(|provenance| provenance.declaration.clone()),
+                                _ => self
+                                    .impl_method_declaration_ids
+                                    .get(&dispatch_key)
+                                    .or_else(|| self.impl_method_declaration_ids.get(&method_key))
+                                    .cloned(),
+                            };
                             self.record_method_call_rewrite(
                                 span,
                                 MethodCallRewrite::RewriteToFunction {
-                                    target: self
-                                        .impl_method_declaration_ids
-                                        .get(&dispatch_key)
-                                        .or_else(|| {
-                                            self.impl_method_declaration_ids.get(&method_key)
-                                        })
-                                        .cloned()
+                                    target: declaration
                                         .map_or_else(
                                             || CallTarget::Unsupported {
                                                 reason: format!(
@@ -8817,26 +8693,6 @@ impl Checker {
                                     // does not enumerate user method keys.
                                     descriptor: None,
                                     extern_identity: None,
-                                    elem_ty: (matches!(*builtin, Some(BuiltinType::VecIter))
-                                        && matches!(
-                                            method,
-                                            "map"
-                                                | "filter"
-                                                | "fold"
-                                                | "any"
-                                                | "all"
-                                                | "find"
-                                                | "count"
-                                                | "enumerate"
-                                                | "take"
-                                                | "skip"
-                                                | "collect"
-                                        ))
-                                    .then(|| type_args.first())
-                                    .flatten()
-                                    .and_then(|elem_ty| {
-                                            ResolvedTy::from_ty(&self.subst.resolve(elem_ty)).ok()
-                                        }),
                                     // #1295: a `#[resource]` type's inherent
                                     // `close(self)` is a terminal handle-release
                                     // consume — HIR lowers the receiver with
@@ -8990,9 +8846,6 @@ impl Checker {
                             MethodCallRewrite::StaticTraitDispatch {
                                 target,
                                 receiver_type_param: name.clone(),
-                                bound_trait,
-                                declaring_trait,
-                                method_name: method.to_string(),
                                 requires_mutable_receiver: trait_sig.requires_mutable_receiver,
                                 consumes_receiver: trait_sig.consumes_receiver,
                                 returns_receiver_identity: trait_sig.returns_receiver_identity,

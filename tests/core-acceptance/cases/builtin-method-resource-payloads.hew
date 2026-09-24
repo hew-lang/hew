@@ -1,0 +1,41 @@
+// `unwrap_or`, `ok_or` and `expect` take their fallback or error by
+// consumption, so a payload with no copy operation moves through either arm
+// and closes exactly once; an unused fallback or error closes when the
+// method returns.
+#[resource]
+type Buf {
+    data: Vec<i64>,
+}
+
+impl Buf {
+    fn close(consume self) {
+        println(f"close {self.data[0]}");
+    }
+}
+
+fn make(n: i64) -> Buf {
+    var data: Vec<i64> = Vec.new();
+    data.push(n);
+    Buf { data: data }
+}
+
+fn main() {
+    let none: Option<Buf> = None;
+    none.unwrap_or(make(1)).close();
+    let some: Option<Buf> = Some(make(2));
+    some.unwrap_or(make(3)).close();
+    let failed: Result<Buf, string> = Err("bad");
+    failed.unwrap_or(make(4)).close();
+    let present: Option<Buf> = Some(make(5));
+    present.expect("present").close();
+    let missing: Option<i64> = None;
+    match missing.ok_or(make(6)) {
+        .Ok(value) => println(value),
+        .Err(buf) => buf.close(),
+    }
+    let found: Option<i64> = Some(7);
+    match found.ok_or(make(8)) {
+        .Ok(value) => println(value),
+        .Err(buf) => buf.close(),
+    }
+}

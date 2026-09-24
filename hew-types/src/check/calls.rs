@@ -859,7 +859,20 @@ impl Checker {
             return Some(Ty::Error);
         }
 
-        match func_name.as_str() {
+        self.check_builtin_variant_against_expected(&func_name, args, &resolved_expected, span)
+    }
+
+    /// Check a builtin `Some`/`Ok`/`Err` constructor call against an expected
+    /// `Option`/`Result` type. `None` when `name` is not one of them or the
+    /// expected type does not select its builtin owner.
+    pub(super) fn check_builtin_variant_against_expected(
+        &mut self,
+        name: &str,
+        args: &[CallArg],
+        resolved_expected: &Ty,
+        span: &Span,
+    ) -> Option<Ty> {
+        match name {
             "Some" => {
                 let inner_ty = resolved_expected.as_option()?.clone();
                 self.check_arity(args, 1, "`Some`", span);
@@ -897,6 +910,54 @@ impl Checker {
                 let result_ty = Ty::result(self.subst.resolve(ok_ty), self.subst.resolve(err_ty));
                 self.record_type(span, &result_ty);
                 Some(result_ty)
+            }
+            _ => None,
+        }
+    }
+
+    /// Check a builtin `Some`/`None`/`Ok`/`Err` constructor call with no
+    /// expected type selecting its payload. `None` for any other name.
+    pub(super) fn check_builtin_variant_call(
+        &mut self,
+        name: &str,
+        args: &[CallArg],
+        span: &Span,
+    ) -> Option<Ty> {
+        match name {
+            "Some" => {
+                self.check_arity(args, 1, "`Some`", span);
+                let t = Ty::Var(TypeVar::fresh());
+                if let Some(arg) = args.first() {
+                    let (expr, sp) = arg.expr();
+                    self.check_against(expr, sp, &t);
+                }
+                Some(Ty::option(t))
+            }
+            "None" => {
+                self.check_arity(args, 0, "`None`", span);
+                Some(Ty::option(Ty::Var(TypeVar::fresh())))
+            }
+            "Ok" => {
+                self.check_arity(args, 1, "`Ok`", span);
+                let ok_ty = Ty::Var(TypeVar::fresh());
+                let err_ty = Ty::Var(TypeVar::fresh());
+                if let Some(arg) = args.first() {
+                    let (expr, sp) = arg.expr();
+                    self.check_against(expr, sp, &ok_ty);
+                }
+                self.record_builtin_result_output_type_args(span, &ok_ty, &err_ty);
+                Some(Ty::result(ok_ty, err_ty))
+            }
+            "Err" => {
+                self.check_arity(args, 1, "`Err`", span);
+                let ok_ty = Ty::Var(TypeVar::fresh());
+                let err_ty = Ty::Var(TypeVar::fresh());
+                if let Some(arg) = args.first() {
+                    let (expr, sp) = arg.expr();
+                    self.check_against(expr, sp, &err_ty);
+                }
+                self.record_builtin_result_output_type_args(span, &ok_ty, &err_ty);
+                Some(Ty::result(ok_ty, err_ty))
             }
             _ => None,
         }
@@ -1855,40 +1916,10 @@ impl Checker {
                 };
                 return result_ty;
             }
-            "Some" => {
-                self.check_arity(args, 1, "`Some`", span);
-                let t = Ty::Var(TypeVar::fresh());
-                if let Some(arg) = args.first() {
-                    let (expr, sp) = arg.expr();
-                    self.check_against(expr, sp, &t);
-                }
-                return Ty::option(t);
-            }
-            "None" => {
-                self.check_arity(args, 0, "`None`", span);
-                return Ty::option(Ty::Var(TypeVar::fresh()));
-            }
-            "Ok" => {
-                self.check_arity(args, 1, "`Ok`", span);
-                let ok_ty = Ty::Var(TypeVar::fresh());
-                let err_ty = Ty::Var(TypeVar::fresh());
-                if let Some(arg) = args.first() {
-                    let (expr, sp) = arg.expr();
-                    self.check_against(expr, sp, &ok_ty);
-                }
-                self.record_builtin_result_output_type_args(span, &ok_ty, &err_ty);
-                return Ty::result(ok_ty, err_ty);
-            }
-            "Err" => {
-                self.check_arity(args, 1, "`Err`", span);
-                let ok_ty = Ty::Var(TypeVar::fresh());
-                let err_ty = Ty::Var(TypeVar::fresh());
-                if let Some(arg) = args.first() {
-                    let (expr, sp) = arg.expr();
-                    self.check_against(expr, sp, &err_ty);
-                }
-                self.record_builtin_result_output_type_args(span, &ok_ty, &err_ty);
-                return Ty::result(ok_ty, err_ty);
+            "Some" | "None" | "Ok" | "Err" => {
+                return self
+                    .check_builtin_variant_call(&func_name, args, span)
+                    .expect("builtin variant constructor names are matched above");
             }
             // `close(actor)` requests a cooperative stop and waits until the
             // actor's terminal cleanup has run; `fork close(actor)` is the
@@ -2339,7 +2370,6 @@ impl Checker {
                     MethodCallRewrite::RewriteModuleQualifiedToFunction {
                         target: target.clone(),
                         c_symbol: resolved_fn_name.clone(),
-                        elem_ty: None,
                     },
                 );
             }

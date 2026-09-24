@@ -1,0 +1,100 @@
+//! Methods on builtin types need no import: `Option`, `Result` and the
+//! `VecIter` adapter chain resolve their std methods like `.len()`.
+
+import std.testing;
+
+type Claim {
+    run_id: string,
+    amount: i64,
+}
+
+#[test]
+fn test_vec_chain_without_import() {
+    let values = [1, 2, 3, 4, 5, 6];
+    let doubled_evens = values.into_iter().filter(|value: i64| value % 2 == 0).map(|value: i64| value * 10).collect();
+    testing.assert_eq(doubled_evens.len(), 3);
+    testing.assert_eq(doubled_evens[0], 20);
+    testing.assert_eq(doubled_evens[2], 60);
+}
+
+#[test]
+fn test_record_chain_moves_owned_fields() {
+    let claims = [Claim { run_id: "a", amount: 5 }, Claim { run_id: "b", amount: 7 }];
+    let ids = claims.into_iter().filter(|claim: Claim| claim.amount > 5).map(|claim: Claim| claim.run_id).collect();
+    testing.assert_eq(ids.len(), 1);
+    testing.assert_eq_str(ids[0], "b");
+}
+
+#[test]
+fn test_chain_terminal_on_empty_vec() {
+    let values: Vec<i64> = [];
+    // Negative control: nothing survives the filter, so `find` is `None`.
+    testing.assert_true(values.into_iter().find(|value: i64| value > 0).is_none());
+}
+
+#[test]
+fn test_option_chain_into_result() {
+    let port: Option<string> = Some("8080");
+    let parsed: Result<i64, string> = port.map(|text: string| text.len()).ok_or("no port");
+    testing.assert_eq(parsed.unwrap_or(0), 4);
+}
+
+#[test]
+fn test_option_chain_on_none_uses_error() {
+    let port: Option<string> = None;
+    let parsed: Result<i64, string> = port.map(|text: string| text.len()).ok_or("no port");
+    testing.assert_eq_str(parsed.err().expect("error"), "no port");
+}
+
+#[test]
+fn test_result_chain_recovers() {
+    let raw: Result<string, string> = Err("missing");
+    let value = raw.map(|text: string| text.len()).unwrap_or_else(|error: string| error.len() * 100);
+    testing.assert_eq(value, 700);
+}
+
+// A method's own type parameter stays distinct from a caller parameter of the
+// same name that the receiver carries in.
+type Boxed<T> {
+    value: T,
+}
+
+impl<T> Boxed<T> {
+    fn map<U>(consume self, f: fn(T) -> U) -> Boxed<U> {
+        Boxed { value: f(self.value) }
+    }
+}
+
+fn lengths<U>(consume found: Option<U>) -> Option<i64> {
+    found.map(|item: U| 1)
+}
+
+fn require<E>(consume found: Option<E>) -> Result<E, string> {
+    found.ok_or("none")
+}
+
+fn relabel<T, F>(consume outcome: Result<T, F>) -> Result<T, string> {
+    outcome.map_err(|error: F| "relabelled")
+}
+
+fn count_all<U>(consume values: Vec<U>) -> Vec<i64> {
+    values.into_iter().map(|item: U| 1).collect()
+}
+
+fn rebox<U>(consume boxed: Boxed<U>) -> Boxed<i64> {
+    boxed.map(|item: U| 7)
+}
+
+#[test]
+fn test_method_type_params_do_not_capture_caller_params() {
+    let no_text: Option<string> = None;
+    let no_number: Option<i64> = None;
+    testing.assert_eq(lengths(Some("a")).unwrap_or(0), 1);
+    testing.assert_true(lengths(no_text).is_none());
+    testing.assert_eq(require(Some(4)).unwrap_or(0), 4);
+    testing.assert_eq_str(require(no_number).err().expect("error"), "none");
+    let failed: Result<i64, i64> = Err(3);
+    testing.assert_eq_str(relabel(failed).err().expect("error"), "relabelled");
+    testing.assert_eq(count_all(["a", "b"]).len(), 2);
+    testing.assert_eq(rebox(Boxed { value: "a" }).value, 7);
+}

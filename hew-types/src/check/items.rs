@@ -5,19 +5,33 @@
 use super::*;
 
 impl Checker {
-    fn registered_fn_type_param_scope(&self, fn_name: &str) -> TypeParamScope {
-        self.fn_sigs
+    /// The function's type parameters as a resolver scope. Every parameter is
+    /// present, bounded or not, so a body annotation naming it binds the
+    /// parameter rather than a same-named type or alias from another module.
+    /// The declaration's own binders count even when its signature lives
+    /// under a module-scoped key.
+    fn registered_fn_type_param_scope(&self, fn_name: &str, fd: &FnDecl) -> TypeParamScope {
+        let mut scope = self
+            .fn_sigs
             .get(fn_name)
             .map(|sig| {
+                let mut bounds = sig.type_param_bounds.clone();
+                for param in &sig.type_params {
+                    bounds.entry(param.clone()).or_default();
+                }
                 TypeParamScope::new(
-                    sig.type_param_bounds.clone(),
+                    bounds,
                     self.fn_type_param_assoc_bindings
                         .get(fn_name)
                         .cloned()
                         .unwrap_or_default(),
                 )
             })
-            .unwrap_or_default()
+            .unwrap_or_default();
+        for param in fd.type_params.iter().flatten() {
+            scope.bounds.entry(param.name.clone()).or_default();
+        }
+        scope
     }
 
     pub(super) fn check_item(&mut self, item: &Item, span: &Span) {
@@ -994,7 +1008,7 @@ impl Checker {
         // Push this fn's type-param bounds onto the resolver stack so
         // `T::Bar` projections inside `let x: T::Bar = ...` and other in-body
         // type annotations resolve. Popped at end of body check.
-        let body_bounds = self.registered_fn_type_param_scope(fn_name);
+        let body_bounds = self.registered_fn_type_param_scope(fn_name, fd);
         let pushed_body_bounds = !body_bounds.bounds.is_empty();
         if pushed_body_bounds {
             self.current_type_param_bounds.push(body_bounds);

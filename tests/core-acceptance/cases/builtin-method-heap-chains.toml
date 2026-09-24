@@ -1,0 +1,10 @@
+[[case]]
+id = "builtin-method-heap-chains"
+intent = "Option, Result and iterator std method bodies move or release heap payloads on both arms without leaks or double releases."
+source = "cases/builtin-method-heap-chains.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "1\nFALLBACK\nALPHA!\nMISSING?\n2\nTAKEN\nEMPTY\n"
+exit = 0

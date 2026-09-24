@@ -265,11 +265,8 @@ const PARITY_CASES: &[ParityCase] = &[
         source_rel: "examples/playground/types/generic_aggregate_eq.hew",
     },
     ParityCase {
-        // Option/Result marker methods: `is_some`, `is_none`, `is_ok`, `is_err`,
-        // `unwrap`, `unwrap_or`. The emitter now lowers these via enum.tag /
-        // enum.payload bytecode sequences rather than falling through to
-        // emit_unsupported. The profile explicitly admits these methods on
-        // Option/Result receiver types.
+        // Option/Result predicates and extractors run their std source bodies
+        // on both engines.
         test_name: "option_result_methods",
         source_rel: "examples/playground/types/option_result_methods.hew",
     },
@@ -377,6 +374,12 @@ const PARITY_CASES: &[ParityCase] = &[
         // `None` stays behind on both engines.
         test_name: "option_take",
         source_rel: "examples/sandbox-graduation/option_take.hew",
+    },
+    ParityCase {
+        // Option, Result and iterator methods are std source bodies every
+        // program sees without an import, chained through closures.
+        test_name: "fluent_method_chains",
+        source_rel: "examples/sandbox-graduation/fluent_method_chains.hew",
     },
     ParityCase {
         // Pushes, an indexed write and a field assignment on a `#[resource]`

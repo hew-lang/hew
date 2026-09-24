@@ -2803,28 +2803,25 @@ fn builtin_result_methods_resolve_on_actor_ask_wrapper() {
          `is_ok` with a different return type; got: {:#?}",
         output.errors
     );
-    // The `is_ok` call must lower to the builtin structured marker, never the
-    // user `Result::is_ok` method key. A user-method rewrite here is the
-    // ill-typed call codegen-front would reject.
+    // The `is_ok` call must dispatch to the std.result declaration, never
+    // the user `Result::is_ok` body: that call would be ill-typed downstream.
+    let is_ok_targets: Vec<&str> = output
+        .method_call_rewrites
+        .values()
+        .filter_map(|rewrite| match rewrite {
+            MethodCallRewrite::RewriteToFunction {
+                target: CallTarget::ImplMethod(declaration),
+                ..
+            } if declaration.full_path().ends_with("::is_ok") => Some(declaration.full_path()),
+            _ => None,
+        })
+        .collect();
     assert!(
-        output.method_call_rewrites.values().any(|rewrite| matches!(
-            rewrite,
-            MethodCallRewrite::BuiltinOptionResult {
-                method: OptionResultMethod::ResultIsOk
-            }
-        )),
-        "`r.is_ok()` on a builtin Result receiver must lower to \
-         the structured ResultIsOk marker; got: {:#?}",
-        output.method_call_rewrites
-    );
-    assert!(
-        !output.method_call_rewrites.values().any(|rewrite| matches!(
-            rewrite,
-            MethodCallRewrite::RewriteToFunction { c_symbol, .. } if c_symbol == "Result::is_ok"
-        )),
-        "no user `Result::is_ok` rewrite must be recorded for a builtin Result \
-         receiver; got: {:#?}",
-        output.method_call_rewrites
+        !is_ok_targets.is_empty()
+            && is_ok_targets
+                .iter()
+                .all(|path| path.starts_with("std.result.")),
+        "`r.is_ok()` on a builtin Result receiver must dispatch to std.result; got: {is_ok_targets:?}"
     );
 }
 
@@ -2832,11 +2829,11 @@ fn builtin_result_methods_resolve_on_actor_ask_wrapper() {
 fn builtin_option_extractors_consume_the_receiver() {
     let output = check_source(
         r#"
-        fn take(value: Option<string>) -> string {
+        fn take(consume value: Option<string>) -> string {
             value.expect("the value is present")
         }
 
-        fn take_or(value: Option<string>, fallback: string) -> string {
+        fn take_or(consume value: Option<string>, consume fallback: string) -> string {
             value.unwrap_or(fallback)
         }
         "#,
@@ -2846,25 +2843,41 @@ fn builtin_option_extractors_consume_the_receiver() {
         "builtin Option extractors must type-check: {:#?}",
         output.errors
     );
-
-    for method in [
-        OptionResultMethod::OptionExpect,
-        OptionResultMethod::OptionUnwrapOr,
-    ] {
+    for method in ["expect", "unwrap_or"] {
         let key = output
             .method_call_rewrites
             .iter()
-            .find_map(|(key, rewrite)| {
-                matches!(
-                    rewrite,
-                    MethodCallRewrite::BuiltinOptionResult { method: actual }
-                        if *actual == method
-                )
-                .then(|| key.clone())
+            .find_map(|(key, rewrite)| match rewrite {
+                MethodCallRewrite::RewriteToFunction {
+                    target: CallTarget::ImplMethod(declaration),
+                    ..
+                } if declaration.full_path().ends_with(&format!("::{method}")) => Some(key.clone()),
+                _ => None,
             })
-            .unwrap_or_else(|| panic!("missing builtin Option rewrite for {method:?}"));
+            .unwrap_or_else(|| panic!("missing std Option dispatch for {method}"));
         assert!(output.method_call_consumes_receiver.contains(&key));
     }
+}
+
+#[test]
+fn builtin_option_extractors_refuse_a_borrowed_receiver() {
+    // `expect`/`unwrap_or` take `consume self`, so a borrowed parameter needs
+    // `consume` like any other consuming method call.
+    let output = check_source(
+        r#"
+        fn take(value: Option<string>) -> string {
+            value.expect("the value is present")
+        }
+        "#,
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.message.contains("E_OWN_CONSUME_BORROWED")),
+        "a consuming Option method on a borrowed parameter must be refused; got: {:#?}",
+        output.errors
+    );
 }
 
 #[test]
@@ -2918,11 +2931,14 @@ fn user_option_and_result_methods_do_not_get_builtin_rewrites() {
         output.errors
     );
     assert!(
-        !output
-            .method_call_rewrites
-            .values()
-            .any(|rewrite| matches!(rewrite, MethodCallRewrite::BuiltinOptionResult { .. })),
-        "same-spelling user types must not acquire builtin Option/Result lowering: {:#?}",
+        !output.method_call_rewrites.values().any(|rewrite| matches!(
+            rewrite,
+            MethodCallRewrite::RewriteToFunction {
+                target: CallTarget::ImplMethod(declaration),
+                ..
+            } if declaration.full_path().starts_with("std.")
+        )),
+        "same-spelling user types must not dispatch to std Option/Result methods: {:#?}",
         output.method_call_rewrites
     );
 }

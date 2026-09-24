@@ -93,6 +93,7 @@ pub const REQUIRED_PARITY_TEST_NAMES: &[&str] = &[
     "option_some_none",
     "var_self_fault_defer",
     "option_take",
+    "fluent_method_chains",
     "resource_field_collections",
     "capture_collections",
     "const_reference",

@@ -65,14 +65,13 @@ pub use check::{
     ImplId, ImplRegistry, LintId, LintLevel, LintLevels, LintSources, LookupError,
     MachineMethodKind, MathGenericOp, MethodCallReceiverKind, MethodCallRewrite, MethodTarget,
     MethodTargetFamily, OpaqueResourceCandidateGraph, OpaqueResourceLifecycleCandidate,
-    OpaqueResourceLifecycleConflict, OpaqueResourceLifecycleConflictKind, OptionResultMethod,
-    PatternKind, PatternPlan, PayloadBinding, PayloadLiteralPattern, PayloadVariantPattern,
-    PlanField, PlanSub, PoolAccessor, PoolAccessorKind, RcIntrinsicOp, ReceiverUpdate,
-    ResolvedCall, ResolvedTraitDefault, ResultReturnKind, RuntimeAbi, SpanKey, TryConversionKind,
-    TryWidthCastLowering, TyPattern, TypeAliasDef, TypeCheckOutput, UserComparisonDispatch,
-    VariantDef, VariantMatch, VecHigherOrderOp, VecMethod, WidthCastKind, WidthCastLowering,
-    WireCodecDirection, WireFieldLayout, WireFieldPresence, WireLayoutEntry, WireLayoutTable,
-    WireTextFormat,
+    OpaqueResourceLifecycleConflict, OpaqueResourceLifecycleConflictKind, PatternKind, PatternPlan,
+    PayloadBinding, PayloadLiteralPattern, PayloadVariantPattern, PlanField, PlanSub, PoolAccessor,
+    PoolAccessorKind, RcIntrinsicOp, ReceiverUpdate, ResolvedCall, ResolvedTraitDefault,
+    ResultReturnKind, RuntimeAbi, SpanKey, TryConversionKind, TryWidthCastLowering, TyPattern,
+    TypeAliasDef, TypeCheckOutput, UserComparisonDispatch, VariantDef, VariantMatch,
+    VecHigherOrderOp, VecMethod, WidthCastKind, WidthCastLowering, WireCodecDirection,
+    WireFieldLayout, WireFieldPresence, WireLayoutEntry, WireLayoutTable, WireTextFormat,
 };
 pub use error::TypeError;
 pub use extern_symbol::{

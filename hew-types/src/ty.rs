@@ -1636,6 +1636,14 @@ impl Ty {
         }
     }
 
+    /// Whether a bare named type parameter spelled `param_name` occurs anywhere
+    /// in this type.
+    #[must_use]
+    pub fn mentions_named_param(&self, param_name: &str) -> bool {
+        matches!(self, Ty::Named { name, args, .. } if args.is_empty() && name == param_name)
+            || self.any_child(&|child| child.mentions_named_param(param_name))
+    }
+
     /// Substitute a named type parameter (e.g. `T`) with a concrete type in a type expression.
     /// Used to resolve generic fields/methods on instantiated types.
     #[must_use]

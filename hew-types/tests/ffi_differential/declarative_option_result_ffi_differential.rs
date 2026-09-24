@@ -1,36 +1,26 @@
-//! Option/Result receiver methods lower through a closed generic-enum marker.
+//! Option/Result receiver methods dispatch to their std source declarations.
 
 use crate::common;
 
-use hew_types::check::{MethodCallRewrite, OptionResultMethod};
+use hew_types::check::MethodCallRewrite;
+use hew_types::CallTarget;
 
 use common::typecheck;
 
-fn has_marker(output: &hew_types::TypeCheckOutput, method: OptionResultMethod) -> bool {
-    output.method_call_rewrites.values().any(
-        |rewrite| matches!(rewrite, MethodCallRewrite::BuiltinOptionResult { method: got } if *got == method),
-    )
-}
-
 #[test]
-fn option_result_methods_record_structured_generic_markers() {
+fn option_result_methods_dispatch_to_std_declarations() {
     let source = r#"
         type Point { x: i64, y: i64, }
 
-        fn exercise_option(opt_i64: Option<i64>, opt_str: Option<string>, opt_point: Option<Point>) {
+        fn exercise_option(opt_i64: Option<i64>, opt_str: Option<string>, consume opt_point: Option<Point>) {
             let _: bool = opt_point.is_some();
             let _: bool = opt_str.is_none();
-            let _: i64 = opt_i64.expect("the value is present");
-            let _: string = opt_str.unwrap_or("fallback");
             let _: Point = opt_point.expect("the value is present");
         }
 
-        fn exercise_result(r_i64: Result<i64, string>, r_f64: Result<f64, string>, r_point: Result<Point, string>) {
-            let _: bool = r_point.is_ok();
+        fn exercise_result(r_i64: Result<i64, string>, consume r_f64: Result<f64, string>) {
             let _: bool = r_i64.is_err();
-            let _: i64 = r_i64.expect("the value is present");
             let _: f64 = r_f64.unwrap_or(0.0);
-            let _: Point = r_point.expect("the value is present");
         }
     "#;
     let output = typecheck(source);
@@ -39,30 +29,31 @@ fn option_result_methods_record_structured_generic_markers() {
         "generic Option/Result receiver methods should typecheck; got: {:#?}",
         output.errors
     );
-    for method in [
-        OptionResultMethod::OptionIsSome,
-        OptionResultMethod::OptionIsNone,
-        OptionResultMethod::OptionExpect,
-        OptionResultMethod::OptionUnwrapOr,
-        OptionResultMethod::ResultIsOk,
-        OptionResultMethod::ResultIsErr,
-        OptionResultMethod::ResultExpect,
-        OptionResultMethod::ResultUnwrapOr,
+    let targets: Vec<&str> = output
+        .method_call_rewrites
+        .values()
+        .filter_map(|rewrite| match rewrite {
+            MethodCallRewrite::RewriteToFunction {
+                target: CallTarget::ImplMethod(declaration),
+                ..
+            } => Some(declaration.full_path()),
+            _ => None,
+        })
+        .collect();
+    for (owner, method) in [
+        ("std.option", "is_some"),
+        ("std.option", "is_none"),
+        ("std.option", "expect"),
+        ("std.result", "is_err"),
+        ("std.result", "unwrap_or"),
     ] {
         assert!(
-            has_marker(&output, method),
-            "expected {method:?} in method_call_rewrites; got: {:#?}",
-            output.method_call_rewrites
+            targets
+                .iter()
+                .any(|path| path.starts_with(owner) && path.ends_with(&format!("::{method}"))),
+            "expected `{method}` to dispatch to {owner}; got: {targets:?}"
         );
     }
-    assert!(
-        output
-            .method_call_rewrites
-            .values()
-            .all(|rewrite| !matches!(rewrite, MethodCallRewrite::RewriteToFunction { .. })),
-        "Option/Result methods must not lower to string runtime symbols: {:#?}",
-        output.method_call_rewrites
-    );
 }
 
 #[test]

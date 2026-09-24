@@ -171,8 +171,14 @@ fn compiler_stdlib_root_impl(
 /// replace the standard library. A Hew checkout's own binary finds the
 /// checkout's `std/` as its shipped std; any other std is selected with
 /// `HEW_STD`.
+///
+/// A host with no filesystem (the browser sandbox) serves the std compiled
+/// into it at its shipped spelling, `./std/...`, so its root is `.`.
 #[must_use]
 pub fn stdlib_search_paths() -> Vec<PathBuf> {
+    if cfg!(target_family = "wasm") {
+        return vec![PathBuf::from(".")];
+    }
     if let Some(std_dir) = std::env::var_os("HEW_STD").map(PathBuf::from) {
         if std_dir.is_dir() {
             return std_dir

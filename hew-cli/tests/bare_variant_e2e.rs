@@ -571,12 +571,20 @@ fn prelude_impl_diagnostics_name_the_selected_std_file() {
         !output.status.success(),
         "the broken std copy must refuse:\n{stderr}"
     );
+    // Diagnostics render the canonical path without Windows' `\\?\` prefix
+    // (`hew-compile::display_path`).
+    let shown = std::fs::canonicalize(&option)
+        .expect("canonical std option path")
+        .display()
+        .to_string();
+    let shown = shown
+        .strip_prefix(r"\\?\UNC\")
+        .map(|rest| format!(r"\\{rest}"))
+        .or_else(|| shown.strip_prefix(r"\\?\").map(str::to_string))
+        .unwrap_or(shown);
     assert!(
         stderr.contains(&format!(
-            "{}:{line}:{column}: error: E_BARE_VARIANT_EXPR",
-            std::fs::canonicalize(&option)
-                .expect("canonical std option path")
-                .display()
+            "{shown}:{line}:{column}: error: E_BARE_VARIANT_EXPR"
         )),
         "the refusal must name the std file it came from:\n{stderr}"
     );

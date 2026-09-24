@@ -2313,10 +2313,9 @@ fn add_prelude_std_modules(
             continue;
         }
         let (path, source) = source_for(name)?;
-        let filename = path.as_ref().map_or_else(
-            || format!("std/{name}.hew"),
-            |path| path.display().to_string(),
-        );
+        let filename = path
+            .as_ref()
+            .map_or_else(|| format!("std/{name}.hew"), |path| display_path(path));
         let parsed = hew_parser::parse(&source);
         if parsed
             .errors

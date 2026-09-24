@@ -2,34 +2,93 @@
 // restart instead of starting another one. Every role restarts exactly once,
 // after the old incarnation's stop hook finishes, and every incarnation stops
 // before supervisor_stop returns.
-actor Worker {
-    var name: string,
-    #[on(start)]
-    fn started() { println("start " + name); }
-    #[on(stop)]
-    fn stopping() {
-        if name == "c" { sleep(1000ms); }
-        println("stop " + name);
+//
+// The gate makes the interleaving deterministic: c's stop hook holds the first
+// group restart open until x's stop hook runs, and only the supervisor's
+// handling of a's crash stops x, so a's crash always arrives while c is still
+// stopping.
+actor Gate {
+    var entered: bool,
+    var released: bool,
+    receive fn enter() {
+        entered = true;
     }
-    receive fn boom() { panic("worker failed"); }
+    receive fn is_entered() -> bool {
+        entered
+    }
+    receive fn release() {
+        released = true;
+    }
+    receive fn is_released() -> bool {
+        released
+    }
 }
 
-supervisor App {
+fn wait_for(gate: Gate, released: bool) {
+    var ready = false;
+    while !ready {
+        let answer = if released {
+            gate.is_released()
+        } else {
+            gate.is_entered()
+        };
+        match answer {
+            .Ok(value) => {
+                ready = value;
+            },
+            .Err(_) => {
+                ready = true;
+            },
+        }
+        if !ready {
+            sleep(1ms);
+        }
+    }
+}
+
+actor Worker {
+    var name: string,
+    let gate: Gate,
+    receive fn boom() {
+        panic("worker failed");
+    }
+    #[on(start)]
+    fn started() {
+        println("start " + name);
+    }
+    #[on(stop)]
+    fn stopping() {
+        if name == "c" {
+            let _ = gate.enter();
+            wait_for(gate, true);
+        }
+        println("stop " + name);
+        if name == "x" {
+            let _ = gate.release();
+        }
+    }
+}
+
+supervisor App(gate: Gate) {
     strategy: rest_for_one,
     intensity: 10 within 60s,
-    child a: Worker(name: "a"),
-    child b: Worker(name: "b"),
-    child c: Worker(name: "c"),
+
+    child a: Worker(name: "a", gate: gate),
+    child x: Worker(name: "x", gate: gate),
+    child b: Worker(name: "b", gate: gate),
+    child c: Worker(name: "c", gate: gate),
 }
 
 fn main() {
-    let app = spawn App;
+    let gate = spawn Gate(entered: false, released: false);
+    let app = spawn App(gate: gate);
     let _ = app.b.boom();
-    // c is inside its stop hook when a fails.
-    sleep(200ms);
+    // b's restart stopped c, and c now holds it open in its stop hook.
+    wait_for(gate, false);
     let _ = app.a.boom();
     let _restarted = await_restart app.a;
     println("restarted");
     supervisor_stop(app);
     println("stopped");
+    close(gate);
 }

@@ -1,11 +1,11 @@
 [[case]]
 id = "supervisor-group-restart-joins-second-crash"
-intent = "A crash while a rest_for_one restart waits on a stopping sibling joins it: each role restarts once, after the stop hook, and nothing outlives supervisor_stop."
+intent = "A crash while a rest_for_one restart waits on a stopping sibling joins it: each role restarts once, after the stop hooks, and nothing outlives supervisor_stop."
 source = "cases/supervisor-group-restart-joins-second-crash.hew"
 suites = ["acceptance", "safety"]
 timeout_seconds = 30
 
 [case.expected]
-stdout = "start a\nstart b\nstart c\nstop c\nstart a\nstart b\nstart c\nrestarted\nstop a\nstop b\nstop c\nstopped\n"
-stderr = "hew: failure: UserPanic (212): worker failed\nhew: actor crash in Worker.boom (actor 2): UserPanic\nhew: failure: UserPanic (212): worker failed\nhew: actor crash in Worker.boom (actor 1): UserPanic\n"
+stdout = "start a\nstart x\nstart b\nstart c\nstop x\nstop c\nstart a\nstart x\nstart b\nstart c\nrestarted\nstop a\nstop x\nstop b\nstop c\nstopped\n"
+stderr = "hew: failure: UserPanic (212): worker failed\nhew: actor crash in Worker.boom (actor 4): UserPanic\nhew: failure: UserPanic (212): worker failed\nhew: actor crash in Worker.boom (actor 2): UserPanic\n"
 exit = 0

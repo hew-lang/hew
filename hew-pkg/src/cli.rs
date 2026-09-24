@@ -1111,6 +1111,7 @@ fn pin_offline_registry_packages(
             );
         }
     }
+
     Ok(pinned)
 }
 
@@ -1653,6 +1654,14 @@ fn verify_registry_signature(
 /// from (`Registry::package_slot_for`). `--local` never combines with
 /// `--registry` (`conflicts_with` in [`PkgCommand::Publish`]), so every local
 /// publish targets the default registry's identity.
+/// Publish a packed archive into the local registry only, under the same
+/// namespaced cache slot `--locked` and `--offline` resolution read from for
+/// the default registry (`Registry::package_slot_for`) — see
+/// `publish_local_package`'s call site and hew-lang/hew#3233. Refuses,
+/// rather than silently overwrites, when that slot already holds a
+/// *verified* registry fetch (one `write_cache_metadata` populated) whose
+/// tree checksum differs: a local test build must never shadow a package a
+/// real registry actually served at the same name and version.
 fn publish_local_package(
     registry: &registry::Registry,
     name: &str,
@@ -1660,6 +1669,22 @@ fn publish_local_package(
     archive: &[u8],
 ) -> std::io::Result<crate::atomic_fs::PinnedDir> {
     let dest = registry.package_slot_for(&config::default_registry_identity(), name, version);
+    let incoming_checksum = crate::tarball::unpacked_tree_checksum(archive)
+        .map_err(|error| std::io::Error::other(format!("cannot checksum archive: {error}")))?;
+    if let Ok(Some(existing)) =
+        registry.pin_package_dir_for_if_present(&config::default_registry_identity(), name, version)
+    {
+        if let Some(verified_checksum) = registry::Registry::verified_tree_checksum(existing.path())
+        {
+            if verified_checksum != incoming_checksum {
+                return Err(std::io::Error::other(format!(
+                    "{name}@{version} is already cached from a verified registry fetch with a \
+                     different tree checksum; a local publish must not shadow it (bump the \
+                     version to publish a different build)"
+                )));
+            }
+        }
+    }
     let staged = crate::atomic_fs::StagedDir::new(&dest)?;
     tarball::unpack(archive, staged.path()).map_err(std::io::Error::other)?;
     staged.publish_pinned(&dest)
@@ -3558,6 +3583,108 @@ mod tests {
         assert_ne!(
             registry.package_dir("foo", "1.0.0"),
             registry.package_dir_for(&config::default_registry_identity(), "foo", "1.0.0")
+        );
+    }
+
+    /// A local publish must not silently overwrite a package the same slot
+    /// already holds from a *verified* registry fetch (one
+    /// `Registry::write_cache_metadata` populated) with different content:
+    /// that would make a later `--offline`/`--locked` resolution trust a
+    /// local test build as if it were the real registry's package. A local
+    /// publish over a *prior local* publish (no cache metadata) still
+    /// succeeds — that is routine local development, not a collision.
+    #[test]
+    fn publish_local_refuses_to_shadow_a_verified_registry_fetch() {
+        let root = tempfile::tempdir().unwrap();
+        let registry = registry::Registry::with_root(root.path().join("registry"));
+        let registry_id = config::default_registry_identity();
+
+        let pkg = |value: &str| {
+            let src = tempfile::tempdir().unwrap();
+            std::fs::write(
+                src.path().join("hew.toml"),
+                "[package]\nname = \"foo\"\nversion = \"1.0.0\"\n",
+            )
+            .unwrap();
+            std::fs::write(
+                src.path().join("foo.hew"),
+                format!("pub fn value() -> i64 {{ {value} }}\n"),
+            )
+            .unwrap();
+            let archive = tarball::pack(src.path(), &[], &[]).unwrap();
+            (src, archive)
+        };
+
+        // Seed the slot as a verified registry fetch would leave it: unpacked
+        // content plus the cache metadata sidecar `write_cache_metadata` writes.
+        let (_src, real) = pkg("1");
+        let slot = registry.package_slot_for(&registry_id, "foo", "1.0.0");
+        let staged = crate::atomic_fs::StagedDir::new(&slot).unwrap();
+        tarball::unpack(&real.data, staged.path()).unwrap();
+        let published = staged.publish_pinned(&slot).unwrap();
+        registry::Registry::write_cache_metadata(
+            published.path(),
+            &registry_id,
+            "foo",
+            "1.0.0",
+            &real.checksum,
+            &real.data,
+        )
+        .unwrap();
+
+        // A local publish with DIFFERENT content for the same name@version
+        // must be refused, not silently overwrite the verified fetch.
+        let (_src2, different) = pkg("2");
+        let error = publish_local_package(&registry, "foo", "1.0.0", &different.data)
+            .expect_err("must refuse to shadow a verified registry fetch");
+        assert!(
+            error.to_string().contains("verified registry fetch"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(
+                registry
+                    .package_dir_for(&registry_id, "foo", "1.0.0")
+                    .join("foo.hew")
+            )
+            .unwrap(),
+            "pub fn value() -> i64 { 1 }\n",
+            "the verified fetch must be untouched after the refused publish"
+        );
+
+        // A local publish with the SAME content is idempotent, not a collision.
+        let (_src3, same) = pkg("1");
+        publish_local_package(&registry, "foo", "1.0.0", &same.data)
+            .expect("identical content is not a collision");
+
+        // A local publish over a PRIOR LOCAL publish (no cache metadata) is
+        // routine local development and must still succeed even when content
+        // changes — matching `tests/package-install/run.sh`'s republish case.
+        let bar_pkg = |value: &str| {
+            let src = tempfile::tempdir().unwrap();
+            std::fs::write(
+                src.path().join("hew.toml"),
+                "[package]\nname = \"bar\"\nversion = \"1.0.0\"\n",
+            )
+            .unwrap();
+            std::fs::write(
+                src.path().join("bar.hew"),
+                format!("pub fn value() -> i64 {{ {value} }}\n"),
+            )
+            .unwrap();
+            tarball::pack(src.path(), &[], &[]).unwrap()
+        };
+        publish_local_package(&registry, "bar", "1.0.0", &bar_pkg("1").data).unwrap();
+        publish_local_package(&registry, "bar", "1.0.0", &bar_pkg("2").data)
+            .expect("republishing over a prior local publish is not a collision");
+        assert_eq!(
+            std::fs::read_to_string(
+                registry
+                    .package_dir_for(&registry_id, "bar", "1.0.0")
+                    .join("bar.hew")
+            )
+            .unwrap(),
+            "pub fn value() -> i64 { 2 }\n"
         );
     }
 

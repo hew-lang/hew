@@ -315,6 +315,19 @@ impl Registry {
         .map_err(|error| format!("cannot write cache metadata for {name}@{version}: {error}"))
     }
 
+    /// The tree checksum a verified registry fetch recorded for `package_dir`,
+    /// if `write_cache_metadata` ever populated it there. `None` covers both
+    /// an empty slot and one only ever populated by an unverified write (a
+    /// local publish's plain `tarball::unpack`, which writes no metadata
+    /// sidecar) — both are safe to overwrite; only a genuine prior registry
+    /// fetch is something a caller must not silently shadow.
+    #[must_use]
+    pub(crate) fn verified_tree_checksum(package_dir: &Path) -> Option<String> {
+        let text = std::fs::read_to_string(package_dir.join(CACHE_METADATA_FILE)).ok()?;
+        let metadata: CacheMetadata = toml::from_str(&text).ok()?;
+        Some(metadata.tree_checksum)
+    }
+
     /// Return the root path of this registry.
     #[must_use]
     pub fn root(&self) -> &Path {
@@ -331,16 +344,31 @@ impl Registry {
     /// Walks both the legacy unnamespaced layout and every per-registry
     /// namespace under `.registries/` (each treated as its own root, since
     /// the namespace segment is a checksum, not a package-name component).
+    ///
+    /// A package migrated from the legacy layout (`pin_offline_registry_packages`
+    /// copies rather than moves) can exist in both places at once; the
+    /// namespaced copy is the current one, so it wins deduplication by
+    /// `(name, version)`.
     #[must_use]
     pub fn list_packages(&self) -> Vec<InstalledPackage> {
         let mut packages = Vec::new();
-        let _ = collect_packages(&self.root, &self.root, &mut packages);
         if let Ok(entries) = std::fs::read_dir(self.root.join(".registries")) {
             for entry in entries.flatten() {
                 let source_root = entry.path();
                 if source_root.is_dir() {
                     let _ = collect_packages(&source_root, &source_root, &mut packages);
                 }
+            }
+        }
+        let mut seen: std::collections::BTreeSet<(String, String)> = packages
+            .iter()
+            .map(|package| (package.name.clone(), package.version.clone()))
+            .collect();
+        let mut legacy = Vec::new();
+        let _ = collect_packages(&self.root, &self.root, &mut legacy);
+        for package in legacy {
+            if seen.insert((package.name.clone(), package.version.clone())) {
+                packages.push(package);
             }
         }
         packages
@@ -631,6 +659,42 @@ mod tests {
         assert_eq!(pkgs.len(), 2);
         assert_eq!(pkgs[0].name, "ecosystem.db.postgres");
         assert_eq!(pkgs[1].name, "std.net.http");
+    }
+
+    /// A package migrated from the legacy layout is copied, not moved
+    /// (`pin_offline_registry_packages`), so the same `name@version` can
+    /// exist under both the legacy root and its namespaced slot at once.
+    /// `list_packages()` must report it once, not twice.
+    #[test]
+    fn list_packages_dedupes_a_package_present_in_both_layouts() {
+        let dir = tempfile::tempdir().unwrap();
+        let reg = Registry::with_root(dir.path().to_path_buf());
+        let identity = crate::config::default_registry_identity();
+
+        for pkg_dir in [
+            reg.package_dir("foo", "1.0.0"),
+            reg.package_dir_for(&identity, "foo", "1.0.0"),
+        ] {
+            std::fs::create_dir_all(&pkg_dir).unwrap();
+            std::fs::write(
+                pkg_dir.join("hew.toml"),
+                "[package]\nname = \"foo\"\nversion = \"1.0.0\"\n",
+            )
+            .unwrap();
+        }
+
+        let pkgs = reg.list_packages();
+        assert_eq!(
+            pkgs.len(),
+            1,
+            "the same name@version present in both layouts must be listed once"
+        );
+        assert_eq!(pkgs[0].name, "foo");
+        assert_eq!(
+            pkgs[0].path,
+            reg.package_dir_for(&identity, "foo", "1.0.0"),
+            "the namespaced copy is the current one and must win"
+        );
     }
 
     #[test]

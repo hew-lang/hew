@@ -2172,17 +2172,6 @@ fn location_matches_node_session(
         && crate::pid::actor_slot_fits_internal_alias(location.slot())
 }
 
-fn location_matches_local(mgr: &HewConnMgr, location: Location) -> bool {
-    if Some(location.node()) != mgr.local_identity
-        || Some(location.incarnation()) != mgr.local_session_incarnation
-        || !crate::pid::actor_slot_fits_internal_alias(location.slot())
-    {
-        return false;
-    }
-    let actor_id = crate::pid::hew_pid_make(mgr.local_node_id, location.slot());
-    crate::lifetime::live_actors::get_actor_ptr_by_id(actor_id).is_some()
-}
-
 fn location_matches_local_session(mgr: &HewConnMgr, location: Location) -> bool {
     Some(location.node()) == mgr.local_identity
         && Some(location.incarnation()) == mgr.local_session_incarnation
@@ -3556,7 +3545,17 @@ fn reader_loop(
                         set_last_error("connection reader envelope missing target Location");
                         continue;
                     };
-                    if !location_matches_local(mgr_ref, target) {
+                    // Validate the envelope targets THIS node's identity and
+                    // session — routing correctness only. Whether the specific
+                    // actor is still live is `node_inbound_router`'s decision:
+                    // an ask against a dead actor gets a typed `ActorStopped`
+                    // rejection (`handle_inbound_ask`), and a send against one
+                    // is fail-closed dropped (`deliver_inbound_send`). Gating
+                    // on liveness here (the former `location_matches_local`)
+                    // silently dropped envelopes for an already-freed actor
+                    // before either path ran, leaving the asking peer to only
+                    // ever observe a timeout instead of `Dead`.
+                    if !location_matches_local_session(mgr_ref, target) {
                         set_last_error("connection reader envelope target Location mismatch");
                         continue;
                     }

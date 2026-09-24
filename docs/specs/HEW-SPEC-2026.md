@@ -3810,10 +3810,14 @@ initialized.
 
 Machine evaluation is synchronous and pure: guards, transition bodies, hooks
 and their transitive helpers may compute and mutate local value data, but
-cannot perform I/O, interact with actors, suspend, access unsafe memory or
-retain external resource identity. An unknown or indirect call has no purity
-proof and is rejected. Checked computation faults remain possible. Inputs,
-states and outputs must support independent value copies.
+cannot perform I/O, interact with actors, spawn, suspend or access unsafe
+memory. Purity restricts what a transition does, not the types its state
+holds: `Rc`, actor handles and `#[resource]` values move through transitions
+as values. An unknown or indirect call has no purity proof and is rejected.
+Checked computation faults remain possible. A step stages an independent copy
+of its machine until it commits, so a `#[resource]` held directly in a state
+payload is refused at the transition that takes it, naming the machine, state,
+field and type; `Rc<T>` shares it across the staged copy.
 
 The native evaluator admits ordinary concrete machines, const parameters and
 depth-1 composite state blocks (§3.11.9). An unclassified generic payload

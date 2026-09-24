@@ -29,6 +29,10 @@ use crate::error::{TypeError, TypeErrorKind};
 pub struct NormalizedMachines {
     pub program: Program,
     pub source_spans: HashMap<Span, Span>,
+    /// Each machine's transitions as `(source state, authored body span)`,
+    /// keyed by the declaring module (`(root)` or its dotted path) and the
+    /// machine name, so a refusal can name the transition it concerns.
+    pub transitions: HashMap<(String, String), Vec<(String, Span)>>,
 }
 
 pub(super) fn normalize(
@@ -67,6 +71,7 @@ pub(super) fn normalize(
         source_spans: HashMap::new(),
         origin: 0..0,
         expansions: HashMap::new(),
+        transitions: HashMap::new(),
     };
     let mut normalized = program.clone();
     let root_sources = program
@@ -127,6 +132,7 @@ pub(super) fn normalize(
     Ok(Some(Arc::new(NormalizedMachines {
         program: normalized,
         source_spans: builder.source_spans,
+        transitions: builder.transitions,
     })))
 }
 
@@ -155,6 +161,7 @@ struct Builder {
     origin: Span,
     /// One expansion per physical declaration, shared by import projections.
     expansions: HashMap<ExpansionKey, Vec<Spanned<Item>>>,
+    transitions: HashMap<(String, String), Vec<(String, Span)>>,
 }
 
 const OUTPUTS: &str = "_$machine_outputs";
@@ -373,6 +380,15 @@ impl Builder {
                 result[ordinal] = (Item::TypeDecl(declaration), span.clone());
                 continue;
             }
+            self.transitions
+                .entry((module.to_string(), machine.name.clone()))
+                .or_insert_with(|| {
+                    machine
+                        .transitions
+                        .iter()
+                        .map(|rule| (rule.source_state.clone(), rule.body.1.clone()))
+                        .collect()
+                });
             let source = sources.get(ordinal).cloned();
             let context = if source.is_some() {
                 String::new()

@@ -1,21 +1,17 @@
-//! Rejection oracle for a `#[resource]` held inside a `machine` state.
+//! Rejection oracle for a `#[resource]` held directly inside a `machine` state.
 //!
-//! A handle carried in a machine state payload is closed neither on transition
-//! nor at scope exit. Two silent-leak shapes lived here — a `reenter` that
-//! carried a payload field through unchanged, and a machine value ending its
-//! scope in a state still holding the handle. Rather than compiling either
-//! into a leak, the checker rejects the machine declaration outright: a
-//! `#[resource]` payload is not a demonstrably pure machine value.
+//! A step stages a copy of its machine until it commits, so a fault before
+//! commit leaves the caller's machine intact. A direct `#[resource]` payload
+//! has no independent value copy, so the checker refuses the transition that
+//! takes it, naming the machine, state, field and type, rather than letting
+//! the step reach lowering. Purity itself no longer restricts the payload
+//! types (D530); an `Rc` payload is admitted and exercised by the
+//! `machine-rc-resource-payload` core-acceptance case.
 //!
 //! This oracle pins that fail-closed floor: both shapes must stop in the
-//! checker naming the machine, and must leave no native artifacts behind.
-//! When machine drop elaboration lands and the payloads are released
-//! tag-aware, these revert to leak-slope oracles proving the exactly-once
-//! close.
-//!
-//! The fixtures construct their handles purely. A transition body that calls
-//! into `extern "C"` is refused by the same purity rule for the effect rather
-//! than for the payload, which would leave the payload veto unexercised.
+//! checker and leave no native artifacts behind. When a step can take an
+//! affine receiver and hand it back on a pre-commit fault, these revert to
+//! leak-slope oracles proving the exactly-once close.
 
 mod support;
 
@@ -119,7 +115,7 @@ fn assert_rejected_in_checker(source: &str, name: &str, expected_diagnostics: &[
     assert!(
         !output.status.success(),
         "{name}: a machine state payload holding a `#[resource]` must be rejected \
-         in the checker, not compiled into a silent leak; stdout: {}\nstderr: {}",
+         in the checker until a step can stage it; stdout: {}\nstderr: {}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );
@@ -155,7 +151,7 @@ fn machine_reenter_carrying_resource_is_rejected_in_checker() {
     assert_rejected_in_checker(
         REENTER_CARRY_SOURCE,
         "machine_reenter_resource",
-        &["machine evaluator is not demonstrably pure: `Session`"],
+        &["machine `Session` state `Active` field `h` holds `Handle`"],
     );
 }
 
@@ -165,8 +161,8 @@ fn machine_state_resource_release_paths_are_rejected_in_checker() {
         RELEASE_PATH_SOURCE,
         "machine_release_paths",
         &[
-            "machine evaluator is not demonstrably pure: `Mixed`",
-            "machine evaluator is not demonstrably pure: `Plain`",
+            "machine `Mixed` state `Active` field `h` holds `Handle`",
+            "machine `Plain` state `Live` field `h` holds `Handle`",
         ],
     );
 }

@@ -1328,9 +1328,9 @@ fn disagreeing_producers_record_conflict_instead_of_selecting_a_release() {
     )));
 }
 
-// ── machine-state resource payload gate (value-context lattice: the
-// `MachineStatePayload` position fails closed until the machine's
-// transition/scope drop elaboration lands) ─────────────────────────────
+// ── machine-state resource payload staging: a step stages a copy of its
+// machine until it commits, and a direct `#[resource]` payload has none, so
+// it is refused until a step can take an affine receiver (D530) ──────────
 
 #[test]
 fn machine_state_resource_payload_rejects() {
@@ -1351,7 +1351,7 @@ fn machine_state_resource_payload_rejects() {
     assert!(
         errors.iter().any(|e| {
             e.kind == crate::error::TypeErrorKind::MachineExhaustivenessError
-                && e.message.contains("not demonstrably pure")
+                && e.message.contains("no independent value copy")
         }),
         "a resource in a machine state payload must be rejected: {errors:?}"
     );
@@ -1378,7 +1378,7 @@ fn machine_state_resource_payload_rejects_transitively() {
     assert!(
         errors.iter().any(|e| {
             e.kind == crate::error::TypeErrorKind::MachineExhaustivenessError
-                && e.message.contains("not demonstrably pure")
+                && e.message.contains("no independent value copy")
         }),
         "a record-wrapped resource in a machine state must be rejected: {errors:?}"
     );

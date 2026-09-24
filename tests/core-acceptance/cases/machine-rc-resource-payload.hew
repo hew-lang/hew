@@ -1,0 +1,41 @@
+// D530: purity restricts what a transition does, not the types its state holds.
+// An Rc payload that owns a #[resource] moves through transitions as a value;
+// the resource closes exactly once when its last sharer is released.
+#[resource]
+type Tag { id: i64 }
+
+impl Tag {
+    fn close(consume self) {
+        println(f"close {self.id}");
+    }
+}
+
+type Node { name: string, tag: Tag }
+
+machine Link {
+    events { Open { id: i64, }, Touch, Hand, Shut, }
+    state Idle,
+    state Live { node: Rc<Node>, touches: i64, },
+    state Parked { node: Rc<Node>, },
+
+    on Open(id): Idle => Live { node: Rc.new(Node { name: "n", tag: Tag { id: id } }), touches: 0 }
+    on Touch: Live => Live reenter { node: state.node, touches: state.touches + 1 }
+    on Hand: Live => Parked { node: state.node }
+    on Shut: Parked => Idle,
+
+    default { state }
+}
+
+fn main() {
+    var link: Link = .Idle;
+    let _ = link.step(.Open { id: 7 });
+    let _ = link.step(.Touch);
+    let _ = link.step(.Touch);
+    println(link.state_name());
+    let _ = link.step(.Hand);
+    println(link.state_name());
+    let _ = link.step(.Shut);
+    println("shut");
+    let _ = link.step(.Open { id: 8 });
+    println("end");
+}

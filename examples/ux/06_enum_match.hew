@@ -14,9 +14,9 @@ fn colour_name(c: Colour) {
 }
 
 fn main() {
-    let c1 = Red;
-    let c2 = Green;
-    let c3 = Blue;
+    let c1 = Colour.Red;
+    let c2 = Colour.Green;
+    let c3 = Colour.Blue;
     colour_name(c1);
     colour_name(c2);
     colour_name(c3);

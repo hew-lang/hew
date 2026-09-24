@@ -37,9 +37,9 @@ pub fn format(epoch_ms: i64, fmt: string) -> Result<string, string> {
     let formatted = format_raw(epoch_ms, fmt);
     let err = datetime_error_message();
     if err.len() == 0 {
-        Ok(formatted)
+        .Ok(formatted)
     } else {
-        Err(err)
+        .Err(err)
     }
 }
 
@@ -73,9 +73,9 @@ pub fn parse(s: string, fmt: string) -> Result<i64, string> {
     };
     let err = datetime_error_message();
     if err.len() == 0 {
-        Ok(epoch_ms)
+        .Ok(epoch_ms)
     } else {
-        Err(err)
+        .Err(err)
     }
 }
 

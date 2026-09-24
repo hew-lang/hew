@@ -63,17 +63,17 @@ fn tls_error_from_status(status: i32) -> net.NetError { // INTERNAL-ABI: TLS FFI
 
 fn tls_write_result(raw: TlsWriteFfiResult) -> Result<i64, net.NetError> { // INTERNAL-ABI: bridge helper lifts raw FFI status into Result while leaving detail in last_error()
     if raw.status == TLS_STATUS_SUCCESS {
-        Ok(raw.written as i64)
+        .Ok(raw.written as i64)
     } else {
-        Err(tls_error_from_status(raw.status))
+        .Err(tls_error_from_status(raw.status))
     }
 }
 
 fn tls_read_result(raw: TlsReadFfiResult) -> Result<bytes, net.NetError> { // INTERNAL-ABI: bridge helper lifts raw FFI status into Result while leaving detail in last_error()
     if raw.status == TLS_STATUS_SUCCESS {
-        Ok(raw.data)
+        .Ok(raw.data)
     } else {
-        Err(tls_error_from_status(raw.status))
+        .Err(tls_error_from_status(raw.status))
     }
 }
 

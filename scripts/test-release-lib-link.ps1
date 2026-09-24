@@ -45,6 +45,8 @@ try {
     $StagedHew = Join-Path $ReleaseBin 'hew.exe'
     Copy-Item -LiteralPath $Hew -Destination $StagedHew
     Copy-Item -LiteralPath $Archive -Destination (Join-Path $ReleaseLib 'hew.lib')
+    # The staged binary finds std beside it, as in a shipped archive.
+    Copy-Item -Recurse -LiteralPath (Join-Path $PSScriptRoot '..\std') -Destination (Join-Path $WorkDir 'release/std')
 
     $Native = Join-Path $WorkDir 'native.rs'
     @'

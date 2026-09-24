@@ -491,19 +491,19 @@ fn selected_encoding_import_preserves_result_and_option_try_payload_identity() {
             import std.encoding.{format}.{{self, Value}};
             fn required_field(obj: Value, key: string) -> Result<Value, string> {{
                 match obj.get_field(key) {{
-                    .Ok(.Some(value)) => Ok(value),
-                    .Ok(.None) => Err("missing field"),
-                    .Err(error) => Err(error),
+                    .Ok(.Some(value)) => .Ok(value),
+                    .Ok(.None) => .Err("missing field"),
+                    .Err(error) => .Err(error),
                 }}
             }}
             fn result_probe(obj: Value) -> Result<Value, string> {{
                 let child = required_field(obj, "field")?;
-                Ok(child)
+                .Ok(child)
             }}
-            fn optional_field(obj: Value) -> Option<Value> {{ Some(obj) }}
+            fn optional_field(obj: Value) -> Option<Value> {{ .Some(obj) }}
             fn option_probe(obj: Value) -> Option<Value> {{
                 let child = optional_field(obj)?;
-                Some(child)
+                .Some(child)
             }}
         "#
         );
@@ -516,7 +516,7 @@ fn selected_encoding_import_preserves_result_and_option_try_payload_identity() {
             {VALUE_SOURCE}
             impl Value {{
                 pub fn get_field(self, key: string) -> Result<Option<Value>, string> {{
-                    Ok(Some(self))
+                    .Ok(.Some(self))
                 }}
             }}
         "

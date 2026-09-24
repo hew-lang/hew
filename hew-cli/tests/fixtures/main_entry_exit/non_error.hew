@@ -11,5 +11,5 @@ impl Display for NonError {
 }
 
 fn main() -> Result<(), NonError> {
-    Err(NonError.Failed("not an error"))
+    .Err(NonError.Failed("not an error"))
 }

@@ -91,7 +91,7 @@ fn match_and_if_let_payload_owners_use_their_real_destinations() {
          \x20   }\n\
          }\n\
          fn main() {\n\
-         \x20   println(via_match(Err(\"match\")));\n\
+         \x20   println(via_match(.Err(\"match\")));\n\
          }\n",
     )
     .expect("write pattern ownership source");

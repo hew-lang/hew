@@ -14,9 +14,9 @@ impl Error for AppError {}
 
 fn check(value: i64) -> Result<(), AppError> {
     if value > 2 {
-        return Err(AppError.Failed("too large"));
+        return .Err(AppError.Failed("too large"));
     }
-    Ok(())
+    .Ok(())
 }
 
 fn main() -> Result<(), AppError> {
@@ -24,5 +24,5 @@ fn main() -> Result<(), AppError> {
     println(held);
     check(3)?;
     println("unreachable");
-    Ok(())
+    .Ok(())
 }

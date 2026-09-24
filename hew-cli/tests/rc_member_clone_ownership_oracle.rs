@@ -190,7 +190,7 @@ type Node { value: i64, }
 
 fn main() -> i64 {
     let shared: Rc<Node> = Rc.new(Node { value: 7 });
-    let held: Option<Rc<Node>> = Some(shared);
+    let held: Option<Rc<Node>> = .Some(shared);
     let _copied = clone held;
     0
 }

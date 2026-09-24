@@ -11,10 +11,10 @@ fn statement_match(ok: bool, stop: bool) -> string {
 
 fn try_comparison(ok: bool, stop: bool) -> Result<string, string> {
     if producer.text_result(ok)? != "ready" {
-        return Err("unexpected");
+        return .Err("unexpected");
     }
-    if stop { return Ok("stopped"); }
-    Ok("continued")
+    if stop { return .Ok("stopped"); }
+    .Ok("continued")
 }
 
 fn nested_match(some: bool, ok: bool) -> string {

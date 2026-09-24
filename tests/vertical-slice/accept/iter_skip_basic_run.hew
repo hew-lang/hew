@@ -29,11 +29,11 @@ impl Iterator for Countdown {
     /// Yield `n, n-1, …, 1` then `None`; advance the cursor in place.
     fn next(var self) -> Option<i64> {
         if self.n <= 0 {
-            None
+            .None
         } else {
             let cur = self.n;
             self.n = self.n - 1;
-            Some(cur)
+            .Some(cur)
         }
     }
 }
@@ -66,7 +66,7 @@ impl<I, A> Iterator for Skip<I, A> where I: Iterator<Item = A> {
                 },
                 .None => {
                     self.iter = inner;
-                    return None;
+                    return .None;
                 },
             }
         }

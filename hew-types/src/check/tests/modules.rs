@@ -1619,7 +1619,7 @@ mod module_body_diagnostic_envelope {
             parse_result.errors
         );
         let mut checker = crate::Checker::new(crate::module_registry::ModuleRegistry::new(
-            crate::module_registry::build_module_search_paths(),
+            crate::module_registry::stdlib_search_paths(),
         ));
         let tco = checker.check_program(&parse_result.program);
         // `i` in `i = i + 1` must appear in assign_target_shapes
@@ -2436,7 +2436,7 @@ actor MyActor {
         let source = r"
 fn pass(r: Result<i64, i64>) -> Result<i64, i64> {
     let x: i64 = r?;
-    Ok(x)
+    .Ok(x)
 }
 ";
         let (errors, _) = parse_and_check(source);
@@ -2451,7 +2451,7 @@ fn pass(r: Result<i64, i64>) -> Result<i64, i64> {
         let source = r"
 fn pass(o: Option<i64>) -> Option<i64> {
     let x: i64 = o?;
-    Some(x)
+    .Some(x)
 }
 ";
         let (errors, _) = parse_and_check(source);
@@ -2482,7 +2482,7 @@ fn bad(r: Result<i64, i64>) -> i64 {
         let source = r"
 fn bad(r: Result<i64, string>) -> Result<i64, i64> {
     let x: i64 = r?;
-    Ok(x)
+    .Ok(x)
 }
 ";
         let (errors, _) = parse_and_check(source);
@@ -2503,7 +2503,7 @@ fn bad(r: Result<i64, string>) -> Result<i64, i64> {
         // in a function returning <error>") must NOT fire — we cannot know
         // whether the intended return type would have supported `?`.  Only the
         // annotation-resolution error should appear.
-        let source = r"fn foo() -> UnknownType { let r: Result<i64, string> = Ok(1); r? }";
+        let source = r"fn foo() -> UnknownType { let r: Result<i64, string> = .Ok(1); r? }";
         let result = hew_parser::parse(source);
         assert!(
             result.errors.is_empty(),
@@ -2531,7 +2531,7 @@ fn bad(r: Result<i64, string>) -> Result<i64, i64> {
         // PR #923 bypasses the `?` context diagnostic for genuinely unknown named
         // return annotations. Builtin named types like Vec must still report the
         // context error even though they are not registered in type_defs/type_aliases.
-        let source = r"fn foo() -> Vec<i32> { let r: Result<i64, string> = Ok(1); let x: i64 = r?; Vec.new() }";
+        let source = r"fn foo() -> Vec<i32> { let r: Result<i64, string> = .Ok(1); let x: i64 = r?; Vec.new() }";
         let result = hew_parser::parse(source);
         assert!(
             result.errors.is_empty(),
@@ -2560,7 +2560,7 @@ fn bad(r: Result<i64, string>) -> Result<i64, i64> {
         // return annotation is Ty::Error.  The `?` context check sees the
         // lambda's own `current_return_type` (Ty::Error), so the Ty::Error
         // bypass must apply there too.
-        let source = r"fn foo() { let r: Result<i64, string> = Ok(1); let f = |x: i64| -> UnknownType { r? }; }";
+        let source = r"fn foo() { let r: Result<i64, string> = .Ok(1); let f = |x: i64| -> UnknownType { r? }; }";
         let result = hew_parser::parse(source);
         assert!(
             result.errors.is_empty(),

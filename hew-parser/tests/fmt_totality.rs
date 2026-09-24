@@ -573,7 +573,7 @@ fn fmt_totality_expr_cast() {
 /// `Expr::PostfixTry`
 #[test]
 fn fmt_totality_expr_postfix_try() {
-    assert_roundtrip("fn f() -> Result<i64, string> {\n    Ok(try_op()?)\n}\n");
+    assert_roundtrip("fn f() -> Result<i64, string> {\n    .Ok(try_op()?)\n}\n");
 }
 
 /// `Expr::Range` — exclusive and inclusive.
@@ -833,7 +833,7 @@ fn fmt_totality_type_expr_named() {
 /// `TypeExpr::Result`
 #[test]
 fn fmt_totality_type_expr_result() {
-    assert_roundtrip("fn f() -> Result<i64, string> {\n    Ok(1)\n}\n");
+    assert_roundtrip("fn f() -> Result<i64, string> {\n    .Ok(1)\n}\n");
 }
 
 /// `TypeExpr::Option`

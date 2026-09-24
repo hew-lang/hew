@@ -1,6 +1,6 @@
 fn main() {
-    let first: Option<i64> = None;
-    let second: Option<i64> = Some(7);
+    let first: Option<i64> = .None;
+    let second: Option<i64> = .Some(7);
     // Statement position: the chain falls through `else if let` to the arm
     // that matches, and neither the guard nor the final `else` runs.
     if let .Some(_) = first {

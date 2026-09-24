@@ -51,7 +51,7 @@ fn return_some_from_option_no_type_mismatch() {
     let output = lower(
         r"
         fn f() -> Option<i64> {
-            return Some(5);
+            return .Some(5);
         }
 
         fn main() -> i64 {
@@ -77,7 +77,7 @@ fn return_ok_from_result_no_type_mismatch() {
     let output = lower(
         r"
         fn g() -> Result<i64, i64> {
-            return Ok(7);
+            return .Ok(7);
         }
 
         fn main() -> i64 {
@@ -104,7 +104,7 @@ fn expression_return_option_still_lowers_cleanly() {
     let output = lower(
         r"
         fn f() -> Option<i64> {
-            Some(5)
+            .Some(5)
         }
 
         fn main() -> i64 {

@@ -442,9 +442,9 @@ pub type Foo {
 impl Foo {
     pub fn try_get(f: Foo) -> Result<i64, string> {
         if f.n < 0 {
-            Err(\"negative\")
+            .Err(\"negative\")
         } else {
-            Ok(f.n)
+            .Ok(f.n)
         }
     }
 }

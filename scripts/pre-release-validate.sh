@@ -366,7 +366,7 @@ validate_linux() {
         local package_smoke_file="${archive_root}/pkg-smoke.hew"
         write_smoke_test "${package_smoke_file}" "pkg-smoke-ok"
         local package_output
-        package_output=$(run_with_timeout "${SMOKE_TIMEOUT}" env -i PATH=/usr/bin:/bin HOME="${HOME}" HEW_STD="${package_stage}/std" "${package_stage}/bin/hew" run "${package_smoke_file}")
+        package_output=$(run_with_timeout "${SMOKE_TIMEOUT}" env -i PATH=/usr/bin:/bin HOME="${HOME}" "${package_stage}/bin/hew" run "${package_smoke_file}")
 
         if echo "$package_output" | grep -q "pkg-smoke-ok"; then
             echo "==> Packaged archive smoke test passed"

@@ -52,7 +52,7 @@ fn use_after_diverging_sibling(flag: bool) -> i64 {
 }
 
 fn main() {
-    print(use_after_match_join(Ok(1)));
+    print(use_after_match_join(.Ok(1)));
     print(use_after_if_join(true));
     print(use_after_partial_join(true));
     print(use_after_diverging_sibling(true));

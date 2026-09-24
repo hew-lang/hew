@@ -135,11 +135,26 @@ impl Parser<'_> {
                     trailing_expr = Some(Box::new(expr));
                     break;
                 }
+                if is_value_bearing {
+                    self.refuse_statement_block_continuation();
+                }
                 stmts.push(stmt);
                 while self.peek() == Some(&Token::Semicolon) {
                     let span = self.peek_span();
                     self.advance();
                     self.warning_at("unnecessary semicolon".to_string(), span);
+                }
+                continue;
+            }
+
+            // A block-like expression at statement start ends at its closing
+            // `}`, as `if`, `match` and the loops do: what follows begins the
+            // next statement, so a `.Ok(x)` tail on the next line is its own
+            // expression. Using the block's value needs parentheses.
+            if self.peek_opens_statement_block() {
+                if let Some(tail) = self.parse_statement_block(&mut stmts) {
+                    trailing_expr = Some(Box::new(tail));
+                    break;
                 }
                 continue;
             }
@@ -219,6 +234,89 @@ impl Parser<'_> {
             stmts,
             trailing_expr,
         })
+    }
+
+    /// Parse the block-like expression that opens a statement, without the
+    /// postfix and infix continuations an operand would take. It is returned
+    /// when it ends the enclosing block (its tail) and pushed onto `stmts`
+    /// otherwise.
+    fn parse_statement_block(&mut self, stmts: &mut Vec<Spanned<Stmt>>) -> Option<Spanned<Expr>> {
+        self.statement_block.set(true);
+        let expr = self.parse_expr();
+        self.statement_block.set(false);
+        let expr = expr?;
+        if self.peek() == Some(&Token::RightBrace) {
+            return Some(expr);
+        }
+        self.refuse_statement_block_continuation();
+        // A `;` that ends the statement belongs to its span: the checker reads
+        // it as the source discarding the block's value on purpose.
+        let end = if self.eat(&Token::Semicolon) {
+            self.last_token_end
+        } else {
+            expr.1.end
+        };
+        let span = expr.1.start..end;
+        stmts.push((Stmt::Expression(expr), span));
+        None
+    }
+
+    /// A statement-start block is not an operand. Refuse what plainly meant
+    /// one: a method call (`{ s }.len()`) or a binary-only operator on any
+    /// line, and on the block's own line any token that would continue an
+    /// expression (`unsafe { f() } - 1`, `{ g }(4)`, `{ v }[0]`). A token that
+    /// can start an expression on the next line starts the next statement.
+    fn refuse_statement_block_continuation(&mut self) {
+        let binary_only = matches!(
+            self.peek(),
+            Some(
+                Token::As
+                    | Token::Is
+                    | Token::EqualEqual
+                    | Token::NotEqual
+                    | Token::Less
+                    | Token::LessEqual
+                    | Token::Greater
+                    | Token::GreaterEqual
+                    | Token::AmpAmp
+                    | Token::PipePipe
+                    | Token::QuestionQuestion
+                    | Token::Question
+                    | Token::Plus
+                    | Token::Slash
+                    | Token::Percent
+                    | Token::Caret
+                    | Token::Ampersand
+                    | Token::LessLess
+                    | Token::GreaterGreater
+            )
+        );
+        let method_call = self.peek() == Some(&Token::Dot)
+            && matches!(
+                self.peek_at(self.pos + 1),
+                Some(Token::Identifier(name)) if name.starts_with(|c: char| c.is_lowercase() || c == '_')
+            );
+        let same_line_continuation = self.peek_on_same_line()
+            && matches!(
+                self.peek(),
+                Some(
+                    Token::Minus
+                        | Token::Star
+                        | Token::Pipe
+                        | Token::LeftParen
+                        | Token::LeftBracket
+                        | Token::DotDot
+                        | Token::DotDotEqual
+                )
+            );
+        if binary_only || method_call || same_line_continuation {
+            self.error_with_hint(
+                "E_BLOCK_STATEMENT_OPERAND: a block at the start of a statement ends at its `}` \
+                 and is not an operand"
+                    .to_string(),
+                "wrap the block in parentheses to call a method on its value or use it in an expression",
+            );
+        }
     }
 
     /// Parse the arm after an `if let`'s `else`, which the caller has already
@@ -748,12 +846,19 @@ impl Parser<'_> {
             }
             Some(Token::Defer) => {
                 self.advance();
-                let expr = self.parse_expr()?;
-                // Block expressions don't need a trailing semicolon
-                // (consistent with if/while/for).
-                if !matches!(expr.0, Expr::Block(_)) {
+                // A block body ends the statement, as for if/while/for, so a
+                // following `.Ok(x)` tail starts a new expression rather than
+                // calling a method on the deferred block.
+                let expr = if self.peek() == Some(&Token::LeftBrace) {
+                    let start = self.peek_span().start;
+                    let block = self.parse_block()?;
+                    let end = self.peek_span().start;
+                    (Expr::Block(block), start..end)
+                } else {
+                    let expr = self.parse_expr()?;
                     self.expect(&Token::Semicolon)?;
-                }
+                    expr
+                };
                 Stmt::Defer(Box::new(expr))
             }
             _ => {

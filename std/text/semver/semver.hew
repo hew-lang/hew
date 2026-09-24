@@ -248,7 +248,7 @@ pub fn parse(s: string) -> Result<Version, string> {
         .None => {},
     }
     if has_build && !dotted_identifiers_are_valid(build, false) {
-        return Err(f"semver: invalid build metadata: {s}");
+        return .Err(f"semver: invalid build metadata: {s}");
     }
     // Split off pre-release (-...)
     // Clone main_part so it remains available for further searches.
@@ -264,27 +264,27 @@ pub fn parse(s: string) -> Result<Version, string> {
         .None => {},
     }
     if has_pre && !dotted_identifiers_are_valid(pre, true) {
-        return Err(f"semver: invalid pre-release: {s}");
+        return .Err(f"semver: invalid pre-release: {s}");
     }
     // Split major.minor.patch
     let first_dot = match version_part.find(".") {
         .Some(i) => i,
-        .None => return Err(f"semver: invalid version string: {s}"),
+        .None => return .Err(f"semver: invalid version string: {s}"),
     };
     let major_str = version_part.slice(0, first_dot);
     let rest = version_part.slice(first_dot + 1, version_part.len());
     let second_dot = match rest.find(".") {
         .Some(i) => i,
-        .None => return Err(f"semver: invalid version string: {s}"),
+        .None => return .Err(f"semver: invalid version string: {s}"),
     };
     let minor_str = rest.slice(0, second_dot);
     let patch_str = rest.slice(second_dot + 1, rest.len());
     // Each of major, minor, and patch must be a numeric identifier: digits
     // only, and no leading zero unless the component is exactly "0".
     if !is_numeric_identifier(major_str) || !is_numeric_identifier(minor_str) || !is_numeric_identifier(patch_str) {
-        return Err(f"semver: invalid version string: {s}");
+        return .Err(f"semver: invalid version string: {s}");
     }
-    Ok(Version { pre_release: pre, build_meta: build, maj: major_str, min: minor_str, pat: patch_str })
+    .Ok(Version { pre_release: pre, build_meta: build, maj: major_str, min: minor_str, pat: patch_str })
 }
 
 /// Format a `Version` as its canonical string representation.

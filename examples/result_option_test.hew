@@ -4,7 +4,7 @@
 // Result and Option type test
 // Exercises construction, pattern matching, and ? operator
 fn test_option_some() -> i64 {
-    let x = Some(42);
+    let x = Option.Some(42);
     match x {
         .Some(val) => val,
         .None => -1,
@@ -12,7 +12,7 @@ fn test_option_some() -> i64 {
 }
 
 fn test_option_none() -> i64 {
-    let x: Option<i64> = None;
+    let x: Option<i64> = .None;
     match x {
         .Some(val) => val,
         .None => -1,
@@ -21,9 +21,9 @@ fn test_option_none() -> i64 {
 
 fn divide(a: i64, b: i64) -> Result<i64, string> {
     if b == 0 {
-        Err("division by zero")
+        .Err("division by zero")
     } else {
-        Ok(a / b)
+        .Ok(a / b)
     }
 }
 
@@ -45,7 +45,7 @@ fn test_result_err() -> i64 {
 
 fn try_divide(a: i64, b: i64) -> Result<i64, string> {
     let x = divide(a, b)?;
-    Ok(x * 2)
+    .Ok(x * 2)
 }
 
 fn test_try_operator() -> i64 {

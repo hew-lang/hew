@@ -81,8 +81,8 @@ pub fn encode(payload: string, secret: string, algorithm: string) -> Result<stri
         hew_jwt_encode_hew(payload, secret, algo)
     };
     match last_error() {
-        JwtError.None => Ok(token),
-        err => Err(err),
+        JwtError.None => .Ok(token),
+        err => .Err(err),
     }
 }
 
@@ -96,8 +96,8 @@ pub fn decode(token: string, secret: string, algorithm: string) -> Result<string
         hew_jwt_decode_hew(token, secret, algo)
     };
     match last_error() {
-        JwtError.None => Ok(payload),
-        err => Err(err),
+        JwtError.None => .Ok(payload),
+        err => .Err(err),
     }
 }
 
@@ -147,9 +147,9 @@ pub fn decode_insecure(token: string) -> string {
 /// ```
 pub fn validate(token: string, secret: string, algorithm: string) -> bool {
     let algo = algo_to_i32(algorithm);
-    unsafe {
+    (unsafe {
         hew_jwt_validate(token, secret, algo)
-    } == 1
+    }) == 1
 }
 
 // ── FFI bindings ──────────────────────────────────────────────────────

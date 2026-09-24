@@ -10,7 +10,7 @@
 // Expected exit status: 3 (the `Some(3)` arm value), proving the match
 // resolved to the payload of the non-loop arm.
 fn main() -> i64 {
-    let opt: Option<i64> = Some(3);
+    let opt: Option<i64> = .Some(3);
     let y: i64 = match opt {
         .Some(n) => n,
         .None => { loop {} },

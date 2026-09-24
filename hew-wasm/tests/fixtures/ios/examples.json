@@ -9,7 +9,7 @@
   },
   {
     "id": "while-let",
-    "source": "// Test while-let pattern matching loops with Option types\n\nfn countdown(n: i64) -> Option<i64> {\n    if n > 0 {\n        Some(n - 1)\n    } else {\n        let none: Option<i64> = None;\n        none\n    }\n}\n\nfn main() -> i64 {\n    // Basic while-let: iterate until None\n    var opt: Option<i64> = Some(3);\n    while let .Some(x) = opt {\n        println(x);\n        opt = countdown(x);\n    }\n\n    // Early exit with break\n    var opt2: Option<i64> = Some(10);\n    while let .Some(x) = opt2 {\n        if x < 8 {\n            break;\n        }\n        println(x);\n        opt2 = countdown(x);\n    }\n    println(\"done\");\n\n    return 0;\n}\n"
+    "source": "// Test while-let pattern matching loops with Option types\n\nfn countdown(n: i64) -> Option<i64> {\n    if n > 0 {\n        .Some(n - 1)\n    } else {\n        let none: Option<i64> = .None;\n        none\n    }\n}\n\nfn main() -> i64 {\n    // Basic while-let: iterate until None\n    var opt: Option<i64> = .Some(3);\n    while let .Some(x) = opt {\n        println(x);\n        opt = countdown(x);\n    }\n\n    // Early exit with break\n    var opt2: Option<i64> = .Some(10);\n    while let .Some(x) = opt2 {\n        if x < 8 {\n            break;\n        }\n        println(x);\n        opt2 = countdown(x);\n    }\n    println(\"done\");\n\n    return 0;\n}\n"
   },
   {
     "id": "pattern-matching",
@@ -41,7 +41,7 @@
   },
   {
     "id": "error-handling",
-    "source": "fn divide(a: i64, b: i64) -> Option<i64> {\n    if b == 0 {\n        None\n    } else {\n        Some(a / b)\n    }\n}\n\nfn main() {\n    match divide(10, 3) {\n        .Some(result) => println(f\"10 / 3 = {result}\"),\n        .None => println(\"cannot divide by zero\"),\n    }\n\n    match divide(10, 0) {\n        .Some(result) => println(f\"10 / 0 = {result}\"),\n        .None => println(\"cannot divide by zero\"),\n    }\n}\n"
+    "source": "fn divide(a: i64, b: i64) -> Option<i64> {\n    if b == 0 {\n        .None\n    } else {\n        .Some(a / b)\n    }\n}\n\nfn main() {\n    match divide(10, 3) {\n        .Some(result) => println(f\"10 / 3 = {result}\"),\n        .None => println(\"cannot divide by zero\"),\n    }\n\n    match divide(10, 0) {\n        .Some(result) => println(f\"10 / 0 = {result}\"),\n        .None => println(\"cannot divide by zero\"),\n    }\n}\n"
   },
   {
     "id": "higher-order-functions",

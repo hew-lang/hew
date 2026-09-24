@@ -42,7 +42,7 @@ machine Signal {
 }
 
 fn main() {
-    var s = Idle;
+    var s = Signal.Idle;
     println(s.state_name());
     let started = s.step(.Start);
     println(s.state_name());

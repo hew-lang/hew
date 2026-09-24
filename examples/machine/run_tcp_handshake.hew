@@ -20,7 +20,7 @@ machine TcpHandshake {
 }
 
 fn main() {
-    var tcp = Closed;
+    var tcp = TcpHandshake.Closed;
     println(tcp.state_name());
     tcp.step(.Syn);
     println(tcp.state_name());

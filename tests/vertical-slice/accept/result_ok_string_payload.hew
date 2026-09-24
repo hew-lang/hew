@@ -4,9 +4,9 @@
 // in the Ok arm is dropped exactly once at the caller's scope exit.
 fn fetch(ok: bool) -> Result<string, i64> {
     if ok {
-        Ok("payload body")
+        .Ok("payload body")
     } else {
-        Err(404)
+        .Err(404)
     }
 }
 

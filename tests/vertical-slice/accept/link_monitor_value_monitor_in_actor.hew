@@ -16,7 +16,7 @@ actor Target {
 }
 
 actor Watcher {
-    var active_monitor: Result<MonitorRef, LinkError> = Err(LinkError.NoContext),
+    var active_monitor: Result<MonitorRef, LinkError> = .Err(LinkError.NoContext),
     receive fn watch(t: Target) {
         active_monitor = monitor(t);
         // Borrow the active MonitorRef through the Result payload. The actor

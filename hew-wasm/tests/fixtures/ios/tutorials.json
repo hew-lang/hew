@@ -13,7 +13,7 @@
   },
   {
     "id": "control-flow",
-    "starterCode": "// Lesson 4: While Let\n// `while let` keeps looping while the pattern matches.\n\nfn countdown(n: i64) -> Option<i64> {\n    if n > 0 {\n        Some(n - 1)\n    } else {\n        None\n    }\n}\n\nfn main() {\n    var opt: Option<i64> = Some(3);\n    while let .Some(value) = opt {\n        println(value);\n        opt = countdown(value);\n    }\n    println(\"done\");\n}\n"
+    "starterCode": "// Lesson 4: While Let\n// `while let` keeps looping while the pattern matches.\n\nfn countdown(n: i64) -> Option<i64> {\n    if n > 0 {\n        .Some(n - 1)\n    } else {\n        .None\n    }\n}\n\nfn main() {\n    var opt: Option<i64> = .Some(3);\n    while let .Some(value) = opt {\n        println(value);\n        opt = countdown(value);\n    }\n    println(\"done\");\n}\n"
   },
   {
     "id": "actors-intro",
@@ -33,7 +33,7 @@
   },
   {
     "id": "option-type",
-    "starterCode": "// Lesson 9: Option Type\n// TODO: Handle the None case so the program prints \"not found\".\n\nfn find(items: i64, target: i64) -> Option<i64> {\n    if target <= items {\n        Some(target)\n    } else {\n        None\n    }\n}\n\nfn main() {\n    match find(10, 5) {\n        .Some(x) => println(f\"found: {x}\"),\n        .None => println(\"not found\"),\n    }\n    match find(3, 7) {\n        .Some(x) => println(f\"found: {x}\"),\n        .None => println(\"not found\"),\n    }\n}\n"
+    "starterCode": "// Lesson 9: Option Type\n// TODO: Handle the None case so the program prints \"not found\".\n\nfn find(items: i64, target: i64) -> Option<i64> {\n    if target <= items {\n        .Some(target)\n    } else {\n        .None\n    }\n}\n\nfn main() {\n    match find(10, 5) {\n        .Some(x) => println(f\"found: {x}\"),\n        .None => println(\"not found\"),\n    }\n    match find(3, 7) {\n        .Some(x) => println(f\"found: {x}\"),\n        .None => println(\"not found\"),\n    }\n}\n"
   },
   {
     "id": "closures",

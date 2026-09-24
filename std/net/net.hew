@@ -170,12 +170,12 @@ pub fn abi_i32_max() -> i64 {
 /// `context` names the calling API so the rejection identifies its origin.
 pub fn duration_ms(context: string, ms: i64) -> Result<i64, NetError> {
     if ms < 0 {
-        return Err(NetError.InvalidArgument(f"{context}: invalid duration {ms} ms (must be >= 0)"));
+        return .Err(NetError.InvalidArgument(f"{context}: invalid duration {ms} ms (must be >= 0)"));
     }
     if ms > abi_i32_max() {
-        return Err(NetError.InvalidArgument(f"{context}: invalid duration {ms} ms (must be <= {abi_i32_max()})"));
+        return .Err(NetError.InvalidArgument(f"{context}: invalid duration {ms} ms (must be <= {abi_i32_max()})"));
     }
-    Ok(ms)
+    .Ok(ms)
 }
 
 /// Validate a TCP connection timeout, preserving its negative "clear" sentinel.
@@ -185,7 +185,7 @@ pub fn duration_ms(context: string, ms: i64) -> Result<i64, NetError> {
 /// ABI, so values such as `i64::MIN` cannot wrap to a non-negative timeout.
 fn try_connection_timeout_ms(context: string, ms: i64) -> Result<i64, NetError> {
     if ms < 0 {
-        return Ok(-1);
+        return .Ok(-1);
     }
     duration_ms(context, ms)
 }
@@ -193,20 +193,20 @@ fn try_connection_timeout_ms(context: string, ms: i64) -> Result<i64, NetError> 
 /// Validate a byte count that the C ABI carries as an `i32`.
 pub fn size_arg(context: string, size: i64) -> Result<i64, NetError> {
     if size < 0 {
-        return Err(NetError.InvalidArgument(f"{context}: invalid size {size} (must be >= 0)"));
+        return .Err(NetError.InvalidArgument(f"{context}: invalid size {size} (must be >= 0)"));
     }
     if size > abi_i32_max() {
-        return Err(NetError.InvalidArgument(f"{context}: invalid size {size} (must be <= {abi_i32_max()})"));
+        return .Err(NetError.InvalidArgument(f"{context}: invalid size {size} (must be <= {abi_i32_max()})"));
     }
-    Ok(size)
+    .Ok(size)
 }
 
 /// Validate a TCP/UDP port number.
 pub fn port_arg(context: string, port: i64) -> Result<i64, NetError> {
     if port < 0 || port > 65535 {
-        return Err(NetError.InvalidArgument(f"{context}: invalid port {port} (must be 0..=65535)"));
+        return .Err(NetError.InvalidArgument(f"{context}: invalid port {port} (must be 0..=65535)"));
     }
-    Ok(port)
+    .Ok(port)
 }
 
 /// A validated `host` / `port` pair.
@@ -233,11 +233,11 @@ fn endpoint_reject(context: string, addr: string, reason: string) -> NetError {
 
 fn try_endpoint_port(context: string, addr: string, text: string) -> Result<i64, NetError> {
     if text == "" {
-        return Err(endpoint_reject(context, addr, "empty port"));
+        return .Err(endpoint_reject(context, addr, "empty port"));
     }
     match string.to_int(text) {
         .Ok(port) => port_arg(context, port),
-        .Err(_) => Err(endpoint_reject(context, addr, f"port '{text}' is not a number")),
+        .Err(_) => .Err(endpoint_reject(context, addr, f"port '{text}' is not a number")),
     }
 }
 
@@ -264,10 +264,10 @@ fn try_endpoint_port(context: string, addr: string, text: string) -> Result<i64,
 /// ```
 pub fn parse_endpoint(context: string, addr: string) -> Result<Endpoint, NetError> {
     if addr == "" {
-        return Err(endpoint_reject(context, addr, "empty address"));
+        return .Err(endpoint_reject(context, addr, "empty address"));
     }
     if addr.len() > max_endpoint_len() {
-        return Err(endpoint_reject(context, "<oversized>", f"address length {addr.len()} exceeds {max_endpoint_len()}"));
+        return .Err(endpoint_reject(context, "<oversized>", f"address length {addr.len()} exceeds {max_endpoint_len()}"));
     }
     if addr.starts_with("[") {
         return try_parse_bracketed_endpoint(context, addr);
@@ -281,16 +281,16 @@ pub fn parse_endpoint(context: string, addr: string) -> Result<Endpoint, NetErro
             // its grammar is ambiguous with `host:port` and it is rejected
             // rather than silently split at the first colon.
             if port_text.contains(":") {
-                return Err(endpoint_reject(context, addr, "unbracketed IPv6 literal; write [address]:port"));
+                return .Err(endpoint_reject(context, addr, "unbracketed IPv6 literal; write [address]:port"));
             }
             let port = try_endpoint_port(context, addr, port_text)?;
             if host == "" {
-                Ok(Endpoint { host: "127.0.0.1", port: port })
+                .Ok(Endpoint { host: "127.0.0.1", port: port })
             } else {
-                Ok(Endpoint { host: host, port: port })
+                .Ok(Endpoint { host: host, port: port })
             }
         },
-        .None => Err(endpoint_reject(context, addr, "missing ':port'")),
+        .None => .Err(endpoint_reject(context, addr, "missing ':port'")),
     }
 }
 
@@ -300,19 +300,19 @@ fn try_parse_bracketed_endpoint(context: string, addr: string) -> Result<Endpoin
         .Some(end) => {
             let host = addr.slice(1, end);
             if host == "" {
-                return Err(endpoint_reject(context, addr, "empty bracketed host"));
+                return .Err(endpoint_reject(context, addr, "empty bracketed host"));
             }
             let rest = addr.slice(end + 1, addr.len());
             if rest == "" {
-                return Err(endpoint_reject(context, addr, "missing ':port'"));
+                return .Err(endpoint_reject(context, addr, "missing ':port'"));
             }
             if !rest.starts_with(":") {
-                return Err(endpoint_reject(context, addr, "expected ':port' after ']'"));
+                return .Err(endpoint_reject(context, addr, "expected ':port' after ']'"));
             }
             let port = try_endpoint_port(context, addr, rest.slice(1, rest.len()))?;
-            Ok(Endpoint { host: host, port: port })
+            .Ok(Endpoint { host: host, port: port })
         },
-        .None => Err(endpoint_reject(context, addr, "unterminated '[' in IPv6 literal")),
+        .None => .Err(endpoint_reject(context, addr, "unterminated '[' in IPv6 literal")),
     }
 }
 
@@ -342,9 +342,9 @@ fn net_result_from_status(status: i32) -> Result<(), NetError> { // INTERNAL-ABI
         let _ = unsafe {
             hew_stream_last_error()
         };
-        Err(net_error_from_errno(errno as i64))
+        .Err(net_error_from_errno(errno as i64))
     } else {
-        Ok(())
+        .Ok(())
     }
 }
 
@@ -505,9 +505,9 @@ impl ConnectionMethods for Connection {
                 panic(f"net.Connection.recv: {to_string(net_error_from_errno(errno as i64))}: {detail}");
             }
             if data.len() == 0 {
-                None
+                .None
             } else {
-                Some(data)
+                .Some(data)
             }
         }
     }
@@ -518,7 +518,7 @@ impl ConnectionMethods for Connection {
             hew_tcp_write(conn, data)
         };
         if status >= 0 {
-            return Ok(());
+            return .Ok(());
         }
         let errno = unsafe {
             hew_stream_last_errno()
@@ -530,12 +530,12 @@ impl ConnectionMethods for Connection {
         // macOS=60, Windows WSAETIMEDOUT=10060. The send buffer stayed full
         // past the deadline.
         if errno == 11 || errno == 35 || errno == 110 || errno == 60 || errno == 10060 {
-            return Err(SendError.Full);
+            return .Err(SendError.Full);
         }
         // ECONNRESET: Linux=104, macOS=54, Windows=10054. EPIPE: 32.
         // ENOTCONN: Linux=107, macOS=57, Windows=10057.
         if errno == 104 || errno == 54 || errno == 10054 || errno == 32 || errno == 107 || errno == 57 || errno == 10057 {
-            return Err(SendError.Closed);
+            return .Err(SendError.Closed);
         }
         panic(f"net.Connection.send: {to_string(net_error_from_errno(errno))}: {detail}")
     }
@@ -589,7 +589,7 @@ impl Connection {
     /// `Err(AttachError.Refused)`.
     #[runtime(family = TcpAttachLocal, symbol = hew_tcp_attach_native, lowering = actor_ingress, target = native, classification = "non-declarable", receiver = connection, data = on_data, close = on_close, result = status_result, error_type = "std.net.AttachError", error_variant = Refused)]
     fn attach(consume self, handler: ConnectionHandler) -> Result<(), AttachError> {
-        Err(AttachError.Refused)
+        .Err(AttachError.Refused)
     }
     /// Consume the connection and give its two directions separate owners:
     /// a `Stream<bytes>` for inbound data and a `Sink<bytes>` for outbound.
@@ -627,11 +627,11 @@ pub fn listen(addr: string) -> Result<Listener, NetError> {
     unsafe {
         let ln = hew_tcp_listen(addr);
         if hew_listener_is_valid(ln) {
-            Ok(ln)
+            .Ok(ln)
         } else {
             let errno = hew_stream_last_errno();
             let _ = hew_stream_last_error();
-            Err(net_error_from_errno(errno as i64))
+            .Err(net_error_from_errno(errno as i64))
         }
     }
 }
@@ -657,11 +657,11 @@ pub fn connect(addr: string) -> Result<Connection, NetError> {
     unsafe {
         let conn = hew_tcp_connect(addr);
         if hew_connection_is_valid(conn) {
-            Ok(conn)
+            .Ok(conn)
         } else {
             let errno = hew_stream_last_errno();
             let _ = hew_stream_last_error();
-            Err(net_error_from_errno(errno as i64))
+            .Err(net_error_from_errno(errno as i64))
         }
     }
 }
@@ -680,11 +680,11 @@ pub fn connect_timeout(addr: string, timeout_sec: i64, timeout_usec: i64) -> Res
     unsafe {
         let conn = hew_tcp_connect_timeout(host, port as i32, timeout_ms as i32); // INTERNAL-ABI: both values are range-checked above
         if hew_connection_is_valid(conn) {
-            Ok(conn)
+            .Ok(conn)
         } else {
             let errno = hew_stream_last_errno();
             let _ = hew_stream_last_error();
-            Err(net_error_from_errno(errno as i64))
+            .Err(net_error_from_errno(errno as i64))
         }
     }
 }
@@ -695,20 +695,20 @@ fn try_connect_timeout_ms(timeout_sec: i64, timeout_usec: i64) -> Result<i64, Ne
     let millis_per_second: i64 = 1000;
     let micros_per_millisecond: i64 = 1000;
     if timeout_sec < 0 {
-        return Err(NetError.InvalidArgument(f"net.connect_timeout: invalid timeout_sec {timeout_sec} (must be >= 0)"));
+        return .Err(NetError.InvalidArgument(f"net.connect_timeout: invalid timeout_sec {timeout_sec} (must be >= 0)"));
     }
     if timeout_usec < 0 {
-        return Err(NetError.InvalidArgument(f"net.connect_timeout: invalid timeout_usec {timeout_usec} (must be >= 0)"));
+        return .Err(NetError.InvalidArgument(f"net.connect_timeout: invalid timeout_usec {timeout_usec} (must be >= 0)"));
     }
     // Bound each term against the ABI ceiling before multiplying or adding, so
     // the accumulation itself can never wrap.
     if timeout_sec > abi_i32_max() / millis_per_second {
-        return Err(NetError.InvalidArgument(f"net.connect_timeout: invalid timeout_sec {timeout_sec} (deadline exceeds {abi_i32_max()} ms)"));
+        return .Err(NetError.InvalidArgument(f"net.connect_timeout: invalid timeout_sec {timeout_sec} (deadline exceeds {abi_i32_max()} ms)"));
     }
     let seconds_ms = timeout_sec * millis_per_second;
     let micros_ms = timeout_usec / micros_per_millisecond;
     if micros_ms > abi_i32_max() - seconds_ms {
-        return Err(NetError.InvalidArgument(f"net.connect_timeout: invalid deadline (timeout_sec {timeout_sec} + timeout_usec {timeout_usec} exceeds {abi_i32_max()} ms)"));
+        return .Err(NetError.InvalidArgument(f"net.connect_timeout: invalid deadline (timeout_sec {timeout_sec} + timeout_usec {timeout_usec} exceeds {abi_i32_max()} ms)"));
     }
     duration_ms("net.connect_timeout", seconds_ms + micros_ms)
 }
@@ -732,9 +732,9 @@ pub fn broadcast_except(sender: Connection, message: bytes) -> Result<i64, NetEr
         unsafe {
             let _ = hew_stream_last_error();
         };
-        Err(net_error_from_errno(errno as i64))
+        .Err(net_error_from_errno(errno as i64))
     } else {
-        Ok(n as i64)
+        .Ok(n as i64)
     }
 }
 

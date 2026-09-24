@@ -6,6 +6,6 @@ fn describe(value: Option<i64>) -> i64 {
 }
 
 fn main() {
-    println(describe(Some(5)));
-    println(describe(None));
+    println(describe(.Some(5)));
+    println(describe(.None));
 }

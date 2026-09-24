@@ -18,10 +18,10 @@ impl<T> Iterator for Repeat<T> {
     type Item = T;
     fn next(var self) -> Option<T> {
         if self.remaining <= 0 {
-            None
+            .None
         } else {
             self.remaining = self.remaining - 1;
-            Some(self.value)
+            .Some(self.value)
         }
     }
 }

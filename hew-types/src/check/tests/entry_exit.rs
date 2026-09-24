@@ -56,7 +56,7 @@ fn integer_main_produces_typed_integer_entry_exit_plan() {
 #[test]
 fn result_main_carries_resolved_display_declaration() {
     let output = check_source(&app_error_source(
-        "Err(AppError.Failed(\"displayed failure\"))",
+        ".Err(AppError.Failed(\"displayed failure\"))",
     ));
     assert!(
         output.errors.is_empty(),
@@ -114,7 +114,7 @@ fn result_main_without_error_conformance_is_rejected() {
         }
 
         fn main() -> Result<(), NonError> {
-            Err(NonError.Failed("not an Error"))
+            .Err(NonError.Failed("not an Error"))
         }
         "#,
     );

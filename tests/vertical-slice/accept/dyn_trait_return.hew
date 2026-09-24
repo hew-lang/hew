@@ -17,7 +17,7 @@ fn make_person() -> dyn Named {
 }
 
 fn _maybe_person() -> Option<dyn Named> {
-    Some(Person { name: "Grace" })
+    .Some(Person { name: "Grace" })
 }
 
 fn main() {

@@ -34,21 +34,21 @@ fn test_chain_terminal_on_empty_vec() {
 
 #[test]
 fn test_option_chain_into_result() {
-    let port: Option<string> = Some("8080");
+    let port: Option<string> = .Some("8080");
     let parsed: Result<i64, string> = port.map(|text: string| text.len()).ok_or("no port");
     testing.assert_eq(parsed.unwrap_or(0), 4);
 }
 
 #[test]
 fn test_option_chain_on_none_uses_error() {
-    let port: Option<string> = None;
+    let port: Option<string> = .None;
     let parsed: Result<i64, string> = port.map(|text: string| text.len()).ok_or("no port");
     testing.assert_eq_str(parsed.err().expect("error"), "no port");
 }
 
 #[test]
 fn test_result_chain_recovers() {
-    let raw: Result<string, string> = Err("missing");
+    let raw: Result<string, string> = .Err("missing");
     let value = raw.map(|text: string| text.len()).unwrap_or_else(|error: string| error.len() * 100);
     testing.assert_eq(value, 700);
 }
@@ -87,13 +87,13 @@ fn rebox<U>(consume boxed: Boxed<U>) -> Boxed<i64> {
 
 #[test]
 fn test_method_type_params_do_not_capture_caller_params() {
-    let no_text: Option<string> = None;
-    let no_number: Option<i64> = None;
-    testing.assert_eq(lengths(Some("a")).unwrap_or(0), 1);
+    let no_text: Option<string> = .None;
+    let no_number: Option<i64> = .None;
+    testing.assert_eq(lengths(.Some("a")).unwrap_or(0), 1);
     testing.assert_true(lengths(no_text).is_none());
-    testing.assert_eq(require(Some(4)).unwrap_or(0), 4);
+    testing.assert_eq(require(.Some(4)).unwrap_or(0), 4);
     testing.assert_eq_str(require(no_number).err().expect("error"), "none");
-    let failed: Result<i64, i64> = Err(3);
+    let failed: Result<i64, i64> = .Err(3);
     testing.assert_eq_str(relabel(failed).err().expect("error"), "relabelled");
     testing.assert_eq(count_all(["a", "b"]).len(), 2);
     testing.assert_eq(rebox(Boxed { value: "a" }).value, 7);

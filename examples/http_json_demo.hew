@@ -36,9 +36,9 @@ fn fetch(url: string) -> Option<string> {
 // Distinguish a missing field from a value of the wrong kind.
 fn required_field(obj: Value, key: string) -> Result<Value, string> {
     match obj.get_field(key) {
-        .Ok(.Some(value)) => Ok(value),
-        .Ok(.None) => Err(f"missing field: {key}"),
-        .Err(error) => Err(f"{key}: {error}"),
+        .Ok(.Some(value)) => .Ok(value),
+        .Ok(.None) => .Err(f"missing field: {key}"),
+        .Err(error) => .Err(f"{key}: {error}"),
     }
 }
 
@@ -47,9 +47,9 @@ fn print_field(obj: Value, key: string) -> Result<(), string> {
     match child.get_string() {
         .Ok(value) => {
             println(f"{key}:  {value}");
-            Ok(())
+            .Ok(())
         },
-        .Err(error) => Err(f"{key}: {error}"),
+        .Err(error) => .Err(f"{key}: {error}"),
     }
 }
 
@@ -62,9 +62,9 @@ fn print_slideshow(root: Value) -> Result<(), string> {
     match slides.array_len() {
         .Ok(count) => {
             println(f"slides: {count}");
-            Ok(())
+            .Ok(())
         },
-        .Err(error) => Err(f"slides: {error}"),
+        .Err(error) => .Err(f"slides: {error}"),
     }
 }
 

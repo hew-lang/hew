@@ -16,10 +16,10 @@ fn drive(w: Worker) -> Result<(), SendError> {
     match inbox.process("a") {
         .Ok(Delivery.Accepted) => println("accepted"),
         .Ok(Delivery.Discarded) => println("discarded"),
-        .Err(failure) => return Err(failure.reason),
+        .Err(failure) => return .Err(failure.reason),
     }
     let _ = inbox.process("b");
-    Ok(())
+    .Ok(())
 }
 
 fn main() {

@@ -40,7 +40,7 @@ fn show<T>(value: T) -> string {
 
 fn main() {
     let reading = Reading { station: "west", temperature: 3 };
-    let report = Report { current: reading, history: [Some(reading), None], tagged: Tagged { label: "reviewed", value: 9 } };
+    let report = Report { current: reading, history: [.Some(reading), .None], tagged: Tagged { label: "reviewed", value: 9 } };
     println(show(report));
     println(show((reading, Tagged { label: "archived", value: "kept" })));
     println(show([Observation.Circle { radius: 3 }, Observation.Square(1), Observation.Sample { reading: reading }, Observation.Missing]));

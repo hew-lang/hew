@@ -571,7 +571,7 @@ fn parse_and_type_check(source: &str) -> AnalyzedSource {
     hew_compile::attach_prelude_std_modules(&mut parse_result.program);
     let (type_output, hir_diagnostics, semantic_diagnostics) = if parse_result.errors.is_empty() {
         let mut checker = hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(
-            hew_types::module_registry::build_module_search_paths(),
+            hew_types::module_registry::stdlib_search_paths(),
         ));
         // Install the editor buffer as the root lint source so in-source
         // `// hew:allow(...)` directives suppress lints in the playground just
@@ -2293,7 +2293,7 @@ mod tests {
             "fn f() -> i64 {\nvar x = 5;\nx = 6;\nx\n}\nfn main() {\nlet _ = f();\n}\n",
         );
         let mut checker = hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(
-            hew_types::module_registry::build_module_search_paths(),
+            hew_types::module_registry::stdlib_search_paths(),
         ));
         let tco = checker.check_program(&parsed.program);
         let hir = hew_hir::lower_program(

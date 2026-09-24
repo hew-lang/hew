@@ -29,7 +29,7 @@ fn tail_question_typed_as_ok_payload_is_ok_wrapped() {
     // declared return is `Result<i64, E>` → the tail is Ok-wrapped.
     let src = r"
         enum E { Bad, }
-        fn helper(x: i64) -> Result<i64, E> { Ok(x) }
+        fn helper(x: i64) -> Result<i64, E> { .Ok(x) }
         fn load(x: i64) -> Result<i64, E> { helper(x)? }
     ";
     let output = typecheck(src);
@@ -52,7 +52,7 @@ fn bare_tail_returning_full_result_is_not_double_wrapped() {
     // `Result<Result<i64, E>, E>`.
     let src = r"
         enum E { Bad, }
-        fn helper(x: i64) -> Result<i64, E> { Ok(x) }
+        fn helper(x: i64) -> Result<i64, E> { .Ok(x) }
         fn passthrough(x: i64) -> Result<i64, E> { helper(x) }
     ";
     let output = typecheck(src);
@@ -73,8 +73,8 @@ fn explicit_ok_wrap_still_works_without_coercion() {
     // the coercion declines (no double-wrap) and there is no regression.
     let src = r"
         enum E { Bad, }
-        fn helper(x: i64) -> Result<i64, E> { Ok(x) }
-        fn explicit(x: i64) -> Result<i64, E> { Ok(helper(x)?) }
+        fn helper(x: i64) -> Result<i64, E> { .Ok(x) }
+        fn explicit(x: i64) -> Result<i64, E> { .Ok(helper(x)?) }
     ";
     let output = typecheck(src);
     assert!(
@@ -93,7 +93,7 @@ fn if_tail_ok_wraps_both_arms() {
     // Both arms of a tail `if` flow to the function return → both Ok-wrap.
     let src = r"
         enum E { Bad, }
-        fn helper(x: i64) -> Result<i64, E> { Ok(x) }
+        fn helper(x: i64) -> Result<i64, E> { .Ok(x) }
         fn branchy(x: i64) -> Result<i64, E> {
             if x > 0 { helper(x)? } else { helper(0 - x)? }
         }
@@ -116,7 +116,7 @@ fn match_tail_ok_wraps_both_arms() {
     // Both arms of a tail `match` flow to the function return → both Ok-wrap.
     let src = r"
         enum E { Bad, }
-        fn helper(x: i64) -> Result<i64, E> { Ok(x) }
+        fn helper(x: i64) -> Result<i64, E> { .Ok(x) }
         fn matchy(x: i64) -> Result<i64, E> {
             match x {
                 0 => helper(10)?,
@@ -161,7 +161,7 @@ fn nested_result_tail_wraps_against_ok_payload_only() {
     let src = r"
         enum B { Bv, }
         enum E { Ev, }
-        fn g() -> Result<Result<i64, B>, E> { Ok(Ok(1)) }
+        fn g() -> Result<Result<i64, B>, E> { .Ok(.Ok(1)) }
         fn nested() -> Result<Result<i64, B>, E> { g()? }
     ";
     let output = typecheck(src);
@@ -290,7 +290,7 @@ fn bare_call_tail_returning_full_result_is_not_double_wrapped() {
     // call arm's probe takes the no-coercion path, no double-wrap.
     let src = r"
         enum E { Bad, }
-        fn g() -> Result<i64, E> { Ok(5) }
+        fn g() -> Result<i64, E> { .Ok(5) }
         fn passthrough() -> Result<i64, E> { g() }
     ";
     let output = typecheck(src);

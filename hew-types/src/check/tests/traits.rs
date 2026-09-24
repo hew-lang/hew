@@ -626,7 +626,7 @@ fn nested_dyn_trait_return_signature_is_admitted() {
         }
 
         fn maybe_person() -> Option<dyn Named> {
-            Some(Person { name: "Ada" })
+            .Some(Person { name: "Ada" })
         }
     "#;
 
@@ -1853,7 +1853,7 @@ fn index_trait_user_impl_runs() {
             type Output = i32;
 
             fn get(g: Grid, index: i32) -> Option<i32> {
-                Some(g.bias + index)
+                .Some(g.bias + index)
             }
 
             fn at(g: Grid, index: i32) -> i32 {

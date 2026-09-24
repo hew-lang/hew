@@ -570,7 +570,7 @@ jobs:
           }
           HEWEOF
 
-          output=$(HEW_STD="${ARCHIVE_NAME}/std" "${ARCHIVE_NAME}/bin/hew" run "${smoke_root}/pkg-presign-smoke.hew")
+          output=$("${ARCHIVE_NAME}/bin/hew" run "${smoke_root}/pkg-presign-smoke.hew")
           echo "${output}"
           echo "${output}" | grep -q "pkg-presign-smoke-ok"
 
@@ -710,7 +710,7 @@ jobs:
           mkdir -p "${staging}"
           tar -xf "${ARCHIVE_NAME}.tar.gz" -C "${staging}" --strip-components=1
 
-          output=$(HEW_STD="${staging}/std" "${staging}/bin/hew" run "${smoke_root}/pkg-smoke.hew")
+          output=$("${staging}/bin/hew" run "${smoke_root}/pkg-smoke.hew")
           echo "${output}"
           echo "${output}" | grep -q "pkg-smoke-ok"
 
@@ -735,7 +735,6 @@ jobs:
 
           Expand-Archive -Path "${env:ARCHIVE_NAME}.zip" -DestinationPath $SmokeRoot -Force
           $Staging = Join-Path $SmokeRoot "${env:ARCHIVE_NAME}"
-          $env:HEW_STD = Join-Path $Staging "std"
 
           $Output = & (Join-Path $Staging "bin/hew.exe") run $SmokeFile | Out-String
           $Output = $Output.Trim()
@@ -935,7 +934,7 @@ jobs:
           mkdir -p "${staging}"
           tar -xf "${ARCHIVE_NAME}.tar.gz" -C "${staging}" --strip-components=1
 
-          output=$(env -i PATH=/usr/bin:/bin HOME="${HOME}" HEW_STD="${staging}/std" "${staging}/bin/hew" run "${smoke_root}/pkg-smoke.hew")
+          output=$(env -i PATH=/usr/bin:/bin HOME="${HOME}" "${staging}/bin/hew" run "${smoke_root}/pkg-smoke.hew")
           echo "${output}"
           echo "${output}" | grep -q "pkg-smoke-ok"
 
@@ -1072,7 +1071,7 @@ jobs:
             mkdir -p "${smoke_root}/staging"
             tar -xf "${ARCHIVE_NAME}.tar.gz" -C "${smoke_root}/staging" --strip-components=1
 
-            output=$(HEW_STD="${smoke_root}/staging/std" "${smoke_root}/staging/bin/hew" run "${smoke_root}/pkg-smoke.hew")
+            output=$("${smoke_root}/staging/bin/hew" run "${smoke_root}/pkg-smoke.hew")
             echo "${output}"
             echo "${output}" | grep -q "pkg-smoke-ok"
 
@@ -1200,7 +1199,7 @@ jobs:
             mkdir -p "${smoke_root}/staging"
             tar -xf "${ARCHIVE_NAME}.tar.gz" -C "${smoke_root}/staging" --strip-components=1
 
-            output=$(HEW_STD="${smoke_root}/staging/std" "${smoke_root}/staging/bin/hew" run "${smoke_root}/pkg-smoke.hew")
+            output=$("${smoke_root}/staging/bin/hew" run "${smoke_root}/pkg-smoke.hew")
             echo "${output}"
             echo "${output}" | grep -q "pkg-smoke-ok"
 
@@ -1762,12 +1761,22 @@ jobs:
         if: steps.download.outcome == 'success'
         run: cd extension && npm ci
 
+      - name: Checkout release std
+        if: steps.download.outcome == 'success'
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ github.sha }}
+          path: hew-source
+          sparse-checkout: std
+
       - name: Bundle LSP binary
         if: steps.download.outcome == 'success'
         run: |
           mkdir -p extension/server
           cp "lsp-binary/${{ matrix.binary }}" "extension/server/${{ matrix.binary }}"
           chmod +x "extension/server/${{ matrix.binary }}"
+          # server/hew-lsp finds std at <exe_dir>/../std, as in a shipped archive.
+          cp -R hew-source/std extension/std
 
       - name: Package extension
         if: steps.download.outcome == 'success'

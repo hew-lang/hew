@@ -210,18 +210,18 @@ type Payload {
 
 fn helper(i: i64) -> i64 {
     let pair: (Option<Payload>, Vec<string>) = (
-        Some(Payload {
+        .Some(Payload {
             values: ["transferred"],
             label: "tag",
         }),
         ["left", "right"],
     );
 
-    var carrier: Option<Payload> = None;
+    var carrier: Option<Payload> = .None;
     if i % 2 == 0 {
         carrier = pair.0;
     } else {
-        carrier = None;
+        carrier = .None;
     }
 
     let rebound = carrier;

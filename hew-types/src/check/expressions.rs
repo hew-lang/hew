@@ -457,7 +457,10 @@ else needs `impl Display for {rendered}`)"
             // genuinely-unconstrained `None` still fails closed: the recorded
             // `Option<Var>` stays unresolved and `validate_expr_output_contract`
             // (admissibility.rs) surfaces it as an inference error. See W4.042.
-            Expr::Identifier(name) if name == "None" => Ty::option(Ty::Var(TypeVar::fresh())),
+            Expr::Identifier(name) if name == "None" => {
+                self.report_bare_variant_expr(name, "Option.None", span);
+                Ty::option(Ty::Var(TypeVar::fresh()))
+            }
             Expr::Identifier(name) => self.synthesize_identifier(name, span),
             Expr::ContextVariant(context) => {
                 if let Some(record) = &context.record {
@@ -2460,6 +2463,26 @@ else needs `impl Display for {rendered}`)"
             }
             self.record_call_edge(&fn_sig_key);
             let sig = self.fn_sigs[&fn_sig_key].clone();
+            // A bare enum variant used as a value (`let c = Red;`,
+            // `xs.map(Wrap)`) is refused like its call form; nothing here
+            // selects the enum, so the fix-it qualifies it.
+            // A machine's states are written bare only inside that machine
+            // (§3.11.3); elsewhere they follow the same rule (D550).
+            if !surface_name.contains("::") {
+                if let Some((owner, _, _)) =
+                    self.lookup_variant_constructor(name)
+                        .filter(|(owner, _, _)| {
+                            self.type_defs
+                                .get(owner)
+                                .is_some_and(|td| td.kind == TypeDefKind::Enum)
+                                && !self.machine_state_is_bare_here(owner)
+                        })
+                {
+                    let replacement =
+                        format!("{}.{name}", super::calls::variant_owner_spelling(&owner));
+                    self.report_bare_variant_expr(name, &replacement, span);
+                }
+            }
             // local-shadows-global: when the fn_sig slot was won by a builtin enum
             // variant, prefer any user-declared enum that has a variant with the
             // same name (e.g. user `enum AppError { NotFound(string); }` shadows
@@ -2906,9 +2929,10 @@ else needs `impl Display for {rendered}`)"
         }
         if let Some(ty) = found {
             if !name.contains("::") {
-                let replacement = ty
-                    .type_name()
-                    .map_or_else(|| format!(".{name}"), |owner| format!("{owner}.{name}"));
+                let replacement = ty.type_name().map_or_else(
+                    || format!(".{name}"),
+                    |owner| format!("{}.{name}", super::calls::variant_owner_spelling(owner)),
+                );
                 self.report_bare_variant_expr(name, &replacement, span);
             }
             ty
@@ -3911,48 +3935,65 @@ else needs `impl Display for {rendered}`)"
         expected: &Ty,
     ) -> Ty {
         match expr {
-            Expr::Block(block) => {
-                let actual = self.check_block(block, Some(expected));
-                let result = if matches!(actual, Ty::Never | Ty::Error) {
-                    actual.clone()
-                } else {
-                    let n = self.errors.len();
-                    self.expect_type(expected, &actual, span);
-                    if self.errors.len() > n {
-                        Ty::Error
-                    } else {
-                        actual.clone()
-                    }
-                };
-                // A block's value IS its trailing expression's value. When that
-                // tail fails to meet the expectation, `check_against` reports
-                // the mismatch on the tail's own span, PUBLISHES the tail's
-                // recovered type, and returns the error placeholder to poison
-                // the caller. Publish the same recovered type for the block so
-                // the two agree: the produced-value graph treats the tail as
-                // the block's identity dependency and rejects a disagreement
-                // ("identity dependency changes type from T to Error"), and
-                // consumers that read published types -- hover -- surface the
-                // placeholder as an unknown type. The placeholder is still what
-                // this call returns, so callers keep their poisoned result.
-                let published = if matches!(result, Ty::Error) {
-                    block
-                        .trailing_expr
-                        .as_ref()
-                        .and_then(|tail| {
-                            self.expr_types
-                                .get(&SpanKey::in_module(&tail.1, self.current_module_idx))
-                                .cloned()
-                        })
-                        .unwrap_or_else(|| result.clone())
-                } else {
-                    result.clone()
-                };
-                self.publish_checked_expression(expr, span, published);
-                result
+            Expr::Block(block) => self.check_block_expr_with_expected(expr, block, span, expected),
+            // An `unsafe` block is a block: its tail flows to the surrounding
+            // expectation, so `.Ok(x)` resolves inside one.
+            Expr::UnsafeBlock(block) => {
+                let prev = self.in_unsafe;
+                self.in_unsafe = true;
+                let ty = self.check_block_expr_with_expected(expr, block, span, expected);
+                self.in_unsafe = prev;
+                ty
             }
             _ => self.check_against(expr, span, expected),
         }
+    }
+
+    fn check_block_expr_with_expected(
+        &mut self,
+        expr: &Expr,
+        block: &Block,
+        span: &Span,
+        expected: &Ty,
+    ) -> Ty {
+        let actual = self.check_block(block, Some(expected));
+        let result = if matches!(actual, Ty::Never | Ty::Error) {
+            actual.clone()
+        } else {
+            let n = self.errors.len();
+            self.expect_type(expected, &actual, span);
+            if self.errors.len() > n {
+                Ty::Error
+            } else {
+                actual.clone()
+            }
+        };
+        // A block's value IS its trailing expression's value. When that
+        // tail fails to meet the expectation, `check_against` reports
+        // the mismatch on the tail's own span, PUBLISHES the tail's
+        // recovered type, and returns the error placeholder to poison
+        // the caller. Publish the same recovered type for the block so
+        // the two agree: the produced-value graph treats the tail as
+        // the block's identity dependency and rejects a disagreement
+        // ("identity dependency changes type from T to Error"), and
+        // consumers that read published types -- hover -- surface the
+        // placeholder as an unknown type. The placeholder is still what
+        // this call returns, so callers keep their poisoned result.
+        let published = if matches!(result, Ty::Error) {
+            block
+                .trailing_expr
+                .as_ref()
+                .and_then(|tail| {
+                    self.expr_types
+                        .get(&SpanKey::in_module(&tail.1, self.current_module_idx))
+                        .cloned()
+                })
+                .unwrap_or_else(|| result.clone())
+        } else {
+            result.clone()
+        };
+        self.publish_checked_expression(expr, span, published);
+        result
     }
 
     /// Check: verify expression against expected type (top-down).
@@ -4425,11 +4466,10 @@ else needs `impl Display for {rendered}`)"
                 expected.clone()
             }
 
-            (Expr::Block(_), _) => {
+            (Expr::Block(_) | Expr::UnsafeBlock(_), _) => {
                 self.tail_ok_armed = tail_ok_armed;
                 self.check_expr_with_expected(expr, span, expected)
             }
-
             // Array repeat coercion to Array<T, N> type. The declared length
             // `N` is part of the fixed-array type, so — like the plain array
             // literal arm above — the repeat count must agree with it. A
@@ -5099,6 +5139,20 @@ else needs `impl Display for {rendered}`)"
             // event type that actually contains the named unit variant.  The check is
             // purely additive — the existing synthesize+unify fallback handles all
             // other shapes.
+            //
+            // A bare builtin `None` under an expected `Option` is refused with the
+            // contextual fix-it the expected type makes available.
+            (
+                Expr::Identifier(name),
+                Ty::Named {
+                    builtin: Some(crate::BuiltinType::Option),
+                    ..
+                },
+            ) if name == "None" => {
+                self.report_bare_variant_expr(name, ".None", span);
+                self.record_type(span, expected);
+                expected.clone()
+            }
             (
                 Expr::Identifier(name),
                 Ty::Named {
@@ -5141,10 +5195,9 @@ else needs `impl Display for {rendered}`)"
                 // type, and resolving it here must not suggest the enum
                 // `.Variant` fix-it — that fix-it is for real enum bare
                 // variants (#3264).
-                let is_machine_state =
-                    expected_type_def.is_some_and(|td| matches!(td.kind, TypeDefKind::Machine));
+                let bare_state_here = self.machine_state_is_bare_here(expected_type_name);
                 if is_unit_variant {
-                    if !name.contains("::") && !is_machine_state {
+                    if !name.contains("::") && !bare_state_here {
                         self.report_bare_variant_expr(name, &format!(".{name}"), span);
                     }
                     self.enforce_type_def_instantiation_bounds(
@@ -6634,9 +6687,14 @@ else needs `impl Display for {rendered}`)"
                     self.emit_borrowed_param_return(name, &source_param, span);
                 }
             }
-            // Descend into block expressions: `{ r }` wraps the identifier
-            // in an Expr::Block whose local bindings may also shadow params.
+            // Descend into block expressions: `{ r }` or `unsafe { r }` wraps
+            // the identifier in a block whose local bindings may also shadow
+            // params.
             Expr::Block(blk) => {
+                let mut nested_scopes = scopes.to_vec();
+                self.scan_block_for_rc_param_return(blk, &mut nested_scopes);
+            }
+            Expr::UnsafeBlock(blk) => {
                 let mut nested_scopes = scopes.to_vec();
                 self.scan_block_for_rc_param_return(blk, &mut nested_scopes);
             }
@@ -6746,20 +6804,34 @@ else needs `impl Display for {rendered}`)"
     /// (spurious `BorrowedParamReturn`), and a lowercase user variant (`wrap(r)`)
     /// is no longer a false miss (a real aggregate escape that the old uppercase
     /// heuristic silently dropped).
+    /// Whether `owner` is a machine whose own generated body is being
+    /// checked, the one place its state names are written bare.
+    fn machine_state_is_bare_here(&self, owner: &str) -> bool {
+        let is_machine = self.lookup_declaration(owner).is_some_and(|def| {
+            self.identity.declaration_kind_by_path(def.full_path())
+                == Some(crate::DeclarationKind::Machine)
+        });
+        is_machine
+            && self.machine_body_owner.as_deref().is_some_and(|current| {
+                super::calls::variant_owner_spelling(current)
+                    == super::calls::variant_owner_spelling(owner)
+            })
+    }
+
     pub(super) fn callee_is_aggregate_constructor(&self, function: &Expr) -> bool {
-        let Expr::Identifier(name) = function else {
+        let name = match function {
+            Expr::Identifier(name) => name,
+            // A contextual variant (`.Some(r)`, `.Wrap(r)`) always constructs
+            // and embeds its payload.
+            Expr::ContextVariant(_) => return true,
             // Calling a function-valued field or closure (`(obj.f)(arg)`) passes
             // the argument as a borrow; it is never an aggregate constructor.
-            return false;
+            _ => return false,
         };
         // `Type::assoc` / `E::Variant` paths construct or wrap a value and may
         // embed the argument (`Rc::new(r)`, `MyEnum::Variant(r)`).  Fail-closed:
         // descend on every qualified call so an aggregate escape is never missed.
         if name.contains("::") {
-            return true;
-        }
-        // Builtin Option/Result variant constructors embed their payload.
-        if matches!(name.as_str(), "Some" | "Ok" | "Err" | "None") {
             return true;
         }
         // User enum / struct tuple-variant constructors, resolved by name
@@ -6981,7 +7053,12 @@ else needs `impl Display for {rendered}`)"
                 }
                 None
             }
-            Expr::Block(blk) => {
+            Expr::Block(_) | Expr::UnsafeBlock(_) => {
+                let blk: &Block = match expr {
+                    Expr::UnsafeBlock(blk) => blk,
+                    Expr::Block(blk) => blk,
+                    _ => unreachable!("guarded by the arm pattern"),
+                };
                 let mut nested_scopes = scopes.to_vec();
                 nested_scopes.push(HashMap::new());
                 self.scan_stmts_for_rc_param_return(&blk.stmts, &mut nested_scopes);

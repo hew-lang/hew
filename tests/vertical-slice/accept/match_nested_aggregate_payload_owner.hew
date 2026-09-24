@@ -35,7 +35,7 @@ type OuterRetained {
 fn main() {
     // Nested record payload: the binder owns `inner.v`, and `other` is still
     // released exactly once when `p` goes out of scope.
-    let p = OuterRecord { other: [7], value: Some(Inner { v: [1, 2] }) };
+    let p = OuterRecord { other: [7], value: .Some(Inner { v: [1, 2] }) };
     match p.value {
         .Some(inner) => println(inner.v[0] + inner.v[1]),
         .None => println("none"),
@@ -43,7 +43,7 @@ fn main() {
     println(p.other[0]);
 
     // Nested tuple payload: same handoff through a tuple rather than a record.
-    let t = OuterTuple { other: [7, 8], value: Some(([1, 2], 9)) };
+    let t = OuterTuple { other: [7, 8], value: .Some(([1, 2], 9)) };
     match t.value {
         .Some(pair) => println(pair.0[0] + pair.0[1] + pair.1),
         .None => println("none"),
@@ -52,7 +52,7 @@ fn main() {
 
     // Retained payload control: the parent still owns everything it started
     // with, so both its fields survive the destructure.
-    let r = OuterRetained { other: [4, 5], value: Some(Retained { s: string.repeat("z", 40) }) };
+    let r = OuterRetained { other: [4, 5], value: .Some(Retained { s: string.repeat("z", 40) }) };
     match r.value {
         .Some(held) => println(held.s.len()),
         .None => println("none"),
@@ -60,7 +60,7 @@ fn main() {
     println(r.other[0] + r.other[1]);
 
     // The vacant arm hands out no payload at all: the record keeps both fields.
-    let empty = OuterRecord { other: [3], value: None };
+    let empty = OuterRecord { other: [3], value: .None };
     match empty.value {
         .Some(inner) => println(inner.v[0]),
         .None => println("none"),

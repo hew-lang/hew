@@ -5,9 +5,9 @@ enum LoadError { Missing(string), }
 
 fn load_session(ok: bool) -> Result<Session, LoadError> {
     if ok {
-        return Ok(Session { token: "token", generation: 7 });
+        return .Ok(Session { token: "token", generation: 7 });
     }
-    Err(LoadError.Missing("missing" + string.from_int(7)))
+    .Err(LoadError.Missing("missing" + string.from_int(7)))
 }
 
 fn select_token(ok: bool, stop: bool) -> string {

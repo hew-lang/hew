@@ -22,7 +22,7 @@ type Wrap { f: Option<string> }
 
 fn pushParam(p: string) -> i64 {
     var v: Vec<Wrap> = [];
-    v.push(Wrap { f: Some(p) });
+    v.push(Wrap { f: .Some(p) });
     v.len()
 }
 
@@ -41,8 +41,8 @@ type Wrap { f: Option<string> }
 
 fn setParam(p: string) -> i64 {
     var v: Vec<Wrap> = [];
-    v.push(Wrap { f: None });
-    v.set(0, Wrap { f: Some(p) });
+    v.push(Wrap { f: .None });
+    v.set(0, Wrap { f: .Some(p) });
     v.len()
 }
 
@@ -129,7 +129,7 @@ type Wrap { f: Option<string> }
 
 fn pushParam(p: string) -> i64 {
     var v: Vec<Wrap> = [];
-    let w = Wrap { f: Some(p) };
+    let w = Wrap { f: .Some(p) };
     v.push(w);
     v.len()
 }
@@ -150,7 +150,7 @@ type Wrap { f: Option<string> }
 fn main() -> i64 {
     for i in 0..$FRAMES {
         var v: Vec<Wrap> = [];
-        v.push(Wrap { f: Some(f"item-{i}") });
+        v.push(Wrap { f: .Some(f"item-{i}") });
         if v.len() != 1 { return 41; }
     }
     0
@@ -186,7 +186,7 @@ fn newArena<T>() -> Arena<T> {
 impl<T> Arena<T> {
     fn insert(var self, value: T) -> Key<T> {
         let index = self.slots.len();
-        self.slots.push(Slot { value: Some(value) });
+        self.slots.push(Slot { value: .Some(value) });
         Key { index: index }
     }
 
@@ -219,14 +219,14 @@ type Wrap { f: Option<string> }
 
 fn pushParam(p: string) -> i64 {
     var v: Vec<Wrap> = [];
-    v.push(Wrap { f: Some(p) });
+    v.push(Wrap { f: .Some(p) });
     v.len()
 }
 
 fn setParam(p: string) -> i64 {
     var v: Vec<Wrap> = [];
-    v.push(Wrap { f: None });
-    v.set(0, Wrap { f: Some(p) });
+    v.push(Wrap { f: .None });
+    v.set(0, Wrap { f: .Some(p) });
     v.len()
 }
 
@@ -404,7 +404,7 @@ type MixedWrap { s: string, items: Vec<string> }
 
 fn pushParam(p: Holder) {
     var v: Vec<Wrap> = [];
-    v.push(Wrap { f: Some(p) });
+    v.push(Wrap { f: .Some(p) });
 }
 
 fn pushMixed(p: string, h: Holder) {

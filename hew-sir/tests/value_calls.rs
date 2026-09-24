@@ -220,8 +220,8 @@ fn ordinary_composite_equality_demands_selected_methods() {
         r#"type Label { raw: string } type Outer { value: Label }
         impl Eq for Label { fn eq(self, other: Label) -> bool { self.raw.len() == other.raw.len() } }
         fn main() -> i64 { let a = Outer { value: Label { raw: "one".to_upper() } }; let b = Outer { value: Label { raw: "two".to_upper() } }; if a == b { 1 } else { 0 } }"#,
-        r#"fn main() -> i64 { let a: Option<string> = Some("one".to_upper()); let b: Option<string> = None; if a != b { 1 } else { 0 } }"#,
-        r#"fn main() -> i64 { let a: Result<string, i64> = Ok("one".to_upper()); let b: Result<string, i64> = Err(1); if a != b { 1 } else { 0 } }"#,
+        r#"fn main() -> i64 { let a: Option<string> = .Some("one".to_upper()); let b: Option<string> = .None; if a != b { 1 } else { 0 } }"#,
+        r#"fn main() -> i64 { let a: Result<string, i64> = .Ok("one".to_upper()); let b: Result<string, i64> = .Err(1); if a != b { 1 } else { 0 } }"#,
     ] {
         let module = lower_source(source);
         assert!(module

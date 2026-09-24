@@ -767,7 +767,7 @@ fn payload_enum_equality_typechecks_when_structurally_eligible() {
 
 #[test]
 fn builtin_payload_enum_comparison_typechecks_when_structurally_eligible() {
-    let source = "fn main() {\n    let a: Option<i64> = Some(1);\n    let b: Option<i64> = Some(2);\n    let _ = a == b;\n    let ok: Result<i64, i64> = Ok(1);\n    let err: Result<i64, i64> = Err(2);\n    let _ = ok != err;\n}";
+    let source = "fn main() {\n    let a: Option<i64> = .Some(1);\n    let b: Option<i64> = .Some(2);\n    let _ = a == b;\n    let ok: Result<i64, i64> = .Ok(1);\n    let err: Result<i64, i64> = .Err(2);\n    let _ = ok != err;\n}";
     let output = check_source(source);
     assert!(
         output.errors.is_empty(),
@@ -1316,7 +1316,7 @@ fn numeric_branch_joins_accept_checker_selected_common_types() {
             let wide_unsigned: u64 = 65537;
             let unsigned = if flag { narrow_unsigned } else { wide_unsigned };
             let float = if flag { narrow_signed } else { 4.5 };
-            let present: Option<i64> = Some(1);
+            let present: Option<i64> = .Some(1);
             let signed_if_let = if let .Some(_) = present {
                 narrow_signed
             } else {
@@ -2422,8 +2422,8 @@ fn selected_eq_admits_owned_option_result_composition() {
     let output = check_source(
         r#"
         fn compare() -> bool {
-            let left: Option<Result<string, bytes>> = Some(Ok("same"));
-            let right: Option<Result<string, bytes>> = Some(Ok("same"));
+            let left: Option<Result<string, bytes>> = .Some(.Ok("same"));
+            let right: Option<Result<string, bytes>> = .Some(.Ok("same"));
             left == right && !(left != right)
         }
     "#,

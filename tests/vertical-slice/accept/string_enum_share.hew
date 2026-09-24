@@ -1,5 +1,5 @@
 fn main() {
     let s = "hello";
-    let _value = Some(s);
+    let _value = Option.Some(s);
     let _ = s;
 }

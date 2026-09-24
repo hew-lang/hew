@@ -26,8 +26,8 @@ fn label(o: Option<string>) -> string {
 fn main() {
     var items: Vec<string> = Vec.new();
     items.push("a" + "x");
-    println(f"{peek(Some(Bag { items: items }))}");
-    println(f"{peek(None)}");
-    println(label(Some("v" + "w")));
-    println(label(None));
+    println(f"{peek(.Some(Bag { items: items }))}");
+    println(f"{peek(.None)}");
+    println(label(.Some("v" + "w")));
+    println(label(.None));
 }

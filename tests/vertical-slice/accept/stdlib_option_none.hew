@@ -5,7 +5,7 @@
 // The None arm must drive the exit code (99), so the exit value derives from
 // the path under test rather than a hardcoded literal beside uninvoked code.
 fn nothing() -> Option<i64> {
-    None
+    .None
 }
 
 fn main() -> i64 {

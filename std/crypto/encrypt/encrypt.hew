@@ -100,8 +100,8 @@ pub fn seal(key: bytes, plaintext: string) -> Result<bytes, CryptoError> {
         hew_encrypt_try_seal_base64_hew(key, plaintext)
     };
     match last_seal_error() {
-        CryptoError.None => Ok(base64.decode(encoded)),
-        err => Err(err),
+        CryptoError.None => .Ok(base64.decode(encoded)),
+        err => .Err(err),
     }
 }
 
@@ -114,8 +114,8 @@ pub fn open(key: bytes, ciphertext: bytes) -> Result<string, CryptoError> {
         hew_encrypt_try_open_hew(key, ciphertext)
     };
     match last_open_error() {
-        CryptoError.None => Ok(plaintext),
-        err => Err(err),
+        CryptoError.None => .Ok(plaintext),
+        err => .Err(err),
     }
 }
 

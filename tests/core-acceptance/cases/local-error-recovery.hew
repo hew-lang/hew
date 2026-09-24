@@ -11,12 +11,12 @@ fn early(value: Result<string, string>) -> string {
 }
 
 fn main() -> i64 {
-    let accepted = Ok("kept".to_upper());
-    let rejected = Err("broken".to_upper());
+    let accepted = Result.Ok("kept".to_upper());
+    let rejected = Result.Err("broken".to_upper());
     println(recover(accepted));
     println(recover(accepted));
     println(recover(rejected));
     println(early(rejected));
-    println(early(Ok("success")));
+    println(early(.Ok("success")));
     0
 }

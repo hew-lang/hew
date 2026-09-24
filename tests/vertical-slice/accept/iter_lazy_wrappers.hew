@@ -24,9 +24,9 @@ impl Iterator for Counter {
     type Item = i64;
     fn next(var it: Counter) -> Option<i64> {
         if it.n >= it.limit {
-            None
+            .None
         } else {
-            Some(it.n)
+            .Some(it.n)
         }
     }
 }
@@ -43,7 +43,7 @@ where
     type Item = B;
     fn next(var it: Map<I, A, B>) -> Option<B> {
         panic("Map::next deferred pending Q004 checker fix");
-        None
+        .None
     }
 }
 
@@ -59,7 +59,7 @@ where
     type Item = A;
     fn next(var it: Filter<I, A>) -> Option<A> {
         panic("Filter::next deferred pending Q004 checker fix");
-        None
+        .None
     }
 }
 
@@ -75,7 +75,7 @@ where
     type Item = A;
     fn next(var it: Take<I>) -> Option<A> {
         panic("Take::next deferred pending Q004 checker fix");
-        None
+        .None
     }
 }
 
@@ -91,7 +91,7 @@ where
     type Item = A;
     fn next(var it: Skip<I>) -> Option<A> {
         panic("Skip::next deferred pending Q004 checker fix");
-        None
+        .None
     }
 }
 

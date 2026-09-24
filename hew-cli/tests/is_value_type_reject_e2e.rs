@@ -155,8 +155,8 @@ const MACHINE_IS: &str = "machine Tank {\n\
      }\n\
      \n\
      fn main() {\n\
-     let t = Filling;\n\
-     let u = Draining;\n\
+     let t = Tank.Filling;\n\
+     let u = Tank.Draining;\n\
      let same: bool = t is u;\n\
      println(same);\n\
      }\n";

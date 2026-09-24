@@ -1042,7 +1042,7 @@ mod assoc_types_slice1 {
 
             impl Iterator for Counter {
                 type Item = i64;
-                fn next(var c: Counter) -> Option<i64> { Some(c.value) }
+                fn next(var c: Counter) -> Option<i64> { .Some(c.value) }
             }
             ",
         );
@@ -1172,7 +1172,7 @@ mod assoc_types_slice1 {
 
             impl<T: Display> Show for Container<T> {
                 type Out = Option<T>;
-                fn show(val: Container<T>) -> Option<T> { Some(val.value) }
+                fn show(val: Container<T>) -> Option<T> { .Some(val.value) }
             }
             ",
         );
@@ -1252,7 +1252,7 @@ mod assoc_types_slice2 {
 
             impl Iterator for Counter {
                 type Item = i64;
-                fn next(var c: Counter) -> Option<i64> { Some(c.value) }
+                fn next(var c: Counter) -> Option<i64> { .Some(c.value) }
             }
 
             fn make<I: Iterator>(it: I) -> Option<I.Item> {
@@ -1325,7 +1325,7 @@ mod assoc_types_slice2 {
 
             impl Iterator for Counter {
                 type Item = i64;
-                fn next(var c: Counter) -> Option<i64> { None }
+                fn next(var c: Counter) -> Option<i64> { .None }
             }
 
             fn collect<I: Iterator>(it: I) -> Vec<I.Item> {

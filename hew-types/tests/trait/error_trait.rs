@@ -97,9 +97,9 @@ fn error_impl_coerces_to_dyn_error_at_every_error_position() {
 
         fn wrapped(text: string) -> Result<i64, dyn Error> {
             if text == "" {
-                return Err(ParseFailure { detail: "empty" })
+                return .Err(ParseFailure { detail: "empty" })
             }
-            return Ok(1)
+            return .Ok(1)
         }
         "#,
     );
@@ -172,7 +172,7 @@ fn entry_dyn_error_renders_through_the_display_fmt_slot() {
         impl Error for Failure {}
         impl Pretty for Failure { fn fmt(self) -> string { "pretty" } }
         fn main() -> Result<(), dyn (Pretty + Error)> {
-            Err(Failure { detail: "x" })
+            .Err(Failure { detail: "x" })
         }
         "#,
     );

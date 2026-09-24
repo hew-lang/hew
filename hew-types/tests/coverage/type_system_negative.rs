@@ -918,7 +918,7 @@ fn nonexhaustive_match_option_missing_none() {
             }
         }
         fn main() {
-            check(Some(1));
+            check(.Some(1));
         }
     ",
     );
@@ -952,7 +952,7 @@ fn nonexhaustive_match_result_missing_err() {
             }
         }
         fn main() {
-            check(Ok(1));
+            check(.Ok(1));
         }
     ",
     );
@@ -988,7 +988,7 @@ fn nonexhaustive_match_enum_missing_variant() {
             }
         }
         fn main() {
-            println(label(Red));
+            println(label(.Red));
         }
     "#,
     );
@@ -1182,7 +1182,7 @@ fn checker_output_does_not_expose_unresolved_ty_var_survivors() {
     let output = typecheck(
         r"
         fn helper() {
-            let x: _ = None;
+            let x: _ = Option.None;
         }
     ",
     );
@@ -1597,7 +1597,7 @@ fn explicit_hole_nonitem_local_var_annotation_is_rejected() {
     let output = typecheck(
         r"
         fn main() {
-            var value: _ = None;
+            var value: _ = Option.None;
         }
     ",
     );
@@ -1618,7 +1618,7 @@ fn explicit_hole_nonitem_local_let_annotation_is_resolved_from_later_use() {
         fn takes(value: Option<i64>) {}
 
         fn main() {
-            let value: _ = None;
+            let value: _ = Option.None;
             takes(value);
         }
     ",
@@ -1637,7 +1637,7 @@ fn explicit_hole_nonitem_local_let_annotation_is_resolved_from_later_use() {
 fn explicit_hole_nonitem_const_annotation_is_rejected() {
     let output = typecheck(
         r"
-        const MAYBE: _ = None;
+        const MAYBE: _ = Option.None;
         fn main() {}
     ",
     );
@@ -1655,7 +1655,7 @@ fn explicit_hole_nonitem_const_annotation_is_rejected() {
 fn explicit_hole_nonitem_const_annotation_is_resolved_from_later_use() {
     let output = typecheck(
         r"
-        const MAYBE: _ = None;
+        const MAYBE: _ = Option.None;
 
         fn takes(value: Option<i64>) {}
 
@@ -1717,7 +1717,7 @@ fn explicit_hole_nonitem_lambda_return_annotation_is_rejected() {
     let output = typecheck(
         r"
         fn main() {
-            let _f = || -> _ { None };
+            let _f = || -> _ { Option.None };
         }
     ",
     );
@@ -1916,7 +1916,7 @@ fn postfix_try_in_non_option_result_function() {
     // type must be rejected at typecheck time, not silently emitted as bad IR.
     let source = r"
         fn maybe(x: i32) -> Option<i32> {
-            if x > 0 { Some(x) } else { None }
+            if x > 0 { .Some(x) } else { .None }
         }
         fn plain(x: i32) -> i32 {
             let v = maybe(x)?;
@@ -1942,11 +1942,11 @@ fn postfix_try_valid_in_option_function() {
     let output = typecheck(
         r"
         fn maybe(x: i32) -> Option<i32> {
-            if x > 0 { Some(x) } else { None }
+            if x > 0 { .Some(x) } else { .None }
         }
         fn double_maybe(x: i32) -> Option<i32> {
             let v = maybe(x)?;
-            Some(v * 2)
+            .Some(v * 2)
         }
         fn main() { double_maybe(5); }
     ",
@@ -1966,12 +1966,12 @@ fn postfix_try_in_option_lambda_inside_plain_fn_is_valid() {
     let output = typecheck(
         r"
         fn maybe(x: i32) -> Option<i32> {
-            if x > 0 { Some(x) } else { None }
+            if x > 0 { .Some(x) } else { .None }
         }
         fn outer(x: i32) {
             let _f = |v: i32| -> Option<i32> {
                 let w = maybe(v)?;
-                Some(w)
+                .Some(w)
             };
         }
         fn main() { outer(3); }
@@ -1990,14 +1990,14 @@ fn postfix_try_in_plain_lambda_inside_option_fn_is_invalid() {
     // must still be rejected even though the *outer* function returns Option.
     let source = r"
         fn maybe(x: i32) -> Option<i32> {
-            if x > 0 { Some(x) } else { None }
+            if x > 0 { .Some(x) } else { .None }
         }
         fn outer(x: i32) -> Option<i32> {
             let _f = |v: i32| -> i32 {
                 let w = maybe(v)?;
                 w
             };
-            None
+            .None
         }
         fn main() { outer(3); }
     ";

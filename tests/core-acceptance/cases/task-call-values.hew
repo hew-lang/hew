@@ -17,8 +17,8 @@ fn work(value: i64) -> i64 {
 fn identity<T>(value: T) -> T { value }
 
 fn outcome(value: i64) -> Result<i64, string> {
-    if value == 0 { return Err("ordinary error"); }
-    Ok(value)
+    if value == 0 { return .Err("ordinary error"); }
+    .Ok(value)
 }
 
 fn main() {

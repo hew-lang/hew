@@ -10543,7 +10543,7 @@ mod tests {
 
             fn keep_text(value: string) {}
             fn main() {
-                keep_text(drive(Some(Choice.Values(["word"], 7))));
+                keep_text(drive(.Some(Choice.Values(["word"], 7))));
             }
             "#,
         );

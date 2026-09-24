@@ -8,7 +8,7 @@ type Holder {
 }
 
 fn main() -> i64 {
-    let h = Holder { maybe: None };
+    let h = Holder { maybe: .None };
     let back = Holder.decode(h.encode());
     match back.maybe {
         .Some(v) => v,

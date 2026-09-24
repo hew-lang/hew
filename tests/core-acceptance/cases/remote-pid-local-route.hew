@@ -118,8 +118,8 @@ fn config() -> NodeConfig {
 fn lookup(name: string) -> Option<RemotePid<Store>> {
     let found: Result<RemotePid<Store>, LookupError> = Node.lookup(name);
     match found {
-        .Ok(pid) => Some(pid),
-        .Err(_) => None,
+        .Ok(pid) => .Some(pid),
+        .Err(_) => .None,
     }
 }
 
@@ -154,7 +154,7 @@ fn main() -> i64 {
     println(get(target, "colour"));
 
     // A clean exit reaches a monitor as the DOWN of a remote location.
-    let watcher = spawn Watcher(active: Err(MonitorError.NodeNotRunning));
+    let watcher = spawn Watcher(active: .Err(MonitorError.NodeNotRunning));
     match watcher.arm(target) {
         .Ok(0) => {},
         .Ok(_) => return 5,
@@ -229,7 +229,7 @@ fn main() -> i64 {
         .Ok(_) => println("send delivered"),
     }
     println(get(old, "colour"));
-    let late_watcher = spawn Watcher(active: Err(MonitorError.NodeNotRunning));
+    let late_watcher = spawn Watcher(active: .Err(MonitorError.NodeNotRunning));
     match late_watcher.arm(old) {
         .Ok(0) => println("monitor registered"),
         .Ok(1) => println("monitor stale"),

@@ -27,5 +27,5 @@ fn main() -> Result<(), dyn Error> {
     println(f"width={width}");
     let missing = parse("")?;
     println(f"unreachable={missing}");
-    Ok(())
+    .Ok(())
 }

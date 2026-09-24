@@ -26,9 +26,9 @@ impl Tx {
         println(pair.1);
     }
     fn choose(consume self, forward: bool) -> Option<Tx> {
-        if forward { return Some(self); }
+        if forward { return .Some(self); }
         println(f"finished {self.id}");
-        None
+        .None
     }
 }
 fn fresh_pair() -> (Tx, string) { (transaction(6), "replacement".to_upper()) }

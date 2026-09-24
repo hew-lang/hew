@@ -139,8 +139,8 @@ pub fn from_stdin() -> Scanner {
 /// Returns `Err(fs.IoError)` if the file cannot be opened or read.
 pub fn from_file(path: string) -> Result<Scanner, fs.IoError> {
     match fs.read(path) {
-        .Ok(contents) => Ok(Scanner { source: contents, pos: 0, current: "", valid: false, done: false, mode: .SplitLines }),
-        .Err(e) => Err(e),
+        .Ok(contents) => .Ok(Scanner { source: contents, pos: 0, current: "", valid: false, done: false, mode: .SplitLines }),
+        .Err(e) => .Err(e),
     }
 }
 
@@ -206,9 +206,9 @@ pub fn next_line(sc: Scanner) -> (Scanner, Option<string>) {
     let restored = Scanner { source: next.source, pos: next.pos, current: next.current, valid: next.valid, done: next.done, mode: mode };
     if has_next(next) {
         let line = text(next);
-        (restored, Some(line))
+        (restored, .Some(line))
     } else {
-        (restored, None)
+        (restored, .None)
     }
 }
 

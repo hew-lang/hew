@@ -2,8 +2,8 @@ import std.string;
 type Secret { value: string, length: i64 }
 enum CredErr { Missing(string), }
 fn resolve(n: i64) -> Result<Secret, CredErr> {
-    if n > 0 { return Ok(Secret { value: "s" + string.from_int(n), length: n }); }
-    Err(CredErr.Missing("nope"))
+    if n > 0 { return .Ok(Secret { value: "s" + string.from_int(n), length: n }); }
+    .Err(CredErr.Missing("nope"))
 }
 fn preflight(n: i64, a: bool) -> string {
     let secret = match resolve(n) {

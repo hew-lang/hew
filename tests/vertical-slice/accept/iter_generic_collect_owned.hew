@@ -20,10 +20,10 @@ impl Iterator for Words {
     /// Yield `n` copies of `"word"` then `None`.
     fn next(var self) -> Option<string> {
         if self.n <= 0 {
-            None
+            .None
         } else {
             self.n = self.n - 1;
-            Some("word")
+            .Some("word")
         }
     }
 }

@@ -416,7 +416,7 @@ mod tests {
             return (parse_result, None);
         }
         let registry = hew_types::module_registry::ModuleRegistry::new(
-            hew_types::module_registry::build_module_search_paths(),
+            hew_types::module_registry::stdlib_search_paths(),
         );
         let mut checker = hew_types::Checker::new(registry);
         let type_check = checker.check_program(&parse_result.program);

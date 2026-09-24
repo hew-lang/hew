@@ -458,7 +458,7 @@ fn generic_impl_method_underconstrained_type_param_reports_inference_failed() {
 
         fn main() {
             let h = Holder {};
-            let unresolved = h.wrap(None);
+            let unresolved = h.wrap(.None);
         }
     ";
 
@@ -673,7 +673,7 @@ fn test_trait_object_type_args_substitution() {
 
         impl MyIter<i64> for Counter {
             fn next(c: Counter) -> Option<i64> {
-                Some(42)
+                .Some(42)
             }
         }
 
@@ -3847,7 +3847,7 @@ fn clone_option<T: Clone>(value: Option<T>) -> Option<T> {
 }
 
 fn main() -> i64 {
-    let original: Option<i64> = Some(3);
+    let original: Option<i64> = .Some(3);
     let copied = clone_option(original);
     match copied {
         .Some(n) => n,
@@ -3898,7 +3898,7 @@ fn clone_option<T: Clone>(value: Option<T>) -> Option<T> {
 }
 
 fn main() {
-    let held: Option<Token> = Some(Token { id: 1 });
+    let held: Option<Token> = .Some(Token { id: 1 });
     let _copied = clone_option(held);
 }
 ";
@@ -3917,8 +3917,8 @@ fn same<T>(a: Option<T>, b: Option<T>) -> bool {
 }
 
 fn main() -> i64 {
-    let left: Option<i64> = Some(1);
-    let right: Option<i64> = Some(1);
+    let left: Option<i64> = .Some(1);
+    let right: Option<i64> = .Some(1);
     if same(left, right) { 0 } else { 1 }
 }
 ";
@@ -3940,8 +3940,8 @@ fn same<T>(a: Option<T>, b: Option<T>) -> bool {
 fn main() -> i64 {
     let left: HashMap<string, i64> = HashMap.new();
     let right: HashMap<string, i64> = HashMap.new();
-    let boxed_left: Option<HashMap<string, i64>> = Some(left);
-    let boxed_right: Option<HashMap<string, i64>> = Some(right);
+    let boxed_left: Option<HashMap<string, i64>> = .Some(left);
+    let boxed_right: Option<HashMap<string, i64>> = .Some(right);
     if same(boxed_left, boxed_right) { 0 } else { 1 }
 }
 ";
@@ -3971,8 +3971,8 @@ fn same_twice<U>(a: Option<U>, b: Option<U>) -> bool {
 fn main() -> i64 {
     let left: HashMap<string, i64> = HashMap.new();
     let right: HashMap<string, i64> = HashMap.new();
-    let boxed_left: Option<HashMap<string, i64>> = Some(left);
-    let boxed_right: Option<HashMap<string, i64>> = Some(right);
+    let boxed_left: Option<HashMap<string, i64>> = .Some(left);
+    let boxed_right: Option<HashMap<string, i64>> = .Some(right);
     if same_twice(boxed_left, boxed_right) { 0 } else { 1 }
 }
 ";
@@ -4041,7 +4041,7 @@ type Node { value: i64, }
 
 fn main() -> i64 {
     let shared: Rc<Node> = Rc.new(Node { value: 7 });
-    let held: Option<Rc<Node>> = Some(shared);
+    let held: Option<Rc<Node>> = .Some(shared);
     let _copied = clone held;
     0
 }
@@ -4054,7 +4054,7 @@ type Node { value: i64, }
 
 fn main() -> i64 {
     let shared: Rc<Node> = Rc.new(Node { value: 7 });
-    let held: Result<Rc<Node>, string> = Ok(shared);
+    let held: Result<Rc<Node>, string> = .Ok(shared);
     let _copied = clone held;
     0
 }
@@ -4150,7 +4150,7 @@ fn dup<T: Clone>(value: Option<Vec<T>>) -> Option<Vec<T>> {
 fn main() -> i64 {
     var items: Vec<i64> = Vec.new();
     items.push(1);
-    let held: Option<Vec<i64>> = Some(items);
+    let held: Option<Vec<i64>> = .Some(items);
     let copied = dup(held);
     match copied {
         .Some(v) => v.len(),
@@ -4204,7 +4204,7 @@ impl<T> Holder<T> {
 fn main() -> i64 {
     let a: HashMap<string, i64> = HashMap.new();
     let b: HashMap<string, i64> = HashMap.new();
-    let holder = Holder { left: Some(a), right: Some(b) };
+    let holder = Holder { left: .Some(a), right: .Some(b) };
     match holder.same() {
         true => 0,
         false => 1,
@@ -4244,7 +4244,7 @@ impl<T> Holder<T> {
 }
 
 fn main() -> i64 {
-    let holder = Holder { left: Some(1), right: Some(1) };
+    let holder = Holder { left: .Some(1), right: .Some(1) };
     match holder.same() {
         true => 0,
         false => 1,
@@ -4280,8 +4280,8 @@ fn generic_forwarder_chain(hops: usize) -> String {
         "fn main() -> i64 {{\n    \
          let left: HashMap<string, i64> = HashMap.new();\n    \
          let right: HashMap<string, i64> = HashMap.new();\n    \
-         let boxed_left: Option<HashMap<string, i64>> = Some(left);\n    \
-         let boxed_right: Option<HashMap<string, i64>> = Some(right);\n    \
+         let boxed_left: Option<HashMap<string, i64>> = .Some(left);\n    \
+         let boxed_right: Option<HashMap<string, i64>> = .Some(right);\n    \
          match hop_{hops}(boxed_left, boxed_right) {{\n        \
          true => 0,\n        false => 1,\n    }}\n}}\n"
     )
@@ -4474,7 +4474,7 @@ type IntBox {
 impl Carrier for IntBox {
     type Item = i64;
     fn peek(self) -> Option<i64> {
-        Some(self.value)
+        .Some(self.value)
     }
 }
 
@@ -4485,7 +4485,7 @@ type MapBox {
 impl Carrier for MapBox {
     type Item = HashMap<string, i64>;
     fn peek(self) -> Option<HashMap<string, i64>> {
-        None
+        .None
     }
 }
 

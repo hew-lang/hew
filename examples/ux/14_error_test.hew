@@ -2,9 +2,9 @@
 // Result<T, E> is a built-in enum — no import needed.
 fn parse_number(s: string) -> Result<i64, string> {
     if s == "42" {
-        Ok(42)
+        .Ok(42)
     } else {
-        Err("Invalid number")
+        .Err("Invalid number")
     }
 }
 
@@ -42,8 +42,8 @@ fn main() {
         .Err(msg) => println(msg),
     }
     // Helper functions show common Result<i64, i64> patterns.
-    let helper_ok: Result<i64, i64> = Ok(42);
-    let helper_err: Result<i64, i64> = Err(-1);
+    let helper_ok: Result<i64, i64> = .Ok(42);
+    let helper_err: Result<i64, i64> = .Err(-1);
     println(is_ok(helper_ok));
     println(is_err(helper_err));
     println(unwrap_or(helper_ok, 0));

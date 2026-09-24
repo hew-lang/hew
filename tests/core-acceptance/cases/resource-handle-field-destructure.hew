@@ -53,13 +53,13 @@ fn main() {
     w.push(3);
     println(w.len());
 
-    let n = Nested { inner: Inner { h: unsafe { hew_deque_new() } }, spare: Some(unsafe { hew_deque_new() }) };
+    let n = Nested { inner: Inner { h: unsafe { hew_deque_new() } }, spare: .Some(unsafe { hew_deque_new() }) };
     n.push(4);
     println(n.len());
     println(n.has_spare());
     let inner = n.release();
     println(unsafe { hew_deque_len(inner.h) });
     unsafe { hew_deque_free(inner.h) };
-    let m = Nested { inner: Inner { h: unsafe { hew_deque_new() } }, spare: Some(unsafe { hew_deque_new() }) };
+    let m = Nested { inner: Inner { h: unsafe { hew_deque_new() } }, spare: .Some(unsafe { hew_deque_new() }) };
     println(m.has_spare());
 }

@@ -34,7 +34,7 @@ pub type LocalShadowError {
 
 impl ForeignClosable for ClosableHandle {
     fn close(handle: ClosableHandle) -> Result<(), LocalShadowError> {
-        Ok(())
+        .Ok(())
     }
 }
 

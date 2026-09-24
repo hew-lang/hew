@@ -8,12 +8,12 @@ fn choose(value: Result<Option<string>, string>) -> string {
 }
 
 fn main() -> i64 {
-    let original = Ok(Some("kept".to_upper()));
+    let original = Result.Ok(Option.Some("kept".to_upper()));
     let first = choose(original);
     let second = choose(original);
-    let absent = choose(Ok(None));
-    let error = choose(Err("broken".to_upper()));
-    let skipped = choose(Ok(Some("skip")));
+    let absent = choose(.Ok(.None));
+    let error = choose(.Err("broken".to_upper()));
+    let skipped = choose(.Ok(.Some("skip")));
     println(f"{first}:{second}:{absent}:{error}:{skipped}");
     0
 }

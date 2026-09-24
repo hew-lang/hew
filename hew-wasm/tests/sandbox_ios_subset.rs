@@ -228,7 +228,7 @@ fn run_native(source: &str, id: &str) -> Output {
         .arg("run")
         .arg(source_path)
         .current_dir(repo_root())
-        .env("HEWPATH", repo_root())
+        .env("HEW_STD", repo_root().join("std"))
         .env("HEW_SEED", HEW_SEED)
         .env("NO_COLOR", "1")
         .output()
@@ -329,7 +329,7 @@ fn repo_root() -> &'static Path {
 }
 
 fn set_test_hewpath() {
-    std::env::set_var("HEWPATH", repo_root());
+    std::env::set_var("HEW_STD", repo_root().join("std"));
 }
 
 fn diagnostics_dump(diagnostics: &[Diagnostic]) -> String {

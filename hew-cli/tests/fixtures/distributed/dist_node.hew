@@ -948,12 +948,12 @@ fn lookup_with_retry(name: string) -> Result<RemotePid<KeyValue>, LookupError> {
         let found: Result<RemotePid<KeyValue>, LookupError> = Node.lookup(name);
         match found {
             Result.Ok(pid) => {
-                return Ok(pid);
+                return .Ok(pid);
             },
             Result.Err(e) => {
                 attempts = attempts + 1;
                 if attempts >= max_attempts {
-                    return Err(e);
+                    return .Err(e);
                 }
                 sleep(100ms);
             },
@@ -967,12 +967,12 @@ fn lookup_wire_with_retry(name: string) -> Result<RemotePid<WireProbe>, LookupEr
         let found: Result<RemotePid<WireProbe>, LookupError> = Node.lookup(name);
         match found {
             Result.Ok(pid) => {
-                return Ok(pid);
+                return .Ok(pid);
             },
             Result.Err(e) => {
                 attempts = attempts + 1;
                 if attempts >= 50 {
-                    return Err(e);
+                    return .Err(e);
                 }
                 sleep(100ms);
             },
@@ -986,12 +986,12 @@ fn lookup_identity_with_retry(name: string) -> Result<RemotePid<IdentityProbe>, 
         let found: Result<RemotePid<IdentityProbe>, LookupError> = Node.lookup(name);
         match found {
             Result.Ok(pid) => {
-                return Ok(pid);
+                return .Ok(pid);
             },
             Result.Err(e) => {
                 attempts = attempts + 1;
                 if attempts >= 50 {
-                    return Err(e);
+                    return .Err(e);
                 }
                 sleep(100ms);
             },
@@ -1251,7 +1251,7 @@ fn scenario_identity_display(identity: RemotePid<IdentityProbe>, scenario: strin
 }
 
 fn monitor_hook_scenario(kv: RemotePid<KeyValue>, scenario: string, drive: i64, expected: i64, ready_drop: bool) -> i64 {
-    let probe = spawn MonitorProbe(active_monitor: Err(MonitorError.InvalidTarget), expected_monitor_id: 0, down_count: 0, down_reason: 100);
+    let probe = spawn MonitorProbe(active_monitor: .Err(MonitorError.InvalidTarget), expected_monitor_id: 0, down_count: 0, down_reason: 100);
     let armed = probe.arm(kv, drive);
     let arm_status = match armed {
         Result.Ok(status) => status,
@@ -1365,7 +1365,7 @@ fn scenario_remote_setup_exit_race(monitor_target: RemotePid<KeyValue>, link_tar
     if monitor_status != 0 {
         return monitor_status;
     }
-    let probe = spawn LinkSetupRaceProbe(active_monitor: Err(LinkError.NoContext), expected_monitor_id: 0, down_count: 0, down_reason: 100);
+    let probe = spawn LinkSetupRaceProbe(active_monitor: .Err(LinkError.NoContext), expected_monitor_id: 0, down_count: 0, down_reason: 100);
     let armed = probe.arm(link_target);
     let linker_id = match armed {
         Result.Ok(value) => value,
@@ -1634,7 +1634,7 @@ fn scenario_server_watcher_node_death(_kv_serial: i64) {
 }
 
 fn scenario_client_watcher_node_death(kv: RemotePid<KeyValue>) -> i64 {
-    let probe = spawn MonitorProbe(active_monitor: Err(MonitorError.InvalidTarget), expected_monitor_id: 0, down_count: 0, down_reason: 100);
+    let probe = spawn MonitorProbe(active_monitor: .Err(MonitorError.InvalidTarget), expected_monitor_id: 0, down_count: 0, down_reason: 100);
     match probe.arm(kv, 2) {
         Result.Err(_) => {
             println("FAIL monitor_watcher_node_death arm-ask-error");
@@ -1823,7 +1823,7 @@ fn scenario_local_route(kv: RemotePid<KeyValue>) -> i64 {
         },
     }
 
-    let probe = spawn MonitorProbe(active_monitor: Err(MonitorError.NodeNotRunning));
+    let probe = spawn MonitorProbe(active_monitor: .Err(MonitorError.NodeNotRunning));
     match probe.arm(local, 0) {
         Result.Ok(0) => {},
         _ => {

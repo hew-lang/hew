@@ -56,13 +56,13 @@ fn close_in_if_let_arms(o: Option<i64>) {
 }
 
 fn main() {
-    close_in_match_arms(Ok(1));
-    close_in_match_arms(Err("boom"));
+    close_in_match_arms(.Ok(1));
+    close_in_match_arms(.Err("boom"));
     close_in_if_arms(true);
     close_in_if_arms(false);
     close_in_else_if_chain(0);
     close_in_else_if_chain(1);
     close_in_else_if_chain(9);
-    close_in_if_let_arms(Some(5));
-    close_in_if_let_arms(None);
+    close_in_if_let_arms(.Some(5));
+    close_in_if_let_arms(.None);
 }

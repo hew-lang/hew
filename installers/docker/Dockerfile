@@ -42,9 +42,6 @@ COPY --from=fetch /tmp/hew-install/hew/bin/hew           /usr/local/bin/hew
 COPY --from=fetch /tmp/hew-install/hew/lib               /usr/local/lib/hew/
 COPY --from=fetch /tmp/hew-install/hew/std               /usr/local/share/hew/std/
 
-# HEW_STD tells the compiler where the standard library lives.
-ENV HEW_STD=/usr/local/share/hew/std
-
 # Users mount their source here: docker run -v $(pwd):/work r.hew.sh/hew ...
 WORKDIR /work
 

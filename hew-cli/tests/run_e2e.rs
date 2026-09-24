@@ -748,11 +748,11 @@ fn run_generic_user_iterator_static_dispatch_outputs_first_value() {
 
             fn next(var self) -> Option<i64> {
                 if self.cur >= self.end {
-                    None
+                    .None
                 } else {
                     let out = self.cur;
                     self.cur = self.cur + 1;
-                    Some(out)
+                    .Some(out)
                 }
             }
         }
@@ -1259,11 +1259,11 @@ impl Iterator for Countdown {
 
     fn next(var self) -> Option<i64> {
         if self.n <= 0 {
-            None
+            .None
         } else {
             let cur = self.n;
             self.n = self.n - 1;
-            Some(cur)
+            .Some(cur)
         }
     }
 }
@@ -1311,7 +1311,7 @@ impl Iterator for Counter {
 
     fn next(var self) -> Option<i64> {
         self.n = self.n + 1;
-        Some(self.n)
+        .Some(self.n)
     }
 }
 
@@ -1392,7 +1392,7 @@ impl Iterator for Counter {
     fn next(var self) -> Option<i64> {
         let before = { self.n };
         self.n = self.n + 1;
-        Some(before)
+        .Some(before)
     }
 }
 
@@ -1486,7 +1486,7 @@ impl<T> Tick for Slot<T> {
 
     fn next(var self) -> Option<i64> {
         self.n = self.n + 1;
-        Some(self.n)
+        .Some(self.n)
     }
 }
 
@@ -4330,7 +4330,7 @@ impl Handle {\n\
     fn close(consume self) { println(f\"close {self.id}\"); }\n\
 }\n\
 fn acquire(ok: bool) -> Result<Handle, string> {\n\
-    if ok { Ok(Handle { id: 7 }) } else { Err(\"declined\") }\n\
+    if ok { .Ok(Handle { id: 7 }) } else { .Err(\"declined\") }\n\
 }\n";
 
 fn run_resource_payload_program(name: &str, body: &str) -> std::process::Output {

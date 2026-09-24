@@ -12,10 +12,10 @@ impl Iterator for HashMapIter {
     type Item = i64;
     fn next(var self) -> Option<i64> {
         if self.done {
-            None
+            .None
         } else {
             self.done = true;
-            Some(self.value)
+            .Some(self.value)
         }
     }
 }

@@ -198,7 +198,7 @@ const RESULT_ENTRY: &str = r#"
     fn main() -> Result<(), AppError> {
         let held = "held";
         println(held);
-        Err(AppError.Failed("displayed failure"))
+        .Err(AppError.Failed("displayed failure"))
     }
     "#;
 

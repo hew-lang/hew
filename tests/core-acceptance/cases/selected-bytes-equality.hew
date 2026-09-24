@@ -12,10 +12,10 @@ fn main() -> i64 {
     let first = Packet { payload: original, label: "label".to_upper() };
     let second = Packet { payload: matching, label: "label".to_upper() };
     println(first == second);
-    let left: (Vec<bytes>, Option<bytes>) = ([original], Some(independent));
-    let right: (Vec<bytes>, Option<bytes>) = ([matching], Some(original));
+    let left: (Vec<bytes>, Option<bytes>) = ([original], .Some(independent));
+    let right: (Vec<bytes>, Option<bytes>) = ([matching], .Some(original));
     println(left == right);
-    let absent: (Vec<bytes>, Option<bytes>) = ([original], None);
+    let absent: (Vec<bytes>, Option<bytes>) = ([original], .None);
     println(left != absent);
     var values: HashMap<Packet, string> = HashMap.new();
     values.insert(first, "stored".to_upper());

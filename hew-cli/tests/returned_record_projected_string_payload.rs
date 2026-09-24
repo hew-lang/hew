@@ -38,25 +38,25 @@ fn persist(value: string) {
 }
 
 fn cleanup() -> Result<(), CleanupError> {
-    Err(CleanupError.Dirty("dirty worktree " + f"{42}"))
+    .Err(CleanupError.Dirty("dirty worktree " + f"{42}"))
 }
 
 fn retire() -> Result<Retirement, string> {
     match cleanup() {
-        .Ok(_) => Ok(Retirement { blocked: false, detail: "" }),
+        .Ok(_) => .Ok(Retirement { blocked: false, detail: "" }),
         .Err(CleanupError.Dirty(message)) => {
             persist(message.clone());
-            Ok(Retirement { blocked: true, detail: __DETAIL__ })
+            .Ok(Retirement { blocked: true, detail: __DETAIL__ })
         },
     }
 }
 
 fn lifecycle() -> Result<Outcome, string> {
     let retirement = match retire() {
-        .Err(message) => return Err(message),
+        .Err(message) => return .Err(message),
         .Ok(value) => value,
     };
-    Ok(Outcome {
+    .Ok(Outcome {
         status: if retirement.blocked { "blocked" } else { "merged" },
     })
 }
@@ -100,15 +100,15 @@ type Pair {{
     first: string, second: string }}
 
 fn cleanup() -> Result<(), CleanupError> {{
-    Err(CleanupError.Dirty("dirty worktree " + f"{{42}}"))
+    .Err(CleanupError.Dirty("dirty worktree " + f"{{42}}"))
 }}
 
 fn build() -> Result<Pair, string> {{
     match cleanup() {{
-        .Ok(_) => Ok(Pair {{ first: "", second: "" }}),
+        .Ok(_) => .Ok(Pair {{ first: "", second: "" }}),
         .Err(CleanupError.Dirty(message)) => {{
             {alias_binding}
-            Ok(Pair {{ first: message, second: {second} }})
+            .Ok(Pair {{ first: message, second: {second} }})
         }},
     }}
 }}
@@ -143,17 +143,17 @@ type Pair {{
 }}
 
 fn cleanup() -> Result<(), CleanupError> {{
-    Err(CleanupError.Dirty("dirty worktree " + f"{{42}}"))
+    .Err(CleanupError.Dirty("dirty worktree " + f"{{42}}"))
 }}
 
 fn build(i: i64) -> Result<Pair, string> {{
     match cleanup() {{
-        .Ok(_) => Ok(Pair {{ first: "", second: "" }}),
+        .Ok(_) => .Ok(Pair {{ first: "", second: "" }}),
         .Err(CleanupError.Dirty(message)) => {{
             var current = message;
             let alias = current;
             current = "replacement " + f"{{i}}";
-            Ok(Pair {{ first: current, second: alias }})
+            .Ok(Pair {{ first: current, second: alias }})
         }},
     }}
 }}
@@ -194,18 +194,18 @@ fn persist(value: string) {{
 }}
 
 fn cleanup() -> Result<(), CleanupError> {{
-    Err(CleanupError.Dirty("dirty worktree " + f"{{42}}"))
+    .Err(CleanupError.Dirty("dirty worktree " + f"{{42}}"))
 }}
 
 fn build() -> Result<Pair, string> {{
     match cleanup() {{
-        .Ok(_) => Ok(Pair {{ first: "", second: "" }}),
+        .Ok(_) => .Ok(Pair {{ first: "", second: "" }}),
         .Err(CleanupError.Dirty(message)) => {{
             let alias = message;
             for _ in 0..1 {{
                 persist(alias.clone());
             }}
-            Ok(Pair {{ first: message, second: alias }})
+            .Ok(Pair {{ first: message, second: alias }})
         }},
     }}
 }}
@@ -240,17 +240,17 @@ type Pair {{
 }}
 
 fn cleanup() -> Result<(), CleanupError> {{
-    Err(CleanupError.Dirty("dirty worktree " + f"{{42}}"))
+    .Err(CleanupError.Dirty("dirty worktree " + f"{{42}}"))
 }}
 
 fn build(i: i64) -> Result<Pair, string> {{
     match cleanup() {{
-        .Ok(_) => Ok(Pair {{ first: "", second: "" }}),
+        .Ok(_) => .Ok(Pair {{ first: "", second: "" }}),
         .Err(CleanupError.Dirty(message)) => {{
             var current = message;
             current = "replacement " + f"{{i}}";
             let alias = current;
-            Ok(Pair {{ first: current, second: alias }})
+            .Ok(Pair {{ first: current, second: alias }})
         }},
     }}
 }}

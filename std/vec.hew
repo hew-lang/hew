@@ -9,10 +9,10 @@ pub fn index_of_i32(v: Vec<i32>, val: i32) -> Option<i64> { // INTERNAL-ABI: typ
     let n = v.len();
     for i in 0 .. n {
         if v[i] == val {
-            return Some(i);
+            return .Some(i);
         }
     }
-    None
+    .None
 }
 
 /// Return `Some` of the index of `val` in a `Vec<i64>`, or `None` if not found.
@@ -20,10 +20,10 @@ pub fn index_of_i64(v: Vec<i64>, val: i64) -> Option<i64> { // INTERNAL-ABI: i64
     let n = v.len();
     for i in 0 .. n {
         if v[i] == val {
-            return Some(i);
+            return .Some(i);
         }
     }
-    None
+    .None
 }
 
 /// Return `Some` of the index of the first occurrence of `val` in `v`, or `None` if not found.
@@ -52,10 +52,10 @@ pub fn index_of_f64(v: Vec<f64>, val: f64) -> Option<i64> {
     let n = v.len();
     for i in 0 .. n {
         if v[i] == val {
-            return Some(i);
+            return .Some(i);
         }
     }
-    None
+    .None
 }
 
 /// Return `Some` of the index of the first occurrence of `val` in `v`, or `None` if not found.
@@ -83,69 +83,69 @@ pub fn index_of_str(v: Vec<string>, val: string) -> Option<i64> {
     let n = v.len();
     for i in 0 .. n {
         if v[i] == val {
-            return Some(i);
+            return .Some(i);
         }
     }
-    None
+    .None
 }
 
 // ── first / last ──────────────────────────────────────────────────────────
 /// Return `Some` of the first element of a `Vec<i64>`, or `None` if empty.
 pub fn first_i64(v: Vec<i64>) -> Option<i64> { // INTERNAL-ABI: i64-typed twin of the _i32 family below, kept for naming symmetry; i64 is Hew's canonical/default integer width
     if v.len() == 0 {
-        return None;
+        return .None;
     }
-    Some(v[0])
+    .Some(v[0])
 }
 
 /// Return `Some` of the first element of `v`, or `None` if `v` is empty.
 pub fn first_f64(v: Vec<f64>) -> Option<f64> {
     if v.len() == 0 {
-        return None;
+        return .None;
     }
-    Some(v[0])
+    .Some(v[0])
 }
 
 /// Return `Some` of the first element of `v`, or `None` if `v` is empty.
 pub fn first_str(v: Vec<string>) -> Option<string> {
     if v.len() == 0 {
-        return None;
+        return .None;
     }
-    Some(v[0])
+    .Some(v[0])
 }
 
 /// Return `Some` of the last element of a `Vec<i64>`, or `None` if empty.
 pub fn last_i64(v: Vec<i64>) -> Option<i64> { // INTERNAL-ABI: i64-typed twin of the _i32 family below, kept for naming symmetry; i64 is Hew's canonical/default integer width
     let n = v.len();
     if n == 0 {
-        return None;
+        return .None;
     }
-    Some(v[n - 1])
+    .Some(v[n - 1])
 }
 
 /// Return `Some` of the last element of `v`, or `None` if `v` is empty.
 pub fn last_f64(v: Vec<f64>) -> Option<f64> {
     let n = v.len();
     if n == 0 {
-        return None;
+        return .None;
     }
-    Some(v[n - 1])
+    .Some(v[n - 1])
 }
 
 /// Return `Some` of the last element of `v`, or `None` if `v` is empty.
 pub fn last_str(v: Vec<string>) -> Option<string> {
     let n = v.len();
     if n == 0 {
-        return None;
+        return .None;
     }
-    Some(v[n - 1])
+    .Some(v[n - 1])
 }
 
 // ── min / max ─────────────────────────────────────────────────────────────
 /// Return `Some` of the smallest element in a `Vec<i32>`, or `None` if empty.
 pub fn min_i32(v: Vec<i32>) -> Option<i64> { // INTERNAL-ABI: typed for 32-bit integer vector storage
     if v.len() == 0 {
-        return None;
+        return .None;
     }
     var m = v[0];
     let n = v.len();
@@ -155,13 +155,13 @@ pub fn min_i32(v: Vec<i32>) -> Option<i64> { // INTERNAL-ABI: typed for 32-bit i
             m = val;
         }
     }
-    Some(m as i64)
+    .Some(m as i64)
 }
 
 /// Return `Some` of the smallest element in a `Vec<i64>`, or `None` if empty.
 pub fn min_i64(v: Vec<i64>) -> Option<i64> { // INTERNAL-ABI: i64-typed twin of the _i32 family below, kept for naming symmetry; i64 is Hew's canonical/default integer width
     if v.len() == 0 {
-        return None;
+        return .None;
     }
     var m = v[0];
     let n = v.len();
@@ -171,14 +171,14 @@ pub fn min_i64(v: Vec<i64>) -> Option<i64> { // INTERNAL-ABI: i64-typed twin of 
             m = val;
         }
     }
-    Some(m)
+    .Some(m)
 }
 
 /// Return `Some` of the smallest element in `v`, or `None` if `v` is empty.
 /// NaN propagates: if any element is NaN the result is unspecified.
 pub fn min_f64(v: Vec<f64>) -> Option<f64> {
     if v.len() == 0 {
-        return None;
+        return .None;
     }
     var m = v[0];
     let n = v.len();
@@ -188,13 +188,13 @@ pub fn min_f64(v: Vec<f64>) -> Option<f64> {
             m = val;
         }
     }
-    Some(m)
+    .Some(m)
 }
 
 /// Return `Some` of the largest element in a `Vec<i32>`, or `None` if empty.
 pub fn max_i32(v: Vec<i32>) -> Option<i64> { // INTERNAL-ABI: typed for 32-bit integer vector storage
     if v.len() == 0 {
-        return None;
+        return .None;
     }
     var m = v[0];
     let n = v.len();
@@ -204,13 +204,13 @@ pub fn max_i32(v: Vec<i32>) -> Option<i64> { // INTERNAL-ABI: typed for 32-bit i
             m = val;
         }
     }
-    Some(m as i64)
+    .Some(m as i64)
 }
 
 /// Return `Some` of the largest element in a `Vec<i64>`, or `None` if empty.
 pub fn max_i64(v: Vec<i64>) -> Option<i64> { // INTERNAL-ABI: i64-typed twin of the _i32 family below, kept for naming symmetry; i64 is Hew's canonical/default integer width
     if v.len() == 0 {
-        return None;
+        return .None;
     }
     var m = v[0];
     let n = v.len();
@@ -220,14 +220,14 @@ pub fn max_i64(v: Vec<i64>) -> Option<i64> { // INTERNAL-ABI: i64-typed twin of 
             m = val;
         }
     }
-    Some(m)
+    .Some(m)
 }
 
 /// Return `Some` of the largest element in `v`, or `None` if `v` is empty.
 /// NaN propagates: if any element is NaN the result is unspecified.
 pub fn max_f64(v: Vec<f64>) -> Option<f64> {
     if v.len() == 0 {
-        return None;
+        return .None;
     }
     var m = v[0];
     let n = v.len();
@@ -237,5 +237,5 @@ pub fn max_f64(v: Vec<f64>) -> Option<f64> {
             m = val;
         }
     }
-    Some(m)
+    .Some(m)
 }

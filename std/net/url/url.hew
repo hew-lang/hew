@@ -82,9 +82,9 @@ impl UrlMethods for Url {
             hew_url_port(u.handle)
         };
         if port < 0 {
-            None
+            .None
         } else {
-            Some(port as i64)
+            .Some(port as i64)
         }
     }
     /// Return the path component.
@@ -124,9 +124,9 @@ impl UrlMethods for Url {
             hew_url_is_valid(handle)
         };
         if ok {
-            Ok(Url { handle: handle })
+            .Ok(Url { handle: handle })
         } else {
-            Err(f"url.resolve: cannot resolve `{path}` against this base")
+            .Err(f"url.resolve: cannot resolve `{path}` against this base")
         }
     }
 }

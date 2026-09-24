@@ -12,11 +12,11 @@ fn save_all<T: Serializable>(value: T) -> string {
 }
 
 fn save_maybe<T: Serializable>(value: T) -> string {
-    save_any([Some(value)])
+    save_any([Option.Some(value)])
 }
 
 fn main() {
-    let inner: Option<i64> = None;
+    let inner: Option<i64> = .None;
     println(save_all(inner));
     println(save_maybe(inner));
 }

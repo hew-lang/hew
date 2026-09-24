@@ -974,11 +974,7 @@ fn configured_stdlib_roots(options: &FrontendOptions) -> Vec<PathBuf> {
     options
         .module_search_paths
         .clone()
-        .unwrap_or_else(|| {
-            hew_types::module_registry::build_module_search_paths_for(
-                options.project_dir.as_deref(),
-            )
-        })
+        .unwrap_or_else(hew_types::module_registry::stdlib_search_paths)
         .into_iter()
         .map(|root| root.join("std"))
         .collect()
@@ -1000,17 +996,25 @@ fn retain_user_facing_diagnostics(
     stdlib_roots: &[PathBuf],
     diagnostics: &mut Vec<FrontendDiagnostic>,
 ) {
-    let root = Path::new(root_filename);
-    diagnostics.retain(|diagnostic| {
-        let Some(filename) = diagnostic.filename.as_deref() else {
-            return true;
-        };
-        let diagnostic_path = Path::new(filename);
-        paths_name_same_file(root, diagnostic_path)
-            || !stdlib_roots
-                .iter()
-                .any(|stdlib_root| path_is_below(diagnostic_path, stdlib_root))
-    });
+    diagnostics
+        .retain(|diagnostic| !is_stdlib_owned_diagnostic(root_filename, stdlib_roots, diagnostic));
+}
+
+/// Whether a diagnostic belongs to an imported standard-library source rather
+/// than the file being checked.
+fn is_stdlib_owned_diagnostic(
+    root_filename: &str,
+    stdlib_roots: &[PathBuf],
+    diagnostic: &FrontendDiagnostic,
+) -> bool {
+    let Some(filename) = diagnostic.filename.as_deref() else {
+        return false;
+    };
+    let diagnostic_path = Path::new(filename);
+    !paths_name_same_file(Path::new(root_filename), diagnostic_path)
+        && stdlib_roots
+            .iter()
+            .any(|stdlib_root| path_is_below(diagnostic_path, stdlib_root))
 }
 
 /// If `options.warnings_as_errors` is set and `diagnostics` contains any
@@ -1526,9 +1530,10 @@ fn build_module_source_map(program: &Program, documents: &DocumentSet) -> Module
             continue;
         };
         let Some(path) = module.source_paths.first() else {
-            // An injected prelude module carries its embedded source instead.
+            // A prelude module attached without a search path carries its
+            // compiled-in source instead.
             if let [std, leaf] = mod_id.path.as_slice() {
-                if let Some((_, text)) = PRELUDE_STD_SOURCES
+                if let Some((_, text)) = COMPILED_PRELUDE_STD_SOURCES
                     .iter()
                     .find(|(name, _)| std == "std" && name == leaf)
                 {
@@ -1667,18 +1672,13 @@ pub fn ownership_diagnostics_to_frontend(
         .collect()
 }
 
-/// Resolve the checker's module search paths for one type-checking pass.
-///
-/// Anchors Tier 2 in-worktree discovery on the source file being checked
-/// (`input`), exactly as the HIR import-resolution path does (see the
-/// `build_module_search_paths_for(Some(source_file))` call in this crate's
-/// import candidate search). `options.project_dir` is `None` for a bare
-/// `hew check <file>` invocation with no project manifest — using it here
-/// silently dropped Tier 2 and fell through to worse search tiers (#3245).
-fn checker_search_paths(options: &FrontendOptions, input: &str) -> Vec<PathBuf> {
-    options.module_search_paths.clone().unwrap_or_else(|| {
-        hew_types::module_registry::build_module_search_paths_for(Some(Path::new(input)))
-    })
+/// Resolve the checker's module search paths for one type-checking pass: the
+/// configured paths, or the standard-library root.
+fn checker_search_paths(options: &FrontendOptions) -> Vec<PathBuf> {
+    options
+        .module_search_paths
+        .clone()
+        .unwrap_or_else(hew_types::module_registry::stdlib_search_paths)
 }
 
 fn typecheck_program_with_diagnostics(
@@ -1689,7 +1689,7 @@ fn typecheck_program_with_diagnostics(
     mode: FrontendParseMode,
     entry_selection: Option<hew_types::DeclarationOccurrence>,
 ) -> (TypeCheckResult, Vec<FrontendDiagnostic>) {
-    let search_paths = checker_search_paths(options, input);
+    let search_paths = checker_search_paths(options);
     let module_registry = hew_types::module_registry::ModuleRegistry::new(search_paths);
 
     if options.no_typecheck {
@@ -2223,7 +2223,9 @@ fn build_module_graph_with_diagnostics(
         ));
     }
 
-    add_prelude_std_modules(&mut graph);
+    add_prelude_std_modules(&mut graph, |name| {
+        resolve_prelude_std_source(ctx, name).map(|(path, source)| (Some(path), source))
+    })?;
 
     rewrite_direct_stdlib_module_root(
         &mut graph,
@@ -2261,11 +2263,13 @@ fn build_module_graph_with_diagnostics(
 
 /// Give a single-source program, parsed without import resolution, the same
 /// standard-library modules [`build_module_graph`] adds to every program, so
-/// an editor analysis lowers builtin-type methods exactly as a build does.
+/// an editor analysis lowers builtin-type methods exactly as a build does. It
+/// has no module search path, so the sources are the ones compiled in.
 ///
 /// # Panics
 ///
-/// Never in practice: the root module is added to a freshly created graph.
+/// Never in practice: the root module is added to a freshly created graph,
+/// and the compiled-in prelude sources parse.
 pub fn attach_prelude_std_modules(program: &mut Program) {
     use hew_parser::module::{Module, ModuleGraph, ModuleId};
     let graph = program.module_graph.get_or_insert_with(|| {
@@ -2283,7 +2287,14 @@ pub fn attach_prelude_std_modules(program: &mut Program) {
         graph.topo_order.push(root);
         graph
     });
-    add_prelude_std_modules(graph);
+    add_prelude_std_modules(graph, |name| {
+        let (_, source) = COMPILED_PRELUDE_STD_SOURCES
+            .iter()
+            .find(|(leaf, _)| *leaf == name)
+            .expect("every prelude module has a compiled-in source");
+        Ok((None, (*source).to_string()))
+    })
+    .expect("the compiled-in prelude sources parse");
 }
 
 /// Methods on builtin types are always available, like `.len()`: the
@@ -2291,66 +2302,108 @@ pub fn attach_prelude_std_modules(program: &mut Program) {
 /// modules unless the program already imports them. The builtins prelude is
 /// loaded out of band, so only its Display impls take this path; its other
 /// declarations retain their compiler-owned registration.
-fn add_prelude_std_modules(graph: &mut hew_parser::module::ModuleGraph) {
-    for (name, source) in PRELUDE_STD_SOURCES {
-        if name == "builtins" {
-            add_embedded_std_module(graph, name, source, |item| {
-                matches!(item, Item::Impl(decl) if decl
-                    .trait_bound
-                    .as_ref()
-                    .is_some_and(|bound| bound.name == "Display"))
-            });
-        } else {
-            add_embedded_std_module(graph, name, source, |_| true);
+fn add_prelude_std_modules(
+    graph: &mut hew_parser::module::ModuleGraph,
+    mut source_for: impl FnMut(&str) -> Result<(Option<PathBuf>, String), FrontendFailure>,
+) -> Result<(), FrontendFailure> {
+    use hew_parser::module::{Module, ModuleId};
+    for (name, _) in COMPILED_PRELUDE_STD_SOURCES {
+        let id = ModuleId::new(vec!["std".to_string(), name.to_string()]);
+        if graph.modules.contains_key(&id) {
+            continue;
         }
+        let (path, source) = source_for(name)?;
+        let filename = path
+            .as_ref()
+            .map_or_else(|| format!("std/{name}.hew"), |path| display_path(path));
+        let parsed = hew_parser::parse(&source);
+        if parsed
+            .errors
+            .iter()
+            .any(|error| error.severity == hew_parser::Severity::Error)
+        {
+            return Err(FrontendFailure::new(
+                format!("Error: the standard library source {filename} does not parse"),
+                parsed
+                    .errors
+                    .into_iter()
+                    .map(|error| FrontendDiagnostic::parse(&source, &filename, error))
+                    .collect(),
+            ));
+        }
+        let items = parsed
+            .program
+            .items
+            .into_iter()
+            .filter(|(item, _)| {
+                name != "builtins"
+                    || matches!(item, Item::Impl(decl) if decl
+                        .trait_bound
+                        .as_ref()
+                        .is_some_and(|bound| bound.name == "Display"))
+            })
+            .collect();
+        graph
+            .add_module(Module {
+                id: id.clone(),
+                items,
+                imports: Vec::new(),
+                source_paths: path.into_iter().collect(),
+                doc: None,
+            })
+            .expect("prelude module absence was checked");
+        graph.topo_order.push(id);
     }
+    Ok(())
 }
 
-/// The embedded standard-library sources [`add_prelude_std_modules`] injects,
-/// by `std.<name>` leaf. They have no on-disk path, so diagnostics inside them
-/// render against this text.
-const PRELUDE_STD_SOURCES: [(&str, &str); 4] = [
+/// The prelude standard-library modules by `std.<name>` leaf, with the source
+/// compiled into the host. A build resolves each through the std search path
+/// instead ([`resolve_prelude_std_source`]); only an analysis with no search
+/// path uses this text.
+const COMPILED_PRELUDE_STD_SOURCES: [(&str, &str); 4] = [
     ("builtins", include_str!("../../std/builtins.hew")),
     ("option", include_str!("../../std/option.hew")),
     ("result", include_str!("../../std/result.hew")),
     ("iter", include_str!("../../std/iter.hew")),
 ];
 
-/// Add the selected items of an embedded `std.<name>` source as a module of
-/// their own, unless the program already imports that module.
-fn add_embedded_std_module(
-    graph: &mut hew_parser::module::ModuleGraph,
+/// Resolve the prelude source `std/<name>.hew` from the standard-library
+/// root a `std` import uses: the configured search path, or
+/// [`hew_types::module_registry::stdlib_search_paths`]. The module carries the
+/// path its diagnostics belong to.
+fn resolve_prelude_std_source(
+    ctx: &ImportResolutionContext<'_>,
     name: &str,
-    source: &str,
-    keep: impl Fn(&Item) -> bool,
-) {
-    use hew_parser::module::{Module, ModuleId};
-    let id = ModuleId::new(vec!["std".to_string(), name.to_string()]);
-    if graph.modules.contains_key(&id) {
-        return;
-    }
-    let parsed = hew_parser::parse(source);
-    assert!(
-        parsed.errors.is_empty(),
-        "embedded std/{name}.hew must parse: {:?}",
-        parsed.errors
+) -> Result<(PathBuf, String), FrontendFailure> {
+    let search_paths = ctx.module_search_paths.map_or_else(
+        hew_types::module_registry::stdlib_search_paths,
+        <[PathBuf]>::to_vec,
     );
-    let items = parsed
-        .program
-        .items
+    search_paths
         .into_iter()
-        .filter(|(item, _)| keep(item))
-        .collect();
-    graph
-        .add_module(Module {
-            id: id.clone(),
-            items,
-            imports: Vec::new(),
-            source_paths: Vec::new(),
-            doc: None,
+        .find_map(|root| {
+            let candidate = root.join("std").join(format!("{name}.hew"));
+            let path = resolve_candidate(ctx.documents, &candidate)?;
+            let source = read_source(ctx.documents, &path).ok()?;
+            Some((path, source))
         })
-        .expect("embedded module absence was checked");
-    graph.topo_order.push(id);
+        .ok_or_else(|| {
+            let tried = if ctx.module_search_paths.is_some() {
+                String::new()
+            } else {
+                let candidates = hew_types::module_registry::compiler_stdlib_root_candidates()
+                    .iter()
+                    .map(|root| display_path(&root.join("std")))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!(" (tried: {candidates})")
+            };
+            FrontendFailure::message_only(format!(
+                "Error: std not found: `std/{name}.hew` is not in the toolchain's standard \
+                 library{tried}; set HEW_STD to a std/ directory"
+            ))
+        })
 }
 
 fn check_ambiguous_module_import_bindings(
@@ -2622,27 +2675,6 @@ fn resolve_file_imports_internal(
 
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
 
-    // Suppress cwd candidates when the source file has an enclosing Hew root that
-    // is NOT the same as the cwd's enclosing root.  This covers two cases:
-    //   (a) both have roots but they differ   — cwd is a different checkout
-    //   (b) source has a root but cwd has none — cwd is outside any checkout
-    // In both cases the Tier-2 logic (build_module_search_paths_for) already
-    // resolves std/ from the source file's own root; adding cwd candidates would
-    // produce a second distinct std/ path and trigger the ambiguity check spuriously.
-    // When the source has NO root, cwd candidates are kept (unchanged behaviour).
-    //
-    // WHY: cross-worktree dogfood regression — `cd <main-checkout> && hew check
-    //   <worktree>/examples/…` hit "import std.fs is ambiguous" in 4/6 sessions;
-    //   gap: `cd /tmp && hew check <worktree>/examples/…` also hit the same error
-    //   because cwd has no root, so the old `(Some, Some) if ≠` guard didn't fire.
-    // WHEN obsolete: when stdlib is co-installed with the binary (sysroot model);
-    //   then neither cwd nor source-ancestor scanning is needed for stdlib.
-    // WHAT the real solution is: pin std to the binary's co-located install path.
-    let source_hew_root = hew_types::module_registry::find_enclosing_hew_root(source_file);
-    let cwd_hew_root = hew_types::module_registry::find_enclosing_hew_root(&cwd);
-    // `None != Some(x)` is true, so the `cwd_hew_root = None` gap is covered.
-    let cwd_crosses_root = source_hew_root.is_some() && cwd_hew_root != source_hew_root;
-
     for idx in &import_indices {
         let is_module_import = matches!(
             &items[*idx].0,
@@ -2664,6 +2696,9 @@ fn resolve_file_imports_internal(
             Item::Import(decl) if !decl.path.is_empty() => {
                 let module_str = decl.path.join("::");
                 let source_module = decl.path.join(".");
+                // A `std` module resolves only from the standard-library root
+                // (`stdlib_search_paths`), never beside the source or in cwd.
+                let is_std_import = module_str.starts_with("std::");
                 let is_declared_dependency = ctx.manifest_deps.is_some_and(|deps| {
                     deps.iter()
                         .any(|dependency| dependency == &module_str || dependency == &source_module)
@@ -2696,7 +2731,7 @@ fn resolve_file_imports_internal(
                     })
                     .map(|(_, version)| version.as_str());
 
-                if is_local && !rest_path.is_empty() {
+                if !is_std_import && is_local && !rest_path.is_empty() {
                     let local_last = *rest_path.last().expect("non-empty local path");
                     let local_rel = rest_path.iter().collect::<PathBuf>();
                     let local_dir = local_rel.join(format!("{local_last}.hew"));
@@ -2713,15 +2748,14 @@ fn resolve_file_imports_internal(
                     candidates.push((ctx.project_dir.join(&local_flat), CandidateForm::Flat));
                 }
 
-                candidates.push((source_dir.join(&dir_path), CandidateForm::Directory));
-                candidates.push((source_dir.join(&rel_path), CandidateForm::Flat));
-                if !cwd_crosses_root {
+                if !is_std_import {
+                    candidates.push((source_dir.join(&dir_path), CandidateForm::Directory));
+                    candidates.push((source_dir.join(&rel_path), CandidateForm::Flat));
                     candidates.push((cwd.join(&dir_path), CandidateForm::Directory));
                     candidates.push((cwd.join(&rel_path), CandidateForm::Flat));
                 }
 
                 let module_dir = decl.path.iter().collect::<PathBuf>();
-                let is_std_import = module_str.starts_with("std::");
                 if let Some(version) = locked_version.filter(|_| !is_std_import) {
                     let entry_file =
                         format!("{}.hew", decl.path.last().expect("path is non-empty"));
@@ -2801,17 +2835,12 @@ fn resolve_file_imports_internal(
                     }
                 }
 
-                // Stdlib / global search roots — apply exclusive precedence tiers so that
-                // a file in worktree-A always resolves std from A only, never from the
-                // build binary's worktree or a sibling checkout.
+                // The standard-library root.
                 let discovered_search_paths;
                 let search_paths = if let Some(paths) = ctx.module_search_paths {
                     paths
                 } else {
-                    discovered_search_paths =
-                        hew_types::module_registry::build_module_search_paths_for(Some(
-                            source_file,
-                        ));
+                    discovered_search_paths = hew_types::module_registry::stdlib_search_paths();
                     &discovered_search_paths
                 };
                 for root in search_paths {
@@ -2964,9 +2993,23 @@ fn resolve_file_imports_internal(
                     // fallback below only fires if `source_file` cannot be
                     // re-read, which never happens on the path that just
                     // parsed it.
-                    let message = format!(
-                        "module `{source_module}` not found (tried: {tried}){hint}{suggestion}"
-                    );
+                    let message = if is_std_import && search_paths.is_empty() {
+                        // No std root at all: the toolchain's std is missing,
+                        // not this one module.
+                        let probed = hew_types::module_registry::compiler_stdlib_root_candidates()
+                            .iter()
+                            .map(|root| display_path(&root.join("std")))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        format!(
+                            "std not found: module `{source_module}` needs the toolchain's \
+                             standard library (tried: {probed}); set HEW_STD to a std/ directory"
+                        )
+                    } else {
+                        format!(
+                            "module `{source_module}` not found (tried: {tried}){hint}{suggestion}"
+                        )
+                    };
                     return Err(match read_source(ctx.documents, source_file) {
                         Ok(module_source) => FrontendFailure::coded_message_at(
                             "E_MODULE_NOT_FOUND",
@@ -3442,6 +3485,13 @@ fn run_frontend_after_parse(
     let type_check_failed = type_check_failed(&typecheck_result);
     state.typecheck_result = Some(typecheck_result);
     if type_check_failed {
+        // A std source's warnings are not the user's to act on; its errors
+        // stay, because they are why the check failed.
+        let stdlib_roots = configured_stdlib_roots(options);
+        state.diagnostics.retain(|diagnostic| {
+            !is_warning_diagnostic(diagnostic)
+                || !is_stdlib_owned_diagnostic(input, &stdlib_roots, diagnostic)
+        });
         return state.stop(FrontendFailure::message_only("type errors found"));
     }
 
@@ -4075,60 +4125,22 @@ mod tests {
         }));
     }
 
-    /// The checker's module search paths must anchor Tier 2 in-worktree
-    /// discovery on the file being checked, not on `options.project_dir`
-    /// (`None` for a bare `hew check <file>`), matching the HIR
-    /// import-resolution path (#3245). Proof: a source file physically
-    /// inside a fake checkout root (marked by `std/builtins.hew`) resolves
-    /// that root as the sole search path, even though nothing in
-    /// `FrontendOptions` names it.
+    /// A `std/` beside the source file is not the standard library: a source
+    /// inside a directory shaped like a Hew checkout still resolves std from
+    /// the toolchain's root, never from that directory.
     #[test]
-    fn checker_search_paths_anchors_on_source_file_not_project_dir() {
-        let root = tempfile::tempdir().expect("create fake checkout root");
+    fn checker_search_paths_ignore_a_std_beside_the_source() {
+        let root = tempfile::tempdir().expect("create lookalike checkout root");
         fs::create_dir_all(root.path().join("std")).expect("create std dir");
         fs::write(root.path().join("std/builtins.hew"), "// marker\n")
             .expect("write builtins marker");
-        let input = write_source(root.path(), "main.hew", "fn main() {}\n");
+        write_source(root.path(), "main.hew", "fn main() {}\n");
 
-        let paths = checker_search_paths(&FrontendOptions::default(), &input);
-
-        assert_eq!(
-            paths,
-            vec![root.path().to_path_buf()],
-            "a source file inside a checkout root must resolve that root as \
-             the sole search path"
-        );
-    }
-
-    /// Negative control: `project_dir` must NOT be able to substitute for
-    /// the source file as the Tier 2 anchor. A source file outside any
-    /// checkout, paired with `project_dir` pointing at a real checkout
-    /// root, must not pick up that unrelated root — proving the anchor is
-    /// genuinely the file being checked, not merely "some path in
-    /// `FrontendOptions`".
-    #[test]
-    fn checker_search_paths_ignores_project_dir_as_tier2_anchor() {
-        let unrelated_root = tempfile::tempdir().expect("create unrelated checkout root");
-        fs::create_dir_all(unrelated_root.path().join("std")).expect("create std dir");
-        fs::write(
-            unrelated_root.path().join("std/builtins.hew"),
-            "// marker\n",
-        )
-        .expect("write builtins marker");
-
-        let outside = tempfile::tempdir().expect("create dir outside any checkout");
-        let input = write_source(outside.path(), "main.hew", "fn main() {}\n");
-
-        let options = FrontendOptions {
-            project_dir: Some(unrelated_root.path().to_path_buf()),
-            ..FrontendOptions::default()
-        };
-        let paths = checker_search_paths(&options, &input);
+        let paths = checker_search_paths(&FrontendOptions::default());
 
         assert!(
-            !paths.contains(&unrelated_root.path().to_path_buf()),
-            "project_dir must not stand in for the source file as the \
-             Tier 2 anchor: {paths:?}"
+            !paths.contains(&root.path().to_path_buf()),
+            "a std beside the source must not be selected: {paths:?}"
         );
     }
 
@@ -6278,12 +6290,16 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         let stdlib_dir = stdlib_root.join("std");
         fs::create_dir_all(&stdlib_dir).expect("create explicit stdlib root");
         write_source(&stdlib_dir, "builtins.hew", "// explicit stdlib marker\n");
-        // Every program loads the prelude's `std.link_monitor`.
+        // Every program loads the prelude's `std.link_monitor`, and the
+        // prelude modules behind builtin-type methods.
         write_source(
             &stdlib_dir,
             "link_monitor.hew",
             "// prelude module marker\n",
         );
+        for prelude in ["option.hew", "result.hew", "iter.hew"] {
+            write_source(&stdlib_dir, prelude, "// prelude impl marker\n");
+        }
         let expected = Path::new(&write_source(
             &stdlib_dir,
             "fs.hew",

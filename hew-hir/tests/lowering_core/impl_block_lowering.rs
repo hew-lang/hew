@@ -69,7 +69,7 @@ fn iterator_impl_on_user_nominal_lowers_method_and_metadata() {
             type Item = T;
 
             fn next(it: VecIter<T>) -> Option<T> {
-                None
+                .None
             }
         }
         ",

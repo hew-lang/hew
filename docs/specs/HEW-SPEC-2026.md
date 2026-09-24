@@ -620,7 +620,7 @@ import std.fs;
 fn read_file(path: string) -> Result<string, fs.IoError> {
     let content = fs.read(path)?;  // Early return on error
     fs.write("copy.txt", content)?;
-    Ok(content)
+    .Ok(content)
 }
 ```
 
@@ -714,11 +714,10 @@ qualifier — is **not** part of edition 2026:
 
 - In pattern position it is a hard error, `E_BARE_VARIANT_PATTERN`, for every
   enum including `Option` and `Result`.
-- In expression position it is `E_BARE_VARIANT_EXPR`, enforced for
-  user-defined enums. The four builtin variants (`Some`, `None`, `Ok`, `Err`)
-  still type-check bare in expression position at v0.6.0: the checker's
-  builtin-name dispatch resolves them before the rule can fire. Closing that
-  gap is tracked by issue #3240.
+- In expression position it is a hard error, `E_BARE_VARIANT_EXPR`, for
+  every enum including `Option` and `Result`, whether the variant is called
+  (`Some(x)`) or used as a value (`None`, `Red`), and whether or not an
+  expected type is present.
 
 Both diagnostics carry a machine-applicable fix-it that replaces `X` with
 `.X` where the context selects the enum, and with `Type.X` where it does not.
@@ -726,7 +725,10 @@ Both diagnostics carry a machine-applicable fix-it that replaces `X` with
 program is rewritten rather than hand-edited.
 
 State names inside a `machine` declaration are not variants at the surface,
-and this rule does not reach them (§3.11.3).
+and this rule does not reach them (§3.11.3). Outside the machine that declares
+it, a state follows the variant spelling: `Door.Shut`, or `.Shut` where the
+expected type is the machine. A bare state name there is `E_BARE_VARIANT_EXPR`
+with the same fix-it.
 
 #### Spread in literals (normative)
 
@@ -1264,7 +1266,7 @@ pub enum ConnectError {
 }
 
 pub fn connect(addr: string) -> Result<Connection, ConnectError> {
-    Ok(Connection { address: addr, internal_state: 0 })
+    .Ok(Connection { address: addr, internal_state: 0 })
 }
 
 fn helper() {  // private to this module
@@ -1421,29 +1423,25 @@ A working example is at
 
 #### 3.5.2 Module search-path resolution
 
-For imports outside the current source tree, Hew builds an ordered search-path
-list and uses the first matching module root. The search order is:
+Every `std.*` module, including the implicit prelude, resolves from one
+standard-library root:
 
-1. In-worktree root — the enclosing Hew checkout root (identified by containing `std/builtins.hew`), when the source file being compiled is inside a checkout. This tier ensures that stdlib resolution is always scoped to the checkout that owns the file.
-2. `HEWPATH` — a colon-separated list of module roots, where each entry is the
-   parent directory that contains `std/`
-3. `HEW_STD` — a direct path to the `std/` directory; Hew uses its parent as the
-   module root
-4. The installed FHS-style location `<prefix>/share/hew` relative to the `hew`
-   binary
-5. XDG user data: `~/.local/share/hew`
-6. User home dotdir: `~/.hew`
-7. System paths: `/usr/local/share/hew`, `/usr/share/hew`
-8. A development fallback to the repo root when `std/` exists two levels above
-   the binary
+1. `HEW_STD` — a direct path to a `std/` directory; Hew uses its parent as the
+   root.
+2. Otherwise the std shipped with the running `hew` binary, found from the
+   binary's own canonical path, first match wins:
+   1. `<exe_dir>/../share/hew/std` — FHS packages, Homebrew, the Docker image;
+   2. `<exe_dir>/../std` — the release tarball and the Windows zip;
+   3. the checkout a development binary was built from, only while the binary
+      is still inside that build's output directory.
 
-`HEWPATH` and `HEW_STD` are the supported user overrides. `hew.toml` does not
-configure module search paths.
+   When none holds `std/builtins.hew`, compilation stops with a "std not
+   found" error naming the directories tried.
 
-> **Scope note:** `HEWPATH` affects stdlib module resolution. User-module
-> file-import paths use `HEW_STD` and `.hew/packages` instead; they are not
-> governed by `HEWPATH`. Unification of `HEWPATH` across both stdlib and
-> user-module file imports is planned for a future edition.
+A `std/` directory beside the source file, in the working directory or in a
+project is never the standard library, so a program cannot replace
+`Option`, `Result` or any other std module by sitting next to a lookalike.
+`HEW_STD` is the one supported override. `hew.toml` does not configure it.
 
 For stdlib discovery, the recommended workflow is to generate docs for the
 stdlib tree itself:
@@ -2038,9 +2036,9 @@ type Node {
 }
 
 fn main() {
-    let root = Rc.new(Node { label: "root", parent: None });
+    let root = Rc.new(Node { label: "root", parent: .None });
     let weak = root.downgrade();
-    root.set(Node { label: "child", parent: Some(weak.clone()) });
+    root.set(Node { label: "child", parent: .Some(weak.clone()) });
 }
 ```
 
@@ -2217,7 +2215,7 @@ The compile error for forgetting to consume (illustrative):
 fn forgot_to_commit(db: Database) -> Result<(), DbError> {
     let tx = db.begin_transaction()?;
     tx.debit(account, money)?;
-    Ok(())
+    .Ok(())
     // ERROR: `tx` of type Transaction (#[linear]) is not consumed at scope exit.
     //        #[linear] values must be consumed via one of: commit, rollback.
 }
@@ -2865,7 +2863,7 @@ fn main() {
     var seed: HashMap<string, i64> = HashMap.new();
     seed.insert("answer", 42);
     let cache = spawn Cache(entries: seed);   // K = string, V = i64
-    let found = cache.lookup("answer") handle error { None };
+    let found = cache.lookup("answer") handle error { .None };
     match found {
         .Some(v) => println(v),
         .None => println("miss"),
@@ -3052,9 +3050,9 @@ fn allocate_buffer(size: usize) -> *mut u8 {
 fn safe_read(fd: i32, buf: *mut u8, count: usize) -> Result<usize, string> {
     let result = unsafe { read(fd, buf, count) };
     if result < 0 {
-        Err("read failed")
+        .Err("read failed")
     } else {
-        Ok(result as usize)
+        .Ok(result as usize)
     }
 }
 ```
@@ -3088,9 +3086,9 @@ impl File {
         let c_path = path.to_c_string();
         let fd = unsafe { open(c_path.as_ptr(), O_RDONLY) };
         if fd < 0 {
-            Err("open failed")
+            .Err("open failed")
         } else {
-            Ok(File { fd })
+            .Ok(File { fd })
         }
     }
 
@@ -3399,7 +3397,7 @@ fn main() {
     let hit = m["answer"];   // i64 — 42
     let miss = m.get("absent");  // Option<i64> — None (m["absent"] would trap)
     assert(hit == 42);
-    assert(miss == None);
+    assert(miss == Option.None);
 }
 ```
 
@@ -3978,7 +3976,8 @@ machine's `state` declarations. It is not an enum variant in expression
 position, so the variant-spelling rule of §3.1 does not reach it and
 `on Toggle: Off => On,` is well formed as written. A machine's states desugar
 to an enum below the surface, and that desugar — not the source spelling — owns
-their identity.
+their identity. Outside the declaring machine, a state is written `Door.Shut`
+or, where the expected type is the machine, `.Shut` (§3.1).
 
 ### 3.11.4 Guards, Wildcards and Priority
 
@@ -6427,6 +6426,23 @@ The methods `.try_to_i8()`, `.try_to_i16()`, `.try_to_i32()`, `.try_to_i64()`, `
 
 > **Float context widening:** In a float-typed context, an integer literal widens to the contextual float type. `let f: f64 = 1;` is accepted and `1` is treated as `1.0`. This does not affect type annotations or wire shapes.
 
+> **Block-like statements (normative):** a block-like form at the start of a
+> statement ends that statement at its closing `}`. The forms are a block
+> (`{ … }`, but not a map literal `{"k": v}`), `unsafe { … }`, `scope`,
+> `select`, `race`, `fork { … }`, `gen { … }`, a lambda `actor`, and the
+> statements `if`, `if let`, `match`, `for`, `while`, `loop` and `defer`. What
+> follows starts the next statement, so a contextual variant tail such as
+> `.Ok(x)` on the next line is its own expression. Only a `handle` clause still
+> attaches. To use the value as an operand at statement start, parenthesize it:
+> `(unsafe { f() }) != 0`. Written directly after the `}`, a method call or a
+> binary-only operator on any line, or on the same line any token that would
+> continue an expression (`-`, `*`, `|`, `(`, `[`, `..`), is refused with
+> `E_BLOCK_STATEMENT_OPERAND` and that fix-it. A block-like statement that is
+> not the block's tail and has no `;` must have type `()`; a value it would
+> drop is `E_BLOCK_STATEMENT_VALUE`, fixed by parenthesizing or by
+> `let _ = …`. The same forms in operand position (`let n = { s }.len();`) are
+> ordinary expressions.
+
 ### 12.3 Duration Literals
 
 Duration literals have source type `duration`; their native carrier stores
@@ -6657,12 +6673,12 @@ import std.string;
 
 fn port(config: HashMap<string, string>) -> Result<i64, string> {
     let .Some(raw) = config.get("port") else {
-        return Err("port missing");
+        return .Err("port missing");
     };
     let .Ok(port) = string.to_int(raw) else {
-        return Err(f"port is not a number: {raw}");
+        return .Err(f"port is not a number: {raw}");
     };
-    Ok(port)
+    .Ok(port)
 }
 ```
 

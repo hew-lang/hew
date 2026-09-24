@@ -187,7 +187,7 @@ fn opt_string_escape_loop_source(frames: usize) -> String {
     format!(
         "actor Maker {{\n\
          \x20   receive fn make(n: i64) -> Option<string> {{\n\
-         \x20       Some(to_string(n).to_upper())\n\
+         \x20       .Some(to_string(n).to_upper())\n\
          \x20   }}\n\
          }}\n\
          \n\
@@ -219,7 +219,7 @@ fn opt_record_escape_loop_source(frames: usize) -> String {
          \n\
          actor Maker {{\n\
          \x20   receive fn make(n: i64) -> Option<Row> {{\n\
-         \x20       Some(Row {{ name: to_string(n).to_upper(), id: n }})\n\
+         \x20       .Some(Row {{ name: to_string(n).to_upper(), id: n }})\n\
          \x20   }}\n\
          }}\n\
          \n\
@@ -278,7 +278,7 @@ fn record_unused_binding_loop_source(frames: usize) -> String {
 const OPT_STRING_ESCAPE_SCRIBBLE_SOURCE: &str = "\
 actor Maker {\n\
 \x20   receive fn make() -> Option<string> {\n\
-\x20       Some(\"opt-escape-owned-reply\".to_upper())\n\
+\x20       .Some(\"opt-escape-owned-reply\".to_upper())\n\
 \x20   }\n\
 }\n\
 \n\

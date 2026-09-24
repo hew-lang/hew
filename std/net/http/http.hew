@@ -208,46 +208,46 @@ impl RequestMethods for Request {
     /// Send a full HTTP response with status, content-type, and body.
     fn respond(req: Request, status: i64, content_type: string, body: string) -> Result<(), net.NetError> {
         let n = if valid_response_status(status) {
-            unsafe {
+            (unsafe {
                 hew_http_respond_bridge(req, status as i32, content_type, body)
-            } as i64
+            }) as i64
         } else {
             -1
         };
         if n < 0 {
-            Err(net.net_error_from_errno(0))
+            .Err(net.net_error_from_errno(0))
         } else {
-            Ok(())
+            .Ok(())
         } // HTTP has no OS errno channel
     }
     /// Send a plain-text HTTP response.
     fn respond_text(req: Request, status: i64, body: string) -> Result<(), net.NetError> {
         let n = if valid_response_status(status) {
-            unsafe {
+            (unsafe {
                 hew_http_respond_text(req, status as i32, body)
-            } as i64
+            }) as i64
         } else {
             -1
         };
         if n < 0 {
-            Err(net.net_error_from_errno(0))
+            .Err(net.net_error_from_errno(0))
         } else {
-            Ok(())
+            .Ok(())
         } // HTTP has no OS errno channel
     }
     /// Send a JSON HTTP response with `Content-Type: application/json`.
     fn respond_json(req: Request, status: i64, json: string) -> Result<(), net.NetError> {
         let n = if valid_response_status(status) {
-            unsafe {
+            (unsafe {
                 hew_http_respond_json(req, status as i32, json)
-            } as i64
+            }) as i64
         } else {
             -1
         };
         if n < 0 {
-            Err(net.net_error_from_errno(0))
+            .Err(net.net_error_from_errno(0))
         } else {
-            Ok(())
+            .Ok(())
         } // HTTP has no OS errno channel
     }
     /// Begin a streaming response.
@@ -262,15 +262,15 @@ impl RequestMethods for Request {
             if unsafe {
                 hew_sink_is_valid(sink)
             } {
-                Ok(sink)
+                .Ok(sink)
             } else {
                 let _ = unsafe {
                     hew_stream_last_error()
                 }; // consume the error message
-                Err(net.net_error_from_errno(0))
+                .Err(net.net_error_from_errno(0))
             }
         } else {
-            Err(net.net_error_from_errno(0))
+            .Err(net.net_error_from_errno(0))
         }
     }
 }
@@ -332,7 +332,7 @@ pub fn listen(addr: string) -> Result<Server, net.NetError> {
         hew_http_server_is_valid(server)
     };
     if ok {
-        return Ok(server);
+        return .Ok(server);
     }
     let errno = unsafe {
         hew_http_last_listen_errno()
@@ -341,9 +341,9 @@ pub fn listen(addr: string) -> Result<Server, net.NetError> {
         let detail = unsafe {
             hew_http_last_error()
         };
-        return Err(net.NetError.InvalidArgument(detail));
+        return .Err(net.NetError.InvalidArgument(detail));
     }
-    Err(net.net_error_from_errno(errno))
+    .Err(net.net_error_from_errno(errno))
 }
 
 /// Send a full HTTP response.

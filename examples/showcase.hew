@@ -42,9 +42,9 @@ fn fib(n: i64) -> i64 {
 
 fn divide(a: i64, b: i64) -> Result<i64, string> {
     if b == 0 {
-        Err("division by zero")
+        .Err("division by zero")
     } else {
-        Ok(a / b)
+        .Ok(a / b)
     }
 }
 
@@ -70,7 +70,7 @@ fn main() {
 
     // 2. Enums
     println("2. Enums:");
-    let s = Circle;
+    let s = Shape.Circle;
     describe_shape(s);
 
     // 3. Pattern matching

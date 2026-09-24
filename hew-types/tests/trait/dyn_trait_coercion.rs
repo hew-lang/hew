@@ -233,7 +233,7 @@ fn dyn_iterator_with_item_binding_object_safe() {
         impl Iterator for Counter {
             type Item = i32;
             fn next(iter: Counter) -> Option<i32> {
-                Some(iter.value)
+                .Some(iter.value)
             }
         }
 
@@ -285,7 +285,7 @@ fn dyn_iterator_without_binding_rejected() {
         impl Iterator for Counter {
             type Item = i32;
             fn next(iter: Counter) -> Option<i32> {
-                Some(iter.value)
+                .Some(iter.value)
             }
         }
 
@@ -334,7 +334,7 @@ fn dyn_iterator_failed_projection_is_diagnostic() {
 
         impl Iterator for Counter {
             fn next(iter: Counter) -> Option<i32> {
-                Some(iter.value)
+                .Some(iter.value)
             }
         }
 
@@ -374,12 +374,12 @@ fn dyn_distinct_bindings_get_distinct_vtables() {
 
         impl Iterator for IntCounter {
             type Item = i32;
-            fn next(iter: IntCounter) -> Option<i32> { Some(iter.value) }
+            fn next(iter: IntCounter) -> Option<i32> { .Some(iter.value) }
         }
 
         impl Iterator for StringCounter {
             type Item = string;
-            fn next(iter: StringCounter) -> Option<string> { Some(iter.value) }
+            fn next(iter: StringCounter) -> Option<string> { .Some(iter.value) }
         }
 
         fn use_int(iter: dyn Iterator<Item = i32>) {}
@@ -427,7 +427,7 @@ fn dyn_trait_method_signature_substituted() {
         impl Iterator for Counter {
             type Item = i32;
             fn next(iter: Counter) -> Option<i32> {
-                Some(iter.value)
+                .Some(iter.value)
             }
         }
 

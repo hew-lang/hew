@@ -9,7 +9,7 @@ fn scope_fork() -> i32 {
         }
         fork {
             fork_worker();
-        }
+        };
     }
     fork_worker()
 }

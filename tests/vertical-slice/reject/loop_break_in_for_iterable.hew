@@ -7,7 +7,12 @@
 // types the outer loop Never and the `i64` vs `()` mismatch below is accepted.
 fn f(c: bool, stop: bool) -> i64 {
     let x: i64 = if c { 5 } else {
-        loop { for _i in { if stop { break; } [1] } {} }
+        loop {
+            for _i in {
+                if stop { break; }
+                [1]
+            } {}
+        }
     };
     x
 }

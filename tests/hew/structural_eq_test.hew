@@ -45,11 +45,11 @@ fn payload_enum_equality_compares_tags_and_payloads() {
 
 #[test]
 fn builtin_payload_enum_equality_compares_payloads() {
-    let a: Option<i64> = Some(1);
-    let b: Option<i64> = Some(1);
-    let c: Option<i64> = Some(2);
-    let ok: Result<i64, i64> = Ok(7);
-    let err: Result<i64, i64> = Err(7);
+    let a: Option<i64> = .Some(1);
+    let b: Option<i64> = .Some(1);
+    let c: Option<i64> = .Some(2);
+    let ok: Result<i64, i64> = .Ok(7);
+    let err: Result<i64, i64> = .Err(7);
     testing.assert_true(a == b);
     testing.assert_false(a == c);
     testing.assert_false(ok == err);
@@ -61,8 +61,8 @@ fn tuple_equality_is_member_wise_and_recursive() {
     let flat_a = (1, "one");
     let flat_b = (1, "one");
     let flat_c = (1, "other");
-    let nested_a: Option<(i64, string)> = Some((2, "two"));
-    let nested_b: Option<(i64, string)> = Some((2, "two"));
+    let nested_a: Option<(i64, string)> = .Some((2, "two"));
+    let nested_b: Option<(i64, string)> = .Some((2, "two"));
     testing.assert_true(flat_a == flat_b);
     testing.assert_false(flat_a == flat_c);
     testing.assert_true(nested_a == nested_b);
@@ -85,9 +85,9 @@ fn same<T>(left: Option<T>, right: Option<T>) -> bool {
 
 #[test]
 fn generic_equality_compares_eligible_instantiations_member_wise() {
-    let a: Option<i64> = Some(1);
-    let b: Option<i64> = Some(1);
-    let c: Option<i64> = Some(2);
+    let a: Option<i64> = .Some(1);
+    let b: Option<i64> = .Some(1);
+    let c: Option<i64> = .Some(2);
     testing.assert_true(same(a, b));
     testing.assert_false(same(a, c));
 }

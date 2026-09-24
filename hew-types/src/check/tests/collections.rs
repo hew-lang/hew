@@ -901,7 +901,7 @@ fn builtin_container_clone_rejects_affine_payloads() {
             tickets.insert("one", LinearTicket { id: 2 });
             let _tickets_copy = clone tickets;
 
-            let optional: Option<ResourceToken> = Some(ResourceToken { id: 3 });
+            let optional: Option<ResourceToken> = .Some(ResourceToken { id: 3 });
             let _optional_copy = optional.clone();
 
             let (sender, _receiver): (
@@ -2989,8 +2989,8 @@ fn builtin_nested_option_variant_constructors_retain_builtin_identity() {
     let output = check_source(
         r"
         fn main() -> i64 {
-            let inner: Option<i64> = Some(5);
-            let outer: Option<Option<i64>> = Some(inner);
+            let inner: Option<i64> = .Some(5);
+            let outer: Option<Option<i64>> = .Some(inner);
             match outer {
                 .Some(v) => match v {
                     .Some(n) => n,
@@ -3130,7 +3130,7 @@ fn machine_state_user_machine_stays_nominal_not_builtin_marker() {
         }
 
         fn main() {
-            var m = Idle;
+            var m = MachineState.Idle;
             m.step(.Tick);
         }
         ",

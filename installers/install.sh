@@ -395,7 +395,6 @@ main() {
 
     printf "  To get started, add Hew to your PATH:\n\n"
     printf "    %bexport HEW_HOME=\"%s\"%b\n" "${CYAN}" "$INSTALL_PREFIX" "${RESET}"
-    printf "    %bexport HEW_STD=\"\$HEW_HOME/std\"%b\n" "${CYAN}" "${RESET}"
     printf "    %bexport PATH=\"\$HEW_HOME/bin:\$PATH\"%b\n\n" "${CYAN}" "${RESET}"
 
     rc_file=""
@@ -410,21 +409,18 @@ main() {
         fi
         printf "  Or add it permanently by running:\n\n"
         printf "    %becho 'export HEW_HOME=\"%s\"' >> %s%b\n" "${DIM}" "$INSTALL_PREFIX" "$rc_file" "${RESET}"
-        printf "    %becho 'export HEW_STD=\"\$HEW_HOME/std\"' >> %s%b\n" "${DIM}" "$rc_file" "${RESET}"
         printf "    %becho 'export PATH=\"\$HEW_HOME/bin:\$PATH\"' >> %s%b\n\n" "${DIM}" "$rc_file" "${RESET}"
         ;;
     zsh)
         rc_file="${ZDOTDIR:-$HOME}/.zshrc"
         printf "  Or add it permanently by running:\n\n"
         printf "    %becho 'export HEW_HOME=\"%s\"' >> %s%b\n" "${DIM}" "$INSTALL_PREFIX" "$rc_file" "${RESET}"
-        printf "    %becho 'export HEW_STD=\"\$HEW_HOME/std\"' >> %s%b\n" "${DIM}" "$rc_file" "${RESET}"
         printf "    %becho 'export PATH=\"\$HEW_HOME/bin:\$PATH\"' >> %s%b\n\n" "${DIM}" "$rc_file" "${RESET}"
         ;;
     fish)
         rc_file="$HOME/.config/fish/config.fish"
         printf "  Or add it permanently by running:\n\n"
         printf "    %bset -Ux HEW_HOME %s%b\n" "${DIM}" "$INSTALL_PREFIX" "${RESET}"
-        printf "    %bset -Ux HEW_STD \$HEW_HOME/std%b\n" "${DIM}" "${RESET}"
         printf "    %bfish_add_path \$HEW_HOME/bin%b\n\n" "${DIM}" "${RESET}"
         ;;
     *)

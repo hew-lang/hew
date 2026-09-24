@@ -59,9 +59,9 @@ fn acquire() -> Slot {
 
 fn acquire_result(ok: bool) -> Result<Slot, string> {
     if ok {
-        Ok(acquire())
+        .Ok(acquire())
     } else {
-        Err("declined")
+        .Err("declined")
     }
 }
 

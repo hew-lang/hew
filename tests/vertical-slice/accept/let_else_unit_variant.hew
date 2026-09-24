@@ -28,17 +28,17 @@ fn make_e(good: bool) -> E {
 fn parse(good: bool) -> Result<string, string> {
     // User-enum unit variant: matches E::A (binds nothing) or diverges.
     let E.A = make_e(good) else {
-        return Err("not-A")
+        return .Err("not-A")
     };
-    Ok("unit")
+    .Ok("unit")
 }
 
 fn require_none(r: Option<i64>) -> Result<string, string> {
     // Built-in Option unit variant: matches None or diverges.
     let .None = r else {
-        return Err("had-some")
+        return .Err("had-some")
     };
-    Ok("none")
+    .Ok("none")
 }
 
 fn show_parse(good: bool) -> string {
@@ -58,6 +58,6 @@ fn show_none(r: Option<i64>) -> string {
 fn main() {
     println(show_parse(true));
     println(show_parse(false));
-    println(show_none(None));
-    println(show_none(Some(9)));
+    println(show_none(.None));
+    println(show_none(.Some(9)));
 }

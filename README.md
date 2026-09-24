@@ -155,26 +155,18 @@ of `.hew` files to document.
 
 ### Module search paths & stdlib discovery
 
-Hew resolves imported modules through three tiers; the first tier that
-produces a result wins and lower tiers are not consulted:
+Every `std.*` module, including the implicit prelude, resolves from one
+standard-library root: `HEW_STD` (the path to the `std/` directory itself)
+when it is set, and otherwise the std shipped with the running binary:
+`<exe_dir>/../share/hew/std` (FHS packages, Homebrew, Docker), then
+`<exe_dir>/../std` (release tarball, Windows zip), then the checkout a
+development binary was built from while it is still in that build's output.
+No shipped layout needs `HEW_STD`. A `std/` beside the source file or in the
+current directory is never the standard library.
 
-1. **Explicit override** — `HEWPATH` (colon-separated entries; each entry is
-   the parent directory that contains `std/`) or `HEW_STD` (the path to the
-   `std/` directory itself; Hew uses its parent as a search root). If either
-   is set, only those paths are used.
-2. **In-worktree development** — otherwise, Hew walks up from the source
-   file (or the current directory) looking for an enclosing Hew checkout (a
-   directory containing `std/builtins.hew`). This anchors a file inside one
-   Hew worktree to that worktree's own `std/`, even when the binary running
-   it was built in a different worktree.
-3. **Installed / external project** — otherwise Hew searches, in order: the
-   FHS layout beside the binary (`<prefix>/share/hew`), XDG
-   (`~/.local/share/hew`), `~/.hew`, `/usr/local/share/hew`,
-   `/usr/share/hew`, and a development fallback to the repo root when
-   `std/` exists two levels above the binary.
-
-`hew.toml` does not configure module search paths. Use `HEWPATH` or `HEW_STD`
-when you need Hew to search a non-default stdlib or module root.
+`hew.toml` does not configure the std root. Use `HEW_STD` when you need a
+different standard library, for example to run one checkout's std with a
+binary built from another.
 
 To browse shipped stdlib modules, generate docs for the stdlib tree:
 

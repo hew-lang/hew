@@ -88,8 +88,8 @@ fn wire_optional_option_counterfactual_controls_check_cleanly() {
          #[wire]\ntype OptionalOption { body: Option<string> @1 optional }\n\
          fn main() -> i64 {\n\
              let _value = RequiredValue { body: \"required\" };\n\
-             let _required_option = RequiredOption { body: Some(\"present\") };\n\
-             let _optional_option = OptionalOption { body: None };\n\
+             let _required_option = RequiredOption { body: .Some(\"present\") };\n\
+             let _optional_option = OptionalOption { body: .None };\n\
              0\n\
          }\n",
     )

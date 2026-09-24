@@ -25,7 +25,7 @@ pub type ClosableHandle {
 
 impl ForeignClosable for ClosableHandle {
     fn close(handle: ClosableHandle) -> Result<(), closableerr2.CloseError> {
-        Ok(())
+        .Ok(())
     }
 }
 

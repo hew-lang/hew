@@ -59,7 +59,7 @@ impl bytes {
     /// Remove and return the last byte, or `None` when the buffer is empty.
     #[extern_symbol(hew_bytes_pop)]
     fn pop(buf: bytes) -> Option<u8> {
-        None
+        .None
     }
     #[runtime(family = BytesLen, lowering = direct, target = native, classification = stable, c_return = storage, receiver = borrow)]
     #[extern_symbol(hew_bytes_len)]
@@ -68,7 +68,7 @@ impl bytes {
     }
     #[extern_symbol(hew_bytes_get)]
     fn get(buf: bytes, index: i64) -> Option<u8> {
-        None
+        .None
     }
     #[extern_symbol(hew_bytes_set)]
     fn set(buf: bytes, index: i64, byte: u8) {}

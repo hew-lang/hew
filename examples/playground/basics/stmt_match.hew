@@ -19,7 +19,7 @@ fn main() {
     describe(.Red);
     describe(.Green);
     describe(.Blue);
-    let c = Green;
+    let c = Color.Green;
     match c {
         .Red => println("stop"),
         .Green => println("go"),

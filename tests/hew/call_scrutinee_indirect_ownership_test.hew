@@ -4,7 +4,7 @@
 import std.testing;
 
 fn make(value: string) -> Result<string, string> {
-    Ok(value)
+    .Ok(value)
 }
 
 fn inspect() -> i64 {

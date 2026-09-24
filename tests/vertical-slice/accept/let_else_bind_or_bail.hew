@@ -10,18 +10,18 @@
 
 fn validate(s: string) -> Result<i64, string> {
     if s == "good" {
-        Ok(41)
+        .Ok(41)
     } else {
-        Err("bad input")
+        .Err("bad input")
     }
 }
 
 fn parse_one(s: string) -> Result<i64, string> {
     // The else block diverges; on a successful match `n` escapes to here.
     let .Ok(n) = validate(s) else {
-        return Err("invalid")
+        return .Err("invalid")
     };
-    Ok(n + 1)
+    .Ok(n + 1)
 }
 
 fn run(s: string) -> string {

@@ -67,7 +67,7 @@ where
     type Item = B;
     fn next(it: Map<I, A, B>) -> Option<B> {
         panic("Map.next deferred pending Q004");
-        None
+        .None
     }
 }
 
@@ -83,7 +83,7 @@ where
     type Item = A;
     fn next(it: Filter<I, A>) -> Option<A> {
         panic("Filter.next deferred (by-move self cannot loop)");
-        None
+        .None
     }
 }
 
@@ -99,7 +99,7 @@ where
     type Item = A;
     fn next(it: Take<I>) -> Option<A> {
         panic("Take.next deferred (by-move self cannot persist remaining)");
-        None
+        .None
     }
 }
 
@@ -115,7 +115,7 @@ where
     type Item = A;
     fn next(it: Skip<I>) -> Option<A> {
         panic("Skip.next deferred (by-move self cannot loop)");
-        None
+        .None
     }
 }
 
@@ -394,9 +394,9 @@ impl Iterator for Counter {
     type Item = i64;
     fn next(it: Counter) -> Option<i64> {
         if it.n >= it.limit {
-            None
+            .None
         } else {
-            Some(it.n)
+            .Some(it.n)
         }
     }
 }
@@ -426,7 +426,7 @@ pub type Counter {
 impl Iterator for Counter {
     type Item = i64;
     fn next(it: Counter) -> Option<i64> {
-        Some(it.n)
+        .Some(it.n)
     }
 }
 

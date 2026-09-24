@@ -7,9 +7,9 @@
 // composes — a Result<_, string> handler compiles and runs end to end.
 fn handle(n: i64) -> Result<i64, string> {
     if n >= 0 {
-        Ok(n * 2)
+        .Ok(n * 2)
     } else {
-        Err("negative input")
+        .Err("negative input")
     }
 }
 

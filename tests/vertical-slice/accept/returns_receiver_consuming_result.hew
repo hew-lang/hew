@@ -56,10 +56,10 @@ fn try_build() -> Result<Value, string> {
         let child = Value { handle: unsafe {
             hew_json_array_new()
         } };
-        Ok(value.push(child))
+        .Ok(value.push(child))
     } else {
         value.close();
-        Err("bad handle")
+        .Err("bad handle")
     }
 }
 

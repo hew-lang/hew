@@ -22,7 +22,7 @@ fn make_claim() -> Result<Preparation, string> {
     var data: Vec<string> = Vec.new();
     data.push("a");
     data.push("b");
-    Ok(Preparation.Claimed(Claim { config: Inner { data: data }, tag: "x" }))
+    .Ok(Preparation.Claimed(Claim { config: Inner { data: data }, tag: "x" }))
 }
 
 fn main() {

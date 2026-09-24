@@ -30,9 +30,9 @@ impl Ticket {
 
 fn issue(ok: bool) -> Result<Ticket, string> {
     if ok {
-        Ok(Ticket { id: 7 })
+        .Ok(Ticket { id: 7 })
     } else {
-        Err("declined")
+        .Err("declined")
     }
 }
 

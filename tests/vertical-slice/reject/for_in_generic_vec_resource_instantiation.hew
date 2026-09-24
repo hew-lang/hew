@@ -18,9 +18,9 @@ type Wrapper {
 // borrowed element with no copy operation cannot be transferred out.
 fn _take_first<T>(items: Vec<T>) -> Option<T> {
     for item in items {
-        return Some(item);
+        return .Some(item);
     }
-    None
+    .None
 }
 
 // The parameter is enough to instantiate `_take_first<Handle>`; no Handle

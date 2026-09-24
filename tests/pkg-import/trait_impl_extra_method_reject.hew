@@ -19,7 +19,7 @@ impl P for W {
     }
 
     fn close(w: W) -> Result<Tally, ProcErr> {
-        Ok(Tally { code: w.id })
+        .Ok(Tally { code: w.id })
     }
 
     fn extra(w: W) -> i64 {

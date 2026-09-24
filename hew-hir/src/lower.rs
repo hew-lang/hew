@@ -34998,7 +34998,7 @@ impl Widget {
             r"
             fn pass(r: Result<i64, i64>) -> Result<i64, i64> {
                 let x: i64 = r?;
-                Ok(x)
+                .Ok(x)
             }
             ",
         );
@@ -35016,7 +35016,7 @@ impl Widget {
         let source = r"
             fn pass(r: Result<i64, i64>) -> Result<i64, i64> {
                 let x: i64 = r?;
-                Ok(x)
+                .Ok(x)
             }
         ";
         let parsed = hew_parser::parse(source);
@@ -35065,7 +35065,7 @@ impl Widget {
 
             fn pass(r: Result<Handle, string>) -> Result<Handle, string> {
                 let handle = r?;
-                Ok(handle)
+                .Ok(handle)
             }
             ",
         );
@@ -35106,7 +35106,7 @@ impl Widget {
             r"
             fn pass(o: Option<i64>) -> Option<i64> {
                 let x: i64 = o?;
-                Some(x)
+                .Some(x)
             }
             ",
         );
@@ -35190,18 +35190,18 @@ impl Widget {
                 import std.encoding.{format}.{{self, Value}};
                 fn required_field(obj: Value, key: string) -> Result<Value, string> {{
                     match obj.get_field(key) {{
-                        .Ok(.Some(value)) => Ok(value),
-                        .Ok(.None) => Err("missing field"),
-                        .Err(error) => Err(error),
+                        .Ok(.Some(value)) => .Ok(value),
+                        .Ok(.None) => .Err("missing field"),
+                        .Err(error) => .Err(error),
                     }}
                 }}
                 fn result_probe(obj: Value) -> Result<Value, string> {{
                     let child = required_field(obj, "field")?;
-                    Ok(child)
+                    .Ok(child)
                 }}
                 fn option_probe(value: Option<Value>) -> Option<Value> {{
                     let child = value?;
-                    Some(child)
+                    .Some(child)
                 }}
                 fn result_expect_probe(consume value: Result<Value, string>) -> Value {{
                     let child = value.expect("the payload decoded");
@@ -35232,7 +35232,7 @@ impl Widget {
                 #[opaque] pub type Value {}
                 impl Value {
                     pub fn get_field(self, key: string) -> Result<Option<Value>, string> {
-                        Ok(Some(self))
+                        .Ok(.Some(self))
                     }
                 }
             ",
@@ -35306,8 +35306,8 @@ impl Widget {
                     fn count(self) -> i64;
                 }
                 impl ValueMethods for Value {
-                    fn push(var self, child: Value) -> Result<(), string> { self = child; Ok(()) }
-                    fn set(var self, key: string, child: Value) -> Result<(), string> { self = child; Ok(()) }
+                    fn push(var self, child: Value) -> Result<(), string> { self = child; .Ok(()) }
+                    fn set(var self, key: string, child: Value) -> Result<(), string> { self = child; .Ok(()) }
                     fn count(self) -> i64 { 0 }
                 }
             ",
@@ -35534,7 +35534,7 @@ impl Widget {
     fn stdlib_option_none_registers_in_enum_layouts() {
         let (_, _, lowered) = parse_typecheck_and_lower(
             r"
-            fn f() -> Option<i64> { None }
+            fn f() -> Option<i64> { .None }
             fn main() -> i64 { match f() { .Some(x) => x, .None => 7 } }
             ",
         );

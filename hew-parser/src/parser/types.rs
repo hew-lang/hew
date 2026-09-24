@@ -921,10 +921,7 @@ impl Parser<'_> {
             Some(Token::If | Token::Match | Token::Unsafe | Token::Select | Token::Scope) => true,
             // Expr::Block — but a `{` that opens a map literal is not a block,
             // and `parse_primary` splits the two on exactly this lookahead.
-            Some(Token::LeftBrace) => {
-                !(matches!(self.peek_at(self.pos + 1), Some(Token::StringLit(_)))
-                    && self.peek_at(self.pos + 2) == Some(&Token::Colon))
-            }
+            Some(Token::LeftBrace) => !self.peek_opens_map_literal(),
             // Only a brace-delimited fork body is block-like.
             Some(Token::Fork) => self.peek_at(self.pos + 1) == Some(&Token::LeftBrace),
             _ => false,

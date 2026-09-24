@@ -1036,6 +1036,10 @@ impl Checker {
             .map(|param| param.name.clone());
         let prev_var_self_receiver =
             std::mem::replace(&mut self.var_self_receiver, var_self_receiver);
+        let prev_machine_body_owner = std::mem::replace(
+            &mut self.machine_body_owner,
+            machine_body_owner(fd, fn_name),
+        );
 
         // Use the return type from the already-registered fn signature so that
         // TypeExpr::Infer (-> _) reuses the same Ty::Var that call sites see.
@@ -1153,6 +1157,7 @@ impl Checker {
         }
         self.emit_scope_warnings();
         self.var_self_receiver = prev_var_self_receiver;
+        self.machine_body_owner = prev_machine_body_owner;
     }
 
     fn function_body_return_type(&self, fd: &FnDecl, declared: &Ty) -> Ty {
@@ -2756,11 +2761,19 @@ impl Checker {
                 // on the same authoritative identity every other trait-reference
                 // site does — never the bare spelling in isolation.
                 let trait_is_local = self.trait_ref_is_local(&tb.name);
-                // hew-compile injects one source-less std.builtins node that
-                // contains only the embedded prelude's Display impls. A user
-                // module retains a source path and cannot claim this authority.
-                let is_embedded_builtins_impl = self.current_item_source.is_none()
-                    && self.checking_canonical_stdlib_source("std.builtins");
+                // hew-compile loads the prelude's Display impls as the
+                // std.builtins module, from the standard-library root every
+                // `std` module resolves from (the toolchain's std or
+                // `HEW_STD`), or source-less from the compiled-in text for an
+                // analysis with no search path. A lookalike module has neither.
+                let is_embedded_builtins_impl = self
+                    .checking_canonical_stdlib_source("std.builtins")
+                    && self.current_item_source.as_ref().is_none_or(|source| {
+                        crate::module_registry::is_canonical_stdlib_module_source(
+                            source,
+                            "std.builtins",
+                        )
+                    });
                 if !type_is_local && !trait_is_local && !is_embedded_builtins_impl {
                     self.warnings.push(TypeError {
                         severity: crate::error::Severity::Warning,
@@ -2865,8 +2878,7 @@ impl Checker {
     /// is below the stdlib root owned by the running compiler installation.
     fn intrinsic_type_is_local_to_builtin_surface(&self, type_name: &str) -> bool {
         self.current_item_source.as_ref().is_some_and(|source| {
-            self.module_registry
-                .source_has_stdlib_authority(source, "std.builtins")
+            crate::module_registry::is_canonical_stdlib_module_source(source, "std.builtins")
         }) && (Ty::from_name(type_name).is_some()
             || self
                 .resolved_builtin_type(type_name)
@@ -2954,6 +2966,17 @@ fn is_canonical_lifecycle_source_type(ty: &Ty, source_identity: &str) -> bool {
             builtin: None,
         } if args.is_empty() && name == source_identity
     )
+}
+
+/// The machine whose generated body `fd` is, if any.
+fn machine_body_owner(fd: &FnDecl, fn_name: &str) -> Option<String> {
+    matches!(
+        fd.origin,
+        hew_parser::ast::DeclarationOrigin::MachineStep
+            | hew_parser::ast::DeclarationOrigin::MachineCompanion
+    )
+    .then(|| fn_name.split_once("::").map(|(owner, _)| owner.to_string()))
+    .flatten()
 }
 
 #[cfg(test)]

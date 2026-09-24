@@ -85,8 +85,6 @@ COPY --from=rust-builder /src/target/release-lib/libhew.a /usr/local/lib/hew/lib
 # Standard library Hew source files
 COPY std/ /usr/local/share/hew/std/
 
-ENV HEW_STD=/usr/local/share/hew/std
-
 USER hew
 WORKDIR /work
 

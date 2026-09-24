@@ -82,7 +82,7 @@ fn enum_temp_source(frames: usize) -> String {
          fn main() -> i64 {{\n\
          \x20   var total: i64 = 0;\n\
          \x20   for i in 0..{frames} {{\n\
-         \x20       total = total + ef(Ok(\"a\" + \"b\"));\n\
+         \x20       total = total + ef(.Ok(\"a\" + \"b\"));\n\
          \x20   }}\n\
          \x20   if total != {frames} * 2 {{ return 73; }}\n\
          \x20   0\n\

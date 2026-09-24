@@ -97,20 +97,15 @@ What to check:
   example `import text_stats.words;`.
 - Standard library imports are available under the last path segment:
   `import std.fs;` gives `fs`, and `import std.encoding.json;` gives `json`.
-- Search roots are tried in three tiers; the first tier that produces a
-  result wins:
-  1. Explicit override — `HEWPATH` (colon-separated entries; each entry is
-     the parent directory of `std/`) or `HEW_STD` (the path to `std/`
-     itself; Hew uses its parent as the search root).
-  2. In-worktree development — Hew walks up from the source file (or the
-     current directory) looking for an enclosing Hew checkout (a directory
-     containing `std/builtins.hew`).
-  3. Installed / external project — the FHS layout beside the binary
-     (`<prefix>/share/hew`), XDG (`~/.local/share/hew`), `~/.hew`,
-     `/usr/local/share/hew`, `/usr/share/hew`, and a development fallback to
-     the repo root when `std/` exists two levels above the binary.
-- `hew.toml` does not configure module search paths. Use `HEWPATH` or
-  `HEW_STD` when you need Hew to look in a non-default module root.
+- Every `std.*` module resolves from one root: `HEW_STD` (the path to
+  `std/` itself) when set, and otherwise the std shipped with the running
+  binary — `<exe_dir>/../share/hew/std`, then `<exe_dir>/../std`, then the
+  checkout a development binary was built from while it is still in that
+  build's output. A `std/` beside your source or in the current directory is
+  never used. "std not found" lists the directories tried; set `HEW_STD` or
+  reinstall so the binary sits in its shipped layout.
+- `hew.toml` does not configure the std root. Use `HEW_STD` when you need a
+  different standard library.
 - If the missing module is a package dependency, run `hew install`. If it is
   undeclared in project metadata, add it with `hew add ...` first.
 - Use the candidate-path list in the module-not-found error to confirm where Hew

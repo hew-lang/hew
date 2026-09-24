@@ -7,7 +7,7 @@ import std.testing;
 /// The paired `Stream` stays with the caller, so what the arm did with the
 /// sink is observable as the text the stream collects.
 fn opened(consume sink: stream.Sink<string>) -> Result<stream.Sink<string>, string> {
-    Ok(sink)
+    .Ok(sink)
 }
 
 #[test]
@@ -65,9 +65,9 @@ fn parse_error_message(e: ParseError) -> string {
 
 fn try_parse(addr: string) -> Result<Endpoint, ParseError> {
     if addr == "" {
-        return Err(ParseError.Invalid("empty address"))
+        return .Err(ParseError.Invalid("empty address"))
     }
-    Ok(Endpoint { host: addr, port: 7 })
+    .Ok(Endpoint { host: addr, port: 7 })
 }
 
 /// Both arms of this match bind a payload out of ONE scrutinee mint. The
@@ -92,9 +92,9 @@ fn test_match_payload_binders_share_one_scrutinee_release() {
 
 fn sink_from_if_let(consume writer: stream.Sink<string>) -> Result<stream.Sink<string>, string> {
     if let .Ok(sink) = opened(writer) {
-        return Ok(sink);
+        return .Ok(sink);
     }
-    Err("open failed")
+    .Err("open failed")
 }
 
 #[test]

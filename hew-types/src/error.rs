@@ -814,6 +814,11 @@ pub enum TypeErrorKind {
     /// discarded (HEW-SPEC-2026 §2.1.1, §5.6). Losing a delivery failure by
     /// accident is not available; the discard has to be written down.
     SendResultDropped,
+    /// A block-like form used as a statement that produces a value other than
+    /// `()`. The statement ends at its `}` and the value would be dropped
+    /// silently; parenthesize it to use the value, or discard it with
+    /// `let _ =`.
+    BlockStatementValue,
     /// Actor types form a reference cycle via actor-handle fields
     ActorRefCycle,
     /// A value-typed enum/record/struct contains itself by value, directly or
@@ -1527,6 +1532,7 @@ impl TypeErrorKind {
             Self::YieldOutsideGenerator => "YieldOutsideGenerator",
             Self::GenReturnSpelling => "E_GEN_RETURN_SPELLING",
             Self::SendResultDropped => "E_SEND_RESULT_DROPPED",
+            Self::BlockStatementValue => "E_BLOCK_STATEMENT_VALUE",
             Self::ActorRefCycle => "ActorRefCycle",
             Self::RecursiveValueType { .. } => "RecursiveValueType",
             Self::UnusedVariable => "UnusedVariable",

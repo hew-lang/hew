@@ -37,7 +37,7 @@
   },
   {
     "id": "while-let",
-    "snippet": "fn countdown(n: i64) -> Option<i64> {\n    if n > 0 { Some(n - 1) } else { None }\n}\n\nfn main() {\n    var opt: Option<i64> = Some(3);\n    while let .Some(value) = opt {\n        println(value);\n        opt = countdown(value);\n    }\n}\n"
+    "snippet": "fn countdown(n: i64) -> Option<i64> {\n    if n > 0 { .Some(n - 1) } else { .None }\n}\n\nfn main() {\n    var opt: Option<i64> = .Some(3);\n    while let .Some(value) = opt {\n        println(value);\n        opt = countdown(value);\n    }\n}\n"
   },
   {
     "id": "enum",
@@ -69,7 +69,7 @@
   },
   {
     "id": "option-result",
-    "snippet": "let val: Option<i64> = Some(42);\nmatch val {\n    .Some(x) => println(x),\n    .None => println(\"nothing\"),\n}\n"
+    "snippet": "let val: Option<i64> = .Some(42);\nmatch val {\n    .Some(x) => println(x),\n    .None => println(\"nothing\"),\n}\n"
   },
   {
     "id": "import",

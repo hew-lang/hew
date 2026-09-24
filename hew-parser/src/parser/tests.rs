@@ -5903,3 +5903,90 @@ fn try_is_an_ordinary_binding_in_condition_position() {
     let result = crate::parse("fn main() { let try = true; if try { println(\"ok\"); } }");
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
 }
+
+/// Parse `fn f() { <stmt> <tail> }` and return its body.
+fn statement_block_body(body: &str) -> (Block, Vec<ParseError>) {
+    let source = format!("fn f() {{\n{body}\n}}");
+    let result = parse(&source);
+    let Item::Function(function) = &result.program.items[0].0 else {
+        panic!("expected function");
+    };
+    (function.body.clone(), result.errors)
+}
+
+/// Every block-like form at statement start ends at its `}`: the dotted
+/// variant on the next line is the block's tail expression, not a method call
+/// on the block.
+#[test]
+fn statement_blocks_end_before_a_dotted_tail() {
+    for opener in [
+        "{ work(); }",
+        "unsafe { work(); }",
+        "scope { work(); }",
+        "select { after 1ms => 0 }",
+        "race { work(), }",
+        "fork { work() }",
+        "gen { yield 1; }",
+        "if c { work(); }",
+        "match c { true => work(), false => work() }",
+        "for i in 0..2 { work(); }",
+        "while c { work(); }",
+        "loop { break; }",
+        "defer { work(); }",
+    ] {
+        let (body, errors) = statement_block_body(&format!("{opener}\n.Ok(1)"));
+        assert!(errors.is_empty(), "`{opener}` errors: {errors:?}");
+        assert_eq!(body.stmts.len(), 1, "`{opener}` must be one statement");
+        let Some(tail) = body.trailing_expr.as_deref() else {
+            panic!("`{opener}` must leave `.Ok(1)` as the tail");
+        };
+        assert!(
+            matches!(&tail.0, Expr::Call { function, .. }
+                if matches!(&function.0, Expr::ContextVariant(context) if context.name == "Ok")),
+            "`{opener}` tail must be `.Ok(1)`, got {:?}",
+            tail.0
+        );
+    }
+}
+
+/// A method call or operator on a statement-start block is refused with a
+/// fix-it naming parentheses; the parenthesized form, a `let` value and a map
+/// literal keep their postfix, and a `handle` clause still attaches.
+#[test]
+fn statement_block_operands_need_parentheses() {
+    for refused in [
+        "{ s }.len();",
+        "unsafe { g() }.abs()",
+        "unsafe { g() } != 0",
+        "unsafe { 7 } - 1",
+        "unsafe { dbl }(4)",
+        "{ vv }[0]",
+        "scope { 7 } * 2",
+        "if c { 1 } else { 2 } - 5",
+        "{ s }\n.len()",
+    ] {
+        let (_, errors) = statement_block_body(refused);
+        assert!(
+            errors.iter().any(
+                |error| error.message.starts_with("E_BLOCK_STATEMENT_OPERAND")
+                    && error
+                        .hint
+                        .as_deref()
+                        .is_some_and(|hint| hint.contains("parentheses"))
+            ),
+            "`{refused}` must be refused with the parentheses fix-it: {errors:?}"
+        );
+    }
+    for accepted in [
+        "({ s }).len()",
+        "(unsafe { g() }) != 0",
+        "let n = { s }.len();\nn",
+        "{\"a\": 1, \"b\": 2}.len()",
+        "scope { work() } handle failure { 0 }",
+        "if stop { work(); }\n[1]",
+        "unsafe { work(); }\n(a, b)",
+    ] {
+        let (_, errors) = statement_block_body(accepted);
+        assert!(errors.is_empty(), "`{accepted}` must parse: {errors:?}");
+    }
+}

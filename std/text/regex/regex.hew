@@ -149,9 +149,9 @@ impl PatternMethods for Pattern {
             hew_regex_capture_index_one(pat.handle, input, group)
         };
         if values.len() == 0 {
-            None
+            .None
         } else {
-            Some(values[0])
+            .Some(values[0])
         }
     }
     /// Return the named capture from the first match.
@@ -160,9 +160,9 @@ impl PatternMethods for Pattern {
             hew_regex_capture_name_one(pat.handle, input, name)
         };
         if values.len() == 0 {
-            None
+            .None
         } else {
-            Some(values[0])
+            .Some(values[0])
         }
     }
     /// Return first-match submatches as one flat row.
@@ -239,13 +239,13 @@ impl CaptureMatchesMethods for CaptureMatches {
     /// Return a capture by match row and group index.
     fn group(rows: CaptureMatches, match_index: i64, group_index: i64) -> Option<string> {
         if match_index < 0 || group_index < 0 || group_index >= rows.group_count {
-            return None;
+            return .None;
         }
         let row_count = rows.len();
         if match_index >= row_count {
-            return None;
+            return .None;
         }
-        Some(rows.groups[match_index * rows.group_count + group_index])
+        .Some(rows.groups[match_index * rows.group_count + group_index])
     }
     /// Return group 0 for the requested match row.
     fn whole(rows: CaptureMatches, match_index: i64) -> Option<string> {

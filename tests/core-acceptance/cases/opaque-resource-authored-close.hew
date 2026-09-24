@@ -35,9 +35,9 @@ fn early_return(stop: bool) {
 fn failing(width: i64) -> Result<i64, string> {
     let _held = unsafe { hew_deque_new() };
     if width < 0 {
-        return Err("negative");
+        return .Err("negative");
     }
-    Ok(width)
+    .Ok(width)
 }
 
 fn main() {

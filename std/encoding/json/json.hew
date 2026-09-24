@@ -113,9 +113,9 @@ trait ValueMethods {
 fn require_kind(value: Value, expected: Kind) -> Result<(), AccessError> {
     let actual = value.type_of();
     if actual == expected {
-        Ok(())
+        .Ok(())
     } else {
-        Err(AccessError.WrongKind(expected, actual))
+        .Err(AccessError.WrongKind(expected, actual))
     }
 }
 
@@ -143,14 +143,14 @@ impl ValueMethods for Value {
             hew_json_last_error()
         };
         if !reason.is_empty() {
-            Err(EncodeError.Invalid(reason))
+            .Err(EncodeError.Invalid(reason))
         } else {
-            Ok(text)
+            .Ok(text)
         }
     }
     fn get_bool(self) -> Result<bool, AccessError> {
         require_kind(self, Kind.Bool)?;
-        Ok(unsafe {
+        .Ok(unsafe {
             hew_json_get_bool(self) == 1
         })
     }
@@ -159,11 +159,11 @@ impl ValueMethods for Value {
         if unsafe {
             hew_json_int_status(self)
         } == 1 {
-            Ok(unsafe {
+            .Ok(unsafe {
                 hew_json_get_int(self)
             })
         } else {
-            Err(AccessError.IntegerRange)
+            .Err(AccessError.IntegerRange)
         }
     }
     fn get_u64(self) -> Result<u64, AccessError> {
@@ -174,22 +174,22 @@ impl ValueMethods for Value {
             if unsafe {
                 hew_json_get_int(self)
             } < 0 {
-                return Err(AccessError.IntegerRange);
+                return .Err(AccessError.IntegerRange);
             }
         }
-        Ok(unsafe {
+        .Ok(unsafe {
             hew_json_get_u64(self)
         })
     }
     fn get_float(self) -> Result<f64, AccessError> {
         require_kind(self, Kind.Float)?;
-        Ok(unsafe {
+        .Ok(unsafe {
             hew_json_get_float(self)
         })
     }
     fn get_string(self) -> Result<string, AccessError> {
         require_kind(self, Kind.String)?;
-        Ok(unsafe {
+        .Ok(unsafe {
             hew_json_get_string(self)
         })
     }
@@ -201,21 +201,21 @@ impl ValueMethods for Value {
         if unsafe {
             hew_json_type(child)
         } < 0 {
-            Ok(None)
+            .Ok(.None)
         } else {
-            Ok(Some(child))
+            .Ok(.Some(child))
         }
     }
     fn array_len(self) -> Result<i64, AccessError> {
         require_kind(self, Kind.Array)?;
-        Ok(unsafe {
+        .Ok(unsafe {
             hew_json_array_len(self) as i64
         })
     }
     fn array_get(self, index: i64) -> Result<Option<Value>, AccessError> {
         require_kind(self, Kind.Array)?;
         if index < 0 || index > 2147483647 {
-            return Err(AccessError.InvalidIndex(index));
+            return .Err(AccessError.InvalidIndex(index));
         }
         let child = unsafe {
             hew_json_array_get(self, index as i32)
@@ -223,14 +223,14 @@ impl ValueMethods for Value {
         if unsafe {
             hew_json_type(child)
         } < 0 {
-            Ok(None)
+            .Ok(.None)
         } else {
-            Ok(Some(child))
+            .Ok(.Some(child))
         }
     }
     fn keys(self) -> Result<Value, AccessError> {
         require_kind(self, Kind.Object)?;
-        Ok(unsafe {
+        .Ok(unsafe {
             hew_json_object_keys(self)
         })
     }
@@ -241,7 +241,7 @@ impl ValueMethods for Value {
         unsafe {
             hew_json_object_set(self, key, owned_child)
         };
-        Ok(())
+        .Ok(())
     }
     fn push(var self, child: Value) -> Result<(), AccessError> {
         require_kind(self, Kind.Array)?;
@@ -249,7 +249,7 @@ impl ValueMethods for Value {
         unsafe {
             hew_json_array_push(self, owned_child)
         };
-        Ok(())
+        .Ok(())
     }
 }
 
@@ -264,9 +264,9 @@ pub fn parse(text: string) -> Result<Value, ParseError> {
     if unsafe {
         hew_json_type(value)
     } < 0 {
-        Err(ParseError.Invalid(reason))
+        .Err(ParseError.Invalid(reason))
     } else {
-        Ok(value)
+        .Ok(value)
     }
 }
 
@@ -306,9 +306,9 @@ pub fn from_float(val: f64) -> Result<Value, EncodeError> {
     if unsafe {
         hew_json_type(value)
     } < 0 {
-        Err(EncodeError.NonFiniteFloat)
+        .Err(EncodeError.NonFiniteFloat)
     } else {
-        Ok(value)
+        .Ok(value)
     }
 }
 

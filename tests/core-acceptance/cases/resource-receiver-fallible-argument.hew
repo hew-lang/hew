@@ -1,11 +1,11 @@
 import std.text.regex;
 fn text(ok: bool) -> Result<string, string> {
-    if ok { Ok("scope gate") } else { Err("failure") }
+    if ok { .Ok("scope gate") } else { .Err("failure") }
 }
 fn capture(ok: bool) -> Result<bool, string> {
     let pattern = regex.new("scope gate");
-    if pattern.capture(text(ok)?, 0).is_none() { return Ok(false); }
-    Ok(true)
+    if pattern.capture(text(ok)?, 0).is_none() { return .Ok(false); }
+    .Ok(true)
 }
 fn main() {
     println(capture(true).expect("success"));

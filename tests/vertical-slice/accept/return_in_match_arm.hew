@@ -11,10 +11,10 @@
 fn checked_div(n: i64, d: i64) -> Result<i64, string> {
     // The error arm is a bare expression-position `return` — no block, no `;`.
     let safe = match d {
-        0 => return Err("divide by zero"),
+        0 => return .Err("divide by zero"),
         _ => d,
     };
-    Ok(n / safe)
+    .Ok(n / safe)
 }
 
 fn run(n: i64, d: i64) -> string {

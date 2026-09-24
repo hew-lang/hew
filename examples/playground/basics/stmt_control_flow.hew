@@ -41,18 +41,18 @@ fn main() {
         println("x is big");
     }
     // Statement-position match in main body.
-    let m = Neutral;
+    let m = Mood.Neutral;
     match m {
         .Happy => println("main: happy"),
         .Sad => println("main: sad"),
         .Neutral => println("main: neutral branch"),
     }
     // Statement-position if-let.
-    let opt: Option<i64> = Some(42);
+    let opt: Option<i64> = .Some(42);
     if let .Some(v) = opt {
         println(f"got value: {v}");
     }
-    let none_opt: Option<i64> = None;
+    let none_opt: Option<i64> = .None;
     if let .Some(v) = none_opt {
         println(f"should not print: {v}");
     } else {

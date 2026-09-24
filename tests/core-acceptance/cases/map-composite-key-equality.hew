@@ -24,9 +24,9 @@ fn make(reverse: bool, empty: bool) -> Key {
         [first, second]
     };
     let suffix: Option<string> = if empty {
-        None
+        .None
     } else {
-        Some("suffix".to_upper())
+        .Some("suffix".to_upper())
     };
     Key { group: 7, labels: labels, suffix: suffix }
 }

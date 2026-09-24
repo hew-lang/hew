@@ -18,19 +18,40 @@ ARCHIVE=""
 CONSUMER_ARCHIVE=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --hew) HEW="${2:-}"; shift 2 ;;
-        --archive) ARCHIVE="${2:-}"; shift 2 ;;
-        --consumer-archive) CONSUMER_ARCHIVE="${2:-}"; shift 2 ;;
-        *) usage ;;
+    --hew)
+        HEW="${2:-}"
+        shift 2
+        ;;
+    --archive)
+        ARCHIVE="${2:-}"
+        shift 2
+        ;;
+    --consumer-archive)
+        CONSUMER_ARCHIVE="${2:-}"
+        shift 2
+        ;;
+    *) usage ;;
     esac
 done
 
-[[ -x "$HEW" ]] || { echo "error: release hew binary is not executable: $HEW" >&2; exit 1; }
-[[ -f "$ARCHIVE" ]] || { echo "error: libhew archive is missing: $ARCHIVE" >&2; exit 1; }
+[[ -x "$HEW" ]] || {
+    echo "error: release hew binary is not executable: $HEW" >&2
+    exit 1
+}
+[[ -f "$ARCHIVE" ]] || {
+    echo "error: libhew archive is missing: $ARCHIVE" >&2
+    exit 1
+}
 if [[ -n "$CONSUMER_ARCHIVE" ]]; then
-    [[ -f "$CONSUMER_ARCHIVE" ]] || { echo "error: consumer archive is missing: $CONSUMER_ARCHIVE" >&2; exit 1; }
+    [[ -f "$CONSUMER_ARCHIVE" ]] || {
+        echo "error: consumer archive is missing: $CONSUMER_ARCHIVE" >&2
+        exit 1
+    }
 else
-    command -v rustc >/dev/null || { echo "error: rustc is required for native-package link validation" >&2; exit 1; }
+    command -v rustc >/dev/null || {
+        echo "error: rustc is required for native-package link validation" >&2
+        exit 1
+    }
 fi
 
 WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/hew-release-link-XXXXXX")
@@ -39,6 +60,8 @@ trap 'rm -rf "$WORK_DIR"' EXIT
 mkdir -p "$WORK_DIR/release/bin" "$WORK_DIR/release/lib"
 cp "$HEW" "$WORK_DIR/release/bin/hew"
 cp "$ARCHIVE" "$WORK_DIR/release/lib/libhew.a"
+# The staged binary finds std beside it, as in a shipped archive.
+cp -R "$(dirname -- "${BASH_SOURCE[0]}")/../std" "$WORK_DIR/release/std"
 
 if [[ -n "$CONSUMER_ARCHIVE" ]]; then
     cp "$CONSUMER_ARCHIVE" "$WORK_DIR/librelease_link_probe.a"

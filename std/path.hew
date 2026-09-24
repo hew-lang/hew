@@ -94,10 +94,10 @@ impl GlobResultMethods for GlobResult {
         // The range check runs in `i64` so an index above `i32` range is
         // rejected as out of range rather than wrapping into a valid slot.
         if index < 0 || index >= res.len() {
-            return None;
+            return .None;
         }
         unsafe {
-            Some(hew_glob_get(res.handle, index as i32))
+            .Some(hew_glob_get(res.handle, index as i32))
         }
     } // INTERNAL-ABI: C ABI takes i32 index; the i64 range check above precedes it
 }
@@ -148,7 +148,7 @@ pub fn glob(pattern: string) -> Result<GlobResult, PathError> {
     unsafe {
         let handle = hew_glob(pattern);
         if hew_glob_is_valid(handle) {
-            Ok(GlobResult { handle: handle })
+            .Ok(GlobResult { handle: handle })
         } else {
             // Preserve the detail before releasing the invalid handle.  The
             // success arm transfers that same single owner to `GlobResult`;
@@ -156,7 +156,7 @@ pub fn glob(pattern: string) -> Result<GlobResult, PathError> {
             // double-free it.
             let detail = hew_glob_error(handle);
             hew_glob_free(handle);
-            Err(PathError.GlobFailed(detail))
+            .Err(PathError.GlobFailed(detail))
         }
     }
 }

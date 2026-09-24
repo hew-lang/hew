@@ -44,11 +44,11 @@ enum Shape {
 }
 
 fn main() {
-    let _wrong_arity = Pair(1);
+    let _wrong_arity = Shape.Pair(1);
     let _wrong_shape = Pair { left: 1 };
     let _missing = Record { left: 1 };
     let _unknown = Record { left: 1, right: 2, extra: 3 };
-    let _unit_call = Unit();
+    let _unit_call = Shape.Unit();
     let _record_call = Record(1, 2);
 }",
     );

@@ -36,6 +36,15 @@ pub(super) struct AppliedCallSignature {
     pub(super) return_type: Ty,
 }
 
+/// The source spelling of a variant owner in a qualified fix-it: the
+/// declaration's leaf name, which is how the enum is written where it is in
+/// scope (`Parcel.Filled`, not `left.render.Parcel.Filled`).
+pub(super) fn variant_owner_spelling(type_name: &str) -> &str {
+    type_name
+        .rsplit_once('.')
+        .map_or(type_name, |(_, leaf)| leaf)
+}
+
 impl Checker {
     pub(super) fn lookup_variant_constructor(
         &self,
@@ -1005,7 +1014,16 @@ impl Checker {
             return Some(Ty::Error);
         }
 
-        self.check_builtin_variant_against_expected(&func_name, args, &resolved_expected, span)
+        let result = self.check_builtin_variant_against_expected(
+            &func_name,
+            args,
+            &resolved_expected,
+            span,
+        )?;
+        // Only the bare source spelling reaches here: dotted heads check their
+        // builtin constructor directly.
+        self.report_bare_variant_expr(&func_name, &format!(".{func_name}"), span);
+        Some(result)
     }
 
     /// Check a builtin `Some`/`Ok`/`Err` constructor call against an expected
@@ -1878,7 +1896,7 @@ impl Checker {
             if !func_name.contains("::") {
                 self.report_bare_variant_expr(
                     &func_name,
-                    &format!("{type_name}.{func_name}"),
+                    &format!("{}.{func_name}", variant_owner_spelling(&type_name)),
                     span,
                 );
             }
@@ -2061,7 +2079,15 @@ impl Checker {
                 };
                 return result_ty;
             }
+            // The bare source spelling: refused on the same footing as a user
+            // enum. Dotted heads check their builtin constructor directly.
             "Some" | "None" | "Ok" | "Err" => {
+                let owner = if matches!(func_name.as_str(), "Some" | "None") {
+                    "Option"
+                } else {
+                    "Result"
+                };
+                self.report_bare_variant_expr(&func_name, &format!("{owner}.{func_name}"), span);
                 return self
                     .check_builtin_variant_call(&func_name, args, span)
                     .expect("builtin variant constructor names are matched above");

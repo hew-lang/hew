@@ -198,7 +198,7 @@ fn local_handler_closure_captures_the_error_binding_by_identity() {
 
 #[test]
 fn propagation_inside_handler_operand_retains_its_lexical_return_edge() {
-    let lowered = lower("fn f(value: Result<Result<i64, string>, string>) -> Result<i64, string> { let number = value? handle problem { 0 }; Ok(number) }");
+    let lowered = lower("fn f(value: Result<Result<i64, string>, string>) -> Result<i64, string> { let number = value? handle problem { 0 }; .Ok(number) }");
     let HirStmtKind::Let(_, Some(recovery)) = &function(&lowered, "f").body.statements[0].kind
     else {
         panic!("local result binding");

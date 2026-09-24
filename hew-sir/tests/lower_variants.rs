@@ -202,7 +202,7 @@ fn result_constructor_return_and_exhaustive_match_transfer_owned_payloads() {
     let lowered = lower_source(
         r#"
         fn make() -> Result<string, string> {
-            Ok("accepted")
+            .Ok("accepted")
         }
 
         fn choose(value: Result<string, string>) -> string {
@@ -256,7 +256,7 @@ fn fresh_option_match_accounts_for_unbound_owned_payload() {
         }
 
         fn main() {
-            classify(Some("temporary"));
+            classify(.Some("temporary"));
         }
         "#,
     );
@@ -319,7 +319,7 @@ fn bitcopy_record_and_option_use_exact_descriptors_without_owner_glue() {
             let point = Point { x: 2, y: 3 };
             point_x(point);
             point_x(point);
-            let optional = Some(5);
+            let optional = Option.Some(5);
             option_value(optional);
             option_value(optional);
         }
@@ -363,7 +363,7 @@ fn guarded_variant_match_lowers_explicit_predicate_cfg() {
         }
 
         fn main() {
-            choose(Some("ordinary"));
+            choose(.Some("ordinary"));
         }
         "#,
     );
@@ -498,8 +498,8 @@ fn match_payload_can_move_while_an_outer_fallback_remains_live() {
         }
 
         fn main() {
-            keep_text(choose(None));
-            keep_text(choose(Some("chosen")));
+            keep_text(choose(.None));
+            keep_text(choose(.Some("chosen")));
         }
         "#,
     );
@@ -589,7 +589,7 @@ fn nested_match_and_failed_string_guard_preserve_the_later_payload() {
 
         fn keep_text(value: string) {}
         fn main() {
-            let original = Ok(Some("kept"));
+            let original = Result.Ok(Option.Some("kept"));
             keep_text(choose(original));
             keep_text(choose(original));
         }
@@ -642,8 +642,8 @@ fn unit_match_allows_a_selected_divergent_handler() {
         }
 
         fn main() {
-            handle(Ok("ok"));
-            handle(Err("error"));
+            handle(.Ok("ok"));
+            handle(.Err("error"));
         }
         "#,
     );
@@ -676,12 +676,12 @@ fn result_propagation_lowers_expression_return_without_a_fake_value() {
         r#"
         fn pair(value: Result<string, string>) -> Result<(string, string), string> {
             let first = value?;
-            Ok((first, "second"))
+            .Ok((first, "second"))
         }
 
         fn main() {
-            pair(Ok("first"));
-            pair(Err("failure"));
+            pair(.Ok("first"));
+            pair(.Err("failure"));
         }
         "#,
     );
@@ -708,8 +708,8 @@ fn never_typed_return_initializer_stops_before_binding_or_sibling_work() {
     let lowered = lower_source(
         r#"
         fn stop() -> Result<string, string> {
-            let unreachable = return Err("stopped");
-            Ok(unreachable)
+            let unreachable = return .Err("stopped");
+            .Ok(unreachable)
         }
 
         fn main() {
@@ -758,7 +758,7 @@ fn let_else_binds_the_success_payload_into_the_enclosing_scope() {
 
         fn keep_text(value: string) {}
         fn main() {
-            let original = Some("present");
+            let original = Option.Some("present");
             keep_text(choose(original));
             keep_text(choose(original));
         }
@@ -837,7 +837,7 @@ const NESTED_AFFINE_SOURCE: &str = r#"
 
     fn keep_text(value: string) {}
     fn main() {
-        keep_text(drive(Some(Choice.Values(words(), 7))));
+        keep_text(drive(.Some(Choice.Values(words(), 7))));
     }
 "#;
 

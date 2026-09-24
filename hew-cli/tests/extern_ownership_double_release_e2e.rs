@@ -179,7 +179,7 @@ const ENUM_PAYLOAD_TO_CONSUMING_EXTERN: &str = r#"extern "C" {
 }
 
 fn mkopt(i: i64) -> Option<string> {
-    Some(f"payload{i}")
+    .Some(f"payload{i}")
 }
 
 fn main() -> i64 {
@@ -221,7 +221,7 @@ const ENUM_PAYLOAD_TO_BORROWING_EXTERN: &str = r#"extern "C" {
 }
 
 fn mkopt(i: i64) -> Option<string> {
-    Some(f"payload{i}")
+    .Some(f"payload{i}")
 }
 
 fn main() -> i64 {
@@ -364,7 +364,7 @@ pub extern "C" fn spy_release_one_from_host() -> i64 {
 /// Hew functions. This must keep working exactly as the leak fix
 /// intends -- the extern veto must not have widened into Hew-bodied calls.
 const ENUM_PAYLOAD_TO_HEW_SINK: &str = r#"fn mkopt(i: i64) -> Option<string> {
-    Some(f"payload{i}")
+    .Some(f"payload{i}")
 }
 
 fn consume(s: string) -> i64 {
@@ -393,7 +393,7 @@ fn main() -> i64 {
 /// `IoHandle` class cannot satisfy. Interpolating the `Err(e)` payload is the
 /// exact trigger.
 const SCALAR_IO_HANDLE_PAYLOAD: &str = r#"fn attempt(i: i64) -> Result<(Stream<i64>, Sink<i64>), string> {
-    Err(f"refused{i}")
+    .Err(f"refused{i}")
 }
 
 fn main() -> i64 {
@@ -707,7 +707,7 @@ const RESOURCE_PAYLOAD_WITH_INTERPOLATED_ERR: &str = r#"#[resource] type Conn { 
 impl Conn { fn close(consume self) { println(f"closed-{self.fd}"); } }
 
 fn attempt(i: i64) -> Result<Conn, string> {
-    if i % 2 == 0 { Ok(Conn { fd: i }) } else { Err(f"refused{i}") }
+    if i % 2 == 0 { .Ok(Conn { fd: i }) } else { .Err(f"refused{i}") }
 }
 
 fn main() -> i64 {
@@ -1276,7 +1276,7 @@ extern "C" {
     fn spy_release_one_from_host() -> i64;
 }
 
-fn wrap() -> Option<Holder> { Some(unsafe { spy_make_holder() }) }
+fn wrap() -> Option<Holder> { .Some(unsafe { spy_make_holder() }) }
 
 fn main() -> i64 {
     var total: i64 = 0;
@@ -1364,7 +1364,7 @@ const MATCH_OVER_A_DOMESTIC_ENUM: &str = r#"extern "C" {
     fn spy_retain(s: string) -> i64;
 }
 
-fn mkopt(i: i64) -> Option<string> { Some(f"tok{i}") }
+fn mkopt(i: i64) -> Option<string> { .Some(f"tok{i}") }
 
 fn main() -> i64 {
     var total: i64 = 0;

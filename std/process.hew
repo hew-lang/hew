@@ -171,11 +171,11 @@ pub fn run(command: string) -> Result<CommandOutput, ProcessError> {
         hew_clear_error();
         let result = hew_process_run(command);
         if hew_process_result_is_valid(result) {
-            Ok(take_command_output(result))
+            .Ok(take_command_output(result))
         } else {
             let error = last_process_error("process.run: command execution failed");
             hew_process_result_free(result);
-            Err(error)
+            .Err(error)
         }
     }
 }
@@ -186,11 +186,11 @@ pub fn run_argv(command: string, args: Vec<string>) -> Result<CommandOutput, Pro
         hew_clear_error();
         let result = hew_process_run_argv(command, args);
         if hew_process_result_is_valid(result) {
-            Ok(take_command_output(result))
+            .Ok(take_command_output(result))
         } else {
             let error = last_process_error("process.run_argv: command execution failed");
             hew_process_result_free(result);
-            Err(error)
+            .Err(error)
         }
     }
 }
@@ -202,11 +202,11 @@ pub fn run_argv(command: string, args: Vec<string>) -> Result<CommandOutput, Pro
 /// `run_argv(command, Vec<string>)`.
 pub fn run_args(command: string, args: string, arg_count: i64) -> Result<CommandOutput, ProcessError> {
     if arg_count < 0 {
-        return Err(ProcessError.InvalidArguments(f"process.run_args: arg_count must be non-negative ({legacy_packed_args_note()})"));
+        return .Err(ProcessError.InvalidArguments(f"process.run_args: arg_count must be non-negative ({legacy_packed_args_note()})"));
     }
     let argv = split_legacy_packed_args(args);
     if argv.len() != arg_count {
-        return Err(ProcessError.InvalidArguments(f"process.run_args: arg_count {arg_count} does not match parsed argument length {argv.len()} ({legacy_packed_args_note()})"));
+        return .Err(ProcessError.InvalidArguments(f"process.run_args: arg_count {arg_count} does not match parsed argument length {argv.len()} ({legacy_packed_args_note()})"));
     }
     run_argv(command, argv)
 }
@@ -220,11 +220,11 @@ pub fn start(command: string) -> Result<Child, ProcessError> {
         hew_clear_error();
         let handle = hew_process_spawn(command);
         if hew_process_is_valid(handle) {
-            Ok(Child { handle: handle })
+            .Ok(Child { handle: handle })
         } else {
             let error = last_process_error("process.start: command launch failed");
             hew_process_drop(handle);
-            Err(error)
+            .Err(error)
         }
     }
 }
@@ -239,11 +239,11 @@ pub fn start_argv(command: string, args: Vec<string>) -> Result<Child, ProcessEr
         hew_clear_error();
         let handle = hew_process_spawn_argv(command, args);
         if hew_process_is_valid(handle) {
-            Ok(Child { handle: handle })
+            .Ok(Child { handle: handle })
         } else {
             let error = last_process_error("process.start_argv: command launch failed");
             hew_process_drop(handle);
-            Err(error)
+            .Err(error)
         }
     }
 }

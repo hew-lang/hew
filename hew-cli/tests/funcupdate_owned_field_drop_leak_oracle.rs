@@ -627,7 +627,7 @@ fn nested_option_without_funcupdate_source(frames: usize) -> String {
          type T {{ pair: (Wrapper, i64), churn: string }}\n\
          fn mk() -> T {{\n\
          \x20   T {{\n\
-         \x20       pair: (Wrapper {{ inner: (Some(Leaf {{ label: string.repeat(\"k\", 32), n: 1 }}), 9), tag: string.repeat(\"w\", 32) }}, 5),\n\
+         \x20       pair: (Wrapper {{ inner: (.Some(Leaf {{ label: string.repeat(\"k\", 32), n: 1 }}), 9), tag: string.repeat(\"w\", 32) }}, 5),\n\
          \x20       churn: string.repeat(\"a\", 32),\n\
          \x20   }}\n\
          }}\n\

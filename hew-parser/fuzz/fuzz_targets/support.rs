@@ -13,7 +13,7 @@ pub fn repo_root() -> PathBuf {
 }
 
 pub fn module_search_paths() -> Vec<PathBuf> {
-    let mut paths = build_module_search_paths();
+    let mut paths = stdlib_search_paths();
     let root = repo_root();
     if root.join("std").exists() && !paths.contains(&root) {
         paths.push(root);

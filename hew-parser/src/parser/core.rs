@@ -101,11 +101,28 @@ impl<'src> Parser<'src> {
             allow_implicit_self_params: false,
             no_struct_literal: Rc::new(Cell::new(false)),
             block_arm_body: Rc::new(Cell::new(false)),
+            statement_block: Cell::new(false),
+            source,
+            source_offset: offset,
             last_token_end: offset,
         }
     }
 
     // ── Helpers ──
+    /// Whether the current token starts on the same line the previous token
+    /// ends on.
+    pub(crate) fn peek_on_same_line(&self) -> bool {
+        let (Some((_, previous)), Some((_, next))) = (
+            self.tokens.get(self.pos.wrapping_sub(1)),
+            self.tokens.get(self.pos),
+        ) else {
+            return false;
+        };
+        self.source
+            .get(previous.end - self.source_offset..next.start - self.source_offset)
+            .is_some_and(|between| !between.contains('\n'))
+    }
+
     pub(crate) fn peek(&self) -> Option<&Token<'src>> {
         self.tokens.get(self.pos).map(|(t, _)| t)
     }
@@ -210,6 +227,27 @@ impl<'src> Parser<'src> {
                     | Token::Fn
             )
         )
+    }
+
+    /// Whether the current token opens a block-like expression that ends its
+    /// statement at the closing `}`: a block (not a map literal), `unsafe`,
+    /// `scope`, `select`, `race`, `fork { }`, `gen { }` or a lambda `actor`.
+    pub(crate) fn peek_opens_statement_block(&self) -> bool {
+        match self.peek() {
+            Some(Token::Unsafe | Token::Scope | Token::Select | Token::Race) => true,
+            Some(Token::Fork | Token::Gen) => self.peek_at(self.pos + 1) == Some(&Token::LeftBrace),
+            Some(Token::Actor) => {
+                matches!(self.peek_at(self.pos + 1), Some(Token::Pipe | Token::Move))
+            }
+            Some(Token::LeftBrace) => !self.peek_opens_map_literal(),
+            _ => false,
+        }
+    }
+
+    /// Whether the `{` at the cursor opens a map literal (`{"k": v}`).
+    pub(crate) fn peek_opens_map_literal(&self) -> bool {
+        matches!(self.peek_at(self.pos + 1), Some(Token::StringLit(_)))
+            && self.peek_at(self.pos + 2) == Some(&Token::Colon)
     }
 
     pub(crate) fn at_end(&self) -> bool {

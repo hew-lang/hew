@@ -530,7 +530,7 @@ finally {
 }
 
 # ---------------------------------------------------------------------------
-# Environment variables — add to user PATH and set HEW_HOME / HEW_STD
+# Environment variables — add to user PATH and set HEW_HOME
 # ---------------------------------------------------------------------------
 
 $pathUpdated = $false
@@ -547,12 +547,8 @@ if ($currentHewHome -ne $InstallDir) {
     [System.Environment]::SetEnvironmentVariable("HEW_HOME", $InstallDir, [System.EnvironmentVariableTarget]::User)
 }
 
-# Persist HEW_STD for the standard library
-$StdDir = Join-Path $InstallDir "std"
-$currentHewStd = [System.Environment]::GetEnvironmentVariable("HEW_STD", [System.EnvironmentVariableTarget]::User)
-if ($currentHewStd -ne $StdDir) {
-    [System.Environment]::SetEnvironmentVariable("HEW_STD", $StdDir, [System.EnvironmentVariableTarget]::User)
-}
+# The compiler finds its standard library beside itself (<prefix>\std), so
+# HEW_STD is not set; it remains available as an explicit override.
 
 # ---------------------------------------------------------------------------
 # Success message

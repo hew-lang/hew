@@ -818,3 +818,28 @@ fn only_the_record_base_may_move() {
         "type P {\n    x: i64,\n    y: i64,\n}\n\nfn f(b: P) -> P {\n    P { y: 2, x: 1 }\n}\n";
     assert!(check(source, swapped).is_err(), "only the base may move");
 }
+
+/// A block-like form at statement start ends its statement at `}`, so the
+/// parentheses that make it an operand are load-bearing and must survive
+/// formatting, including around a lambda actor.
+#[test]
+fn parenthesized_statement_blocks_keep_their_parentheses() {
+    assert_faithful(
+        r"fn f(v: Vec<i64>) -> i64 {
+    (unsafe { v })[0]
+}
+
+fn g() -> i64 {
+    (scope within 1s { 5 } handle failure { 0 }) - 1
+}
+
+fn main() {
+    (actor |x: i64| {
+        println(x * 3);
+    }).close();
+    ({ 7 }) - 1;
+    println(f([1]));
+}
+",
+    );
+}

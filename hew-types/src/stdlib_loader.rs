@@ -1028,7 +1028,7 @@ impl WrapperForward<'_> {
 ///
 /// Complements [`extract_call_target`] for the `#[resource] T { handle: H }`
 /// idiom. A borrowing method on such a wrapper cannot pass the resource itself
-/// across the FFI boundary (`ResourceBoundaryParamMustConsume`); instead it
+/// across the FFI boundary (`E_BOUNDARY_RESOURCE_MUST_CONSUME`); instead it
 /// forwards the inner non-resource handle field, either directly
 /// (`hew_foo(self.handle, ...rest)`) or through the wrapper-constructing clone
 /// idiom (`T { handle: hew_foo(self.handle, ...) }`), where the remaining args
@@ -1275,7 +1275,7 @@ fn extract_handle_methods(
         // A trivial C shim forwards `self` directly (`hew_foo(self, ...)`). A
         // `#[resource] T { handle: H }` wrapper cannot: a borrowing method may
         // not pass the resource itself across the FFI boundary
-        // (`ResourceBoundaryParamMustConsume`), so it forwards the inner
+        // (`E_BOUNDARY_RESOURCE_MUST_CONSUME`), so it forwards the inner
         // non-resource handle field (`hew_foo(self.handle, ...)`). Recognise that
         // shape — validated against the receiver, the wrapper's declared field,
         // and the module's extern set — so wrapper methods register into the

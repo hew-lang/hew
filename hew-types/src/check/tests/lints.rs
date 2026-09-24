@@ -4263,7 +4263,7 @@ fn count_sleep_loop_blocks_mailbox(diags: &[TypeError]) -> usize {
 const SLEEP_LOOP_REPRO: &str = "actor Worker {\n\
      var running: bool = true,\n\
      receive fn run() { while running { sleep(10ms); } }\n\
-     receive fn stop() { running = false; }\n\
+     receive fn halt() { running = false; }\n\
      }\n";
 
 #[test]
@@ -4339,7 +4339,7 @@ fn sleep_loop_blocks_mailbox_ignores_sleep_loop_inside_lambda() {
         "actor Worker {\n\
          var running: bool = true,\n\
          receive fn run() { let f = || { while running { sleep(10ms); } }; let _ = f; }\n\
-         receive fn stop() { running = false; }\n\
+         receive fn halt() { running = false; }\n\
          }\n",
     );
     assert!(errors.is_empty(), "fixture should type-check: {errors:?}");
@@ -4402,7 +4402,7 @@ fn sleep_loop_blocks_mailbox_suppressed_by_directive() {
              // hew:allow(sleep_loop_blocks_mailbox)\n\
              while running { sleep(10ms); }\n\
          }\n\
-         receive fn stop() { running = false; }\n\
+         receive fn halt() { running = false; }\n\
          }\n";
     let out = check_with_lint_level(SOURCE, LintId::SleepLoopBlocksMailbox, LintLevel::Warn);
     assert!(

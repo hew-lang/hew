@@ -2003,12 +2003,11 @@ receive handler loops around `sleep`/`sleep_until` without an in-loop exit path.
 
 `stop` is a reserved handler name, so the handler above is `halt`, not `stop`.
 Stopping is a method with one signature: inside the actor, `self.stop()`
-finishes the current handler, runs `#[on(stop)]`, and stops; from outside,
-`pid.stop()` requests the same and returns `()`, doing nothing if the actor has
-already stopped or crashed. A `receive fn stop()` is `E_RESERVED_HANDLER_NAME`,
-whose fix-it is to rename the handler or to call `self.stop()`. The shipped
-compiler still exposes the older free-function `stop(actor)` builtin
-(hew-lang/hew#3193).
+lets the handler's remaining synchronous work run, then runs `#[on(stop)]` and
+stops (a suspension after the request cancels the rest of the turn); from
+outside, `pid.stop()` requests the same and returns `()`, doing nothing if the
+actor has already stopped or crashed. A `receive fn stop()` is `E_RESERVED_HANDLER_NAME`,
+whose fix-it is to rename the handler or to call `self.stop()`.
 
 ### Accepting connections and reading in a handler
 

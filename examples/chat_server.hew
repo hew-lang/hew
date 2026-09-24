@@ -25,10 +25,6 @@ import std.os;
 
 import std.stream.{Sink, Stream};
 
-extern "C" {
-    fn hew_actor_self_stop();
-}
-
 actor ChatRoom {
     var handlers: Vec<ClientHandler>,
     var names: Vec<string>,
@@ -104,9 +100,7 @@ actor ClientHandler {
             registered = false;
         }
         sink.finish();
-        unsafe {
-            hew_actor_self_stop()
-        };
+        self.stop();
     }
 }
 
@@ -131,9 +125,7 @@ actor ClientReader {
                 },
             }
         }
-        unsafe {
-            hew_actor_self_stop()
-        };
+        self.stop();
     }
 }
 

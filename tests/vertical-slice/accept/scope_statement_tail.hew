@@ -1,7 +1,6 @@
-// Accept twin for reject/scope_in_value_position.hew.
+// Accept fixture: a `scope { .. }` in statement position stays a statement.
 //
-// `scope` leaving `Primary` closes every value position without touching the
-// statement spelling. `guarded` ends with a `scope { .. }` that carries no
+// `guarded` ends with a `scope { .. }` that carries no
 // trailing `;`: it must stay a statement and must NOT be promoted to the
 // block's trailing expression, so the explicit `return fired` still decides
 // the handler's value. `announce` uses the `scope { .. };` spelling.

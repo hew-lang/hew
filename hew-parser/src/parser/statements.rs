@@ -88,6 +88,25 @@ impl Parser<'_> {
         );
     }
 
+    /// Refuses the retired `for await` spelling (HEW-SPEC-2026 §4.12): `for`
+    /// waits per item on its own. The word is consumed so the loop still
+    /// parses and the reader gets one diagnostic instead of a pattern-position
+    /// cascade.
+    fn refuse_for_await(&mut self) {
+        if self.peek() != Some(&Token::Await) {
+            return;
+        }
+        let span = self.peek_span();
+        self.advance();
+        self.error_at_with_kind_and_hint(
+            "E_FOR_AWAIT: `for` waits for each item on its own; there is no `for await`"
+                .to_string(),
+            span,
+            "delete `await`",
+            ParseDiagnosticKind::ForAwait,
+        );
+    }
+
     pub(crate) fn parse_block(&mut self) -> Option<Block> {
         self.expect(&Token::LeftBrace)?;
 
@@ -655,6 +674,7 @@ impl Parser<'_> {
             }
             Some(Token::For) => {
                 self.advance();
+                self.refuse_for_await();
                 let pattern = self.parse_pattern()?;
                 self.expect(&Token::In)?;
                 let iterable = self.parse_expr()?;
@@ -792,6 +812,7 @@ impl Parser<'_> {
             }
             Some(Token::For) => {
                 self.advance();
+                self.refuse_for_await();
                 let pattern = self.parse_pattern()?;
                 self.expect(&Token::In)?;
                 let iterable = self.parse_expr()?;

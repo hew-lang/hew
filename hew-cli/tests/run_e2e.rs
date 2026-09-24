@@ -5639,12 +5639,11 @@ fn suspended_actor_fresh_state_handoff_closes_each_child_once() {
          extern \"C\" {\n\
          \x20   fn hew_deque_new() -> Marker;\n\
          \x20   fn hew_deque_free(consume marker: Marker);\n\
-         \x20   fn hew_actor_self_stop();\n\
          }\n\
          actor Child {\n\
          \x20   let label: string,\n\
          \x20   let marker: Marker,\n\
-         \x20   receive fn stop() { unsafe { hew_actor_self_stop() }; }\n\
+         \x20   receive fn ping() {}\n\
          }\n\
          actor Maker {\n\
          \x20   receive fn go() {\n\
@@ -5656,7 +5655,7 @@ fn suspended_actor_fresh_state_handoff_closes_each_child_once() {
          \x20               label: label.clone(),\n\
          \x20               marker: unsafe { hew_deque_new() },\n\
          \x20           );\n\
-         \x20           let _ = child.stop();\n\
+         \x20           child.stop();\n\
          \x20           i = i + 1;\n\
          \x20       }\n\
          \x20       println(\"maker-done\");\n\

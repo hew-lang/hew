@@ -29,10 +29,6 @@ import std.stream.{Sink, Stream};
 
 import std.os;
 
-extern "C" {
-    fn hew_actor_self_stop();
-}
-
 // Bound buffering for peers that advertise a very large Remaining Length and
 // then dribble bytes indefinitely. This example intentionally implements a
 // compact MQTT subset; one MiB is ample for its demonstrations.
@@ -229,9 +225,7 @@ actor ClientHandler {
             registered = true;
         } else {
             sink.finish();
-            unsafe {
-                hew_actor_self_stop()
-            };
+            self.stop();
         }
         accepted
     }
@@ -473,9 +467,7 @@ actor ClientHandler {
             }
             println(f"[mqtt] connection closed for {client_id}");
             sink.finish();
-            unsafe {
-                hew_actor_self_stop()
-            };
+            self.stop();
         }
         connected
     }
@@ -486,9 +478,7 @@ actor ClientHandler {
             println(f"[mqtt] connection closed for {client_id}");
         }
         sink.finish();
-        unsafe {
-            hew_actor_self_stop()
-        };
+        self.stop();
     }
 }
 
@@ -514,9 +504,7 @@ actor ClientReader {
                 },
             }
         }
-        unsafe {
-            hew_actor_self_stop()
-        };
+        self.stop();
     }
 }
 

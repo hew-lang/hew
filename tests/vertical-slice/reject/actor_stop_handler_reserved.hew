@@ -1,0 +1,10 @@
+// Reject fixture: `stop` is the actor handle's own lifecycle method, so a
+// receive handler cannot take its name (E_RESERVED_HANDLER_NAME). The fix-it
+// renames the handler or calls `self.stop()`.
+actor Worker {
+    receive fn stop() {}
+}
+
+fn main() {
+    let _worker = spawn Worker;
+}

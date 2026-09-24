@@ -1,0 +1,10 @@
+[[case]]
+id = "user_nominal_named_monitor_ref"
+intent = "A root record named MonitorRef keeps its inherent impl beside the prelude's std.link_monitor, and a handler's monitor result still closes."
+source = "../vertical-slice/accept/user_nominal_named_monitor_ref.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "user#3\ntrue\n"
+exit = 0

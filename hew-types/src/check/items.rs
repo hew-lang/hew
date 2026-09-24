@@ -47,7 +47,29 @@ impl Checker {
             Item::Impl(id) => self.check_impl(id, span),
             Item::Trait(td) => {
                 if !crate::ty::is_reserved_type_name(&td.name) {
+                    for item in &td.items {
+                        if let TraitItem::Method(method) = item {
+                            if method.body.is_none() {
+                                self.check_boundary_resource_params(
+                                    &method.name,
+                                    &method.params,
+                                    "trait method signature",
+                                    &method.span,
+                                );
+                            }
+                        }
+                    }
                     self.check_trait_defaults(td);
+                }
+            }
+            Item::ExternBlock(block) => {
+                for function in &block.functions {
+                    self.check_boundary_resource_params(
+                        &function.name,
+                        &function.params,
+                        "extern fn",
+                        &function.span,
+                    );
                 }
             }
             // All of these are fully handled during earlier registration passes
@@ -60,9 +82,79 @@ impl Checker {
             | Item::Import(_)
             | Item::TypeDecl(_)
             | Item::TypeAlias(_)
-            | Item::Machine(_)
-            | Item::ExternBlock(_) => {}
+            | Item::Machine(_) => {}
             Item::Supervisor(sd) => self.check_supervisor(sd, span),
+        }
+    }
+
+    /// A `#[resource]`/`#[linear]` value passed by value across a boundary
+    /// whose body is invisible - an `extern` fn or a bodyless trait method
+    /// signature - must say `consume`: no body shows whether the other side
+    /// closes it, and a wrong guess double-closes or leaks. A std extern whose
+    /// generated ownership row proves an audited borrow of this exact nominal
+    /// is the one exception. Builtin runtime handles are not user resources
+    /// and ride the runtime's own drop path.
+    fn check_boundary_resource_params(
+        &mut self,
+        function: &str,
+        params: &[hew_parser::ast::Param],
+        boundary: &str,
+        span: &Span,
+    ) {
+        for (index, param) in params.iter().enumerate() {
+            // Only a by-value nominal can be a resource; `&T`, pointers and
+            // callables keep their own boundary rules.
+            if param.is_consume || !matches!(param.ty.0, TypeExpr::Named { .. }) {
+                continue;
+            }
+            let Ty::Named {
+                name,
+                builtin: None,
+                ..
+            } = self.resolve_type_expr(&param.ty)
+            else {
+                continue;
+            };
+            let marker = crate::value_class::ClassDeclarations::declared_type(
+                &self.class_declarations(),
+                &name,
+            )
+            .map(|declared| declared.marker);
+            if !matches!(
+                marker,
+                Some(
+                    crate::value_class::DeclarationMarker::Resource
+                        | crate::value_class::DeclarationMarker::Linear
+                )
+            ) {
+                continue;
+            }
+            if boundary == "extern fn"
+                && crate::ffi_contracts::extern_resource_param_is_audited_borrow(
+                    function,
+                    index,
+                    self.current_module.as_deref(),
+                    &name,
+                )
+            {
+                continue;
+            }
+            let shown = name.rsplit('.').next().unwrap_or(&name).to_string();
+            self.report_error_with_suggestions(
+                TypeErrorKind::BoundaryResourceMustConsume,
+                span,
+                format!(
+                    "E_BOUNDARY_RESOURCE_MUST_CONSUME: `{shown}` is a `#[resource]`/`#[linear]` \
+                     value passed to {boundary} `{function}`, whose body is not visible, so \
+                     parameter `{}` must say whether it takes the value",
+                    param.name
+                ),
+                vec![format!(
+                    "write `consume {}: {shown}` when the other side takes ownership, or pass \
+                     an owned id instead of the resource itself",
+                    param.name
+                )],
+            );
         }
     }
 
@@ -862,8 +954,7 @@ impl Checker {
     /// collisions with builtins or inlined functions from other modules.
     pub(super) fn check_function_as(&mut self, fd: &FnDecl, fn_name: &str) {
         let body = self
-            .identity
-            .declaration_by_path(fn_name)
+            .lookup_declaration(fn_name)
             .cloned()
             .or_else(|| self.impl_method_declaration_ids.get(fn_name).cloned())
             .map(|id| {
@@ -2296,6 +2387,16 @@ impl Checker {
         rf: &ReceiveFnDecl,
         fields: &[FieldDecl],
     ) {
+        if rf.name == "stop" {
+            self.report_error_with_suggestions(
+                TypeErrorKind::InvalidOperation,
+                &rf.span,
+                "E_RESERVED_HANDLER_NAME: `stop` is the actor handle's own lifecycle \
+                 method, so no receive handler can take its name"
+                    .to_string(),
+                vec!["rename the handler, or call `self.stop()` to stop the actor".to_string()],
+            );
+        }
         // Validate #[every(duration)] attribute if present.
         self.validate_every_attribute(rf);
         self.actor_handler_state_guards.insert(
@@ -2315,8 +2416,7 @@ impl Checker {
         let prev_function = self.current_function.take();
         self.current_function = Some(qualified_name.clone());
         let effect_body = self
-            .identity
-            .declaration_by_path(&qualified_name)
+            .lookup_declaration(&qualified_name)
             .cloned()
             .map(super::effects::EffectBody::Declaration);
         let previous_effect_body =

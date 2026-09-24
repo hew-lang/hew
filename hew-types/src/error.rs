@@ -800,6 +800,9 @@ pub enum TypeErrorKind {
     /// receiver instead of consuming it (D442). A borrowing `close` runs the
     /// implicit scope-exit release a second time when called explicitly.
     ResourceCloseMustConsume,
+    /// A `#[resource]`/`#[linear]` value parameter of an `extern` fn or a
+    /// bodyless trait method signature does not say `consume`.
+    BoundaryResourceMustConsume,
     /// Yield used outside a generator function
     YieldOutsideGenerator,
     /// A `gen fn` return-type annotation spells the generator handle
@@ -1509,6 +1512,7 @@ impl TypeErrorKind {
             Self::OwnMutateBorrowed => "E_OWN_MUTATE_BORROWED",
             Self::OwnPartialConsume => "E_OWN_PARTIAL_CONSUME",
             Self::ResourceCloseMustConsume => "E_RESOURCE_CLOSE_MUST_CONSUME",
+            Self::BoundaryResourceMustConsume => "E_BOUNDARY_RESOURCE_MUST_CONSUME",
             Self::YieldOutsideGenerator => "YieldOutsideGenerator",
             Self::GenReturnSpelling => "E_GEN_RETURN_SPELLING",
             Self::SendResultDropped => "E_SEND_RESULT_DROPPED",

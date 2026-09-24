@@ -1472,6 +1472,7 @@ fn resolve_imports_internal(
     inject_implicit_imports(&mut program.items, source);
 
     let input_path = Path::new(input);
+    inject_prelude_module_loads(&mut program.items, input_path);
     let mut import_ctx = ImportResolutionContext {
         in_progress_imports: HashSet::new(),
         resolved_imports: HashMap::new(),
@@ -1876,6 +1877,38 @@ pub fn inject_implicit_imports(items: &mut Vec<Spanned<Item>>, source: &str) {
             ));
         }
     }
+}
+
+/// Load the modules whose declarations the prelude publishes. `monitor`
+/// returns a `MonitorRef`, so `std.link_monitor` belongs to every program that
+/// could name one; the import selects no names, so it loads the declarations
+/// without binding anything. A standard-library module checked directly is
+/// the prelude's own floor and loads nothing: `std.link_monitor` would import
+/// itself, and `std.failure` would close a cycle through it.
+fn inject_prelude_module_loads(items: &mut Vec<Spanned<Item>>, input: &Path) {
+    if canonical_direct_stdlib_module_for_source(input).is_some() {
+        return;
+    }
+    let path = ["std", "link_monitor"];
+    let already_imported = items
+        .iter()
+        .any(|(item, _)| matches!(item, Item::Import(decl) if decl.path == path));
+    if already_imported {
+        return;
+    }
+    items.push((
+        Item::Import(ImportDecl {
+            path: path.iter().map(|segment| (*segment).to_string()).collect(),
+            spec: Some(hew_parser::ast::ImportSpec::Names(Vec::new())),
+            selection_trailing_comma: false,
+            module_alias: None,
+            file_path: None,
+            resolved_items: None,
+            resolved_item_source_paths: Vec::new(),
+            resolved_source_paths: Vec::new(),
+        }),
+        0..0,
+    ));
 }
 
 fn source_contains_regex_literal(source: &str) -> bool {
@@ -5901,27 +5934,18 @@ impl Foo { fn close(consume self) {} }
 extern "C" { fn hew_tcp_read(foo: Foo); }
 "#,
         );
-        let spoof_state = run_file_frontend_to_typecheck(&spoof, &FrontendOptions::default())
-            .expect("the spoof is syntactically/type valid before HIR boundary enforcement");
-        let spoof_tco = spoof_state
-            .typecheck_result
-            .tco
-            .as_ref()
-            .expect("successful spoof type check has type output");
-        let spoof_hir = hew_hir::lower_program(
-            &spoof_state.program,
-            spoof_tco,
-            &hew_hir::ResolutionCtx,
-            hew_hir::TargetArch::host(),
-        );
+        let Err(spoof) = run_file_frontend_to_typecheck(&spoof, &FrontendOptions::default()) else {
+            panic!("a user Foo must not inherit std.net.Connection's borrow row");
+        };
         assert!(
-            spoof_hir.diagnostics.iter().any(|diagnostic| matches!(
-                diagnostic.kind,
-                hew_hir::HirDiagnosticKind::ResourceBoundaryParamMustConsume { ref func, .. }
-                    if func == "hew_tcp_read"
+            spoof.diagnostics.iter().any(|diagnostic| matches!(
+                &diagnostic.kind,
+                FrontendDiagnosticKind::Type(error)
+                    if error.kind == hew_types::error::TypeErrorKind::BoundaryResourceMustConsume
+                        && error.message.contains("`hew_tcp_read`")
             )),
             "a user Foo must not inherit std.net.Connection's borrow row: {:#?}",
-            spoof_hir.diagnostics
+            spoof.diagnostics
         );
     }
 
@@ -6209,6 +6233,12 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         let stdlib_dir = stdlib_root.join("std");
         fs::create_dir_all(&stdlib_dir).expect("create explicit stdlib root");
         write_source(&stdlib_dir, "builtins.hew", "// explicit stdlib marker\n");
+        // Every program loads the prelude's `std.link_monitor`.
+        write_source(
+            &stdlib_dir,
+            "link_monitor.hew",
+            "// prelude module marker\n",
+        );
         let expected = Path::new(&write_source(
             &stdlib_dir,
             "fs.hew",

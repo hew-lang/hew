@@ -296,7 +296,7 @@ fn len_zero_comparison_inline_directive_suppresses() {
 const SLEEP_LOOP_BLOCKS_MAILBOX: &str = "actor Worker {\n\
      var running: bool = true,\n\
      receive fn run() { while running { sleep(10ms); } }\n\
-     receive fn stop() { running = false; }\n\
+     receive fn halt() { running = false; }\n\
      }\n";
 
 const SLEEP_LOOP_BLOCKS_MAILBOX_SUPPRESSED: &str = "actor Worker {\n\
@@ -305,7 +305,7 @@ const SLEEP_LOOP_BLOCKS_MAILBOX_SUPPRESSED: &str = "actor Worker {\n\
      // hew:allow(sleep_loop_blocks_mailbox)\n\
      while running { sleep(10ms); }\n\
      }\n\
-     receive fn stop() { running = false; }\n\
+     receive fn halt() { running = false; }\n\
      }\n";
 
 const SLEEP_LOOP_BLOCKS_MAILBOX_MESSAGE: &str = "actor's mailbox is never observed";

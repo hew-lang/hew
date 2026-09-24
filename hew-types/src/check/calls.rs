@@ -1325,8 +1325,7 @@ impl Checker {
                 format!("{module}.{name}")
             },
         );
-        self.identity
-            .declaration_by_path(&declaration)
+        self.lookup_declaration(&declaration)
             .cloned()
             .map(|declaration| self.source_call_target(declaration))
     }
@@ -1346,7 +1345,7 @@ impl Checker {
         // is also importable in its own right publishes both `pkg.f` and
         // `pkg.file.f`), and the extern table is keyed by the identity, not by
         // a spelling. Resolve the key first, then read the extern row.
-        let resolved = self.identity.declaration_by_path(signature_key).cloned();
+        let resolved = self.lookup_declaration(signature_key).cloned();
         if self.identity.declaration_kind_by_path(signature_key)
             == Some(crate::DeclarationKind::Record)
         {
@@ -1471,7 +1470,7 @@ impl Checker {
                 // the missing declaration owner even when the signature was
                 // populated by an earlier graph-registration pass that did
                 // not retain a second `fn_def_spans` compatibility entry.
-                if let Some(declaration) = self.identity.declaration_by_path(&declaration) {
+                if let Some(declaration) = self.lookup_declaration(&declaration) {
                     return self.source_call_target(declaration.clone());
                 }
                 return CallTarget::Unsupported {
@@ -1496,18 +1495,14 @@ impl Checker {
             self.current_module_idx,
             signature_key.to_string(),
         )) {
-            return self
-                .identity
-                .declaration_by_path(source_key)
-                .cloned()
-                .map_or_else(
-                    || CallTarget::Unsupported {
-                        reason: format!(
-                            "checker identity table has no imported declaration `{source_key}`"
-                        ),
-                    },
-                    |declaration| self.source_call_target(declaration),
-                );
+            return self.lookup_declaration(source_key).cloned().map_or_else(
+                || CallTarget::Unsupported {
+                    reason: format!(
+                        "checker identity table has no imported declaration `{source_key}`"
+                    ),
+                },
+                |declaration| self.source_call_target(declaration),
+            );
         }
         // Compiler-registered builtins have no source declaration span. Their
         // executable identity comes from the typed registry populated during
@@ -1775,14 +1770,23 @@ impl Checker {
         }
 
         if matches!(func_name.as_str(), "link" | "monitor")
-            && self.current_function.as_deref() == Some("main")
-            && self.user_call_target_for_declared_fn(&func_name).is_none()
+            && self
+                .current_function
+                .as_deref()
+                .and_then(|function| self.root_owned_fn_leaf(function))
+                == Some("main")
+            && !self.declares_function(&func_name)
         {
             self.report_error(
                 TypeErrorKind::InvalidOperation,
                 span,
                 format!("E_ACTOR_CONTEXT_REQUIRED: `{func_name}` requires an actor context; main cannot receive actor notifications"),
             );
+            // The arguments are still ordinary uses of their bindings.
+            for arg in args {
+                let (expr, arg_span) = arg.expr();
+                self.synthesize(expr, arg_span);
+            }
             return Ty::Error;
         }
 

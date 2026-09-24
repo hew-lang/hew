@@ -20,9 +20,7 @@ actor Worker {
         panic("childref state transition");
     }
     receive fn stop_me() {
-        unsafe {
-            hew_actor_self_stop()
-        };
+        self.stop();
     }
 }
 
@@ -63,10 +61,6 @@ supervisor StaticPool {
 
 type Holder {
     child: ChildRef<Worker>,
-}
-
-extern "C" {
-    fn hew_actor_self_stop();
 }
 
 fn expect_live(child: ChildRef<Worker>) -> bool {

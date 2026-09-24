@@ -99,6 +99,16 @@ starts the same operation concurrently and returns a `Task<()>`; it does not
 remove the task's cleanup obligation. These calls return unit and are
 idempotent for an actor that is already terminal (§4.10).
 
+`pid.stop()` requests the same cooperative stop without waiting, and returns
+unit; it is idempotent on an actor that has already stopped or crashed.
+Inside the actor, `self.stop()` is not divergence: the handler's remaining
+synchronous statements run and a reply it returns without suspending is
+delivered, then `#[on(stop)]` runs and the actor stops. A suspension after the
+request cancels the rest of the turn. Messages sent after the request fail
+with `SendError`. `stop` is a reserved handler name: `receive fn stop()` is
+`E_RESERVED_HANDLER_NAME`, whose fix-it renames the handler or calls
+`self.stop()`.
+
 Inside a named actor body, bare `self` is the actor's own handle, so
 `registry.register(self)` passes that identity. `self.field` still accesses
 actor state. `this` is not a receiver token.
@@ -4701,8 +4711,8 @@ pulling from a generator you own is a call into your own frame, and it carries
 the generator's inferred suspension effect like any other call (§4.0). The
 pull that crosses an actor boundary is written the same way:
 `for x in pid.stream()` waits per item with no marker on the loop. There is no
-`for await` spelling; `await` after `for` is an ordinary parse error where the
-pattern belongs.
+`for await` spelling; `for await` is `E_FOR_AWAIT` (User) with a fix-it that
+deletes `await`.
 
 Generator construction snapshots every captured value into a heap-owned
 environment before the body ramp reaches its first `yield`. Bit-copy values and
@@ -4985,12 +4995,10 @@ time deliberately — the execution context is dynamic (§4.2), and a static
 link. Neither form succeeds silently, which is the property that matters: a
 subscription with no reader is always reported.
 
-> **Implementation status.** Today `LinkError` carries ten variants and names
-> the missing context `NoCurrentActor`, `monitor` returns
-> `Result<MonitorRef, MonitorError>`, and a `link` reached through a free
-> function called from `main` succeeds and prints. The `Dead` arm is never
-> produced until dead-target resolution lands (§5.6). Tracked in
-> hew-lang/hew#3255.
+> **Implementation status.** Local pids follow this rule. `monitor` on a
+> `RemotePid` still returns `Result<MonitorRef, MonitorError>`, whose variants
+> the distributed runtime produces. The `Dead` arm is never produced until
+> dead-target resolution lands (§5.6). Tracked in hew-lang/hew#3255.
 
 ### 5.8 Process Exit Status (normative)
 
@@ -6218,11 +6226,9 @@ replacement rather than a bare parse error.
 carrying the `var` fix-it, not a parse cascade. Mutable bindings are `var`
 (§3.2).
 
-**Current lexer limitation.** Some words intended as ordinary or contextual
-identifiers remain reserved by the lexer, including `try`, `catch`, `default`,
-`emit` and `pool`. This does not reinstate their retired constructs.
 `send` has no keyword role, `this` has no receiver role, and neither `join` nor
-`for await` is a language construct. Parser diagnostics for old spellings do
+`for await` is a language construct. `for await` is `E_FOR_AWAIT` (User) with
+a fix-it that deletes `await` (§4.12). Parser diagnostics for old spellings do
 not make them recommended alternatives.
 
 ### 12.1 Built-in Numeric Types

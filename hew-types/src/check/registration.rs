@@ -1152,7 +1152,6 @@ impl Checker {
             }],
             Ty::Unit,
         );
-        self.register_builtin_fn("stop", vec![Ty::Var(TypeVar::fresh())], Ty::Unit);
         // `close(actor)` requests a cooperative stop and waits for terminal
         // cleanup; `closed(actor)` waits without requesting. Both are ordinary
         // calls, so `fork close(actor)` is the non-waiting request.
@@ -3664,8 +3663,8 @@ impl Checker {
                 .map(|module| format!("{}.{}", self.identity.module_path(module), td.name));
             if let Some(declaration) = qualified
                 .as_deref()
-                .and_then(|name| self.identity.declaration_by_path(name))
-                .or_else(|| self.identity.declaration_by_path(&td.name))
+                .and_then(|name| self.lookup_declaration(name))
+                .or_else(|| self.lookup_declaration(&td.name))
             {
                 self.must_use_types.insert(declaration.clone());
             }
@@ -7467,8 +7466,7 @@ impl Checker {
             impl_method: Some(super::types::ImplMethodProvenance {
                 declaration: declaration_id.clone(),
                 receiver: self
-                    .identity
-                    .declaration_by_path(
+                    .lookup_declaration(
                         &self
                             .canonical_nominal_name(type_name)
                             .unwrap_or_else(|| self.trait_impl_type_identity(type_name)),
@@ -7816,7 +7814,7 @@ impl Checker {
         // established row for it is that same method: resolve it rather than
         // mint a second identity. A genuinely duplicated impl method collides
         // on this path too, and impl registration reports that.
-        self.identity.declaration_by_path(&path).cloned()
+        self.lookup_declaration(&path).cloned()
     }
 
     /// Substitute trait-side type references into impl-side concrete types.
@@ -8131,8 +8129,7 @@ impl Checker {
             .trait_defs
             .iter()
             .filter_map(|(key, info)| {
-                self.identity
-                    .declaration_by_path(key)
+                self.lookup_declaration(key)
                     .cloned()
                     .map(|id| (key.clone(), id, info.clone()))
             })
@@ -8155,7 +8152,7 @@ impl Checker {
                     continue;
                 };
                 let owner_key = self.trait_defs_key_for_identity(&owner);
-                let Some(owner_id) = self.identity.declaration_by_path(&owner_key) else {
+                let Some(owner_id) = self.lookup_declaration(&owner_key) else {
                     continue;
                 };
                 let method_key = format!("{}::{name}", owner_id.full_path());
@@ -8448,7 +8445,7 @@ impl Checker {
         let identity = self.resolve_trait_conformance_identity(trait_name);
         let trait_key = self.trait_defs_key_for_identity(&identity);
         self.mark_imported_trait_used(self.current_module.as_deref(), trait_name);
-        if let Some(declaration) = self.identity.declaration_by_path(&trait_key).cloned() {
+        if let Some(declaration) = self.lookup_declaration(&trait_key).cloned() {
             self.trait_bindings.insert(
                 (
                     self.current_module.clone(),
@@ -9976,7 +9973,7 @@ impl Checker {
         module_path: &str,
         key: &str,
     ) {
-        let declaration = if let Some(existing) = self.identity.declaration_by_path(key) {
+        let declaration = if let Some(existing) = self.lookup_declaration(key) {
             existing.clone()
         } else {
             // One occurrence per source-less extern declaration in this
@@ -11601,8 +11598,7 @@ impl Checker {
                 }
                 Item::Trait(decl) if decl.visibility.is_pub() => {
                     let canonical = format!("{module_full_path}.{}", decl.name);
-                    let Some(trait_id) = self.identity.declaration_by_path(&canonical).cloned()
-                    else {
+                    let Some(trait_id) = self.lookup_declaration(&canonical).cloned() else {
                         continue;
                     };
                     let mut bindings = vec![format!("{module_short}.{}", decl.name)];
@@ -11642,8 +11638,7 @@ impl Checker {
                                 continue;
                             };
                             let Some(method_id) = self
-                                .identity
-                                .declaration_by_path(&format!(
+                                .lookup_declaration(&format!(
                                     "{}::{}",
                                     trait_id.full_path(),
                                     method.name

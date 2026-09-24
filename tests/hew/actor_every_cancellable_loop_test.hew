@@ -1,7 +1,7 @@
 //! Runtime coverage for cancellable actor work expressed as periodic receive
 //! handlers.
 //!
-//! The worker checks a boolean flag on each `#[every]` tick. The `stop` receive
+//! The worker checks a boolean flag on each `#[every]` tick. The `halt` receive
 //! handler is a normal actor message, so it can interleave between ticks because
 //! each tick returns control to the mailbox.
 
@@ -19,7 +19,7 @@ actor Worker {
         ticks += 1;
     }
 
-    receive fn stop() {
+    receive fn halt() {
         running = false;
     }
 
@@ -29,11 +29,11 @@ actor Worker {
 }
 
 #[test]
-fn stop_message_prevents_more_periodic_work() {
+fn halt_message_prevents_more_periodic_work() {
     let worker = spawn Worker(running: true, ticks: 0);
     sleep(250ms);
     let before = worker.total();
-    let _ = worker.stop();
+    let _ = worker.halt();
     sleep(150ms);
     let after = worker.total();
     sleep(150ms);

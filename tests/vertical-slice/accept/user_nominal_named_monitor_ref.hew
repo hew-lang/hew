@@ -1,0 +1,38 @@
+// Every program loads std.link_monitor, whose builtin MonitorRef shares its
+// leaf with this root record. The root record keeps its own inherent impl and
+// value class, and a monitor result inside a handler still closes through the
+// std declaration.
+type MonitorRef {
+    label: string,
+    id: i64,
+}
+
+impl MonitorRef {
+    fn show(self) -> string {
+        f"{self.label}#{self.id}"
+    }
+}
+
+actor Probe {
+    receive fn ping() {}
+}
+
+actor Watcher {
+    receive fn watch(p: Probe) -> bool {
+        match monitor(p) {
+            .Ok(registration) => registration.id().value > 0,
+            .Err(_) => false,
+        }
+    }
+}
+
+fn main() {
+    let mine = MonitorRef { label: "user", id: 3 };
+    println(mine.show());
+    let p = spawn Probe;
+    let w = spawn Watcher;
+    match w.watch(p) {
+        .Ok(watched) => println(watched),
+        .Err(_) => println("watch failed"),
+    }
+}

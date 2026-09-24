@@ -1620,6 +1620,9 @@ impl Builder<'_, '_> {
                 };
                 self.make_delivery_record(expression, vec![target, message.id, payload.id])
             }
+            ActorDeliveryCall::Stop => {
+                Err("a stop request reaches SIR only as its close request".into())
+            }
             ActorDeliveryCall::Submit { .. }
             | ActorDeliveryCall::Close
             | ActorDeliveryCall::AwaitClosed => self

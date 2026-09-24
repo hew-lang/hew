@@ -1641,9 +1641,9 @@ impl Checker {
             match item {
                 ConditionItem::Let { pattern, expr } => {
                     let scrutinee_ty = self.synthesize(&expr.0, &expr.1);
-                    self.pattern_place = self.expr_place(&expr.0);
-                    self.bind_pattern(&pattern.0, &scrutinee_ty, false, &pattern.1);
-                    self.pattern_place = None;
+                    let place = self.expr_place(&expr.0);
+                    let loan = self.collection_borrow_origin(&expr.0, &expr.1);
+                    self.bind_scrutinee_pattern(pattern, &scrutinee_ty, false, place, loan);
                     // Record the pattern resolution so HIR lowering consumes the
                     // same `pattern_resolutions` side-table that powers `match`.
                     self.record_arm_resolution(&pattern.0, &pattern.1, &scrutinee_ty);

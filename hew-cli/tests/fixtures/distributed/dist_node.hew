@@ -30,11 +30,10 @@ import std.fs;
 
 import std.link_monitor.{DownNotification, DownReason, DownTarget, MonitorError, MonitorRef, PartitionPolicy,};
 
-// Self-stop FFI: the cross-node clean-exit scenario drives the remote actor to
-// the Stopped terminal state from within its own handler. `stop(self)` is not a
-// working surface yet, so the actor calls the runtime self-stop directly.
+// hew_node_api_unregister: the repoint_preserves_ref scenario re-points a
+// registered name to a DIFFERENT actor. `Node::unregister` is not yet a Hew
+// surface, so the server calls the runtime api directly.
 extern "C" {
-    fn hew_actor_self_stop();
     fn hew_actor_self_id() -> i64;
     fn hew_dist_setup_race_kind() -> i64;
 }
@@ -115,9 +114,7 @@ actor KeyValue {
             // terminal state, which the cross-node monitor reports as a DOWN
             // carrying the clean-exit reason.
             KvReq.StopSelf => {
-                unsafe {
-                    hew_actor_self_stop()
-                };
+                self.stop();
                 KvResp.Ack
             },
             // Crash: a deliberate panic transitions the actor to the Crashed

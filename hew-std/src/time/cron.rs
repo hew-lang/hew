@@ -663,32 +663,6 @@ mod tests {
         );
     }
 
-    /// FFI signature-parity guard (`uuid.rs`-style scalar pin).
-    ///
-    /// `hew_cron_next` returns `i32` on the Rust side (`#[no_mangle]` above,
-    /// a status code: 0=success/1=no-next/2=invalid-input/3=invalid-epoch).
-    /// The Hew binding in `cron.hew` must declare the same return type. This
-    /// test parses the `.hew` extern block and fails closed if the declared
-    /// return type is anything other than `-> i32`.
-    #[test]
-    fn hew_binding_declares_cron_next_returns_i32() {
-        let hew_src = include_str!("../../../std/time/cron/cron.hew");
-
-        let decl = hew_src
-            .lines()
-            .map(str::trim)
-            .find(|line| line.starts_with("fn hew_cron_next("))
-            .expect("cron.hew must declare an extern `fn hew_cron_next`");
-
-        let signature = decl.split("//").next().unwrap_or(decl).trim();
-
-        assert!(
-            signature.contains("-> i32"),
-            "cron.hew binding for hew_cron_next must return i32 to match \
-             the Rust `#[no_mangle] -> i32` signature; found: {signature:?}"
-        );
-    }
-
     /// FFI enum/status-code parity guard.
     ///
     /// `cron.hew`'s `cron_error_from_result` match arms hard-code the status

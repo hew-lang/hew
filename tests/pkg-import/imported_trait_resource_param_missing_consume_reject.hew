@@ -7,15 +7,13 @@
 // with `consume`. Leaving it unannotated is a drop-safety bypass (double-free or
 // leak depending on what the impl does).
 //
-// The root and file-flattened lowering passes already reject this. This oracle
-// proves the discipline ALSO fires when the trait arrives via a PACKAGE import:
-// the importer lowers `sinkres`'s items and must reject the unannotated
-// `item: Sticky` with `ResourceBoundaryParamMustConsume`, NOT silently swallow
-// the imported trait (the imported-module item loop previously had no trait arm
-// and let the boundary through).
+// Root and file-flattened traits are already rejected. This oracle proves the
+// discipline ALSO fires when the trait arrives via a PACKAGE import: the checker
+// must reject the unannotated `item: Sticky` in `sinkres` with
+// `E_BOUNDARY_RESOURCE_MUST_CONSUME`, NOT silently swallow the imported trait.
 //
 // Harness verb: hew check (negative — see run.sh). Asserts the boundary
-// diagnostic fires at HIR-lowering time on the imported trait signature.
+// diagnostic fires at check time on the imported trait signature.
 import hew.sinkres.{Sink as ImportedSink};
 
 fn main() {

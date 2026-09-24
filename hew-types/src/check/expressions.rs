@@ -584,8 +584,7 @@ else needs `impl Display for {rendered}`)"
             // Match
             Expr::Match { scrutinee, arms } => {
                 let scr_ty = self.synthesize(&scrutinee.0, &scrutinee.1);
-                let place = self.expr_place(&scrutinee.0);
-                self.check_match_expr(&scr_ty, place.as_ref(), arms, span, None)
+                self.check_match_expr(&scr_ty, scrutinee, arms, span, None)
             }
 
             // Tuple
@@ -3955,6 +3954,23 @@ else needs `impl Display for {rendered}`)"
                 result
             }
 
+            // An unresolved expected type carries no information for the arms,
+            // and checking a diverging first arm against it would bind it to
+            // `!` before the other arm is seen. Synthesize the join instead,
+            // exactly as `check_match_expr` does, and relate it afterwards.
+            (Expr::If { .. }, Ty::Var(_)) => {
+                let actual = self.synthesize(expr, span);
+                if matches!(actual, Ty::Error) {
+                    return actual;
+                }
+                let n = self.errors.len();
+                self.expect_type(expected, &actual, span);
+                if self.errors.len() > n {
+                    Ty::Error
+                } else {
+                    actual
+                }
+            }
             (
                 Expr::If {
                     condition,
@@ -4015,9 +4031,7 @@ else needs `impl Display for {rendered}`)"
                 // re-arm before checking them; the scrutinee (synthesized above)
                 // does not. `check_match_expr` threads the flag to each arm body.
                 self.tail_ok_armed = tail_ok_armed;
-                let place = self.expr_place(&scrutinee.0);
-                let actual =
-                    self.check_match_expr(&scr_ty, place.as_ref(), arms, span, Some(expected));
+                let actual = self.check_match_expr(&scr_ty, scrutinee, arms, span, Some(expected));
                 if matches!(actual, Ty::Never | Ty::Error) {
                     actual
                 } else {
@@ -7875,7 +7889,7 @@ else needs `impl Display for {rendered}`)"
     pub(super) fn check_match_expr(
         &mut self,
         scrutinee_ty: &Ty,
-        scrutinee_place: Option<&(String, crate::env::PlacePath)>,
+        scrutinee: &Spanned<Expr>,
         arms: &[MatchArm],
         span: &Span,
         expected: Option<&Ty>,
@@ -7905,6 +7919,8 @@ else needs `impl Display for {rendered}`)"
             return Ty::Error;
         }
 
+        let scrutinee_place = self.expr_place(&scrutinee.0);
+        let scrutinee_loan = self.collection_borrow_origin(&scrutinee.0, &scrutinee.1);
         // If the enclosing context supplies a concrete expected type (e.g. the
         // function's declared return type), pre-seed result_ty so every arm body
         // is checked with check_against rather than having the first arm's
@@ -7941,9 +7957,13 @@ else needs `impl Display for {rendered}`)"
         for arm in arms {
             self.env.push_scope();
             self.env.restore_ownership(&fall_through);
-            self.pattern_place = scrutinee_place.cloned();
-            self.bind_pattern(&arm.pattern.0, scrutinee_ty, false, &arm.pattern.1);
-            self.pattern_place = None;
+            self.bind_scrutinee_pattern(
+                &arm.pattern,
+                scrutinee_ty,
+                false,
+                scrutinee_place.clone(),
+                scrutinee_loan.clone(),
+            );
             self.record_arm_resolution(&arm.pattern.0, &arm.pattern.1, scrutinee_ty);
 
             let mut guard_diverges = false;

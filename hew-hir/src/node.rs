@@ -314,9 +314,9 @@ pub struct HirExternFn {
     /// disposition of a `#[resource]`/`#[linear]` value parameter cannot be
     /// inferred — it is pinned at the surface with `consume` and preserved here
     /// as the durable boundary signature (the surface `Param.is_consume` would
-    /// otherwise be dropped at lowering). The lowering pass fail-closes any
-    /// affine resource parameter that is NOT `consume` with
-    /// `ResourceBoundaryParamMustConsume`, so every `true` here on a resource
+    /// otherwise be dropped at lowering). The checker refuses any affine
+    /// resource parameter that is NOT `consume` with
+    /// `E_BOUNDARY_RESOURCE_MUST_CONSUME`, so every `true` here on a resource
     /// parameter records a caller-side move-in / callee-(ABI-)owns transfer.
     pub param_consume: Vec<bool>,
     pub return_ty: ResolvedTy,

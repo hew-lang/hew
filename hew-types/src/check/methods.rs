@@ -43,8 +43,7 @@ impl Checker {
                 // file that declares it.
                 let lookup_key = self.trait_ref_lookup_key(trait_name);
                 let declaring_trait = self
-                    .identity
-                    .declaration_by_path(&lookup_key)
+                    .lookup_declaration(&lookup_key)
                     .map_or(lookup_key, |declaration| {
                         declaration.full_path().to_string()
                     });
@@ -1544,8 +1543,7 @@ impl Checker {
         {
             CallTarget::Runtime(family)
         } else {
-            self.identity
-                .declaration_by_path(&source_declaration)
+            self.lookup_declaration(&source_declaration)
                 .cloned()
                 .map_or_else(
                     || CallTarget::Builtin {
@@ -1719,8 +1717,7 @@ impl Checker {
             .or_else(|| self.actor_protocol_descriptors.get(&name))
             .ok_or_else(|| format!("actor `{canonical}` has no receive protocol"))?;
         let actor = self
-            .identity
-            .declaration_by_path(&canonical)
+            .lookup_declaration(&canonical)
             .cloned()
             .ok_or_else(|| format!("actor `{canonical}` has no declaration identity"))?;
         let endpoint = |name: &str| -> Result<ResolvedActorEndpoint, String> {
@@ -1735,8 +1732,7 @@ impl Checker {
                 ));
             }
             let handler = self
-                .identity
-                .declaration_by_path(&format!("{canonical}::{name}"))
+                .lookup_declaration(&format!("{canonical}::{name}"))
                 .cloned()
                 .ok_or_else(|| {
                     format!("handler `{canonical}::{name}` has no declaration identity")
@@ -7822,6 +7818,25 @@ impl Checker {
                 } else {
                     crate::BuiltinType::ActorHandle
                 };
+                // `stop` is the actor handle's own lifecycle method
+                // (HEW-SPEC-2026 §2.1): it requests a graceful stop and
+                // returns at once, so `self.stop()` lets the current handler
+                // finish before `#[on(stop)]` runs. A supervisor's lifecycle
+                // is `close`, which tears its tree down.
+                let supervisor = matches!(
+                    resolved.as_actor_handle(),
+                    Some(Ty::Named { name, .. }) if self.supervisor_children.contains_key(name)
+                );
+                if method == "stop" && resolved.as_actor_handle().is_some() && !supervisor {
+                    if !self.check_arity(args, 0, "`stop`", span) {
+                        return Ty::Error;
+                    }
+                    self.actor_delivery_calls.insert(
+                        SpanKey::in_module(span, self.current_module_idx),
+                        crate::actor_delivery::ActorDeliveryCall::Stop,
+                    );
+                    return Ty::Unit;
+                }
                 // A user handler named `send` is actor dispatch; otherwise
                 // `send` resolves through the reference type's own method.
                 let has_user_send_handler = if method == "send" {

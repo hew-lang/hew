@@ -756,15 +756,27 @@ fn peer_files_with_divergent_same_named_types_conflict_on_one_symbol() {
     );
 }
 
-/// Control: ONE declaration (in the peer file) reached through both
-/// assembly routes mints one file-backed nominal identity and therefore
-/// one contract — no self-conflict.
+/// A declaration has one render (#3239). The frontend never builds this
+/// graph - importing a peer file directly is `E_PEER_IMPORT` - so a peer file
+/// walked a second time as its own module is an internal defect: the identity
+/// table refuses the second spelling and names both, and the one declaration
+/// still yields one contract rather than a self-conflict.
 #[test]
-fn one_peer_declaration_through_two_routes_resolves_one_contract() {
+fn one_peer_declaration_through_two_routes_is_refused_naming_both_spellings() {
     let output = check_peer_assembled_extern(false);
     assert!(
-        output.errors.is_empty(),
-        "one declaration, two routes, one identity; errors: {:#?}",
+        output.errors.iter().any(|error| error
+            .message
+            .contains("declaration `pkg.Tok` was offered a second spelling `pkg.aaa.Tok`")),
+        "{:#?}",
+        output.errors
+    );
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|error| error.message.contains("conflicting declarations")),
+        "{:#?}",
         output.errors
     );
 }
@@ -1097,4 +1109,43 @@ fn unaliased_item_import_binds_the_bare_extern_nominal() {
         "`import sm.{{ Tok }}` binds `Tok` bare; errors: {:#?}",
         output.errors
     );
+}
+
+/// A `#[resource]` value crossing an extern or bodyless trait boundary must
+/// say `consume`; the refusal is decided at check time (#3228). A root type
+/// cannot borrow through a std symbol's audited row by spelling the symbol,
+/// and a `consume` parameter or a non-resource value passes.
+#[test]
+fn boundary_resource_params_must_consume_at_check() {
+    let output = check_source(
+        r#"
+        #[resource]
+        #[opaque]
+        type Handle {}
+        impl Handle { fn close(consume self) {} }
+        extern "C" {
+            fn hew_tcp_read(handle: Handle);
+            fn hew_tcp_unclassified(handle: Handle);
+            fn hew_takes(consume handle: Handle);
+            fn hew_len(text: string) -> i64;
+        }
+        trait Sink { fn put(self, item: Handle); fn take(self, consume item: Handle); }
+        fn main() {}
+        "#,
+    );
+    let mut rejected: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|error| error.kind == TypeErrorKind::BoundaryResourceMustConsume)
+        .map(|error| error.message.clone())
+        .collect();
+    rejected.sort();
+    assert_eq!(rejected.len(), 3, "{:#?}", output.errors);
+    for (message, function) in
+        rejected
+            .iter()
+            .zip(["`hew_tcp_read`", "`hew_tcp_unclassified`", "`put`"])
+    {
+        assert!(message.contains(function), "{message}");
+    }
 }

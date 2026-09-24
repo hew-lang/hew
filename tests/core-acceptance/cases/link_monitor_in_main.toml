@@ -1,0 +1,13 @@
+[[case]]
+id = "link_monitor_in_main"
+intent = "A direct monitor in main is refused because main cannot receive actor notifications."
+source = "../vertical-slice/reject/link_monitor_in_main.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "InvalidOperation"
+line = 12
+column = 13
+message = "E_ACTOR_CONTEXT_REQUIRED: `monitor` requires an actor context"

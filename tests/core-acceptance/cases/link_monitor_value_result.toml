@@ -1,0 +1,10 @@
+[[case]]
+id = "link_monitor_value_result"
+intent = "link and monitor return Ok inside a handler and Err(LinkError.NoContext) through a free function called from main."
+source = "../vertical-slice/accept/link_monitor_value_result.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "in actor: 11\nfrom main: 11\n"
+exit = 0

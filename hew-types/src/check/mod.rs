@@ -107,13 +107,14 @@ pub(super) enum TypeResolutionContext {
 /// How one module's nominal declarations are spelled in the identity table.
 ///
 /// A nominal (type, trait, record, actor, supervisor, machine, const) has one
-/// PRIMARY spelling — the one `ResolvedTy::Named` carries for it, and the one
-/// every declaration-derived downstream key renders from — plus, in the two
-/// flattened cases, a second spelling recorded on the same occurrence.
+/// spelling — the one `ResolvedTy::Named` carries for it, and the one every
+/// declaration-derived downstream key renders from. In the two flattened cases
+/// it also answers to a second name in its namespace, which is claimed for
+/// collision reporting but is never a spelling of its identity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum NominalNamespace {
     /// The root compilation unit: its nominals are BARE, and the root's own
-    /// module path is the second spelling.
+    /// module path is the second name.
     RootBare,
     /// An ordinary graph module: its nominals are owner-qualified and no
     /// other spelling reaches them.
@@ -998,10 +999,9 @@ impl Checker {
                         .or(assembler);
                     // The render axis is the module being assembled, which is
                     // the module the checker keys by: `pkg/helpers.hew`'s
-                    // `pub fn make` publishes as `pkg.make`. A peer file that
-                    // is ALSO importable in its own right is walked a second
-                    // time as its own module and records `pkg.helpers.make` as
-                    // a second spelling of the same declaration.
+                    // `pub fn make` publishes as `pkg.make`. A peer file is
+                    // never importable in its own right (E_PEER_IMPORT), so no
+                    // second render of its declarations exists.
                     self.mint_item_declaration_identities(
                         occurrence_module,
                         assembler,
@@ -1056,12 +1056,23 @@ impl Checker {
             .or_else(|| self.identity.root_module())
     }
 
+    /// Resolve a declaration path the checker holds: its canonical render, or
+    /// the other name a nominal answers to in its namespace. The published
+    /// identity view carries only canonical renders.
+    pub(super) fn lookup_declaration(&self, path: &str) -> Option<&crate::DefId> {
+        self.identity.declaration_by_path(path).or_else(|| {
+            self.nominal_namespace_claims
+                .get(path)
+                .and_then(|occurrence| self.identity.declaration(*occurrence))
+        })
+    }
+
     pub(super) fn require_declaration_path(
         &mut self,
         path: &str,
         span: &std::ops::Range<usize>,
     ) -> Option<crate::DefId> {
-        if let Some(declaration) = self.identity.declaration_by_path(path) {
+        if let Some(declaration) = self.lookup_declaration(path) {
             return Some(declaration.clone());
         }
         self.errors.push(TypeError::new(
@@ -1428,9 +1439,8 @@ impl Checker {
     /// * free and extern functions are always module-scoped
     ///   (`{module}.{name}`; the root unit's own path for root functions);
     /// * nominal declarations (types, traits, records, actors, supervisors,
-    ///   machines, consts) render as [`NominalNamespace`] says, and record
-    ///   the other reachable spelling as a second path on the same
-    ///   occurrence.
+    ///   machines, consts) render as [`NominalNamespace`] says, and claim
+    ///   the other name they answer to in that namespace.
     fn mint_item_declaration_identities(
         &mut self,
         module: Option<crate::ModuleId>,
@@ -1459,16 +1469,14 @@ impl Checker {
             NominalNamespace::RootBare => leaf.to_string(),
             NominalNamespace::Owned | NominalNamespace::FlattenedFile => fn_path(leaf),
         };
-        // The OTHER spelling the same declaration is reachable under. A root
-        // nominal is bare but its module still owns it, and the checker's own
-        // registries (`trait_defs`, `type_def_spans`, the visibility index)
-        // key it `{module}.{leaf}`; a flat-imported nominal is qualified by
-        // its file but its items were flattened into the root's namespace, so
-        // it also answers bare. Recording the second spelling on the SAME
-        // occurrence is what the identity table is for: one declaration,
-        // several ways to name it. It never mints a second identity, and a
-        // spelling another declaration already owns is refused rather than
-        // merged.
+        // The OTHER name the same declaration answers to. A root nominal is
+        // bare but its module still owns it, and the checker's own registries
+        // (`trait_defs`, `type_def_spans`, the visibility index) key it
+        // `{module}.{leaf}`; a flat-imported nominal is qualified by its file
+        // but its items were flattened into the root's namespace, so it also
+        // answers bare. The identity table keeps the one canonical render;
+        // the other name is only claimed in the namespace, so a second
+        // declaration answering to it is a duplicate definition.
         let nominal_alias = |leaf: &str| match namespace {
             NominalNamespace::RootBare => module_path
                 .as_ref()
@@ -1476,28 +1484,67 @@ impl Checker {
             NominalNamespace::FlattenedFile => Some(leaf.to_string()),
             NominalNamespace::Owned => None,
         };
-        let mut declare = |kind: Kind, ordinal: usize, path: String| {
+        // `alias` marks the other name a nominal answers to in its namespace.
+        // It is claimed there for collision reporting and never becomes a
+        // second spelling of the declaration's identity.
+        let mut declare = |kind: Kind, ordinal: usize, path: String, alias: bool| {
             let occurrence =
                 Occurrence::new_with_synthetic_ordinal(module, span, item_ordinal, kind, ordinal);
-            let Err(error) = self.identity.declare(occurrence, path.clone()) else {
+            let collision = if alias {
+                let claimant = self
+                    .identity
+                    .occurrence_by_path(&path)
+                    .or_else(|| self.nominal_namespace_claims.get(&path).copied());
+                match claimant {
+                    Some(claimant) if claimant != occurrence => Some(claimant),
+                    Some(_) => None,
+                    None => {
+                        self.nominal_namespace_claims
+                            .insert(path.clone(), occurrence);
+                        None
+                    }
+                }
+            } else {
+                match self.identity.declare(occurrence, path.clone()) {
+                    Ok(_) => self
+                        .nominal_namespace_claims
+                        .get(&path)
+                        .copied()
+                        .filter(|claimant| *claimant != occurrence),
+                    // An `extern "C"` symbol is the one declaration form where
+                    // two occurrences under one path are genuinely one
+                    // declaration: the linker binds every call to a single
+                    // implementation, the checker keys every declaration of
+                    // the symbol by the same fn-sig path, and the extern table
+                    // resolves the redeclaration against the established ABI
+                    // contract. Peer files of one directory module routinely
+                    // re-declare a runtime symbol, so binding the further
+                    // occurrence is what keeps their declarations resolvable.
+                    Err(crate::identity::DeclarationIdentityError::PathAlreadyDeclared {
+                        ..
+                    }) if kind == Kind::ExternFunction => {
+                        self.identity.bind_redeclaration(occurrence, &path);
+                        None
+                    }
+                    Err(crate::identity::DeclarationIdentityError::PathAlreadyDeclared {
+                        established_occurrence,
+                        ..
+                    }) => Some(established_occurrence),
+                    Err(
+                        error @ crate::identity::DeclarationIdentityError::SecondSpelling { .. },
+                    ) => {
+                        self.errors.push(TypeError::new(
+                            TypeErrorKind::InvalidOperation,
+                            span.clone(),
+                            format!("internal compiler error: {error}"),
+                        ));
+                        None
+                    }
+                }
+            };
+            let Some(established_occurrence) = collision else {
                 return;
             };
-            let crate::identity::DeclarationIdentityError::PathAlreadyDeclared {
-                established_occurrence,
-                ..
-            } = &error;
-            // An `extern "C"` symbol is the one declaration form where two
-            // occurrences under one path are genuinely one declaration: the
-            // linker binds every call to a single implementation, the checker
-            // keys every declaration of the symbol by the same fn-sig path,
-            // and the extern table resolves the redeclaration against the
-            // established ABI contract. Peer files of one directory module
-            // routinely re-declare a runtime symbol, so binding the further
-            // occurrence is what keeps their declarations resolvable.
-            if kind == Kind::ExternFunction {
-                self.identity.bind_redeclaration(occurrence, &path);
-                return;
-            }
             // Everything else is a redefinition. Registration reports the
             // ones it can see, which is one file at a time; a collision
             // ACROSS files that share one namespace — two peer files of a
@@ -1544,15 +1591,15 @@ impl Checker {
         match item {
             Item::Import(_) | Item::Impl(_) => {}
             Item::Const(decl) => {
-                declare(Kind::Const, 0, owner_path(&decl.name));
+                declare(Kind::Const, 0, owner_path(&decl.name), false);
                 if let Some(alias) = nominal_alias(&decl.name) {
-                    declare(Kind::Const, 0, alias);
+                    declare(Kind::Const, 0, alias, true);
                 }
             }
-            Item::Function(decl) => declare(Kind::Function, 0, fn_path(&decl.name)),
+            Item::Function(decl) => declare(Kind::Function, 0, fn_path(&decl.name), false),
             Item::ExternBlock(block) => {
                 for (index, decl) in block.functions.iter().enumerate() {
-                    declare(Kind::ExternFunction, index, fn_path(&decl.name));
+                    declare(Kind::ExternFunction, index, fn_path(&decl.name), false);
                 }
             }
             Item::TypeDecl(decl) => {
@@ -1562,9 +1609,9 @@ impl Checker {
                 } else {
                     Kind::Type
                 };
-                declare(kind, 0, owner.clone());
+                declare(kind, 0, owner.clone(), false);
                 if let Some(alias) = nominal_alias(&decl.name) {
-                    declare(kind, 0, alias);
+                    declare(kind, 0, alias, true);
                 }
                 for (index, method) in decl
                     .body
@@ -1576,28 +1623,33 @@ impl Checker {
                     })
                     .enumerate()
                 {
-                    declare(Kind::TypeMethod, index, format!("{owner}::{}", method.name));
+                    declare(
+                        Kind::TypeMethod,
+                        index,
+                        format!("{owner}::{}", method.name),
+                        false,
+                    );
                 }
             }
             Item::TypeAlias(decl) => {
-                declare(Kind::TypeAlias, 0, owner_path(&decl.name));
+                declare(Kind::TypeAlias, 0, owner_path(&decl.name), false);
                 if matches!(namespace, NominalNamespace::RootBare) {
                     if let Some(alias) = nominal_alias(&decl.name) {
-                        declare(Kind::TypeAlias, 0, alias);
+                        declare(Kind::TypeAlias, 0, alias, true);
                     }
                 }
             }
             Item::Record(decl) => {
-                declare(Kind::Record, 0, owner_path(&decl.name));
+                declare(Kind::Record, 0, owner_path(&decl.name), false);
                 if let Some(alias) = nominal_alias(&decl.name) {
-                    declare(Kind::Record, 0, alias);
+                    declare(Kind::Record, 0, alias, true);
                 }
             }
             Item::Trait(decl) => {
                 let owner = owner_path(&decl.name);
-                declare(Kind::Trait, 0, owner.clone());
+                declare(Kind::Trait, 0, owner.clone(), false);
                 if let Some(alias) = nominal_alias(&decl.name) {
-                    declare(Kind::Trait, 0, alias);
+                    declare(Kind::Trait, 0, alias, true);
                 }
                 for (index, method) in decl
                     .items
@@ -1612,23 +1664,25 @@ impl Checker {
                         Kind::TraitMethod,
                         index,
                         format!("{owner}::{}", method.name),
+                        false,
                     );
                 }
             }
             Item::Actor(decl) => {
                 let owner = owner_path(&decl.name);
-                declare(Kind::Actor, 0, owner.clone());
+                declare(Kind::Actor, 0, owner.clone(), false);
                 if let Some(alias) = nominal_alias(&decl.name) {
-                    declare(Kind::Actor, 0, alias);
+                    declare(Kind::Actor, 0, alias, true);
                 }
                 if decl.init.is_some() {
-                    declare(Kind::ActorInit, 0, format!("{owner}::<init>"));
+                    declare(Kind::ActorInit, 0, format!("{owner}::<init>"), false);
                 }
                 for (index, receive) in decl.receive_fns.iter().enumerate() {
                     declare(
                         Kind::ActorReceive,
                         index,
                         format!("{owner}::{}", receive.name),
+                        false,
                     );
                 }
                 for (index, method) in decl.methods.iter().enumerate() {
@@ -1636,35 +1690,38 @@ impl Checker {
                         Kind::ActorMethod,
                         index,
                         format!("{owner}::{}", method.name),
+                        false,
                     );
                 }
             }
             Item::Supervisor(decl) => {
                 let owner = owner_path(&decl.name);
-                declare(Kind::Supervisor, 0, owner.clone());
+                declare(Kind::Supervisor, 0, owner.clone(), false);
                 if let Some(alias) = nominal_alias(&decl.name) {
-                    declare(Kind::Supervisor, 0, alias);
+                    declare(Kind::Supervisor, 0, alias, true);
                 }
                 declare(
                     Kind::SupervisorBootstrap,
                     0,
                     format!("{owner}::<bootstrap>"),
+                    false,
                 );
             }
             Item::Machine(decl) => {
                 let owner = owner_path(&decl.name);
-                declare(Kind::Machine, 0, owner.clone());
+                declare(Kind::Machine, 0, owner.clone(), false);
                 if let Some(alias) = nominal_alias(&decl.name) {
-                    declare(Kind::Machine, 0, alias);
+                    declare(Kind::Machine, 0, alias, true);
                 }
                 for (index, state) in decl.states.iter().enumerate() {
                     let state_owner = format!("{owner}::state {}", state.name);
-                    declare(Kind::MachineState, index, state_owner.clone());
+                    declare(Kind::MachineState, index, state_owner.clone(), false);
                     if state.entry.is_some() {
                         declare(
                             Kind::MachineStateEntry,
                             index,
                             format!("{state_owner}::<entry>"),
+                            false,
                         );
                     }
                     if state.exit.is_some() {
@@ -1672,6 +1729,7 @@ impl Checker {
                             Kind::MachineStateExit,
                             index,
                             format!("{state_owner}::<exit>"),
+                            false,
                         );
                     }
                 }
@@ -1680,6 +1738,7 @@ impl Checker {
                         Kind::MachineEvent,
                         index,
                         format!("{owner}::event {}", event.name),
+                        false,
                     );
                 }
                 for (index, _) in decl.transitions.iter().enumerate() {
@@ -1687,6 +1746,7 @@ impl Checker {
                         Kind::MachineTransition,
                         index,
                         format!("{owner}::<transition#{index}>"),
+                        false,
                     );
                 }
             }

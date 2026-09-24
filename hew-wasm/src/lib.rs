@@ -695,7 +695,6 @@ fn hir_kind_str(kind: &hew_hir::HirDiagnosticKind) -> &'static str {
             "LinearConsumingMethodSourceUnsupported"
         }
         K::ResourceCloseMustReturnUnit { .. } => "ResourceCloseMustReturnUnit",
-        K::ResourceBoundaryParamMustConsume { .. } => "ResourceBoundaryParamMustConsume",
         K::CloseableOpaqueMustBeResource { .. } => "CloseableOpaqueMustBeResource",
         K::OpaqueResourceCloseMismatch { .. } => "OpaqueResourceCloseMismatch",
         K::OpaqueResourceLifecycleConflict { .. } => "OpaqueResourceLifecycleConflict",

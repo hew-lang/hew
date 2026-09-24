@@ -965,8 +965,8 @@ echo "PASS ${unpub_fixture}"
 
 # Reject fixture: a PACKAGE-imported trait whose bodyless `put` takes a sibling
 # `#[resource]` by value WITHOUT `consume`. A bodyless trait method signature is
-# an invisible-body boundary; the importer lowers the imported module's items and
-# must reject the unannotated resource param with `ResourceBoundaryParamMustConsume`
+# an invisible-body boundary; the checker must reject the unannotated resource
+# param in the imported module with `E_BOUNDARY_RESOURCE_MUST_CONSUME`
 # (RAII-2 #1295). The imported-module item loop previously had no trait arm, so
 # root/file-flattened traits were checked but package-imported ones slipped the
 # gate — a caller could borrow across an invisible body that actually consumes.
@@ -976,8 +976,8 @@ imported_trait_reject_out="$("${HEW}" check --pkg-path "${PKGS}" "${DIR}/${impor
     echo "${imported_trait_reject_out}" >&2
     exit 1
 }
-if ! grep -q "ResourceBoundaryParamMustConsume" <<<"${imported_trait_reject_out}"; then
-    echo "FAIL ${imported_trait_reject}: expected a ResourceBoundaryParamMustConsume diagnostic on the imported trait signature" >&2
+if ! grep -q "E_BOUNDARY_RESOURCE_MUST_CONSUME" <<<"${imported_trait_reject_out}"; then
+    echo "FAIL ${imported_trait_reject}: expected an E_BOUNDARY_RESOURCE_MUST_CONSUME diagnostic on the imported trait signature" >&2
     echo "${imported_trait_reject_out}" >&2
     exit 1
 fi
@@ -993,8 +993,8 @@ imported_trait_ok_out="$("${HEW}" check --pkg-path "${PKGS}" "${DIR}/${imported_
     echo "${imported_trait_ok_out}" >&2
     exit 1
 }
-if grep -q "ResourceBoundaryParamMustConsume" <<<"${imported_trait_ok_out}"; then
-    echo "FAIL ${imported_trait_ok}: consume-pinned imported trait param wrongly flagged ResourceBoundaryParamMustConsume" >&2
+if grep -q "E_BOUNDARY_RESOURCE_MUST_CONSUME" <<<"${imported_trait_ok_out}"; then
+    echo "FAIL ${imported_trait_ok}: consume-pinned imported trait param wrongly flagged E_BOUNDARY_RESOURCE_MUST_CONSUME" >&2
     echo "${imported_trait_ok_out}" >&2
     exit 1
 fi

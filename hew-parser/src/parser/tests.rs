@@ -1152,21 +1152,32 @@ fn parse_labeled_continue() {
     assert!(result.errors.is_empty());
 }
 
-/// `for` waits per item on its own (U383): the `for await` spelling is gone
-/// and leaves an ordinary parse error where the pattern belongs.
+/// `for` waits per item on its own (U383): the `for await` spelling is gone.
+/// It is one `E_FOR_AWAIT` diagnostic whose fix-it deletes the word, and the
+/// loop behind it still parses, labelled or not, so nothing cascades.
 #[test]
-fn parse_for_await_is_a_parse_error() {
-    let source = r"fn main() {
+fn parse_for_await_is_one_diagnostic() {
+    for source in [
+        r"fn main() {
             for await item in stream {
                 println(item);
             }
-        }";
-    let result = parse(source);
-    assert!(
-        !result.errors.is_empty(),
-        "`for await` must not parse; got {:?}",
-        result.program.items
-    );
+        }",
+        r"fn main() {
+            @outer: for await item in stream {
+                println(item);
+            }
+        }",
+    ] {
+        let result = parse(source);
+        assert_eq!(result.errors.len(), 1, "got {:?}", result.errors);
+        assert_eq!(result.errors[0].kind.as_kind_str(), "E_FOR_AWAIT");
+        assert_eq!(result.errors[0].hint.as_deref(), Some("delete `await`"));
+        let Item::Function(main) = &result.program.items[0].0 else {
+            panic!("expected fn main");
+        };
+        assert!(matches!(main.body.stmts[0].0, Stmt::For { .. }));
+    }
 }
 
 #[test]

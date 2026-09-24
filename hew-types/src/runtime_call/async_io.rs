@@ -1,10 +1,12 @@
 //! Canonical source operations implemented by owned native I/O requests.
 
-use super::{
-    runtime_semantic_contract, Deserialize, EnumIter, IntoEnumIterator, ResolvedTy,
-    RuntimeArgumentContract, RuntimeArgumentEffect, RuntimeCallFamily, RuntimeResultEffect,
-    RuntimeSemanticContract, RuntimeValueKind, Serialize,
+use crate::runtime_call::{
+    runtime_semantic_contract, RuntimeArgumentContract, RuntimeArgumentEffect, RuntimeCallFamily,
+    RuntimeResultEffect, RuntimeSemanticContract, RuntimeValueKind,
 };
+use crate::ResolvedTy;
+use serde::{Deserialize, Serialize};
+use strum::{EnumIter, IntoEnumIterator};
 
 /// Source resource identity; the selected extern additionally proves provenance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

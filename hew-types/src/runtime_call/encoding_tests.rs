@@ -3,6 +3,7 @@
     reason = "test the enclosing descriptor authority"
 )]
 use super::*;
+use strum::IntoEnumIterator;
 
 fn value(format: EncodingFormat) -> ResolvedTy {
     ResolvedTy::Named {
@@ -18,7 +19,7 @@ fn source_signature(
     op: EncodingOp,
     value: &ResolvedTy,
 ) -> (Vec<ResolvedTy>, ResolvedTy, Vec<bool>) {
-    use ResolvedTy::{String, Unit, F64, I32, I64, U64};
+    use crate::ResolvedTy::{String, Unit, F64, I32, I64, U64};
     let (params, result) = match op {
         EncodingOp::Parse | EncodingOp::FromString => (vec![String], value.clone()),
         EncodingOp::LastError => (vec![], String),

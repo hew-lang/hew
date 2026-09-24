@@ -323,6 +323,15 @@ fn bare_actor_field_and_bare_break_keep_their_spelling() {
     );
 }
 
+#[test]
+fn doc_comments_keep_their_place_among_attributes() {
+    assert_faithful(
+        "//! Module doc.\n\n#[resource]\n/// Doc after the attribute.\ntype H {}\n\n\
+         /// Doc before the attribute.\n#[test]\nfn t() {}\n\n\
+         actor A {\n    #[on(start)]\n    /// Hook doc.\n    fn started() {}\n}\n",
+    );
+}
+
 // ── Negative controls ────────────────────────────────────────────────────
 
 const ACTOR: &str = "actor W {\n    var n: i64,\n\n    // starts it\n    #[on(start)]\n    fn started() {}\n\n    receive fn boom() {}\n}\n";

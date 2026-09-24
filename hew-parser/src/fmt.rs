@@ -50,7 +50,9 @@ pub fn format_program(program: &Program) -> String {
 /// Format an AST [`Program`] as canonical Hew source text, preserving comments from `source`.
 #[must_use]
 pub fn format_source(source: &str, program: &Program) -> String {
-    let comments = extract_comments(source, false);
+    // Doc comments travel with the other comments, so they keep their place
+    // among attributes and declarations exactly as written.
+    let comments = extract_comments(source, true);
     let mut f = Formatter::new(source, comments);
     f.format_program(program);
     f.flush_comments_before(usize::MAX);
@@ -290,7 +292,12 @@ impl<'a> Formatter<'a> {
         }
     }
 
+    /// Emit a declaration's doc comment from the AST. With source, doc
+    /// comments are flushed in place like any other comment instead.
     fn write_outer_doc(&mut self, doc: Option<&String>) {
+        if !self.source.is_empty() {
+            return;
+        }
         if let Some(d) = doc {
             self.write_doc_comment(d, "///");
         }
@@ -398,6 +405,18 @@ impl<'a> Formatter<'a> {
         if needs_blank_line && !flushed_comments && !self.output.ends_with("\n\n") {
             self.newline();
         }
+        if flushed_comments {
+            self.keep_blank_line_before(pos);
+        }
+    }
+
+    /// After flushing comments, keep a blank line the author left between
+    /// the last of them and the declaration at `pos`.
+    fn keep_blank_line_before(&mut self, pos: usize) {
+        let gap = self.source.get(self.prev_source_pos..pos).unwrap_or("");
+        if gap.matches('\n').count() > 1 && !self.output.ends_with("\n\n") {
+            self.newline();
+        }
     }
 
     /// Emit the comments before `pos` from inside an expression. The
@@ -485,7 +504,10 @@ impl<'a> Formatter<'a> {
         if blank_line_before(self.source, lead) && !self.output.ends_with("\n\n") {
             self.newline();
         }
-        self.flush_comments_before(start);
+        if lead < start {
+            self.flush_comments_before(start);
+            self.keep_blank_line_before(start);
+        }
         self.prev_source_pos = self.prev_source_pos.max(start);
     }
 
@@ -541,6 +563,7 @@ impl<'a> Formatter<'a> {
         let mut tokens = hew_lexer::Lexer::new(rest).peekable();
         loop {
             match tokens.peek() {
+                // A doc comment prints in place with the other comments.
                 Some((hew_lexer::Token::DocComment(_), _)) => {
                     tokens.next();
                 }
@@ -567,7 +590,12 @@ impl<'a> Formatter<'a> {
                     self.write(&text);
                     self.newline();
                 }
-                _ => return true,
+                Some((_, span)) => {
+                    // Doc comments between the attributes and the keyword.
+                    self.flush_comments_before(item_start + span.start);
+                    return true;
+                }
+                None => return true,
             }
         }
     }
@@ -622,7 +650,11 @@ impl<'a> Formatter<'a> {
     // ------------------------------------------------------------------
 
     fn format_program(&mut self, program: &Program) {
-        if let Some(doc) = &program.module_doc {
+        if let Some(doc) = program
+            .module_doc
+            .as_ref()
+            .filter(|_| self.source.is_empty())
+        {
             for line in doc.split('\n') {
                 if line.is_empty() {
                     self.write("//!\n");

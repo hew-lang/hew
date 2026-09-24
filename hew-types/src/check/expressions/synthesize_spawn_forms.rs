@@ -269,6 +269,7 @@ impl Checker {
                             field,
                             self.env
                                 .all_names()
+                                .map(Symbol::as_str)
                                 .filter_map(|k| k.strip_prefix(&format!("{name}.")))
                                 .filter(|k| !k.contains('.')),
                         );

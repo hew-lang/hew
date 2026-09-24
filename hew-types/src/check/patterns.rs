@@ -23,12 +23,12 @@ fn or_branch_bound_names(
     // A name counts as newly bound when it is absent from `before` or rebound to
     // a fresh binding id (shadowing within the same scope), so a branch that
     // re-binds an outer name to a different type is still observed.
-    let before_ids: HashMap<&str, crate::env::TypeBindingId> =
+    let before_ids: HashMap<Ident, crate::env::TypeBindingId> =
         before.current_scope_bindings().collect();
     after
         .current_scope_bindings()
         .filter(|(name, id)| before_ids.get(name) != Some(id))
-        .map(|(name, _)| name.to_owned())
+        .map(|(name, _)| name.to_string())
         .collect()
 }
 
@@ -752,16 +752,16 @@ impl Checker {
             return;
         }
         self.bind_pattern_recording = true;
-        let before: HashSet<String> = self
+        let before: HashSet<Ident> = self
             .env
             .current_scope_bindings()
-            .map(|(name, _)| name.to_string())
+            .map(|(name, _)| name)
             .collect();
         self.bind_pattern_inner(pattern, ty, is_mutable, span);
         let bound: Vec<String> = self
             .env
             .current_scope_bindings()
-            .filter(|(name, _)| !before.contains(*name))
+            .filter(|(name, _)| !before.contains(name))
             .map(|(name, _)| name.to_string())
             .collect();
         self.bind_pattern_recording = false;

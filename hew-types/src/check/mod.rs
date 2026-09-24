@@ -56,6 +56,7 @@ mod patterns;
 mod registration;
 pub use registration::intrinsic_floor_modules;
 mod resolution;
+pub mod scope;
 mod serializable;
 mod statements;
 #[cfg(test)]
@@ -1005,6 +1006,19 @@ impl Checker {
                         span,
                     );
                 }
+                for (item_index, (item, _)) in module.items.iter().enumerate() {
+                    let Item::Import(decl) = item else {
+                        continue;
+                    };
+                    let file = graph
+                        .item_source(module_id, item_index)
+                        .or_else(|| module.source_paths.first())
+                        .and_then(|source| self.defs.module_for_source(source))
+                        .or(assembler);
+                    if let Some(file) = file {
+                        self.bind_import_in_scope(file, decl);
+                    }
+                }
             }
             // `Program::items` is the checker root surface. Some callers keep
             // the graph root's `items` empty, so it is not interchangeable
@@ -1023,6 +1037,7 @@ impl Checker {
                     span,
                 );
             }
+            self.bind_root_imports_in_scope(program);
         } else {
             let root = self.defs.root_module();
             for (item_index, (item, span)) in program.items.iter().enumerate() {
@@ -1034,6 +1049,57 @@ impl Checker {
                     item,
                     span,
                 );
+            }
+            self.bind_root_imports_in_scope(program);
+        }
+    }
+
+    fn bind_root_imports_in_scope(&mut self, program: &Program) {
+        let Some(root) = self.defs.root_module() else {
+            return;
+        };
+        for (item, _) in &program.items {
+            if let Item::Import(decl) = item {
+                self.bind_import_in_scope(root, decl);
+            }
+        }
+    }
+
+    /// Bind one import declaration in its file's scope: a whole-module import
+    /// binds the module under its alias or last segment, a selection binds
+    /// each selected item under its alias or name, and a file import binds
+    /// every item of the imported file.
+    fn bind_import_in_scope(&mut self, file: crate::ModuleId, decl: &hew_parser::ast::ImportDecl) {
+        let Some(target) = decl
+            .resolved_source_paths
+            .first()
+            .and_then(|source| self.defs.module_for_source(source))
+        else {
+            return;
+        };
+        if decl.path.segments.is_empty() {
+            for (name, binding) in self.scopes.items(target) {
+                self.scopes.bind_import(file, name, binding);
+            }
+            return;
+        }
+        match &decl.spec {
+            None => {
+                if let Some(binding_name) = decl.module_alias.or_else(|| decl.path.last()) {
+                    self.scopes.bind_import(
+                        file,
+                        binding_name.name,
+                        scope::Binding::Module(target),
+                    );
+                }
+            }
+            Some(hew_parser::ast::ImportSpec::Names(names)) => {
+                for selected in names {
+                    if let Some(binding) = self.scopes.item(target, selected.name.name) {
+                        let bound = selected.alias.unwrap_or(selected.name);
+                        self.scopes.bind_import(file, bound.name, binding);
+                    }
+                }
             }
         }
     }
@@ -1444,6 +1510,12 @@ impl Checker {
     ) {
         use crate::{DeclarationKind as Kind, DeclarationOccurrence as Occurrence};
 
+        let namespace_module = owner.or(module);
+        if let (Some(file), Some(namespace_module)) = (module, namespace_module) {
+            if file != namespace_module {
+                self.scopes.join_namespace(file, namespace_module);
+            }
+        }
         let module_path = owner.or(module).and_then(|owner| {
             let path = self.defs.module_path(owner);
             (path != "#synthetic-root").then(|| path.to_string())
@@ -1509,6 +1581,16 @@ impl Checker {
                 match self.defs.declare(occurrence, name, owner, path.clone()) {
                     Ok(id) => {
                         minted = Some(id);
+                        match owner {
+                            Some(owner) => self.scopes.declare_member(owner, name, id),
+                            None => {
+                                if let (Some(namespace_module), Some(binding)) =
+                                    (namespace_module, scope::Binding::of_item(&self.defs, id))
+                                {
+                                    self.scopes.declare_item(namespace_module, name, binding);
+                                }
+                            }
+                        }
                         self.nominal_namespace_claims
                             .get(&path)
                             .copied()
@@ -2613,6 +2695,8 @@ impl Checker {
             HashMap::new()
         };
         let defs = std::sync::Arc::new(std::mem::take(&mut self.defs));
+        let resolutions = self.scopes.take_resolutions();
+        let contexts = self.scopes.contexts().clone();
         let mut output = TypeCheckOutput {
             normalized_machines: normalized_machines.clone(),
             select_sources: std::mem::take(&mut self.select_sources),
@@ -2677,6 +2761,8 @@ impl Checker {
             resolved_type_aliases,
             internal_builtin_enum_names,
             defs,
+            resolutions,
+            contexts,
             entry_exit_plan,
             extern_contracts: std::mem::take(&mut self.extern_table),
             fn_sigs: resolved_fn_sigs,

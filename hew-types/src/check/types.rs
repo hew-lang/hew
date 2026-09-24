@@ -591,6 +591,12 @@ pub struct TypeCheckOutput {
     /// later stages look up an exact declaration occurrence; every `DefId` in
     /// this output indexes it.
     pub defs: std::sync::Arc<crate::DefTable>,
+    /// Every path segment the checker resolved, keyed by the segment's span:
+    /// the identity `Scope::resolve` answered. HIR and tooling read it rather
+    /// than resolving a spelling again.
+    pub resolutions: HashMap<SpanKey, super::scope::Resolution>,
+    /// The compilation's hygiene contexts (identity plan §3.8).
+    pub contexts: super::scope::SyntaxContexts,
     /// The checker-selected process entry and its complete exit contract.
     pub entry_exit_plan: Option<EntryExitPlan>,
     /// The compile's single-owner extern contract table (rc1-F1 stage B):
@@ -1486,6 +1492,8 @@ impl Default for TypeCheckOutput {
             resolved_type_aliases: HashMap::new(),
             internal_builtin_enum_names: HashSet::new(),
             defs: std::sync::Arc::default(),
+            resolutions: HashMap::new(),
+            contexts: super::scope::SyntaxContexts::new(),
             entry_exit_plan: None,
             extern_contracts: crate::extern_table::ExternTable::new(),
             fn_sigs: HashMap::new(),
@@ -3562,6 +3570,8 @@ pub struct Checker {
     /// here — `defs.root_module_path()` — and is the authority the
     /// fn-sig mint chokepoint (`canonical_fn_owner`) resolves through.
     pub(super) defs: crate::DefTable,
+    /// The spelling boundary: every module, file and prelude scope.
+    pub(super) scopes: super::scope::Scopes,
     /// The table the next `check_program` mints into instead of a fresh one;
     /// set only by [`crate::Checker::check_embedded_builtins`].
     pub(super) seed_defs: Option<crate::DefTable>,
@@ -4179,6 +4189,7 @@ impl Checker {
             task_scope_depth: 0,
             current_module: None,
             defs: crate::DefTable::new(),
+            scopes: super::scope::Scopes::new(),
             seed_defs: None,
             extern_table: crate::extern_table::ExternTable::new(),
             contractless_extern_occurrences: std::collections::HashMap::new(),

@@ -2717,13 +2717,14 @@ impl Checker {
             })
             .map(|(_, _, binding)| binding.as_str())
             .collect();
+        let local_names: Vec<&str> = self.env.all_names().map(Symbol::as_str).collect();
         let mut similar = crate::error::find_similar(
             &func_name,
             self.fn_sigs
                 .keys()
                 .map(String::as_str)
                 .filter(|key| !foreign_bindings.contains(key))
-                .chain(self.env.all_names()),
+                .chain(local_names.iter().copied()),
         );
         similar.extend(module_qualified_intrinsic_spellings(&func_name));
         self.report_error_with_suggestions(

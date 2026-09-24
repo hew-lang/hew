@@ -113,6 +113,135 @@ pub struct TraitObjectBound {
     pub assoc_bindings: Vec<(String, Ty)>,
 }
 
+/// The identity a named type's head resolves to.
+///
+/// Equality, hashing and ordering of a head are decided by its identity; the
+/// spelling a nominal or parameter head carries is display data only, so two
+/// same-leaf declarations from different modules never compare equal.
+#[derive(Debug, Clone, Copy)]
+pub enum TypeHead {
+    /// A declared nominal: record, enum, machine, supervisor, opaque or extern
+    /// type, identity alias.
+    Nominal(NominalHead),
+    /// The handle type of a declared actor (D489).
+    Actor(NominalHead),
+    /// A compiler-owned type: `Vec`, `Option`, `HashMap`, `Rc`, `Stream`, ...
+    Builtin(BuiltinType),
+    /// A generic binder.
+    Param(ParamHead),
+}
+
+/// A nominal identity with the spelling it renders as.
+#[derive(Debug, Clone, Copy)]
+pub struct NominalHead {
+    pub id: crate::NominalId,
+    /// Display only; never compared.
+    pub spelling: hew_parser::ast::Symbol,
+}
+
+/// A generic binder identity with its declared spelling.
+#[derive(Debug, Clone, Copy)]
+pub struct ParamHead {
+    pub id: crate::def_table::TypeParamId,
+    /// Display only; never compared.
+    pub spelling: hew_parser::ast::Symbol,
+}
+
+/// The discriminant and identity a head is compared by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum HeadIdentity {
+    Nominal(crate::NominalId),
+    Actor(crate::NominalId),
+    Builtin(BuiltinType),
+    Param(crate::def_table::TypeParamId),
+}
+
+impl TypeHead {
+    fn identity(self) -> HeadIdentity {
+        match self {
+            Self::Nominal(head) => HeadIdentity::Nominal(head.id),
+            Self::Actor(head) => HeadIdentity::Actor(head.id),
+            Self::Builtin(builtin) => HeadIdentity::Builtin(builtin),
+            Self::Param(head) => HeadIdentity::Param(head.id),
+        }
+    }
+
+    /// The spelling this head renders as in diagnostics and dumps.
+    #[must_use]
+    pub fn spelling(self) -> &'static str {
+        match self {
+            Self::Nominal(head) | Self::Actor(head) => head.spelling.as_str(),
+            Self::Builtin(builtin) => builtin.canonical_name(),
+            Self::Param(head) => head.spelling.as_str(),
+        }
+    }
+
+    /// The builtin this head is, when it is one.
+    #[must_use]
+    pub fn builtin(self) -> Option<BuiltinType> {
+        match self {
+            Self::Builtin(builtin) => Some(builtin),
+            _ => None,
+        }
+    }
+
+    /// The declared nominal this head names, for a nominal or actor head.
+    #[must_use]
+    pub fn nominal(self) -> Option<crate::NominalId> {
+        match self {
+            Self::Nominal(head) | Self::Actor(head) => Some(head.id),
+            _ => None,
+        }
+    }
+}
+
+impl PartialEq for TypeHead {
+    fn eq(&self, other: &Self) -> bool {
+        self.identity() == other.identity()
+    }
+}
+
+impl Eq for TypeHead {}
+
+impl std::hash::Hash for TypeHead {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.identity().hash(state);
+    }
+}
+
+/// Ordered by spelling first so sorted output does not depend on mint order;
+/// the identity breaks ties between same-spelled heads.
+impl PartialOrd for TypeHead {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for TypeHead {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        fn rank(identity: HeadIdentity) -> (u8, u32, u32) {
+            match identity {
+                HeadIdentity::Nominal(id) => (0, id.declaration().index_u32(), 0),
+                HeadIdentity::Actor(id) => (1, id.declaration().index_u32(), 0),
+                HeadIdentity::Builtin(builtin) => (2, builtin as u32, 0),
+                HeadIdentity::Param(id) => (3, id.owner.index_u32(), u32::from(id.index)),
+            }
+        }
+        self.spelling()
+            .cmp(other.spelling())
+            .then_with(|| rank(self.identity()).cmp(&rank(other.identity())))
+    }
+}
+
+/// A resolved trait reference: the trait's declaration identity and its type
+/// arguments. Every bound, supertrait and `dyn` component names a trait this
+/// way, so a user trait spelled like a compiler predicate stays distinct.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct TraitRef {
+    pub trait_id: crate::DefId,
+    pub args: Vec<Ty>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum HashSetLoweringTypeKey {
     I64,

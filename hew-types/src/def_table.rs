@@ -239,6 +239,12 @@ impl DefId {
     fn index(self) -> usize {
         self.0 as usize
     }
+
+    /// The row index, for orderings that must not depend on anything but
+    /// the table. Never a key: an index means nothing outside its table.
+    pub(crate) fn index_u32(self) -> u32 {
+        self.0
+    }
 }
 
 /// Canonical identity of a declared nominal type.
@@ -260,6 +266,98 @@ impl NominalId {
     #[must_use]
     pub fn declaration(self) -> DefId {
         self.declaration
+    }
+}
+
+/// Identity of one generic binder: the declaration that binds it and its
+/// position in that declaration's parameter list.
+///
+/// A binder is never looked up by its spelling: `fn g<T>(x: T)` and a nominal
+/// `type T` in the same module are distinct identities, so a parameter cannot
+/// resolve to a nominal of the same name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct TypeParamId {
+    pub owner: DefId,
+    pub index: u16,
+}
+
+impl TypeParamId {
+    /// The `index`-th parameter bound by `owner`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a declaration binds more than `u16::MAX` parameters.
+    #[must_use]
+    pub fn new(owner: DefId, index: usize) -> Self {
+        Self {
+            owner,
+            index: u16::try_from(index).expect("more than u16::MAX type parameters on one item"),
+        }
+    }
+}
+
+/// The compiler predicates: marker traits the compiler decides structurally.
+/// None has a source declaration; each is one sourceless row minted when the
+/// table is created and bound in the prelude by its spelling, so a user trait
+/// spelled like a predicate is a different identity (D554 rule 2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Predicate {
+    Send,
+    Sync,
+    Frozen,
+    Copy,
+    Clone,
+    Eq,
+    PartialOrd,
+    Ord,
+    Num,
+    Hash,
+    Debug,
+    Decode,
+    Encode,
+    Serializable,
+    Resource,
+}
+
+impl Predicate {
+    pub const ALL: [Self; 15] = [
+        Self::Send,
+        Self::Sync,
+        Self::Frozen,
+        Self::Copy,
+        Self::Clone,
+        Self::Eq,
+        Self::PartialOrd,
+        Self::Ord,
+        Self::Num,
+        Self::Hash,
+        Self::Debug,
+        Self::Decode,
+        Self::Encode,
+        Self::Serializable,
+        Self::Resource,
+    ];
+
+    /// The prelude spelling the predicate is bound under.
+    #[must_use]
+    pub const fn spelling(self) -> &'static str {
+        match self {
+            Self::Send => "Send",
+            Self::Sync => "Sync",
+            Self::Frozen => "Frozen",
+            Self::Copy => "Copy",
+            Self::Clone => "Clone",
+            Self::Eq => "Eq",
+            Self::PartialOrd => "PartialOrd",
+            Self::Ord => "Ord",
+            Self::Num => "Num",
+            Self::Hash => "Hash",
+            Self::Debug => "Debug",
+            Self::Decode => "Decode",
+            Self::Encode => "Encode",
+            Self::Serializable => "Serializable",
+            Self::Resource => "Resource",
+        }
     }
 }
 
@@ -448,7 +546,35 @@ impl DefTable {
                 path: anchor.spelling().to_string(),
             });
         }
+        for predicate in Predicate::ALL {
+            table.push_row(DefRow {
+                name: Symbol::intern(predicate.spelling()),
+                kind: DeclarationKind::Trait,
+                module: None,
+                owner: None,
+                site: None,
+                path: predicate.spelling().to_string(),
+            });
+        }
         table
+    }
+
+    /// The row of a compiler predicate: predicates follow the builtin
+    /// anchors, in [`Predicate::ALL`] order.
+    #[must_use]
+    pub fn predicate(predicate: Predicate) -> DefId {
+        DefId(
+            u32::try_from(BuiltinAnchor::ALL.len()).expect("anchor count fits u32")
+                + predicate as u32,
+        )
+    }
+
+    /// The predicate a definition is, when it is one.
+    #[must_use]
+    pub fn as_predicate(id: DefId) -> Option<Predicate> {
+        let first = u32::try_from(BuiltinAnchor::ALL.len()).expect("anchor count fits u32");
+        id.0.checked_sub(first)
+            .and_then(|index| Predicate::ALL.get(index as usize).copied())
     }
 
     fn push_row(&mut self, row: DefRow) -> DefId {
@@ -518,7 +644,7 @@ impl DefTable {
     /// Whether the table holds only the builtin anchors.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.defs.len() == BuiltinAnchor::ALL.len()
+        self.defs.len() == BuiltinAnchor::ALL.len() + Predicate::ALL.len()
     }
 
     /// Whether `self` holds every row of `base` unchanged and appended only.

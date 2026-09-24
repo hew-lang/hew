@@ -76,7 +76,7 @@ pub use check::{
 };
 pub use def_table::{
     DeclarationIdentityError, DeclarationKind, DeclarationOccurrence, DefId, DefTable, ModuleId,
-    NominalId,
+    NominalId, Predicate, TypeParamId,
 };
 pub use error::TypeError;
 pub use extern_symbol::{
@@ -107,7 +107,7 @@ pub use stdlib_authority::{
     ExternAbiFact, ExternRuntimeCapability, ExternRuntimeCapabilityEntry, Intrinsic, OverloadGroup,
     PreludeExport, StdlibAuthority, StdlibRoot, STDLIB_AUTHORITY, SUBSTRATE_SOURCES,
 };
-pub use ty::{TraitObjectBound, Ty};
+pub use ty::{NominalHead, ParamHead, TraitObjectBound, TraitRef, Ty, TypeHead};
 pub use type_descriptor::TypeDescriptor;
 pub use type_facts::push_type_components;
 pub use type_facts::{

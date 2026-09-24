@@ -153,7 +153,7 @@ impl Checker {
         let released: Vec<(String, Span)> = self
             .env
             .current_scope_bindings()
-            .filter(|(name, _)| *name != receiver)
+            .filter(|(name, _)| name.name.as_str() != receiver)
             .filter_map(|(name, _)| {
                 let binding = self.env.lookup_ref(name)?;
                 self.release_may_run_close(&self.subst.resolve(&binding.ty))

@@ -705,10 +705,12 @@ else needs `impl Display for {rendered}`)"
                         .to_string(),
                 );
             } else {
+                let local_names: Vec<&str> = self.env.all_names().map(Symbol::as_str).collect();
                 let similar = crate::error::find_similar(
                     name,
-                    self.env
-                        .all_names()
+                    local_names
+                        .iter()
+                        .copied()
                         .chain(self.fn_sigs.keys().map(String::as_str)),
                 );
                 self.report_error_with_suggestions(

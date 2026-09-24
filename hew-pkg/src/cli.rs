@@ -1653,15 +1653,14 @@ fn verify_registry_signature(
 /// namespaced cache slot that `--locked` and `--offline` resolution read
 /// from (`Registry::package_slot_for`). `--local` never combines with
 /// `--registry` (`conflicts_with` in [`PkgCommand::Publish`]), so every local
-/// publish targets the default registry's identity.
-/// Publish a packed archive into the local registry only, under the same
-/// namespaced cache slot `--locked` and `--offline` resolution read from for
-/// the default registry (`Registry::package_slot_for`) — see
-/// `publish_local_package`'s call site and hew-lang/hew#3233. Refuses,
-/// rather than silently overwrites, when that slot already holds a
+/// publish targets the default registry's identity — see hew-lang/hew#3233.
+/// Refuses, rather than silently overwrites, when that slot already holds a
 /// *verified* registry fetch (one `write_cache_metadata` populated) whose
 /// tree checksum differs: a local test build must never shadow a package a
-/// real registry actually served at the same name and version.
+/// real registry actually served at the same name and version. When the
+/// incoming content matches the verified fetch exactly, this is a no-op that
+/// leaves the existing generation (and its cache metadata and retained
+/// archive) untouched, rather than restaging an identical tree.
 fn publish_local_package(
     registry: &registry::Registry,
     name: &str,
@@ -1683,6 +1682,13 @@ fn publish_local_package(
                      version to publish a different build)"
                 )));
             }
+            // Identical content: leave the verified generation in place rather
+            // than restaging it. `StagedDir::publish_pinned` always swaps in a
+            // fresh generation holding only the unpacked tree, which would
+            // drop this generation's cache metadata and retained archive even
+            // though nothing actually changed — silently turning the next
+            // publish (any content) into an unverified, unguarded overwrite.
+            return Ok(existing);
         }
     }
     let staged = crate::atomic_fs::StagedDir::new(&dest)?;
@@ -3685,6 +3691,93 @@ mod tests {
             )
             .unwrap(),
             "pub fn value() -> i64 { 2 }\n"
+        );
+    }
+
+    /// An idempotent same-content local publish over a *verified* registry
+    /// fetch must not drop that fetch's cache metadata or retained archive.
+    /// `StagedDir::publish_pinned` always swaps in a fresh generation holding
+    /// only the unpacked tree, so a naive "checksums match, allow it" guard
+    /// still restages and silently loses the metadata sidecar; a later
+    /// different-content publish would then find `verified_tree_checksum ==
+    /// None` and shadow the package the registry actually served.
+    #[test]
+    fn publish_local_idempotent_publish_preserves_verified_metadata() {
+        let root = tempfile::tempdir().unwrap();
+        let registry = registry::Registry::with_root(root.path().join("registry"));
+        let registry_id = config::default_registry_identity();
+
+        let pkg = |value: &str| {
+            let src = tempfile::tempdir().unwrap();
+            std::fs::write(
+                src.path().join("hew.toml"),
+                "[package]\nname = \"foo\"\nversion = \"1.0.0\"\n",
+            )
+            .unwrap();
+            std::fs::write(
+                src.path().join("foo.hew"),
+                format!("pub fn value() -> i64 {{ {value} }}\n"),
+            )
+            .unwrap();
+            let archive = tarball::pack(src.path(), &[], &[]).unwrap();
+            (src, archive)
+        };
+
+        // Seed the slot as a verified registry fetch would leave it: unpacked
+        // content plus the cache metadata sidecar `write_cache_metadata` writes.
+        let (_src, real) = pkg("1");
+        let slot = registry.package_slot_for(&registry_id, "foo", "1.0.0");
+        let staged = crate::atomic_fs::StagedDir::new(&slot).unwrap();
+        tarball::unpack(&real.data, staged.path()).unwrap();
+        let published = staged.publish_pinned(&slot).unwrap();
+        registry::Registry::write_cache_metadata(
+            published.path(),
+            &registry_id,
+            "foo",
+            "1.0.0",
+            &real.checksum,
+            &real.data,
+        )
+        .unwrap();
+
+        // A local publish with the SAME content is idempotent, not a collision.
+        let (_src2, same) = pkg("1");
+        publish_local_package(&registry, "foo", "1.0.0", &same.data)
+            .expect("identical content is not a collision");
+
+        // The idempotent publish must not have dropped the verified fetch's
+        // cache metadata: the slot must still read back with the same tree
+        // checksum, not silently downgraded to a plain, unverified local
+        // publish that a later different-content publish could shadow.
+        let expected_tree_checksum = crate::tarball::unpacked_tree_checksum(&real.data).unwrap();
+        assert_eq!(
+            registry::Registry::verified_tree_checksum(&registry.package_dir_for(
+                &registry_id,
+                "foo",
+                "1.0.0"
+            )),
+            Some(expected_tree_checksum),
+            "idempotent same-content publish must not disturb the verified metadata"
+        );
+        assert!(
+            registry
+                .verified_online_cache_entry(&registry_id, "foo", "1.0.0", &real.checksum)
+                .unwrap()
+                .is_some(),
+            "the retained archive must also survive, or the next online install redownloads"
+        );
+
+        // With the verified metadata intact, a later local publish with
+        // DIFFERENT content must still be refused — the guard the idempotent
+        // path above must not have silently disarmed it.
+        let (_src3, different_again) = pkg("3");
+        let error = publish_local_package(&registry, "foo", "1.0.0", &different_again.data)
+            .expect_err(
+                "verified metadata surviving the idempotent publish must still guard the slot",
+            );
+        assert!(
+            error.to_string().contains("verified registry fetch"),
+            "unexpected error: {error}"
         );
     }
 

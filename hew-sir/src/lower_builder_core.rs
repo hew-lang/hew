@@ -341,7 +341,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         let mut function = SemFunction {
             id: self.function.id,
             callable: self.callable.id,
-            declaration: self.function.declaration.clone(),
+            declaration: self.function.declaration,
             name: self.callable.symbol.clone(),
             span: self.function.span.clone(),
             source_origin: self.callable.source_origin.clone(),

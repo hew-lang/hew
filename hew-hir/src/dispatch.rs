@@ -76,7 +76,7 @@ pub fn build_trait_impl_method_index(
         // concrete instance args. A specialised impl retains the concrete args
         // structurally instead of encoding them into a mangled string key.
         let self_type = NominalInstance {
-            nominal: nominal.clone(),
+            nominal: *nominal,
             args: if block.type_params.is_empty() {
                 block.self_type_concrete_args.clone()
             } else {
@@ -105,15 +105,15 @@ pub fn build_trait_impl_method_index(
                 // Static calls carry the trait declaration identity.  The
                 // emitted method has a separate implementation declaration
                 // identity, retained in the entry for direct-call projection.
-                method: trait_method_id.clone(),
-                declaring_trait: declaring_trait.clone(),
+                method: *trait_method_id,
+                declaring_trait: *declaring_trait,
                 self_type: self_type.clone(),
             };
             index.insert(
                 key,
                 TraitImplMethodEntry {
                     item: *method_item,
-                    method: impl_method_id.clone(),
+                    method: *impl_method_id,
                     method_symbol: method_symbol.clone(),
                     impl_type_params: block.type_params.clone(),
                 },
@@ -133,18 +133,18 @@ pub fn build_direct_call_symbol_index(items: &[HirItem]) -> HashMap<DefId, Strin
     for item in items {
         match item {
             HirItem::Function(function) => {
-                index.insert(function.declaration.clone(), function.name.clone());
+                index.insert(function.declaration, function.name.clone());
             }
             HirItem::Impl(block) => {
                 for (method_id, method_symbol) in block.method_ids.iter().zip(&block.method_symbols)
                 {
                     if let Some(method_id) = method_id {
-                        index.insert(method_id.clone(), method_symbol.clone());
+                        index.insert(*method_id, method_symbol.clone());
                     }
                 }
             }
             HirItem::ExternFn(extern_fn) => {
-                index.insert(extern_fn.declaration.clone(), extern_fn.name.clone());
+                index.insert(extern_fn.declaration, extern_fn.name.clone());
             }
             _ => {}
         }
@@ -163,9 +163,9 @@ pub fn lookup_trait_impl_entry_by_id<'a, S: std::hash::BuildHasher>(
     method: &DefId,
 ) -> Option<&'a TraitImplMethodEntry> {
     let key = TraitImplKey {
-        declaring_trait: declaring_trait.clone(),
+        declaring_trait: *declaring_trait,
         self_type: self_type.clone(),
-        method: method.clone(),
+        method: *method,
     };
     if let Some(entry) = index.get(&key) {
         return Some(entry);
@@ -174,12 +174,12 @@ pub fn lookup_trait_impl_entry_by_id<'a, S: std::hash::BuildHasher>(
         return None;
     }
     index.get(&TraitImplKey {
-        declaring_trait: declaring_trait.clone(),
+        declaring_trait: *declaring_trait,
         self_type: NominalInstance {
-            nominal: self_type.nominal.clone(),
+            nominal: self_type.nominal,
             args: Vec::new(),
         },
-        method: method.clone(),
+        method: *method,
     })
 }
 
@@ -189,10 +189,10 @@ mod tests {
     use hew_types::{BuiltinType, DefId, NominalId, NominalInstance, ResolvedTy};
     use std::collections::HashMap;
 
-    fn entry(method: &DefId, symbol: &str) -> TraitImplMethodEntry {
+    fn entry(method: DefId, symbol: &str) -> TraitImplMethodEntry {
         TraitImplMethodEntry {
             item: crate::ItemId(0),
-            method: method.clone(),
+            method,
             method_symbol: symbol.to_string(),
             impl_type_params: Vec::new(),
         }
@@ -215,19 +215,19 @@ mod tests {
         let mut index = HashMap::new();
         index.insert(
             TraitImplKey {
-                declaring_trait: alpha_trait.clone(),
+                declaring_trait: alpha_trait,
                 self_type: alpha_thing.clone(),
-                method: alpha_method.clone(),
+                method: alpha_method,
             },
-            entry(&alpha_method, "Thing::show__alpha"),
+            entry(alpha_method, "Thing::show__alpha"),
         );
         index.insert(
             TraitImplKey {
-                declaring_trait: beta_trait.clone(),
+                declaring_trait: beta_trait,
                 self_type: beta_thing.clone(),
-                method: beta_method.clone(),
+                method: beta_method,
             },
-            entry(&beta_method, "Thing::show__beta"),
+            entry(beta_method, "Thing::show__beta"),
         );
 
         assert_eq!(
@@ -265,19 +265,19 @@ mod tests {
         let mut index = HashMap::new();
         index.insert(
             TraitImplKey {
-                declaring_trait: trait_id.clone(),
+                declaring_trait: trait_id,
                 self_type: generic,
-                method: method_id.clone(),
+                method: method_id,
             },
-            entry(&method_id, "Box::show__generic"),
+            entry(method_id, "Box::show__generic"),
         );
         index.insert(
             TraitImplKey {
-                declaring_trait: trait_id.clone(),
+                declaring_trait: trait_id,
                 self_type: i64_instance.clone(),
-                method: method_id.clone(),
+                method: method_id,
             },
-            entry(&method_id, "Box::show__i64"),
+            entry(method_id, "Box::show__i64"),
         );
 
         assert_eq!(
@@ -301,20 +301,19 @@ mod tests {
         );
         let user = ResolvedTy::named_user("HashMapIter", vec![ResolvedTy::I64, ResolvedTy::String]);
 
+        let mut defs = hew_types::DefTable::new();
+        let cursor = defs.mint_for_test("std.builtins.HashMapIter");
+        let shadow = defs.mint_for_test("HashMapIter");
         let builtin_instance = builtin
-            .impl_receiver_instance()
+            .impl_receiver_instance(&defs)
             .expect("the compiler cursor has an exact std impl identity");
+        assert_eq!(builtin_instance.nominal.declaration(), cursor);
         assert_eq!(
-            builtin_instance.nominal.full_path(),
-            "std.builtins.HashMapIter"
-        );
-        assert_eq!(
-            user.impl_receiver_instance()
+            user.impl_receiver_instance(&defs)
                 .expect("the user nominal remains independently dispatchable")
                 .nominal
-                .full_path(),
-            "HashMapIter"
+                .declaration(),
+            shadow
         );
-        assert_ne!(builtin_instance.nominal.full_path(), "HashMapIter");
     }
 }

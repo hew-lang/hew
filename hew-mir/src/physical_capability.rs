@@ -133,7 +133,7 @@ pub(super) fn verify(module: &PhysicalModule) -> Result<(), PhysicalError> {
                     "physical value capability changed its selected callable",
                 ));
             }
-            verify_user(module, ty, *capability, callable, method, type_args)?;
+            verify_user(module, ty, *capability, callable, *method, type_args)?;
         } else {
             if plan.selection.callable.is_some() {
                 return Err(PhysicalError::new(
@@ -216,7 +216,7 @@ fn verify_user(
     ty: &ResolvedTy,
     capability: ValueCapability,
     id: hew_sir::CallableId,
-    declaration: &hew_types::DefId,
+    declaration: hew_types::DefId,
     type_args: &[ResolvedTy],
 ) -> Result<(), PhysicalError> {
     let callable = module
@@ -231,10 +231,10 @@ fn verify_user(
         | hew_sir::CallableInstance::SupervisorChild { .. } => false,
         hew_sir::CallableInstance::Monomorphic => type_args.is_empty(),
         hew_sir::CallableInstance::Generic(key) => {
-            &key.template.declaration == declaration && key.type_args == type_args
+            key.template.declaration == declaration && key.type_args == type_args
         }
     };
-    if &callable.declaration != declaration || !exact_instance {
+    if callable.declaration != declaration || !exact_instance {
         return Err(PhysicalError::new(
             "physical capability callable disagrees with its checker selection",
         ));

@@ -9,13 +9,13 @@ use hew_parser::ast::Ident;
 /// The comparison resolves it through the identity table, which carries one
 /// canonical render per declaration, rather than matching text.
 pub(super) fn impl_receiver_is(
-    identity: &hew_types::IdentityView,
+    identity: &hew_types::DefTable,
     impl_block: &crate::node::HirImplBlock,
-    declaration: &hew_types::DefId,
+    declaration: hew_types::DefId,
 ) -> bool {
-    impl_block.self_type_name == declaration.full_path()
+    impl_block.self_type_name == identity.path(declaration)
         || identity
-            .declaration_by_path(&impl_block.self_type_name)
+            .lookup_path(&impl_block.self_type_name)
             .is_some_and(|resolved| resolved == declaration)
 }
 
@@ -24,7 +24,7 @@ pub(super) fn impl_receiver_is(
 /// reconstruct a close declaration from a record-layout or symbol spelling.
 pub(super) fn admit_resource_record_lifecycles(
     items: &[HirItem],
-    identity: &hew_types::IdentityView,
+    identity: &hew_types::DefTable,
     resource_close_discipline_failures: &HashSet<hew_types::DefId>,
     type_classes: &mut crate::value_class::TypeClassTable,
     diagnostics: &mut Vec<HirDiagnostic>,
@@ -40,13 +40,13 @@ pub(super) fn admit_resource_record_lifecycles(
         }
         _ => None,
     }) {
-        let exact_owner = decl.declaration.full_path();
+        let exact_owner = identity.path(decl.declaration);
         let close_methods: Vec<_> = items
             .iter()
             .filter_map(|item| match item {
                 HirItem::Impl(impl_block)
                     if impl_block.trait_name.is_none()
-                        && impl_receiver_is(identity, impl_block, &decl.declaration) =>
+                        && impl_receiver_is(identity, impl_block, decl.declaration) =>
                 {
                     Some(impl_block)
                 }
@@ -61,7 +61,7 @@ pub(super) fn admit_resource_record_lifecycles(
             })
             .filter_map(|((name, declaration), symbol)| {
                 (name == "close")
-                    .then(|| declaration.as_ref().map(|id| (id.clone(), symbol.clone())))
+                    .then(|| declaration.as_ref().map(|id| (*id, symbol.clone())))
                     .flatten()
             })
             .collect();
@@ -93,7 +93,7 @@ pub(super) fn admit_resource_record_lifecycles(
             .collect();
         let [close_body] = close_bodies.as_slice() else {
             diagnostics.push(resource_lifecycle_boundary_diagnostic(
-                close_declaration.full_path(),
+                identity.path(*close_declaration),
                 format!(
                     "resource record close requires one exact emitted body; found {}",
                     close_bodies.len()
@@ -105,7 +105,7 @@ pub(super) fn admit_resource_record_lifecycles(
         };
         if close_body.return_ty != ResolvedTy::Unit || close_body.params.len() != 1 {
             diagnostics.push(resource_lifecycle_boundary_diagnostic(
-                close_declaration.full_path(),
+                identity.path(*close_declaration),
                 "resource record close body must take one receiver and return unit".to_string(),
                 &decl.span,
                 "resource lifecycle close body has an inadmissible signature",
@@ -114,8 +114,8 @@ pub(super) fn admit_resource_record_lifecycles(
         }
 
         let lifecycle = crate::ResourceRecordLifecycle {
-            resource_declaration: decl.declaration.clone(),
-            close_declaration: close_declaration.clone(),
+            resource_declaration: decl.declaration,
+            close_declaration: *close_declaration,
             close_symbol: close_symbol.clone(),
         };
         if type_classes
@@ -210,7 +210,7 @@ pub(super) fn validate_opaque_resource_close(
             let receiver = close.params[0].id;
             let exact_wrapper = is_exact_release_forwarding_wrapper(
                 &close.body,
-                &candidate.release_declaration,
+                candidate.release_declaration,
                 &candidate.release_symbol,
                 candidate.release_param_index,
                 receiver,
@@ -229,6 +229,7 @@ pub(super) fn validate_opaque_resource_close(
 }
 
 pub(super) fn admit_opaque_resource_lifecycles(
+    identity: &hew_types::DefTable,
     items: &[HirItem],
     graph: &hew_types::OpaqueResourceCandidateGraph,
     type_classes: &mut crate::value_class::TypeClassTable,
@@ -296,9 +297,9 @@ pub(super) fn admit_opaque_resource_lifecycles(
         match detail {
             Ok(close_symbol) => {
                 let lifecycle = crate::OpaqueResourceLifecycle {
-                    resource_declaration: candidate.resource_declaration.clone(),
-                    close_declaration: candidate.close_declaration.clone(),
-                    release_declaration: candidate.release_declaration.clone(),
+                    resource_declaration: candidate.resource_declaration,
+                    close_declaration: candidate.close_declaration,
+                    release_declaration: candidate.release_declaration,
                     close_symbol,
                     release_symbol: candidate.release_symbol.clone(),
                     discharge_depth: candidate.discharge_depth,
@@ -307,7 +308,7 @@ pub(super) fn admit_opaque_resource_lifecycles(
                     producer_modules: candidate.producer_modules.clone(),
                 };
                 if type_classes
-                    .admit_opaque_resource_lifecycle(lifecycle)
+                    .admit_opaque_resource_lifecycle(identity, lifecycle)
                     .is_err()
                 {
                     diagnostics.push(HirDiagnostic::new(
@@ -352,7 +353,7 @@ pub(super) fn admit_opaque_resource_lifecycles(
 pub(super) fn admit_declared_opaque_resource_lifecycles(
     items: &[HirItem],
     graph: &hew_types::OpaqueResourceCandidateGraph,
-    identity: &hew_types::IdentityView,
+    identity: &hew_types::DefTable,
     type_classes: &mut crate::value_class::TypeClassTable,
     diagnostics: &mut Vec<HirDiagnostic>,
 ) {
@@ -368,7 +369,7 @@ pub(super) fn admit_declared_opaque_resource_lifecycles(
             // single-representation lifecycle boundary to admit and must not
             // fall out of the iterator silently.
             diagnostics.push(resource_lifecycle_boundary_diagnostic(
-                decl.declaration.full_path(),
+                identity.path(decl.declaration),
                 "opaque #[resource] declarations with variants have no single-representation \
                  lifecycle boundary to admit"
                     .to_string(),
@@ -386,7 +387,7 @@ pub(super) fn admit_declared_opaque_resource_lifecycles(
             || graph
                 .conflicts
                 .iter()
-                .any(|conflict| conflict.resource_type == decl.declaration.full_path());
+                .any(|conflict| conflict.resource_type == identity.path(decl.declaration));
         if checker_owns_lifecycle_decision {
             continue;
         }
@@ -397,13 +398,13 @@ pub(super) fn admit_declared_opaque_resource_lifecycles(
         {
             continue;
         }
-        let exact_owner = decl.declaration.full_path();
+        let exact_owner = identity.path(decl.declaration);
         let close_methods: Vec<_> = items
             .iter()
             .filter_map(|item| match item {
                 HirItem::Impl(impl_block)
                     if impl_block.trait_name.is_none()
-                        && impl_receiver_is(identity, impl_block, &decl.declaration) =>
+                        && impl_receiver_is(identity, impl_block, decl.declaration) =>
                 {
                     Some(impl_block)
                 }
@@ -418,7 +419,7 @@ pub(super) fn admit_declared_opaque_resource_lifecycles(
             })
             .filter_map(|((name, declaration), symbol)| {
                 (name == "close")
-                    .then(|| declaration.as_ref().map(|id| (id.clone(), symbol.clone())))
+                    .then(|| declaration.as_ref().map(|id| (*id, symbol.clone())))
                     .flatten()
             })
             .collect();
@@ -448,7 +449,7 @@ pub(super) fn admit_declared_opaque_resource_lifecycles(
             .collect();
         let [close_body] = close_bodies.as_slice() else {
             diagnostics.push(resource_lifecycle_boundary_diagnostic(
-                close_declaration.full_path(),
+                identity.path(*close_declaration),
                 format!(
                     "opaque resource close requires one exact emitted body; found {}",
                     close_bodies.len()
@@ -460,7 +461,7 @@ pub(super) fn admit_declared_opaque_resource_lifecycles(
         };
         if close_body.return_ty != ResolvedTy::Unit || close_body.params.len() != 1 {
             diagnostics.push(resource_lifecycle_boundary_diagnostic(
-                close_declaration.full_path(),
+                identity.path(*close_declaration),
                 "opaque resource close body must take one receiver and return unit".to_string(),
                 &decl.span,
                 "opaque resource close body has an inadmissible signature",
@@ -468,12 +469,12 @@ pub(super) fn admit_declared_opaque_resource_lifecycles(
             continue;
         }
         let lifecycle = crate::OpaqueResourceLifecycle {
-            resource_declaration: decl.declaration.clone(),
-            close_declaration: close_declaration.clone(),
+            resource_declaration: decl.declaration,
+            close_declaration: *close_declaration,
             // There is no separately declared release ABI in this authored
             // form.  The generated close body is the exact lifecycle endpoint;
             // the fields are retained for the shared lifecycle carrier.
-            release_declaration: close_declaration.clone(),
+            release_declaration: *close_declaration,
             close_symbol: close_symbol.clone(),
             release_symbol: close_symbol.clone(),
             discharge_depth: hew_types::ffi_contracts::ReleaseDischargeDepth::Shallow,
@@ -482,7 +483,7 @@ pub(super) fn admit_declared_opaque_resource_lifecycles(
             producer_modules: std::collections::BTreeSet::new(),
         };
         if type_classes
-            .admit_opaque_resource_lifecycle(lifecycle)
+            .admit_opaque_resource_lifecycle(identity, lifecycle)
             .is_err()
         {
             diagnostics.push(resource_lifecycle_boundary_diagnostic(
@@ -497,7 +498,7 @@ pub(super) fn admit_declared_opaque_resource_lifecycles(
 
 pub(super) fn is_exact_release_forwarding_wrapper(
     block: &HirBlock,
-    release_declaration: &hew_types::DefId,
+    release_declaration: hew_types::DefId,
     release_symbol: &str,
     release_param_index: usize,
     receiver: BindingId,
@@ -523,7 +524,7 @@ pub(super) fn is_exact_release_forwarding_wrapper(
 
 pub(super) fn is_exact_release_forwarding_expr(
     expr: &HirExpr,
-    release_declaration: &hew_types::DefId,
+    release_declaration: hew_types::DefId,
     release_symbol: &str,
     release_param_index: usize,
     receiver: BindingId,
@@ -535,7 +536,7 @@ pub(super) fn is_exact_release_forwarding_expr(
                 hew_types::CallTarget::Extern {
                     declaration, endpoint, ..
                 }
-                    if declaration == release_declaration && endpoint == release_symbol
+                    if *declaration == release_declaration && endpoint == release_symbol
             ) && args.get(release_param_index).is_some_and(|arg| {
                 matches!(
                     arg.kind,
@@ -567,12 +568,12 @@ impl LowerCtx {
     /// Query checker signatures by their canonical receiver identity.
     pub(super) fn inherent_close_signature(
         &self,
-        declaration: &hew_types::DefId,
+        declaration: hew_types::DefId,
     ) -> Option<&hew_types::FnSig> {
         self.fn_sigs.values().find(|sig| {
             sig.impl_method.as_ref().is_some_and(|origin| {
                 origin.is_inherent
-                    && origin.receiver.as_ref() == Some(declaration)
+                    && origin.receiver.as_ref() == Some(&declaration)
                     && origin.name == "close"
             })
         })
@@ -599,15 +600,14 @@ impl LowerCtx {
         &mut self,
         decl: &TypeDecl,
         span: &Span,
-        declaration: &hew_types::DefId,
+        declaration: hew_types::DefId,
     ) {
         let inline_close = decl
             .body
             .iter()
             .any(|item| matches!(item, TypeBodyItem::Method(m) if m.name == Ident::new("close")));
         if inline_close {
-            self.resource_close_discipline_failures
-                .insert(declaration.clone());
+            self.resource_close_discipline_failures.insert(declaration);
             self.diagnostics.push(HirDiagnostic::new(
                 HirDiagnosticKind::ResourceCloseSourceUnsupported {
                     name: decl.name.to_string(),
@@ -630,8 +630,7 @@ impl LowerCtx {
                     .expect("inherent provenance")
                     .span
                     .clone();
-                self.resource_close_discipline_failures
-                    .insert(declaration.clone());
+                self.resource_close_discipline_failures.insert(declaration);
                 self.diagnostics.push(HirDiagnostic::new(
                     HirDiagnosticKind::ResourceCloseMustReturnUnit {
                         name: decl.name.to_string(),
@@ -650,8 +649,7 @@ impl LowerCtx {
             }
             return;
         }
-        self.resource_close_discipline_failures
-            .insert(declaration.clone());
+        self.resource_close_discipline_failures.insert(declaration);
         self.diagnostics.push(HirDiagnostic::new(
             HirDiagnosticKind::ResourceMissingClose {
                 name: decl.name.to_string(),
@@ -685,7 +683,7 @@ impl LowerCtx {
         &mut self,
         decl: &TypeDecl,
         span: &Span,
-        declaration: &hew_types::DefId,
+        declaration: hew_types::DefId,
     ) {
         let has_inline_consuming = decl.body.iter().any(|item| {
             matches!(item, TypeBodyItem::Method(m)
@@ -705,7 +703,7 @@ impl LowerCtx {
         } else if !self.fn_sigs.values().any(|sig| {
             sig.consumes_receiver
                 && sig.impl_method.as_ref().is_some_and(|origin| {
-                    origin.is_inherent && origin.receiver.as_ref() == Some(declaration)
+                    origin.is_inherent && origin.receiver.as_ref() == Some(&declaration)
                 })
         }) {
             self.diagnostics.push(HirDiagnostic::new(

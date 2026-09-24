@@ -42,7 +42,7 @@ fn verified_main(lowered: &hew_sir::LoweredModule) -> &SemFunction {
         .module
         .functions
         .iter()
-        .find(|function| function.declaration.full_path() == "main")
+        .find(|function| lowered.module.defs.path(function.declaration) == "main")
         .expect("main has a body")
 }
 

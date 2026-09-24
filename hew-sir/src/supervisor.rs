@@ -201,7 +201,7 @@ impl SemSupervisor {
         if !self
             .handle_ty
             .is_builtin(hew_types::BuiltinType::ActorHandle)
-            || declared_handle(&self.handle_ty).as_ref() != Some(&self.declaration)
+            || declared_handle(&module.defs, &self.handle_ty) != Some(self.declaration)
         {
             return Err("supervisor handle refers to another declaration".into());
         }
@@ -265,7 +265,7 @@ impl SemSupervisor {
 }
 
 /// The declaration a direct handle or stable supervisor role names.
-pub(crate) fn declared_handle(ty: &ResolvedTy) -> Option<DefId> {
-    let instance = crate::actor::local_actor_instance(ty)?;
-    Some(instance.nominal.declaration().clone())
+pub(crate) fn declared_handle(defs: &hew_types::DefTable, ty: &ResolvedTy) -> Option<DefId> {
+    let instance = crate::actor::local_actor_instance(defs, ty)?;
+    Some(instance.nominal.declaration())
 }

@@ -61,7 +61,7 @@ fn pattern_guard_can_replace_a_sibling_but_not_its_borrowed_field() {
         .module
         .functions
         .iter_mut()
-        .find(|function| function.declaration.full_path() == "main")
+        .find(|function| lowered.module.defs.path(function.declaration) == "main")
         .unwrap();
     let borrowed = main
         .blocks
@@ -117,7 +117,7 @@ fn owned_tuple_construction_and_repeated_borrows_are_explicit() {
         .module
         .functions
         .iter()
-        .find(|function| function.declaration.full_path() == "main")
+        .find(|function| lowered.module.defs.path(function.declaration) == "main")
         .expect("main must have a body");
     assert!(main.blocks.iter().flat_map(|block| &block.ops).any(|op| {
         matches!(
@@ -129,6 +129,7 @@ fn owned_tuple_construction_and_repeated_borrows_are_explicit() {
         )
     }));
     let plan = hew_sir::place_plan(
+        &lowered.module.defs,
         main,
         &lowered.module.aggregate_shapes,
         &lowered.module.type_facts,
@@ -188,11 +189,11 @@ fn owned_record_shape_and_field_order_are_exact() {
     assert_main_lowered(&lowered);
 
     // Name the shape this source demands rather than indexing the table.
-    let packets: Vec<_> = lowered
-        .module
+    let module = &lowered.module;
+    let packets: Vec<_> = module
         .aggregate_shapes
         .iter()
-        .filter(|shape| shape.instance.nominal.display_name() == "Packet")
+        .filter(|shape| module.defs.path(shape.instance.nominal.declaration()) == "Packet")
         .collect();
     let [shape] = packets.as_slice() else {
         panic!("one demanded record type must publish exactly one shape")
@@ -210,9 +211,10 @@ fn owned_record_shape_and_field_order_are_exact() {
         .module
         .functions
         .iter()
-        .find(|f| f.declaration.full_path() == "main")
+        .find(|f| lowered.module.defs.path(f.declaration) == "main")
         .unwrap();
     let plan = hew_sir::place_plan(
+        &lowered.module.defs,
         main,
         &lowered.module.aggregate_shapes,
         &lowered.module.type_facts,
@@ -327,7 +329,7 @@ fn aggregate_call_borrows_caller_and_returns_an_independent_owner() {
         .module
         .callables
         .iter()
-        .find(|callable| callable.declaration.full_path() == "echo")
+        .find(|callable| lowered.module.defs.path(callable.declaration) == "echo")
         .expect("echo must have an exact callable header");
     assert_eq!(echo.signature.params[0].passing, SemParamPassing::Borrow);
     assert_eq!(
@@ -355,7 +357,7 @@ fn aggregate_call_borrows_caller_and_returns_an_independent_owner() {
         .module
         .functions
         .iter()
-        .find(|function| function.declaration.full_path() == "main")
+        .find(|function| lowered.module.defs.path(function.declaration) == "main")
         .expect("main must have a body");
     assert!(main.blocks.iter().any(|block| {
         matches!(
@@ -431,7 +433,7 @@ fn aggregate_patterns_read_named_fields_and_preserve_siblings() {
         .module
         .functions
         .iter()
-        .find(|function| function.declaration.full_path() == "main")
+        .find(|function| lowered.module.defs.path(function.declaration) == "main")
         .expect("main must have a body");
     let field_reads = main
         .blocks
@@ -507,7 +509,7 @@ fn nested_record_and_tuple_argument_loans_close_on_both_runtime_edges() {
         .module
         .functions
         .iter()
-        .find(|f| f.declaration.full_path() == "main")
+        .find(|f| lowered.module.defs.path(f.declaration) == "main")
         .unwrap();
     let loans: Vec<_> = main
         .blocks
@@ -525,6 +527,7 @@ fn nested_record_and_tuple_argument_loans_close_on_both_runtime_edges() {
         "the leaf borrows directly from its owning root"
     );
     let plan = hew_sir::place_plan(
+        &lowered.module.defs,
         main,
         &lowered.module.aggregate_shapes,
         &lowered.module.type_facts,
@@ -610,7 +613,7 @@ fn borrowed_temporary_fields_can_return_an_independent_owner() {
         .module
         .functions
         .iter()
-        .find(|f| f.declaration.full_path() == "main")
+        .find(|f| lowered.module.defs.path(f.declaration) == "main")
         .unwrap();
     assert_eq!(
         main.blocks
@@ -624,7 +627,7 @@ fn borrowed_temporary_fields_can_return_an_independent_owner() {
         .module
         .functions
         .iter()
-        .find(|f| f.declaration.full_path() == "echo")
+        .find(|f| lowered.module.defs.path(f.declaration) == "echo")
         .unwrap();
     assert!(
         echo.blocks.iter().flat_map(|b| &b.ops).any(|op| {
@@ -655,13 +658,13 @@ fn earlier_arguments_capture_owned_fields_before_later_effects() {
             .module
             .callables
             .iter()
-            .find(|c| c.declaration.full_path() == "read")
+            .find(|c| lowered.module.defs.path(c.declaration) == "read")
             .unwrap();
         let main = lowered
             .module
             .functions
             .iter()
-            .find(|f| f.declaration.full_path() == "main")
+            .find(|f| lowered.module.defs.path(f.declaration) == "main")
             .unwrap();
         let captured = main
             .blocks
@@ -702,10 +705,11 @@ fn scalar_arguments_copy_the_exact_nested_leaf() {
         .module
         .functions
         .iter()
-        .find(|f| f.declaration.full_path() == "main")
+        .find(|f| lowered.module.defs.path(f.declaration) == "main")
         .unwrap();
     let operations: Vec<_> = main.blocks.iter().flat_map(|b| &b.ops).collect();
     let plan = hew_sir::place_plan(
+        &lowered.module.defs,
         main,
         &lowered.module.aggregate_shapes,
         &lowered.module.type_facts,
@@ -764,7 +768,7 @@ fn runtime_read_keeps_bindings_replaced_by_index_evaluation() {
         .module
         .functions
         .iter()
-        .find(|f| f.declaration.full_path() == "main")
+        .find(|f| lowered.module.defs.path(f.declaration) == "main")
         .unwrap();
     assert!(
         main.blocks.iter().flat_map(|b| &b.ops).any(|op| {
@@ -780,7 +784,7 @@ fn function<'a>(lowered: &'a hew_sir::LoweredModule, name: &str) -> &'a hew_sir:
         .module
         .functions
         .iter()
-        .find(|function| function.declaration.full_path() == name)
+        .find(|function| lowered.module.defs.path(function.declaration) == name)
         .unwrap_or_else(|| panic!("`{name}` must have a body"))
 }
 

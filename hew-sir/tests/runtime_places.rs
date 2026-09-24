@@ -81,7 +81,7 @@ fn field_push_transfers_the_leaf_without_copying_its_container() {
     let main = module
         .functions
         .iter()
-        .find(|function| function.declaration.full_path() == "main")
+        .find(|function| module.defs.path(function.declaration) == "main")
         .unwrap();
     let initial = main
         .bindings
@@ -152,7 +152,7 @@ fn assert_receiver_update_order(module: &SemModule) {
     let main = module
         .functions
         .iter()
-        .find(|function| function.declaration.full_path() == "main")
+        .find(|function| module.defs.path(function.declaration) == "main")
         .unwrap();
     let BindingTarget::Place(root) = main
         .bindings
@@ -163,7 +163,7 @@ fn assert_receiver_update_order(module: &SemModule) {
     else {
         panic!("state must retain its local storage")
     };
-    let plan = hew_sir::place_plan(main, &module.aggregate_shapes, &module.type_facts).unwrap();
+    let plan = place_plan_of(module, main);
     let clear = runtime_block(main, RuntimeCallFamily::Vector(VecValueOp::Clear));
     let SemTerminator::RtCall {
         normal,
@@ -304,7 +304,7 @@ fn assert_retained_sibling_cleanup(module: &SemModule, family: RuntimeCallFamily
     let main = module
         .functions
         .iter()
-        .find(|function| function.declaration.full_path() == "main")
+        .find(|function| module.defs.path(function.declaration) == "main")
         .unwrap();
     let (call, moved, cleanup) = main
         .blocks
@@ -329,7 +329,7 @@ fn assert_retained_sibling_cleanup(module: &SemModule, family: RuntimeCallFamily
         }
         _ => cleanup,
     };
-    let plan = hew_sir::place_plan(main, &module.aggregate_shapes, &module.type_facts).unwrap();
+    let plan = place_plan_of(module, main);
     let field = plan.projection(place).unwrap();
     assert_eq!(
         field.path.iter().map(|step| step.field).collect::<Vec<_>>(),
@@ -382,7 +382,7 @@ fn assert_retained_sibling_cleanup(module: &SemModule, family: RuntimeCallFamily
     let function = missing_cleanup
         .functions
         .iter_mut()
-        .find(|f| f.declaration.full_path() == "main")
+        .find(|f| module.defs.path(f.declaration) == "main")
         .unwrap();
     for block in &mut function.blocks {
         if reachable.contains(&block.id) {
@@ -510,7 +510,9 @@ fn malformed_mutable_places_cannot_bypass_root_or_projection_checks() {
             .items
             .iter_mut()
             .find_map(|item| match item {
-                HirItem::Function(function) if function.declaration.full_path() == "main" => {
+                HirItem::Function(function)
+                    if invalid.defs.path(function.declaration) == "main" =>
+                {
                     Some(function)
                 }
                 _ => None,
@@ -600,4 +602,17 @@ fn assert_root_cleanup(block: &hew_sir::SemBlock, root: hew_sir::PlaceId) {
         1,
         "each exit cleans up the remaining root exactly once"
     );
+}
+
+fn place_plan_of(
+    module: &hew_sir::SemModule,
+    function: &hew_sir::SemFunction,
+) -> hew_sir::PlacePlan {
+    hew_sir::place_plan(
+        &module.defs,
+        function,
+        &module.aggregate_shapes,
+        &module.type_facts,
+    )
+    .unwrap()
 }

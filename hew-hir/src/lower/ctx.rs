@@ -30,7 +30,7 @@ impl LowerCtx {
             resource_close_discipline_failures: HashSet::new(),
             diagnostics: Vec::new(),
             // Resolution spellings remain a checker lookup index. Declaration
-            // identity comes only from `tc_output.identity`; HIR must never
+            // identity comes only from `tc_output.defs`; HIR must never
             // manufacture a second canonical-string namespace here.
             fn_sigs: tc_output.fn_sigs.clone(),
             direct_call_targets: tc_output.direct_call_targets.clone(),
@@ -176,7 +176,7 @@ impl LowerCtx {
             published_bare_const_owners: tc_output.published_bare_const_owners.clone(),
             import_fn_name_aliases: tc_output.import_fn_name_aliases.clone(),
             root_value_bindings: tc_output.root_value_bindings.clone(),
-            identity: tc_output.identity.clone(),
+            defs: std::sync::Arc::clone(&tc_output.defs),
         }
     }
 
@@ -192,7 +192,7 @@ impl LowerCtx {
             .copied()
             .or_else(|| {
                 (self.current_module_idx == 0)
-                    .then(|| self.identity.root_module())
+                    .then(|| self.defs.root_module())
                     .flatten()
             });
         let occurrence = hew_types::DeclarationOccurrence::new_with_synthetic_ordinal(
@@ -202,8 +202,8 @@ impl LowerCtx {
             kind,
             ordinal,
         );
-        if let Some(declaration) = self.identity.declaration(occurrence) {
-            return Some(declaration.clone());
+        if let Some(declaration) = self.defs.declaration(occurrence) {
+            return Some(declaration);
         }
         self.diagnostics.push(
             HirDiagnostic::new(
@@ -667,7 +667,7 @@ impl LowerCtx {
         }
         if let Some(module) = &self.current_module_name {
             let declared = format!("{module}.{name}");
-            if self.identity.declaration_kind_by_path(&declared)
+            if self.defs.declaration_kind_by_path(&declared)
                 == Some(hew_types::DeclarationKind::Function)
                 && self.fn_sigs.contains_key(&declared)
             {
@@ -695,15 +695,15 @@ impl LowerCtx {
 
     pub(super) fn checked_member_definition(
         &mut self,
-        declaration: &hew_types::DefId,
+        declaration: hew_types::DefId,
         span: &Span,
     ) -> Option<hew_types::check::TypeDef> {
-        if let Some(definition) = self.checked_type_defs.get(declaration.full_path()) {
+        if let Some(definition) = self.checked_type_defs.get(self.defs.path(declaration)) {
             return Some(definition.clone());
         }
         self.diagnostics.push(HirDiagnostic::new(
             HirDiagnosticKind::CheckerBoundaryViolation {
-                name: declaration.full_path().to_string(),
+                name: self.defs.path(declaration).to_string(),
                 reason: "missing resolved declaration members".to_string(),
             },
             span.clone(),

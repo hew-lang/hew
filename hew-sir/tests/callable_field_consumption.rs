@@ -49,7 +49,7 @@ fn assert_once_field_transfer(source: &str) {
         .module
         .functions
         .iter()
-        .find(|function| function.declaration.full_path() == "main")
+        .find(|function| lowered.module.defs.path(function.declaration) == "main")
         .unwrap();
     let callee = main
         .blocks
@@ -82,6 +82,7 @@ fn assert_once_field_transfer(source: &str) {
         panic!("once receiver must take its stored field")
     };
     let plan = hew_sir::place_plan(
+        &lowered.module.defs,
         main,
         &lowered.module.aggregate_shapes,
         &lowered.module.type_facts,
@@ -308,7 +309,7 @@ fn explicit_destructure_exposes_owned_callable_fields_and_live_siblings() {
             .module
             .functions
             .iter()
-            .find(|function| function.declaration.full_path() == "main")
+            .find(|function| lowered.module.defs.path(function.declaration) == "main")
             .unwrap();
         // A destructure of a place names fields, not the whole value: each
         // field is read out of its own storage, and the aggregate is never

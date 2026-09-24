@@ -136,7 +136,7 @@ fn argument_alias_and_nested_mutation_precede_the_receiver_take() {
     let main = module
         .functions
         .iter()
-        .find(|function| function.declaration.full_path() == "main")
+        .find(|function| module.defs.path(function.declaration) == "main")
         .unwrap();
     let BindingTarget::Place(receiver) = main
         .bindings
@@ -228,7 +228,7 @@ fn failing_method_hands_its_receiver_back_into_the_callers_place() {
     let main = module
         .functions
         .iter()
-        .find(|f| f.declaration.full_path() == "main")
+        .find(|f| module.defs.path(f.declaration) == "main")
         .unwrap();
     let BindingTarget::Place(receiver) = main
         .bindings
@@ -261,7 +261,7 @@ fn failing_method_hands_its_receiver_back_into_the_callers_place() {
     let method = module
         .functions
         .iter()
-        .find(|f| f.declaration.full_path().ends_with("replace"))
+        .find(|f| module.defs.path(f.declaration).ends_with("replace"))
         .unwrap();
     let exits: Vec<_> = method
         .blocks
@@ -295,7 +295,7 @@ fn failing_method_hands_its_receiver_back_into_the_callers_place() {
     for block in released
         .functions
         .iter_mut()
-        .filter(|f| f.declaration.full_path().ends_with("replace"))
+        .filter(|f| module.defs.path(f.declaration).ends_with("replace"))
         .flat_map(|f| &mut f.blocks)
     {
         if let SemTerminator::ResumeUnwind { handback } = &mut block.terminator {
@@ -516,7 +516,7 @@ fn a_plain_receiver_is_copied_back_into_its_place_when_the_method_fails() {
     let main = module
         .functions
         .iter()
-        .find(|f| f.declaration.full_path() == "main")
+        .find(|f| module.defs.path(f.declaration) == "main")
         .unwrap();
     let BindingTarget::Place(receiver) = main
         .bindings
@@ -548,7 +548,7 @@ fn a_plain_receiver_is_copied_back_into_its_place_when_the_method_fails() {
     let method = module
         .functions
         .iter()
-        .find(|f| f.declaration.full_path().ends_with("bump"))
+        .find(|f| module.defs.path(f.declaration).ends_with("bump"))
         .unwrap();
     assert!(method
         .blocks
@@ -578,10 +578,11 @@ fn a_plain_receiver_is_copied_back_into_its_place_when_the_method_fails() {
             if reason.contains("must carry exactly the `var self` receiver")
     )));
     let mut moved_exit = module;
+    let defs = std::sync::Arc::clone(&moved_exit.defs);
     for block in moved_exit
         .functions
         .iter_mut()
-        .filter(|f| f.declaration.full_path().ends_with("bump"))
+        .filter(|f| defs.path(f.declaration).ends_with("bump"))
         .flat_map(|f| &mut f.blocks)
     {
         if let SemTerminator::ResumeUnwind {
@@ -623,7 +624,7 @@ fn fields_beneath_a_whole_owner_are_mutated_in_place() {
     let main = module
         .functions
         .iter()
-        .find(|f| f.declaration.full_path() == "main")
+        .find(|f| module.defs.path(f.declaration) == "main")
         .unwrap();
     let BindingTarget::Place(pool) = main
         .bindings
@@ -693,7 +694,7 @@ fn a_plain_receiver_is_copied_back_before_its_defers_read_it() {
     let method = module
         .functions
         .iter()
-        .position(|f| f.declaration.full_path().ends_with("bump"))
+        .position(|f| module.defs.path(f.declaration).ends_with("bump"))
         .unwrap();
     let function = &module.functions[method];
     let BindingTarget::Place(receiver) = function

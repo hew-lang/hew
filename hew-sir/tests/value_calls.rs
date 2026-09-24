@@ -50,7 +50,7 @@ fn selected_call(capability: ValueCapability) -> SemModule {
     let target = module
         .functions
         .iter()
-        .find(|f| f.declaration.full_path() == "selected")
+        .find(|f| module.defs.path(f.declaration) == "selected")
         .unwrap()
         .callable;
     let mut converted = 0;
@@ -193,7 +193,7 @@ fn selected_method_failure_cannot_discard_its_fault() {
     let main = module
         .functions
         .iter_mut()
-        .find(|f| f.declaration.full_path() == "main")
+        .find(|f| module.defs.path(f.declaration) == "main")
         .unwrap();
     let target = main
         .blocks
@@ -256,7 +256,7 @@ fn equality_snapshots_a_whole_binding_before_later_mutation() {
         let main = module
             .functions
             .iter()
-            .find(|f| f.declaration.full_path() == "main")
+            .find(|f| module.defs.path(f.declaration) == "main")
             .unwrap();
         let argument = main
             .blocks
@@ -330,7 +330,7 @@ fn selected_equality_keeps_user_method_fault_cleanup() {
     let main = module
         .functions
         .iter()
-        .find(|f| f.declaration.full_path() == "main")
+        .find(|f| module.defs.path(f.declaration) == "main")
         .unwrap();
     let failure = main
         .blocks

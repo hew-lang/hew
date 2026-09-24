@@ -21,7 +21,7 @@ pub(super) fn declaration<'a>(
     module: &'a HirModule,
     ty: &ResolvedTy,
 ) -> Option<&'a hew_hir::HirSupervisorDecl> {
-    let declaration = crate::supervisor::declared_handle(ty)?;
+    let declaration = crate::supervisor::declared_handle(&module.defs, ty)?;
     module.items.iter().find_map(|item| match item {
         HirItem::Supervisor(supervisor) if supervisor.declaration == declaration => {
             Some(supervisor)
@@ -97,7 +97,7 @@ impl InstanceService<'_> {
         let source = declaration(self.module, ty)
             .ok_or("supervisor handle lacks its exact declaration")?
             .clone();
-        let instance = crate::actor::local_actor_instance(ty)
+        let instance = crate::actor::local_actor_instance(&self.module.defs, ty)
             .ok_or("supervisor instance lacks its nominal identity")?;
         if instance.args.len() != source.type_params.len() {
             return Err("supervisor instance type arguments differ from its declaration".into());
@@ -142,7 +142,7 @@ impl InstanceService<'_> {
         // Publish the header first so a nested child resolves this identity.
         self.supervisors.push(SemSupervisor {
             id,
-            declaration: source.declaration.clone(),
+            declaration: source.declaration,
             handle_ty: ty.clone(),
             config: config.clone(),
             strategy,
@@ -212,9 +212,13 @@ impl InstanceService<'_> {
             ty: handle.clone(),
             intent: IntentKind::Consume,
             kind: HirExprKind::Spawn {
-                actor_name: crate::supervisor::declared_handle(&handle)
-                    .ok_or("supervised child lacks its declared handle type")?
-                    .full_path()
+                actor_name: self
+                    .module
+                    .defs
+                    .path(
+                        crate::supervisor::declared_handle(&self.module.defs, &handle)
+                            .ok_or("supervised child lacks its declared handle type")?,
+                    )
                     .to_string(),
                 args: child.init_args.clone(),
             },
@@ -223,7 +227,7 @@ impl InstanceService<'_> {
         let function = HirFn {
             id: source.id,
             node: source.node,
-            declaration: source.bootstrap_declaration.clone(),
+            declaration: source.bootstrap_declaration,
             name: format!("{}::{}", source.name, child.name),
             type_params: Vec::new(),
             params: source.params.clone(),
@@ -263,7 +267,7 @@ impl InstanceService<'_> {
         self.table.callables.push(SemCallable {
             id,
             function: source.id,
-            declaration: source.bootstrap_declaration.clone(),
+            declaration: source.bootstrap_declaration,
             instance: CallableInstance::SupervisorChild {
                 supervisor,
                 child: u32::try_from(index).map_err(|_| "supervisor child count exceeds u32")?,

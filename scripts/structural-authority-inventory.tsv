@@ -48,6 +48,7 @@ call-target-authority	call-target-use	hew-types/src/check/registration/type_publ
 call-target-authority	call-target-use	hew-types/src/check/type_members.rs	stage-4	exact checker-selected executable identity carrier
 call-target-authority	call-target-use	hew-types/src/check/var_self.rs	stage-4	the var self receiver rule tells a record constructor from a selected call that can fail
 call-target-authority	call-target-variant	hew-types/src/check/dispatch.rs	stage-4	exact checker-selected executable identity carrier
+checker-hir-fact-relation	hir-publication-consumer	hew-hir/src/dump.rs	stage-2	the HIR dump renders declarations through the module's published declaration table
 checker-hir-fact-relation	hir-publication-consumer	hew-hir/src/lower/actors.rs	stage-2	reviewed checker-to-HIR fact reads, including the new method_call_rewrites read that routes generic wire facade calls through the checker-selected WireCodec lowering and the identity-view reads that resolve an impl receiver's spelling and a peer file's span index
 checker-hir-fact-relation	hir-publication-consumer	hew-hir/src/lower/builders.rs	stage-2	reviewed checker-to-HIR fact reads, including the new method_call_rewrites read that routes generic wire facade calls through the checker-selected WireCodec lowering and the identity-view reads that resolve an impl receiver's spelling and a peer file's span index
 checker-hir-fact-relation	hir-publication-consumer	hew-hir/src/lower/calls.rs	stage-2	reviewed checker-to-HIR fact reads, including the new method_call_rewrites read that routes generic wire facade calls through the checker-selected WireCodec lowering and the identity-view reads that resolve an impl receiver's spelling and a peer file's span index
@@ -264,8 +265,7 @@ string-method-identity	qualified-format-macro	hew-types/src/check/registration/t
 string-method-identity	qualified-format-macro	hew-types/src/check/resolution.rs	stage-1	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-types/src/check/statements.rs	stage-1	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-types/src/check/type_members.rs	stage-1	reviewed dotted qualified identity construction
-string-method-identity	qualified-format-macro	hew-types/src/identity.rs	stage-1	the two lambda-actor declaration paths, built once here beside the minting authority so no stage re-derives a nameless actor's identity from spellings
+string-method-identity	qualified-format-macro	hew-types/src/def_table.rs	stage-1	the declaration table renders the lambda-actor and materialized-default paths it mints, so no stage re-derives a nameless or synthesized body's identity from spellings
 string-method-identity	qualified-format-macro	hew-types/src/method_resolution.rs	stage-1	reviewed qualified string identity construction
-string-method-identity	qualified-format-macro	hew-types/src/resolved_ty.rs	stage-1	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-types/src/stdlib_authority.rs	stage-1	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-types/src/stdlib_authority/codegen.rs	stage-1	reviewed qualified string identity construction

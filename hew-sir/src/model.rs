@@ -573,6 +573,7 @@ pub struct RuntimeVariantShapeRefs {
 /// descriptor, or any disagreement in canonical variant, field, or payload
 /// shape.
 pub fn runtime_variant_shape_refs(
+    defs: &hew_types::DefTable,
     kind: RuntimeVariantResultKind,
     result_ty: &ResolvedTy,
     aggregate_shapes: &[SemAggregateShape],
@@ -621,7 +622,7 @@ pub fn runtime_variant_shape_refs(
                 error_ty.user_facing()
             )
         })?;
-    if error_ty.nominal_instance().as_ref() != Some(&error.instance) {
+    if error_ty.nominal_instance(defs).as_ref() != Some(&error.instance) {
         return Err(format!(
             "runtime variant error `{}` descriptor has the wrong nominal identity",
             error_ty.user_facing()
@@ -769,6 +770,9 @@ pub struct SemModule {
     pub regex_patterns: Vec<String>,
     /// Root-unit lexical scopes and site offsets, for native debug metadata.
     pub debug: crate::SemDebugFacts,
+    /// The compilation's declaration table: every `DefId` in the module
+    /// indexes it, and it renders declarations for diagnostics and symbols.
+    pub defs: std::sync::Arc<hew_types::DefTable>,
 }
 
 impl SemModule {

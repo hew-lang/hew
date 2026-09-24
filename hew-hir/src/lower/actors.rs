@@ -181,7 +181,7 @@ impl LowerCtx {
         ] {
             let canonical =
                 module.map_or_else(|| name.clone(), |module| format!("{module}.{name}"));
-            let Some(declaration) = self.identity.declaration_by_path(&canonical).cloned() else {
+            let Some(declaration) = self.defs.lookup_path(&canonical) else {
                 self.diagnostics.push(HirDiagnostic::new(
                     HirDiagnosticKind::CheckerBoundaryViolation {
                         name: canonical,
@@ -192,7 +192,7 @@ impl LowerCtx {
                 ));
                 continue;
             };
-            let Some(definition) = self.checked_member_definition(&declaration, span) else {
+            let Some(definition) = self.checked_member_definition(declaration, span) else {
                 continue;
             };
             let variants = variants
@@ -393,9 +393,7 @@ impl LowerCtx {
             let (state_bindings, params, body) =
                 self.lower_actor_body(&state_fields, &init.params, &init.body, &ResolvedTy::Unit);
             HirActorInit {
-                declaration: init_declaration
-                    .clone()
-                    .expect("actor init identity preflighted above"),
+                declaration: init_declaration.expect("actor init identity preflighted above"),
                 state_bindings,
                 params,
                 body,
@@ -710,7 +708,7 @@ impl LowerCtx {
                 });
             match hook_kind {
                 Some(kind) => hooks.push(HirLifecycleHook {
-                    declaration: declaration.clone(),
+                    declaration: *declaration,
                     state_bindings,
                     kind,
                     name: method.name.to_string(),
@@ -720,7 +718,7 @@ impl LowerCtx {
                     span: method.fn_span.clone(),
                 }),
                 None => plain.push(HirActorMethod {
-                    declaration: declaration.clone(),
+                    declaration: *declaration,
                     state_bindings,
                     name: method.name.to_string(),
                     params,

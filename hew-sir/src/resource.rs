@@ -196,7 +196,7 @@ pub(crate) fn resource_release_from_hir(
                     return None;
                 };
                 (&function.declaration == declaration).then(|| ResourceExtern {
-                    declaration: function.declaration.clone(),
+                    declaration: function.declaration,
                     symbol: function.name.clone(),
                     params: function.param_tys.clone(),
                     consumes: function.param_consume.clone(),
@@ -243,7 +243,7 @@ pub(crate) fn record_resource_lifecycle<'a>(
         .type_classes
         .lifecycle_registry()
         .resource_records()
-        .find(|lifecycle| lifecycle.resource_declaration.full_path() == name)
+        .find(|lifecycle| module.defs.path(lifecycle.resource_declaration) == name)
 }
 
 /// The authored `#[resource] #[opaque]` lifecycle for one exact nominal type.
@@ -384,6 +384,7 @@ pub(crate) fn release_may_fault(
 /// # Errors
 /// Refuses inconsistent declaration, ownership, signature or discharge facts.
 pub fn verify_resource_release(
+    defs: &hew_types::DefTable,
     ty: &ResolvedTy,
     release: &ResourceRelease,
     facts: &TypeFacts,
@@ -445,7 +446,7 @@ pub fn verify_resource_release(
             return Err("an authored opaque release requires an exact opaque nominal type".into());
         };
         return if args.is_empty()
-            && lifecycle.resource_declaration.full_path() == name
+            && defs.path(lifecycle.resource_declaration) == name
             && lifecycle.release_declaration == lifecycle.close_declaration
             && lifecycle.producer_declarations.is_empty()
         {
@@ -464,7 +465,7 @@ pub fn verify_resource_release(
         else {
             return Err("a record release requires an exact non-opaque nominal type".into());
         };
-        return if args.is_empty() && lifecycle.resource_declaration.full_path() == name {
+        return if args.is_empty() && defs.path(lifecycle.resource_declaration) == name {
             Ok(())
         } else {
             Err("record release declaration does not match its nominal owner".into())
@@ -485,11 +486,12 @@ pub fn verify_resource_release(
             lifecycle,
             release,
             producers,
-        } => verify_nominal_release(ty, lifecycle, release, producers),
+        } => verify_nominal_release(defs, ty, lifecycle, release, producers),
     }
 }
 
 fn verify_nominal_release(
+    defs: &hew_types::DefTable,
     ty: &ResolvedTy,
     lifecycle: &hew_hir::OpaqueResourceLifecycle,
     release: &ResourceExtern,
@@ -514,7 +516,7 @@ fn verify_nominal_release(
     }
     let declarations = producers
         .iter()
-        .map(|producer| producer.declaration.clone())
+        .map(|producer| producer.declaration)
         .collect::<std::collections::BTreeSet<_>>();
     let symbols = producers
         .iter()
@@ -548,7 +550,7 @@ fn verify_nominal_release(
     else {
         return Err("nominal release requires an exact opaque source type".into());
     };
-    if !args.is_empty() || lifecycle.resource_declaration.full_path() != name {
+    if !args.is_empty() || defs.path(lifecycle.resource_declaration) != name {
         return Err("resource release declaration does not match its nominal owner".into());
     }
     if lifecycle.producer_declarations.is_empty() || lifecycle.producer_symbols.is_empty() {

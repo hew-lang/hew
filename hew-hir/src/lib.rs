@@ -14,6 +14,7 @@ pub mod mono;
 pub mod monomorph;
 pub mod node;
 pub mod stdlib_catalog;
+pub mod symbol;
 pub mod value_class;
 pub mod verify;
 

@@ -103,7 +103,7 @@ fn call_result_outside_its_normal_edge_is_rejected() {
         let main = module
             .functions
             .iter_mut()
-            .find(|f| f.declaration.full_path() == "main")
+            .find(|f| module.defs.path(f.declaration) == "main")
             .unwrap();
         let block = main
             .blocks
@@ -204,7 +204,7 @@ fn two_pass_lowering_resolves_forward_scalar_calls_through_callable_ids() {
             module
                 .callables
                 .iter()
-                .any(|callable| callable.declaration.full_path() == name),
+                .any(|callable| module.defs.path(callable.declaration) == name),
             "the entry and the callee its edge admits must both have a callable"
         );
     }
@@ -216,13 +216,13 @@ fn two_pass_lowering_resolves_forward_scalar_calls_through_callable_ids() {
         module
             .callables
             .iter()
-            .map(|callable| (callable.id, callable.declaration.clone()))
+            .map(|callable| (callable.id, callable.declaration))
             .collect::<Vec<_>>(),
         again
             .module
             .callables
             .iter()
-            .map(|callable| (callable.id, callable.declaration.clone()))
+            .map(|callable| (callable.id, callable.declaration))
             .collect::<Vec<_>>(),
         "callable IDs must be a function of the program, not of when a body ran"
     );
@@ -293,7 +293,7 @@ fn unit_direct_call_is_a_zero_result_sir_terminator() {
         .module
         .callables
         .iter()
-        .find(|callable| callable.declaration.full_path() == "unit_helper")
+        .find(|callable| lowered.module.defs.path(callable.declaration) == "unit_helper")
         .expect("unit-returning declaration must retain an ABI callable entry");
     assert_eq!(unit_helper.signature.return_ty, hew_types::ResolvedTy::Unit);
     assert!(
@@ -367,7 +367,7 @@ fn scalar_binding_and_explicit_return_transfers_lower_without_erasing_resource_r
         .module
         .functions
         .iter()
-        .find(|function| function.declaration.full_path() == "f")
+        .find(|function| lowered.module.defs.path(function.declaration) == "f")
         .expect("the scalar helper must have a SIR body");
     assert!(
         f.blocks.iter().any(|block| matches!(
@@ -453,7 +453,7 @@ fn recursive_scalar_call_resolves_to_its_own_callable_id() {
     let countdown = module
         .callables
         .iter()
-        .find(|callable| callable.declaration.full_path() == "countdown")
+        .find(|callable| module.defs.path(callable.declaration) == "countdown")
         .expect("recursive declaration must have a callable-table entry");
     let function = module
         .function_index()

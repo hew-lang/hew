@@ -1296,6 +1296,7 @@ mod tests {
             supervisor_child_slots: HashMap::new(),
             pool_accessor_sites: HashMap::new(),
             regex_literals: Vec::new(),
+            defs: Arc::default(),
         }
     }
 

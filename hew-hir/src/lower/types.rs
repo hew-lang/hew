@@ -26,15 +26,15 @@ impl LowerCtx {
         span: Span,
         declaration: hew_types::DefId,
     ) -> Option<HirTypeDecl> {
-        let definition = self.checked_member_definition(&declaration, &span)?;
+        let definition = self.checked_member_definition(declaration, &span)?;
         let facts = self
             .type_declarations
-            .get(declaration.full_path())
+            .get(self.defs.path(declaration))
             .cloned()
             .unwrap_or_else(|| {
                 self.diagnostics.push(HirDiagnostic::new(
                     HirDiagnosticKind::CheckerBoundaryViolation {
-                        name: declaration.full_path().to_string(),
+                        name: self.defs.path(declaration).to_string(),
                         reason: "missing declared type facts".to_string(),
                     },
                     span.clone(),
@@ -65,10 +65,10 @@ impl LowerCtx {
 
         match marker {
             ResourceMarker::Resource => {
-                self.check_resource_close_discipline(decl, &span, &declaration);
+                self.check_resource_close_discipline(decl, &span, declaration);
             }
             ResourceMarker::Linear => {
-                self.check_linear_consume_discipline(decl, &span, &declaration);
+                self.check_linear_consume_discipline(decl, &span, declaration);
             }
             ResourceMarker::None | ResourceMarker::BitCopy => {}
         }
@@ -127,7 +127,7 @@ impl LowerCtx {
         // the path safe if the pre-pass ever skips a decl.
         let id = self
             .record_registry
-            .get(declaration.full_path())
+            .get(self.defs.path(declaration))
             .map_or_else(|| self.ids.item(), |entry| entry.id);
         let type_params = definition.type_params;
         Some(HirTypeDecl {
@@ -171,7 +171,7 @@ impl LowerCtx {
         span: std::ops::Range<usize>,
     ) -> Option<HirRecordDecl> {
         let declaration = self.source_declaration(&span, hew_types::DeclarationKind::Record, 0)?;
-        let definition = self.checked_member_definition(&declaration, &span)?;
+        let definition = self.checked_member_definition(declaration, &span)?;
         let type_params = definition.type_params.clone();
         let (fields, positional_field_tys) = match &decl.kind {
             RecordKind::Named(record_fields) => (
@@ -193,10 +193,10 @@ impl LowerCtx {
                 Vec::new(),
             ),
             RecordKind::Tuple(_) => {
-                let Some(signature) = self.fn_sigs.get(declaration.full_path()).cloned() else {
+                let Some(signature) = self.fn_sigs.get(self.defs.path(declaration)).cloned() else {
                     self.diagnostics.push(HirDiagnostic::new(
                         HirDiagnosticKind::CheckerBoundaryViolation {
-                            name: declaration.full_path().to_string(),
+                            name: self.defs.path(declaration).to_string(),
                             reason: "missing checked positional constructor signature".to_string(),
                         },
                         span.clone(),
@@ -220,7 +220,7 @@ impl LowerCtx {
         // the path safe if the pre-pass ever skips a decl.
         let id = self
             .record_registry
-            .get(declaration.full_path())
+            .get(self.defs.path(declaration))
             .map_or_else(|| self.ids.item(), |entry| entry.id);
         Some(HirRecordDecl {
             id,
@@ -1224,8 +1224,8 @@ impl LowerCtx {
                 }
             },
         );
-        if let Some(declaration) = self.identity.declaration_by_path(&local) {
-            return self.type_aliases.get(declaration);
+        if let Some(declaration) = self.defs.lookup_path(&local) {
+            return self.type_aliases.get(&declaration);
         }
         let canonical = self
             .import_type_name_aliases
@@ -1245,8 +1245,8 @@ impl LowerCtx {
                     ))
                     .map(|owner| format!("{owner}.{tail}"))
             })?;
-        let declaration = self.identity.declaration_by_path(&canonical)?;
-        self.type_aliases.get(declaration)
+        let declaration = self.defs.lookup_path(&canonical)?;
+        self.type_aliases.get(&declaration)
     }
 
     pub(super) fn instantiate_type_alias(
@@ -1265,7 +1265,7 @@ impl LowerCtx {
             target => {
                 self.diagnostics.push(HirDiagnostic::new(
                     HirDiagnosticKind::CheckerBoundaryViolation {
-                        name: alias.declaration.full_path().to_string(),
+                        name: self.defs.path(alias.declaration).to_string(),
                         reason: format!("invalid resolved alias target or arity: {target:?}"),
                     },
                     span.clone(),

@@ -1156,10 +1156,33 @@ fn cmd_dump_sir(a: &args::CompileArgs, json: bool) -> i32 {
     0
 }
 
+/// Body of `hew tool compile --dump-defs`: the declaration table the whole
+/// pipeline indexes, printed in mint order.
+fn cmd_dump_defs(a: &args::CompileArgs, json: bool) -> i32 {
+    let sir = match lower_file_to_sir(
+        &a.input,
+        a.target.as_deref(),
+        &compile::CompileOptions::default(),
+    ) {
+        Ok(sir) => sir,
+        Err(channel) => return channel.exit_code(),
+    };
+    let dump = hew_types::dump::dump_defs(&sir.module.defs);
+    if json {
+        eprint!("{dump}");
+    } else {
+        print!("{dump}");
+    }
+    0
+}
+
 fn cmd_compile_run(a: &args::CompileArgs) -> i32 {
     let json = a.format == args::DiagnosticFormat::Json;
     if a.dump_sir {
         return cmd_dump_sir(a, json);
+    }
+    if a.dump_defs {
+        return cmd_dump_defs(a, json);
     }
     let target = match target::TargetSpec::from_requested(a.target.as_deref()) {
         Ok(target) => target,

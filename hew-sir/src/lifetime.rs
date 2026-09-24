@@ -2139,7 +2139,13 @@ mod tests {
     fn verify(function: &crate::SemFunction) -> Vec<super::Violation> {
         super::verify(
             function,
-            &crate::place_plan(function, &[], &std::collections::BTreeMap::default()).unwrap(),
+            &crate::place_plan(
+                &hew_types::DefTable::new(),
+                function,
+                &[],
+                &std::collections::BTreeMap::default(),
+            )
+            .unwrap(),
             &crate::ownership::TypeFactTable::new(),
             &[],
             &|_| false,
@@ -2309,7 +2315,7 @@ mod tests {
         entry.append(&mut f.blocks[0].ops);
         f.blocks[0].ops = entry;
         let rows = facts.into_rows();
-        let plan = crate::place_plan(&f, &[], &rows).unwrap();
+        let plan = crate::place_plan(&hew_types::DefTable::new(), &f, &[], &rows).unwrap();
         super::verify(&f, &plan, &rows, &[], release_may_fault)
     }
 

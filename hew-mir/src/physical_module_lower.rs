@@ -86,7 +86,7 @@ pub fn lower_physical_module(
             };
             Ok(PhysicalCallable {
                 id: callable.id,
-                declaration: callable.declaration.clone(),
+                declaration: callable.declaration,
                 instance: callable.instance.clone(),
                 symbol: callable.symbol.clone(),
                 params,
@@ -240,6 +240,7 @@ pub fn lower_physical_module(
         string_literals: module.string_literals.clone(),
         bytes_literals: module.bytes_literals.clone(),
         regex_patterns: module.regex_patterns.clone(),
+        defs: std::sync::Arc::clone(&module.defs),
         debug,
     };
     let callback_resumption = physical
@@ -732,7 +733,7 @@ pub(crate) fn collect_resource_type(
     let Some(facts) = module.type_facts.get(&TypeInstanceKey(ty.clone())) else {
         return false;
     };
-    if hew_sir::verify_resource_release(ty, release, facts).is_err() {
+    if hew_sir::verify_resource_release(&module.defs, ty, release, facts).is_err() {
         return false;
     }
     inventory.resources.insert(

@@ -68,7 +68,7 @@ fn callable_for(function: &SemFunction) -> SemCallable {
     SemCallable {
         id: function.callable,
         function: function.id,
-        declaration: function.declaration.clone(),
+        declaration: function.declaration,
         instance: CallableInstance::Monomorphic,
         symbol: function.name.clone(),
         source_origin: function.source_origin.clone(),
@@ -118,6 +118,7 @@ fn module(functions: Vec<SemFunction>) -> SemModule {
         let _ = fact_service.require(ty);
     }
     SemModule {
+        defs: hew_types::DefTable::fixture(),
         debug: hew_sir::SemDebugFacts::default(),
         regex_patterns: Vec::new(),
         actors: Vec::new(),
@@ -2261,6 +2262,7 @@ fn verifier_refuses_a_generic_template_parameter_carrying_a_borrow_slot() {
             return_ty: ResolvedTy::Unit,
         },
     }];
+    module.defs = hew_types::DefTable::fixture();
     let diagnostics = verify_module(&module);
     assert!(diagnostics.iter().any(|diagnostic| matches!(
         &diagnostic.kind,
@@ -2291,6 +2293,7 @@ fn verifier_admits_a_generic_template_parameter_with_a_read_only_slot() {
             return_ty: ResolvedTy::Unit,
         },
     }];
+    module.defs = hew_types::DefTable::fixture();
     let diagnostics = verify_module(&module);
     assert!(diagnostics.is_empty(), "{diagnostics:#?}");
     module.generic_templates[0].signature.params[0].passing = SemParamPassing::Consume;

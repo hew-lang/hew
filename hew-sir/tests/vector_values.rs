@@ -93,7 +93,7 @@ fn ordinary_vector_values_share_one_operation_family() {
         let main = module
             .functions
             .iter()
-            .find(|function| function.declaration.full_path() == "main")
+            .find(|function| module.defs.path(function.declaration) == "main")
             .unwrap();
         let local = |name| match main
             .bindings
@@ -170,12 +170,10 @@ fn nested_vector_demands_shapes_without_constructing_elements() {
         }
     ",
     );
-    assert!(module.aggregate_shapes.iter().any(|shape| shape
-        .instance
-        .nominal
-        .declaration()
-        .full_path()
-        == "Leaf"));
+    assert!(module
+        .aggregate_shapes
+        .iter()
+        .any(|shape| module.defs.path(shape.instance.nominal.declaration()) == "Leaf"));
     assert!(module
         .variant_shapes
         .iter()
@@ -243,7 +241,7 @@ fn generic_vector_copy_and_early_return_keep_exact_elements() {
     assert!(module
         .functions
         .iter()
-        .any(|function| function.declaration.full_path() == "first"));
+        .any(|function| module.defs.path(function.declaration) == "first"));
 }
 
 fn index_module() -> hew_sir::SemModule {
@@ -266,7 +264,7 @@ fn verifier_rejects_a_wrong_element_even_with_the_right_arity() {
     let function = module
         .functions
         .iter_mut()
-        .find(|function| function.declaration.full_path() == "main")
+        .find(|function| module.defs.path(function.declaration) == "main")
         .unwrap();
     let wrong = function
         .blocks
@@ -339,7 +337,7 @@ fn verifier_requires_index_failure_and_its_owner_cleanup() {
     let function = missing_cleanup
         .functions
         .iter_mut()
-        .find(|function| function.declaration.full_path() == "main")
+        .find(|function| missing_cleanup.defs.path(function.declaration) == "main")
         .unwrap();
     let hew_sir::BindingTarget::Place(owner) = function
         .bindings

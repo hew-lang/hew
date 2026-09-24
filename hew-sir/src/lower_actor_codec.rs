@@ -24,7 +24,7 @@ impl InstanceService<'_> {
                     .filter(|protocol| protocol.handlers.iter().any(|handler| handler.remote_codec))
                     .map(|_| {
                         ResolvedTy::named_builtin(
-                            actor.declaration.full_path(),
+                            self.module.defs.path(actor.declaration),
                             hew_types::BuiltinType::ActorHandle,
                             Vec::new(),
                         )

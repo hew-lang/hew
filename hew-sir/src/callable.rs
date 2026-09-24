@@ -464,7 +464,7 @@ mod tests {
         crate::SemFunction {
             id: callable.function,
             callable: callable.id,
-            declaration: callable.declaration.clone(),
+            declaration: callable.declaration,
             name: callable.symbol.clone(),
             source_origin: callable.source_origin.clone(),
             terminal_receiver: None,
@@ -596,7 +596,7 @@ mod tests {
         module.functions.push(SemFunction {
             id: module.callables[0].function,
             callable: CallableId(0),
-            declaration: module.callables[0].declaration.clone(),
+            declaration: module.callables[0].declaration,
             name: "counter".into(),
             span: 0..0,
             source_origin: FunctionSourceOrigin::Unknown,

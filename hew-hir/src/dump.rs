@@ -3,6 +3,7 @@ use std::fmt::Write as _;
 use crate::node::{HirBlock, HirExpr, HirExprKind, HirItem, HirModule, HirStmtKind};
 
 fn dump_destructure(
+    defs: &hew_types::DefTable,
     out: &mut String,
     value: &HirExpr,
     fields: &[crate::node::HirDestructureField],
@@ -19,7 +20,7 @@ fn dump_destructure(
         })
         .collect();
     writeln!(out, "{pad}destructure bind=[{}]", names.join(", ")).expect("write to string");
-    dump_expr(out, value, indent + 2);
+    dump_expr(defs, out, value, indent + 2);
 }
 
 #[must_use]
@@ -29,6 +30,7 @@ fn dump_destructure(
               and splitting would obscure per-variant locality"
 )]
 pub fn dump_hir(module: &HirModule) -> String {
+    let defs = &module.defs;
     let mut out = String::new();
     for item in &module.items {
         match item {
@@ -63,34 +65,34 @@ pub fn dump_hir(module: &HirModule) -> String {
                             )
                             .expect("write to string");
                             if let Some(value) = value {
-                                dump_expr(&mut out, value, 4);
+                                dump_expr(defs, &mut out, value, 4);
                             }
                         }
                         HirStmtKind::Destructure { value, fields } => {
-                            dump_destructure(&mut out, value, fields, 2);
+                            dump_destructure(defs, &mut out, value, fields, 2);
                         }
                         HirStmtKind::Assign { target, value, .. } => {
                             writeln!(out, "  assign").expect("write to string");
-                            dump_expr(&mut out, target, 4);
-                            dump_expr(&mut out, value, 4);
+                            dump_expr(defs, &mut out, target, 4);
+                            dump_expr(defs, &mut out, value, 4);
                         }
-                        HirStmtKind::Expr(expr) => dump_expr(&mut out, expr, 2),
+                        HirStmtKind::Expr(expr) => dump_expr(defs, &mut out, expr, 2),
                         HirStmtKind::Return(Some(expr)) => {
                             writeln!(out, "  return").expect("write to string");
-                            dump_expr(&mut out, expr, 4);
+                            dump_expr(defs, &mut out, expr, 4);
                         }
                         HirStmtKind::Return(None) => {
                             writeln!(out, "  return unit").expect("write to string");
                         }
                         HirStmtKind::Defer { body, .. } => {
                             writeln!(out, "  defer").expect("write to string");
-                            dump_expr(&mut out, body, 4);
+                            dump_expr(defs, &mut out, body, 4);
                         }
                     }
                 }
                 if let Some(tail) = &func.body.tail {
                     writeln!(out, "  tail").expect("write to string");
-                    dump_expr(&mut out, tail, 4);
+                    dump_expr(defs, &mut out, tail, 4);
                 }
             }
             HirItem::TypeDecl(decl) => {
@@ -104,7 +106,7 @@ pub fn dump_hir(module: &HirModule) -> String {
                     writeln!(
                         out,
                         "  defining-module {module_short} qualified={}",
-                        decl.qualified_name()
+                        decl.qualified_name(defs)
                     )
                     .expect("write to string");
                 }
@@ -165,7 +167,7 @@ pub fn dump_hir(module: &HirModule) -> String {
                         )
                         .expect("write to string");
                     }
-                    dump_block(&mut out, &init.body, 4);
+                    dump_block(defs, &mut out, &init.body, 4);
                 }
                 for rf in &actor.receive_handlers {
                     writeln!(
@@ -190,7 +192,7 @@ pub fn dump_hir(module: &HirModule) -> String {
                         )
                         .expect("write to string");
                     }
-                    dump_block(&mut out, &rf.body, 4);
+                    dump_block(defs, &mut out, &rf.body, 4);
                 }
                 for m in &actor.methods {
                     writeln!(
@@ -212,7 +214,7 @@ pub fn dump_hir(module: &HirModule) -> String {
                         )
                         .expect("write to string");
                     }
-                    dump_block(&mut out, &m.body, 4);
+                    dump_block(defs, &mut out, &m.body, 4);
                 }
                 for h in &actor.lifecycle_hooks {
                     writeln!(
@@ -235,7 +237,7 @@ pub fn dump_hir(module: &HirModule) -> String {
                         )
                         .expect("write to string");
                     }
-                    dump_block(&mut out, &h.body, 4);
+                    dump_block(defs, &mut out, &h.body, 4);
                 }
             }
             HirItem::Supervisor(sup) => {
@@ -294,7 +296,7 @@ pub fn dump_hir(module: &HirModule) -> String {
     out
 }
 
-fn dump_block(out: &mut String, block: &HirBlock, indent: usize) {
+fn dump_block(defs: &hew_types::DefTable, out: &mut String, block: &HirBlock, indent: usize) {
     let pad = " ".repeat(indent);
     for stmt in &block.statements {
         match &stmt.kind {
@@ -308,34 +310,34 @@ fn dump_block(out: &mut String, block: &HirBlock, indent: usize) {
                 )
                 .expect("write to string");
                 if let Some(value) = value {
-                    dump_expr(out, value, indent + 2);
+                    dump_expr(defs, out, value, indent + 2);
                 }
             }
             HirStmtKind::Destructure { value, fields } => {
-                dump_destructure(out, value, fields, indent);
+                dump_destructure(defs, out, value, fields, indent);
             }
             HirStmtKind::Assign { target, value, .. } => {
                 writeln!(out, "{pad}assign").expect("write to string");
-                dump_expr(out, target, indent + 2);
-                dump_expr(out, value, indent + 2);
+                dump_expr(defs, out, target, indent + 2);
+                dump_expr(defs, out, value, indent + 2);
             }
-            HirStmtKind::Expr(expr) => dump_expr(out, expr, indent),
+            HirStmtKind::Expr(expr) => dump_expr(defs, out, expr, indent),
             HirStmtKind::Return(Some(expr)) => {
                 writeln!(out, "{pad}return").expect("write to string");
-                dump_expr(out, expr, indent + 2);
+                dump_expr(defs, out, expr, indent + 2);
             }
             HirStmtKind::Return(None) => {
                 writeln!(out, "{pad}return unit").expect("write to string");
             }
             HirStmtKind::Defer { body, .. } => {
                 writeln!(out, "{pad}defer").expect("write to string");
-                dump_expr(out, body, indent + 2);
+                dump_expr(defs, out, body, indent + 2);
             }
         }
     }
     if let Some(tail) = &block.tail {
         writeln!(out, "{pad}tail").expect("write to string");
-        dump_expr(out, tail, indent + 2);
+        dump_expr(defs, out, tail, indent + 2);
     }
 }
 
@@ -374,7 +376,7 @@ fn dump_payload_variant_predicate(
     reason = "single match on HirExprKind variants; each arm renders one variant \
               and splitting would obscure the dump's per-variant locality"
 )]
-fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
+fn dump_expr(defs: &hew_types::DefTable, out: &mut String, expr: &HirExpr, indent: usize) {
     let pad = " ".repeat(indent);
     writeln!(
         out,
@@ -404,7 +406,7 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
             )
             .expect("write to string");
             for operand in receiver.iter().chain(value.iter()) {
-                dump_expr(out, operand, indent + 4);
+                dump_expr(defs, out, operand, indent + 4);
             }
         }
         HirExprKind::RegexLiteralRef {
@@ -423,13 +425,13 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
         }
         HirExprKind::Binary { op, left, right } => {
             writeln!(out, "{pad}  binary {op}").expect("write to string");
-            dump_expr(out, left, indent + 4);
-            dump_expr(out, right, indent + 4);
+            dump_expr(defs, out, left, indent + 4);
+            dump_expr(defs, out, right, indent + 4);
         }
         HirExprKind::IdentityCompare { left, right } => {
             writeln!(out, "{pad}  identity-compare").expect("write to string");
-            dump_expr(out, left, indent + 4);
-            dump_expr(out, right, indent + 4);
+            dump_expr(defs, out, left, indent + 4);
+            dump_expr(defs, out, right, indent + 4);
         }
         HirExprKind::NumericCast {
             value,
@@ -443,7 +445,7 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                 to_ty.user_facing()
             )
             .expect("write to string");
-            dump_expr(out, value, indent + 4);
+            dump_expr(defs, out, value, indent + 4);
         }
         HirExprKind::SaturatingWidthCast {
             value,
@@ -458,7 +460,7 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                 to_ty.user_facing()
             )
             .expect("write to string");
-            dump_expr(out, value, indent + 4);
+            dump_expr(defs, out, value, indent + 4);
         }
         HirExprKind::TryWidthCast {
             value,
@@ -475,20 +477,20 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                 to_ty.user_facing()
             )
             .expect("write to string");
-            dump_expr(out, value, indent + 4);
+            dump_expr(defs, out, value, indent + 4);
         }
         HirExprKind::Call { callee, args, .. } => {
             writeln!(out, "{pad}  call").expect("write to string");
-            dump_expr(out, callee, indent + 4);
+            dump_expr(defs, out, callee, indent + 4);
             for arg in args {
-                dump_expr(out, arg, indent + 4);
+                dump_expr(defs, out, arg, indent + 4);
             }
         }
         HirExprKind::Spawn { actor_name, args } => {
             writeln!(out, "{pad}  spawn {actor_name}").expect("write to string");
             for (arg_name, value) in args {
                 writeln!(out, "{pad}    {arg_name}:").expect("write to string");
-                dump_expr(out, value, indent + 6);
+                dump_expr(defs, out, value, indent + 6);
             }
         }
         HirExprKind::ActorSelf => {
@@ -503,9 +505,9 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
         } => {
             writeln!(out, "{pad}  actor-message {method_id} policy={policy:?}")
                 .expect("write to string");
-            dump_expr(out, receiver, indent + 4);
+            dump_expr(defs, out, receiver, indent + 4);
             for arg in args {
-                dump_expr(out, arg, indent + 4);
+                dump_expr(defs, out, arg, indent + 4);
             }
         }
         HirExprKind::ActorDelivery {
@@ -514,9 +516,9 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
             operation,
         } => {
             writeln!(out, "{pad}  actor-delivery {operation:?}").expect("write to string");
-            dump_expr(out, receiver, indent + 4);
+            dump_expr(defs, out, receiver, indent + 4);
             for arg in args {
-                dump_expr(out, arg, indent + 4);
+                dump_expr(defs, out, arg, indent + 4);
             }
         }
         HirExprKind::ActorAsk {
@@ -536,9 +538,9 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                 reply_ty.user_facing()
             )
             .expect("write to string");
-            dump_expr(out, receiver, indent + 4);
+            dump_expr(defs, out, receiver, indent + 4);
             for arg in args {
-                dump_expr(out, arg, indent + 4);
+                dump_expr(defs, out, arg, indent + 4);
             }
         }
         HirExprKind::ActorGenStream {
@@ -548,9 +550,9 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
             ..
         } => {
             writeln!(out, "{pad}  actor-gen-stream {method}").expect("write to string");
-            dump_expr(out, receiver, indent + 4);
+            dump_expr(defs, out, receiver, indent + 4);
             for arg in args {
-                dump_expr(out, arg, indent + 4);
+                dump_expr(defs, out, arg, indent + 4);
             }
         }
         HirExprKind::RemoteActorAsk {
@@ -561,14 +563,14 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
         } => {
             writeln!(out, "{pad}  remote-actor-ask -> {}", reply_ty.user_facing())
                 .expect("write to string");
-            dump_expr(out, receiver, indent + 4);
-            dump_expr(out, msg, indent + 4);
-            dump_expr(out, timeout_ms, indent + 4);
+            dump_expr(defs, out, receiver, indent + 4);
+            dump_expr(defs, out, msg, indent + 4);
+            dump_expr(defs, out, timeout_ms, indent + 4);
         }
         HirExprKind::RemoteActorSend { receiver, msg } => {
             writeln!(out, "{pad}  remote-actor-send").expect("write to string");
-            dump_expr(out, receiver, indent + 4);
-            dump_expr(out, msg, indent + 4);
+            dump_expr(defs, out, receiver, indent + 4);
+            dump_expr(defs, out, msg, indent + 4);
         }
         HirExprKind::Block(block) => {
             writeln!(out, "{pad}  block {}", block.scope).expect("write to string");
@@ -582,20 +584,20 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
             writeln!(out, "{pad}  struct-init {name}").expect("write to string");
             for (field_name, value) in fields {
                 writeln!(out, "{pad}    .{field_name}").expect("write to string");
-                dump_expr(out, value, indent + 6);
+                dump_expr(defs, out, value, indent + 6);
             }
             if let Some(base) = base {
                 writeln!(out, "{pad}    ..base").expect("write to string");
-                dump_expr(out, base, indent + 6);
+                dump_expr(defs, out, base, indent + 6);
             }
         }
         HirExprKind::FieldAccess { object, field } => {
             writeln!(out, "{pad}  field-access .{field}").expect("write to string");
-            dump_expr(out, object, indent + 4);
+            dump_expr(defs, out, object, indent + 4);
         }
         HirExprKind::Race { body } => {
             writeln!(out, "{pad}  race scope={}", body.scope).expect("write to string");
-            dump_block(out, body, indent + 4);
+            dump_block(defs, out, body, indent + 4);
         }
         HirExprKind::Scope { body } => {
             writeln!(out, "{pad}  scope scope={}", body.scope).expect("write to string");
@@ -611,28 +613,28 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                         )
                         .expect("write to string");
                         if let Some(value) = value {
-                            dump_expr(out, value, indent + 6);
+                            dump_expr(defs, out, value, indent + 6);
                         }
                     }
                     HirStmtKind::Destructure { value, fields } => {
-                        dump_destructure(out, value, fields, indent + 4);
+                        dump_destructure(defs, out, value, fields, indent + 4);
                     }
                     HirStmtKind::Assign { target, value, .. } => {
                         writeln!(out, "{pad}    assign").expect("write to string");
-                        dump_expr(out, target, indent + 6);
-                        dump_expr(out, value, indent + 6);
+                        dump_expr(defs, out, target, indent + 6);
+                        dump_expr(defs, out, value, indent + 6);
                     }
-                    HirStmtKind::Expr(expr) => dump_expr(out, expr, indent + 4),
+                    HirStmtKind::Expr(expr) => dump_expr(defs, out, expr, indent + 4),
                     HirStmtKind::Return(Some(expr)) => {
                         writeln!(out, "{pad}    return").expect("write to string");
-                        dump_expr(out, expr, indent + 6);
+                        dump_expr(defs, out, expr, indent + 6);
                     }
                     HirStmtKind::Return(None) => {
                         writeln!(out, "{pad}    return unit").expect("write to string");
                     }
                     HirStmtKind::Defer { body, .. } => {
                         writeln!(out, "{pad}    defer").expect("write to string");
-                        dump_expr(out, body, indent + 6);
+                        dump_expr(defs, out, body, indent + 6);
                     }
                 }
             }
@@ -652,28 +654,28 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                         )
                         .expect("write to string");
                         if let Some(value) = value {
-                            dump_expr(out, value, indent + 6);
+                            dump_expr(defs, out, value, indent + 6);
                         }
                     }
                     HirStmtKind::Destructure { value, fields } => {
-                        dump_destructure(out, value, fields, indent + 4);
+                        dump_destructure(defs, out, value, fields, indent + 4);
                     }
                     HirStmtKind::Assign { target, value, .. } => {
                         writeln!(out, "{pad}    assign").expect("write to string");
-                        dump_expr(out, target, indent + 6);
-                        dump_expr(out, value, indent + 6);
+                        dump_expr(defs, out, target, indent + 6);
+                        dump_expr(defs, out, value, indent + 6);
                     }
-                    HirStmtKind::Expr(expr) => dump_expr(out, expr, indent + 4),
+                    HirStmtKind::Expr(expr) => dump_expr(defs, out, expr, indent + 4),
                     HirStmtKind::Return(Some(expr)) => {
                         writeln!(out, "{pad}    return").expect("write to string");
-                        dump_expr(out, expr, indent + 6);
+                        dump_expr(defs, out, expr, indent + 6);
                     }
                     HirStmtKind::Return(None) => {
                         writeln!(out, "{pad}    return unit").expect("write to string");
                     }
                     HirStmtKind::Defer { body, .. } => {
                         writeln!(out, "{pad}    defer").expect("write to string");
-                        dump_expr(out, body, indent + 6);
+                        dump_expr(defs, out, body, indent + 6);
                     }
                 }
             }
@@ -691,12 +693,12 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                 error.ty.user_facing()
             )
             .expect("write to string");
-            dump_expr(out, scope, indent + 4);
-            dump_expr(out, handler, indent + 4);
+            dump_expr(defs, out, scope, indent + 4);
+            dump_expr(defs, out, handler, indent + 4);
         }
         HirExprKind::ScopeDeadline { duration, body } => {
             writeln!(out, "{pad}  scope-deadline").expect("write to string");
-            dump_expr(out, duration, indent + 4);
+            dump_expr(defs, out, duration, indent + 4);
             for stmt in &body.statements {
                 match &stmt.kind {
                     HirStmtKind::Let(binding, value) => {
@@ -709,28 +711,28 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                         )
                         .expect("write to string");
                         if let Some(value) = value {
-                            dump_expr(out, value, indent + 6);
+                            dump_expr(defs, out, value, indent + 6);
                         }
                     }
                     HirStmtKind::Destructure { value, fields } => {
-                        dump_destructure(out, value, fields, indent + 4);
+                        dump_destructure(defs, out, value, fields, indent + 4);
                     }
                     HirStmtKind::Assign { target, value, .. } => {
                         writeln!(out, "{pad}    assign").expect("write to string");
-                        dump_expr(out, target, indent + 6);
-                        dump_expr(out, value, indent + 6);
+                        dump_expr(defs, out, target, indent + 6);
+                        dump_expr(defs, out, value, indent + 6);
                     }
-                    HirStmtKind::Expr(expr) => dump_expr(out, expr, indent + 4),
+                    HirStmtKind::Expr(expr) => dump_expr(defs, out, expr, indent + 4),
                     HirStmtKind::Return(Some(expr)) => {
                         writeln!(out, "{pad}    return").expect("write to string");
-                        dump_expr(out, expr, indent + 6);
+                        dump_expr(defs, out, expr, indent + 6);
                     }
                     HirStmtKind::Return(None) => {
                         writeln!(out, "{pad}    return unit").expect("write to string");
                     }
                     HirStmtKind::Defer { body, .. } => {
                         writeln!(out, "{pad}    defer").expect("write to string");
-                        dump_expr(out, body, indent + 6);
+                        dump_expr(defs, out, body, indent + 6);
                     }
                 }
             }
@@ -738,11 +740,11 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
         HirExprKind::AwaitTask { operand, output_ty } => {
             writeln!(out, "{pad}  await-task -> {}", output_ty.user_facing())
                 .expect("write to string");
-            dump_expr(out, operand, indent + 2);
+            dump_expr(defs, out, operand, indent + 2);
         }
         HirExprKind::AwaitRestart { child } => {
             writeln!(out, "{pad}  await-restart").expect("write to string");
-            dump_expr(out, child, indent + 2);
+            dump_expr(defs, out, child, indent + 2);
         }
         HirExprKind::ConnAwaitRead {
             conn,
@@ -758,11 +760,11 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                 "{pad}  conn-await-read to_string={to_string}{deadline}"
             )
             .expect("write to string");
-            dump_expr(out, conn, indent + 2);
+            dump_expr(defs, out, conn, indent + 2);
         }
         HirExprKind::ListenerAwaitAccept { listener, .. } => {
             writeln!(out, "{pad}  listener-await-accept").expect("write to string");
-            dump_expr(out, listener, indent + 2);
+            dump_expr(defs, out, listener, indent + 2);
         }
         HirExprKind::StreamRecvAwait {
             stream,
@@ -773,7 +775,7 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                 .map(|ns| format!(" | after {ns}ns"))
                 .unwrap_or_default();
             writeln!(out, "{pad}  stream-recv-await{deadline}").expect("write to string");
-            dump_expr(out, stream, indent + 2);
+            dump_expr(defs, out, stream, indent + 2);
         }
         HirExprKind::Select(select) => {
             writeln!(out, "{pad}  select arms={}", select.arms.len()).expect("write to string");
@@ -811,7 +813,7 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                 )
                 .expect("write to string");
             }
-            dump_expr(out, body, indent + 4);
+            dump_expr(defs, out, body, indent + 4);
         }
         HirExprKind::Closure {
             params,
@@ -843,7 +845,7 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                 )
                 .expect("write to string");
             }
-            dump_expr(out, body, indent + 4);
+            dump_expr(defs, out, body, indent + 4);
         }
         HirExprKind::GenBlock {
             body,
@@ -868,24 +870,24 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                 )
                 .expect("write to string");
             }
-            dump_block(out, body, indent + 4);
+            dump_block(defs, out, body, indent + 4);
         }
         HirExprKind::Yield { value, yield_ty } => {
             writeln!(out, "{pad}  yield yield_ty={}", yield_ty.user_facing())
                 .expect("write to string");
             if let Some(value) = value {
-                dump_expr(out, value, indent + 4);
+                dump_expr(defs, out, value, indent + 4);
             }
         }
         HirExprKind::TupleIndex { tuple, index } => {
             writeln!(out, "{pad}  tuple-index .{index}").expect("write to string");
-            dump_expr(out, tuple, indent + 4);
+            dump_expr(defs, out, tuple, indent + 4);
         }
         HirExprKind::Index { container, index }
         | HirExprKind::BorrowedIndex { container, index } => {
             writeln!(out, "{pad}  vec-index").expect("write to string");
-            dump_expr(out, container, indent + 4);
-            dump_expr(out, index, indent + 4);
+            dump_expr(defs, out, container, indent + 4);
+            dump_expr(defs, out, index, indent + 4);
         }
         HirExprKind::Slice {
             container,
@@ -893,14 +895,14 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
             end,
         } => {
             writeln!(out, "{pad}  vec-slice").expect("write to string");
-            dump_expr(out, container, indent + 4);
+            dump_expr(defs, out, container, indent + 4);
             if let Some(s) = start {
-                dump_expr(out, s, indent + 4);
+                dump_expr(defs, out, s, indent + 4);
             } else {
                 writeln!(out, "{pad}    start (open)").expect("write to string");
             }
             if let Some(e) = end {
-                dump_expr(out, e, indent + 4);
+                dump_expr(defs, out, e, indent + 4);
             } else {
                 writeln!(out, "{pad}    end (open)").expect("write to string");
             }
@@ -921,7 +923,7 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                 vtable_entries.len()
             )
             .expect("write to string");
-            dump_expr(out, value, indent + 4);
+            dump_expr(defs, out, value, indent + 4);
         }
         HirExprKind::CallDynMethod {
             receiver,
@@ -939,9 +941,9 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                 ret_ty.user_facing()
             )
             .expect("write to string");
-            dump_expr(out, receiver, indent + 4);
+            dump_expr(defs, out, receiver, indent + 4);
             for arg in args {
-                dump_expr(out, arg, indent + 4);
+                dump_expr(defs, out, arg, indent + 4);
             }
         }
         HirExprKind::CallTraitMethodStatic {
@@ -954,7 +956,7 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
         } => {
             let target_label = match target {
                 hew_types::CallTarget::StaticTraitMethod { method, .. } => {
-                    method.full_path().to_string()
+                    defs.path(*method).to_string()
                 }
                 other => format!("invalid-static-target:{other:?}"),
             };
@@ -965,9 +967,9 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                 ret_ty.user_facing()
             )
             .expect("write to string");
-            dump_expr(out, receiver, indent + 4);
+            dump_expr(defs, out, receiver, indent + 4);
             for arg in args {
-                dump_expr(out, arg, indent + 4);
+                dump_expr(defs, out, arg, indent + 4);
             }
         }
         HirExprKind::VarSelfMethodCall {
@@ -982,7 +984,7 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
             let target_label = match target {
                 crate::node::HirVarSelfMethodTarget::Direct => match call_target {
                     hew_types::CallTarget::ImplMethod(declaration) => {
-                        declaration.full_path().to_string()
+                        defs.path(*declaration).to_string()
                     }
                     other => format!("invalid-direct-target:{other:?}"),
                 },
@@ -991,7 +993,7 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                 } => match call_target {
                     hew_types::CallTarget::StaticTraitMethod { method, .. } => format!(
                         "{} [receiver_param={receiver_type_param}]",
-                        method.full_path()
+                        defs.path(*method)
                     ),
                     other => format!("invalid-static-target:{other:?}"),
                 },
@@ -1003,9 +1005,9 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                 receiver_ty.user_facing()
             )
             .expect("write to string");
-            dump_expr(out, receiver, indent + 4);
+            dump_expr(defs, out, receiver, indent + 4);
             for arg in args {
-                dump_expr(out, arg, indent + 4);
+                dump_expr(defs, out, arg, indent + 4);
             }
         }
         HirExprKind::ResolvedImplCall {
@@ -1031,18 +1033,18 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                 ret_ty.user_facing()
             )
             .expect("write to string");
-            dump_expr(out, receiver, indent + 4);
+            dump_expr(defs, out, receiver, indent + 4);
             for arg in args {
-                dump_expr(out, arg, indent + 4);
+                dump_expr(defs, out, arg, indent + 4);
             }
         }
         HirExprKind::CancellationTokenIsCancelled { receiver } => {
             writeln!(out, "{pad}  cancellation-token-is-cancelled").expect("write to string");
-            dump_expr(out, receiver, indent + 4);
+            dump_expr(defs, out, receiver, indent + 4);
         }
         HirExprKind::GeneratorNext { receiver, yield_ty } => {
             writeln!(out, "{pad}  generator-next yield_ty={yield_ty:?}").expect("write to string");
-            dump_expr(out, receiver, indent + 4);
+            dump_expr(defs, out, receiver, indent + 4);
         }
         HirExprKind::WireCodec {
             direction,
@@ -1051,7 +1053,7 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
         } => {
             writeln!(out, "{pad}  wire-codec {direction:?} value_ty={value_ty:?}")
                 .expect("write to string");
-            dump_expr(out, operand, indent + 4);
+            dump_expr(defs, out, operand, indent + 4);
         }
         HirExprKind::RecordCloneCall {
             src,
@@ -1060,11 +1062,11 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
         } => {
             writeln!(out, "{pad}  record-clone {record_name} fn={clone_fn_sym}")
                 .expect("write to string");
-            dump_expr(out, src, indent + 4);
+            dump_expr(defs, out, src, indent + 4);
         }
         HirExprKind::SubsumedValue { source } => {
             writeln!(out, "{pad}  subsumed-value").expect("write to string");
-            dump_expr(out, source, indent + 4);
+            dump_expr(defs, out, source, indent + 4);
         }
         HirExprKind::MachineVariantCtor {
             machine_name,
@@ -1079,7 +1081,7 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
             if let Some(fields) = payload {
                 for (name, val) in fields {
                     writeln!(out, "{pad}    field {name}:").expect("write to string");
-                    dump_expr(out, val, indent + 6);
+                    dump_expr(defs, out, val, indent + 6);
                 }
             }
         }
@@ -1089,8 +1091,8 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
             body,
         } => {
             writeln!(out, "{pad}  while label={label:?}").expect("write to string");
-            dump_expr(out, condition, indent + 4);
-            dump_block(out, body, indent + 4);
+            dump_expr(defs, out, condition, indent + 4);
+            dump_block(defs, out, body, indent + 4);
         }
         HirExprKind::ForRange {
             label,
@@ -1108,14 +1110,14 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                 binding.name
             )
             .expect("write to string");
-            dump_expr(out, start, indent + 4);
-            dump_expr(out, end, indent + 4);
-            dump_expr(out, step, indent + 4);
-            dump_block(out, body, indent + 4);
+            dump_expr(defs, out, start, indent + 4);
+            dump_expr(defs, out, end, indent + 4);
+            dump_expr(defs, out, step, indent + 4);
+            dump_block(defs, out, body, indent + 4);
         }
         HirExprKind::Match { scrutinee, arms } => {
             writeln!(out, "{pad}  match ({} arms)", arms.len()).expect("write to string");
-            dump_expr(out, scrutinee, indent + 4);
+            dump_expr(defs, out, scrutinee, indent + 4);
             for arm in arms {
                 let label = match &arm.predicate {
                     crate::node::HirMatchArmPredicate::Wildcard => "_".to_string(),
@@ -1158,7 +1160,7 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                 for pvp in &arm.payload_variant_predicates {
                     dump_payload_variant_predicate(out, pvp, indent + 6);
                 }
-                dump_expr(out, &arm.body, indent + 6);
+                dump_expr(defs, out, &arm.body, indent + 6);
             }
         }
         HirExprKind::Unsupported(reason) => {
@@ -1166,7 +1168,7 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
         }
         HirExprKind::Unary { op, operand, .. } => {
             writeln!(out, "{pad}  unary {op:?}").expect("write to string");
-            dump_expr(out, operand, indent + 4);
+            dump_expr(defs, out, operand, indent + 4);
         }
         HirExprKind::ArrayLiteral { elements } => {
             writeln!(
@@ -1176,30 +1178,30 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
             )
             .expect("write to string");
             for element in elements {
-                dump_expr(out, element, indent + 4);
+                dump_expr(defs, out, element, indent + 4);
             }
         }
         HirExprKind::ArrayRepeat { value } => {
             writeln!(out, "{pad}  fixed array repeat").expect("write to string");
-            dump_expr(out, value, indent + 4);
+            dump_expr(defs, out, value, indent + 4);
         }
         HirExprKind::TupleLiteral { elements } => {
             writeln!(out, "{pad}  tuple literal ({} elements)", elements.len())
                 .expect("write to string");
             for elem in elements {
-                dump_expr(out, elem, indent + 4);
+                dump_expr(defs, out, elem, indent + 4);
             }
         }
         HirExprKind::Break { label, value } => {
             writeln!(out, "{pad}  break label={label:?}").expect("write to string");
             if let Some(value) = value {
-                dump_expr(out, value, indent + 4);
+                dump_expr(defs, out, value, indent + 4);
             }
         }
         HirExprKind::Return { value } => {
             writeln!(out, "{pad}  return").expect("write to string");
             if let Some(value) = value {
-                dump_expr(out, value, indent + 4);
+                dump_expr(defs, out, value, indent + 4);
             }
         }
         HirExprKind::Continue { label } => {
@@ -1207,7 +1209,7 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
         }
         HirExprKind::Loop { label, body } => {
             writeln!(out, "{pad}  loop label={label:?}").expect("write to string");
-            dump_block(out, body, indent + 4);
+            dump_block(defs, out, body, indent + 4);
         }
     }
 }

@@ -274,7 +274,7 @@ pub fn actor_signature(
     operation: &hew_sir::ActorOperation,
 ) -> Result<hew_sir::SemSignature, PhysicalError> {
     operation
-        .signature(&module.actors, &module.supervisors, |id| {
+        .signature(&module.defs, &module.actors, &module.supervisors, |id| {
             module
                 .callables
                 .iter()

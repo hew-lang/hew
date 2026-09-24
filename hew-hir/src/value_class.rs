@@ -81,17 +81,15 @@ impl LifecycleRegistry {
     /// Returns the rejected lifecycle on duplicate declaration identity.
     pub fn admit_opaque_resource(
         &mut self,
+        defs: &hew_types::DefTable,
         lifecycle: OpaqueResourceLifecycle,
     ) -> Result<(), Box<OpaqueResourceLifecycle>> {
         use std::collections::btree_map::Entry;
-        match self
-            .opaque_resources
-            .entry(lifecycle.resource_declaration.clone())
-        {
+        match self.opaque_resources.entry(lifecycle.resource_declaration) {
             Entry::Vacant(entry) => {
                 self.opaque_resources_by_name.insert(
-                    lifecycle.resource_declaration.full_path().to_string(),
-                    lifecycle.resource_declaration.clone(),
+                    defs.path(lifecycle.resource_declaration).to_string(),
+                    lifecycle.resource_declaration,
                 );
                 entry.insert(lifecycle);
                 Ok(())
@@ -136,10 +134,7 @@ impl LifecycleRegistry {
         lifecycle: ResourceRecordLifecycle,
     ) -> Result<(), Box<ResourceRecordLifecycle>> {
         use std::collections::btree_map::Entry;
-        match self
-            .resource_records
-            .entry(lifecycle.resource_declaration.clone())
-        {
+        match self.resource_records.entry(lifecycle.resource_declaration) {
             Entry::Vacant(entry) => {
                 entry.insert(lifecycle);
                 Ok(())
@@ -202,9 +197,11 @@ impl TypeClassTable {
     /// already admitted.
     pub fn admit_opaque_resource_lifecycle(
         &mut self,
+        defs: &hew_types::DefTable,
         lifecycle: OpaqueResourceLifecycle,
     ) -> Result<(), Box<OpaqueResourceLifecycle>> {
-        self.lifecycle_registry.admit_opaque_resource(lifecycle)
+        self.lifecycle_registry
+            .admit_opaque_resource(defs, lifecycle)
     }
 
     /// Admit one exact field-bearing resource-record lifecycle at the HIR

@@ -49,7 +49,7 @@ fn physical_with_roots(source: &str, roots: &[&str]) -> PhysicalModule {
                 .iter()
                 .find_map(|item| match item {
                     hew_hir::HirItem::Function(function) if function.name == *name => {
-                        Some(function.declaration.clone())
+                        Some(function.declaration)
                     }
                     _ => None,
                 })

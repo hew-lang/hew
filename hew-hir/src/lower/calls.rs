@@ -337,7 +337,7 @@ impl LowerCtx {
         site: SiteId,
     ) -> (HirExprKind, ResolvedTy) {
         if let CallTarget::RecordConstructor(declaration) = &target {
-            return self.lower_positional_record_constructor(declaration, lowered_args.args, span);
+            return self.lower_positional_record_constructor(*declaration, lowered_args.args, span);
         }
 
         if !matches!(
@@ -363,10 +363,10 @@ impl LowerCtx {
             );
         }
         let symbol = if let CallTarget::ImplMethod(declaration) = &target {
-            let Some(symbol) = self.registered_impl_method_symbol(declaration) else {
+            let Some(symbol) = self.registered_impl_method_symbol(*declaration) else {
                 self.diagnostics.push(HirDiagnostic::new(
                     HirDiagnosticKind::CallableUnsupportedInMir {
-                        name: declaration.full_path().to_string(),
+                        name: self.defs.path(*declaration).to_string(),
                     },
                     span.clone(),
                     "checker selected an associated implementation declaration whose HIR body was not registered",
@@ -443,12 +443,13 @@ impl LowerCtx {
 
     pub(super) fn lower_positional_record_constructor(
         &mut self,
-        declaration: &hew_types::DefId,
+        declaration: hew_types::DefId,
         args: Vec<HirExpr>,
         span: &Span,
     ) -> (HirExprKind, ResolvedTy) {
+        let path = self.defs.path(declaration).to_string();
         let ty = self
-            .checker_expr_ty(span, declaration.full_path())
+            .checker_expr_ty(span, &path)
             .unwrap_or(ResolvedTy::Unit);
         let type_args = match &ty {
             ResolvedTy::Named { args, .. } => args.clone(),
@@ -456,7 +457,7 @@ impl LowerCtx {
         };
         (
             HirExprKind::StructInit {
-                name: declaration.full_path().to_string(),
+                name: self.defs.path(declaration).to_string(),
                 type_args,
                 fields: args
                     .into_iter()
@@ -481,7 +482,7 @@ impl LowerCtx {
         site: SiteId,
     ) -> (HirExprKind, ResolvedTy) {
         if let Some(CallTarget::RecordConstructor(declaration)) = self.ordinary_call_target(span) {
-            return self.lower_positional_record_constructor(&declaration, args.args, span);
+            return self.lower_positional_record_constructor(declaration, args.args, span);
         }
 
         // Module-qualified call `module.fn(args)`: the callee is a
@@ -561,7 +562,7 @@ impl LowerCtx {
                 ResolvedTy::Unit,
             );
         };
-        let target_name = Self::call_target_presentation_name(&target);
+        let target_name = self.call_target_presentation_name(&target);
         if !self.ensure_executable_target(&target, &target_name, span) {
             return (
                 HirExprKind::Unsupported(
@@ -660,17 +661,17 @@ impl LowerCtx {
             declaring_trait.to_string(),
             method_name.to_string(),
         )) {
-            return Some(ids.clone());
+            return Some(*ids);
         }
         if let Some(module) = self.current_module_name.as_deref() {
             let key = format!("{module}.{declaring_trait}::{method_name}");
             if let Some(ids) = self.trait_method_ids.get(&key) {
-                return Some(ids.clone());
+                return Some(*ids);
             }
         }
         self.trait_method_ids
             .get(&format!("{declaring_trait}::{method_name}"))
-            .cloned()
+            .copied()
             .or_else(|| {
                 // The prelude iterator may be available without a lexical
                 // import binding.  Its lang-item binding carries the exact
@@ -684,7 +685,7 @@ impl LowerCtx {
                 if declaring_trait == binding.trait_name
                     && binding.method_name.as_deref() == Some(method_name)
                 {
-                    Some((binding.trait_id.clone(), binding.method_id.clone()?))
+                    Some((binding.trait_id, binding.method_id?))
                 } else {
                     None
                 }
@@ -697,7 +698,7 @@ impl LowerCtx {
                 if declaring_trait == binding.trait_name
                     && binding.method_name.as_deref() == Some(method_name)
                 {
-                    Some((binding.trait_id.clone(), binding.method_id.clone()?))
+                    Some((binding.trait_id, binding.method_id?))
                 } else {
                     None
                 }
@@ -726,7 +727,7 @@ impl LowerCtx {
                 self.current_module_idx,
                 binding.to_string(),
             ))
-            .cloned()
+            .copied()
     }
 
     pub(super) fn ordinary_call_target(&self, span: &Span) -> Option<CallTarget> {
@@ -763,20 +764,20 @@ impl LowerCtx {
     /// by a lowered expression.  Declaration-bearing targets retain their
     /// full `DefId` path so diagnostics identify the same declaration that
     /// structured dispatch will carry to MIR.
-    pub(super) fn call_target_presentation_name(target: &CallTarget) -> String {
+    pub(super) fn call_target_presentation_name(&self, target: &CallTarget) -> String {
         match target {
             CallTarget::User(declaration)
             | CallTarget::RecordConstructor(declaration)
             | CallTarget::ImplMethod(declaration)
             | CallTarget::Extern { declaration, .. }
             | CallTarget::DeclaredRuntime { declaration, .. } => {
-                declaration.full_path().to_string()
+                self.defs.path(*declaration).to_string()
             }
             CallTarget::Runtime(family) => format!("runtime::{family:?}"),
             CallTarget::Builtin { endpoint } => endpoint.clone(),
             CallTarget::RuntimeCollection(family) => format!("runtime collection::{family:?}"),
             CallTarget::DynamicVtable { method, .. }
-            | CallTarget::StaticTraitMethod { method, .. } => method.full_path().to_string(),
+            | CallTarget::StaticTraitMethod { method, .. } => self.defs.path(*method).to_string(),
             CallTarget::IndirectFunctionValue => "indirect function value".to_string(),
             CallTarget::Unsupported { reason } => format!("unsupported call ({reason})"),
         }
@@ -821,7 +822,7 @@ impl LowerCtx {
             }
         }
         if let Some(declaration) = self.impl_method_declaration_ids.get(symbol) {
-            return CallTarget::ImplMethod(declaration.clone());
+            return CallTarget::ImplMethod(*declaration);
         }
         CallTarget::Unsupported {
             reason: format!("synthetic call `{symbol}` has no checker-owned target"),

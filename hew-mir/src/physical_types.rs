@@ -1236,6 +1236,9 @@ pub struct PhysicalModule {
     pub regex_patterns: Vec<String>,
     /// Source attribution for `hew build -g`.
     pub debug: PhysicalDebug,
+    /// The compilation's declaration table: every `DefId` in the module
+    /// indexes it.
+    pub defs: std::sync::Arc<hew_types::DefTable>,
 }
 
 pub use hew_sir::SemDebugScope;

@@ -8,7 +8,7 @@ use hew_parser::{
     ast::{Item, Program},
     module::{Module, ModuleGraph, ModulePath},
 };
-use hew_types::{DefId, NominalId, NominalInstance};
+use hew_types::NominalInstance;
 
 const ADAPTERS: &[&str] = &["Map", "Filter", "Take", "Skip"];
 
@@ -66,15 +66,27 @@ fn std_iter_output(root_body: &str) -> hew_hir::LowerOutput {
 fn imported_iter_adapter_next_impls_are_registered_by_exact_owner() {
     let output = std_iter_output("fn main() -> i64 { 0 }");
     let index = build_trait_impl_method_index(&output.module.items);
-    let iterator = DefId::for_test("std.builtins.Iterator");
-    let next = DefId::for_test("std.builtins.Iterator::next");
+    let iterator = output
+        .module
+        .defs
+        .lookup_path("std.builtins.Iterator")
+        .expect("declared");
+    let next = output
+        .module
+        .defs
+        .lookup_path("std.builtins.Iterator::next")
+        .expect("declared");
 
     for adapter in ADAPTERS {
         let entry = lookup_trait_impl_entry_by_id(
             &index,
             &iterator,
             &NominalInstance {
-                nominal: NominalId::for_test(format!("std.iter.{adapter}")),
+                nominal: output
+                    .module
+                    .defs
+                    .lookup_nominal(&format!("std.iter.{adapter}"))
+                    .expect("declared"),
                 args: Vec::new(),
             },
             &next,
@@ -98,12 +110,26 @@ fn imported_iter_adapter_next_impls_are_registered_by_exact_owner() {
 fn compiler_iterator_impls_retain_their_typed_receiver_identities() {
     let output = std_iter_output("fn main() -> i64 { 0 }");
     let index = build_trait_impl_method_index(&output.module.items);
-    let iterator = DefId::for_test("std.builtins.Iterator");
-    let next = DefId::for_test("std.builtins.Iterator::next");
+    let iterator = output
+        .module
+        .defs
+        .lookup_path("std.builtins.Iterator")
+        .expect("declared");
+    let next = output
+        .module
+        .defs
+        .lookup_path("std.builtins.Iterator::next")
+        .expect("declared");
     let receivers: Vec<_> = index
         .keys()
         .filter(|key| key.declaring_trait == iterator && key.method == next)
-        .map(|key| key.self_type.nominal.full_path().to_string())
+        .map(|key| {
+            output
+                .module
+                .defs
+                .path(key.self_type.nominal.declaration())
+                .to_string()
+        })
         .collect();
 
     for expected in [
@@ -131,13 +157,25 @@ fn main() -> i64 { 0 }
 ",
     );
     let index = build_trait_impl_method_index(&output.module.items);
-    let iterator = DefId::for_test("std.builtins.Iterator");
-    let next = DefId::for_test("std.builtins.Iterator::next");
+    let iterator = output
+        .module
+        .defs
+        .lookup_path("std.builtins.Iterator")
+        .expect("declared");
+    let next = output
+        .module
+        .defs
+        .lookup_path("std.builtins.Iterator::next")
+        .expect("declared");
     let builtin = lookup_trait_impl_entry_by_id(
         &index,
         &iterator,
         &NominalInstance {
-            nominal: NominalId::for_test("std.builtins.HashMapIter"),
+            nominal: output
+                .module
+                .defs
+                .lookup_nominal("std.builtins.HashMapIter")
+                .expect("declared"),
             args: Vec::new(),
         },
         &next,
@@ -152,7 +190,11 @@ fn main() -> i64 { 0 }
         &index,
         &iterator,
         &NominalInstance {
-            nominal: NominalId::for_test("HashMapIter"),
+            nominal: output
+                .module
+                .defs
+                .lookup_nominal("HashMapIter")
+                .expect("declared"),
             args: Vec::new(),
         },
         &next,
@@ -176,13 +218,25 @@ fn main() -> i64 { 0 }
 ",
     );
     let index = build_trait_impl_method_index(&output.module.items);
-    let iterator = DefId::for_test("std.builtins.Iterator");
-    let next = DefId::for_test("std.builtins.Iterator::next");
+    let iterator = output
+        .module
+        .defs
+        .lookup_path("std.builtins.Iterator")
+        .expect("declared");
+    let next = output
+        .module
+        .defs
+        .lookup_path("std.builtins.Iterator::next")
+        .expect("declared");
     let std_entry = lookup_trait_impl_entry_by_id(
         &index,
         &iterator,
         &NominalInstance {
-            nominal: NominalId::for_test("std.iter.Map"),
+            nominal: output
+                .module
+                .defs
+                .lookup_nominal("std.iter.Map")
+                .expect("declared"),
             args: Vec::new(),
         },
         &next,
@@ -192,7 +246,7 @@ fn main() -> i64 { 0 }
         &index,
         &iterator,
         &NominalInstance {
-            nominal: NominalId::for_test("Map"),
+            nominal: output.module.defs.lookup_nominal("Map").expect("declared"),
             args: Vec::new(),
         },
         &next,

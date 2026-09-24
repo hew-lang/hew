@@ -12,7 +12,7 @@ fn probe(module: &mut PhysicalModule) -> &mut PhysicalFunction {
     let id = module
         .callables
         .iter()
-        .find(|callable| callable.declaration.full_path() == "probe")
+        .find(|callable| module.defs.path(callable.declaration) == "probe")
         .unwrap()
         .id;
     module

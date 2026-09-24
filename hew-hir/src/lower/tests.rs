@@ -151,8 +151,9 @@ impl Sample for Broken {
     );
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
 
-    let diagnostic = *check_builtin_callable_impl_program(&parsed.program)
-        .expect_err("the invalid injected impl must fail closed");
+    let diagnostic =
+        *check_builtin_callable_impl_program(&parsed.program, &hew_types::DefTable::new())
+            .expect_err("the invalid injected impl must fail closed");
     let HirDiagnosticKind::CheckerBoundaryViolation { name, reason } = diagnostic.kind else {
         panic!("expected checker-boundary diagnostic, got {diagnostic:?}");
     };
@@ -205,7 +206,7 @@ fn trait_method_identity_prefers_local_and_imported_same_leaf_traits_over_prelud
         let local_method = hew_types::DefId::for_test(format!("app.{trait_name}::{method_name}"));
         ctx.trait_method_ids.insert(
             format!("app.{trait_name}::{method_name}"),
-            (local_trait.clone(), local_method.clone()),
+            (local_trait, local_method),
         );
         assert_eq!(
             ctx.trait_method_identity(trait_name, method_name),
@@ -225,7 +226,7 @@ fn trait_method_identity_prefers_local_and_imported_same_leaf_traits_over_prelud
                 trait_name.to_string(),
                 method_name.to_string(),
             ),
-            (imported_trait.clone(), imported_method.clone()),
+            (imported_trait, imported_method),
         );
         assert_eq!(
             ctx.trait_method_identity(trait_name, method_name),
@@ -278,7 +279,7 @@ fn main() {}
     let alpha = type_output
         .impl_method_declaration_ids
         .get("Alpha::run")
-        .cloned()
+        .copied()
         .expect("checker must publish Alpha's implementation declaration");
     type_output
         .impl_method_declaration_ids
@@ -340,13 +341,16 @@ impl Widget {
         ["Widget", "fixture.owner.Widget"],
         ["fixture.owner.Widget", "Widget"],
     ] {
-        let mut output = TypeCheckOutput::default();
+        let mut output = TypeCheckOutput {
+            defs: hew_types::DefTable::fixture(),
+            ..TypeCheckOutput::default()
+        };
         output
             .impl_method_declaration_ids
-            .insert("Widget::run".to_string(), declaration.clone());
+            .insert("Widget::run".to_string(), declaration);
         output
             .impl_method_declaration_ids
-            .insert("fixture.owner.Widget::run".to_string(), declaration.clone());
+            .insert("fixture.owner.Widget::run".to_string(), declaration);
         let mut ctx = LowerCtx::new(&output, MONOMORPHISATION_REGISTRY_CAP, TargetArch::host());
         for path in paths {
             plan_impl_block_symbols(&mut ctx, impl_decl, path, &HashSet::new());
@@ -382,7 +386,7 @@ fn impl_body_projection_never_retries_through_a_same_leaf_symbol() {
         "right.render.Result::<impl inherent for right.render.Result>::echo",
     );
     ctx.impl_method_body_symbols
-        .insert(left.clone(), "left.render.Result::echo".to_string());
+        .insert(left, "left.render.Result::echo".to_string());
     ctx.fn_registry.insert(
         "right.render.Result::echo".to_string(),
         FnEntry {
@@ -396,11 +400,11 @@ fn impl_body_projection_never_retries_through_a_same_leaf_symbol() {
     );
 
     assert_eq!(
-        ctx.registered_impl_method_symbol(&left).as_deref(),
+        ctx.registered_impl_method_symbol(left).as_deref(),
         Some("left.render.Result::echo")
     );
     assert_eq!(
-        ctx.registered_impl_method_symbol(&right),
+        ctx.registered_impl_method_symbol(right),
         None,
         "a real same-leaf registry entry cannot substitute for the selected declaration body"
     );
@@ -1181,7 +1185,12 @@ fn checker_admitted_opaque_lifecycle_survives_into_exact_hir_authority() {
     let candidate = output
         .opaque_resource_candidates
         .candidates
-        .get("std.fs.FileReadStream")
+        .get(
+            &output
+                .defs
+                .lookup_path("std.fs.FileReadStream")
+                .expect("declared resource"),
+        )
         .expect("checker must admit the exact generated lifecycle")
         .clone();
 
@@ -1231,7 +1240,7 @@ fn resource_record_lifecycle_requires_its_exact_emitted_close_body() {
         .items
         .iter()
         .find_map(|item| match item {
-            HirItem::TypeDecl(decl) if decl.name == "Connection" => Some(decl.declaration.clone()),
+            HirItem::TypeDecl(decl) if decl.name == "Connection" => Some(decl.declaration),
             _ => None,
         })
         .unwrap();
@@ -1255,7 +1264,7 @@ fn resource_record_lifecycle_requires_its_exact_emitted_close_body() {
     let mut diagnostics = Vec::new();
     admit_resource_record_lifecycles(
         &items,
-        &hew_types::IdentityView::default(),
+        &lowered.module.defs,
         &HashSet::new(),
         &mut table,
         &mut diagnostics,
@@ -1329,7 +1338,12 @@ fn opaque_lifecycle_rejects_a_second_release_hidden_in_control_flow() {
     let candidate = output
         .opaque_resource_candidates
         .candidates
-        .get("std.fs.FileReadStream")
+        .get(
+            &output
+                .defs
+                .lookup_path("std.fs.FileReadStream")
+                .expect("declared resource"),
+        )
         .expect("checker candidate")
         .clone();
     let lowered = lower_program(&program, &output, &ResolutionCtx, TargetArch::host());
@@ -2319,7 +2333,7 @@ fn stdlib_println_unsupported_type_emits_overload_diagnostic() {
     // still carry the immutable identity view produced for this exact
     // source program.
     let tco = TypeCheckOutput {
-        identity: checked.identity,
+        defs: checked.defs,
         ..TypeCheckOutput::default()
     };
     let lowered = lower_program_host_target(&parsed.program, &tco, &ResolutionCtx);
@@ -4332,7 +4346,7 @@ fn opaque_resource_with_variants_emits_checker_boundary_violation() {
     admit_declared_opaque_resource_lifecycles(
         &items,
         &graph,
-        &hew_types::IdentityView::default(),
+        &hew_types::DefTable::fixture(),
         &mut type_classes,
         &mut diagnostics,
     );

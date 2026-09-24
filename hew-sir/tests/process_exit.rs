@@ -44,7 +44,7 @@ fn lowered_main(lowered: &hew_sir::LoweredModule) -> &SemFunction {
         .module
         .functions
         .iter()
-        .find(|function| function.declaration.full_path() == "main")
+        .find(|function| lowered.module.defs.path(function.declaration) == "main")
         .expect("main has a body")
 }
 
@@ -84,7 +84,7 @@ fn exit_never_returns_and_leaves_its_live_owners_to_the_process() {
         .module
         .functions
         .iter()
-        .find(|function| function.declaration.full_path() == "finish")
+        .find(|function| lowered.module.defs.path(function.declaration) == "finish")
         .expect("finish has a body");
     let exit = finish
         .blocks
@@ -130,7 +130,7 @@ fn a_process_exit_that_continues_is_malformed() {
     let finish = module
         .functions
         .iter_mut()
-        .find(|function| function.declaration.full_path() == "finish")
+        .find(|function| module.defs.path(function.declaration) == "finish")
         .expect("finish has a body");
     let continuation = finish
         .blocks

@@ -84,7 +84,7 @@ fn symbol(module: &PhysicalModule, name: &str) -> String {
         module
             .callables
             .iter()
-            .find(|callable| callable.declaration.full_path() == name)
+            .find(|callable| module.defs.path(callable.declaration) == name)
             .unwrap(),
     )
 }

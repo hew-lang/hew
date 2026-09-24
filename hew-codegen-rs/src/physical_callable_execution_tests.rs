@@ -52,7 +52,7 @@ fn function(callable: &sir::SemCallable, blocks: Vec<sir::SemBlock>) -> sir::Sem
     sir::SemFunction {
         id: callable.function,
         callable: callable.id,
-        declaration: callable.declaration.clone(),
+        declaration: callable.declaration,
         name: callable.symbol.clone(),
         source_origin: callable.source_origin.clone(),
         terminal_receiver: None,
@@ -599,7 +599,7 @@ fn assert_source_outcome(name: &str, source: &str, expected: Option<i64>) {
     let main = physical
         .callables
         .iter()
-        .find(|row| row.declaration.full_path() == "main")
+        .find(|row| physical.defs.path(row.declaration) == "main")
         .unwrap();
     let symbol = emitted_symbol(&physical, main);
     for optimized in [false, true] {

@@ -49,7 +49,7 @@ pub fn lower_program_with_mono_cap(
         .as_ref()
         .map(hew_parser::module::ModuleGraph::file_span_indices)
         .unwrap_or_default();
-    if let Some(root) = ctx.identity.root_module() {
+    if let Some(root) = ctx.defs.root_module() {
         ctx.declaration_module_by_file_index.insert(0, root);
     }
     if let Some(graph) = &program.module_graph {
@@ -63,7 +63,7 @@ pub fn lower_program_with_mono_cap(
             if module.source_paths.is_empty() {
                 if let (Some(index), Some(identity_module)) = (
                     span_indices.module_base(module_id),
-                    ctx.identity.module_for_path(&module_id.dotted()),
+                    ctx.defs.module_for_path(&module_id.dotted()),
                 ) {
                     ctx.declaration_module_by_file_index
                         .insert(index, identity_module);
@@ -73,7 +73,7 @@ pub fn lower_program_with_mono_cap(
             for source in &module.source_paths {
                 if let (Some(index), Some(identity_module)) = (
                     span_indices.path_index(source),
-                    ctx.identity.module_for_source(source),
+                    ctx.defs.module_for_source(source),
                 ) {
                     ctx.declaration_module_by_file_index
                         .insert(index, identity_module);
@@ -95,7 +95,7 @@ pub fn lower_program_with_mono_cap(
                     .as_ref()
                     .and_then(|graph| graph.item_source(module_id, item_idx))
                     .or_else(|| module.source_paths.first())
-                    .and_then(|source| ctx.identity.module_for_source(source));
+                    .and_then(|source| ctx.defs.module_for_source(source));
                 if let Some(identity_module) = identity_module {
                     ctx.declaration_module_by_file_index
                         .entry(index)
@@ -109,7 +109,7 @@ pub fn lower_program_with_mono_cap(
     let mut builtin_impl_diagnostics = Vec::new();
     let (builtin_callable_impl_program, builtin_callable_impl_output) =
         match builtin_declarations.clone() {
-            Some(program) => match check_builtin_callable_impl_program(&program) {
+            Some(program) => match check_builtin_callable_impl_program(&program, &ctx.defs) {
                 Ok(output) => (Some(program), Some(output)),
                 Err(diagnostic) => {
                     builtin_impl_diagnostics.push(*diagnostic);
@@ -274,8 +274,10 @@ pub fn lower_program_with_mono_cap(
                     if let (Some(plan), Some(declaration)) = (entry_exit_plan.as_ref(), declaration)
                     {
                         if plan.entry != declaration {
-                            ctx.fn_symbol_overrides
-                                .insert(item, authored_main_callable_symbol(&declaration));
+                            ctx.fn_symbol_overrides.insert(
+                                item,
+                                authored_main_callable_symbol(&ctx.defs, declaration),
+                            );
                         }
                     }
                 }
@@ -539,7 +541,7 @@ pub fn lower_program_with_mono_cap(
                                 continue;
                             };
                             let Some(definition) =
-                                ctx.checked_member_definition(&declaration, item_span)
+                                ctx.checked_member_definition(declaration, item_span)
                             else {
                                 continue;
                             };
@@ -575,7 +577,7 @@ pub fn lower_program_with_mono_cap(
                                 continue;
                             };
                             let Some(definition) =
-                                ctx.checked_member_definition(&declaration, item_span)
+                                ctx.checked_member_definition(declaration, item_span)
                             else {
                                 continue;
                             };
@@ -745,8 +747,7 @@ pub fn lower_program_with_mono_cap(
                 let Some(declaration) = ctx.source_declaration(item_span, kind, 0) else {
                     continue;
                 };
-                let Some(definition) = ctx.checked_member_definition(&declaration, item_span)
-                else {
+                let Some(definition) = ctx.checked_member_definition(declaration, item_span) else {
                     continue;
                 };
                 let fields = ctx.checked_record_fields(&definition, item_span);
@@ -769,8 +770,7 @@ pub fn lower_program_with_mono_cap(
                 else {
                     continue;
                 };
-                let Some(definition) = ctx.checked_member_definition(&declaration, item_span)
-                else {
+                let Some(definition) = ctx.checked_member_definition(declaration, item_span) else {
                     continue;
                 };
                 let fields = ctx.checked_record_fields(&definition, item_span);
@@ -1341,7 +1341,7 @@ pub fn lower_program_with_mono_cap(
                     // surface and drop-elaboration would silently elide the
                     // close call.
                     .or_else(|| {
-                        ctx.inherent_close_signature(&hir_decl.declaration)
+                        ctx.inherent_close_signature(hir_decl.declaration)
                             .map(|_| "close".to_string())
                     })
             } else {
@@ -1352,7 +1352,7 @@ pub fn lower_program_with_mono_cap(
                 .insert(hir_decl.name.clone(), class_entry.clone());
             if hir_decl.defining_module.is_some() {
                 ctx.type_classes
-                    .insert(hir_decl.qualified_name(), class_entry);
+                    .insert(hir_decl.qualified_name(&ctx.defs), class_entry);
             }
             // Structural member set for the mailbox-transfer walk: record
             // fields plus every variant's payload types. Registered under the
@@ -1368,7 +1368,7 @@ pub fn lower_program_with_mono_cap(
                 .insert(hir_decl.name.clone(), member_tys.clone());
             if hir_decl.defining_module.is_some() {
                 ctx.type_member_tys
-                    .insert(hir_decl.qualified_name(), member_tys);
+                    .insert(hir_decl.qualified_name(&ctx.defs), member_tys);
             }
             // Snapshot the enum's variant descriptors so call/struct-init
             // lowering can resolve payload ctors to `MachineVariantCtor`
@@ -1379,7 +1379,7 @@ pub fn lower_program_with_mono_cap(
                 // while the generated prelude also contributes
                 // `std.builtins.Delivery`; the latter must not replace the
                 // source enum's variants or layout origin.
-                let enum_name = hir_decl.qualified_name();
+                let enum_name = hir_decl.qualified_name(&ctx.defs);
                 ctx.enum_variants_by_name
                     .insert(enum_name.clone(), hir_decl.variants.clone());
                 if hir_decl.is_indirect {
@@ -1396,7 +1396,7 @@ pub fn lower_program_with_mono_cap(
             // `try_register_enum_instantiation` for that enum silently
             // no-ops and codegen-front fails with registration-mismatch.
             if decl.kind == TypeDeclKind::Enum {
-                let enum_name = hir_decl.qualified_name();
+                let enum_name = hir_decl.qualified_name(&ctx.defs);
                 ctx.enum_type_params
                     .insert(enum_name.clone(), hir_decl.type_params.clone());
                 ctx.enum_item_ids.insert(enum_name, hir_decl.id);
@@ -1556,7 +1556,7 @@ pub fn lower_program_with_mono_cap(
                                     .find(|m| m.as_str() == "close")
                                     .cloned()
                                     .or_else(|| {
-                                        ctx.inherent_close_signature(&hir_decl.declaration)
+                                        ctx.inherent_close_signature(hir_decl.declaration)
                                             .map(|_| "close".to_string())
                                     })
                             } else {
@@ -1752,7 +1752,7 @@ pub fn lower_program_with_mono_cap(
                             .impl_method_declaration_ids
                             .get(&emitted_symbol)
                             .or_else(|| ctx.impl_method_declaration_ids.get(&source_symbol))
-                            .cloned()
+                            .copied()
                             .or_else(|| {
                                 builtin_callable_impl_output.as_ref().and_then(|output| {
                                     output
@@ -1761,7 +1761,7 @@ pub fn lower_program_with_mono_cap(
                                         .or_else(|| {
                                             output.impl_method_declaration_ids.get(&source_symbol)
                                         })
-                                        .cloned()
+                                        .copied()
                                 })
                             });
                         let selected_by_checker = declaration.as_ref().is_some_and(|declaration| {
@@ -1798,9 +1798,7 @@ pub fn lower_program_with_mono_cap(
                         // bodies; the compiler-injected builtins live in a
                         // separate program, so they must be planned here.
                         if let Some(declaration) = declaration {
-                            ctx.impl_body_plan
-                                .compiler_selected
-                                .insert(declaration.clone());
+                            ctx.impl_body_plan.compiler_selected.insert(declaration);
                             ctx.impl_body_plan
                                 .symbols
                                 .entry(declaration)
@@ -1853,7 +1851,7 @@ pub fn lower_program_with_mono_cap(
             _ => None,
         })?;
         let canonical_name = "std.builtins.ScopeFailure";
-        let Some(declaration) = ctx.identity.declaration_by_path(canonical_name).cloned() else {
+        let Some(declaration) = ctx.defs.lookup_path(canonical_name) else {
             ctx.unsupported(
                 span.clone(),
                 "scope failure declaration identity",
@@ -1898,8 +1896,7 @@ pub fn lower_program_with_mono_cap(
                 continue;
             };
             let canonical_name = format!("std.builtins.{name}");
-            let Some(declaration) = ctx.identity.declaration_by_path(&canonical_name).cloned()
-            else {
+            let Some(declaration) = ctx.defs.lookup_path(&canonical_name) else {
                 ctx.unsupported(
                     span.clone(),
                     "actor delivery declaration identity",
@@ -2802,8 +2799,7 @@ pub fn lower_program_with_mono_cap(
                 if let Item::ExternBlock(block) = item {
                     for function in &block.functions {
                         let owner = format!("std.builtins.{}", function.name);
-                        let Some(declaration) = ctx.identity.declaration_by_path(&owner).cloned()
-                        else {
+                        let Some(declaration) = ctx.defs.lookup_path(&owner) else {
                             continue;
                         };
                         let provenance = extern_provenance(Some("std.builtins"));
@@ -2890,7 +2886,7 @@ pub fn lower_program_with_mono_cap(
                                 .impl_method_declaration_ids
                                 .get(&emitted_symbol)
                                 .or_else(|| ctx.impl_method_declaration_ids.get(&source_symbol))
-                                .cloned()
+                                .copied()
                                 .or_else(|| {
                                     output
                                         .impl_method_declaration_ids
@@ -2898,7 +2894,7 @@ pub fn lower_program_with_mono_cap(
                                         .or_else(|| {
                                             output.impl_method_declaration_ids.get(&source_symbol)
                                         })
-                                        .cloned()
+                                        .copied()
                                 })
                             {
                                 ctx.impl_method_declaration_ids
@@ -3022,7 +3018,7 @@ pub fn lower_program_with_mono_cap(
         }) {
             let key = MonoKey {
                 origin: function.id,
-                declaration: declaration.clone(),
+                declaration: *declaration,
                 linker_symbol: function.name.clone(),
                 type_args: type_args.clone(),
             };
@@ -3050,6 +3046,7 @@ pub fn lower_program_with_mono_cap(
     // any newly discovered concrete instantiations to the registry.
     // Repeat to a fixed point (bounded by the configured cap).
     closure_under_substitution(
+        &ctx.defs,
         &items,
         &call_site_type_args,
         &mut monomorphisations,
@@ -3070,6 +3067,7 @@ pub fn lower_program_with_mono_cap(
     // value-class assigned.
     let (extra_record_layouts, extra_enum_layouts, layout_mono_diagnostics) =
         crate::layout_mono::run_layout_mono_pass(
+            &ctx.defs,
             &items,
             &layout_universe_decls,
             &monomorphisations,
@@ -3132,6 +3130,7 @@ pub fn lower_program_with_mono_cap(
     // `machine_layouts` build (Stage 3, out of scope for this change).
     //
     admit_opaque_resource_lifecycles(
+        &ctx.defs,
         &items,
         &ctx.opaque_resource_candidates,
         &mut ctx.type_classes,
@@ -3140,13 +3139,13 @@ pub fn lower_program_with_mono_cap(
     admit_declared_opaque_resource_lifecycles(
         &items,
         &ctx.opaque_resource_candidates,
-        &ctx.identity,
+        &ctx.defs,
         &mut ctx.type_classes,
         &mut ctx.diagnostics,
     );
     admit_resource_record_lifecycles(
         &items,
-        &ctx.identity,
+        &ctx.defs,
         &ctx.resource_close_discipline_failures,
         &mut ctx.type_classes,
         &mut ctx.diagnostics,
@@ -3168,6 +3167,7 @@ pub fn lower_program_with_mono_cap(
         supervisor_child_slots,
         pool_accessor_sites,
         regex_literals: ctx.regex_literals,
+        defs: Arc::clone(&ctx.defs),
     };
 
     LowerOutput {

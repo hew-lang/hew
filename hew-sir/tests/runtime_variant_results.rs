@@ -28,6 +28,7 @@ fn validating_utf8_decode_returns_an_owned_variant_on_the_normal_edge() {
         other => panic!("fixture must contain a value-producing runtime call: {other:?}"),
     };
     let refs = runtime_variant_shape_refs(
+        &module.defs,
         RuntimeVariantResultKind::Utf8Decode,
         &result_ty,
         &module.aggregate_shapes,

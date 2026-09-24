@@ -603,7 +603,7 @@ fn scalar_entry_module() -> SemModule {
     let callable = SemCallable {
         id: CallableId(0),
         function: ItemId(0),
-        declaration: declaration.clone(),
+        declaration,
         instance: CallableInstance::Monomorphic,
         symbol: "main".to_string(),
         source_origin: FunctionSourceOrigin::RootUnit,
@@ -617,7 +617,7 @@ fn scalar_entry_module() -> SemModule {
     let function = SemFunction {
         id: ItemId(0),
         callable: CallableId(0),
-        declaration: declaration.clone(),
+        declaration,
         name: "main".to_string(),
         span: 0..0,
         source_origin: FunctionSourceOrigin::RootUnit,
@@ -650,6 +650,7 @@ fn scalar_entry_module() -> SemModule {
         bindings: vec![],
     };
     SemModule {
+        defs: hew_types::DefTable::fixture(),
         structural_display: BTreeMap::new(),
         debug: hew_sir::SemDebugFacts::default(),
         regex_patterns: Vec::new(),
@@ -776,7 +777,7 @@ fn bytes_copy_module() -> SemModule {
     let callable = SemCallable {
         id: CallableId(0),
         function: ItemId(0),
-        declaration: declaration.clone(),
+        declaration,
         instance: CallableInstance::Monomorphic,
         symbol: "copy_bytes".to_string(),
         source_origin: FunctionSourceOrigin::RootUnit,
@@ -845,6 +846,7 @@ fn bytes_copy_module() -> SemModule {
         bindings: vec![],
     };
     SemModule {
+        defs: hew_types::DefTable::fixture(),
         structural_display: BTreeMap::new(),
         debug: hew_sir::SemDebugFacts::default(),
         regex_patterns: Vec::new(),
@@ -959,7 +961,7 @@ fn owned_record_layout_and_recursive_glue_emit_verified_llvm() {
     let shape = semantic
         .aggregate_shapes
         .iter()
-        .find(|shape| shape.instance.nominal.display_name() == "Packet")
+        .find(|shape| semantic.defs.display(shape.instance.nominal.declaration()) == "Packet")
         .expect("source must demand one exact record shape");
     assert!(matches!(
         target.layout(&shape.aggregate_ty),

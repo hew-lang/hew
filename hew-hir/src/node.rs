@@ -164,6 +164,9 @@ pub struct HirModule {
     /// each entry and stores the `*HewRegex` handle in a global slot indexed
     /// by `literal_id`. Codegen (slice 5) wires the global-slot reference.
     pub regex_literals: Vec<HirRegexLiteral>,
+    /// The compilation's declaration table: every `DefId` in the module
+    /// indexes it, and it is the only renderer of a declaration path.
+    pub defs: Arc<hew_types::DefTable>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -927,8 +930,8 @@ impl HirTypeDecl {
     /// [`crate::mangle_dotted_name`], which maps the root/bare form to itself
     /// — so qualifying is a no-op for single-module programs by construction.
     #[must_use]
-    pub fn qualified_name(&self) -> String {
-        self.declaration.full_path().to_string()
+    pub fn qualified_name(&self, defs: &hew_types::DefTable) -> String {
+        defs.path(self.declaration).to_string()
     }
 }
 

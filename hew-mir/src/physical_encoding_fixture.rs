@@ -48,7 +48,7 @@ pub fn skeleton(params: Vec<ResolvedTy>, return_ty: ResolvedTy) -> sir::SemModul
     let callable = sir::SemCallable {
         id: sir::CallableId(0),
         function: hew_hir::ItemId(0),
-        declaration: declaration.clone(),
+        declaration,
         instance: sir::CallableInstance::Monomorphic,
         symbol: "encoding_probe".into(),
         source_origin: sir::FunctionSourceOrigin::Unknown,
@@ -94,6 +94,7 @@ pub fn skeleton(params: Vec<ResolvedTy>, return_ty: ResolvedTy) -> sir::SemModul
         blocks: vec![],
     };
     sir::SemModule {
+        defs: hew_types::DefTable::fixture(),
         structural_display: BTreeMap::new(),
         debug: hew_sir::SemDebugFacts::default(),
         regex_patterns: Vec::new(),

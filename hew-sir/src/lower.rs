@@ -3,7 +3,6 @@ mod wire;
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
-use std::fmt;
 use std::ops::Range;
 
 use hew_parser::ast::Span;
@@ -141,18 +140,17 @@ pub struct SirRootSelectionError {
     pub reason: String,
 }
 
-impl fmt::Display for SirRootSelectionError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            formatter,
+impl SirRootSelectionError {
+    /// The driver diagnostic for this refusal.
+    #[must_use]
+    pub fn render(&self, defs: &hew_types::DefTable) -> String {
+        format!(
             "SIR root `{}` was refused: {}",
-            self.declaration.full_path(),
+            defs.path(self.declaration),
             self.reason
         )
     }
 }
-
-impl std::error::Error for SirRootSelectionError {}
 
 /// The lowering outcome for one HIR function declaration.
 #[derive(Debug, Clone, PartialEq)]
@@ -279,7 +277,7 @@ impl InstanceService<'_> {
             .iter()
             .filter_map(|item| match item {
                 HirItem::Function(function) => Some(SirSourceStatus {
-                    declaration: function.declaration.clone(),
+                    declaration: function.declaration,
                     name: function.name.clone(),
                     status: self.source_status(function),
                 }),
@@ -322,11 +320,15 @@ impl TypeSubstitution {
         Self::default()
     }
 
-    fn for_instance(function: &HirFn, args: &[ResolvedTy]) -> Result<Self, String> {
+    fn for_instance(
+        defs: &hew_types::DefTable,
+        function: &HirFn,
+        args: &[ResolvedTy],
+    ) -> Result<Self, String> {
         if function.type_params.len() != args.len() {
             return Err(format!(
                 "generic template `{}` expects {} type argument(s), SIR received {}",
-                function.declaration.full_path(),
+                defs.path(function.declaration),
                 function.type_params.len(),
                 args.len()
             ));
@@ -404,10 +406,10 @@ impl<'a> CallableTable<'a> {
             functions_by_item.insert(function.id, function);
             let Some(symbol) = direct_symbols.get(&function.declaration) else {
                 ineligible.insert(
-                    function.declaration.clone(),
+                    function.declaration,
                     format!(
                         "HIR direct-call symbol index has no exact symbol for declaration `{}`",
-                        function.declaration.full_path()
+                        module.defs.path(function.declaration)
                     ),
                 );
                 continue;
@@ -421,26 +423,26 @@ impl<'a> CallableTable<'a> {
                 let signature = match generic_template_signature(function) {
                     Ok(signature) => signature,
                     Err(reason) => {
-                        ineligible.insert(function.declaration.clone(), reason);
+                        ineligible.insert(function.declaration, reason);
                         continue;
                     }
                 };
                 let id = GenericTemplateId {
-                    declaration: function.declaration.clone(),
+                    declaration: function.declaration,
                 };
                 let source_origin = function_source_origin(module, function);
                 if templates.contains_key(&function.declaration) {
                     ineligible.insert(
-                        function.declaration.clone(),
+                        function.declaration,
                         format!(
                             "duplicate generic HIR template declaration `{}` has no unambiguous SIR template authority",
-                            function.declaration.full_path()
+                            module.defs.path(function.declaration)
                         ),
                     );
                     continue;
                 }
                 templates.insert(
-                    function.declaration.clone(),
+                    function.declaration,
                     GenericTemplate {
                         function,
                         source_origin: source_origin.clone(),
@@ -475,13 +477,10 @@ impl<'a> CallableTable<'a> {
         let mut admissible_order = Vec::with_capacity(pending.len());
         for (function, symbol) in pending {
             if admissible
-                .insert(
-                    function.declaration.clone(),
-                    AdmissibleFn { function, symbol },
-                )
+                .insert(function.declaration, AdmissibleFn { function, symbol })
                 .is_none()
             {
-                admissible_order.push(function.declaration.clone());
+                admissible_order.push(function.declaration);
             }
         }
 
@@ -701,13 +700,16 @@ fn concrete_variant_shape(
             enum_ty.user_facing()
         ));
     };
-    if enum_ty.nominal_instance().is_some_and(|instance| {
-        module.items.iter().any(|item| {
-            matches!(item, HirItem::TypeDecl(decl)
-            if decl.declaration == *instance.nominal.declaration()
+    if enum_ty
+        .nominal_instance(&module.defs)
+        .is_some_and(|instance| {
+            module.items.iter().any(|item| {
+                matches!(item, HirItem::TypeDecl(decl)
+            if decl.declaration == instance.nominal.declaration()
                 && decl.kind == hew_hir::HirTypeDeclKind::Enum)
+            })
         })
-    }) {
+    {
         return concrete_user_variant_shape(module, enum_ty);
     }
     builtin.map_or_else(
@@ -794,13 +796,13 @@ fn is_uninhabited(module: &HirModule, ty: &ResolvedTy) -> bool {
     if matches!(ty, ResolvedTy::Never) {
         return true;
     }
-    let Some(instance) = ty.nominal_instance() else {
+    let Some(instance) = ty.nominal_instance(&module.defs) else {
         return false;
     };
     let declaration = instance.nominal.declaration();
     module.items.iter().any(|item| {
         matches!(item, HirItem::TypeDecl(decl)
-            if decl.declaration == *declaration
+            if decl.declaration == declaration
                 && decl.kind == hew_hir::HirTypeDeclKind::Enum
                 && decl.variants.is_empty())
     })
@@ -810,7 +812,7 @@ fn concrete_user_variant_shape(
     module: &HirModule,
     enum_ty: &ResolvedTy,
 ) -> Result<(bool, Vec<SemVariant>), String> {
-    let instance = enum_ty.nominal_instance().ok_or_else(|| {
+    let instance = enum_ty.nominal_instance(&module.defs).ok_or_else(|| {
         format!(
             "`{}` has no checker-minted nominal enum identity",
             enum_ty.user_facing()
@@ -822,7 +824,7 @@ fn concrete_user_variant_shape(
         .iter()
         .find_map(|item| match item {
             HirItem::TypeDecl(decl)
-                if decl.declaration == *declaration
+                if decl.declaration == declaration
                     && decl.kind == hew_hir::HirTypeDeclKind::Enum =>
             {
                 Some(decl)

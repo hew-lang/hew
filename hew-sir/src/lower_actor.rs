@@ -28,10 +28,10 @@ pub(super) fn declaration<'a>(
             _ => None,
         });
     }
-    let instance = crate::actor::local_actor_instance(ty)?;
+    let instance = crate::actor::local_actor_instance(&module.defs, ty)?;
     module.items.iter().find_map(|item| match item {
         HirItem::Actor(actor)
-            if &actor.declaration == instance.nominal.declaration()
+            if actor.declaration == instance.nominal.declaration()
                 && actor.type_params.len() == instance.args.len() =>
         {
             Some(actor)
@@ -41,13 +41,14 @@ pub(super) fn declaration<'a>(
 }
 
 fn actor_substitution(
+    defs: &hew_types::DefTable,
     source: &hew_hir::HirActorDecl,
     ty: &ResolvedTy,
 ) -> Result<TypeSubstitution, String> {
     let args = if source.lambda_handle_ty.is_some() {
         Vec::new()
     } else {
-        crate::actor::local_actor_instance(ty)
+        crate::actor::local_actor_instance(defs, ty)
             .ok_or("actor instance lacks its nominal identity")?
             .args
     };
@@ -174,14 +175,16 @@ impl InstanceService<'_> {
         if let Some(actor) = self.actors.iter().find(|actor| {
             exact.map_or_else(
                 || actor.admits_target(ty),
-                |name| actor.declaration.full_path() == name,
+                |name| self.module.defs.path(actor.declaration) == name,
             )
         }) {
             return Ok(actor.id);
         }
         let source = match exact {
             Some(name) => self.module.items.iter().find_map(|item| match item {
-                HirItem::Actor(actor) if actor.declaration.full_path() == name => Some(actor),
+                HirItem::Actor(actor) if self.module.defs.path(actor.declaration) == name => {
+                    Some(actor)
+                }
                 _ => None,
             }),
             None => declaration(self.module, ty),
@@ -195,16 +198,16 @@ impl InstanceService<'_> {
         let handle_ty = if let Some(handle) = lambda_handle {
             handle
         } else {
-            let instance = crate::actor::local_actor_instance(ty)
+            let instance = crate::actor::local_actor_instance(&self.module.defs, ty)
                 .ok_or("declaration() matched a local actor reference")?;
             ResolvedTy::named_builtin(
-                instance.nominal.full_path(),
+                self.module.defs.path(instance.nominal.declaration()),
                 hew_types::BuiltinType::ActorHandle,
                 instance.args.clone(),
             )
         };
         let ty = &handle_ty;
-        let substitution = actor_substitution(&source, ty)?;
+        let substitution = actor_substitution(&self.module.defs, &source, ty)?;
         for argument in &substitution.args {
             self.require_type_facts(argument)?;
         }
@@ -226,7 +229,7 @@ impl InstanceService<'_> {
         );
         self.actors.push(crate::SemActor {
             id,
-            declaration: source.declaration.clone(),
+            declaration: source.declaration,
             handle_ty: ty.clone(),
             state_ty,
             fields,
@@ -317,7 +320,7 @@ impl InstanceService<'_> {
                 id,
                 source,
                 substitution,
-                hook.declaration.clone(),
+                hook.declaration,
                 &hook.state_bindings,
                 &hook.params,
                 return_ty,
@@ -352,7 +355,7 @@ impl InstanceService<'_> {
                 id,
                 source,
                 substitution,
-                init.declaration.clone(),
+                init.declaration,
                 &init.state_bindings,
                 &init.params,
                 ResolvedTy::Unit,
@@ -369,7 +372,7 @@ impl InstanceService<'_> {
                 id,
                 source,
                 substitution,
-                method.declaration.clone(),
+                method.declaration,
                 &method.state_bindings,
                 &method.params,
                 substitution.apply(&method.return_ty),
@@ -457,7 +460,7 @@ impl InstanceService<'_> {
                 id,
                 source,
                 substitution,
-                handler.declaration.clone(),
+                handler.declaration,
                 &handler.state_bindings,
                 &handler.params,
                 return_ty.clone(),
@@ -491,7 +494,7 @@ impl InstanceService<'_> {
                         }
                     };
                     Some(crate::SemFailureDisplay::Callable(
-                        self.resolve_entry_display(declaration, &instance)?.id,
+                        self.resolve_entry_display(*declaration, &instance)?.id,
                     ))
                 }
             };
@@ -503,7 +506,7 @@ impl InstanceService<'_> {
             self.actors[id.0 as usize]
                 .handlers
                 .push(crate::SemActorHandler {
-                    declaration: handler.declaration.clone(),
+                    declaration: handler.declaration,
                     name: handler.name.clone(),
                     message_id: row.msg_id,
                     every_ns: handler.every_ns,
@@ -542,7 +545,7 @@ impl InstanceService<'_> {
         let function = HirFn {
             id: source.id,
             node: body.node,
-            declaration: declaration.clone(),
+            declaration,
             name: symbol.to_string(),
             type_params: Vec::new(),
             params: params.to_vec(),
@@ -724,13 +727,21 @@ impl Builder<'_, '_> {
             descriptor
                 .handlers
                 .iter()
-                .find(|handler| handler.declaration.full_path() == method_id.as_str())
+                .find(|handler| {
+                    self.service.module.defs.path(handler.declaration) == method_id.as_str()
+                })
                 .ok_or("ask has no exact receive protocol member")?
         };
         let message = handler.message_id;
 
         let output = self.ty(&expression.ty);
-        let signature = descriptor.ask_signature(message, &target_ty, output.clone(), false)?;
+        let signature = descriptor.ask_signature(
+            &self.service.module.defs,
+            message,
+            &target_ty,
+            output.clone(),
+            false,
+        )?;
         if signature.return_ty != output || signature.params.len() != args.len() + 1 {
             return Err("ask must return its complete checked Result".into());
         }
@@ -999,21 +1010,14 @@ impl Builder<'_, '_> {
                     .is_builtin(hew_types::BuiltinType::ActorFn)
                     .then_some(actor_name.as_str());
                 let id = self.service.require_actor_declaration(&ty, exact)?;
-                let declaration_path = self.service.actors[id.0 as usize]
-                    .declaration
-                    .full_path()
-                    .to_string();
+                let declaration = self.service.actors[id.0 as usize].declaration;
                 let source = self
                     .service
                     .module
                     .items
                     .iter()
                     .find_map(|item| match item {
-                        HirItem::Actor(actor)
-                            if actor.declaration.full_path() == declaration_path =>
-                        {
-                            Some(actor)
-                        }
+                        HirItem::Actor(actor) if actor.declaration == declaration => Some(actor),
                         _ => None,
                     })
                     .ok_or("spawn lost its actor declaration")?;
@@ -1110,7 +1114,11 @@ impl Builder<'_, '_> {
                     let actor = &self.service.actors[actor.0 as usize];
                     let declaration = declaration(self.service.module, &actor.handle_ty)
                         .ok_or("spawn default lacks its actor declaration")?;
-                    Some(actor_substitution(declaration, &actor.handle_ty)?)
+                    Some(actor_substitution(
+                        &self.service.module.defs,
+                        declaration,
+                        &actor.handle_ty,
+                    )?)
                 }
                 _ => None,
             };
@@ -1184,11 +1192,16 @@ impl Builder<'_, '_> {
         &self,
         operation: &crate::ActorOperation,
     ) -> Result<SemSignature, String> {
-        operation.signature(&self.service.actors, &self.service.supervisors, |id| {
-            self.service
-                .callable(id)
-                .map(|callable| callable.signature.clone())
-        })
+        operation.signature(
+            &self.service.module.defs,
+            &self.service.actors,
+            &self.service.supervisors,
+            |id| {
+                self.service
+                    .callable(id)
+                    .map(|callable| callable.signature.clone())
+            },
+        )
     }
 
     /// Transfer evaluated operands across one actor boundary and continue
@@ -1399,7 +1412,9 @@ impl Builder<'_, '_> {
             descriptor
                 .handlers
                 .iter()
-                .find(|handler| handler.declaration.full_path() == method_id.as_str())
+                .find(|handler| {
+                    self.service.module.defs.path(handler.declaration) == method_id.as_str()
+                })
                 .ok_or("message description has no exact receive member")?
         }
         .clone();
@@ -1534,7 +1549,7 @@ impl Builder<'_, '_> {
                     .handlers
                     .iter()
                     .find(|handler| {
-                        handler.declaration.full_path() == method_id
+                        self.service.module.defs.path(handler.declaration) == method_id
                             || method_id == hew_types::actor_protocol::LAMBDA_ACTOR_METHOD_ID
                     })
                     .ok_or("request recovery lacks its checked handler")?;
@@ -1555,6 +1570,7 @@ impl Builder<'_, '_> {
                     return Err("request recovery changes its checked protocol".into());
                 }
                 self.service.actors[actor.0 as usize].ask_signature(
+                    &self.service.module.defs,
                     handler.message_id,
                     &target_ty,
                     self.ty(&expression.ty),
@@ -1647,7 +1663,8 @@ impl Builder<'_, '_> {
             .handlers
             .iter()
             .find(|handler| {
-                handler.declaration.full_path() == method.as_str() && handler.stream.is_some()
+                self.service.module.defs.path(handler.declaration) == method.as_str()
+                    && handler.stream.is_some()
             })
             .ok_or("stream request has no exact producer member")?
             .clone();

@@ -241,14 +241,14 @@ impl LowerCtx {
         self.pending_lambda_actors.push(HirActorDecl {
             id: self.ids.item(),
             node: self.ids.node(),
-            declaration: identity.actor.clone(),
+            declaration: identity.actor,
             name: identity.path.clone(),
             defining_module: None,
             type_params: Vec::new(),
             state_fields,
             init: None,
             receive_handlers: vec![HirActorReceiveFn {
-                declaration: identity.handler.clone(),
+                declaration: identity.handler,
                 state_bindings,
                 name: handler_name,
                 is_generator: false,

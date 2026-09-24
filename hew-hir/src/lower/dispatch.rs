@@ -40,8 +40,8 @@ impl LowerCtx {
                 _ => (method, vec![left, right], false),
             },
         };
-        let Some(symbol) = self.registered_impl_method_symbol(method) else {
-            let name = method.full_path().to_string();
+        let Some(symbol) = self.registered_impl_method_symbol(*method) else {
+            let name = self.defs.path(*method).to_string();
             self.diagnostics.push(HirDiagnostic::new(
                 HirDiagnosticKind::CheckerBoundaryViolation {
                     name: name.clone(),
@@ -509,7 +509,7 @@ impl LowerCtx {
             .impl_method_body_symbols
             .iter()
             .chain(self.impl_body_plan.symbols.iter())
-            .find_map(|(declaration, emitted)| (emitted == symbol).then(|| declaration.clone()))
+            .find_map(|(declaration, emitted)| (emitted == symbol).then_some(*declaration))
         else {
             return;
         };

@@ -180,7 +180,7 @@ pub fn module(case: Case) -> sir::SemModule {
     let callable = sir::SemCallable {
         id: sir::CallableId(0),
         function: hew_hir::ItemId(0),
-        declaration: declaration.clone(),
+        declaration,
         instance: sir::CallableInstance::Monomorphic,
         symbol: "partial_storage".into(),
         source_origin: sir::FunctionSourceOrigin::Unknown,
@@ -238,6 +238,7 @@ pub fn module(case: Case) -> sir::SemModule {
         facts.require(&ty).unwrap();
     }
     sir::SemModule {
+        defs: hew_types::DefTable::fixture(),
         structural_display: BTreeMap::new(),
         debug: hew_sir::SemDebugFacts::default(),
         regex_patterns: Vec::new(),

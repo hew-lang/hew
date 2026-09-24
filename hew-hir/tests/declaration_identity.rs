@@ -3,7 +3,7 @@ use hew_parser::{
     ast::Program,
     module::{Module, ModuleGraph, ModulePath},
 };
-use hew_types::{module_registry::ModuleRegistry, Checker, TypeCheckOutput};
+use hew_types::{module_registry::ModuleRegistry, Checker};
 
 fn check_and_lower(source: &str) -> hew_hir::LowerOutput {
     let parsed = hew_parser::parse(source);
@@ -71,39 +71,53 @@ fn ordinary<T>(value: T) -> T { value }
     for item in &output.module.items {
         match item {
             HirItem::Function(function) if function.name == "ordinary" => {
-                assert_eq!(function.declaration.full_path(), "ordinary");
+                assert_eq!(output.module.defs.path(function.declaration), "ordinary");
             }
             HirItem::ExternFn(function) if function.name == "raw_identity" => {
-                assert_eq!(function.declaration.full_path(), "raw_identity");
+                assert_eq!(
+                    output.module.defs.path(function.declaration),
+                    "raw_identity"
+                );
             }
             HirItem::TypeDecl(declaration) if declaration.name == "Holder" => {
-                assert_eq!(declaration.declaration.full_path(), "Holder");
+                assert_eq!(output.module.defs.path(declaration.declaration), "Holder");
             }
             HirItem::Impl(implementation) if implementation.self_type_name == "Holder" => {
                 saw_impl = true;
                 let method = implementation.method_ids[0]
                     .as_ref()
                     .expect("language-declared impl method has an exact DefId");
-                assert!(method
-                    .full_path()
+                assert!(output
+                    .module
+                    .defs
+                    .path(*method)
                     .contains("::<impl inherent for Holder<i64>>::get"));
             }
             HirItem::Actor(actor) if actor.name == "Counter" => {
-                assert_eq!(actor.declaration.full_path(), "Counter");
+                assert_eq!(output.module.defs.path(actor.declaration), "Counter");
                 assert_eq!(
-                    actor.init.as_ref().unwrap().declaration.full_path(),
+                    output
+                        .module
+                        .defs
+                        .path(actor.init.as_ref().unwrap().declaration),
                     "Counter::<init>"
                 );
                 assert_eq!(
-                    actor.receive_handlers[0].declaration.full_path(),
+                    output
+                        .module
+                        .defs
+                        .path(actor.receive_handlers[0].declaration),
                     "Counter::ping"
                 );
-                assert_eq!(actor.methods[0].declaration.full_path(), "Counter::status");
+                assert_eq!(
+                    output.module.defs.path(actor.methods[0].declaration),
+                    "Counter::status"
+                );
             }
             HirItem::Supervisor(supervisor) if supervisor.name == "App" => {
-                assert_eq!(supervisor.declaration.full_path(), "App");
+                assert_eq!(output.module.defs.path(supervisor.declaration), "App");
                 assert_eq!(
-                    supervisor.bootstrap_declaration.full_path(),
+                    output.module.defs.path(supervisor.bootstrap_declaration),
                     "App::<bootstrap>"
                 );
             }
@@ -114,30 +128,10 @@ fn ordinary<T>(value: T) -> T { value }
 }
 
 #[test]
-fn missing_or_desynchronised_identity_emits_no_source_artifact() {
+fn desynchronised_identity_emits_no_source_artifact() {
     let parsed = hew_parser::parse("fn stable() {}");
     assert!(parsed.errors.is_empty());
     let checked = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
-
-    let missing = TypeCheckOutput {
-        identity: hew_types::IdentityView::default(),
-        ..checked.clone()
-    };
-    let missing_output = lower_program(
-        &parsed.program,
-        &missing,
-        &ResolutionCtx,
-        TargetArch::host(),
-    );
-    assert!(!missing_output
-        .module
-        .items
-        .iter()
-        .any(|item| matches!(item, HirItem::Function(function) if function.name == "stable")));
-    assert!(missing_output.diagnostics.iter().any(|diagnostic| matches!(
-        diagnostic.kind,
-        HirDiagnosticKind::CheckerBoundaryViolation { .. }
-    )));
 
     let mut desynchronised = parsed.program.clone();
     desynchronised.items[0].1 = 1000..1010;
@@ -223,13 +217,16 @@ fn directory_peer_declarations_publish_under_the_assembling_module() {
             _ => None,
         })
         .expect("peer function lowers");
-    assert_eq!(function.declaration.full_path(), "pkg.peer_value");
+    assert_eq!(
+        output.module.defs.path(function.declaration),
+        "pkg.peer_value"
+    );
     assert_eq!(
         checked
-            .identity
-            .declaration_by_path("pkg.peer_value")
+            .defs
+            .lookup_path("pkg.peer_value")
             .expect("the assembled spelling resolves"),
-        &function.declaration,
+        function.declaration,
         "HIR carries the identity the checker published, not a re-render"
     );
 }

@@ -54,7 +54,7 @@ impl Builder<'_, '_> {
         let callee = match call_target {
             CallTarget::User(declaration) | CallTarget::ImplMethod(declaration) => self
                 .service
-                .resolve_direct_call(declaration, expr.site, &self.substitution)?,
+                .resolve_direct_call(*declaration, expr.site, &self.substitution)?,
             // A generic body reaches `it.next()` through its bound; the
             // implementation is selected here, from the receiver type this
             // instance substituted.
@@ -62,8 +62,8 @@ impl Builder<'_, '_> {
                 declaring_trait,
                 method,
             } => self.service.resolve_static_trait_call(
-                declaring_trait,
-                method,
+                *declaring_trait,
+                *method,
                 &receiver_ty,
                 expr.site,
                 &self.substitution,
@@ -99,7 +99,7 @@ impl Builder<'_, '_> {
         {
             return Err(format!(
                 "mutable method `{}` differs from its checked receiver and dual-return signature: receiver {receiver_ty:?}, result {return_ty:?}, signature {signature:?}",
-                callee.declaration.full_path()
+                self.service.module.defs.path(callee.declaration)
             ));
         }
         self.service.require_type_facts(&receiver_ty)?;

@@ -24,11 +24,11 @@ fn fixture(source: &str) -> SemModule {
         lowered.statuses
     );
     assert!(
-        lowered
+        lowered.module.functions.iter().any(|function| lowered
             .module
-            .functions
-            .iter()
-            .any(|function| function.declaration.full_path() == "probe"),
+            .defs
+            .path(function.declaration)
+            == "probe"),
         "{:?}",
         lowered.statuses
     );
@@ -87,7 +87,7 @@ fn probe(module: &mut SemModule) -> &mut SemFunction {
     module
         .functions
         .iter_mut()
-        .find(|function| function.declaration.full_path() == "probe")
+        .find(|function| module.defs.path(function.declaration) == "probe")
         .unwrap()
 }
 
@@ -204,7 +204,7 @@ fn valid(module: &mut SemModule) {
     let function = module
         .functions
         .iter()
-        .find(|function| function.declaration.full_path() == "probe")
+        .find(|function| module.defs.path(function.declaration) == "probe")
         .unwrap();
     assert!(place_lifetimes(module, function).is_ok());
 }
@@ -227,7 +227,7 @@ fn refuses(module: &mut SemModule, expected: &str) {
     let function = module
         .functions
         .iter()
-        .find(|function| function.declaration.full_path() == "probe")
+        .find(|function| module.defs.path(function.declaration) == "probe")
         .unwrap();
     assert!(place_lifetimes(module, function).is_err());
 }
@@ -246,7 +246,13 @@ fn live_and_taken_predecessors_join_until_lexical_cleanup() {
     ];
     valid(&mut module);
     let function = probe(&mut module).clone();
-    let plan = place_plan(&function, &module.aggregate_shapes, &module.type_facts).unwrap();
+    let plan = place_plan(
+        &module.defs,
+        &function,
+        &module.aggregate_shapes,
+        &module.type_facts,
+    )
+    .unwrap();
     assert_eq!(
         plan.leaves(OwnerRoot::Local(PlaceId(0))).unwrap(),
         [PlaceId(0)]
@@ -409,7 +415,13 @@ fn local_projection_partition_tracks_fields_without_an_intermediate_init_bit() {
     ];
     valid(&mut module);
     let function = probe(&mut module).clone();
-    let plan = place_plan(&function, &module.aggregate_shapes, &module.type_facts).unwrap();
+    let plan = place_plan(
+        &module.defs,
+        &function,
+        &module.aggregate_shapes,
+        &module.type_facts,
+    )
+    .unwrap();
     assert_eq!(
         plan.leaves(OwnerRoot::Local(PlaceId(0))).unwrap(),
         [PlaceId(1), PlaceId(3), PlaceId(4)]
@@ -588,7 +600,7 @@ fn checked_module_retains_the_local_plan_and_cleanup_for_each_body() {
     let checked = hew_sir::check_module(&module).unwrap();
     for function in &checked.module().functions {
         let analysis = checked.function(function.callable).unwrap();
-        if function.declaration.full_path() == "probe" {
+        if module.defs.path(function.declaration) == "probe" {
             assert_eq!(
                 analysis
                     .place_plan()
@@ -601,7 +613,7 @@ fn checked_module_retains_the_local_plan_and_cleanup_for_each_body() {
                 analysis.place_lifetimes().cleanup(end.id),
                 Some(CleanupMode::Ordinary)
             );
-        } else if function.declaration.full_path() == "main" {
+        } else if module.defs.path(function.declaration) == "main" {
             assert!(analysis.place_plan().roots().next().is_none());
         }
     }
@@ -719,7 +731,7 @@ fn checked_module_rejects_duplicate_identities_and_missing_literal_pool_entries(
         let probe = missing
             .functions
             .iter()
-            .find(|function| function.declaration.full_path() == "probe")
+            .find(|function| module.defs.path(function.declaration) == "probe")
             .unwrap();
         assert!(place_lifetimes(&missing, probe).is_ok());
         rejects_module_context(&missing, |kind| {

@@ -99,7 +99,7 @@ impl Builder<'_, '_> {
                 declaration,
                 instance,
             } => {
-                let target = self.service.resolve_entry_display(declaration, instance)?;
+                let target = self.service.resolve_entry_display(*declaration, instance)?;
                 let [receiver] = target.signature.params.as_slice() else {
                     return Err("entry Display target must take exactly its receiver".into());
                 };
@@ -124,7 +124,7 @@ impl Builder<'_, '_> {
                         decision: BoundaryDecision::Borrow,
                     },
                     slot: *slot,
-                    method: method.clone(),
+                    method: *method,
                 },
                 crate::SemSignature {
                     params: Vec::new(),

@@ -40,7 +40,7 @@ fn exclusive_receiver() -> (PhysicalModule, CallableId) {
     let callee = physical
         .callables
         .iter_mut()
-        .find(|callee| callee.declaration.full_path() == "inspect")
+        .find(|callee| physical.defs.path(callee.declaration) == "inspect")
         .unwrap();
     callee.params[0].passing = SemParamPassing::BorrowMut;
     callee.params[0].carrier = ParamCarrier::Indirect;
@@ -490,7 +490,7 @@ fn module_with_return() -> SemModule {
     let callable = SemCallable {
         id: CallableId(0),
         function: ItemId(0),
-        declaration: declaration.clone(),
+        declaration,
         instance: CallableInstance::Monomorphic,
         symbol: "main".to_string(),
         source_origin: FunctionSourceOrigin::RootUnit,
@@ -549,6 +549,7 @@ fn module_with_return() -> SemModule {
         },
     );
     SemModule {
+        defs: hew_types::DefTable::fixture(),
         structural_display: BTreeMap::new(),
         debug: hew_sir::SemDebugFacts::default(),
         regex_patterns: Vec::new(),
@@ -2094,6 +2095,7 @@ fn verifier_rejects_overwriting_a_maybe_live_owner() {
         ],
     };
     let physical = PhysicalModule {
+        defs: hew_types::DefTable::fixture(),
         debug: PhysicalDebug::default(),
         regex_patterns: Vec::new(),
         releases: ReleaseEffects::default(),
@@ -2975,7 +2977,7 @@ fn selected_value_call_module(capability: ValueCapability) -> PhysicalModule {
     let selected = module
         .functions
         .iter()
-        .find(|function| function.declaration.full_path() == "selected")
+        .find(|function| module.defs.path(function.declaration) == "selected")
         .unwrap()
         .callable;
     let mut converted = 0;

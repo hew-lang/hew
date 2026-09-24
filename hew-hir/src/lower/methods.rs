@@ -984,10 +984,10 @@ impl LowerCtx {
                 }
                 let c_symbol = match &target {
                     CallTarget::ImplMethod(declaration) => {
-                        let Some(symbol) = self.registered_impl_method_symbol(declaration) else {
+                        let Some(symbol) = self.registered_impl_method_symbol(*declaration) else {
                             self.diagnostics.push(HirDiagnostic::new(
                                 HirDiagnosticKind::CallableUnsupportedInMir {
-                                    name: declaration.full_path().to_string(),
+                                    name: self.defs.path(*declaration).to_string(),
                                 },
                                 span.clone(),
                                 "checker selected an implementation declaration whose HIR body \
@@ -1333,19 +1333,18 @@ impl LowerCtx {
                 // The checker-selected trait method declaration names the
                 // member; its `Owner::method` path carries the method leaf.
                 let trait_method_leaf = match &target {
-                    CallTarget::StaticTraitMethod { method, .. } => method
-                        .full_path()
-                        .rsplit_once("::")
-                        .map(|(_, leaf)| leaf.to_string()),
+                    CallTarget::StaticTraitMethod { method, .. } => {
+                        Some(self.defs.name(*method).to_string())
+                    }
                     _ => None,
                 };
                 if let (true, Some(method_leaf)) =
                     (receiver_type_param == "Self", trait_method_leaf)
                 {
                     if let Some(self_ty) = self.current_impl_self_ty.clone() {
-                        if let Some(self_type) = self_ty.impl_receiver_instance() {
+                        if let Some(self_type) = self_ty.impl_receiver_instance(&self.defs) {
                             let c_symbol = crate::node::HirImplBlock::method_symbol(
-                                self_type.nominal.declaration().full_path(),
+                                self.defs.path(self_type.nominal.declaration()),
                                 &method_leaf,
                             );
                             let concrete_target = self.registered_symbol_target(&c_symbol);
@@ -1367,11 +1366,11 @@ impl LowerCtx {
                             let c_symbol = match &concrete_target {
                                 CallTarget::ImplMethod(declaration) => {
                                     let Some(symbol) =
-                                        self.registered_impl_method_symbol(declaration)
+                                        self.registered_impl_method_symbol(*declaration)
                                     else {
                                         self.diagnostics.push(HirDiagnostic::new(
                                             HirDiagnosticKind::CallableUnsupportedInMir {
-                                                name: declaration.full_path().to_string(),
+                                                name: self.defs.path(*declaration).to_string(),
                                             },
                                             span.clone(),
                                             "checker selected an implementation declaration whose                                              HIR body was not registered; a trait default body                                              cannot dispatch to it",

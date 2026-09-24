@@ -40,7 +40,7 @@ fn callable_paths(lowered: &LoweredModule) -> Vec<&str> {
         .module
         .callables
         .iter()
-        .map(|callable| callable.declaration.full_path())
+        .map(|callable| lowered.module.defs.path(callable.declaration))
         .collect()
 }
 
@@ -57,9 +57,7 @@ fn declaration_of(module: &HirModule, name: &str) -> DefId {
         .items
         .iter()
         .find_map(|item| match item {
-            HirItem::Function(function) if function.name == name => {
-                Some(function.declaration.clone())
-            }
+            HirItem::Function(function) if function.name == name => Some(function.declaration),
             _ => None,
         })
         .unwrap_or_else(|| panic!("HIR module must declare `{name}`"))
@@ -384,12 +382,8 @@ fn explicit_root_refusals_name_each_requested_declaration() {
         |item| !matches!(item, HirItem::Function(function) if function.declaration == vanished),
     );
 
-    let errors = lower_module_with_roots(
-        &hir,
-        &type_facts,
-        &[vanished.clone(), refused.clone(), generic.clone()],
-    )
-    .expect_err("generic, ineligible, and absent declarations must fail closed as roots");
+    let errors = lower_module_with_roots(&hir, &type_facts, &[vanished, refused, generic])
+        .expect_err("generic, ineligible, and absent declarations must fail closed as roots");
 
     assert_eq!(
         errors.len(),
@@ -400,17 +394,19 @@ fn explicit_root_refusals_name_each_requested_declaration() {
         .iter()
         .find(|error| error.declaration == generic)
         .expect("generic root refusal must retain its declaration");
-    assert!(generic_error.to_string().contains("concrete"));
+    assert!(generic_error.render(&hir.defs).contains("concrete"));
     let refused_error = errors
         .iter()
         .find(|error| error.declaration == refused)
         .expect("ineligible root refusal must retain its declaration");
-    assert!(refused_error.to_string().contains("UnregisteredDemandType"));
+    assert!(refused_error
+        .render(&hir.defs)
+        .contains("UnregisteredDemandType"));
     let missing_error = errors
         .iter()
         .find(|error| error.declaration == vanished)
         .expect("missing root refusal must retain its declaration");
-    assert!(missing_error.to_string().contains("not present"));
+    assert!(missing_error.render(&hir.defs).contains("not present"));
 }
 
 /// Every-callable demand is the coverage question: it lowers bodies the entry
@@ -594,10 +590,10 @@ fn a_demanded_header_publishes_nested_shapes_and_an_unreached_one_publishes_none
         .callables
         .iter()
         .all(|callable| callable.declaration != declaration_of(&hir, "uncalled")));
-    assert!(lowered.module.aggregate_shapes.iter().all(|shape| shape
-        .instance
-        .nominal
-        .display_name()
+    assert!(lowered.module.aggregate_shapes.iter().all(|shape| lowered
+        .module
+        .defs
+        .display(shape.instance.nominal.declaration())
         != "Unused"));
     assert!(
         verify_module(&lowered.module).is_empty(),

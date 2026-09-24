@@ -146,17 +146,17 @@ fn type_qualified_name_derives_dotted_for_module_and_bare_for_root() {
     assert!(tco.errors.is_empty(), "type errors: {:#?}", tco.errors);
 
     let imported = find_type(&output, "Widget");
-    assert_eq!(imported.qualified_name(), "bank.Widget");
+    assert_eq!(imported.qualified_name(&output.module.defs), "bank.Widget");
     assert_eq!(
-        hew_hir::mangle_dotted_name(&imported.qualified_name()),
+        hew_hir::mangle_dotted_name(&imported.qualified_name(&output.module.defs)),
         "bank$Widget",
         "module-type symbols mangle through the dotted-name authority"
     );
 
     let local = find_type(&output, "Local");
-    assert_eq!(local.qualified_name(), "Local");
+    assert_eq!(local.qualified_name(&output.module.defs), "Local");
     assert_eq!(
-        hew_hir::mangle_dotted_name(&local.qualified_name()),
+        hew_hir::mangle_dotted_name(&local.qualified_name(&output.module.defs)),
         "Local",
         "root-type qualified key mangles to the bare name unchanged"
     );

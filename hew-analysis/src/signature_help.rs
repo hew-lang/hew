@@ -289,9 +289,9 @@ fn find_root_fn_sig(name: &str, tc: &TypeCheckOutput) -> Option<FnSig> {
     if name.contains('.') || name.contains("::") {
         return None;
     }
-    let root = tc.identity.root_module_path()?;
-    let declaration = tc.identity.declaration_by_path(&format!("{root}.{name}"))?;
-    tc.fn_sigs.get(declaration.full_path()).cloned()
+    let root = tc.defs.root_module_path()?;
+    let declaration = tc.defs.lookup_path(&format!("{root}.{name}"))?;
+    tc.fn_sigs.get(tc.defs.path(declaration)).cloned()
 }
 
 /// Format signature label like `fn name(param1: Type, param2: Type) -> RetType`.

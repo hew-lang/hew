@@ -960,7 +960,13 @@ pub(crate) fn verify_terminator(
                 .get(actor.0 as usize)
                 .filter(|descriptor| descriptor.id == *actor)
                 .ok_or_else(|| PhysicalError::new("ask requires its exact actor descriptor"))?
-                .ask_signature(*message, &target, slot(*result)?.ty.clone(), *sealed)
+                .ask_signature(
+                    &module.defs,
+                    *message,
+                    &target,
+                    slot(*result)?.ty.clone(),
+                    *sealed,
+                )
                 .map_err(PhysicalError::new)?;
             if args.len() != signature.params.len() || slot(*result)?.ty != signature.return_ty {
                 return Err(PhysicalError::new(

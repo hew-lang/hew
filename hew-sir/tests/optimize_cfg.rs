@@ -35,7 +35,7 @@ fn callable_for(function: &SemFunction) -> SemCallable {
     SemCallable {
         id: function.callable,
         function: function.id,
-        declaration: function.declaration.clone(),
+        declaration: function.declaration,
         instance: CallableInstance::Monomorphic,
         symbol: function.name.clone(),
         source_origin: function.source_origin.clone(),
@@ -75,6 +75,7 @@ fn module(function: SemFunction) -> SemModule {
         let _ = fact_service.require(ty);
     }
     SemModule {
+        defs: hew_types::DefTable::fixture(),
         debug: hew_sir::SemDebugFacts::default(),
         regex_patterns: Vec::new(),
         actors: Vec::new(),
@@ -917,6 +918,7 @@ fn module_canonicalization_rejects_an_invalid_body_atomically() {
     invalid.callable = CallableId(1);
 
     let mut module = SemModule {
+        defs: hew_types::DefTable::fixture(),
         debug: hew_sir::SemDebugFacts::default(),
         regex_patterns: Vec::new(),
         actors: Vec::new(),

@@ -321,7 +321,7 @@ fn map_lookup_borrows_a_field_and_preserves_the_fault_after_ending_its_loan() {
     let main = module
         .functions
         .iter()
-        .find(|f| f.declaration.full_path() == "main")
+        .find(|f| module.defs.path(f.declaration) == "main")
         .unwrap();
     let (borrowed, fault) = main
         .blocks
@@ -350,8 +350,7 @@ fn map_lookup_borrows_a_field_and_preserves_the_fault_after_ending_its_loan() {
         .flat_map(|b| &b.ops)
         .find_map(|op| match &op.kind {
             SemOpKind::LoadBorrow { place } if op.results[0].id == borrowed => {
-                let plan = hew_sir::place_plan(main, &module.aggregate_shapes, &module.type_facts)
-                    .unwrap();
+                let plan = place_plan_of(&module, main);
                 let projection = plan.projection(*place).unwrap();
                 assert_eq!(
                     projection
@@ -392,7 +391,7 @@ fn map_lookup_borrows_a_field_and_preserves_the_fault_after_ending_its_loan() {
     replaced
         .functions
         .iter_mut()
-        .find(|function| function.declaration.full_path() == "main")
+        .find(|function| module.defs.path(function.declaration) == "main")
         .unwrap()
         .blocks
         .iter_mut()
@@ -746,8 +745,10 @@ fn borrowed_collection_reads_do_not_demand_key_callbacks() {
         .items
         .iter()
         .find_map(|item| match item {
-            hew_hir::HirItem::Function(function) if function.declaration.full_path() == "size" => {
-                Some(function.declaration.clone())
+            hew_hir::HirItem::Function(function)
+                if hir.module.defs.path(function.declaration) == "size" =>
+            {
+                Some(function.declaration)
             }
             _ => None,
         })
@@ -768,4 +769,17 @@ fn zero_sized_keys_and_empty_entry_pairs_share_collection_contracts() {
     let families = operation_families(&module);
     assert!(families.contains(&RuntimeCallFamily::Map(MapValueOp::Entries)));
     assert!(families.contains(&RuntimeCallFamily::Set(SetValueOp::Elements)));
+}
+
+fn place_plan_of(
+    module: &hew_sir::SemModule,
+    function: &hew_sir::SemFunction,
+) -> hew_sir::PlacePlan {
+    hew_sir::place_plan(
+        &module.defs,
+        function,
+        &module.aggregate_shapes,
+        &module.type_facts,
+    )
+    .unwrap()
 }

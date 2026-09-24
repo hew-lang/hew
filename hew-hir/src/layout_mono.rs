@@ -147,6 +147,7 @@ struct Discovery<'a> {
     reason = "single layout-mono discovery pass — mirrors walk_expr in complexity; splitting would need shared Discovery state across fns"
 )]
 pub fn run_layout_mono_pass(
+    defs: &hew_types::DefTable,
     items: &[HirItem],
     extra_decls: &[HirItem],
     monomorphisations: &[MonomorphizedFn],
@@ -200,7 +201,7 @@ pub fn run_layout_mono_pass(
                 // disjoint even when an enum has no variants.
                 if td.kind == crate::HirTypeDeclKind::Struct {
                     record_decls.insert(
-                        td.qualified_name(),
+                        td.qualified_name(defs),
                         RecordDecl {
                             id: td.id,
                             type_params: td.type_params.clone(),
@@ -214,7 +215,7 @@ pub fn run_layout_mono_pass(
                     );
                 } else {
                     enum_decls.insert(
-                        td.qualified_name(),
+                        td.qualified_name(defs),
                         EnumDecl {
                             id: td.id,
                             type_params: td.type_params.clone(),
@@ -290,7 +291,7 @@ pub fn run_layout_mono_pass(
                 all_type_params.extend(td.type_params.iter().cloned());
                 if td.kind == crate::HirTypeDeclKind::Struct {
                     record_decls
-                        .entry(td.qualified_name())
+                        .entry(td.qualified_name(defs))
                         .or_insert_with(|| RecordDecl {
                             id: td.id,
                             type_params: td.type_params.clone(),
@@ -303,7 +304,7 @@ pub fn run_layout_mono_pass(
                         });
                 } else {
                     enum_decls
-                        .entry(td.qualified_name())
+                        .entry(td.qualified_name(defs))
                         .or_insert_with(|| EnumDecl {
                             id: td.id,
                             type_params: td.type_params.clone(),

@@ -18,6 +18,7 @@ pub(super) struct TraitMethodStaticSite {
     reason = "two-phase worklist: direct calls + trait method sites"
 )]
 pub(super) fn closure_under_substitution(
+    defs: &hew_types::DefTable,
     items: &[HirItem],
     call_site_type_args: &HashMap<SiteId, Vec<ResolvedTy>>,
     monomorphisations: &mut Vec<crate::monomorph::MonomorphizedFn>,
@@ -35,10 +36,7 @@ pub(super) fn closure_under_substitution(
     for item in items {
         if let HirItem::Function(f) = item {
             origin_fns.insert(f.id, f);
-            fn_info.insert(
-                f.name.clone(),
-                (f.id, f.declaration.clone(), f.type_params.clone()),
-            );
+            fn_info.insert(f.name.clone(), (f.id, f.declaration, f.type_params.clone()));
         }
     }
     // Structured `(declaring_trait, self_type_name, method_name)` index
@@ -131,7 +129,7 @@ pub(super) fn closure_under_substitution(
                 continue;
             };
             // Canonical nominal instance for impl lookup.
-            let Some(self_type) = concrete_ty.impl_receiver_instance() else {
+            let Some(self_type) = concrete_ty.impl_receiver_instance(defs) else {
                 continue;
             };
             let type_args = self_type.args.clone();
@@ -188,7 +186,7 @@ pub(super) fn closure_under_substitution(
             }
             let new_key = MonoKey {
                 origin: origin_id,
-                declaration: entry.method.clone(),
+                declaration: entry.method,
                 linker_symbol: entry.method_symbol.clone(),
                 type_args: type_args.clone(),
             };

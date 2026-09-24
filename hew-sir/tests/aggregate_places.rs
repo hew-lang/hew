@@ -50,7 +50,7 @@ fn probe(module: &mut SemModule) -> &mut SemFunction {
     module
         .functions
         .iter_mut()
-        .find(|body| body.declaration.full_path() == "probe")
+        .find(|body| module.defs.path(body.declaration) == "probe")
         .unwrap()
 }
 
@@ -208,7 +208,13 @@ fn nested_take_preserves_siblings_and_one_root_cleanup() {
     ];
     assert_valid(&module);
     let function = probe(&mut module).clone();
-    let plan = place_plan(&function, &module.aggregate_shapes, &module.type_facts).unwrap();
+    let plan = place_plan(
+        &module.defs,
+        &function,
+        &module.aggregate_shapes,
+        &module.type_facts,
+    )
+    .unwrap();
     assert_eq!(
         plan.leaves(OwnerRoot::Value(ValueId(0))).unwrap(),
         [PlaceId(0), PlaceId(2), PlaceId(3)]
@@ -321,7 +327,13 @@ fn partial_state_crosses_root_versions_and_joined_assignment_restores_it() {
 
 fn assert_projection_error(module: &mut SemModule, expected: &str) {
     let function = probe(module).clone();
-    let error = place_plan(&function, &module.aggregate_shapes, &module.type_facts).unwrap_err();
+    let error = place_plan(
+        &module.defs,
+        &function,
+        &module.aggregate_shapes,
+        &module.type_facts,
+    )
+    .unwrap_err();
     assert!(error.contains(expected), "{error}");
     let diagnostics = verify_module(module);
     assert!(
@@ -350,6 +362,7 @@ fn projection_query_rejects_missing_siblings_and_lost_cfg_partitions() {
     let mut forgotten = joined_fixture();
     let function = probe(&mut forgotten).clone();
     let plan = place_plan(
+        &forgotten.defs,
         &function,
         &forgotten.aggregate_shapes,
         &forgotten.type_facts,
@@ -618,7 +631,7 @@ fn call_failure_cleanup_keeps_the_partially_consumed_root() {
     let callee = module
         .functions
         .iter()
-        .find(|function| function.declaration.full_path() == "consume_text")
+        .find(|function| module.defs.path(function.declaration) == "consume_text")
         .unwrap()
         .callable;
     probe(&mut module).blocks = vec![
@@ -750,7 +763,13 @@ fn custom_cleanup_fields_remain_indivisible_transferable_leaves() {
             .marker = marker;
         probe(&mut module).places.truncate(2);
         let function = probe(&mut module).clone();
-        let plan = place_plan(&function, &module.aggregate_shapes, &module.type_facts).unwrap();
+        let plan = place_plan(
+            &module.defs,
+            &function,
+            &module.aggregate_shapes,
+            &module.type_facts,
+        )
+        .unwrap();
         assert_eq!(
             plan.leaves(OwnerRoot::Value(ValueId(0))).unwrap(),
             [PlaceId(0), PlaceId(1)]
@@ -786,7 +805,13 @@ fn opaque_fields_are_leaves_but_cannot_be_projection_ancestors() {
     assert_projection_error(&mut module, "cannot traverse an opaque ancestor");
     probe(&mut module).places.truncate(2);
     let function = probe(&mut module).clone();
-    let plan = place_plan(&function, &module.aggregate_shapes, &module.type_facts).unwrap();
+    let plan = place_plan(
+        &module.defs,
+        &function,
+        &module.aggregate_shapes,
+        &module.type_facts,
+    )
+    .unwrap();
     assert_eq!(plan.projection(PlaceId(1)).unwrap().recipe.ty, opaque_ty);
 }
 

@@ -248,13 +248,10 @@ impl Builder<'_, '_> {
                     .functions_by_item
                     .get(item)
                     .ok_or_else(|| "function value has no checked HIR declaration".to_string())?
-                    .declaration
-                    .clone();
-                let target = self.service.resolve_direct_call(
-                    &declaration,
-                    expr.site,
-                    &self.substitution,
-                )?;
+                    .declaration;
+                let target =
+                    self.service
+                        .resolve_direct_call(declaration, expr.site, &self.substitution)?;
                 let ty = ResolvedTy::Function {
                     params: target
                         .signature

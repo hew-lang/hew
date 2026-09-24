@@ -54,7 +54,7 @@ pub fn probe(module: &mut SemModule) -> &mut SemFunction {
     module
         .functions
         .iter_mut()
-        .find(|f| f.declaration.full_path() == "probe")
+        .find(|f| module.defs.path(f.declaration) == "probe")
         .unwrap()
 }
 
@@ -102,7 +102,7 @@ pub fn module(failing: bool) -> SemModule {
     let fail = module
         .callables
         .iter()
-        .find(|c| c.declaration.full_path() == "fail")
+        .find(|c| module.defs.path(c.declaration) == "fail")
         .unwrap()
         .id;
     let function = probe(&mut module);

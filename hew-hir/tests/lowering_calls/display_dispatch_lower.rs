@@ -329,13 +329,18 @@ fn fstring_named_type_without_impl_is_fail_closed() {
     // CheckerBoundaryViolation in display dispatch substitution.
     let mut tc = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
     tc.lang_items = hew_types::LangItemRegistry::default();
+    let defs = std::sync::Arc::make_mut(&mut tc.defs);
+    // Rows no declaration can claim: the poisoned binding names nothing the
+    // checker or the embedded builtin check declared.
+    let trait_id = defs.mint_for_test("#poison.Display");
+    let method_id = defs.mint_for_test("#poison.Display::fmt");
     tc.lang_items.insert(
         hew_types::LANG_ITEM_DISPLAY_FMT,
         hew_types::LangItemBinding {
             trait_name: "Display".to_string(),
-            trait_id: hew_types::DefId::for_test("Display"),
+            trait_id,
             method_name: Some("fmt".to_string()),
-            method_id: Some(hew_types::DefId::for_test("Display::fmt")),
+            method_id: Some(method_id),
         },
     );
     tc.insert_expr_type(

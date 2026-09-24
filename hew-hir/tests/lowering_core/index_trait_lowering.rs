@@ -124,6 +124,6 @@ fn dyn_index_selects_index_at_beside_another_at() {
         );
     };
     // `Index` publishes `get` then `at`; `Other.at` follows them.
-    assert_eq!(method.full_path(), "std.builtins.Index::at");
+    assert_eq!(output.module.defs.path(*method), "std.builtins.Index::at");
     assert_eq!(*slot, 4);
 }

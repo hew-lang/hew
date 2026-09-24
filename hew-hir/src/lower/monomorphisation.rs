@@ -10,7 +10,7 @@ impl LowerCtx {
         call_span: &std::ops::Range<usize>,
         call_site: SiteId,
     ) {
-        let declaration = self.impl_method_declaration_ids.get(callee).cloned();
+        let declaration = self.impl_method_declaration_ids.get(callee).copied();
         let Some((origin, type_param_count, linkage, declaration)) = self
             .fn_registry
             .get(callee)
@@ -228,7 +228,7 @@ impl LowerCtx {
         // recover it from the linker spelling. Bare direct calls continue to
         // read the ordinary target side table.
         let Some(declaration) = selected_declaration
-            .cloned()
+            .copied()
             .or_else(|| self.direct_monomorph_declaration(call_span))
         else {
             return;

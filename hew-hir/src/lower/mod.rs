@@ -876,10 +876,13 @@ pub fn lower_program_host_target(
 /// Linker-safe internal symbol for an authored `main` that is not the selected
 /// process entry. A single `$` delimiter cannot be written in Hew source and is
 /// distinct from the `$$` generic-instantiation separator.
-fn authored_main_callable_symbol(declaration: &hew_types::DefId) -> String {
+fn authored_main_callable_symbol(
+    defs: &hew_types::DefTable,
+    declaration: hew_types::DefId,
+) -> String {
     format!(
         "__hew_callable${}",
-        crate::mangle_dotted_name(declaration.full_path())
+        crate::symbol::declaration_symbol(defs, declaration)
     )
 }
 
@@ -1541,7 +1544,7 @@ struct LowerCtx {
     /// spelling used for lexical resolution.
     declaration_module_by_file_index: HashMap<u32, hew_types::ModuleId>,
     /// Immutable checker declaration authority. This view cannot mint.
-    identity: hew_types::IdentityView,
+    defs: std::sync::Arc<hew_types::DefTable>,
     type_aliases: HashMap<hew_types::DefId, hew_types::TypeAliasDef>,
     /// Checker-authoritative import resolution table: maps `(importer_module,
     /// source spelling)` → canonical qualified source identity for named/glob

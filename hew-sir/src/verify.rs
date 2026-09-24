@@ -251,6 +251,7 @@ pub struct SirDiagnostic {
 
 #[derive(Debug)]
 pub(crate) struct CallableContext<'a> {
+    defs: &'a hew_types::DefTable,
     by_id: BTreeMap<CallableId, &'a SemCallable>,
     closures: &'a [crate::SemClosure],
     actors: &'a [crate::SemActor],
@@ -265,6 +266,7 @@ pub(crate) struct CallableContext<'a> {
 /// and building it here lets that pass hold the table while it mutates the
 /// module's bodies.
 pub(crate) fn callable_context<'a>(
+    defs: &'a hew_types::DefTable,
     callables: &'a [SemCallable],
     closures: &'a [crate::SemClosure],
     actors: &'a [crate::SemActor],
@@ -272,6 +274,7 @@ pub(crate) fn callable_context<'a>(
     vtables: &'a [crate::SemVtable],
 ) -> CallableContext<'a> {
     CallableContext {
+        defs,
         closures,
         actors,
         supervisors,
@@ -328,7 +331,7 @@ fn verify_aggregate_shapes(module: &SemModule, diagnostics: &mut Vec<SirDiagnost
                 expected.0, shape.id.0
             ));
         }
-        let carries_instance = shape.aggregate_ty.nominal_instance().as_ref()
+        let carries_instance = shape.aggregate_ty.nominal_instance(&module.defs).as_ref()
             == Some(&shape.instance)
             || matches!(
                 &shape.aggregate_ty,
@@ -337,7 +340,7 @@ fn verify_aggregate_shapes(module: &SemModule, diagnostics: &mut Vec<SirDiagnost
                     args,
                     builtin: Some(_),
                     ..
-                } if shape.instance.args == *args && shape.instance.nominal.full_path() == name
+                } if shape.instance.args == *args && module.defs.path(shape.instance.nominal.declaration()) == name
             );
         if !carries_instance {
             refuse(format!(
@@ -532,7 +535,7 @@ fn verify_vtables(module: &SemModule, diagnostics: &mut Vec<SirDiagnostic>) {
                 refuse(format!(
                     "slot {} repeats trait method `{}`",
                     slot.slot,
-                    slot.method.full_path()
+                    module.defs.path(slot.method)
                 ));
             }
             let expected_slot = 3 + u32::try_from(position).expect("SIR vtable slot exceeds u32");
@@ -601,7 +604,7 @@ fn verify_resources(module: &SemModule, diagnostics: &mut Vec<SirDiagnostic>) {
             .type_facts
             .get(&hew_types::TypeInstanceKey(ty.clone()))
             .ok_or_else(|| "resource release has no exact type facts".to_string())
-            .and_then(|facts| crate::verify_resource_release(ty, release, facts));
+            .and_then(|facts| crate::verify_resource_release(&module.defs, ty, release, facts));
         if let Err(reason) = result {
             diagnostics.push(module_diag(SirDiagnosticKind::InvalidResourceType {
                 ty: ty.clone(),
@@ -684,7 +687,7 @@ pub fn check_module(module: &SemModule) -> Result<CheckedModule<'_>, Vec<SirDiag
         let monomorphic_body = callables
             .callable(function.callable)
             .is_none_or(|callable| matches!(callable.instance, CallableInstance::Monomorphic));
-        if monomorphic_body && !declarations.insert(function.declaration.clone()) {
+        if monomorphic_body && !declarations.insert(function.declaration) {
             diagnostics.push(diag(
                 function,
                 SirDiagnosticKind::DuplicateFunctionDeclaration(format!(
@@ -695,6 +698,7 @@ pub fn check_module(module: &SemModule) -> Result<CheckedModule<'_>, Vec<SirDiag
         }
         verify_constant_references(module, function, &mut diagnostics);
         let (function_diagnostics, analysis) = check_function_with_context(
+            &module.defs,
             function,
             Some(&callables),
             &module.type_facts,
@@ -937,6 +941,7 @@ pub fn verify_function_in_module(module: &SemModule, function: &SemFunction) -> 
         ));
     }
     diagnostics.extend(verify_function_with_context(
+        &module.defs,
         function,
         Some(&callables),
         &module.type_facts,
@@ -976,6 +981,7 @@ pub fn place_lifetimes(
         ));
     }
     let (function_diagnostics, lifetimes) = check_function_with_context(
+        &module.defs,
         function,
         Some(&callables),
         &module.type_facts,
@@ -1022,7 +1028,15 @@ pub(crate) fn verify_function_with_facts(
     function: &SemFunction,
     facts: &TypeFactTable,
 ) -> Vec<SirDiagnostic> {
-    verify_function_with_context(function, None, facts, &[], &[], &BTreeMap::new())
+    verify_function_with_context(
+        &hew_types::DefTable::new(),
+        function,
+        None,
+        facts,
+        &[],
+        &[],
+        &BTreeMap::new(),
+    )
 }
 
 /// Verify the semantic precondition for discarding blocks during a CFG rewrite.
@@ -1136,6 +1150,7 @@ fn cfg_discard_diag(
 }
 
 pub(crate) fn verify_function_with_context(
+    defs: &hew_types::DefTable,
     function: &SemFunction,
     callable_context: Option<&CallableContext<'_>>,
     facts: &TypeFactTable,
@@ -1144,6 +1159,7 @@ pub(crate) fn verify_function_with_context(
     resources: &BTreeMap<ResolvedTy, crate::ResourceRelease>,
 ) -> Vec<SirDiagnostic> {
     check_function_with_context(
+        defs,
         function,
         callable_context,
         facts,
@@ -1159,6 +1175,7 @@ pub(crate) fn verify_function_with_context(
     reason = "the verifier keeps SSA collection, CFG shape, and dominance checks together so the stage boundary is auditable"
 )]
 fn check_function_with_context(
+    defs: &hew_types::DefTable,
     function: &SemFunction,
     callable_context: Option<&CallableContext<'_>>,
     facts: &TypeFactTable,
@@ -1407,7 +1424,7 @@ fn check_function_with_context(
             ));
         }
     }
-    let projections = crate::place_plan(function, aggregate_shapes, facts);
+    let projections = crate::place_plan(defs, function, aggregate_shapes, facts);
     if let Err(reason) = &projections {
         diagnostics.push(diag(
             function,
@@ -1421,6 +1438,7 @@ fn check_function_with_context(
     // terminators. In particular this catches a malformed use whose value is
     // defined in a later block rather than silently skipping its type check.
     let variants = VariantVerifyContext {
+        defs,
         facts,
         aggregate_shapes,
         shapes: variant_shapes,
@@ -1696,10 +1714,10 @@ fn verify_callable_table<'a>(
                 }
             }
             CallableInstance::Monomorphic => {
-                if !monomorphic_declarations.insert(callable.declaration.clone()) {
+                if !monomorphic_declarations.insert(callable.declaration) {
                     diagnostics.push(module_diag(
                         SirDiagnosticKind::DuplicateCallableDeclaration(
-                            callable.declaration.full_path().to_string(),
+                            module.defs.path(callable.declaration).to_string(),
                         ),
                     ));
                 }
@@ -1711,7 +1729,7 @@ fn verify_callable_table<'a>(
                     }));
                 }
                 if generic_templates.contains_key(&GenericTemplateId {
-                    declaration: callable.declaration.clone(),
+                    declaration: callable.declaration,
                 }) {
                     diagnostics.push(module_diag(SirDiagnosticKind::InvalidCallable {
                         callable: callable.id,
@@ -1722,7 +1740,7 @@ fn verify_callable_table<'a>(
             }
             CallableInstance::ActorMember => {
                 let valid = if let SemCallableKind::HewActor(actor) = callable.kind {
-                    actor_members.insert((actor, callable.declaration.clone()))
+                    actor_members.insert((actor, callable.declaration))
                         && module
                             .actor(actor)
                             .is_some_and(|actor| actor.bodies().any(|body| body == callable.id))
@@ -1759,7 +1777,7 @@ fn verify_callable_table<'a>(
                 }
             }
             CallableInstance::Generic(key) => {
-                generic_declarations.insert(callable.declaration.clone());
+                generic_declarations.insert(callable.declaration);
                 if monomorphic_declarations.contains(&callable.declaration) {
                     diagnostics.push(module_diag(SirDiagnosticKind::InvalidCallable {
                         callable: callable.id,
@@ -1964,6 +1982,7 @@ fn verify_callable_table<'a>(
         }
     }
     CallableContext {
+        defs: &module.defs,
         by_id,
         closures: &module.closures,
         actors: &module.actors,
@@ -1980,7 +1999,7 @@ fn verify_generic_template_headers<'a>(
 ) -> BTreeMap<GenericTemplateId, &'a SemGenericTemplate> {
     let mut templates = BTreeMap::new();
     for template in &module.generic_templates {
-        let name = template.id.declaration.full_path().to_string();
+        let name = module.defs.path(template.id.declaration).to_string();
         if template.type_params.is_empty() {
             diagnostics.push(module_diag(SirDiagnosticKind::InvalidGenericTemplate {
                 template: name.clone(),
@@ -2056,7 +2075,7 @@ fn verify_generic_callable_instance(
         diagnostics.push(module_diag(SirDiagnosticKind::DuplicateCallableInstance(
             format!(
                 "{}<{}>",
-                key.template.declaration.full_path(),
+                module.defs.path(key.template.declaration),
                 key.type_args
                     .iter()
                     .map(|ty| ty.user_facing().to_string())
@@ -2103,7 +2122,7 @@ fn verify_generic_callable_instance(
             reason: format!(
                 "generic instance carries {} type argument(s), but template `{}` requires {}",
                 key.type_args.len(),
-                template.id.declaration.full_path(),
+                module.defs.path(template.id.declaration),
                 template.type_params.len()
             ),
         }));
@@ -2186,7 +2205,7 @@ fn verify_function_callable_identity(
         diagnostics.push(diag(
             function,
             SirDiagnosticKind::MissingFunctionCallable {
-                declaration: function.declaration.full_path().to_string(),
+                declaration: callable_context.defs.path(function.declaration).to_string(),
             },
         ));
         return;
@@ -2605,9 +2624,9 @@ fn verify_dyn_call(
         if published.method != *method {
             return Err(format!(
                 "dynamic dispatch of `{}` names slot {slot}, which `{}` fills with `{}`",
-                method.full_path(),
+                context.defs.path(*method),
                 table.concrete_ty.user_facing(),
-                published.method.full_path()
+                context.defs.path(published.method)
             ));
         }
         let expected = match published.receiver {
@@ -3887,7 +3906,10 @@ fn verify_call_handback(
     callable_context: Option<&CallableContext<'_>>,
     diagnostics: &mut Vec<SirDiagnostic>,
 ) {
-    let Some(target) = callable_context.and_then(|context| context.callable(callee)) else {
+    let Some(context) = callable_context else {
+        return;
+    };
+    let Some(target) = context.callable(callee) else {
         return;
     };
     let receiver = target
@@ -3914,7 +3936,7 @@ fn verify_call_handback(
             id,
             format!(
                 "direct call to `{}` must carry exactly the `var self` receiver its failing callee hands back",
-                target.declaration.full_path()
+                context.defs.path(target.declaration)
             ),
             diagnostics,
         );
@@ -4032,7 +4054,7 @@ fn verify_direct_call_terminator(
                 format!(
                     "direct call result has `{}`, callee `{}` returns `{}`",
                     result.ty.user_facing(),
-                    target.declaration.full_path(),
+                    callable_context.defs.path(target.declaration),
                     target.signature.return_ty.user_facing()
                 ),
                 diagnostics,
@@ -4045,7 +4067,7 @@ fn verify_direct_call_terminator(
             id,
             format!(
                 "direct call to `{}` has {} argument(s), expected {}",
-                target.declaration.full_path(),
+                callable_context.defs.path(target.declaration),
                 args.len(),
                 target.signature.params.len()
             ),
@@ -4065,7 +4087,7 @@ fn verify_direct_call_terminator(
                 id,
                 format!(
                     "direct call argument {index} to `{}` is {:?}, expected {:?} for {:?} parameter passing",
-                    target.declaration.full_path(),
+                    callable_context.defs.path(target.declaration),
                     argument.decision,
                     expected_decision,
                     parameter.passing
@@ -4080,7 +4102,7 @@ fn verify_direct_call_terminator(
                     id,
                     format!(
                         "direct call argument {index} to `{}` has `{}`, expected `{}`",
-                        target.declaration.full_path(),
+                        callable_context.defs.path(target.declaration),
                         actual.user_facing(),
                         parameter.ty.user_facing()
                     ),
@@ -4371,6 +4393,7 @@ fn verify_runtime_call_terminator(
             }
             if let RuntimeResultEffect::FreshOwnedVariant(kind) = contract.result {
                 if let Err(reason) = crate::runtime_variant_shape_refs(
+                    shapes.defs,
                     kind,
                     &value.ty,
                     shapes.aggregate_shapes,
@@ -4817,6 +4840,7 @@ fn failure_cfg_matches_exit(
 }
 
 struct VariantVerifyContext<'a> {
+    defs: &'a hew_types::DefTable,
     facts: &'a TypeFactTable,
     aggregate_shapes: &'a [SemAggregateShape],
     shapes: &'a [SemVariantShape],
@@ -5046,11 +5070,16 @@ fn verify_terminator_shape(
             let check = (|| {
                 let context =
                     callable_context.ok_or("actor boundary requires its module contracts")?;
-                let signature = operation.signature(context.actors, context.supervisors, |id| {
-                    context
-                        .callable(id)
-                        .map(|callable| callable.signature.clone())
-                })?;
+                let signature = operation.signature(
+                    context.defs,
+                    context.actors,
+                    context.supervisors,
+                    |id| {
+                        context
+                            .callable(id)
+                            .map(|callable| callable.signature.clone())
+                    },
+                )?;
                 if args.len() != signature.params.len()
                     || args.iter().zip(&signature.params).any(|(arg, param)| {
                         arg.decision
@@ -5435,9 +5464,12 @@ fn verify_terminator_shape(
                     sealed,
                     ..
                 } => {
-                    callable_context.and_then(|context| context.actors.get(actor.0 as usize))
-                        .filter(|descriptor| descriptor.id == *actor)
-                        .and_then(|descriptor| {
+                    callable_context
+                        .and_then(|context| {
+                            Some((context.defs, context.actors.get(actor.0 as usize)?))
+                        })
+                        .filter(|(_, descriptor)| descriptor.id == *actor)
+                        .and_then(|(defs, descriptor)| {
                             let target = types.get(&inputs.first()?.operand.value)?;
                             // The sealed message inside `ActorError` is a
                             // per-call-site fact; the protocol owns the reply
@@ -5446,7 +5478,7 @@ fn verify_terminator_shape(
                                 return None;
                             };
                             descriptor
-                                .ask_signature(*message, target, value.ty.clone(), *sealed)
+                                .ask_signature(defs, *message, target, value.ty.clone(), *sealed)
                                 .ok()
                         })
                         .is_some_and(|signature| {
@@ -6071,7 +6103,7 @@ mod parameter_own_kind_tests {
         SemCallable {
             id: function.callable,
             function: function.id,
-            declaration: function.declaration.clone(),
+            declaration: function.declaration,
             instance: CallableInstance::Monomorphic,
             symbol: function.name.clone(),
             source_origin: function.source_origin.clone(),
@@ -6111,8 +6143,10 @@ mod parameter_own_kind_tests {
     fn verifier_refuses_a_borrow_slot_parameter_the_class_kind_contradicts() {
         let function = function(ResolvedTy::String, OwnKind::Owned);
         let callables = vec![callable(&function, SemParamPassing::Borrow)];
-        let context = callable_context(&callables, &[], &[], &[], &[]);
+        let defs = hew_types::DefTable::fixture();
+        let context = callable_context(&defs, &callables, &[], &[], &[], &[]);
         let diagnostics = verify_function_with_context(
+            &hew_types::DefTable::fixture(),
             &function,
             Some(&context),
             &TypeFactTable::new(),
@@ -6131,8 +6165,10 @@ mod parameter_own_kind_tests {
     fn verifier_admits_a_borrow_slot_parameter_that_is_guaranteed() {
         let function = function(ResolvedTy::String, OwnKind::Guaranteed);
         let callables = vec![callable(&function, SemParamPassing::Borrow)];
-        let context = callable_context(&callables, &[], &[], &[], &[]);
+        let defs = hew_types::DefTable::fixture();
+        let context = callable_context(&defs, &callables, &[], &[], &[], &[]);
         let diagnostics = verify_function_with_context(
+            &hew_types::DefTable::fixture(),
             &function,
             Some(&context),
             &TypeFactTable::new(),
@@ -6150,10 +6186,12 @@ mod parameter_own_kind_tests {
     fn verifier_refuses_a_read_only_slot_parameter_that_claims_guaranteed() {
         let function = function(ResolvedTy::String, OwnKind::Guaranteed);
         let callables = vec![callable(&function, SemParamPassing::ReadOnly)];
-        let context = callable_context(&callables, &[], &[], &[], &[]);
+        let defs = hew_types::DefTable::fixture();
+        let context = callable_context(&defs, &callables, &[], &[], &[], &[]);
         let mut facts = TypeFactService::new(TypeFactContext::default(), TypeFactTable::new());
         facts.require(&ResolvedTy::String).unwrap();
         let diagnostics = verify_function_with_context(
+            &hew_types::DefTable::fixture(),
             &function,
             Some(&context),
             facts.rows(),
@@ -6175,6 +6213,7 @@ mod parameter_own_kind_tests {
     fn verifier_refuses_a_parameter_whose_header_slot_it_cannot_read() {
         let function = function(ResolvedTy::I64, OwnKind::None);
         let diagnostics = verify_function_with_context(
+            &hew_types::DefTable::fixture(),
             &function,
             None,
             &TypeFactTable::new(),

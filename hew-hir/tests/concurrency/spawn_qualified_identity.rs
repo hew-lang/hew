@@ -118,9 +118,9 @@ fn collect_spawns(expr: &HirExpr, spawns: &mut Vec<(String, ResolvedTy)>) {
 /// The actor's own dotted name, if `ty` is that actor's handle type (D489:
 /// an actor is the type of its handle, so the handle carries the actor's
 /// nominal identity directly rather than wrapping it in a separate carrier).
-fn actor_handle_name(ty: &ResolvedTy) -> Option<String> {
-    ty.actor_handle_instance()
-        .map(|instance| instance.nominal.full_path().to_string())
+fn actor_handle_name(defs: &hew_types::DefTable, ty: &ResolvedTy) -> Option<String> {
+    ty.actor_handle_instance(defs)
+        .map(|instance| defs.path(instance.nominal.declaration()).to_string())
 }
 
 /// `spawn bank.Account()` carries the dotted identity on both the lowered
@@ -143,7 +143,7 @@ fn qualified_spawn_lowers_dotted_actor_name_and_handle_type() {
         "lowered spawn must carry the canonical dotted actor identity"
     );
     assert_eq!(
-        actor_handle_name(ty),
+        actor_handle_name(&output.module.defs, ty),
         Some("hew.bank.Account".to_string()),
         "spawn result type must be hew.bank.Account, got {ty:?}"
     );
@@ -169,5 +169,8 @@ fn root_spawn_keeps_bare_actor_name_and_handle_type() {
     assert_eq!(spawns.len(), 1, "expected one spawn, got {spawns:?}");
     let (actor_name, ty) = &spawns[0];
     assert_eq!(actor_name, "Local");
-    assert_eq!(actor_handle_name(ty), Some("Local".to_string()));
+    assert_eq!(
+        actor_handle_name(&output.module.defs, ty),
+        Some("Local".to_string())
+    );
 }

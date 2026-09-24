@@ -179,6 +179,7 @@ fn value_definitions(function: &SemFunction) -> BTreeMap<ValueId, (OwnKind, Reso
 /// Refuses borrowed roots, invalid paths/descriptors/types, incomplete field
 /// coverage and CFG transfers that change the availability partition.
 pub fn place_plan(
+    defs: &hew_types::DefTable,
     function: &SemFunction,
     shapes: &[SemAggregateShape],
     facts: &TypeFactTable,
@@ -207,13 +208,13 @@ pub fn place_plan(
                 plan.bases.insert(place.id, base);
             }
         }
-        let projection = resolve_projection(function, place, &values, shapes, facts)?;
+        let projection = resolve_projection(defs, function, place, &values, shapes, facts)?;
         if !paths.insert((projection.root, projection.path.clone())) {
             return Err("aggregate projection has duplicate places for one field".into());
         }
         plan.projections.insert(place.id, projection);
     }
-    let expanded = verify_partition_coverage(function, &plan, &values, shapes, facts)?;
+    let expanded = verify_partition_coverage(defs, function, &plan, &values, shapes, facts)?;
     install_partitions(&mut plan, &expanded);
     let targets = function
         .blocks
@@ -240,6 +241,7 @@ pub fn place_plan(
 }
 
 fn plain_field_recipes(
+    defs: &hew_types::DefTable,
     shape: AggregateShapeRef,
     ty: &ResolvedTy,
     shapes: &[SemAggregateShape],
@@ -259,7 +261,7 @@ fn plain_field_recipes(
         ) {
             return Err("aggregate projection cannot traverse an opaque ancestor".into());
         }
-        if ty.nominal_instance().as_ref() != Some(&descriptor.instance) {
+        if ty.nominal_instance(defs).as_ref() != Some(&descriptor.instance) {
             return Err("aggregate ancestor descriptor has a different nominal identity".into());
         }
         if descriptor.marker != hew_types::DeclarationMarker::None {
@@ -273,6 +275,7 @@ fn plain_field_recipes(
 }
 
 fn resolve_projection(
+    defs: &hew_types::DefTable,
     function: &SemFunction,
     place: &PlaceDecl,
     values: &BTreeMap<ValueId, (OwnKind, ResolvedTy)>,
@@ -306,7 +309,7 @@ fn resolve_projection(
         clone: row.clone,
     };
     for step in &path {
-        let recipes = plain_field_recipes(step.shape, &ty, shapes, facts)?;
+        let recipes = plain_field_recipes(defs, step.shape, &ty, shapes, facts)?;
         let recipe = recipes
             .get(step.field as usize)
             .cloned()
@@ -327,6 +330,7 @@ fn resolve_projection(
 }
 
 fn verify_partition_coverage(
+    defs: &hew_types::DefTable,
     function: &SemFunction,
     plan: &PlacePlan,
     values: &BTreeMap<ValueId, (OwnKind, ResolvedTy)>,
@@ -350,7 +354,7 @@ fn verify_partition_coverage(
             }
             PlaceBase::Value(value) => &values[&value].1,
         };
-        let count = plain_field_recipes(shape, ty, shapes, facts)?.len();
+        let count = plain_field_recipes(defs, shape, ty, shapes, facts)?.len();
         let (previous_shape, expected, fields) = groups
             .entry((root, base))
             .or_insert_with(|| (shape, count, BTreeSet::new()));

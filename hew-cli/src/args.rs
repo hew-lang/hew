@@ -148,6 +148,10 @@ pub struct CompileArgs {
     /// LLVM artifacts are emitted.
     #[arg(long = "dump-sir", conflicts_with = "dump_mir")]
     pub dump_sir: bool,
+    /// Emit the compilation's declaration table (every module and
+    /// declaration row with its id, kind, owner and path) and exit.
+    #[arg(long = "dump-defs", conflicts_with_all = ["dump_mir", "dump_sir"])]
+    pub dump_defs: bool,
     /// Compilation target. Omit for native; pass `wasm32-unknown-unknown` for WASM.
     #[arg(long, value_name = "TRIPLE")]
     pub target: Option<String>,

@@ -751,7 +751,7 @@ impl Builder<'_, '_> {
                     decision,
                 },
                 slot: *slot,
-                method: method.clone(),
+                method: *method,
             },
             dispatch,
             lowered_args,
@@ -803,7 +803,7 @@ impl Builder<'_, '_> {
                 let target = match local_actor_method {
                     Some(method) => method,
                     None => self.service.resolve_direct_call(
-                        declaration,
+                        *declaration,
                         expr.site,
                         &self.substitution,
                     )?,
@@ -853,7 +853,7 @@ impl Builder<'_, '_> {
         {
             let name = match target {
                 CallTarget::User(declaration) | CallTarget::ImplMethod(declaration) => {
-                    declaration.full_path()
+                    self.service.module.defs.path(*declaration)
                 }
                 _ => "<function value>",
             };
@@ -972,8 +972,8 @@ impl Builder<'_, '_> {
         };
         let receiver_ty = self.ty(&receiver.ty);
         let callee = self.service.resolve_static_trait_call(
-            declaring_trait,
-            method,
+            *declaring_trait,
+            *method,
             &receiver_ty,
             expr.site,
             &self.substitution,
@@ -986,7 +986,7 @@ impl Builder<'_, '_> {
         if arguments.len() != signature.params.len() || result_ty != signature.return_ty {
             return Err(format!(
                 "static trait call to `{}` differs from its semantic signature: {} arguments, expected {}; result {result_ty:?}, expected {:?}",
-                callee.declaration.full_path(),
+                self.service.module.defs.path(callee.declaration),
                 arguments.len(),
                 signature.params.len(),
                 signature.return_ty
@@ -1323,7 +1323,7 @@ impl Builder<'_, '_> {
                 ..
             } => self.lower_extern_call(
                 expr,
-                declaration,
+                *declaration,
                 endpoint,
                 (args, evaluation_order),
                 value_required,
@@ -1383,8 +1383,8 @@ impl Builder<'_, '_> {
         };
         let handler_ty = self.ty(&handler.ty);
         if handler_ty
-            .actor_handle_instance()
-            .is_none_or(|instance| instance.nominal.declaration() != &endpoints.actor)
+            .actor_handle_instance(&self.service.module.defs)
+            .is_none_or(|instance| instance.nominal.declaration() != endpoints.actor)
         {
             return Err("actor ingress target differs from its resolved declaration".into());
         }
@@ -2264,7 +2264,7 @@ impl Builder<'_, '_> {
     /// dispositions and the return type, so one lookup serves both.
     pub(super) fn extern_signature(
         &self,
-        declaration: &hew_types::DefId,
+        declaration: hew_types::DefId,
         endpoint: &str,
     ) -> Result<crate::ExternSignature, String> {
         self.service
@@ -2275,9 +2275,9 @@ impl Builder<'_, '_> {
                 let hew_hir::HirItem::ExternFn(function) = item else {
                     return None;
                 };
-                (&function.declaration == declaration && function.name == endpoint).then(|| {
+                (function.declaration == declaration && function.name == endpoint).then(|| {
                     crate::ExternSignature {
-                        declaration: function.declaration.clone(),
+                        declaration: function.declaration,
                         symbol: function.name.clone(),
                         params: function.param_tys.clone(),
                         consumes: function.param_consume.clone(),
@@ -2363,7 +2363,7 @@ impl Builder<'_, '_> {
     pub(super) fn lower_extern_call(
         &mut self,
         expr: &HirExpr,
-        declaration: &hew_types::DefId,
+        declaration: hew_types::DefId,
         endpoint: &str,
         (args, evaluation_order): (&[HirExpr], &[usize]),
         value_required: bool,

@@ -43,13 +43,13 @@ impl Session {
                 ))
             })?;
         let occurrence = hew_types::DeclarationOccurrence::new_with_synthetic_ordinal(
-            tco.identity.root_module(),
+            tco.defs.root_module(),
             span,
             ordinal,
             hew_types::DeclarationKind::Function,
             0,
         );
-        let declaration = tco.identity.declaration(occurrence).ok_or_else(|| {
+        let declaration = tco.defs.declaration(occurrence).ok_or_else(|| {
             unsupported(format!(
                 "C export `{name}` has no checked declaration identity"
             ))
@@ -64,6 +64,6 @@ impl Session {
                 "C export input must be a library without a process entry".into(),
             ));
         }
-        self.lower_hir_module(&lowered.module, tco, std::slice::from_ref(declaration))
+        self.lower_hir_module(&lowered.module, tco, std::slice::from_ref(&declaration))
     }
 }

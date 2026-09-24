@@ -56,6 +56,7 @@ pub(super) fn facts(class: ValueClass, clone: CloneKind) -> TypeFacts {
     reason = "one complete SIR fixture keeps the runtime result, exact nested descriptors, and cleanup CFG auditable together"
 )]
 pub(super) fn decode_module() -> SemModule {
+    DefId::for_test("std.encoding.utf8.Utf8Error");
     let error_ty = utf8_error_ty("std.encoding.utf8.Utf8Error");
     let option_ty = option_i64_ty();
     let result_ty = decode_result_ty(error_ty.clone());
@@ -148,6 +149,7 @@ pub(super) fn decode_module() -> SemModule {
         type_facts.insert(TypeInstanceKey(ty), row);
     }
     SemModule {
+        defs: hew_types::DefTable::fixture(),
         structural_display: BTreeMap::new(),
         debug: hew_sir::SemDebugFacts::default(),
         regex_patterns: Vec::new(),
@@ -160,7 +162,7 @@ pub(super) fn decode_module() -> SemModule {
         callables: vec![SemCallable {
             id: CallableId(0),
             function: ItemId(0),
-            declaration: function.declaration.clone(),
+            declaration: function.declaration,
             instance: CallableInstance::Monomorphic,
             symbol: function.name.clone(),
             source_origin: function.source_origin.clone(),
@@ -185,7 +187,7 @@ pub(super) fn decode_module() -> SemModule {
             aggregate_ty: error_ty.clone(),
             marker: hew_types::DeclarationMarker::None,
             instance: error_ty
-                .nominal_instance()
+                .nominal_instance(&hew_types::DefTable::fixture())
                 .expect("canonical source error must carry nominal identity"),
             fields: vec![
                 SemAggregateField {

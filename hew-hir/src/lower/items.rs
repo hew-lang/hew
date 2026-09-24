@@ -245,12 +245,12 @@ impl LowerCtx {
         let is_declaring_encoding_impl = builtin_impl_kind
             .is_some_and(BuiltinType::is_encoding_value)
             && matches!(&resolved_impl_self_ty, ResolvedTy::Named { name, .. } if {
-                self.identity.declarations().any(|(occurrence, declaration)| {
-                    self.identity.declaration_by_path(name) == Some(declaration)
+                self.defs.declarations().any(|(occurrence, declaration)| {
+                    self.defs.lookup_path(name) == Some(declaration)
                         && occurrence.module().is_some_and(|module| {
-                            Some(self.identity.module_path(module))
+                            Some(self.defs.module_path(module))
                                 == self.current_module_name.as_deref()
-                                    .or_else(|| self.identity.root_module_path())
+                                    .or_else(|| self.defs.root_module_path())
                         })
                 })
             });
@@ -368,13 +368,15 @@ impl LowerCtx {
                         .map_or_else(|| name.clone(), |local| format!("{module}.{local}"))
                 },
             ),
-            _ => resolved_impl_self_ty.impl_receiver_instance().map_or_else(
-                || base_symbol_self_name.to_string(),
-                |instance| instance.nominal.declaration().full_path().to_string(),
-            ),
+            _ => resolved_impl_self_ty
+                .impl_receiver_instance(&self.defs)
+                .map_or_else(
+                    || base_symbol_self_name.to_string(),
+                    |instance| self.defs.path(instance.nominal.declaration()).to_string(),
+                ),
         };
         let impl_self_nominal = resolved_impl_self_ty
-            .impl_receiver_instance()
+            .impl_receiver_instance(&self.defs)
             .map(|instance| instance.nominal);
         let prior_self_ty = self.current_impl_self_ty.take();
         self.current_impl_self_ty = Some(resolved_impl_self_ty);
@@ -391,14 +393,19 @@ impl LowerCtx {
                 &symbol_self_name,
                 method.name.name.as_str(),
             );
-            let declaration = self.impl_method_declaration_ids.get(&symbol).cloned();
+            let declaration = self.impl_method_declaration_ids.get(&symbol).copied();
             if let Some((declaration, selected)) = declaration.as_ref().and_then(|declaration| {
                 self.impl_body_plan
                     .symbols
                     .get(declaration)
                     .map(|selected| (declaration, selected))
             }) {
-                if impl_body_symbols_alias_one_declaration(declaration, selected, &symbol) {
+                if impl_body_symbols_alias_one_declaration(
+                    &self.defs,
+                    *declaration,
+                    selected,
+                    &symbol,
+                ) {
                     // This AST body is a second import-path view of the exact
                     // declaration already selected by the plan. Only the
                     // selected spelling may materialise a HIR function.
@@ -438,10 +445,10 @@ impl LowerCtx {
             // never be promoted into a callable implementation body.
             if let Some(declaration) = &declaration {
                 if self.lowering_injected_items
-                    || self.validate_impl_body_plan(declaration, &symbol, &span)
+                    || self.validate_impl_body_plan(*declaration, &symbol, &span)
                 {
                     self.impl_method_body_symbols
-                        .entry(declaration.clone())
+                        .entry(*declaration)
                         .or_insert_with(|| symbol.clone());
                 }
             }
@@ -455,11 +462,11 @@ impl LowerCtx {
                 .map_or(String::new(), |tb| tb.path.to_string()); // TRANSITION(P1): deleted by A1 commit 2
             let ids = self.trait_method_identity(&declaring_trait, method.name.name.as_str());
             let declaring_trait = ids.as_ref().map_or(declaring_trait, |(trait_id, _)| {
-                trait_id.full_path().to_string()
+                self.defs.path(*trait_id).to_string()
             });
             method_declaring_traits.push(declaring_trait);
-            method_declaring_trait_ids.push(ids.as_ref().map(|(trait_id, _)| trait_id.clone()));
-            method_trait_method_ids.push(ids.as_ref().map(|(_, method_id)| method_id.clone()));
+            method_declaring_trait_ids.push(ids.as_ref().map(|(trait_id, _)| *trait_id));
+            method_trait_method_ids.push(ids.as_ref().map(|(_, method_id)| *method_id));
             method_ids.push(declaration);
         }
 
@@ -488,31 +495,27 @@ impl LowerCtx {
                             &symbol_self_name,
                             fn_decl.name.name.as_str(),
                         );
-                        let declaring_trait = default_method.trait_id.full_path().to_string();
-                        let ids = Some((
-                            default_method.trait_id.clone(),
-                            default_method.method_id.clone(),
-                        ));
+                        let declaring_trait = self.defs.path(default_method.trait_id).to_string();
+                        let ids = Some((default_method.trait_id, default_method.method_id));
                         // Trait declaration IDs own static lookup; this
                         // materialised default body needs a distinct concrete
                         // implementation identity for body lookup and
-                        // monomorphisation. The checker has no explicit
-                        // method declaration for a body it did not see in the
-                        // impl AST, so mint one exactly at this synthesis
-                        // boundary from the carried trait and self identities.
+                        // monomorphisation. The checker minted one row per
+                        // materialized default; read it by the carried trait
+                        // and self identities.
                         let synthetic_default_declaration =
                             ids.as_ref().and_then(|(declaring_trait, _)| {
-                                Self::synthetic_default_impl_body_declaration(
-                                    declaring_trait,
+                                self.synthetic_default_impl_body_declaration(
+                                    *declaring_trait,
                                     self.current_impl_self_ty.as_ref(),
-                                    fn_decl.name.name.as_str(),
+                                    fn_decl.name.name,
                                 )
                             });
                         if let Some(declaration) = &synthetic_default_declaration {
                             if let Some(existing) = self
                                 .impl_body_plan
                                 .symbols
-                                .insert(declaration.clone(), symbol.clone())
+                                .insert(*declaration, symbol.clone())
                             {
                                 if existing != symbol {
                                     self.impl_body_plan.symbols.remove(declaration);
@@ -520,7 +523,7 @@ impl LowerCtx {
                                         HirDiagnosticKind::CheckerBoundaryViolation {
                                             name: format!(
                                                 "impl body `{}`",
-                                                declaration.full_path()
+                                                self.defs.path(*declaration)
                                             ),
                                             reason: format!(
                                                 "conflicting pre-lowering symbols `{existing}` and `{symbol}`"
@@ -546,14 +549,14 @@ impl LowerCtx {
                             span.clone(),
                             &type_params,
                             Some(&symbol_self_name),
-                            synthetic_default_declaration.clone(),
+                            synthetic_default_declaration,
                         ) else {
                             continue;
                         };
                         if let Some(declaration) = &synthetic_default_declaration {
-                            if self.validate_impl_body_plan(declaration, &symbol, &span) {
+                            if self.validate_impl_body_plan(*declaration, &symbol, &span) {
                                 self.impl_method_body_symbols
-                                    .entry(declaration.clone())
+                                    .entry(*declaration)
                                     .or_insert_with(|| symbol.clone());
                             }
                         }
@@ -563,16 +566,15 @@ impl LowerCtx {
                         method_names.push(fn_decl.name.to_string());
                         let declaring_trait =
                             ids.as_ref().map_or(declaring_trait, |(trait_id, _)| {
-                                trait_id.full_path().to_string()
+                                self.defs.path(*trait_id).to_string()
                             });
                         method_declaring_trait_ids
-                            .push(ids.as_ref().map(|(trait_id, _)| trait_id.clone()));
-                        method_trait_method_ids
-                            .push(ids.as_ref().map(|(_, method_id)| method_id.clone()));
+                            .push(ids.as_ref().map(|(trait_id, _)| *trait_id));
+                        method_trait_method_ids.push(ids.as_ref().map(|(_, method_id)| *method_id));
                         method_ids.push(
                             self.impl_method_declaration_ids
                                 .get(&symbol)
-                                .cloned()
+                                .copied()
                                 .or(synthetic_default_declaration),
                         );
                         method_declaring_traits.push(declaring_trait);
@@ -840,7 +842,7 @@ impl LowerCtx {
         let declaration = if let Some(declaration) = known_declaration {
             declaration
         } else if let Some(declaration) = self.impl_method_declaration_ids.get(name) {
-            declaration.clone()
+            *declaration
         } else {
             self.source_declaration(&span, hew_types::DeclarationKind::Function, 0)?
         };
@@ -1041,12 +1043,12 @@ impl LowerCtx {
     /// unresolved until lowering order establishes that body evidence.
     pub(super) fn registered_impl_method_symbol(
         &self,
-        declaration: &hew_types::DefId,
+        declaration: hew_types::DefId,
     ) -> Option<String> {
         self.impl_method_body_symbols
-            .get(declaration)
+            .get(&declaration)
             .cloned()
-            .or_else(|| self.impl_body_plan.symbols.get(declaration).cloned())
+            .or_else(|| self.impl_body_plan.symbols.get(&declaration).cloned())
     }
 
     /// Verify that actual emission fulfils the declaration-keyed body plan.
@@ -1054,17 +1056,17 @@ impl LowerCtx {
     /// must fail closed rather than publish a wrong `DefId -> symbol` map.
     pub(super) fn validate_impl_body_plan(
         &mut self,
-        declaration: &hew_types::DefId,
+        declaration: hew_types::DefId,
         symbol: &str,
         span: &Span,
     ) -> bool {
-        let expected = self.impl_body_plan.symbols.get(declaration).cloned();
+        let expected = self.impl_body_plan.symbols.get(&declaration).cloned();
         if expected.as_deref() == Some(symbol) {
             return true;
         }
         self.diagnostics.push(HirDiagnostic::new(
             HirDiagnosticKind::CheckerBoundaryViolation {
-                name: format!("impl body `{}`", declaration.full_path()),
+                name: format!("impl body `{}`", self.defs.path(declaration)),
                 reason: expected.map_or_else(
                     || "no pre-lowering emitted-body plan".to_string(),
                     |expected| format!("planned symbol `{expected}`, emitted `{symbol}`"),
@@ -1176,25 +1178,18 @@ impl LowerCtx {
         skip_methods
     }
 
-    /// Allocate the direct-body identity for a trait default materialised in a
-    /// concrete impl. The trait method `DefId` remains the static-dispatch key;
-    /// this synthetic ID names the distinct body HIR emits for one selected
-    /// `(trait, self-type, method)` tuple.
-    ///
-    /// This is intentionally constructed only at the default-body synthesis
-    /// boundary. It uses the carried declaration/type structures directly and
-    /// never parses a linker symbol or leaf method spelling back into an owner.
+    /// The direct-body identity of a trait default materialised in a concrete
+    /// impl. The trait method `DefId` remains the static-dispatch key; the
+    /// checker minted this row for the distinct body HIR emits for one
+    /// selected `(trait, self-type, method)` tuple.
     pub(super) fn synthetic_default_impl_body_declaration(
-        declaring_trait: &hew_types::DefId,
+        &self,
+        declaring_trait: hew_types::DefId,
         self_ty: Option<&ResolvedTy>,
-        method: &str,
+        method: hew_types::Symbol,
     ) -> Option<hew_types::DefId> {
-        let self_ty = self_ty?;
-        let instance = self_ty.impl_receiver_instance()?;
-        Some(hew_types::default_impl_method_declaration(
-            declaring_trait,
-            &instance,
-            method,
-        ))
+        let instance = self_ty?.impl_receiver_instance(&self.defs)?;
+        self.defs
+            .default_impl_body(declaring_trait, &instance, method)
     }
 }

@@ -1432,6 +1432,7 @@ impl FunctionLowerer<'_> {
                     return Err(PhysicalError::new("UTF-8 decode has no result value"));
                 };
                 let refs = hew_sir::runtime_variant_shape_refs(
+                    &self.module.defs,
                     hew_types::RuntimeVariantResultKind::Utf8Decode,
                     &value.ty,
                     &self.module.aggregate_shapes,

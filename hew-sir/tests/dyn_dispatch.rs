@@ -62,7 +62,7 @@ fn dispatch_names_the_method_its_slot_publishes() {
         (alpha.method_name.as_str(), beta.method_name.as_str()),
         ("alpha", "beta")
     );
-    let (beta_slot, beta_method) = (beta.slot, beta.method.clone());
+    let (beta_slot, beta_method) = (beta.slot, beta.method);
     let calls = dyn_calls(&mut module);
     let [SemTerminator::DynCall { slot, method, .. }] = calls.as_slice() else {
         panic!("expected one dynamic dispatch");
@@ -97,7 +97,7 @@ fn dispatch_to_a_slot_holding_another_method_is_refused() {
 #[test]
 fn table_repeating_a_method_is_refused() {
     let mut module = lower(TWO_BOUNDS);
-    let alpha = module.vtables[0].slots[0].method.clone();
+    let alpha = module.vtables[0].slots[0].method;
     module.vtables[0].slots[1].method = alpha;
 
     let errors = verify_module(&module);

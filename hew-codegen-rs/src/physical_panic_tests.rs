@@ -44,7 +44,7 @@ fn panic_propagates_one_fault_without_initializing_the_result_at_o0_o2() {
             physical
                 .callables
                 .iter()
-                .find(|c| c.declaration.full_path() == "panic_probe")
+                .find(|c| physical.defs.path(c.declaration) == "panic_probe")
                 .unwrap(),
         );
         for optimized in [false, true] {

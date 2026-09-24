@@ -496,7 +496,7 @@ fn direct_call_carries_checker_user_declaration_id() {
         ",
     );
     assert!(tc_output.direct_call_targets.values().any(|target| {
-        matches!(target, hew_types::CallTarget::User(id) if id.full_path() == "helper")
+        matches!(target, hew_types::CallTarget::User(id) if tc_output.defs.path(*id) == "helper")
     }));
     let main = lower_output
         .module
@@ -512,7 +512,7 @@ fn direct_call_carries_checker_user_declaration_id() {
         Some(HirExprKind::Call {
             target: hew_types::CallTarget::User(id),
             ..
-        }) if id.full_path() == "helper"
+        }) if lower_output.module.defs.path(*id) == "helper"
     ));
 }
 

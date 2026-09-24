@@ -219,9 +219,10 @@ impl SemModule {
 /// An actor is the type of its handle, so a handle carries its own identity; a
 /// `ChildRef<A>` names the same actor through its role parameter.
 pub(crate) fn local_actor_instance(
+    defs: &hew_types::DefTable,
     ty: &ResolvedTy,
 ) -> Option<hew_types::resolved_ty::NominalInstance> {
-    if let Some(instance) = ty.actor_handle_instance() {
+    if let Some(instance) = ty.actor_handle_instance(defs) {
         return Some(instance);
     }
     let ResolvedTy::Named {
@@ -235,7 +236,7 @@ pub(crate) fn local_actor_instance(
     let [actor_ty] = args.as_slice() else {
         return None;
     };
-    actor_ty.actor_handle_instance()
+    actor_ty.actor_handle_instance(defs)
 }
 
 impl SemActor {
@@ -293,6 +294,7 @@ impl SemActor {
     /// Rejects an unknown protocol member or an unresolved reply type.
     pub fn ask_signature(
         &self,
+        defs: &hew_types::DefTable,
         message: u32,
         target: &ResolvedTy,
         result_ty: ResolvedTy,
@@ -358,7 +360,7 @@ impl SemActor {
                     .ok_or("ask rejection lacks its sealed handler protocol")?;
             if *request_target != target.to_ty()
                 || policy != hew_types::actor_delivery::SendPolicy::Reject
-                || (method != handler.declaration.full_path()
+                || (method != defs.path(handler.declaration)
                     && !(self.is_lambda()
                         && method == hew_types::actor_protocol::LAMBDA_ACTOR_METHOD_ID))
                 || *parameters
@@ -439,7 +441,7 @@ impl SemActor {
     }
 
     /// Check the handle spelling this descriptor answers to.
-    fn validate_handle(&self) -> Result<(), String> {
+    fn validate_handle(&self, defs: &hew_types::DefTable) -> Result<(), String> {
         // A named actor is addressed by its own type. An anonymous actor has no
         // source nominal to name, so its handle is `actor(M) -> R` and the
         // protocol it must agree with is its single handler's.
@@ -450,8 +452,8 @@ impl SemActor {
             } => {
                 if self
                     .handle_ty
-                    .actor_handle_instance()
-                    .is_none_or(|instance| instance.nominal.declaration() != &self.declaration)
+                    .actor_handle_instance(defs)
+                    .is_none_or(|instance| instance.nominal.declaration() != self.declaration)
                 {
                     return Err("actor handle refers to another declaration".into());
                 }
@@ -483,6 +485,7 @@ impl SemActor {
 
     fn validate_lifecycle_signature(
         &self,
+        defs: &hew_types::DefTable,
         body: crate::CallableId,
         callable: &crate::SemCallable,
     ) -> Result<(), String> {
@@ -518,7 +521,7 @@ impl SemActor {
                 parameter.ty.is_builtin(expected)
                     && parameter
                         .ty
-                        .nominal_instance()
+                        .nominal_instance(defs)
                         .is_some_and(|instance| instance.args.is_empty())
             })
         });
@@ -535,7 +538,7 @@ impl SemActor {
         if module.actor(self.id) != Some(self) {
             return Err("actor descriptor is not at its canonical index".into());
         }
-        self.validate_handle()?;
+        self.validate_handle(&module.defs)?;
         if self.state_ty
             != ResolvedTy::Tuple(self.fields.iter().map(|field| field.ty.clone()).collect())
         {
@@ -600,7 +603,7 @@ impl SemActor {
                     return Err("actor init must return unit".into());
                 }
             } else if hooks.clone().any(|hook| *hook == body) {
-                self.validate_lifecycle_signature(body, callable)?;
+                self.validate_lifecycle_signature(&module.defs, body, callable)?;
             }
             let lends = self.methods.contains(&body);
             for parameter in callable.signature.params.iter().skip(1) {
@@ -1067,7 +1070,11 @@ impl ActorOperation {
         })
     }
 
-    fn completion_signature(&self, actors: &[SemActor]) -> Result<crate::SemSignature, String> {
+    fn completion_signature(
+        &self,
+        defs: &hew_types::DefTable,
+        actors: &[SemActor],
+    ) -> Result<crate::SemSignature, String> {
         let (Self::CallStart(protocol) | Self::CallTake(protocol)) = self else {
             return Err("operation is not a completion boundary".into());
         };
@@ -1077,6 +1084,7 @@ impl ActorOperation {
             .ok_or("unknown completion actor identity")?;
         let sealed = matches!(self, Self::CallStart(_)) && protocol.sealed;
         let mut signature = actor.ask_signature(
+            defs,
             protocol.message,
             &protocol.target,
             protocol.result.clone(),
@@ -1116,12 +1124,13 @@ impl ActorOperation {
     )]
     pub fn signature(
         &self,
+        defs: &hew_types::DefTable,
         actors: &[SemActor],
         supervisors: &[crate::SemSupervisor],
         callable: impl Fn(crate::CallableId) -> Option<crate::SemSignature>,
     ) -> Result<crate::SemSignature, String> {
         if matches!(self, Self::CallStart(_) | Self::CallTake(_)) {
-            return self.completion_signature(actors);
+            return self.completion_signature(defs, actors);
         }
         if let Self::LocalObservation {
             kind,

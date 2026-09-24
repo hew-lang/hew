@@ -67,6 +67,7 @@ pub fn canonicalize_module_constant_cfg(
     // serves every body. `verify_module` above already validated the table.
     let callables = candidate.callables.clone();
     let context = crate::verify::callable_context(
+        &candidate.defs,
         &callables,
         &candidate.closures,
         &candidate.actors,
@@ -76,6 +77,7 @@ pub fn canonicalize_module_constant_cfg(
     let mut reports = Vec::with_capacity(candidate.functions.len());
     for function in &mut candidate.functions {
         let report = canonicalize_verified_function(
+            &candidate.defs,
             function,
             Some(&context),
             &facts,
@@ -96,6 +98,7 @@ pub fn canonicalize_module_constant_cfg(
 }
 
 fn canonicalize_verified_function(
+    defs: &hew_types::DefTable,
     function: &mut SemFunction,
     callable_context: Option<&crate::verify::CallableContext<'_>>,
     facts: &TypeFactTable,
@@ -161,6 +164,7 @@ fn canonicalize_verified_function(
     // separate audited transformation: later passes can follow this shape
     // without inventing a second validation convention.
     let diagnostics = crate::verify::verify_function_with_context(
+        defs,
         function,
         callable_context,
         facts,
@@ -183,6 +187,7 @@ fn canonicalize_verified_function(
     let post_fold_cfg = build_cfg_index(function);
     let (removed_blocks, block_remap) = compact_unreachable(function, post_fold_cfg.reachable());
     let diagnostics = crate::verify::verify_function_with_context(
+        defs,
         function,
         callable_context,
         facts,
@@ -353,7 +358,8 @@ pub fn transfer_module_dead_local_reads(
     let aggregate_shapes = candidate.aggregate_shapes.clone();
     let mut reports = Vec::with_capacity(candidate.functions.len());
     for function in &mut candidate.functions {
-        let transferred_reads = transfer_dead_local_reads(function, &aggregate_shapes, &facts);
+        let transferred_reads =
+            transfer_dead_local_reads(&candidate.defs, function, &aggregate_shapes, &facts);
         reports.push((
             function.callable,
             DeadLocalTransferReport { transferred_reads },
@@ -370,11 +376,12 @@ pub fn transfer_module_dead_local_reads(
 
 /// Rewrite one body's dead-after copying reads and report the operations moved.
 fn transfer_dead_local_reads(
+    defs: &hew_types::DefTable,
     function: &mut SemFunction,
     aggregate_shapes: &[crate::SemAggregateShape],
     facts: &TypeFactTable,
 ) -> Vec<crate::OpId> {
-    let Ok(plan) = crate::place_plan(function, aggregate_shapes, facts) else {
+    let Ok(plan) = crate::place_plan(defs, function, aggregate_shapes, facts) else {
         return Vec::new();
     };
     let roots = transferable_roots(function, &plan, facts);

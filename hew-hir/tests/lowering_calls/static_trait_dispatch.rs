@@ -237,8 +237,8 @@ impl Render for Box<string> {
                 declaring_trait,
                 method,
             } => Some((
-                declaring_trait.full_path().to_string(),
-                method.full_path().to_string(),
+                output.module.defs.path(declaring_trait).to_string(),
+                output.module.defs.path(method).to_string(),
             )),
             _ => None,
         })
@@ -271,7 +271,7 @@ impl Render for Box<string> {
     let direct_identities: Vec<_> = main_targets
         .into_iter()
         .filter_map(|target| match target {
-            CallTarget::User(id) => Some(id.full_path().to_string()),
+            CallTarget::User(id) => Some(output.module.defs.path(id).to_string()),
             _ => None,
         })
         .collect();
@@ -292,16 +292,16 @@ impl Render for Box<string> {
     let left_specialized = index
         .iter()
         .find(|(key, _)| {
-            key.declaring_trait.full_path() == "left.render.Render"
-                && key.self_type.nominal.declaration().full_path() == "left.render.Box"
+            output.module.defs.path(key.declaring_trait) == "left.render.Render"
+                && output.module.defs.path(key.self_type.nominal.declaration()) == "left.render.Box"
                 && key.self_type.args == vec![hew_types::ResolvedTy::I64]
         })
         .expect("left.render's i64 specialization must be indexed structurally");
     let right_generic = index
         .iter()
         .find(|(key, _)| {
-            key.declaring_trait.full_path() == "right.paint.Render"
-                && key.self_type.nominal.declaration().full_path() == "right.paint.Box"
+            output.module.defs.path(key.declaring_trait) == "right.paint.Render"
+                && output.module.defs.path(key.self_type.nominal.declaration()) == "right.paint.Box"
                 && key.self_type.args.is_empty()
         })
         .expect("right.paint's generic impl must be indexed structurally");
@@ -322,19 +322,19 @@ impl Render for Box<string> {
         &index,
         &left_specialized.0.declaring_trait,
         &hew_types::NominalInstance {
-            nominal: left_specialized.0.self_type.nominal.clone(),
+            nominal: left_specialized.0.self_type.nominal,
             args: vec![hew_types::ResolvedTy::I64],
         },
         &left_specialized.0.method,
     )
     .expect("left i64 dispatch must resolve its specialization");
     assert_eq!(
-        left_specialized.0.method.full_path(),
+        output.module.defs.path(left_specialized.0.method),
         "left.render.Render::render",
         "the static registry key must use the checker-selected trait declaration identity"
     );
     assert_eq!(
-        left_selected.method.full_path(),
+        output.module.defs.path(left_selected.method),
         "left.render.Box::<impl left.render.Render for left.render.Box<i64>>::render",
         "the emitted body keeps its distinct checker implementation declaration identity: {left_selected:?}"
     );
@@ -355,7 +355,7 @@ impl Render for Box<string> {
         &index,
         &right_generic.0.declaring_trait,
         &hew_types::NominalInstance {
-            nominal: right_generic.0.self_type.nominal.clone(),
+            nominal: right_generic.0.self_type.nominal,
             args: vec![hew_types::ResolvedTy::Bool],
         },
         &right_generic.0.method,
@@ -851,7 +851,7 @@ fn example() -> string {
             .module
             .monomorphisations
             .iter()
-            .all(|mono| mono.key.declaration.full_path() != "Wrapper::show"),
+            .all(|mono| output.module.defs.path(mono.key.declaration) != "Wrapper::show"),
         "static dispatch must retain the checker implementation declaration rather than a leaf-derived `Wrapper::show` identity: {:#?}",
         output.module.monomorphisations
     );

@@ -485,12 +485,12 @@ fn generic_module_function_values_keep_the_selected_declaration() {
             output.diagnostics
         );
         assert!(
-            output
+            output.module.monomorphisations.iter().any(|mono| output
                 .module
-                .monomorphisations
-                .iter()
-                .any(|mono| mono.key.declaration.full_path() == "m.id"
-                    && mono.key.type_args == vec![hew_types::ResolvedTy::I64]),
+                .defs
+                .path(mono.key.declaration)
+                == "m.id"
+                && mono.key.type_args == vec![hew_types::ResolvedTy::I64]),
             "{root}: {:?}",
             output.module.monomorphisations
         );
@@ -507,12 +507,12 @@ fn generic_function_value_keeps_an_imported_private_helper_reachable() {
     assert!(checked.errors.is_empty(), "{:?}", checked.errors);
     assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
     assert!(
-        output
+        output.module.monomorphisations.iter().any(|mono| output
             .module
-            .monomorphisations
-            .iter()
-            .any(|mono| mono.key.declaration.full_path() == "m.id"
-                && mono.key.type_args == vec![hew_types::ResolvedTy::I64]),
+            .defs
+            .path(mono.key.declaration)
+            == "m.id"
+            && mono.key.type_args == vec![hew_types::ResolvedTy::I64]),
         "{:?}",
         output.module.monomorphisations
     );

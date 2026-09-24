@@ -14,10 +14,11 @@ use hew_parser::ast::Ident;
 /// A merely same-shaped symbol for another receiver remains a genuine
 /// conflict and fails closed.
 pub(super) fn impl_body_symbol_matches_declaration(
-    declaration: &hew_types::DefId,
+    defs: &hew_types::DefTable,
+    declaration: hew_types::DefId,
     symbol: &str,
 ) -> bool {
-    let Some((receiver, declaration_tail)) = declaration.full_path().split_once("::<") else {
+    let Some((receiver, declaration_tail)) = defs.path(declaration).split_once("::<") else {
         return false;
     };
     let Some((_, method)) = declaration_tail.rsplit_once(">::") else {
@@ -41,22 +42,24 @@ pub(super) fn impl_body_symbol_matches_declaration(
 }
 
 pub(super) fn impl_body_symbols_alias_one_declaration(
-    declaration: &hew_types::DefId,
+    defs: &hew_types::DefTable,
+    declaration: hew_types::DefId,
     left: &str,
     right: &str,
 ) -> bool {
     left != right
-        && impl_body_symbol_matches_declaration(declaration, left)
-        && impl_body_symbol_matches_declaration(declaration, right)
+        && impl_body_symbol_matches_declaration(defs, declaration, left)
+        && impl_body_symbol_matches_declaration(defs, declaration, right)
 }
 
 pub(super) fn declaration_owned_impl_body_symbol<'a>(
-    declaration: &hew_types::DefId,
+    defs: &hew_types::DefTable,
+    declaration: hew_types::DefId,
     left: &'a str,
     right: &'a str,
 ) -> &'a str {
-    let receiver = declaration
-        .full_path()
+    let receiver = defs
+        .path(declaration)
         .split_once("::<")
         .map_or("", |(receiver, _)| receiver);
     let is_declaration_owned = |symbol: &str| {
@@ -106,7 +109,12 @@ pub(super) fn validate_impl_body_owner_alias(
                 .get(declaration)
                 .is_some_and(|existing| {
                     existing == symbol
-                        || impl_body_symbols_alias_one_declaration(declaration, existing, symbol)
+                        || impl_body_symbols_alias_one_declaration(
+                            &ctx.defs,
+                            *declaration,
+                            existing,
+                            symbol,
+                        )
                 })
         });
     if aliases_existing_plan {
@@ -137,27 +145,26 @@ pub(super) fn merge_planned_impl_body_symbols(
         if let Some(existing) = ctx
             .impl_body_plan
             .symbols
-            .insert(declaration.clone(), symbol.clone())
+            .insert(*declaration, symbol.clone())
         {
             if existing == *symbol {
                 continue;
             }
-            if impl_body_symbols_alias_one_declaration(declaration, &existing, symbol) {
+            if impl_body_symbols_alias_one_declaration(&ctx.defs, *declaration, &existing, symbol) {
                 let selected = if ctx.impl_body_plan.compiler_selected.contains(declaration) {
                     existing
                 } else {
-                    declaration_owned_impl_body_symbol(declaration, &existing, symbol).to_string()
+                    declaration_owned_impl_body_symbol(&ctx.defs, *declaration, &existing, symbol)
+                        .to_string()
                 };
-                ctx.impl_body_plan
-                    .symbols
-                    .insert(declaration.clone(), selected);
+                ctx.impl_body_plan.symbols.insert(*declaration, selected);
                 continue;
             }
             ctx.impl_body_plan.symbols.remove(declaration);
             conflict = true;
             ctx.diagnostics.push(HirDiagnostic::new(
                 HirDiagnosticKind::CheckerBoundaryViolation {
-                    name: format!("impl body `{}`", declaration.full_path()),
+                    name: format!("impl body `{}`", ctx.defs.path(*declaration)),
                     reason: format!(
                         "conflicting pre-lowering symbols `{existing}` and `{symbol}`"
                     ),
@@ -165,7 +172,7 @@ pub(super) fn merge_planned_impl_body_symbols(
                 0..0,
                 format!(
                     "implementation declaration `{}` selected two distinct emitted-body symbols: `{existing}` and `{symbol}`",
-                    declaration.full_path()
+                    ctx.defs.path(*declaration)
                 ),
             ));
         }
@@ -239,17 +246,15 @@ pub(super) fn plan_impl_block_symbols(
         }
         let symbol =
             crate::node::HirImplBlock::method_symbol(&symbol_self_name, method.name.name.as_str());
-        let Some(declaration) = ctx.impl_method_declaration_ids.get(&symbol).cloned() else {
+        let Some(declaration) = ctx.impl_method_declaration_ids.get(&symbol).copied() else {
             continue;
         };
         planned.push((declaration, symbol));
     }
     // A trait default the impl does NOT override is materialised as its own
-    // body by `lower_impl_block`, under a declaration id minted at that
-    // synthesis boundary (`synthetic_default_impl_body_declaration`) — the
-    // checker never saw a method declaration to publish into
-    // `impl_method_declaration_ids`, so the explicit-method loop above cannot
-    // reach it. Plan those ids on the same authority: an imported module's
+    // body by `lower_impl_block`, under the checker's materialized-default
+    // row (`synthetic_default_impl_body_declaration`) — the impl AST has no
+    // method for the explicit-method loop above to reach. Plan those ids on the same authority: an imported module's
     // bodies are emitted in the fourth pass, so a ROOT call to a materialised
     // default (`d.greet()` on a type from `import gm;`) is lowered before its
     // body exists and otherwise fails closed with `CallableUnsupportedInMir`.
@@ -275,7 +280,7 @@ pub(super) fn plan_impl_block_symbols(
 /// block materialises rather than overrides.
 ///
 /// Mirrors the synthesis in `lower_impl_block` exactly — same owner key, same
-/// non-overridden filter, same `synthetic_default_impl_body_declaration` mint,
+/// non-overridden filter, same `synthetic_default_impl_body_declaration` row,
 /// same `method_symbol` — so the plan and the later emission cannot disagree.
 pub(super) fn materialized_default_body_plan(
     ctx: &mut LowerCtx,
@@ -309,10 +314,10 @@ pub(super) fn materialized_default_body_plan(
             continue;
         }
         let declaring_trait = &default_method.trait_id;
-        let Some(declaration) = LowerCtx::synthetic_default_impl_body_declaration(
-            declaring_trait,
+        let Some(declaration) = ctx.synthetic_default_impl_body_declaration(
+            *declaring_trait,
             Some(&self_ty),
-            default_method.method.name.name.as_str(),
+            default_method.method.name.name,
         ) else {
             continue;
         };
@@ -633,6 +638,7 @@ pub(super) fn impl_type_param_names(decl: &hew_parser::ast::ImplDecl) -> Vec<Str
 
 pub(super) fn check_builtin_callable_impl_program(
     program: &Program,
+    defs: &hew_types::DefTable,
 ) -> Result<TypeCheckOutput, Box<HirDiagnostic>> {
     // The parsed embedded source uses private leaf spellings for its synthetic
     // cursor declarations. Type-check a projection whose impl targets carry
@@ -665,7 +671,14 @@ pub(super) fn check_builtin_callable_impl_program(
     }
     let mut checker =
         hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(Vec::new()));
-    let output = checker.check_embedded_builtins(&checker_program);
+    // The run mints into a fork of the compilation's table, so every id its
+    // facts carry indexes that table (TRANSITION(P2): see
+    // `DefTable::fork_for_embedded`).
+    let output = checker.check_embedded_builtins(&checker_program, defs);
+    assert!(
+        output.defs.extends(defs),
+        "the embedded builtin check must only append to the compilation's table"
+    );
     if output.errors.is_empty() {
         return Ok(output);
     }

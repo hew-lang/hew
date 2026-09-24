@@ -22,6 +22,7 @@ pub(crate) fn verify_resources(module: &PhysicalModule) -> Result<(), PhysicalEr
             return Err(PhysicalError::new("duplicate physical resource authority"));
         }
         hew_sir::verify_resource_release(
+            &module.defs,
             &resource.ty,
             &resource.release,
             semantic_type_facts(module, &resource.ty)?,

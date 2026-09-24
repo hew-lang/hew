@@ -571,6 +571,7 @@ mod tests {
             let _ = fact_service.require(ty);
         }
         SemModule {
+            defs: hew_types::DefTable::fixture(),
             debug: crate::SemDebugFacts::default(),
             actors: Vec::new(),
             supervisors: Vec::new(),
@@ -583,7 +584,7 @@ mod tests {
             callables: vec![SemCallable {
                 id: function.callable,
                 function: function.id,
-                declaration: function.declaration.clone(),
+                declaration: function.declaration,
                 instance: CallableInstance::Monomorphic,
                 symbol: function.name.clone(),
                 source_origin: function.source_origin.clone(),

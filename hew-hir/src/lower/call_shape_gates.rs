@@ -107,13 +107,13 @@ pub(super) fn build_callable_set(
     for item in items {
         match item {
             HirItem::Function(f) => {
-                declarations.insert(f.declaration.clone());
+                declarations.insert(f.declaration);
             }
             HirItem::ExternFn(ef) => {
-                declarations.insert(ef.declaration.clone());
+                declarations.insert(ef.declaration);
             }
             HirItem::Impl(block) => {
-                declarations.extend(block.method_ids.iter().flatten().cloned());
+                declarations.extend(block.method_ids.iter().flatten().copied());
             }
             HirItem::Actor(actor) => {
                 // An actor-body plain `fn` realizes an emitted body too: MIR's
@@ -121,7 +121,7 @@ pub(super) fn build_callable_set(
                 // the declaration to that symbol in `direct_call_symbols`.
                 // Receive handlers and lifecycle hooks stay out — the runtime
                 // trampolines enter those, and no Hew call site may name them.
-                declarations.extend(actor.methods.iter().map(|m| m.declaration.clone()));
+                declarations.extend(actor.methods.iter().map(|m| m.declaration));
             }
             _ => {}
         }

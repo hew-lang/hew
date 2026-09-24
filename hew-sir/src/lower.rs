@@ -7831,6 +7831,16 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         )
     }
 
+    /// Whether a place is a capture of a body that borrows its environment.
+    /// The environment keeps the field after this call, so it must be whole
+    /// at every exit.
+    fn is_borrowed_capture(&self, place: PlaceId) -> bool {
+        matches!(self.places[place.0 as usize].origin, PlaceOrigin::Capture { environment, .. }
+        if self.params.iter().any(|param| {
+            param.value == environment && param.own != OwnKind::Owned
+        }))
+    }
+
     /// Whether a place is a `var self` method's receiver seat or lies beneath
     /// it. Its method hands that seat back when it fails, so the seat must be
     /// whole wherever the method can fail.
@@ -9163,8 +9173,15 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             // that can fail, and a transform that releases its receiver when
             // it fails leaves nothing to close the owner around, so those
             // mutate a copy of the field that is assigned back after them.
-            let copies_field = indexed_path.is_some()
-                || (!contract.failures.is_empty() && !contract.preserves_inputs_on_failure());
+            let releases = !contract.failures.is_empty() && !contract.preserves_inputs_on_failure();
+            let copies_field = indexed_path.is_some() || releases;
+            // A closure called again after a recovered fault reads its capture
+            // again, so a transform that releases a capture when it fails
+            // mutates a copy of the capture too.
+            let whole_owner = whole_owner.or_else(|| {
+                (releases && indexed_path.is_none() && self.is_borrowed_capture(projected))
+                    .then_some(projected)
+            });
             let (current, target) = match whole_owner {
                 Some(root) if copies_field => (
                     Some(self.copy_through_whole_owner(

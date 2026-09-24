@@ -199,10 +199,10 @@ impl Builder<'_, '_> {
         self.restore_taken_place(owner.root, rebuilt, provenance)
     }
 
-    /// An owned copy of the field `place` names beneath a whole owner, read
-    /// through aggregate loans that end before this returns. A mutation runs
-    /// on the copy, so a fault leaves the owner as it was. `why` names the
-    /// mutation that cannot open the owner in place.
+    /// An owned copy of the field `place` names beneath a whole owner, or of
+    /// the owner itself, read through aggregate loans that end before this
+    /// returns. A mutation runs on the copy, so a fault leaves the owner as
+    /// it was. `why` names the mutation that cannot open the owner in place.
     pub(super) fn copy_through_whole_owner(
         &mut self,
         root: PlaceId,
@@ -219,7 +219,7 @@ impl Builder<'_, '_> {
         {
             let leaf = place.leaf_ty.user_facing();
             return Err(format!(
-                "mutating a `{leaf}` beneath an actor state field, a capture or a resource is \
+                "mutating a `{leaf}` held by an actor state field, a capture or a resource is \
                  not implemented for {why}: the mutation works on a copy, and `{leaf}` has none"
             ));
         }

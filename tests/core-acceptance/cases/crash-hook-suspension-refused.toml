@@ -1,0 +1,14 @@
+[[case]]
+id = "crash-hook-suspension-refused"
+intent = "A crash hook that suspends through a helper is refused at check time, naming the hook and the suspending call."
+source = "cases/crash-hook-suspension-refused.hew"
+kind = "check"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "InvalidOperation"
+line = 16
+column = 9
+message = "a crash hook cannot suspend: it rules on the restart before cleanup; `Worker.on_crash` suspends at `settle(...)`"

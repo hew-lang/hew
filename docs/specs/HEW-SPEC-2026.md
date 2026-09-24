@@ -5946,7 +5946,7 @@ unrecovered and the child's role is spent.
 
 1. A hook is a plain `fn` declaration inside an actor body carrying exactly one `#[on(...)]` annotation whose kind is `start`, `stop`, `crash`, `exit`, or `down`.
 2. `#[on(start)]` and `#[on(stop)]` hooks take **no parameters**. Actor fields are in scope by bare name (the same convention as `init { }` and ordinary actor methods).
-3. `#[on(crash)]` hooks take exactly one `CrashInfo` parameter and declare `CrashAction` as the return type. The supervisor applies the returned action as described above.
+3. `#[on(crash)]` hooks take exactly one `CrashInfo` parameter and declare `CrashAction` as the return type. The supervisor applies the returned action as described above. A crash hook cannot suspend: it rules on the restart before cleanup, so a hook that sleeps, awaits or calls a suspending function is rejected at compile time.
 4. `#[on(start)]` and `#[on(stop)]` hooks return `()`.
 5. A hook is **not** generic and has no `where` clause.
 6. Hook functions are not invocable from message handlers; the runtime is the sole caller.

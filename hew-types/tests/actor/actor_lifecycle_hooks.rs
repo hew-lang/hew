@@ -1363,6 +1363,61 @@ fn accept_crash_action_tail_return() {
     );
 }
 
+/// D529: the supervisor calls a crash hook synchronously to rule on the
+/// restart before the crashed actor's cleanup, so a hook that suspends -
+/// directly or through a helper - is refused at the suspending call.
+#[test]
+fn reject_suspending_crash_hook() {
+    for (body, witness) in [("sleep(1ms);", "sleep(...)"), ("settle();", "settle(...)")] {
+        let source = format!(
+            "
+            fn settle() {{ sleep(1ms); }}
+            fn tally() -> i64 {{ 1 }}
+            actor Worker {{
+                #[on(crash)]
+                fn on_crash(info: CrashInfo) -> CrashAction {{
+                    {body}
+                    CrashAction.Restart
+                }}
+            }}
+
+            fn main() {{ let _ = tally(); settle(); }}
+            "
+        );
+        let output = typecheck(&source);
+        let refusals: Vec<_> = output
+            .errors
+            .iter()
+            .filter(|error| error.message.contains("a crash hook cannot suspend"))
+            .collect();
+        assert_eq!(refusals.len(), 1, "{body}: {:?}", output.errors);
+        let refusal = refusals[0];
+        assert!(
+            refusal.message.contains("`Worker.on_crash` suspends at")
+                && refusal.message.contains(witness),
+            "{body}: {}",
+            refusal.message
+        );
+        assert_eq!(&source[refusal.span.clone()], body.trim_end_matches(';'));
+    }
+
+    let accepted = typecheck(
+        "
+        fn tally() -> i64 { 1 }
+        actor Worker {
+            #[on(crash)]
+            fn on_crash(info: CrashInfo) -> CrashAction {
+                let _ = tally();
+                CrashAction.Restart
+            }
+        }
+
+        fn main() {}
+        ",
+    );
+    assert!(accepted.errors.is_empty(), "{:?}", accepted.errors);
+}
+
 #[test]
 fn accept_crash_action_explicit_return_stmt() {
     // The explicit `return CrashAction::Restart;` form also type-checks.

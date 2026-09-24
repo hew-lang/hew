@@ -2011,6 +2011,11 @@ impl Checker {
         self.env.push_scope();
 
         let qualified_name = format!("{actor_name}::{}", hook.name);
+        let previous_effect_body = self.enter_crash_hook_body(
+            &qualified_name,
+            format!("{actor_name}.{}", hook.name),
+            &hook.decl_span,
+        );
         let prev_function = self.current_function.take();
         self.current_function = Some(qualified_name);
 
@@ -2041,6 +2046,7 @@ impl Checker {
         // now return `Restart`/`Escalate`/`Kill` (or `panic(...)`) freely. The
         // standard return-type checking against `current_return_type` covers it.
         let _body_ty = self.check_block(&hook.body, None);
+        self.effect_graph.current_body = previous_effect_body;
         self.crash_hook_consumed_fields.clear();
         self.current_return_type = None;
         self.in_actor_handler_context = prev_actor_handler_context;

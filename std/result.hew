@@ -212,7 +212,7 @@ impl<T, E> Result<T, E> {
         }
     }
     /// Unwrap the `Ok` value, or return `fallback` if `Err`.
-    pub fn unwrap_or(consume self, fallback: T) -> T {
+    pub fn unwrap_or(consume self, consume fallback: T) -> T {
         match self {
             .Ok(v) => v,
             .Err(_) => fallback,

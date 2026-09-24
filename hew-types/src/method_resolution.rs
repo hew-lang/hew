@@ -15,6 +15,47 @@ use crate::BuiltinType;
 use crate::Ty;
 
 fn instantiate_named_method_sig(mut sig: FnSig, type_params: &[String], type_args: &[Ty]) -> FnSig {
+    // A method's own type parameter (`map<U>`) is a binder distinct from any
+    // caller parameter the receiver carries in (`Option<U>` inside `fn f<U>`).
+    // Rename a colliding binder first so substituting the impl parameters
+    // cannot make the two indistinguishable.
+    let captures = |name: &str| type_args.iter().any(|arg| arg.mentions_named_param(name));
+    let mut renames: HashMap<String, Ty> = HashMap::new();
+    for method_param in sig
+        .type_params
+        .iter()
+        .filter(|param| !type_params.contains(param) && captures(param))
+    {
+        let mut fresh = format!("{method_param}'");
+        while captures(&fresh) || sig.type_params.contains(&fresh) {
+            fresh.push('\'');
+        }
+        renames.insert(
+            method_param.clone(),
+            Ty::Named {
+                builtin: None,
+                name: fresh,
+                args: Vec::new(),
+            },
+        );
+    }
+    if !renames.is_empty() {
+        let binder_name = |name: &String| match renames.get(name) {
+            Some(Ty::Named { name: fresh, .. }) => fresh.clone(),
+            _ => name.clone(),
+        };
+        for param_ty in &mut sig.params {
+            *param_ty = param_ty.substitute_named_params_parallel(&renames);
+        }
+        sig.return_type = sig.return_type.substitute_named_params_parallel(&renames);
+        sig.type_params = sig.type_params.iter().map(binder_name).collect();
+        sig.type_param_bounds = sig
+            .type_param_bounds
+            .into_iter()
+            .map(|(name, bounds)| (binder_name(&name), bounds))
+            .collect();
+    }
+
     let subst_map: HashMap<String, Ty> = type_params
         .iter()
         .zip(type_args.iter())

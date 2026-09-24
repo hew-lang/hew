@@ -1,0 +1,10 @@
+[[case]]
+id = "prelude-binder-shadow-import"
+intent = "An explicitly imported std.iter keeps its function type parameters distinct from a user module's same-spelled types."
+source = "cases/prelude-binder-shadow-import/main.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "9\n7\n"
+exit = 0

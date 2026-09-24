@@ -1526,6 +1526,18 @@ fn build_module_source_map(program: &Program, documents: &DocumentSet) -> Module
             continue;
         };
         let Some(path) = module.source_paths.first() else {
+            // An injected prelude module carries its embedded source instead.
+            if let [std, leaf] = mod_id.path.as_slice() {
+                if let Some((_, text)) = PRELUDE_STD_SOURCES
+                    .iter()
+                    .find(|(name, _)| std == "std" && name == leaf)
+                {
+                    map.insert(
+                        mod_id.path.join("."),
+                        ((*text).to_string(), format!("std/{leaf}.hew")),
+                    );
+                }
+            }
             continue;
         };
         if let Ok(text) = read_source(documents, path) {
@@ -2280,25 +2292,29 @@ pub fn attach_prelude_std_modules(program: &mut Program) {
 /// loaded out of band, so only its Display impls take this path; its other
 /// declarations retain their compiler-owned registration.
 fn add_prelude_std_modules(graph: &mut hew_parser::module::ModuleGraph) {
-    add_embedded_std_module(
-        graph,
-        "builtins",
-        include_str!("../../std/builtins.hew"),
-        |item| {
-            matches!(item, Item::Impl(decl) if decl
-                .trait_bound
-                .as_ref()
-                .is_some_and(|bound| bound.name == "Display"))
-        },
-    );
-    for (name, source) in [
-        ("option", include_str!("../../std/option.hew")),
-        ("result", include_str!("../../std/result.hew")),
-        ("iter", include_str!("../../std/iter.hew")),
-    ] {
-        add_embedded_std_module(graph, name, source, |_| true);
+    for (name, source) in PRELUDE_STD_SOURCES {
+        if name == "builtins" {
+            add_embedded_std_module(graph, name, source, |item| {
+                matches!(item, Item::Impl(decl) if decl
+                    .trait_bound
+                    .as_ref()
+                    .is_some_and(|bound| bound.name == "Display"))
+            });
+        } else {
+            add_embedded_std_module(graph, name, source, |_| true);
+        }
     }
 }
+
+/// The embedded standard-library sources [`add_prelude_std_modules`] injects,
+/// by `std.<name>` leaf. They have no on-disk path, so diagnostics inside them
+/// render against this text.
+const PRELUDE_STD_SOURCES: [(&str, &str); 4] = [
+    ("builtins", include_str!("../../std/builtins.hew")),
+    ("option", include_str!("../../std/option.hew")),
+    ("result", include_str!("../../std/result.hew")),
+    ("iter", include_str!("../../std/iter.hew")),
+];
 
 /// Add the selected items of an embedded `std.<name>` source as a module of
 /// their own, unless the program already imports that module.

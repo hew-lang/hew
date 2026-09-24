@@ -175,14 +175,17 @@ impl Checker {
     /// module registers the complete owner (`std.text.regex.Pattern`). Applying
     /// the projection only at the call sites that remembered to ask left the two
     /// spellings alive side by side; this is the one entry point, applied
-    /// uniformly at registration.
+    /// uniformly at registration. `binders` are the signature's own type
+    /// parameters: a bare `A` there is the binder, never a same-spelled type
+    /// another module declares.
     pub(super) fn canonicalize_registry_signature(
         &self,
         ty: &crate::ty::Ty,
         canonical_owner: &str,
+        binders: &[String],
     ) -> crate::ty::Ty {
         let mapped = ty.map_children_pub(&|child| {
-            self.canonicalize_registry_signature(child, canonical_owner)
+            self.canonicalize_registry_signature(child, canonical_owner, binders)
         });
         let crate::ty::Ty::Named {
             name,
@@ -192,6 +195,13 @@ impl Checker {
         else {
             return mapped;
         };
+        if args.is_empty() && binders.contains(&name) {
+            return crate::ty::Ty::Named {
+                name,
+                args,
+                builtin,
+            };
+        }
         let name = self
             .resolve_nominal_declaration(
                 NominalOrigin::RegistrySignature { canonical_owner },

@@ -5312,6 +5312,29 @@ impl Checker {
         self.impl_alias_scopes.pop();
     }
 
+    /// Resolve an impl target's type arguments (`Filter<I, A>`) with the
+    /// impl's own type parameters in scope, so `A` names the impl's binder
+    /// rather than a same-spelled type that another module declares.
+    fn resolve_impl_target_type_args(
+        &mut self,
+        id: &ImplDecl,
+        type_args: Option<&Vec<Spanned<TypeExpr>>>,
+    ) -> Vec<Ty> {
+        let bounds = self.collect_type_param_scope_with_bounds(
+            id.type_params.as_ref(),
+            id.where_clause.as_ref(),
+        );
+        self.current_type_param_bounds
+            .push(TypeParamScope::new(bounds, HashMap::new()));
+        let resolved = type_args.map_or_else(Vec::new, |args| {
+            args.iter()
+                .map(|type_arg| self.resolve_type_expr(type_arg))
+                .collect()
+        });
+        self.current_type_param_bounds.pop();
+        resolved
+    }
+
     /// Enforce trait-side bounds on each impl-side associated-type binding.
     ///
     /// For `trait Foo { type Out: Display; }` and `impl Foo for X { type Out = Y; }`,
@@ -5708,14 +5731,8 @@ impl Checker {
 
                     // Set current_self_type for resolving `Self` in method parameters
                     let prev_self_type = self.current_self_type.take();
-                    let self_type_args: Vec<Ty> = type_args
-                        .as_ref()
-                        .map(|args| {
-                            args.iter()
-                                .map(|type_arg| self.resolve_type_expr(type_arg))
-                                .collect()
-                        })
-                        .unwrap_or_default();
+                    let self_type_args: Vec<Ty> =
+                        self.resolve_impl_target_type_args(id, type_args.as_ref());
                     self.current_self_type = Some((type_name.clone(), self_type_args.clone()));
                     let scope_pushed =
                         self.enter_impl_scope(id, span, Some(type_name.as_str()), false);
@@ -10631,12 +10648,13 @@ impl Checker {
                                 .params
                                 .iter()
                                 .map(|ty| {
-                                    self.canonicalize_registry_signature(ty, &canonical_owner)
+                                    self.canonicalize_registry_signature(ty, &canonical_owner, &[])
                                 })
                                 .collect(),
                             return_type: self.canonicalize_registry_signature(
                                 &func.return_type,
                                 &canonical_owner,
+                                &[],
                             ),
                             accepts_kwargs,
                             ..FnSig::default()
@@ -10654,19 +10672,24 @@ impl Checker {
                         let accepts_kwargs = module_path == "std.misc.log"
                             && Self::LOG_KWARGS_FUNCTIONS.contains(&wfn.name.as_str());
                         let sig = FnSig {
-                            type_params: wfn.type_params,
-                            type_param_bounds: wfn.type_param_bounds,
                             params: wfn
                                 .params
                                 .iter()
                                 .map(|ty| {
-                                    self.canonicalize_registry_signature(ty, &canonical_owner)
+                                    self.canonicalize_registry_signature(
+                                        ty,
+                                        &canonical_owner,
+                                        &wfn.type_params,
+                                    )
                                 })
                                 .collect(),
                             return_type: self.canonicalize_registry_signature(
                                 &wfn.return_type,
                                 &canonical_owner,
+                                &wfn.type_params,
                             ),
+                            type_params: wfn.type_params,
+                            type_param_bounds: wfn.type_param_bounds,
                             accepts_kwargs,
                             ..FnSig::default()
                         };
@@ -11318,10 +11341,19 @@ impl Checker {
                     sig.params = sig
                         .params
                         .iter()
-                        .map(|ty| self.canonicalize_registry_signature(ty, module_full_path))
+                        .map(|ty| {
+                            self.canonicalize_registry_signature(
+                                ty,
+                                module_full_path,
+                                &sig.type_params,
+                            )
+                        })
                         .collect();
-                    sig.return_type =
-                        self.canonicalize_registry_signature(&sig.return_type, module_full_path);
+                    sig.return_type = self.canonicalize_registry_signature(
+                        &sig.return_type,
+                        module_full_path,
+                        &sig.type_params,
+                    );
                     // `accepts_kwargs` is transport metadata supplied by the
                     // registry for the log wrapper; it does not carry a type
                     // identity, so retain it while replacing every semantic
@@ -11429,14 +11461,8 @@ impl Checker {
                         self.current_module.replace(module_full_path.to_string());
                     // Set current_self_type for resolving `Self` in method parameters
                     let prev_self_type = self.current_self_type.take();
-                    let self_type_args: Vec<Ty> = type_args
-                        .as_ref()
-                        .map(|args| {
-                            args.iter()
-                                .map(|type_arg| self.resolve_type_expr(type_arg))
-                                .collect()
-                        })
-                        .unwrap_or_default();
+                    let self_type_args: Vec<Ty> =
+                        self.resolve_impl_target_type_args(id, type_args.as_ref());
                     self.current_self_type = Some((type_name.clone(), self_type_args.clone()));
                     let scope_pushed =
                         self.enter_impl_scope(id, span, Some(type_name.as_str()), false);
@@ -12054,19 +12080,12 @@ impl Checker {
                         // The impl's `Self` type arguments (e.g. `[E]` for
                         // `impl<E> Index for Vec<E>`), resolved so a later
                         // dispatch on a concrete receiver can bind the impl's
-                        // type parameters. This path bypasses `enter_impl_scope`
-                        // so `E` resolves to a bare `Ty::Named { name: "E" }`,
-                        // which is exactly the placeholder the dispatch-time
-                        // binding zips against the receiver's concrete args.
-                        let self_type_args: Vec<Ty> = target_type_args
-                            .as_ref()
-                            .map(|type_args| {
-                                type_args
-                                    .iter()
-                                    .map(|type_arg| self.resolve_type_expr(type_arg))
-                                    .collect()
-                            })
-                            .unwrap_or_default();
+                        // type parameters: `E` resolves to a bare
+                        // `Ty::Named { name: "E" }`, which is exactly the
+                        // placeholder the dispatch-time binding zips against
+                        // the receiver's concrete args.
+                        let self_type_args: Vec<Ty> =
+                            self.resolve_impl_target_type_args(id, target_type_args.as_ref());
                         let primitive_key = id.trait_bound.as_ref().and_then(|_| {
                             self.canonical_primitive_or_builtin_key_for_impl_name(type_name)
                         });
@@ -12977,14 +12996,8 @@ impl Checker {
                     {
                         // Set current_self_type for resolving `Self` in method parameters
                         let prev_self_type = self.current_self_type.take();
-                        let self_type_args: Vec<Ty> = type_args
-                            .as_ref()
-                            .map(|args| {
-                                args.iter()
-                                    .map(|type_arg| self.resolve_type_expr(type_arg))
-                                    .collect()
-                            })
-                            .unwrap_or_default();
+                        let self_type_args: Vec<Ty> =
+                            self.resolve_impl_target_type_args(id, type_args.as_ref());
                         self.current_self_type = Some((type_name.clone(), self_type_args.clone()));
                         let scope_pushed =
                             self.enter_impl_scope(id, span, Some(type_name.as_str()), false);

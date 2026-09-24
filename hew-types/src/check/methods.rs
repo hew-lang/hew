@@ -2296,11 +2296,14 @@ impl Checker {
                             params: params
                                 .iter()
                                 .map(|ty| {
-                                    self.canonicalize_registry_signature(ty, &canonical_owner)
+                                    self.canonicalize_registry_signature(ty, &canonical_owner, &[])
                                 })
                                 .collect(),
-                            return_type: self
-                                .canonicalize_registry_signature(&return_type, &canonical_owner),
+                            return_type: self.canonicalize_registry_signature(
+                                &return_type,
+                                &canonical_owner,
+                                &[],
+                            ),
                             ..FnSig::default()
                         }
                     })

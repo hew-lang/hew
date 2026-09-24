@@ -2827,7 +2827,8 @@ Like `.len()`, these methods need no import. `Option` has `map`,
 `map`, `map_err`, `and_then`, `or_else`, `unwrap_or_else`, `ok` and `err`.
 The extracting and combining methods consume the value they are called
 on, so a borrowed parameter needs `consume` to use them; `??` supplies a
-default without consuming.
+default without consuming. `unwrap_or` and `ok_or` consume their fallback
+or error argument as well.
 
 ### Option .take()
 

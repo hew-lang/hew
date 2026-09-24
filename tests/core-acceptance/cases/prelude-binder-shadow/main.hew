@@ -1,0 +1,15 @@
+// A user module that exports types named like the prelude's type parameters
+// leaves those binders alone: the prelude impls still conform and the methods
+// still infer from their arguments.
+import model;
+
+fn main() {
+    let items = [model.make(1), model.make(2), model.make(3)];
+    let codes = items.into_iter().filter(|item: model.A| item.code > 1).map(|item: model.A| item.code * 10).collect();
+    println(codes.len());
+    println(codes[1]);
+    let labels = [model.tag("x"), model.tag("y")];
+    println(labels.into_iter().map(|item: model.B| item.label).collect()[1]);
+    let outcome: Result<model.A, model.E> = Err(model.fail("missing"));
+    println(outcome.map_err(|error: model.E| error.reason).err().unwrap_or("none"));
+}

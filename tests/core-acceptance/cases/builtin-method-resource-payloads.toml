@@ -1,0 +1,10 @@
+[[case]]
+id = "builtin-method-resource-payloads"
+intent = "Option and Result extractors move a resource fallback, error or payload through either arm and close each exactly once, including a fallback or error left unused."
+source = "cases/builtin-method-resource-payloads.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "close 1\nclose 3\nclose 2\nclose 4\nclose 5\nclose 6\nclose 8\n7\n"
+exit = 0

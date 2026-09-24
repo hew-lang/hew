@@ -206,7 +206,7 @@ impl<T> Option<T> {
         }
     }
     /// Unwrap the value, or return `fallback` if `None`.
-    pub fn unwrap_or(consume self, fallback: T) -> T {
+    pub fn unwrap_or(consume self, consume fallback: T) -> T {
         match self {
             .Some(v) => v,
             .None => fallback,
@@ -252,7 +252,7 @@ impl<T> Option<T> {
         }
     }
     /// Convert to a `Result`, using `err` as the `Err` value when `None`.
-    pub fn ok_or<E>(consume self, err: E) -> Result<T, E> {
+    pub fn ok_or<E>(consume self, consume err: E) -> Result<T, E> {
         match self {
             .Some(v) => .Ok(v),
             .None => .Err(err),

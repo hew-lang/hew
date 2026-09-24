@@ -3288,7 +3288,7 @@ Both types carry their methods in every program, with no import, like
 `Result<T, E>` has `is_ok`, `is_err`, `expect`, `unwrap_or`,
 `unwrap_or_else`, `ok`, `err`, `map`, `map_err`, `and_then` and `or_else`.
 The predicates borrow their receiver; `take` mutates it; the others consume
-it.
+it. `unwrap_or` and `ok_or` also consume their fallback or error argument.
 
 User-authored functions may return `Result<T, E>` or `Option<T>` and use `?`
 for propagation. Any error type `E` may be used with `Result<T, E>`. Each module defines its own structured error enum, as demonstrated by the canonical `std.fs.IoError`:

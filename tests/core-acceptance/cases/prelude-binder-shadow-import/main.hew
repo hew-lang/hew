@@ -1,0 +1,17 @@
+// An explicit `import std.iter` registers its generic functions through the
+// imported-module path, whose binders must not resolve to this program's
+// same-spelled `model.A`.
+import std.iter;
+import model;
+
+fn main() {
+    let items = [model.make(4), model.make(5)];
+    let total = iter.fold(items.into_iter(), 0, |sum: i64, item: model.A| sum + item.code);
+    println(total);
+    let first = iter.find(model_items().into_iter(), |item: model.A| item.code > 6);
+    println(first.expect("a match").code);
+}
+
+fn model_items() -> Vec<model.A> {
+    [model.make(6), model.make(7)]
+}

@@ -1,0 +1,42 @@
+// A418: moving a field out of a var self receiver across an operation that can
+// fail is refused, naming the field and the operation.
+#[resource]
+type Conn { fd: i64 }
+impl Conn { fn close(consume self) { println(f"close {self.fd}"); } }
+type Holder { conn: Conn, count: i64, spare: Option<Conn> }
+trait Touch {
+    fn touch(var self, divisor: i64);
+    fn swap(var self, fd: i64) -> i64;
+    fn take_spare(var self) -> i64;
+    fn bump(var self);
+}
+impl Touch for Holder {
+    fn touch(var self, divisor: i64) {
+        let conn = self.conn;
+        self.count = 8 / divisor;
+        self.conn = conn;
+    }
+    fn swap(var self, fd: i64) -> i64 {
+        let old = self.conn;
+        self.conn = Conn { fd: fd };
+        let n = old.fd * 2;
+        n
+    }
+    fn take_spare(var self) -> i64 {
+        match self.spare.take() {
+            .Some(c) => c.fd,
+            .None => 0,
+        }
+    }
+    fn bump(var self) {
+        self.count += 1;
+        self.conn.fd = self.conn.fd + 1;
+    }
+}
+fn main() {
+    var holder = Holder { conn: Conn { fd: 1 }, count: 0, spare: Some(Conn { fd: 5 }) };
+    println(holder.swap(2));
+    println(holder.take_spare());
+    holder.bump();
+    println(holder.conn.fd);
+}

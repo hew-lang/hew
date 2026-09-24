@@ -310,39 +310,6 @@ fn failing_method_hands_its_receiver_back_into_the_callers_place() {
 }
 
 #[test]
-fn a_receiver_moved_out_across_a_failing_call_is_refused() {
-    let source = r"
-        #[resource]
-        type Conn { fd: i64 }
-        impl Conn { fn close(consume self) {} }
-        type Holder { conn: Conn, count: i64 }
-        trait Touch { fn touch(var self, divisor: i64); }
-        impl Touch for Holder {
-            fn touch(var self, divisor: i64) {
-                let conn = self.conn;
-                self.count = 8 / divisor;
-                self.conn = conn;
-            }
-        }
-        fn main() -> i64 {
-            var holder = Holder { conn: Conn { fd: 1 }, count: 0 };
-            holder.touch(2);
-            holder.count
-        }
-    ";
-    let parsed = hew_parser::parse(source);
-    let checked = Checker::new(ModuleRegistry::new(Vec::new())).check_program(&parsed.program);
-    assert!(checked.errors.is_empty(), "{:?}", checked.errors);
-    let hir = lower_program_host_target(&parsed.program, &checked, &ResolutionCtx);
-    let lowered = lower_module(&hir.module, &checked);
-    assert!(lowered.callable_statuses.iter().any(|(_, status)| matches!(
-        status,
-        SirLoweringStatus::Unsupported { reason, .. }
-            if reason.contains("must keep its receiver whole wherever it can fail")
-    )));
-}
-
-#[test]
 fn generic_method_transfers_receiver_on_explicit_and_fallthrough_returns() {
     lower(
         r#"

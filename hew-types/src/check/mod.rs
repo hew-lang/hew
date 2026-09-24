@@ -62,6 +62,7 @@ mod type_members;
 use self::type_members::DottedTypeMemberUse;
 mod types;
 mod util;
+mod var_self;
 mod visibility;
 
 pub use self::types::{

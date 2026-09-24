@@ -1,0 +1,41 @@
+// A418: a failing var self method hands its receiver back whole. Replacing a
+// field before anything that can fail, take() on an Option field and in-place
+// updates keep the receiver whole; each resource closes once.
+#[resource]
+type Conn { fd: i64 }
+impl Conn { fn close(consume self) { println(f"close {self.fd}"); } }
+type Holder { conn: Conn, count: i64, spare: Option<Conn> }
+trait Touch {
+    fn touch(var self, divisor: i64);
+    fn swap(var self, fd: i64) -> i64;
+    fn take_spare(var self) -> i64;
+    fn bump(var self);
+}
+impl Touch for Holder {
+    fn touch(var self, divisor: i64) {
+        self.count = 8 / divisor;
+    }
+    fn swap(var self, fd: i64) -> i64 {
+        let old = self.conn;
+        self.conn = Conn { fd: fd };
+        let n = old.fd * 2;
+        n
+    }
+    fn take_spare(var self) -> i64 {
+        match self.spare.take() {
+            .Some(c) => c.fd,
+            .None => 0,
+        }
+    }
+    fn bump(var self) {
+        self.count += 1;
+        self.conn.fd = self.conn.fd + 1;
+    }
+}
+fn main() {
+    var holder = Holder { conn: Conn { fd: 1 }, count: 0, spare: Some(Conn { fd: 5 }) };
+    println(holder.swap(2));
+    println(holder.take_spare());
+    holder.bump();
+    println(holder.conn.fd);
+}

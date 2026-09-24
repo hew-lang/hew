@@ -566,6 +566,7 @@ impl Checker {
         // intentionally carried across inputs, so one unused (or never-yet
         // reassigned) within a single accumulated fragment is expected, not a
         // defect. Suppress the per-binding lints for eval fragments.
+        self.check_receiver_whole_at_scope_end();
         let scope_warnings = self.env.pop_scope_with_warnings();
         if self.repl_fragment || self.is_stdlib_source {
             return;

@@ -1645,9 +1645,13 @@ binding is a use-after-consume diagnostic.
 A `var self` method that fails leaves the receiver, as last written, in the
 caller's binding, field, capture or actor state field, whatever its type; the
 place is never left empty.
-The method must therefore keep `self` whole wherever it can fail: moving a
-field out of `self` and restoring it after a call that can fail is refused.
-Call the field's own `var self` method in place instead.
+The method must therefore keep `self` whole wherever it can fail. While a field
+of `self` is moved out, the checker refuses every operation that can fail - a
+call, checked integer arithmetic, an index, an assignment or scope exit that
+releases a value with a `close` - naming the field and the operation
+(`E_OWN_PARTIAL_CONSUME`). Call the field's own methods in place, move it out
+of an `Option` field with `take()`, or assign a replacement to the field before
+anything that can fail.
 
 The consuming receiver is spelled `consume self`, matching a consuming
 parameter such as `consume value: T`. Both inherent and trait methods use the

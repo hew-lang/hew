@@ -1008,6 +1008,20 @@ impl Checker {
         }
 
         self.bind_function_parameters(fd, in_actor);
+        // A machine step stages an independent copy of its receiver, so only
+        // an ordinary `var self` method hands its receiver back on failure.
+        let var_self_receiver = fd
+            .params
+            .first()
+            .filter(|param| {
+                param.is_mutable
+                    && fd.origin != hew_parser::ast::DeclarationOrigin::MachineStep
+                    && fn_name.contains("::")
+            })
+            .filter(|param| self.is_receiver_param(param))
+            .map(|param| param.name.clone());
+        let prev_var_self_receiver =
+            std::mem::replace(&mut self.var_self_receiver, var_self_receiver);
 
         // Use the return type from the already-registered fn signature so that
         // TypeExpr::Infer (-> _) reuses the same Ty::Var that call sites see.
@@ -1124,6 +1138,7 @@ impl Checker {
             self.env.pop_scope();
         }
         self.emit_scope_warnings();
+        self.var_self_receiver = prev_var_self_receiver;
     }
 
     fn function_body_return_type(&self, fd: &FnDecl, declared: &Ty) -> Ty {

@@ -3333,6 +3333,10 @@ pub struct Checker {
     /// When set, records the scope depth at which a lambda was entered.
     /// Variable lookups from scopes below this depth are captures.
     pub(super) lambda_capture_depth: Option<usize>,
+    /// The receiver binding of the `var self` method being checked (A418).
+    pub(super) var_self_receiver: Option<String>,
+    /// Operations already refused for a hole in the `var self` receiver.
+    pub(super) var_self_hole_reports: HashSet<SpanKey>,
     /// Captured variable types accumulated during lambda body checking.
     pub(super) lambda_captures: Vec<Ty>,
     /// Binding-accurate capture facts accumulated during lambda body checking.
@@ -4140,6 +4144,8 @@ impl Checker {
             actor_init_params: HashMap::new(),
             actor_spawn_args: HashMap::new(),
             lambda_capture_depth: None,
+            var_self_receiver: None,
+            var_self_hole_reports: HashSet::new(),
             lambda_captures: Vec::new(),
             lambda_capture_facts: Vec::new(),
             import_spans: HashMap::new(),

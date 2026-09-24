@@ -2389,8 +2389,19 @@ fn resolve_prelude_std_source(
             Some((path, source))
         })
         .ok_or_else(|| {
+            let tried = if ctx.module_search_paths.is_some() {
+                String::new()
+            } else {
+                let candidates = hew_types::module_registry::compiler_stdlib_root_candidates()
+                    .iter()
+                    .map(|root| display_path(&root.join("std")))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!(" (tried: {candidates})")
+            };
             FrontendFailure::message_only(format!(
-                "Error: the standard library source `std/{name}.hew` is not on the module search path"
+                "Error: std not found: `std/{name}.hew` is not in the toolchain's standard \
+                 library{tried}; set HEW_STD to a std/ directory"
             ))
         })
 }
@@ -2982,9 +2993,23 @@ fn resolve_file_imports_internal(
                     // fallback below only fires if `source_file` cannot be
                     // re-read, which never happens on the path that just
                     // parsed it.
-                    let message = format!(
-                        "module `{source_module}` not found (tried: {tried}){hint}{suggestion}"
-                    );
+                    let message = if is_std_import && search_paths.is_empty() {
+                        // No std root at all: the toolchain's std is missing,
+                        // not this one module.
+                        let probed = hew_types::module_registry::compiler_stdlib_root_candidates()
+                            .iter()
+                            .map(|root| display_path(&root.join("std")))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        format!(
+                            "std not found: module `{source_module}` needs the toolchain's \
+                             standard library (tried: {probed}); set HEW_STD to a std/ directory"
+                        )
+                    } else {
+                        format!(
+                            "module `{source_module}` not found (tried: {tried}){hint}{suggestion}"
+                        )
+                    };
                     return Err(match read_source(ctx.documents, source_file) {
                         Ok(module_source) => FrontendFailure::coded_message_at(
                             "E_MODULE_NOT_FOUND",

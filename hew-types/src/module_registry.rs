@@ -119,47 +119,91 @@ pub fn find_enclosing_hew_root(from: &std::path::Path) -> Option<PathBuf> {
 
 /// Resolve the standard-library root owned by the running compiler binary.
 ///
-/// Installed binaries use `<bin>/../share/hew`; development binaries (and
-/// their `deps/`-nested Rust test executables) resolve from the compile-time
-/// source tree, walking up from `CARGO_MANIFEST_DIR` rather than a fixed
-/// parent-count offset from the executable's runtime path — that offset
-/// breaks whenever `CARGO_TARGET_DIR` points out of tree. No project path,
-/// cwd, or environment override participates in this decision. If neither
-/// layout has the compiler's `std/builtins.hew`, authority is unavailable
-/// and callers must fail closed.
+/// The root is derived from where the binary itself lives, in this order:
+///
+/// 1. `<exe_dir>/../share/hew` — an FHS install, Homebrew, the Docker image.
+/// 2. `<exe_dir>/..` — a release tarball or the Windows zip, which ship
+///    `<prefix>/bin/hew` beside `<prefix>/std`.
+/// 3. The checkout this binary was built from, but only while the binary is
+///    still inside that build's own output directory (a development build,
+///    in or out of tree). A binary copied or extracted anywhere else never
+///    reaches a checkout's std, not even one it happens to sit under.
+///
+/// Each candidate counts only when it holds `std/builtins.hew`. The
+/// executable path is canonicalized first, so a `build/bin/hew` or Homebrew
+/// symlink resolves through to the real binary. No project path, working
+/// directory or environment variable participates; `HEW_STD` is applied by
+/// [`stdlib_search_paths`]. When nothing matches, authority is unavailable
+/// and callers fail closed.
 #[must_use]
 pub fn compiler_stdlib_root() -> Option<PathBuf> {
     let executable = std::env::current_exe().ok()?.canonicalize().ok()?;
     compiler_stdlib_root_for_executable(&executable)
 }
 
-fn compiler_stdlib_root_for_executable(executable: &std::path::Path) -> Option<PathBuf> {
-    compiler_stdlib_root_impl(executable, std::path::Path::new(env!("CARGO_MANIFEST_DIR")))
+/// The directories [`compiler_stdlib_root`] probes, in order, for a
+/// diagnostic that has to say where the std was looked for.
+#[must_use]
+pub fn compiler_stdlib_root_candidates() -> Vec<PathBuf> {
+    let Some(executable) = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.canonicalize().ok())
+    else {
+        return Vec::new();
+    };
+    stdlib_root_candidates(&executable, &development_anchor())
 }
 
-/// Resolve the compiler-owned stdlib root from an installed-layout probe and
-/// a source-tree anchor.
-///
-/// `manifest_dir` anchors the development tier. It must be a compile-time
-/// constant (`env!("CARGO_MANIFEST_DIR")`) rather than derived from
-/// `executable`'s runtime path: a fixed parent-count offset from the
-/// executable assumes `target/<profile>[/deps]` sits directly under the
-/// workspace root, which breaks whenever `CARGO_TARGET_DIR` points out of
-/// tree — the executable then lives an arbitrary depth below the actual
-/// source tree (#3086). The manifest directory is baked into the binary at
-/// compile time and always names this crate's own directory in the source
-/// tree, independent of where cargo placed the build output.
+fn compiler_stdlib_root_for_executable(executable: &std::path::Path) -> Option<PathBuf> {
+    compiler_stdlib_root_impl(executable, &development_anchor())
+}
+
+/// The checkout this crate was compiled from, and the build-profile
+/// directory its binaries were written to. Both are compile-time facts:
+/// `CARGO_MANIFEST_DIR` names `<checkout>/hew-types`, and `OUT_DIR` is
+/// `<profile-dir>/build/hew-types-<hash>/out` however `CARGO_TARGET_DIR`
+/// was set.
+struct DevelopmentAnchor {
+    checkout: PathBuf,
+    profile_dir: PathBuf,
+}
+
+fn development_anchor() -> DevelopmentAnchor {
+    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let out_dir = std::path::Path::new(env!("OUT_DIR"));
+    DevelopmentAnchor {
+        checkout: manifest_dir.parent().unwrap_or(manifest_dir).to_path_buf(),
+        profile_dir: out_dir.ancestors().nth(3).unwrap_or(out_dir).to_path_buf(),
+    }
+}
+
+fn stdlib_root_candidates(
+    executable: &std::path::Path,
+    anchor: &DevelopmentAnchor,
+) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(prefix) = executable.parent().and_then(std::path::Path::parent) {
+        candidates.push(prefix.join("share/hew"));
+        candidates.push(prefix.to_path_buf());
+    }
+    let profile_dir = anchor
+        .profile_dir
+        .canonicalize()
+        .unwrap_or_else(|_| anchor.profile_dir.clone());
+    if executable.starts_with(&profile_dir) {
+        candidates.push(anchor.checkout.clone());
+    }
+    candidates
+}
+
 fn compiler_stdlib_root_impl(
     executable: &std::path::Path,
-    manifest_dir: &std::path::Path,
+    anchor: &DevelopmentAnchor,
 ) -> Option<PathBuf> {
-    let executable_dir = executable.parent()?;
-    let installed = executable_dir.parent()?.join("share/hew");
-    if installed.join("std/builtins.hew").is_file() {
-        return installed.canonicalize().ok();
-    }
-
-    find_enclosing_hew_root(manifest_dir)
+    stdlib_root_candidates(executable, anchor)
+        .into_iter()
+        .find(|root| root.join("std/builtins.hew").is_file())
+        .and_then(|root| root.canonicalize().ok())
 }
 
 /// The standard-library root every `std.*` module resolves from: the parent
@@ -1121,6 +1165,7 @@ impl ModuleRegistry {
 mod tests {
     use super::*;
     use std::fs;
+    use std::path::Path;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
@@ -1326,82 +1371,132 @@ mod tests {
         }
     }
 
+    /// Write a shipped std marker at `root/std/builtins.hew`.
+    fn ship_std(root: &Path) {
+        fs::create_dir_all(root.join("std")).unwrap();
+        fs::write(root.join("std/builtins.hew"), "// shipped std\n").unwrap();
+    }
+
+    /// A development anchor whose checkout and build output are both
+    /// somewhere unrelated to the layout under test.
+    fn unrelated_anchor(dir: &TestDir) -> DevelopmentAnchor {
+        let checkout = dir.root.join("unrelated-checkout");
+        ship_std(&checkout);
+        let profile_dir = dir.root.join("unrelated-target/debug");
+        fs::create_dir_all(&profile_dir).unwrap();
+        DevelopmentAnchor {
+            checkout,
+            profile_dir,
+        }
+    }
+
     #[test]
-    fn compiler_stdlib_root_prefers_installed_layout_over_source_anchor() {
-        let installed = TestDir::new("compiler-stdlib-installed");
-        let installed_root = installed.root.join("share/hew");
-        fs::create_dir_all(installed_root.join("std")).unwrap();
-        fs::write(
-            installed_root.join("std/builtins.hew"),
-            "// installed compiler std\n",
-        )
-        .unwrap();
-        let installed_executable = installed.root.join("bin/hew");
-        // The manifest_dir anchor is irrelevant here: the installed tier
-        // wins whenever the executable's own `../share/hew` layout exists.
-        let unrelated_manifest_dir = TestDir::new("compiler-stdlib-unrelated-manifest");
+    fn compiler_stdlib_root_resolves_every_shipped_layout() {
+        let dir = TestDir::new("compiler-stdlib-layouts");
+        let anchor = unrelated_anchor(&dir);
+
+        // FHS, Homebrew keg and Docker: <prefix>/bin/hew + <prefix>/share/hew/std.
+        let fhs = dir.root.join("fhs");
+        ship_std(&fhs.join("share/hew"));
         assert_eq!(
-            compiler_stdlib_root_impl(&installed_executable, &unrelated_manifest_dir.root),
-            installed_root.canonicalize().ok()
+            compiler_stdlib_root_impl(&fhs.join("bin/hew"), &anchor),
+            fhs.join("share/hew").canonicalize().ok()
+        );
+
+        // Homebrew links bin/hew into the prefix; the canonical executable is
+        // the keg's, whose share/hew holds the std.
+        let keg = dir.root.join("Cellar/hew/0.6.0");
+        ship_std(&keg.join("share/hew"));
+        fs::create_dir_all(keg.join("bin")).unwrap();
+        fs::write(keg.join("bin/hew"), "").unwrap();
+        #[cfg(unix)]
+        {
+            let linked = dir.root.join("homebrew/bin");
+            fs::create_dir_all(&linked).unwrap();
+            std::os::unix::fs::symlink(keg.join("bin/hew"), linked.join("hew")).unwrap();
+            let resolved = linked.join("hew").canonicalize().unwrap();
+            assert_eq!(
+                compiler_stdlib_root_impl(&resolved, &anchor),
+                keg.join("share/hew").canonicalize().ok()
+            );
+        }
+
+        // Release tarball and Windows zip: <prefix>/bin/hew[.exe] + <prefix>/std.
+        let tarball = dir.root.join("hew-v0.6.0-linux-x86_64");
+        ship_std(&tarball);
+        assert_eq!(
+            compiler_stdlib_root_impl(&tarball.join("bin/hew"), &anchor),
+            tarball.canonicalize().ok()
+        );
+        let zip = dir.root.join("hew-v0.6.0-windows-x86_64");
+        ship_std(&zip);
+        assert_eq!(
+            compiler_stdlib_root_impl(&zip.join("bin").join("hew.exe"), &anchor),
+            zip.canonicalize().ok()
         );
     }
 
     #[test]
-    fn compiler_stdlib_root_anchors_development_tier_on_source_tree_not_executable_offset() {
-        // A development stdlib root is discovered by walking up from the
-        // compile-time manifest directory, never from a fixed parent-count
-        // offset baked onto the executable's runtime location. Proof: an
-        // executable path nested arbitrarily deep below an unrelated
-        // directory (simulating an out-of-tree CARGO_TARGET_DIR) still
-        // resolves correctly because only manifest_dir determines the
-        // development tier.
-        let development = TestDir::new("compiler-stdlib-development");
-        fs::create_dir_all(development.root.join("std")).unwrap();
-        fs::write(
-            development.root.join("std/builtins.hew"),
-            "// development compiler std\n",
-        )
-        .unwrap();
-        let child_manifest_dir = development.root.join("some-crate");
-        fs::create_dir_all(&child_manifest_dir).unwrap();
-
-        let out_of_tree_executable = TestDir::new("compiler-stdlib-out-of-tree-targets")
-            .root
-            .join("deeply/nested/unrelated/path/deps/hew_types-abc123");
-        // The development tier returns the manifest-dir ancestor as spelled,
-        // so canonicalize both sides: an out-of-tree `target/` symlink
-        // otherwise spells the same directory two ways.
+    fn compiler_stdlib_root_uses_the_checkout_only_from_its_own_build_output() {
+        let dir = TestDir::new("compiler-stdlib-development");
+        let checkout = dir.root.join("checkout");
+        ship_std(&checkout);
+        // An out-of-tree CARGO_TARGET_DIR: the build output sits anywhere.
+        let profile_dir = dir.root.join("scratch/targets/lane/debug");
+        fs::create_dir_all(profile_dir.join("deps")).unwrap();
+        let anchor = DevelopmentAnchor {
+            checkout: checkout.clone(),
+            profile_dir: profile_dir.clone(),
+        };
+        let built = profile_dir.join("hew");
         assert_eq!(
-            compiler_stdlib_root_impl(&out_of_tree_executable, &child_manifest_dir)
-                .and_then(|root| root.canonicalize().ok()),
-            development.root.canonicalize().ok(),
-            "the development tier must resolve from manifest_dir, not the executable path"
+            compiler_stdlib_root_impl(&built, &anchor),
+            checkout.canonicalize().ok(),
+            "a binary inside its own build output resolves its checkout's std"
+        );
+        assert_eq!(
+            compiler_stdlib_root_impl(&profile_dir.join("deps/hew_types-abc123"), &anchor),
+            checkout.canonicalize().ok(),
+            "a test executable in deps/ resolves it too"
         );
     }
 
     #[test]
-    fn compiler_stdlib_root_fails_closed_without_either_layout() {
-        // `TestDir` lives under this checkout's own `target/`, so the
-        // ancestor walk would otherwise find this repo's real
-        // `std/builtins.hew` and defeat the fail-closed proof. Anchor the
-        // manifest_dir outside the checkout, exactly like
-        // `find_enclosing_hew_root_returns_none_outside_checkout` does.
-        let missing = TestDir::new("compiler-stdlib-missing");
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let missing_manifest_dir = std::env::temp_dir().join(format!(
-            "hew-test-compiler-stdlib-missing-manifest-{}-{unique}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&missing_manifest_dir).unwrap();
-        let result =
-            compiler_stdlib_root_impl(&missing.root.join("bin/hew"), &missing_manifest_dir);
-        let _ = fs::remove_dir_all(&missing_manifest_dir);
+    fn compiler_stdlib_root_fails_closed_outside_every_layout() {
+        let dir = TestDir::new("compiler-stdlib-missing");
+        let anchor = unrelated_anchor(&dir);
+        let copied = dir.root.join("somewhere/else/hew");
         assert_eq!(
-            result, None,
-            "a compiler without its own stdlib layout must fail closed"
+            compiler_stdlib_root_impl(&copied, &anchor),
+            None,
+            "a binary copied outside any layout finds no std"
+        );
+        let candidates = stdlib_root_candidates(&copied, &anchor);
+        assert_eq!(
+            candidates,
+            vec![
+                dir.root.join("somewhere/share/hew"),
+                dir.root.join("somewhere"),
+            ],
+            "the diagnostic names exactly the layouts it tried"
+        );
+    }
+
+    #[test]
+    fn compiler_stdlib_root_ignores_a_checkout_a_release_is_extracted_under() {
+        let dir = TestDir::new("compiler-stdlib-extracted");
+        // A release extracted inside some checkout, without its own std.
+        let checkout = dir.root.join("someone-elses-checkout");
+        ship_std(&checkout);
+        let extracted = checkout.join("downloads/hew-v0.6.0/bin/hew");
+        let anchor = DevelopmentAnchor {
+            checkout: dir.root.join("build-checkout"),
+            profile_dir: dir.root.join("build-checkout/target/release"),
+        };
+        assert_eq!(
+            compiler_stdlib_root_impl(&extracted, &anchor),
+            None,
+            "the enclosing checkout's std is never used"
         );
     }
 

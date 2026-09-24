@@ -157,9 +157,11 @@ of `.hew` files to document.
 
 Every `std.*` module, including the implicit prelude, resolves from one
 standard-library root: `HEW_STD` (the path to the `std/` directory itself)
-when it is set, and otherwise the std shipped with the toolchain —
-`<prefix>/share/hew` beside an installed binary, or the checkout a
-development binary was built from. A `std/` beside the source file or in the
+when it is set, and otherwise the std shipped with the running binary:
+`<exe_dir>/../share/hew/std` (FHS packages, Homebrew, Docker), then
+`<exe_dir>/../std` (release tarball, Windows zip), then the checkout a
+development binary was built from while it is still in that build's output.
+No shipped layout needs `HEW_STD`. A `std/` beside the source file or in the
 current directory is never the standard library.
 
 `hew.toml` does not configure the std root. Use `HEW_STD` when you need a

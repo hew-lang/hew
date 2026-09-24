@@ -98,10 +98,12 @@ What to check:
 - Standard library imports are available under the last path segment:
   `import std.fs;` gives `fs`, and `import std.encoding.json;` gives `json`.
 - Every `std.*` module resolves from one root: `HEW_STD` (the path to
-  `std/` itself) when set, and otherwise the std shipped with the toolchain
-  (`<prefix>/share/hew` beside an installed binary, or the checkout a
-  development binary was built from). A `std/` beside your source or in the
-  current directory is never used.
+  `std/` itself) when set, and otherwise the std shipped with the running
+  binary — `<exe_dir>/../share/hew/std`, then `<exe_dir>/../std`, then the
+  checkout a development binary was built from while it is still in that
+  build's output. A `std/` beside your source or in the current directory is
+  never used. "std not found" lists the directories tried; set `HEW_STD` or
+  reinstall so the binary sits in its shipped layout.
 - `hew.toml` does not configure the std root. Use `HEW_STD` when you need a
   different standard library.
 - If the missing module is a package dependency, run `hew install`. If it is

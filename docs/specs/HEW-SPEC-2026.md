@@ -1428,9 +1428,15 @@ standard-library root:
 
 1. `HEW_STD` — a direct path to a `std/` directory; Hew uses its parent as the
    root.
-2. Otherwise the toolchain's own shipped std: `<prefix>/share/hew` beside an
-   installed `hew` binary, or the checkout a development binary was built
-   from.
+2. Otherwise the std shipped with the running `hew` binary, found from the
+   binary's own canonical path, first match wins:
+   1. `<exe_dir>/../share/hew/std` — FHS packages, Homebrew, the Docker image;
+   2. `<exe_dir>/../std` — the release tarball and the Windows zip;
+   3. the checkout a development binary was built from, only while the binary
+      is still inside that build's output directory.
+
+   When none holds `std/builtins.hew`, compilation stops with a "std not
+   found" error naming the directories tried.
 
 A `std/` directory beside the source file, in the working directory or in a
 project is never the standard library, so a program cannot replace

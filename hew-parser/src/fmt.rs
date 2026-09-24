@@ -57,6 +57,19 @@ pub fn format_source(source: &str, program: &Program) -> String {
     f.output
 }
 
+/// Format `program` with the comments of `source`, refusing any output that
+/// would not reprint `source` faithfully.
+///
+/// # Errors
+///
+/// Returns the [`fidelity::FidelityError`] describing how the formatted text
+/// would differ from `source` beyond layout.
+pub fn format_checked(source: &str, program: &Program) -> Result<String, fidelity::FidelityError> {
+    let formatted = format_source(source, program);
+    fidelity::check(source, &formatted)?;
+    Ok(formatted)
+}
+
 /// A checker-approved replacement for a legacy bare enum variant.
 ///
 /// The formatter owns the byte edit, while the caller supplies the semantic
@@ -238,6 +251,7 @@ impl<'a> Formatter<'a> {
             }
         }
         self.comma_sep(fields, |f, (name, value)| {
+            f.flush_inline_comments(value.1.start);
             f.write(name);
             f.write(": ");
             f.format_expr(&value);
@@ -377,27 +391,101 @@ impl<'a> Formatter<'a> {
         self.next_comment += 1;
     }
 
-    /// Flush the comments before `pos`, then separate the next declaration
-    /// with a blank line when `needs_blank_line` asks for one. An own-line
-    /// comment carries the source's own spacing, so it suppresses the
-    /// canonical blank line; a trailing comment belongs to the line above and
-    /// does not.
     fn flush_comments_and_separate(&mut self, pos: usize, needs_blank_line: bool) {
-        let first = self.next_comment;
+        let had_comments = self.next_comment;
         self.flush_comments_before(pos);
-        let flushed_own_line = self.comments[first..self.next_comment]
-            .iter()
-            .any(|c| !is_trailing_comment(self.source, c.span.start));
-        if needs_blank_line && !flushed_own_line && !self.output.ends_with("\n\n") {
+        let flushed_comments = self.next_comment > had_comments;
+        if needs_blank_line && !flushed_comments && !self.output.ends_with("\n\n") {
             self.newline();
         }
     }
 
+    /// Emit the comments before `pos` from inside an expression. The
+    /// expression continues after them on a continuation line, so a comment
+    /// keeps its place between the same two tokens: a trailing comment stays
+    /// on the line it trails and an own-line comment gets its own line.
+    fn flush_inline_comments(&mut self, pos: usize) {
+        if self
+            .comments
+            .get(self.next_comment)
+            .is_none_or(|c| c.span.start >= pos)
+        {
+            return;
+        }
+        while let Some(comment) = self.comments.get(self.next_comment) {
+            if comment.span.start >= pos {
+                break;
+            }
+            let text = comment.text.clone();
+            let trailing = is_trailing_comment(self.source, comment.span.start);
+            let line_comment = text.starts_with("//") || text.contains('\n');
+            self.prev_source_pos = comment.span.end;
+            self.next_comment += 1;
+            while self.output.ends_with(' ') {
+                self.output.pop();
+            }
+            if trailing && !self.output.ends_with('\n') {
+                self.write(" ");
+            } else {
+                if !self.output.ends_with('\n') {
+                    self.newline();
+                }
+                self.indent += 1;
+                self.write_indent();
+                self.indent -= 1;
+            }
+            self.write(&text);
+            if line_comment {
+                self.newline();
+            } else {
+                self.write(" ");
+            }
+        }
+        if self.output.ends_with('\n') {
+            self.indent += 1;
+            self.write_indent();
+            self.indent -= 1;
+        }
+    }
+
+    /// Emit, inside an expression, the comments before the first token at
+    /// or after `pos`: those between a receiver and its `.member`.
+    fn flush_comments_before_token_after(&mut self, pos: usize) {
+        if let Some(rest) = self.source.get(pos..) {
+            if let Some((_, span)) = hew_lexer::Lexer::new(rest).next() {
+                self.flush_inline_comments(pos + span.start);
+            }
+        }
+    }
+
     /// Start a member of a declaration body whose first source token is at
-    /// `start`: emit the comments that precede it and the separating blank
-    /// line, then measure later comment gaps from the member itself.
-    fn begin_member(&mut self, start: usize, needs_blank_line: bool) {
-        self.flush_comments_and_separate(start, needs_blank_line);
+    /// `start`, emitting the comments before it. With source, the member is
+    /// preceded by a blank line exactly when the author left one before it
+    /// (or before its leading comments); a synthesized program uses
+    /// `canonical_blank_line` instead.
+    fn begin_member(&mut self, start: usize, canonical_blank_line: bool) {
+        if self.source.is_empty() {
+            if canonical_blank_line && !self.output.ends_with("\n\n") {
+                self.newline();
+            }
+            return;
+        }
+        // A trailing comment stays on the line of the member before.
+        while self
+            .comments
+            .get(self.next_comment)
+            .is_some_and(|c| c.span.start < start && is_trailing_comment(self.source, c.span.start))
+        {
+            self.flush_one_comment();
+        }
+        let lead = self
+            .comments
+            .get(self.next_comment)
+            .map_or(start, |c| c.span.start.min(start));
+        if blank_line_before(self.source, lead) && !self.output.ends_with("\n\n") {
+            self.newline();
+        }
+        self.flush_comments_before(start);
         self.prev_source_pos = self.prev_source_pos.max(start);
     }
 
@@ -2365,6 +2453,9 @@ impl<'a> Formatter<'a> {
 
     fn format_params(&mut self, params: &[Param]) {
         self.comma_sep(params, |f, p| {
+            // A parameter's comments precede its name, which has no span of
+            // its own; everything before its type belongs in front of it.
+            f.flush_inline_comments(p.ty.1.start);
             if p.name == "self"
                 && matches!(
                     &p.ty.0,
@@ -3245,6 +3336,11 @@ impl<'a> Formatter<'a> {
 
     #[expect(clippy::too_many_lines, reason = "match on all Expr variants")]
     fn format_expr(&mut self, expr: &Spanned<Expr>) {
+        // A block flushes its own comments statement by statement, and its
+        // span can start inside the braces.
+        if !matches!(expr.0, Expr::Block(_)) {
+            self.flush_inline_comments(expr.1.start);
+        }
         match &expr.0 {
             Expr::Binary { left, op, right } => {
                 let prec = binop_precedence(*op);
@@ -3602,6 +3698,7 @@ impl<'a> Formatter<'a> {
                 args,
             } => {
                 self.format_receiver(&receiver);
+                self.flush_comments_before_token_after(receiver.1.end);
                 self.write(".");
                 self.write(method);
                 self.write("(");
@@ -3686,6 +3783,7 @@ impl<'a> Formatter<'a> {
                 } else {
                     self.format_receiver(&object);
                 }
+                self.flush_comments_before_token_after(object.1.end);
                 self.write(".");
                 self.write(field);
             }
@@ -3840,6 +3938,7 @@ impl<'a> Formatter<'a> {
     fn format_call_args(&mut self, args: &[CallArg]) {
         self.comma_sep(args, |f, arg| match arg {
             CallArg::Named { name, value } => {
+                f.flush_inline_comments(value.1.start);
                 f.write(name);
                 f.write(": ");
                 f.format_expr(&value);
@@ -4499,6 +4598,24 @@ pub fn extract_comments(source: &str, include_doc_comments: bool) -> Vec<Comment
         }
     }
     comments
+}
+
+/// Whether the author left a blank line directly before `pos`, or before
+/// the doc comment that opens the declaration at `pos`.
+fn blank_line_before(source: &str, pos: usize) -> bool {
+    let mut before = source[..pos.min(source.len())].trim_end();
+    loop {
+        let line_start = before.rfind('\n').map_or(0, |i| i + 1);
+        if !before[line_start..].trim_start().starts_with("///") {
+            break;
+        }
+        before = before[..line_start].trim_end();
+    }
+    let end = before.len();
+    let gap = &source[end..pos.min(source.len())];
+    // The gap runs to the declaration; only its leading whitespace counts.
+    let leading = &gap[..gap.len() - gap.trim_start().len()];
+    leading.matches('\n').count() > 1
 }
 
 fn is_trailing_comment(source: &str, comment_start: usize) -> bool {

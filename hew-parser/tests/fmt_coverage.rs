@@ -1907,13 +1907,11 @@ fn fmt_impl_associated_type_binding_roundtrip() {
 }
 
 #[test]
-fn fmt_impl_associated_type_bindings_before_methods_roundtrip() {
-    let formatted = roundtrip_no_comments(
+fn fmt_impl_members_keep_source_order() {
+    // An associated type written after a method stays after it: the formatter
+    // reprints members in the order the source declares them.
+    exact_roundtrip(
         "impl Container for Widget {\n    fn get(c: Widget) -> Self.Item {\n        1\n    }\n\n    type Item = i32;\n}\n",
-    );
-    assert_eq!(
-        formatted,
-        "impl Container for Widget {\n    type Item = i32;\n\n    fn get(c: Widget) -> Self.Item {\n        1\n    }\n}\n",
     );
 }
 

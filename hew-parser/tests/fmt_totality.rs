@@ -36,10 +36,11 @@
 ///
 /// # Relation to existing tests
 ///
-/// `fmt_roundtrip_corpus.rs` — round-trips every real `.hew` file in the repo
-/// tree (idempotence net over real-world code). This file layers on top: it
-/// guarantees the formatter is structurally total over the AST enum, while the
-/// corpus test catches regressions against real programs.
+/// `fmt_roundtrip_corpus.rs` — proves every real `.hew` file in the repo
+/// reprints faithfully, comments included, and reaches a fixed point. This
+/// file layers on top: it guarantees the formatter is structurally total over
+/// the AST enum, while the corpus test catches regressions against real
+/// programs.
 use hew_parser::ast::{Expr, Item, Pattern, Stmt, TypeExpr};
 use hew_parser::ast_eq::program_eq_ignoring_spans;
 use hew_parser::fmt::format_program;

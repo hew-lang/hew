@@ -477,7 +477,9 @@ pub(crate) fn formatting(
 ) -> Option<Vec<TextEdit>> {
     let uri = &params.text_document.uri;
     let doc = server.documents.get(uri)?;
-    let formatted = hew_parser::fmt::format_source(&doc.source, &doc.parse_result.program);
+    // A document the formatter cannot reprint faithfully (a parse error, or
+    // a formatter defect) gets no edits rather than a corrupted one.
+    let formatted = hew_parser::fmt::format_checked(&doc.source, &doc.parse_result.program).ok()?;
     if formatted == doc.source {
         // Already canonical: signal success with an empty edit list.
         return Some(vec![]);

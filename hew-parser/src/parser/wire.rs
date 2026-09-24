@@ -248,6 +248,7 @@ impl Parser<'_> {
             }
 
             // Parse field: name: Type [@N] [modifiers] [,]
+            let field_start = self.peek_span().start;
             let field_name = self.expect_ident()?;
             self.expect(&Token::Colon)?;
             let ty = self.parse_type()?;
@@ -268,7 +269,7 @@ impl Parser<'_> {
                 ty,
                 attributes: Vec::new(),
                 doc_comment: None,
-                span: 0..0,
+                span: field_start..self.last_token_end,
             });
             field_meta.push((
                 field_name,

@@ -1889,10 +1889,8 @@ impl<'a> Flow<'a> {
                 place: None,
                 block,
                 value: Some(owner),
-                reason: if initializing && self.state_places.contains(&place) {
-                    "actor state field is already initialized on an incoming path"
-                } else if initializing {
-                    "capture field is already initialized on an incoming path"
+                reason: if initializing {
+                    "actor state field or capture is already initialized on an incoming path"
                 } else if self.deferred_places.contains(&place) {
                     "actor state field is not initialized on every incoming path"
                 } else {

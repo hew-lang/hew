@@ -1,0 +1,50 @@
+#[resource]
+type Guard {
+    id: i64,
+}
+
+impl Guard {
+    fn close(consume self) {
+        println(f"close guard {self.id}");
+        panic("guard close failed");
+    }
+}
+
+type Meta {
+    tag: string,
+}
+
+impl Meta {
+    fn stamp(var self, guard: Guard) {
+        self.tag = f"stamped {guard.id}";
+    }
+}
+
+#[resource]
+type Conn {
+    fd: i64,
+    meta: Meta,
+    items: [i64],
+}
+
+impl Conn {
+    fn close(consume self) {
+        println(f"close conn {self.meta.tag} {self.items.len()}");
+    }
+}
+
+actor Worker {
+    receive fn stamp() {
+        var c = Conn { fd: 1, meta: Meta { tag: "new" }, items: [] };
+        c.meta.stamp(Guard { id: 7 });
+        println("unreachable");
+    }
+}
+
+fn main() {
+    let w = spawn Worker;
+    match w.stamp() {
+        .Ok(_) => println("unexpected"),
+        .Err(_) => println("stamp faulted"),
+    }
+}

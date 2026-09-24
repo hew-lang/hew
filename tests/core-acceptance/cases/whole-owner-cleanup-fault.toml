@@ -1,0 +1,11 @@
+[[case]]
+id = "whole-owner-cleanup-fault"
+intent = "A `var self` call on a field beneath a resource returns its receiver before the call's argument temporaries are released, so a temporary whose close panics leaves the resource whole and it closes once with the written field."
+source = "cases/whole-owner-cleanup-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "close guard 7\nclose conn stamped 7 0\nstamp faulted\n"
+stderr = "hew: failure: UserPanic (212): guard close failed\nhew: actor crash in Worker.stamp (actor 1): UserPanic\n"
+exit = 1

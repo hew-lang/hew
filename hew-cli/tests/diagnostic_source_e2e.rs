@@ -330,10 +330,10 @@ fn non_root_unreachable_code_warning_rendered_with_dep_filename() {
 #[test]
 fn cross_module_sir_unsupported_renders_without_a_caret() {
     let fixture = write_fixture(&[
-        ("main.hew", "import \"dep.hew\";\n\nfn main() {\n    let pool = Pool { items: [] };\n    fill(pool);\n}\n"),
+        ("main.hew", "import \"dep.hew\";\n\nfn main() {\n    let registry = Registry { conns: HashMap.new() };\n    fill(registry);\n}\n"),
         (
             "dep.hew",
-            "#[resource]\ntype Item {\n    id: i64,\n}\n\nimpl Item {\n    fn close(consume self) {\n        println(f\"close {self.id}\");\n    }\n}\n\n#[resource]\ntype Pool {\n    items: [Item],\n}\n\nimpl Pool {\n    fn close(consume self) {\n        println(\"close pool\");\n    }\n}\n\npub fn fill(consume var pool: Pool) {\n    let item = Item { id: 1 };\n    pool.items.push(item);\n}\n",
+            "#[resource]\ntype Conn {\n    fd: i64,\n}\n\nimpl Conn {\n    fn close(consume self) {\n        println(f\"close {self.fd}\");\n    }\n}\n\n#[resource]\ntype Registry {\n    conns: HashMap<string, Conn>,\n}\n\nimpl Registry {\n    fn close(consume self) {\n        println(\"close registry\");\n    }\n}\n\npub fn fill(consume var registry: Registry) {\n    let conn = Conn { fd: 1 };\n    registry.conns.insert(\"a\", conn);\n}\n",
         ),
     ]);
     let main_path = fixture.path().join("main.hew");
@@ -346,12 +346,12 @@ fn cross_module_sir_unsupported_renders_without_a_caret() {
 
     assert!(
         !output.status.success(),
-        "expected the vec-mutation limitation to reject the program"
+        "expected the map-mutation limitation to reject the program"
     );
     let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
     assert!(
         stderr.contains("E_SIR_UNSUPPORTED"),
-        "expected the foreign-module vec-mutation limitation to report E_SIR_UNSUPPORTED; got:\n{stderr}"
+        "expected the foreign-module map-mutation limitation to report E_SIR_UNSUPPORTED; got:\n{stderr}"
     );
     // No caret line: a foreign-origin span would index dep.hew's bytes but
     // render against main.hew's text, so the renderer must stay spanless.

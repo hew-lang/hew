@@ -1,0 +1,11 @@
+[[case]]
+id = "var-self-fault-nested-state"
+intent = "A `var self` call on a field beneath an actor state field mutates it in place; when it panics, the crash hook reads the field as last written and teardown closes the nested resource once."
+source = "cases/var-self-fault-nested-state.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "2\nhook sees outer count 2 fd 3\nclose 3\n2\nclose 2\ndone\n"
+stderr = "hew: failure: UserPanic (212): bump failed\nhew: actor crash in Holder.poke (actor 1): UserPanic\n"
+exit = 0

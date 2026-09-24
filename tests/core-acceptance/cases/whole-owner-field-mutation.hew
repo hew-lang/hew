@@ -1,0 +1,110 @@
+#[resource]
+type Item {
+    id: i64,
+}
+
+impl Item {
+    fn close(consume self) {
+        println(f"close item {self.id}");
+    }
+}
+
+type Meta {
+    tag: string,
+    count: i64,
+}
+
+impl Meta {
+    fn retag(var self, tag: string) {
+        self.tag = tag;
+        self.count = self.count + 1;
+    }
+}
+
+#[resource]
+type Pool {
+    items: [Item],
+    ids: [i64],
+    index: HashMap<string, i64>,
+    meta: Meta,
+}
+
+impl Pool {
+    fn close(consume self) {
+        println(f"close pool {self.meta.tag} {self.meta.count} {self.items.len()} {self.ids.len()}");
+    }
+
+    fn add(var self, id: i64) {
+        self.items.push(Item { id: id });
+        self.ids.push(id);
+    }
+}
+
+#[resource]
+type Conn {
+    fd: i64,
+    name: string,
+}
+
+impl Conn {
+    fn close(consume self) {
+        println(f"close conn {self.name} {self.fd}");
+    }
+}
+
+fn fill(consume var pool: Pool) -> Pool {
+    pool.items.push(Item { id: 1 });
+    pool
+}
+
+actor Keeper {
+    var pool: Pool,
+
+    receive fn add(id: i64) -> i64 {
+        pool.items.push(Item { id: id });
+        pool.meta.retag(f"kept {id}");
+        pool.items.len()
+    }
+}
+
+actor Worker {
+    receive fn overflow() {
+        var pool = Pool { items: [], ids: [1, 2], index: HashMap.new(), meta: Meta { tag: "bounded", count: 0 } };
+        pool.items.push(Item { id: 9 });
+        pool.ids[5] = 3;
+        println("unreachable");
+    }
+}
+
+fn main() {
+    var pool = Pool { items: [], ids: [], index: HashMap.new(), meta: Meta { tag: "new", count: 0 } };
+    pool = fill(pool);
+    pool.items.push(Item { id: 2 });
+    pool.add(3);
+    pool.meta.retag("filled");
+    pool.ids[0] = 30;
+    pool.index.insert("first", 1);
+    pool.index.insert("second", 2);
+    println(f"{pool.meta.tag} {pool.meta.count} {pool.items.len()} {pool.ids[0]} {pool.index.len()}");
+
+    let conn = Conn { fd: 1, name: "a" };
+    var step = move capture(var conn) |fd: i64| {
+        conn.fd = fd;
+        conn.name = f"n{fd}";
+        println(f"now {conn.name} {conn.fd}");
+    };
+    step(2);
+    step(3);
+
+    let keeper = spawn Keeper(pool: Pool { items: [], ids: [], index: HashMap.new(), meta: Meta { tag: "keeper", count: 0 } });
+    println(keeper.add(7).expect("add"));
+    println(keeper.add(8).expect("add"));
+    close(keeper);
+
+    let worker = spawn Worker;
+    match worker.overflow() {
+        .Ok(_) => println("unexpected"),
+        .Err(_) => println("overflow faulted"),
+    }
+    println("done");
+}

@@ -1,6 +1,7 @@
 //! Indexed writable paths materialize semantic values and publish them from
 //! the leaf outwards. Runtime calls retain ownership of COW and failure rules.
-use super::{AggregateSelection, BindingPlace, BindingTarget, Builder};
+use super::projection::OpenOwner;
+use super::{AggregateSelection, BindingPlace, Builder};
 use crate::{Operand, OwnKind, PlaceId, Provenance, SemOpKind, ValueId};
 use hew_hir::{HirExpr, HirExprKind};
 use hew_types::{ResolvedTy, RuntimeCallFamily};
@@ -25,16 +26,14 @@ pub(super) struct Writeback {
 
 /// Where a writable path publishes its updated leaf.
 pub(super) enum WritableRoot {
-    /// A place of this body, or a field place of a staged seat copy that is
-    /// published back whole. `taken` marks a state seat the mutation took.
-    Place {
-        leaf: PlaceId,
-        staged_root: Option<(PlaceId, ValueId)>,
-        taken: bool,
-    },
+    /// A place of this body. `taken` marks a state seat the mutation took.
+    Place { leaf: PlaceId, taken: bool },
     /// A field beneath a whole owner. The mutation ran on a copy of the
     /// field, which is assigned back through the owner.
     WholeOwner { root: PlaceId, base: BindingPlace },
+    /// A field beneath an owner the mutation opened: the owner is closed
+    /// around the updated field.
+    Opened(OpenOwner),
 }
 
 impl Builder<'_, '_> {
@@ -78,46 +77,18 @@ impl Builder<'_, '_> {
         path.steps.iter().map(|step| step.index).collect()
     }
 
-    /// State and capture fields are published through their whole owning seat.
-    /// Only the staged copy exposes field places to the indexed transaction.
-    /// A path beneath a whole owner has neither; callers that can mutate a
-    /// copy of its field check [`Self::whole_owner_root`] first.
-    pub(super) fn stage_writable_root(
-        &mut self,
-        base: &BindingPlace,
-        provenance: &Provenance,
-    ) -> Result<(PlaceId, Option<(PlaceId, ValueId)>), String> {
-        if let Some(root) = self.owned_projection(base)? {
-            return Ok((root, None));
-        }
-        if self.whole_owner_root(base)?.is_some() {
-            return Err(
-                "a `var self` call on a field beneath an owner that has no copy or \
-                 keeps one whole owner is not implemented"
-                    .into(),
-            );
-        }
-        let BindingTarget::Place(root) = self.binding_target(base.binding)? else {
-            return Err("indexed writable root has no owning seat".into());
-        };
-        let staged = self.emit_typed(
-            provenance.clone(),
-            &base.root_ty,
-            SemOpKind::LoadCopy { place: root },
-        )?;
-        let leaf = self.value_projection_place(staged, &base.root_ty, &base.projections)?;
-        Ok((leaf, Some((root, staged))))
-    }
-
     /// The container an indexed path starts from, and where the updated
-    /// container is published.
+    /// container is published. Beneath a whole owner the path reads and
+    /// updates a copy of its container, so a failing step leaves the owner as
+    /// it was.
     pub(super) fn stage_indexed_base(
         &mut self,
         base: &BindingPlace,
         provenance: &Provenance,
     ) -> Result<(ValueId, WritableRoot), String> {
         if let Some(root) = self.whole_owner_root(base)? {
-            let container = self.copy_through_whole_owner(root, base, provenance)?;
+            let container =
+                self.copy_through_whole_owner(root, base, provenance, "an indexed update")?;
             return Ok((
                 container,
                 WritableRoot::WholeOwner {
@@ -126,39 +97,15 @@ impl Builder<'_, '_> {
                 },
             ));
         }
-        let (leaf, staged_root) = self.stage_writable_root(base, provenance)?;
+        let leaf = self
+            .owned_projection(base)?
+            .ok_or("indexed writable root has no owning seat")?;
         let container = self.emit_typed(
             provenance.clone(),
             &base.leaf_ty,
             SemOpKind::LoadCopy { place: leaf },
         )?;
-        Ok((
-            container,
-            WritableRoot::Place {
-                leaf,
-                staged_root,
-                taken: false,
-            },
-        ))
-    }
-
-    pub(super) fn publish_writable_root(
-        &mut self,
-        root: PlaceId,
-        replacement: ValueId,
-        staged_root: Option<(PlaceId, ValueId)>,
-        taken: bool,
-        provenance: &Provenance,
-    ) -> Result<(), String> {
-        if taken {
-            self.restore_taken_place(root, replacement, provenance.clone())?;
-        } else {
-            self.store_projected(root, replacement, provenance.clone())?;
-        }
-        if let Some((root, staged)) = staged_root {
-            self.store_projected(root, staged, provenance.clone())?;
-        }
-        Ok(())
+        Ok((container, WritableRoot::Place { leaf, taken: false }))
     }
 
     pub(super) fn publish_writable(
@@ -168,14 +115,16 @@ impl Builder<'_, '_> {
         provenance: &Provenance,
     ) -> Result<(), String> {
         match root {
-            WritableRoot::Place {
-                leaf,
-                staged_root,
-                taken,
-            } => self.publish_writable_root(leaf, replacement, staged_root, taken, provenance),
+            WritableRoot::Place { leaf, taken: true } => {
+                self.restore_taken_place(leaf, replacement, provenance.clone())
+            }
+            WritableRoot::Place { leaf, taken: false } => {
+                self.store_projected(leaf, replacement, provenance.clone())
+            }
             WritableRoot::WholeOwner { root, base } => {
                 self.assign_through_whole_owner(root, &base, replacement, provenance.clone())
             }
+            WritableRoot::Opened(owner) => self.close_owner(owner, replacement, provenance.clone()),
         }
     }
 

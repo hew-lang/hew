@@ -1,0 +1,55 @@
+type Counter {
+    n: i64,
+    label: string,
+}
+
+impl Counter {
+    fn bump(var self, fail: bool) {
+        self.n = self.n + 1;
+        if fail {
+            panic("bump failed");
+        }
+    }
+}
+
+type Outer {
+    inner: Counter,
+    tag: string,
+}
+
+actor Worker {
+    receive fn root() {
+        let c = Counter { n: 1, label: "root" };
+        var step = capture(var c) |fail: bool| {
+            defer println(f"defer sees {c.label} {c.n}");
+            c.bump(fail);
+        };
+        step(false);
+        step(true);
+        println("unreachable");
+    }
+
+    receive fn field() {
+        let outer = Outer { inner: Counter { n: 10, label: "inner" }, tag: "outer" };
+        var step = capture(var outer) |fail: bool| {
+            defer println(f"defer sees {outer.tag} {outer.inner.label} {outer.inner.n}");
+            outer.inner.bump(fail);
+        };
+        step(false);
+        step(true);
+        println("unreachable");
+    }
+}
+
+fn main() {
+    let root = spawn Worker;
+    match root.root() {
+        .Ok(_) => println("unexpected"),
+        .Err(_) => println("root faulted"),
+    }
+    let field = spawn Worker;
+    match field.field() {
+        .Ok(_) => println("unexpected"),
+        .Err(_) => println("field faulted"),
+    }
+}

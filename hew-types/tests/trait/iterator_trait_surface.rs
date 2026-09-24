@@ -18,6 +18,7 @@
 )]
 
 use crate::common;
+use hew_parser::ast::Ident;
 
 use common::typecheck_embedded_builtins_isolated;
 use hew_parser::ast::{Item, TraitItem};
@@ -75,7 +76,7 @@ fn iterator_trait_locks_next_signature_shape() {
         .items
         .iter()
         .find_map(|(item, _)| match item {
-            Item::Trait(td) if td.name == "Iterator" => Some(td),
+            Item::Trait(td) if td.name == Ident::new("Iterator") => Some(td),
             _ => None,
         })
         .expect("Iterator trait must be parsed");
@@ -91,7 +92,11 @@ fn iterator_trait_locks_next_signature_shape() {
                 ..
             } => {
                 assoc_items += 1;
-                assert_eq!(name, "Item", "Iterator's only assoc type must be `Item`");
+                assert_eq!(
+                    name.name.as_str(),
+                    "Item",
+                    "Iterator's only assoc type must be `Item`"
+                );
                 assert!(bounds.is_empty(), "Iterator::Item carries no bound in v0.5");
                 assert!(
                     default.is_none(),
@@ -100,7 +105,11 @@ fn iterator_trait_locks_next_signature_shape() {
             }
             TraitItem::Method(m) => {
                 methods += 1;
-                assert_eq!(m.name, "next", "Iterator's only method must be `next`");
+                assert_eq!(
+                    m.name,
+                    Ident::new("next"),
+                    "Iterator's only method must be `next`"
+                );
                 assert!(
                     m.body.is_none(),
                     "trait `next` is abstract in v0.5; impls provide the body"
@@ -109,7 +118,11 @@ fn iterator_trait_locks_next_signature_shape() {
                 // `self`, not `&mut self`. The parser models `self` as a Param
                 // named "self" with `is_mutable: false` for the by-move form.
                 let recv = m.params.first().expect("next must have a receiver");
-                assert_eq!(recv.name, "self", "first param of next must be `self`");
+                assert_eq!(
+                    recv.name,
+                    Ident::new("self"),
+                    "first param of next must be `self`"
+                );
                 assert!(
                     !recv.is_mutable,
                     "Q001 locks `next` receiver as by-move `self`, not `&mut self`"
@@ -136,7 +149,7 @@ fn intoiterator_trait_locks_assoc_type_bound() {
         .items
         .iter()
         .find_map(|(item, _)| match item {
-            Item::Trait(td) if td.name == "IntoIterator" => Some(td),
+            Item::Trait(td) if td.name == Ident::new("IntoIterator") => Some(td),
             _ => None,
         })
         .expect("IntoIterator trait must be parsed");
@@ -148,15 +161,17 @@ fn intoiterator_trait_locks_assoc_type_bound() {
         .items
         .iter()
         .find_map(|ti| match ti {
-            TraitItem::AssociatedType { name, bounds, .. } if name == "IntoIter" => Some(bounds),
+            TraitItem::AssociatedType { name, bounds, .. } if name.name.as_str() == "IntoIter" => {
+                Some(bounds)
+            }
             _ => None,
         })
         .expect("IntoIterator must declare assoc type `IntoIter`");
     assert!(
-        into_iter_bounds
-            .iter()
-            .any(|tb| tb.name == "Iterator"
-                && tb.assoc_type_bindings.iter().any(|b| b.name == "Item")),
+        into_iter_bounds.iter().any(
+            |tb| tb.path.to_string() == "Iterator" // TRANSITION(P1): deleted by A1 commit 2
+                && tb.assoc_type_bindings.iter().any(|b| b.name == Ident::new("Item"))
+        ),
         "IntoIter must be bounded by `Iterator<Item = ...>`; got: {into_iter_bounds:#?}"
     );
 
@@ -166,7 +181,7 @@ fn intoiterator_trait_locks_assoc_type_bound() {
         matches!(
             ti,
             TraitItem::AssociatedType { name, bounds, .. }
-                if name == "Item" && bounds.is_empty()
+                if name.name.as_str() == "Item" && bounds.is_empty()
         )
     });
     assert!(
@@ -279,7 +294,7 @@ fn stdlib_builtins_carries_iterator_and_intoiterator_decls() {
         .items
         .iter()
         .filter_map(|(item, _)| match item {
-            Item::Trait(td) => Some(td.name.as_str()),
+            Item::Trait(td) => Some(td.name.name.as_str()),
             _ => None,
         })
         .collect();

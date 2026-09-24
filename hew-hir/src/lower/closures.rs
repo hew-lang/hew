@@ -284,7 +284,9 @@ impl LowerCtx {
         let hir_params = params
             .iter()
             .zip(signature_params)
-            .map(|(param, ty)| self.bind(param.name.clone(), ty, false, param.name_span.clone()))
+            .map(|(param, ty)| {
+                self.bind(param.name.to_string(), ty, false, param.name_span.clone())
+            })
             .collect();
         let lowered_body = self
             .with_current_return_type(ret_ty.clone(), |ctx| ctx.lower_expr(body, IntentKind::Read));

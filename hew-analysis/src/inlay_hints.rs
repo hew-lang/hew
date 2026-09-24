@@ -47,9 +47,9 @@ fn collect_inlay_hints_from_item(
                 &f.fn_span,
                 f.return_type.is_none(),
                 tc.fn_sigs
-                    .get(f.name.as_str())
+                    .get(f.name.name.as_str())
                     .cloned()
-                    .or_else(|| find_fallback_fn_sig(&f.name, tc)),
+                    .or_else(|| find_fallback_fn_sig(f.name.name.as_str(), tc)),
                 hints,
             );
             collect_inlay_hints_from_block(source, &f.body, tc, hints);
@@ -93,9 +93,9 @@ fn collect_inlay_hints_from_item(
         Item::Impl(i) => {
             for method in &i.methods {
                 let sig = match &i.target_type.0 {
-                    TypeExpr::Named { name, .. } => tc
+                    TypeExpr::Named { path, .. } => tc
                         .fn_sigs
-                        .get(format!("{name}::{}", method.name).as_str())
+                        .get(format!("{path}::{}", method.name).as_str())
                         .cloned(),
                     _ => None,
                 };
@@ -237,7 +237,7 @@ fn collect_inlay_hints_from_stmt(
                         module_idx: 0,
                     };
                     if let Some(inferred_ty) = tc.expr_types.get(&span_key) {
-                        let name_end = find_var_name_end(source, &value_expr.1, name);
+                        let name_end = find_var_name_end(source, &value_expr.1, name.name.as_str());
                         hints.push(InlayHint {
                             offset: name_end,
                             label: format!(": {}", inferred_ty.user_facing()),
@@ -469,7 +469,7 @@ fn collect_inlay_hints_from_expr(
             args,
         } => {
             collect_inlay_hints_from_expr(source, &receiver.0, tc, hints);
-            if let Some(sig) = find_method_call_signature(tc, &receiver.1, method) {
+            if let Some(sig) = find_method_call_signature(tc, &receiver.1, method.0.name.as_str()) {
                 push_parameter_hints(source, args, &sig.param_names, hints);
             }
             for arg in args {
@@ -553,7 +553,7 @@ fn collect_inlay_hints_from_expr(
             collect_inlay_hints_from_expr(source, &rhs.0, tc, hints);
         }
         Expr::Literal(_)
-        | Expr::Identifier(_)
+        | Expr::Ident(_)
         | Expr::QualifiedAssoc(_)
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
@@ -579,8 +579,8 @@ fn find_call_signature(
     if let Some(sig) = find_fallback_fn_sig(callee, tc) {
         return Some(sig);
     }
-    if let Expr::Identifier(name) = function {
-        return tc.fn_sigs.get(name.as_str()).cloned();
+    if let Expr::Ident(name) = function {
+        return tc.fn_sigs.get(name.name.as_str()).cloned();
     }
     None
 }

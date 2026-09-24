@@ -9,7 +9,7 @@ mod non_root_module_inference_scope {
     use super::*;
 
     fn make_non_root_module(
-        mod_id: &ModuleId,
+        mod_id: &ModulePath,
         fn_name: &str,
         param_ty: TypeExpr,
         return_ty: Option<TypeExpr>,
@@ -19,10 +19,10 @@ mod non_root_module_inference_scope {
             attributes: vec![],
             is_generator: false,
             visibility: Visibility::Private,
-            name: fn_name.to_string(),
+            name: Ident::new(fn_name),
             type_params: None,
             params: vec![Param {
-                name: "x".to_string(),
+                name: Ident::new("x"),
                 ty: (param_ty, 10..11),
                 is_mutable: false,
                 is_consume: false,
@@ -49,7 +49,7 @@ mod non_root_module_inference_scope {
     }
 
     fn make_program_with_non_root(module: Module) -> Program {
-        let root_id = ModuleId::root();
+        let root_id = ModulePath::root();
         let mod_id = module.id.clone();
         let mut mg = ModuleGraph::new(root_id.clone());
         mg.add_module(module).unwrap();
@@ -75,7 +75,7 @@ mod non_root_module_inference_scope {
     /// `InferenceFailed` error via `report_unresolved_inference_holes`.
     #[test]
     fn fn_param_infer_hole_fails_closed() {
-        let mod_id = ModuleId::new(vec!["utils".to_string()]);
+        let mod_id = ModulePath::new(["utils"]);
         let module = make_non_root_module(&mod_id, "helper", TypeExpr::Infer, None);
         let program = make_program_with_non_root(module);
 
@@ -95,9 +95,9 @@ mod non_root_module_inference_scope {
     /// resolves `_` to `unit` instead of leaving an unresolved inference hole.
     #[test]
     fn fn_return_infer_hole_resolves_from_body() {
-        let mod_id = ModuleId::new(vec!["helpers".to_string()]);
+        let mod_id = ModulePath::new(["helpers"]);
         let concrete_param = TypeExpr::Named {
-            name: "i64".to_string(),
+            path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("i64"), 0..0),
             type_args: None,
         };
         let module =
@@ -123,13 +123,13 @@ mod non_root_module_inference_scope {
     /// any `InferenceFailed` errors (baseline / regression guard).
     #[test]
     fn fn_concrete_types_passes() {
-        let mod_id = ModuleId::new(vec!["math".to_string()]);
+        let mod_id = ModulePath::new(["math"]);
         let concrete_param = TypeExpr::Named {
-            name: "i64".to_string(),
+            path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("i64"), 0..0),
             type_args: None,
         };
         let concrete_return = TypeExpr::Named {
-            name: "i64".to_string(),
+            path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("i64"), 0..0),
             type_args: None,
         };
         let module = make_non_root_module(&mod_id, "add", concrete_param, Some(concrete_return));
@@ -151,7 +151,7 @@ mod non_root_module_inference_scope {
     fn infer_hole_in_non_root_does_not_suppress_root_errors() {
         use hew_parser::ast::{FnDecl, Item};
 
-        let mod_id = ModuleId::new(vec!["side".to_string()]);
+        let mod_id = ModulePath::new(["side"]);
         let module = make_non_root_module(&mod_id, "side_fn", TypeExpr::Infer, None);
 
         // Root module also has a function with `_` param — should also error.
@@ -160,10 +160,10 @@ mod non_root_module_inference_scope {
             attributes: vec![],
             is_generator: false,
             visibility: Visibility::Private,
-            name: "root_fn".to_string(),
+            name: Ident::new("root_fn"),
             type_params: None,
             params: vec![Param {
-                name: "v".to_string(),
+                name: Ident::new("v"),
                 ty: (TypeExpr::Infer, 50..51),
                 is_mutable: false,
                 is_consume: false,
@@ -181,7 +181,7 @@ mod non_root_module_inference_scope {
             consumes_self: false,
         };
 
-        let root_id = ModuleId::root();
+        let root_id = ModulePath::root();
         let mut mg = ModuleGraph::new(root_id.clone());
         mg.add_module(module).unwrap();
         mg.topo_order = vec![mod_id, root_id];
@@ -207,8 +207,8 @@ mod non_root_module_inference_scope {
     #[test]
     fn multiple_infer_holes_in_non_root_all_fail_closed() {
         use hew_parser::ast::{Block, FnDecl, Item, Param, TypeExpr};
-        let mod_id = ModuleId::new(vec!["util2".to_string()]);
-        let root_id = ModuleId::root();
+        let mod_id = ModulePath::new(["util2"]);
+        let root_id = ModulePath::root();
 
         let make_infer_fn = |name: &str, span_start: usize| -> Spanned<Item> {
             let fd = FnDecl {
@@ -216,10 +216,10 @@ mod non_root_module_inference_scope {
                 attributes: vec![],
                 is_generator: false,
                 visibility: Visibility::Private,
-                name: name.to_string(),
+                name: Ident::new(name),
                 type_params: None,
                 params: vec![Param {
-                    name: "a".to_string(),
+                    name: Ident::new("a"),
                     ty: (TypeExpr::Infer, span_start..span_start + 1),
                     is_mutable: false,
                     is_consume: false,
@@ -278,15 +278,15 @@ mod non_root_module_inference_scope {
     #[test]
     fn body_cast_infer_hole_fails_closed() {
         // fn foo(x: i64) { let y = x as _; }  — `_` cast target is unresolved
-        let mod_id = ModuleId::new(vec!["castmod".to_string()]);
-        let root_id = ModuleId::root();
+        let mod_id = ModulePath::new(["castmod"]);
+        let root_id = ModulePath::root();
 
         let cast_expr = Expr::Cast {
-            expr: Box::new((Expr::Identifier("x".to_string()), 20..21)),
+            expr: Box::new((Expr::Ident(Ident::new("x")), 20..21)),
             ty: (TypeExpr::Infer, 25..26),
         };
         let let_stmt = Stmt::Let {
-            pattern: (Pattern::Identifier("y".to_string()), 14..15),
+            pattern: (Pattern::Identifier(Ident::new("y")), 14..15),
             ty: None,
             value: Some((cast_expr, 18..26)),
             else_block: None,
@@ -296,13 +296,16 @@ mod non_root_module_inference_scope {
             attributes: vec![],
             is_generator: false,
             visibility: Visibility::Private,
-            name: "foo".to_string(),
+            name: Ident::new("foo"),
             type_params: None,
             params: vec![Param {
-                name: "x".to_string(),
+                name: Ident::new("x"),
                 ty: (
                     TypeExpr::Named {
-                        name: "i64".to_string(),
+                        path: hew_parser::ast::Path::single(
+                            hew_parser::ast::Ident::new("i64"),
+                            0..0,
+                        ),
                         type_args: None,
                     },
                     7..10,
@@ -361,11 +364,11 @@ mod non_root_module_inference_scope {
     #[test]
     fn body_let_annotation_infer_resolves_cleanly() {
         // fn bar() { let y: _ = 42; }  — `_` must resolve to i64 from the value
-        let mod_id = ModuleId::new(vec!["letmod".to_string()]);
-        let root_id = ModuleId::root();
+        let mod_id = ModulePath::new(["letmod"]);
+        let root_id = ModulePath::root();
 
         let let_stmt = Stmt::Let {
-            pattern: (Pattern::Identifier("y".to_string()), 14..15),
+            pattern: (Pattern::Identifier(Ident::new("y")), 14..15),
             ty: Some((TypeExpr::Infer, 17..18)),
             value: Some(make_int_literal(42, 21..23)),
             else_block: None,
@@ -375,7 +378,7 @@ mod non_root_module_inference_scope {
             attributes: vec![],
             is_generator: false,
             visibility: Visibility::Private,
-            name: "bar".to_string(),
+            name: Ident::new("bar"),
             type_params: None,
             params: vec![],
             return_type: None,
@@ -488,19 +491,22 @@ mod non_root_module_inference_scope {
 
         let trait_decl = TraitDecl {
             visibility: Visibility::Private,
-            name: "Answerer".to_string(),
+            name: Ident::new("Answerer"),
             type_params: None,
             super_traits: None,
             items: vec![TraitItem::Method(TraitMethod {
                 attributes: vec![],
                 consumes_self: false,
-                name: "answer".to_string(),
+                name: Ident::new("answer"),
                 type_params: None,
                 params: vec![Param {
-                    name: "value".to_string(),
+                    name: Ident::new("value"),
                     ty: (
                         TypeExpr::Named {
-                            name: "i64".to_string(),
+                            path: hew_parser::ast::Path::single(
+                                hew_parser::ast::Ident::new("i64"),
+                                0..0,
+                            ),
                             type_args: None,
                         },
                         12..15,
@@ -512,7 +518,7 @@ mod non_root_module_inference_scope {
                 where_clause: None,
                 body: Some(Block {
                     stmts: vec![],
-                    trailing_expr: Some(Box::new((Expr::Identifier("value".to_string()), 20..25))),
+                    trailing_expr: Some(Box::new((Expr::Ident(Ident::new("value")), 20..25))),
                 }),
                 span: 0..0,
                 doc_comment: None,
@@ -544,20 +550,20 @@ mod non_root_module_inference_scope {
 
         let trait_decl = TraitDecl {
             visibility: Visibility::Private,
-            name: "Answerer".to_string(),
+            name: Ident::new("Answerer"),
             type_params: None,
             super_traits: None,
             items: vec![TraitItem::Method(TraitMethod {
                 attributes: vec![],
                 consumes_self: false,
-                name: "answer".to_string(),
+                name: Ident::new("answer"),
                 type_params: None,
                 params: vec![],
                 return_type: Some((TypeExpr::Infer, 10..11)),
                 where_clause: None,
                 body: Some(Block {
                     stmts: vec![],
-                    trailing_expr: Some(Box::new((Expr::Identifier("None".to_string()), 20..24))),
+                    trailing_expr: Some(Box::new((Expr::Ident(Ident::new("None")), 20..24))),
                 }),
                 span: 0..0,
                 doc_comment: None,
@@ -596,19 +602,22 @@ mod non_root_module_inference_scope {
 
         let trait_decl = TraitDecl {
             visibility: Visibility::Private,
-            name: "Answerer".to_string(),
+            name: Ident::new("Answerer"),
             type_params: None,
             super_traits: None,
             items: vec![TraitItem::Method(TraitMethod {
                 attributes: vec![],
                 consumes_self: false,
-                name: "answer".to_string(),
+                name: Ident::new("answer"),
                 type_params: None,
                 params: vec![Param {
-                    name: "value".to_string(),
+                    name: Ident::new("value"),
                     ty: (
                         TypeExpr::Named {
-                            name: "i64".to_string(),
+                            path: hew_parser::ast::Path::single(
+                                hew_parser::ast::Ident::new("i64"),
+                                0..0,
+                            ),
                             type_args: None,
                         },
                         12..15,
@@ -620,7 +629,7 @@ mod non_root_module_inference_scope {
                 where_clause: None,
                 body: Some(Block {
                     stmts: vec![],
-                    trailing_expr: Some(Box::new((Expr::Identifier("value".to_string()), 20..25))),
+                    trailing_expr: Some(Box::new((Expr::Ident(Ident::new("value")), 20..25))),
                 }),
                 span: 0..0,
                 doc_comment: None,
@@ -633,7 +642,7 @@ mod non_root_module_inference_scope {
             origin: hew_parser::ast::DeclarationOrigin::Authored,
             visibility: Visibility::Private,
             kind: TypeDeclKind::Struct,
-            name: "Greeter".to_string(),
+            name: Ident::new("Greeter"),
             type_params: None,
             where_clause: None,
             body: vec![],
@@ -648,13 +657,16 @@ mod non_root_module_inference_scope {
         let impl_decl = ImplDecl {
             type_params: None,
             trait_bound: Some(TraitBound {
-                name: "Answerer".to_string(),
+                path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("Answerer"), 0..0),
                 type_args: None,
                 assoc_type_bindings: vec![],
             }),
             target_type: (
                 TypeExpr::Named {
-                    name: "Greeter".to_string(),
+                    path: hew_parser::ast::Path::single(
+                        hew_parser::ast::Ident::new("Greeter"),
+                        0..0,
+                    ),
                     type_args: None,
                 },
                 30..37,
@@ -815,8 +827,8 @@ mod non_root_module_inference_scope {
     #[test]
     fn body_lambda_infer_param_hole_fails_closed() {
         // fn foo() { let f = |x: _| x; }  — lambda param `_` never constrained
-        let mod_id = ModuleId::new(vec!["lambdamod".to_string()]);
-        let root_id = ModuleId::root();
+        let mod_id = ModulePath::new(["lambdamod"]);
+        let root_id = ModulePath::root();
 
         // |x: _| x  — lambda with infer-typed parameter, no call site to resolve it
         let lambda_expr = Expr::Lambda {
@@ -824,15 +836,15 @@ mod non_root_module_inference_scope {
             is_move: false,
             type_params: None,
             params: vec![LambdaParam {
-                name: "x".to_string(),
+                name: Ident::new("x"),
                 ty: Some((TypeExpr::Infer, 15..16)),
                 name_span: 14..15,
             }],
             return_type: None,
-            body: Box::new((Expr::Identifier("x".to_string()), 19..20)),
+            body: Box::new((Expr::Ident(Ident::new("x")), 19..20)),
         };
         let let_stmt = Stmt::Let {
-            pattern: (Pattern::Identifier("f".to_string()), 10..11),
+            pattern: (Pattern::Identifier(Ident::new("f")), 10..11),
             ty: None,
             value: Some((lambda_expr, 14..21)),
             else_block: None,
@@ -842,7 +854,7 @@ mod non_root_module_inference_scope {
             attributes: vec![],
             is_generator: false,
             visibility: Visibility::Private,
-            name: "foo".to_string(),
+            name: Ident::new("foo"),
             type_params: None,
             params: vec![],
             return_type: None,

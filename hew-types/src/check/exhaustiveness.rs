@@ -346,9 +346,9 @@ impl Checker {
                 if self.is_catch_all_for_scrutinee(head, ty) {
                     return open();
                 }
-                let matched = variant_name == Some(short_name(name))
+                let matched = variant_name == Some(short_name(name.name.as_str()))
                     && info.slots.is_empty()
-                    && self.variant_surface_owner_matches(name, ty);
+                    && self.variant_surface_owner_matches(name.name.as_str(), ty);
                 if matched {
                     vec![Vec::new()]
                 } else {
@@ -361,7 +361,12 @@ impl Checker {
             Pattern::Tuple(patterns) if info.ctor == Ctor::Product => {
                 Self::positional_row(patterns, info)
             }
-            Pattern::Constructor { name, patterns } => {
+            // TRANSITION(P1): deleted by A1 commit 2
+            Pattern::NominalPath {
+                path: one_path,
+                payload: Some(hew_parser::ast::NominalPatternPayload::Tuple(patterns)),
+            } if one_path.segments.len() == 1 => {
+                let name = &one_path.to_string();
                 if variant_name == Some(short_name(name))
                     && self.variant_surface_owner_matches(name, ty)
                 {
@@ -370,20 +375,29 @@ impl Checker {
                     Vec::new()
                 }
             }
-            Pattern::Struct { name, fields, .. } => match &info.ctor {
-                Ctor::Product => Self::named_row(fields, info),
-                Ctor::Variant(_)
-                    if variant_name == Some(short_name(name))
-                        && self.variant_surface_owner_matches(name, ty) =>
-                {
-                    Self::named_row(fields, info)
+            // TRANSITION(P1): deleted by A1 commit 2
+            Pattern::NominalPath {
+                path: one_path,
+                payload: Some(hew_parser::ast::NominalPatternPayload::Record { fields, .. }),
+            } if one_path.segments.len() == 1 => {
+                let name = one_path.segments[0].0.name.as_str();
+                match &info.ctor {
+                    Ctor::Product => Self::named_row(fields, info),
+                    Ctor::Variant(_)
+                        if variant_name == Some(short_name(name))
+                            && self.variant_surface_owner_matches(name, ty) =>
+                    {
+                        Self::named_row(fields, info)
+                    }
+                    _ => Vec::new(),
                 }
-                _ => Vec::new(),
-            },
+            }
             Pattern::RecordShorthand { fields, .. } if info.ctor == Ctor::Product => {
                 Self::named_row(fields, info)
             }
-            Pattern::ContextVariant(context) if variant_name == Some(context.name.as_str()) => {
+            Pattern::ContextVariant(context)
+                if variant_name == Some(context.name.name.as_str()) =>
+            {
                 Self::payload_row(context.payload.as_ref(), info)
             }
             Pattern::NominalPath { path, payload }
@@ -434,7 +448,7 @@ impl Checker {
             .map(|name| {
                 fields
                     .iter()
-                    .find(|field| field.name == *name)
+                    .find(|field| field.name == Ident::new(&*name))
                     .and_then(|field| field.pattern.as_ref())
                     .map_or(&WILDCARD, |(pattern, _)| pattern)
             })

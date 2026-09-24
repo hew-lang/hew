@@ -143,11 +143,11 @@ impl Checker {
             // genuinely-unconstrained `None` still fails closed: the recorded
             // `Option<Var>` stays unresolved and `validate_expr_output_contract`
             // (admissibility.rs) surfaces it as an inference error. See W4.042.
-            Expr::Identifier(name) if name == "None" => {
-                self.report_bare_variant_expr(name, "Option.None", span);
+            Expr::Ident(name) if name.name.as_str() == "None" => {
+                self.report_bare_variant_expr(name.name.as_str(), "Option.None", span);
                 Ty::option(Ty::Var(TypeVar::fresh()))
             }
-            Expr::Identifier(name) => self.synthesize_identifier(name, span),
+            Expr::Ident(name) => self.synthesize_identifier(name.name.as_str(), span),
             Expr::ContextVariant(context) => {
                 if let Some(record) = &context.record {
                     for (_, value) in &record.fields {
@@ -168,12 +168,17 @@ impl Checker {
                 Ty::Error
             }
             Expr::GenericApplySuffix { target, type_args } => match &target.0 {
-                Expr::Identifier(name) => {
-                    self.synthesize_identifier_with_type_args(name, Some(type_args), span)
-                }
-                Expr::FieldAccess { object, field } => {
-                    self.check_field_access_with_type_args(object, field, Some(type_args), span)
-                }
+                Expr::Ident(name) => self.synthesize_identifier_with_type_args(
+                    name.name.as_str(),
+                    Some(type_args),
+                    span,
+                ),
+                Expr::FieldAccess { object, field } => self.check_field_access_with_type_args(
+                    object,
+                    field.0.name.as_str(),
+                    Some(type_args),
+                    span,
+                ),
                 _ => {
                     self.report_error(
                         TypeErrorKind::InvalidOperation,
@@ -232,13 +237,15 @@ impl Checker {
                 method,
                 args,
             } => {
-                let ty = self.check_method_call(receiver, method, args, span);
-                self.finish_named_arguments(args, || format!("method `{method}`"), &ty, span);
+                let ty = self.check_method_call(receiver, method.0.name.as_str(), args, span);
+                self.finish_named_arguments(args, || format!("method `{}`", method.0), &ty, span);
                 ty
             }
 
             // Field access
-            Expr::FieldAccess { object, field } => self.check_field_access(object, field, span),
+            Expr::FieldAccess { object, field } => {
+                self.check_field_access(object, field.0.name.as_str(), span)
+            }
 
             // Block
             Expr::Block(block) => self.check_block(block, None),
@@ -309,11 +316,17 @@ impl Checker {
 
             // Struct init
             Expr::StructInit {
-                name,
+                path,
                 fields,
                 type_args,
                 base,
-            } => self.check_struct_init(name, fields, type_args.as_deref(), base.as_deref(), span),
+            } => self.check_struct_init(
+                &path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
+                fields,
+                type_args.as_deref(),
+                base.as_deref(),
+                span,
+            ),
 
             // Spawn
             Expr::Spawn {
@@ -884,7 +897,7 @@ impl Checker {
         &mut self,
         operand: &Spanned<Expr>,
         body: &Spanned<Expr>,
-        error: Option<&Spanned<String>>,
+        error: Option<&Spanned<Ident>>,
         span: &Span,
     ) -> Ty {
         let container = self.synthesize(&operand.0, &operand.1);
@@ -944,9 +957,9 @@ impl Checker {
         let entry = self.env.ownership_snapshot();
         self.env.push_scope();
         if let Some((name, binding_span)) = error {
-            self.check_shadowing(name, binding_span);
+            self.check_shadowing(name.name.as_str(), binding_span);
             self.env
-                .define_with_span(name.clone(), error_ty, false, binding_span.clone());
+                .define_with_span(name.to_string(), error_ty, false, binding_span.clone());
         }
         let body_ty = if payload == Ty::Never {
             self.synthesize(&body.0, &body.1)
@@ -1420,7 +1433,7 @@ impl Checker {
             return Ty::Error;
         }
 
-        let trait_name = path.trait_path.source_spelling();
+        let trait_name = path.trait_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
         let mut candidates = Vec::new();
         if self.trait_defs.contains_key(&trait_name) {
             candidates.push(trait_name.clone());
@@ -1467,7 +1480,7 @@ impl Checker {
         if info
             .associated_types
             .iter()
-            .any(|associated| associated.name == *member)
+            .any(|associated| associated.name == member.name.as_str())
         {
             self.report_error(
                 TypeErrorKind::PathKindMismatch,

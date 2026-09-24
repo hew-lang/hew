@@ -173,7 +173,7 @@ impl Checker {
                 self.report_error(
                     TypeErrorKind::TraitNotObjectSafe {
                         trait_name: trait_name.to_string(),
-                        method_name: method.name.clone(),
+                        method_name: method.name.to_string(),
                         reason: "generic method",
                     },
                     span,
@@ -190,7 +190,7 @@ impl Checker {
                     self.report_error(
                         TypeErrorKind::TraitNotObjectSafe {
                             trait_name: trait_name.to_string(),
-                            method_name: method.name.clone(),
+                            method_name: method.name.to_string(),
                             reason: "Self-returning method",
                         },
                         span,
@@ -244,10 +244,15 @@ impl Checker {
             return false;
         };
         for method in &trait_info.methods {
-            let Some(handler) = descriptor.handlers.iter().find(|h| h.name == method.name) else {
+            let Some(handler) = descriptor
+                .handlers
+                .iter()
+                .find(|h| h.name == method.name.name.as_str())
+            else {
                 return false;
             };
-            let Some(trait_sig) = self.lookup_trait_method(trait_name, &method.name) else {
+            let Some(trait_sig) = self.lookup_trait_method(trait_name, method.name.name.as_str())
+            else {
                 return false;
             };
             if trait_sig.params.len() != handler.param_tys.len() {
@@ -291,7 +296,7 @@ impl Checker {
             method
                 .params
                 .first()
-                .is_none_or(|first| first.name != "self")
+                .is_none_or(|first| first.name.name != hew_parser::ast::sym::SELF_VALUE)
         })
     }
 
@@ -300,7 +305,7 @@ impl Checker {
     pub(super) fn is_coercible_numeric(&self, expr: &Expr) -> bool {
         is_integer_literal(expr)
             || is_float_literal(expr)
-            || matches!(expr, Expr::Identifier(name) if self.const_values.contains_key(name))
+            || matches!(expr, Expr::Ident(name) if self.const_values.contains_key(name.name.as_str()))
     }
 
     /// Unify two branch types (if/else, if-let/else).
@@ -859,7 +864,11 @@ fn canonical_dyn_assoc_bindings(traits: &[crate::ty::TraitObjectBound]) -> Vec<D
 /// trait methods at `dyn Trait` coercion sites.
 fn type_expr_mentions_self(expr: &TypeExpr) -> bool {
     match expr {
-        TypeExpr::Named { name, type_args } => {
+        TypeExpr::Named {
+            path: named_path,
+            type_args,
+        } => {
+            let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
             if name == "Self" {
                 return true;
             }

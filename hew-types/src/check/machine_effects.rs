@@ -522,7 +522,7 @@ fn collect_bodies<'a>(
             let Some(module) = graph.modules.get(id) else {
                 continue;
             };
-            let dotted = id.path.join(".");
+            let dotted = id.dotted();
             let contexts = module
                 .items
                 .iter()
@@ -549,7 +549,7 @@ fn collect_bodies<'a>(
 /// generated impl the normalizer produced for it.
 fn machine_shape(implementation: &hew_parser::ast::ImplDecl) -> MachineShape {
     let type_name = match &implementation.target_type.0 {
-        hew_parser::ast::TypeExpr::Named { name, .. } => name.clone(),
+        hew_parser::ast::TypeExpr::Named { path, .. } => path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
         _ => String::new(),
     };
     MachineShape {
@@ -558,7 +558,7 @@ fn machine_shape(implementation: &hew_parser::ast::ImplDecl) -> MachineShape {
             .type_params
             .iter()
             .flatten()
-            .map(|param| param.name.clone())
+            .map(|param| param.name.to_string())
             .collect(),
     }
 }
@@ -713,8 +713,8 @@ impl NodeVisitor for EffectVisitor<'_> {
         match expr {
             Expr::Call { function, .. } => {
                 let call = match &function.0 {
-                    Expr::Identifier(name) => format!("{name}(...)"),
-                    Expr::FieldAccess { field, .. } => format!("{field}(...)"),
+                    Expr::Ident(name) => format!("{name}(...)"),
+                    Expr::FieldAccess { field, .. } => format!("{}(...)", field.0),
                     _ => "call".to_string(),
                 };
                 if let Some(target) = self.output.direct_call_targets.get(&key) {
@@ -723,7 +723,9 @@ impl NodeVisitor for EffectVisitor<'_> {
                     self.refuse(span, format!("`{call}` has no checked direct target"));
                 }
             }
-            Expr::MethodCall { method, .. } => self.method(&key, span, &format!("{method}(...)")),
+            Expr::MethodCall { method, .. } => {
+                self.method(&key, span, &format!("{}(...)", method.0));
+            }
             Expr::Clone(_) => self.method(&key, span, "clone"),
             Expr::Spawn { .. }
             | Expr::SpawnLambdaActor { .. }
@@ -743,8 +745,9 @@ impl NodeVisitor for EffectVisitor<'_> {
                 span,
                 "concurrency, unsafe access and latent effects are not admitted in machine helpers",
             ),
-            Expr::Identifier(name)
-                if crate::ExecutionContextReader::from_surface_name(name).is_some() =>
+            Expr::Ident(name)
+                if crate::ExecutionContextReader::from_surface_name(name.name.as_str())
+                    .is_some() =>
             {
                 self.refuse(span, "machine evaluation cannot observe execution context");
             }

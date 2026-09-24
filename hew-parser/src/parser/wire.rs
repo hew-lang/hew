@@ -65,10 +65,7 @@ impl Parser<'_> {
                 }
                 Some(tok) if Self::is_ident_token(tok) => {
                     let saved = self.save_pos();
-                    let ident = self
-                        .expect_ident()
-                        .map(|ident| ident.to_string())
-                        .unwrap_or_default();
+                    let ident = self.expect_word();
                     match ident.as_str() {
                         "repeated" => {
                             modifiers.is_repeated = true;
@@ -268,7 +265,7 @@ impl Parser<'_> {
             }
 
             fields.push(TypeBodyItem::Field {
-                name: field_name.clone(),
+                name: field_name,
                 ty,
                 attributes: Vec::new(),
                 doc_comment: None,

@@ -3,6 +3,7 @@
 //! Parses `.hew` files and extracts type information: function signatures,
 //! clean name mappings, handle types, and handle method mappings.
 
+use hew_parser::ast::Ident;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -235,7 +236,7 @@ fn collect_extern_fn_names(program: &hew_parser::ast::Program) -> HashSet<String
         .iter()
         .filter_map(|(item, _)| {
             if let Item::ExternBlock(block) = item {
-                Some(block.functions.iter().map(|f| f.name.clone()))
+                Some(block.functions.iter().map(|f| f.name.to_string()))
             } else {
                 None
             }
@@ -283,7 +284,7 @@ fn extract_module_info(program: &hew_parser::ast::Program, module_short: &str) -
                             .push(format!("extern function `{}`", func.name));
                     }
                     info.functions.push(CFunction {
-                        name: func.name.clone(),
+                        name: func.name.to_string(),
                         params,
                         return_type,
                     });
@@ -324,7 +325,7 @@ fn extract_module_info(program: &hew_parser::ast::Program, module_short: &str) -
                         .push(format!("public function `{}`", fn_decl.name));
                 }
                 info.wrapper_fns.push(WrapperFn {
-                    name: fn_decl.name.clone(),
+                    name: fn_decl.name.to_string(),
                     type_params,
                     type_param_bounds,
                     params,
@@ -346,12 +347,12 @@ fn extract_module_info(program: &hew_parser::ast::Program, module_short: &str) -
                     if call_arg_count == fn_decl.params.len() && extern_fn_names.contains(&target) {
                         target
                     } else {
-                        fn_decl.name.clone()
+                        fn_decl.name.to_string()
                     }
                 } else {
-                    fn_decl.name.clone()
+                    fn_decl.name.to_string()
                 };
-                info.clean_names.push((fn_decl.name.clone(), c_target));
+                info.clean_names.push((fn_decl.name.to_string(), c_target));
             }
             Item::Impl(impl_decl) => {
                 extract_impl_info(
@@ -412,7 +413,7 @@ fn collect_wrapper_resource_fields(
                 .body
                 .iter()
                 .filter_map(|b| match b {
-                    TypeBodyItem::Field { name, .. } => Some(name.clone()),
+                    TypeBodyItem::Field { name, .. } => Some(name.to_string()),
                     _ => None,
                 })
                 .collect();
@@ -426,7 +427,10 @@ fn collect_wrapper_resource_fields(
 /// prefixing the module short name when the target is unqualified.
 fn qualified_impl_type_name(impl_decl: &ImplDecl, module_short: &str) -> Option<String> {
     match &impl_decl.target_type.0 {
-        TypeExpr::Named { name, .. } => {
+        TypeExpr::Named {
+            path: named_path, ..
+        } => {
+            let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
             if name.contains('.') {
                 Some(name.clone())
             } else {
@@ -455,7 +459,11 @@ fn extract_impl_info(
     if impl_decl.trait_bound.is_none() {
         if let Some(qualified) = impl_type_name.as_ref() {
             if resource_type_names.contains(qualified) {
-                if let Some(close_method) = impl_decl.methods.iter().find(|m| m.name == "close") {
+                if let Some(close_method) = impl_decl
+                    .methods
+                    .iter()
+                    .find(|m| m.name == Ident::new("close"))
+                {
                     if let Some((c_func, _)) = extract_call_target(&close_method.body) {
                         info.drop_funcs.push((qualified.clone(), c_func));
                     }
@@ -468,11 +476,16 @@ fn extract_impl_info(
     // programs are rejected by the checker before codegen; this path
     // only keeps older loader tests honest while stdlib migrates.
     if let Some(ref tb) = impl_decl.trait_bound {
-        if tb.name == "Drop" {
+        if tb.path.to_string() == "Drop" {
+            // TRANSITION(P1): deleted by A1 commit 2
             if let Some(qualified) = impl_type_name.as_ref() {
                 info.drop_types.push(qualified.clone());
                 // Extract the C drop function from `fn drop { ... }`.
-                if let Some(drop_method) = impl_decl.methods.iter().find(|m| m.name == "drop") {
+                if let Some(drop_method) = impl_decl
+                    .methods
+                    .iter()
+                    .find(|m| m.name == Ident::new("drop"))
+                {
                     if let Some((c_func, _)) = extract_call_target(&drop_method.body) {
                         info.drop_funcs.push((qualified.clone(), c_func));
                     }
@@ -593,26 +606,32 @@ fn wrapper_fn_type_params(func: &FnDecl) -> (Vec<String>, HashMap<String, Vec<St
     let mut bounds = HashMap::new();
     if let Some(params) = &func.type_params {
         for param in params {
-            type_params.push(param.name.clone());
+            type_params.push(param.name.to_string());
             bounds.insert(
-                param.name.clone(),
+                param.name.to_string(),
                 param
                     .bounds
                     .iter()
-                    .map(|bound| bound.name.clone())
+                    .map(|bound| bound.path.to_string()) // TRANSITION(P1): deleted by A1 commit 2
                     .collect(),
             );
         }
     }
-    let type_param_names: HashSet<String> = type_params.iter().cloned().collect();
+    let type_param_names: HashSet<String> = type_params.iter().map(ToString::to_string).collect();
     if let Some(where_clause) = &func.where_clause {
         for predicate in &where_clause.predicates {
-            if let TypeExpr::Named { name, type_args } = &predicate.ty.0 {
+            if let TypeExpr::Named {
+                path: named_path,
+                type_args,
+            } = &predicate.ty.0
+            {
+                let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
                 if type_args.as_ref().is_none_or(Vec::is_empty) && type_param_names.contains(name) {
                     bounds
                         .entry(name.clone())
                         .or_insert_with(Vec::new)
-                        .extend(predicate.bounds.iter().map(|bound| bound.name.clone()));
+                        .extend(predicate.bounds.iter().map(|bound| bound.path.to_string()));
+                    // TRANSITION(P1): deleted by A1 commit 2
                 }
             }
         }
@@ -686,15 +705,19 @@ fn type_expr_to_ty_with_params_and_context(
             }
             Ty::AssocType {
                 base: Box::new(base),
-                trait_name: path.trait_path.source_spelling().into_boxed_str(),
-                assoc_name: assoc_name.clone().into_boxed_str(),
+                trait_name: path.trait_path.to_string().into_boxed_str(), // TRANSITION(P1): deleted by A1 commit 2
+                assoc_name: assoc_name.clone().to_string().into_boxed_str(),
             }
         }
-        TypeExpr::Named { name, type_args } => {
-            // Primitive types never take type args; delegate entirely to the
-            // canonical primitive table so names like `string`, `bool`, `char`,
-            // `bytes`, `duration`, `isize`, `usize` are recognised instead of
-            // falling through to module-qualification.
+        TypeExpr::Named {
+            path: named_path,
+            type_args,
+        } => {
+            let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
+                                                // Primitive types never take type args; delegate entirely to the
+                                                // canonical primitive table so names like `string`, `bool`, `char`,
+                                                // `bytes`, `duration`, `isize`, `usize` are recognised instead of
+                                                // falling through to module-qualification.
             let has_args = type_args.as_ref().is_some_and(|a| !a.is_empty());
             if !has_args {
                 if let Some(prim) = Ty::from_name(name.as_str()) {
@@ -922,7 +945,7 @@ fn type_expr_to_ty_with_params_and_context(
             traits: bounds
                 .iter()
                 .map(|bound| crate::ty::TraitObjectBound {
-                    trait_name: bound.name.clone(),
+                    trait_name: bound.path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
                     args: vec![],
                     assoc_bindings: vec![],
                 })
@@ -964,7 +987,7 @@ fn extract_call_target(body: &Block) -> Option<(String, usize)> {
 fn call_target_from_expr(expr: &Expr) -> Option<(String, usize)> {
     match expr {
         Expr::Call { function, args, .. } => {
-            if let Expr::Identifier(name) = &function.0 {
+            if let Expr::Ident(name) = &function.0 {
                 // Only treat as a simple C shim if every argument is a direct
                 // identifier — or an identifier wrapped in an ABI-width cast
                 // like `port as i32`. The cast form preserves arity and the
@@ -977,7 +1000,7 @@ fn call_target_from_expr(expr: &Expr) -> Option<(String, usize)> {
                 // passing an i32 fd where bytes are expected.
                 let all_direct = args.iter().all(|arg| is_pass_through_arg(&arg.expr().0));
                 if all_direct {
-                    return Some((name.clone(), args.len()));
+                    return Some((name.to_string(), args.len()));
                 }
                 return None;
             }
@@ -996,8 +1019,8 @@ fn call_target_from_expr(expr: &Expr) -> Option<(String, usize)> {
 /// ABI-width cast (`ident as T`).
 fn is_pass_through_arg(expr: &Expr) -> bool {
     match expr {
-        Expr::Identifier(_) => true,
-        Expr::Cast { expr, .. } => matches!(expr.0, Expr::Identifier(_)),
+        Expr::Ident(_) => true,
+        Expr::Cast { expr, .. } => matches!(expr.0, Expr::Ident(_)),
         _ => false,
     }
 }
@@ -1018,7 +1041,7 @@ impl WrapperForward<'_> {
     /// of the wrapper's own declared fields. Rejects a field access on any other
     /// binding or a field the wrapper does not declare.
     fn is_receiver_handle_field(&self, object: &Expr, field: &str) -> bool {
-        matches!(object, Expr::Identifier(id) if id == self.receiver)
+        matches!(object, Expr::Ident(id) if id.name.as_str() == self.receiver)
             && self.field_names.contains(field)
     }
 }
@@ -1096,7 +1119,7 @@ fn is_immediate_terminating_guard(block: &Block) -> bool {
     match block.stmts.as_slice() {
         [(Stmt::Return(_), _)] => true,
         [(Stmt::Expression((Expr::Call { function, .. }, _)), _)] => {
-            matches!(&function.0, Expr::Identifier(name) if name == "panic")
+            matches!(&function.0, Expr::Ident(name) if name.name.as_str() == "panic")
         }
         _ => false,
     }
@@ -1113,17 +1136,17 @@ fn is_immediate_terminating_guard(block: &Block) -> bool {
 fn handle_forwarding_call_from_expr(expr: &Expr, ctx: &WrapperForward) -> Option<(String, usize)> {
     match expr {
         Expr::Call { function, args, .. } => {
-            let Expr::Identifier(name) = &function.0 else {
+            let Expr::Ident(name) = &function.0 else {
                 return None;
             };
-            if !ctx.extern_fn_names.contains(name) {
+            if !ctx.extern_fn_names.contains(name.name.as_str()) {
                 return None;
             }
             let mut forwards_handle_field = false;
             for arg in args {
                 match &arg.expr().0 {
                     Expr::FieldAccess { object, field }
-                        if ctx.is_receiver_handle_field(&object.0, field) =>
+                        if ctx.is_receiver_handle_field(&object.0, field.0.name.as_str()) =>
                     {
                         forwards_handle_field = true;
                     }
@@ -1131,22 +1154,24 @@ fn handle_forwarding_call_from_expr(expr: &Expr, ctx: &WrapperForward) -> Option
                     _ => return None,
                 }
             }
-            forwards_handle_field.then(|| (name.clone(), args.len()))
+            forwards_handle_field.then(|| (name.to_string(), args.len()))
         }
         Expr::Block(block) => extract_handle_forwarding_target(block, ctx),
         Expr::UnsafeBlock(block) => extract_handle_forwarding_target(block, ctx),
         Expr::Cast { expr, .. } => handle_forwarding_call_from_expr(&expr.0, ctx),
         Expr::StructInit {
-            name,
+            path,
             fields,
             base: None,
             ..
-        } if name == ctx.wrapper_simple_name => fields.iter().find_map(|(field_name, value)| {
-            ctx.field_names
-                .contains(field_name)
-                .then(|| handle_forwarding_call_from_expr(&value.0, ctx))
-                .flatten()
-        }),
+        } if path.to_string() == ctx.wrapper_simple_name => {
+            fields.iter().find_map(|(field_name, value)| {
+                ctx.field_names
+                    .contains(field_name.name.as_str())
+                    .then(|| handle_forwarding_call_from_expr(&value.0, ctx))
+                    .flatten()
+            })
+        }
         _ => None,
     }
 }
@@ -1209,16 +1234,16 @@ fn wrapper_constructor_call_from_expr(
             extern_fn_names,
         ),
         Expr::StructInit {
-            name,
+            path,
             fields,
             base: None,
             ..
-        } if crate::short_name(name) == wrapper_simple_name
+        } if crate::short_name(&path.to_string()) == wrapper_simple_name // TRANSITION(P1): deleted by A1 commit 2
             && fields.len() == 1
             && field_names.len() == 1 =>
         {
             let (field_name, value) = fields.first()?;
-            if !field_names.contains(field_name) {
+            if !field_names.contains(field_name.name.as_str()) {
                 return None;
             }
             call_target_from_expr(&value.0)
@@ -1242,7 +1267,10 @@ fn extract_handle_methods(
 ) {
     // Get the target type name
     let type_name = match &impl_decl.target_type.0 {
-        TypeExpr::Named { name, .. } => {
+        TypeExpr::Named {
+            path: named_path, ..
+        } => {
+            let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
             if name.contains('.') {
                 name.clone()
             } else {
@@ -1268,7 +1296,7 @@ fn extract_handle_methods(
         // ritual HIR/MIR registers for scope, crash, cancel and suspend drops.
         // Sending it through the raw handle rewrite would lose the resource
         // consume intent and create a second, disconnected close authority.
-        let inherent_resource_close = method.name == "close"
+        let inherent_resource_close = method.name == Ident::new("close")
             && resource_type_names.contains(&type_name)
             && !is_resource_wrapper
             && impl_decl.trait_bound.is_none();
@@ -1284,9 +1312,10 @@ fn extract_handle_methods(
         // `clean_names` and drop-func extraction) is left untouched. Skip the
         // `self` parameter when matching — it's not part of the call.
         let returned_wrapper = method.return_type.as_ref().and_then(|return_type| {
-            let TypeExpr::Named { name, .. } = &return_type.0 else {
+            let TypeExpr::Named { path, .. } = &return_type.0 else {
                 return None;
             };
+            let name = &path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
             let qualified = if name.contains('.') {
                 name.clone()
             } else {
@@ -1294,7 +1323,8 @@ fn extract_handle_methods(
             };
             wrapper_resource_fields
                 .get(&qualified)
-                .map(|field_names| (crate::short_name(name), field_names))
+                .zip(path.last())
+                .map(|(field_names, leaf)| (leaf.name.as_str(), field_names))
         });
         let extracted = extract_call_target(&method.body)
             .map(|target| (target, false))
@@ -1310,7 +1340,7 @@ fn extract_handle_methods(
             })
             .or_else(|| {
                 let field_names = wrapper_field_names?;
-                let receiver = method.params.first()?.name.as_str();
+                let receiver = method.params.first()?.name.name.as_str();
                 let ctx = WrapperForward {
                     receiver,
                     wrapper_simple_name,
@@ -1322,7 +1352,7 @@ fn extract_handle_methods(
             })
             .or_else(|| {
                 let field_names = wrapper_field_names?;
-                let receiver = method.params.first()?.name.as_str();
+                let receiver = method.params.first()?.name.name.as_str();
                 let ctx = WrapperForward {
                     receiver,
                     wrapper_simple_name,
@@ -1351,7 +1381,7 @@ fn extract_handle_methods(
                 .map_or(Ty::Unit, |rt| type_expr_to_ty(&rt.0, module_short));
             info.handle_methods.push(HandleMethod {
                 type_name: type_name.clone(),
-                method_name: method.name.clone(),
+                method_name: method.name.to_string(),
                 c_symbol,
                 params,
                 return_type,
@@ -2023,7 +2053,7 @@ mod tests {
 
         for (name, expected) in cases {
             let texpr = TypeExpr::Named {
-                name: name.to_string(),
+                path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new(name), 0..0),
                 type_args: None,
             };
             let got = type_expr_to_ty(&texpr, module);
@@ -2043,7 +2073,7 @@ mod tests {
         let retired = ["str", "float", "Float", "byte", "Bool", "Char", "Bytes"];
         for alias in retired {
             let texpr = TypeExpr::Named {
-                name: alias.to_string(),
+                path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new(alias), 0..0),
                 type_args: None,
             };
             let got = type_expr_to_ty(&texpr, "mymod");
@@ -2063,7 +2093,7 @@ mod tests {
 
         let texpr = TypeExpr::Slice(Box::new((
             TypeExpr::Named {
-                name: "i32".to_string(),
+                path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("i32"), 0..0),
                 type_args: None,
             },
             0..0,

@@ -20,7 +20,7 @@ use hew_types::{Ty, TypeCheckOutput};
 fn module_import(path: &[&str], source: &str) -> Spanned<Item> {
     let items = common::parse_program(source).items;
     let decl = ImportDecl {
-        path: path.iter().map(ToString::to_string).collect(),
+        path: hew_parser::ast::Path::from_spellings(path),
         spec: None,
         selection_trailing_comma: false,
         module_alias: None,

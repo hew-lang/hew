@@ -76,19 +76,12 @@ impl Parser<'_> {
                 while self.peek() != Some(&Token::RightParen) && !self.at_end() {
                     if self.peek().is_some_and(|tok| Self::is_ident_token(tok)) {
                         // Safe to call: we know the token is identifier-like
-                        let key = self
-                            .expect_ident()
-                            .map(|ident| ident.to_string())
-                            .unwrap_or_default();
+                        let key = self.expect_word();
                         // Check for key = value syntax
                         if self.eat(&Token::Equal) {
                             let value = if self.peek().is_some_and(|tok| Self::is_ident_token(tok))
                             {
-                                Some(
-                                    self.expect_ident()
-                                        .map(|ident| ident.to_string())
-                                        .unwrap_or_default(),
-                                )
+                                Some(self.expect_word())
                             } else if let Some(Token::StringLit(s) | Token::RawString(s)) =
                                 self.peek()
                             {
@@ -150,10 +143,7 @@ impl Parser<'_> {
                             Self::is_ident_token(tok)
                                 && !matches!(tok, Token::RightParen | Token::Comma)
                         }) {
-                            let unit = self
-                                .expect_ident()
-                                .map(|ident| ident.to_string())
-                                .unwrap_or_default();
+                            let unit = self.expect_word();
                             args.push(AttributeArg::Positional(unit));
                         }
                     } else {
@@ -926,7 +916,7 @@ impl Parser<'_> {
                 if has_consuming_self {
                     // Record the method name so the checker can validate ownership rules.
                     if let TypeBodyItem::Method(ref m) = item {
-                        consuming_methods.push(m.name.clone());
+                        consuming_methods.push(m.name);
                     }
                 }
                 body.push(item);

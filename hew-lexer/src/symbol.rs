@@ -153,7 +153,9 @@ impl<'de> serde::Deserialize<'de> for Symbol {
 /// Every identifier the parser reads from source carries [`SyntaxContext::ROOT`].
 /// A macro expansion mints further contexts; resolution binds an identifier by
 /// its `(Symbol, SyntaxContext)` pair.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 #[serde(transparent)]
 pub struct SyntaxContext(u32);
 
@@ -177,7 +179,10 @@ mod tests {
     #[test]
     fn preinterned_constants_match_their_spellings() {
         for (index, spelling) in sym::PREINTERNED.iter().enumerate() {
-            assert_eq!(Symbol::intern(spelling), Symbol(index as u32));
+            assert_eq!(
+                Symbol::intern(spelling),
+                Symbol(u32::try_from(index).unwrap())
+            );
         }
         assert_eq!(sym::MAIN.as_str(), "main");
     }

@@ -13,7 +13,7 @@
 
 use hew_hir::{HirExprKind, HirItem, HirStmtKind};
 use hew_parser::ast::{Item, Program};
-use hew_parser::module::{Module, ModuleGraph, ModuleId};
+use hew_parser::module::{Module, ModuleGraph, ModulePath};
 
 use crate::support;
 
@@ -54,12 +54,8 @@ fn main() {
     );
 
     // Build the module graph: root depends on `std::machines::toggle`.
-    let imported_id = ModuleId::new(vec![
-        "std".to_string(),
-        "machines".to_string(),
-        "toggle".to_string(),
-    ]);
-    let root_id = ModuleId::root();
+    let imported_id = ModulePath::new(["std", "machines", "toggle"]);
+    let root_id = ModulePath::root();
 
     let imported_items: Vec<_> = imported
         .program

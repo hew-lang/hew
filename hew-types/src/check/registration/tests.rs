@@ -6,6 +6,7 @@
     reason = "re-exported for nested test modules' glob imports"
 )]
 use super::*;
+use hew_parser::ast::Ident;
 
 #[cfg(test)]
 mod canonical_type_publication_tests {
@@ -116,7 +117,7 @@ mod failure_surface_lockstep_tests {
             .items
             .iter()
             .filter_map(|(item, _)| match item {
-                hew_parser::ast::Item::TypeDecl(decl) => Some(decl.name.clone()),
+                hew_parser::ast::Item::TypeDecl(decl) => Some(decl.name.to_string()),
                 _ => None,
             })
             .collect();
@@ -139,7 +140,9 @@ mod failure_surface_lockstep_tests {
             .items
             .iter()
             .find_map(|(item, _)| match item {
-                hew_parser::ast::Item::TypeDecl(decl) if decl.name == "CrashInfo" => Some(decl),
+                hew_parser::ast::Item::TypeDecl(decl) if decl.name.name.as_str() == "CrashInfo" => {
+                    Some(decl)
+                }
                 _ => None,
             })
             .expect("embedded FAILURE_HEW must declare CrashInfo");
@@ -147,7 +150,7 @@ mod failure_surface_lockstep_tests {
             .body
             .iter()
             .filter_map(|item| match item {
-                hew_parser::ast::TypeBodyItem::Field { name, .. } => Some(name.as_str()),
+                hew_parser::ast::TypeBodyItem::Field { name, .. } => Some(name.name.as_str()),
                 _ => None,
             })
             .collect();

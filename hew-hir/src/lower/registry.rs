@@ -272,7 +272,7 @@ impl LowerCtx {
         let type_params = func
             .type_params
             .as_ref()
-            .map(|params| params.iter().map(|p| p.name.clone()).collect())
+            .map(|params| params.iter().map(|p| p.name.to_string()).collect())
             .unwrap_or_default();
         self.fn_registry.insert(
             name.to_string(),
@@ -295,7 +295,8 @@ impl LowerCtx {
         impl_type_params: &[String],
     ) {
         let bare_type_name = Self::bare_impl_self_type_name(self_type_name);
-        let symbol = crate::node::HirImplBlock::method_symbol(self_type_name, &method.name);
+        let symbol =
+            crate::node::HirImplBlock::method_symbol(self_type_name, method.name.name.as_str());
         self.register_fn_entry(&symbol, method);
         if Self::is_var_self_method_for_type(method, Some(bare_type_name)) {
             if let Some(entry) = self.fn_registry.get_mut(&symbol) {
@@ -333,7 +334,7 @@ impl LowerCtx {
             .map_or(ResolvedTy::Unit, |ty| self.lower_type(ty));
         let param_tys = decl.params.iter().map(|p| self.lower_type(&p.ty)).collect();
         self.fn_registry.insert(
-            decl.name.clone(),
+            decl.name.to_string(),
             FnEntry {
                 id,
                 return_ty,
@@ -343,6 +344,6 @@ impl LowerCtx {
                 builtin_family: None,
             },
         );
-        self.extern_fn_names.insert(decl.name.clone());
+        self.extern_fn_names.insert(decl.name.to_string());
     }
 }

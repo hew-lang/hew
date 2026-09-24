@@ -78,16 +78,16 @@ impl<'ast> AstVisitor<'ast> for CallCollector {
     ) {
         match expr {
             Expr::Call { function, .. } => {
-                if let Expr::Identifier(name) = &function.0 {
+                if let Expr::Ident(name) = &function.0 {
                     self.calls.push(CallSite {
-                        name: name.clone(),
+                        name: name.to_string(),
                         span: span.clone(),
                     });
                 }
             }
             Expr::MethodCall { method, .. } => {
                 self.calls.push(CallSite {
-                    name: method.clone(),
+                    name: method.0.to_string(),
                     span: span.clone(),
                 });
             }
@@ -195,9 +195,9 @@ fn collect_calls_in_expr(spanned: &(Expr, Span), calls: &mut Vec<CallSite>) {
     match expr {
         Expr::Call { function, args, .. } => {
             let (func, _) = function.as_ref();
-            if let Expr::Identifier(name) = func {
+            if let Expr::Ident(name) = func {
                 calls.push(CallSite {
-                    name: name.clone(),
+                    name: name.to_string(),
                     span: expr_span.clone(),
                 });
             }
@@ -237,7 +237,7 @@ fn collect_calls_in_expr(spanned: &(Expr, Span), calls: &mut Vec<CallSite>) {
             ..
         } => {
             calls.push(CallSite {
-                name: method.clone(),
+                name: method.0.to_string(),
                 span: expr_span.clone(),
             });
             collect_calls_in_expr(receiver.as_ref(), calls);
@@ -384,7 +384,7 @@ fn collect_calls_in_expr(spanned: &(Expr, Span), calls: &mut Vec<CallSite>) {
             collect_calls_in_expr(rhs.as_ref(), calls);
         }
         Expr::Literal(_)
-        | Expr::Identifier(_)
+        | Expr::Ident(_)
         | Expr::QualifiedAssoc(_)
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)

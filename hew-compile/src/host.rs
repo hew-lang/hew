@@ -1,6 +1,7 @@
 //! Explicit source selection for the experimental synchronous C host boundary.
 
 use crate::{Session, SessionError, SessionOutput};
+use hew_parser::ast::Ident;
 
 impl Session {
     /// Compile exactly one public monomorphic function and its dependencies.
@@ -28,7 +29,7 @@ impl Session {
             .enumerate()
             .find_map(|(ordinal, (item, span))| match item {
                 hew_parser::ast::Item::Function(function)
-                    if function.name == name
+                    if function.name == Ident::new(name)
                         && function.visibility.is_pub()
                         && function.type_params.as_ref().is_none_or(Vec::is_empty) =>
                 {

@@ -124,7 +124,7 @@ fn actor_coalesce(
         let Some(param) = declared
             .params
             .iter()
-            .position(|param| param.name == *key_field)
+            .position(|param| param.name == key_field.name.as_str())
         else {
             continue;
         };

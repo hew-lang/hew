@@ -13,7 +13,7 @@ pub(super) use crate::module_registry::ModuleRegistry;
 pub(super) use crate::BuiltinType;
 pub(super) use hew_parser::ast::IntRadix;
 pub(super) use hew_parser::ast::{ImportName, TraitMethod, TypeExpr, Visibility};
-pub(super) use hew_parser::module::{Module, ModuleGraph, ModuleId};
+pub(super) use hew_parser::module::{Module, ModuleGraph, ModulePath};
 
 mod actor_delivery;
 mod actor_fields;
@@ -81,8 +81,8 @@ fn check_source_in_module_with_prelude_policy(
         "module source must parse cleanly, got: {:?}",
         parsed.errors
     );
-    let root_id = ModuleId::root();
-    let mod_id = ModuleId::new(module_path);
+    let root_id = ModulePath::root();
+    let mod_id = ModulePath::new(module_path);
     let module = Module {
         id: mod_id.clone(),
         items: parsed.program.items,
@@ -117,8 +117,8 @@ pub(super) fn check_source_in_canonical_std_module(
         "module source must parse cleanly: {:?}",
         parsed.errors
     );
-    let root_id = ModuleId::root();
-    let mod_id = ModuleId::new(module_path.to_vec());
+    let root_id = ModulePath::root();
+    let mod_id = ModulePath::new(module_path.to_vec());
     let leaf = module_path.last().expect("canonical std module has a leaf");
     let module_base = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -195,7 +195,7 @@ pub(super) fn make_pub_fn(name: &str, params: Vec<Param>, ret: Option<TypeExpr>)
         attributes: vec![],
         is_generator: false,
         visibility: Visibility::Pub,
-        name: name.to_string(),
+        name: Ident::new(name),
         type_params: None,
         params,
         return_type: ret.map(|te| (te, 0..0)),
@@ -219,12 +219,12 @@ pub(super) fn make_priv_fn(name: &str) -> FnDecl {
         attributes: vec![],
         is_generator: false,
         visibility: Visibility::Private,
-        name: name.to_string(),
+        name: Ident::new(name),
         type_params: None,
         params: vec![],
         return_type: Some((
             TypeExpr::Named {
-                name: "i32".to_string(),
+                path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("i32"), 0..0),
                 type_args: None,
             },
             0..0,
@@ -249,7 +249,7 @@ pub(super) fn make_user_import(
     items: Vec<Spanned<Item>>,
 ) -> ImportDecl {
     ImportDecl {
-        path: path.iter().map(ToString::to_string).collect(),
+        path: hew_parser::ast::Path::from_spellings(path),
         spec,
         selection_trailing_comma: false,
         module_alias: None,
@@ -288,7 +288,7 @@ pub(super) fn make_checker_with_trait(
         .map(|name| {
             let type_params = if with_generic_method {
                 Some(vec![TypeParam {
-                    name: "U".to_string(),
+                    name: Ident::new("U"),
                     bounds: vec![],
                 }])
             } else {
@@ -297,13 +297,16 @@ pub(super) fn make_checker_with_trait(
             TraitItem::Method(TraitMethod {
                 attributes: vec![],
                 consumes_self: false,
-                name: name.to_string(),
+                name: Ident::new(name),
                 type_params,
                 params: vec![Param {
-                    name: "val".to_string(),
+                    name: Ident::new("val"),
                     ty: (
                         TypeExpr::Named {
-                            name: "Self".to_string(),
+                            path: hew_parser::ast::Path::single(
+                                hew_parser::ast::Ident::new("Self"),
+                                0..0,
+                            ),
                             type_args: None,
                         },
                         0..4,
@@ -323,7 +326,7 @@ pub(super) fn make_checker_with_trait(
 
     if with_assoc {
         items.push(TraitItem::AssociatedType {
-            name: "Output".to_string(),
+            name: Ident::new("Output"),
             default: None,
             bounds: vec![],
             span: 0..0,
@@ -332,7 +335,7 @@ pub(super) fn make_checker_with_trait(
 
     let td = TraitDecl {
         visibility: hew_parser::ast::Visibility::Private,
-        name: trait_name.to_string(),
+        name: Ident::new(trait_name),
         type_params: None,
         super_traits: None,
         items,
@@ -367,8 +370,8 @@ pub(super) fn make_test_type_def(
 /// Build a minimal two-module `Program`: a root module (empty) and a single
 /// non-root module `mymod` containing the supplied items.
 pub(super) fn make_program_with_module_graph(non_root_items: Vec<Spanned<Item>>) -> Program {
-    let root_id = ModuleId::root();
-    let non_root_id = ModuleId::new(vec!["mymod".to_string()]);
+    let root_id = ModulePath::root();
+    let non_root_id = ModulePath::new(["mymod"]);
 
     let root_module = Module {
         id: root_id.clone(),

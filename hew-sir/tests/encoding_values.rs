@@ -3,7 +3,7 @@
 use hew_hir::{lower_program_host_target, ResolutionCtx};
 use hew_parser::{
     ast::Item,
-    module::{Module, ModuleGraph, ModuleId},
+    module::{Module, ModuleGraph, ModulePath},
 };
 use hew_sir::{BoundaryDecision, SemOpKind, SemTerminator, SirLoweringStatus};
 use hew_types::{module_registry::ModuleRegistry, Checker, EncodingOp, RuntimeCallFamily};
@@ -35,8 +35,8 @@ fn lower_encoding(format: &str, body: &str) -> hew_sir::SemModule {
         .unwrap()
         .join(format!("std/encoding/{format}/{format}.hew"))];
     let source_paths = import.resolved_source_paths.clone();
-    let root = ModuleId::root();
-    let encoding = ModuleId::new(vec!["std".into(), "encoding".into(), format.into()]);
+    let root = ModulePath::root();
+    let encoding = ModulePath::new(["std", "encoding", format]);
     let mut graph = ModuleGraph::new(root.clone());
     graph
         .add_module(Module {

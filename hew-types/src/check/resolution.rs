@@ -743,7 +743,9 @@ impl Checker {
             surface
                 .split(['.', ':'])
                 .filter(|component| !component.is_empty())
-                .eq(owner_segments.iter().map(String::as_str))
+                .eq(owner_segments
+                    .iter()
+                    .map(|(segment, _)| segment.name.as_str()))
         };
         if self
             .import_type_name_aliases
@@ -766,12 +768,16 @@ impl Checker {
                     .get(&(
                         self.current_module.clone(),
                         self.current_module_idx,
-                        module_binding.clone(),
+                        module_binding.0.to_string(),
                     ))
                     .is_some_and(|canonical_module| {
                         canonical_module
                             .split('.')
-                            .chain(nested_owner.iter().map(String::as_str))
+                            .chain(
+                                nested_owner
+                                    .iter()
+                                    .map(|(segment, _)| segment.name.as_str()),
+                            )
                             .eq(expected_segments.iter().copied())
                     })
             })
@@ -779,18 +785,24 @@ impl Checker {
             return true;
         }
 
-        if expected_segments
+        if expected_segments.iter().copied().eq(owner_segments
             .iter()
-            .copied()
-            .eq(owner_segments.iter().map(String::as_str))
+            .map(|(segment, _)| segment.name.as_str()))
         {
             return true;
         }
 
         if owner_segments.len() == 1
-            && expected_segments.last().copied() == owner_segments.first().map(String::as_str)
-            && !self.local_type_defs.contains(owner_segments[0].as_str())
-            && !self.source_type_defs.contains(owner_segments[0].as_str())
+            && expected_segments.last().copied()
+                == owner_segments
+                    .first()
+                    .map(|(segment, _)| segment.name.as_str())
+            && !self
+                .local_type_defs
+                .contains(owner_segments[0].0.name.as_str())
+            && !self
+                .source_type_defs
+                .contains(owner_segments[0].0.name.as_str())
         {
             return true;
         }
@@ -798,7 +810,11 @@ impl Checker {
         self.current_module_identity().is_some_and(|module| {
             module
                 .split('.')
-                .chain(owner_segments.iter().map(String::as_str))
+                .chain(
+                    owner_segments
+                        .iter()
+                        .map(|(segment, _)| segment.name.as_str()),
+                )
                 .eq(expected_segments.iter().copied())
         })
     }
@@ -1294,13 +1310,14 @@ impl Checker {
         for binding in &bound.assoc_type_bindings {
             let ty =
                 self.resolve_type_expr_tracking_holes_with_context(&binding.ty, hole_vars, context);
-            if !seen_assoc.insert(binding.name.clone()) {
+            if !seen_assoc.insert(binding.name.to_string()) {
                 self.report_error(
                     TypeErrorKind::InvalidOperation,
                     span,
                     format!(
                         "duplicate associated type binding `{}` in `dyn {}`",
-                        binding.name, bound.name
+                        binding.name,
+                        bound.path // TRANSITION(P1): deleted by A1 commit 2
                     ),
                 );
                 continue;
@@ -1311,30 +1328,30 @@ impl Checker {
                     &binding.ty.1,
                     format!(
                         "associated type binding `{}.{}` in a dyn trait object must be fully projected",
-                        bound.name, binding.name
+                        bound.path, binding.name // TRANSITION(P1): deleted by A1 commit 2
                     ),
                 );
             }
-            assoc_bindings.push((binding.name.clone(), ty));
+            assoc_bindings.push((binding.name.to_string(), ty));
         }
         assoc_bindings.sort_by(|a, b| a.0.cmp(&b.0));
 
-        let trait_lookup_key = self.trait_ref_lookup_key(&bound.name);
-        // `dyn X` names a trait; an unknown name has no vtable to build and no
-        // methods to dispatch, so refuse it here rather than letting it reach a
-        // coercion site as an unexplained type mismatch.
+        let trait_lookup_key = self.trait_ref_lookup_key(&bound.path.to_string()); // TRANSITION(P1): deleted by A1 commit 2
+                                                                                   // `dyn X` names a trait; an unknown name has no vtable to build and no
+                                                                                   // methods to dispatch, so refuse it here rather than letting it reach a
+                                                                                   // coercion site as an unexplained type mismatch.
         if !self.trait_defs.contains_key(&trait_lookup_key) {
             // A type annotation is resolved once per registration pass and
             // again at use, so report the span once.
             let dedup_key = (
-                bound.name.clone(),
+                bound.path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
                 SpanKey::in_module(span, self.current_module_idx),
             );
             if self.reported_unknown_dyn_traits.insert(dedup_key) {
                 self.report_error(
                     TypeErrorKind::UndefinedType,
                     span,
-                    format!("unknown trait `{}` in `dyn` type", bound.name),
+                    format!("unknown trait `{}` in `dyn` type", bound.path), // TRANSITION(P1): deleted by A1 commit 2
                 );
             }
         }
@@ -1360,26 +1377,26 @@ impl Checker {
                         && matches!(
                             &err.kind,
                             TypeErrorKind::MissingAssocTypeBinding { trait_name, missing: prev }
-                                if trait_name == &bound.name && prev == &missing
+                                if trait_name == &bound.path.to_string() && prev == &missing // TRANSITION(P1): deleted by A1 commit 2
                         )
                 });
                 if !already_reported {
                     self.report_error(
                         TypeErrorKind::MissingAssocTypeBinding {
-                            trait_name: bound.name.clone(),
+                            trait_name: bound.path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
                             missing: missing.clone(),
                         },
                         span,
                         format!(
                             "`dyn {}` must bind associated type{} {}; write `dyn {}<{}>`",
-                            bound.name,
+                            bound.path, // TRANSITION(P1): deleted by A1 commit 2
                             if missing.len() == 1 { "" } else { "s" },
                             missing
                                 .iter()
                                 .map(|name| format!("`{name}`"))
                                 .collect::<Vec<_>>()
                                 .join(", "),
-                            bound.name,
+                            bound.path, // TRANSITION(P1): deleted by A1 commit 2
                             missing
                                 .iter()
                                 .map(|name| format!("{name} = ..."))
@@ -1396,7 +1413,8 @@ impl Checker {
                         span,
                         format!(
                             "trait `{}` has no associated type `{}` for dyn binding",
-                            bound.name, assoc_name
+                            bound.path,
+                            assoc_name // TRANSITION(P1): deleted by A1 commit 2
                         ),
                     );
                 }
@@ -1404,7 +1422,7 @@ impl Checker {
         }
 
         crate::ty::TraitObjectBound {
-            trait_name: bound.name.clone(),
+            trait_name: bound.path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
             args,
             assoc_bindings,
         }
@@ -1646,7 +1664,7 @@ impl Checker {
                 let Some(module) = module_graph.modules.get(module_id) else {
                     continue;
                 };
-                let module_name = module_id.path.join(".");
+                let module_name = module_id.dotted();
                 self.report_unresolved_inference_in_items(
                     &module.items,
                     Some(module_name.as_str()),
@@ -1788,8 +1806,12 @@ impl Checker {
         for (item, span) in items {
             match item {
                 Item::Function(fd) => {
-                    if lookup_scoped_item(&self.fn_sig_inference_holes, module_name, &fd.name)
-                        .is_some_and(|hole_vars| self.inference_holes_still_unresolved(hole_vars))
+                    if lookup_scoped_item(
+                        &self.fn_sig_inference_holes,
+                        module_name,
+                        fd.name.name.as_str(),
+                    )
+                    .is_some_and(|hole_vars| self.inference_holes_still_unresolved(hole_vars))
                     {
                         self.errors.push(TypeError::inference_failed(
                             span.clone(),
@@ -1798,8 +1820,12 @@ impl Checker {
                     }
                 }
                 Item::TypeDecl(td) => {
-                    if lookup_scoped_item(&self.type_def_inference_holes, module_name, &td.name)
-                        .is_some_and(|hole_vars| self.inference_holes_still_unresolved(hole_vars))
+                    if lookup_scoped_item(
+                        &self.type_def_inference_holes,
+                        module_name,
+                        td.name.name.as_str(),
+                    )
+                    .is_some_and(|hole_vars| self.inference_holes_still_unresolved(hole_vars))
                     {
                         self.errors.push(TypeError::inference_failed(
                             span.clone(),
@@ -1830,7 +1856,7 @@ impl Checker {
                     if lookup_scoped_item(
                         &self.type_def_inference_holes,
                         module_name,
-                        &type_alias.name,
+                        type_alias.name.name.as_str(),
                     )
                     .is_some_and(|hole_vars| self.inference_holes_still_unresolved(hole_vars))
                     {
@@ -1841,8 +1867,12 @@ impl Checker {
                     }
                 }
                 Item::Actor(ad) => {
-                    if lookup_scoped_item(&self.type_def_inference_holes, module_name, &ad.name)
-                        .is_some_and(|hole_vars| self.inference_holes_still_unresolved(hole_vars))
+                    if lookup_scoped_item(
+                        &self.type_def_inference_holes,
+                        module_name,
+                        ad.name.name.as_str(),
+                    )
+                    .is_some_and(|hole_vars| self.inference_holes_still_unresolved(hole_vars))
                     {
                         self.errors.push(TypeError::inference_failed(
                             span.clone(),
@@ -1887,7 +1917,7 @@ impl Checker {
                         if lookup_scoped_item(
                             &self.fn_sig_inference_holes,
                             module_name,
-                            &function.name,
+                            function.name.name.as_str(),
                         )
                         .is_some_and(|hole_vars| self.inference_holes_still_unresolved(hole_vars))
                         {
@@ -1902,9 +1932,10 @@ impl Checker {
                 }
                 Item::Impl(id) => {
                     if let TypeExpr::Named {
-                        name: type_name, ..
+                        path: named_path, ..
                     } = &id.target_type.0
                     {
+                        let type_name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
                         for method in &id.methods {
                             let method_name = format!("{type_name}::{}", method.name);
                             if self.fn_sig_inference_holes.get(&method_name).is_some_and(
@@ -3120,7 +3151,7 @@ impl Checker {
                     );
                     return Ty::Error;
                 }
-                let trait_name = path.trait_path.source_spelling();
+                let trait_name = path.trait_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
                 let mut candidates = Vec::new();
                 if self.trait_defs.contains_key(&trait_name) {
                     candidates.push(trait_name.clone());
@@ -3158,7 +3189,7 @@ impl Checker {
                     if !info
                         .associated_types
                         .iter()
-                        .any(|associated| associated.name == *assoc_name)
+                        .any(|associated| associated.name == assoc_name.name.as_str())
                     {
                         let kind = if info.methods.iter().any(|method| method.name == *assoc_name) {
                             TypeErrorKind::PathKindMismatch
@@ -3183,11 +3214,15 @@ impl Checker {
                 Ty::AssocType {
                     base: Box::new(base),
                     trait_name: trait_key.into_boxed_str(),
-                    assoc_name: assoc_name.clone().into_boxed_str(),
+                    assoc_name: assoc_name.clone().to_string().into_boxed_str(),
                 }
             }
-            TypeExpr::Named { name, type_args } => {
-                // Handle `Self` type
+            TypeExpr::Named {
+                path: named_path,
+                type_args,
+            } => {
+                let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
+                                                    // Handle `Self` type
                 if name == "Self" {
                     if let Some((self_type_name, self_type_args)) = &self.current_self_type {
                         return Ty::normalize_named(self_type_name.clone(), self_type_args.clone());

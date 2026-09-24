@@ -444,8 +444,7 @@ impl LowerCtx {
     pub(super) fn record_shape_missing_plan(&mut self, pattern: &Spanned<Pattern>) -> bool {
         let record_shaped = matches!(
             &pattern.0,
-            Pattern::Struct { .. }
-                | Pattern::RecordShorthand { .. }
+            Pattern::RecordShorthand { .. }
                 | Pattern::NominalPath {
                     payload: Some(hew_parser::ast::NominalPatternPayload::Record { .. }),
                     ..

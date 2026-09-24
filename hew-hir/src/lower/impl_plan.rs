@@ -1,6 +1,7 @@
 //! Impl-body symbol planning and builtin impl-program injection.
 
 use super::*;
+use hew_parser::ast::Ident;
 
 /// Whether two linker spellings are compatibility projections of one
 /// checker-owned impl declaration.
@@ -202,12 +203,13 @@ pub(super) fn plan_impl_block_symbols(
         return;
     }
     let TypeExpr::Named {
-        name: self_type_name,
+        path: named_path,
         type_args,
     } = &impl_decl.target_type.0
     else {
         return;
     };
+    let self_type_name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
     if impl_type_param_names(impl_decl)
         .iter()
         .any(|type_param| type_param == self_type_name)
@@ -232,10 +234,11 @@ pub(super) fn plan_impl_block_symbols(
     };
     let mut planned: Vec<(hew_types::DefId, String)> = Vec::new();
     for method in &impl_decl.methods {
-        if skip_methods.contains(&method.name) {
+        if skip_methods.contains(method.name.name.as_str()) {
             continue;
         }
-        let symbol = crate::node::HirImplBlock::method_symbol(&symbol_self_name, &method.name);
+        let symbol =
+            crate::node::HirImplBlock::method_symbol(&symbol_self_name, method.name.name.as_str());
         let Some(declaration) = ctx.impl_method_declaration_ids.get(&symbol).cloned() else {
             continue;
         };
@@ -282,13 +285,18 @@ pub(super) fn materialized_default_body_plan(
     let Some(trait_bound) = &impl_decl.trait_bound else {
         return Vec::new();
     };
-    let Some(owner_key) = ctx.trait_declaration(&trait_bound.name) else {
+    let Some(owner_key) = ctx.trait_declaration(&trait_bound.path.to_string()) else {
+        // TRANSITION(P1): deleted by A1 commit 2
         return Vec::new();
     };
     let Some(defaults) = ctx.trait_defaults.get(&owner_key).cloned() else {
         return Vec::new();
     };
-    let overridden: HashSet<&str> = impl_decl.methods.iter().map(|m| m.name.as_str()).collect();
+    let overridden: HashSet<&str> = impl_decl
+        .methods
+        .iter()
+        .map(|m| m.name.name.as_str())
+        .collect();
     // Planning is a read-only projection: `lower_impl_block` lowers this exact
     // target type again and owns every diagnostic that resolution produces.
     // Discard anything emitted here so the plan cannot duplicate one.
@@ -297,20 +305,23 @@ pub(super) fn materialized_default_body_plan(
     ctx.diagnostics.truncate(diagnostics_before);
     let mut out = Vec::new();
     for default_method in &defaults {
-        if overridden.contains(default_method.method.name.as_str()) {
+        if overridden.contains(default_method.method.name.name.as_str()) {
             continue;
         }
         let declaring_trait = &default_method.trait_id;
         let Some(declaration) = LowerCtx::synthetic_default_impl_body_declaration(
             declaring_trait,
             Some(&self_ty),
-            &default_method.method.name,
+            default_method.method.name.name.as_str(),
         ) else {
             continue;
         };
         out.push((
             declaration,
-            crate::node::HirImplBlock::method_symbol(symbol_self_name, &default_method.method.name),
+            crate::node::HirImplBlock::method_symbol(
+                symbol_self_name,
+                default_method.method.name.name.as_str(),
+            ),
         ));
     }
     out
@@ -320,8 +331,8 @@ pub(super) fn plan_imported_impl_bodies(
     ctx: &mut LowerCtx,
     program: &Program,
     file_import_module_idx: &HashMap<usize, u32>,
-    file_import_modules: &HashSet<hew_parser::module::ModuleId>,
-    preferred_modules: &HashSet<hew_parser::module::ModuleId>,
+    file_import_modules: &HashSet<hew_parser::module::ModulePath>,
+    preferred_modules: &HashSet<hew_parser::module::ModulePath>,
     span_indices: &hew_parser::module::FileSpanIndices,
     skip_imported_builtin_impls: bool,
 ) {
@@ -337,7 +348,11 @@ pub(super) fn plan_imported_impl_bodies(
             .module_name(ctx.current_module_idx)
             .map(str::to_string);
         if let Item::Impl(impl_decl) = item {
-            if let TypeExpr::Named { name, .. } = &impl_decl.target_type.0 {
+            if let TypeExpr::Named {
+                path: named_path, ..
+            } = &impl_decl.target_type.0
+            {
+                let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
                 let symbol_self_name = file_import_module_idx
                     .get(&item_idx)
                     .and_then(|module_idx| span_indices.module_name(*module_idx))
@@ -363,7 +378,7 @@ pub(super) fn plan_imported_impl_bodies(
             continue;
         }
         let module = &module_graph.modules[module_id];
-        let source_module = module_id.path.join(".");
+        let source_module = module_id.dotted();
         if skip_imported_builtin_impls && source_module == "std.builtins" {
             continue;
         }
@@ -379,9 +394,13 @@ pub(super) fn plan_imported_impl_bodies(
             if item_is_duplicated_in_preferred_module(program, preferred_modules, module_id, item) {
                 continue;
             }
-            let TypeExpr::Named { name, .. } = &impl_decl.target_type.0 else {
+            let TypeExpr::Named {
+                path: named_path, ..
+            } = &impl_decl.target_type.0
+            else {
                 continue;
             };
+            let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
             let skip_methods = ctx.imported_impl_skip_methods(impl_decl, &source_module);
             let base_symbol_self_name = imported_impl_symbol_self_name(&source_module, name);
             plan_impl_block_symbols(ctx, impl_decl, &base_symbol_self_name, &skip_methods);
@@ -401,7 +420,7 @@ pub(super) fn trait_method_to_fn_decl(method: &TraitMethod) -> FnDecl {
         attributes: vec![],
         is_generator: false,
         visibility: hew_parser::ast::Visibility::Private,
-        name: method.name.clone(),
+        name: method.name,
         type_params: method.type_params.clone(),
         params: method.params.clone(),
         return_type: method.return_type.clone(),
@@ -429,15 +448,19 @@ pub(super) fn render_type_expr(ty: &TypeExpr) -> String {
         TypeExpr::QualifiedAssocPath(path) => format!(
             "<{} as {}>.{}",
             render_type_expr(&path.base.0),
-            path.trait_path.source_spelling(),
-            path.members.join(".")
+            path.trait_path,
+            path.members
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(".")
         ),
-        TypeExpr::Named { name, type_args } => match type_args {
+        TypeExpr::Named { path, type_args } => match type_args {
             Some(args) if !args.is_empty() => {
                 let inner: Vec<String> = args.iter().map(|a| render_type_expr(&a.0)).collect();
-                format!("{name}<{}>", inner.join(", "))
+                format!("{path}<{}>", inner.join(", "))
             }
-            _ => name.clone(),
+            _ => path.to_string(),
         },
         TypeExpr::Result { ok, err }
         | TypeExpr::Fallible {
@@ -534,15 +557,20 @@ pub(super) fn is_builtin_vec_iterator_impl(item: &Item) -> bool {
     let Some(trait_name) = impl_decl
         .trait_bound
         .as_ref()
-        .map(|bound| bound.name.as_str())
+        .map(|bound| bound.path.to_string())
+    // TRANSITION(P1): deleted by A1 commit 2
     else {
         return false;
     };
-    let TypeExpr::Named { name, .. } = &impl_decl.target_type.0 else {
+    let TypeExpr::Named {
+        path: named_path, ..
+    } = &impl_decl.target_type.0
+    else {
         return false;
     };
+    let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
     matches!(
-        (trait_name, name.as_str()),
+        (trait_name.as_str(), name.as_str()),
         ("Iterator", "VecIter" | "HashMapIter" | "Generator") | ("IntoIterator", "Vec")
     )
 }
@@ -587,7 +615,7 @@ pub(super) fn is_builtin_receiver_impl(item: &Item) -> bool {
 
 pub(super) fn is_builtin_request_owner_impl(item: &Item) -> bool {
     matches!(item, Item::Impl(decl) if matches!(&decl.target_type.0,
-        TypeExpr::Named { name, .. } if name == "ActorRequestOwner" || name == "std.builtins.ActorRequestOwner"))
+        TypeExpr::Named { path, .. } if matches!(path.to_string().as_str(), "ActorRequestOwner" | "std.builtins.ActorRequestOwner")))
 }
 
 pub(super) fn is_builtin_callable_impl(item: &Item) -> bool {
@@ -599,7 +627,7 @@ pub(super) fn is_builtin_callable_impl(item: &Item) -> bool {
 pub(super) fn impl_type_param_names(decl: &hew_parser::ast::ImplDecl) -> Vec<String> {
     decl.type_params
         .as_ref()
-        .map(|params| params.iter().map(|param| param.name.clone()).collect())
+        .map(|params| params.iter().map(|param| param.name.to_string()).collect())
         .unwrap_or_default()
 }
 
@@ -663,10 +691,19 @@ pub(super) fn canonicalize_injected_cursor_type_expr(ty: &mut TypeExpr) {
         TypeExpr::QualifiedAssocPath(path) => {
             canonicalize_injected_cursor_type_expr(&mut path.base.0);
         }
-        TypeExpr::Named { name, type_args } => {
-            let canonical = injected_builtin_impl_symbol_owner(name).to_string();
-            if canonical != *name {
-                *name = canonical;
+        TypeExpr::Named { path, type_args } => {
+            let name = path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
+            let canonical = injected_builtin_impl_symbol_owner(&name);
+            if canonical != name {
+                let span = path
+                    .segments
+                    .first()
+                    .map(|(_, span)| span.clone())
+                    .unwrap_or_default();
+                path.segments = canonical
+                    .split('.')
+                    .map(|segment| (Ident::new(segment), span.clone()))
+                    .collect();
             }
             if let Some(type_args) = type_args {
                 for arg in type_args {

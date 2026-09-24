@@ -15,10 +15,10 @@ use std::sync::Arc;
 
 use hew_parser::ast::{
     Block, CallArg, ContextVariantExpr, ContextVariantPattern, ContextVariantRecord,
-    DeclarationOrigin, Expr, FnDecl, IntRadix, Item, Literal, MachineDecl, MachineEvent,
+    DeclarationOrigin, Expr, FnDecl, Ident, IntRadix, Item, Literal, MachineDecl, MachineEvent,
     MachineState, MachineTransition, MachineTransitionBodyForm, MatchArm, NominalPatternPayload,
-    Pattern, PatternField, Program, ResourceMarker, Span, Spanned, Stmt, StringPart, TypeBodyItem,
-    TypeDecl, TypeDeclKind, TypeExpr, VariantDecl, VariantKind, Visibility,
+    Path, Pattern, PatternField, Program, ResourceMarker, Span, Spanned, Stmt, StringPart,
+    TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr, VariantDecl, VariantKind, Visibility,
 };
 
 use crate::error::{TypeError, TypeErrorKind};
@@ -91,7 +91,7 @@ pub(super) fn normalize(
             let old_len = old_items.len();
             let sources = graph
                 .item_sources
-                .get(&id.path.join("."))
+                .get(&id.dotted())
                 .cloned()
                 .unwrap_or_else(|| {
                     module
@@ -103,14 +103,14 @@ pub(super) fn normalize(
             module.items = if *id == graph.root && same_item_list(old_items, &program.items) {
                 normalized.items.clone()
             } else {
-                builder.items(old_items, &sources, &id.path.join("."))?
+                builder.items(old_items, &sources, &id.dotted())?
             };
-            if let Some(sources) = graph.item_sources.get_mut(&id.path.join(".")) {
+            if let Some(sources) = graph.item_sources.get_mut(&id.dotted()) {
                 // Each expansion appends its companions after all authored
                 // items, in authored machine order.
                 let old_sources = sources.clone();
                 for (ordinal, (item, _)) in old_items.iter().enumerate() {
-                    if matches!(item, Item::Machine(machine) if !crate::ty::is_reserved_type_name(&machine.name))
+                    if matches!(item, Item::Machine(machine) if !crate::ty::is_reserved_type_name(machine.name.name.as_str()))
                     {
                         let source = old_sources
                             .get(ordinal)
@@ -153,7 +153,7 @@ fn same_item_list(left: &[Spanned<Item>], right: &[Spanned<Item>]) -> bool {
 }
 
 type ExpansionKey = (Option<PathBuf>, String, Span, usize);
-type VariantFields = (String, Vec<(String, Spanned<TypeExpr>)>);
+type VariantFields = (Ident, Vec<(Ident, Spanned<TypeExpr>)>);
 
 struct Builder {
     next_span: usize,
@@ -182,16 +182,17 @@ impl Builder {
     fn stmt(&mut self, stmt: Stmt) -> Spanned<Stmt> {
         (stmt, self.span())
     }
-    fn ident(&mut self, name: impl Into<String>) -> Spanned<Expr> {
-        self.expr(Expr::Identifier(name.into()))
+    fn ident(&mut self, name: impl std::fmt::Display) -> Spanned<Expr> {
+        self.expr(Expr::Ident(Ident::new(&name.to_string())))
     }
-    fn ty(&mut self, name: impl Into<String>) -> Spanned<TypeExpr> {
+    fn ty(&mut self, name: impl std::fmt::Display) -> Spanned<TypeExpr> {
+        let span = self.span();
         (
             TypeExpr::Named {
-                name: name.into(),
+                path: Path::single(Ident::new(&name.to_string()), span.clone()),
                 type_args: None,
             },
-            self.span(),
+            span,
         )
     }
     fn block(&mut self, stmts: Vec<Spanned<Stmt>>, trailing: Spanned<Expr>) -> Spanned<Expr> {
@@ -202,12 +203,12 @@ impl Builder {
     }
     fn var(
         &mut self,
-        name: impl Into<String>,
+        name: impl std::fmt::Display,
         ty: Option<Spanned<TypeExpr>>,
         value: Spanned<Expr>,
     ) -> Spanned<Stmt> {
         self.stmt(Stmt::Var {
-            name: name.into(),
+            name: Ident::new(&name.to_string()),
             ty,
             value: Some(value),
         })
@@ -218,7 +219,7 @@ impl Builder {
         ty: Option<Spanned<TypeExpr>>,
         value: Spanned<Expr>,
     ) -> Spanned<Stmt> {
-        let pattern = (Pattern::Identifier(name.to_string()), self.span());
+        let pattern = (Pattern::Identifier(Ident::new(name)), self.span());
         self.stmt(Stmt::Let {
             pattern,
             ty,
@@ -226,29 +227,32 @@ impl Builder {
             else_block: None,
         })
     }
-    fn variant(&mut self, name: &str, fields: Vec<(String, Spanned<Expr>)>) -> Spanned<Expr> {
+    fn variant(&mut self, name: Ident, fields: Vec<(Ident, Spanned<Expr>)>) -> Spanned<Expr> {
         self.expr(Expr::ContextVariant(ContextVariantExpr {
-            name: name.to_string(),
+            name,
             record: (!fields.is_empty())
                 .then_some(Box::new(ContextVariantRecord { fields, base: None })),
         }))
     }
     fn pattern(
         &mut self,
-        name: &str,
-        fields: &[(String, Spanned<TypeExpr>)],
+        name: Ident,
+        fields: &[(Ident, Spanned<TypeExpr>)],
         prefix: &str,
     ) -> Spanned<Pattern> {
         let fields: Vec<_> = fields
             .iter()
             .map(|(name, _)| PatternField {
-                name: name.clone(),
-                pattern: Some((Pattern::Identifier(format!("{prefix}{name}")), self.span())),
+                name: *name,
+                pattern: Some((
+                    Pattern::Identifier(Ident::new(&format!("{prefix}{name}"))),
+                    self.span(),
+                )),
             })
             .collect();
         (
             Pattern::ContextVariant(ContextVariantPattern {
-                name: name.to_string(),
+                name,
                 payload: (!fields.is_empty())
                     .then_some(NominalPatternPayload::Record { fields, rest: None }),
             }),
@@ -262,26 +266,30 @@ impl Builder {
         let fields: Vec<_> = state
             .fields
             .iter()
-            .map(|(name, _)| (name.clone(), self.ident(format!("_$machine_state_{name}"))))
+            .map(|(name, _)| (*name, self.ident(format!("_$machine_state_{name}"))))
             .collect();
-        self.qualified_variant(machine, &state.name, fields)
+        self.qualified_variant(machine, state.name, fields)
     }
 
     fn qualified_variant(
         &mut self,
         machine: &MachineDecl,
-        name: &str,
-        fields: Vec<(String, Spanned<Expr>)>,
+        name: Ident,
+        fields: Vec<(Ident, Spanned<Expr>)>,
     ) -> Spanned<Expr> {
         if fields.is_empty() {
-            let object = self.ident(&machine.name);
+            let object = self.ident(machine.name);
+            let field = (name, self.span());
             return self.expr(Expr::FieldAccess {
                 object: Box::new(object),
-                field: name.to_string(),
+                field,
             });
         }
+        let path = Path {
+            segments: vec![(machine.name, self.span()), (name, self.span())],
+        };
         self.expr(Expr::StructInit {
-            name: format!("{}.{name}", machine.name),
+            path,
             fields,
             type_args: None,
             base: None,
@@ -313,7 +321,7 @@ impl Builder {
                     value: i128::from(default),
                     radix: IntRadix::Decimal,
                 }));
-                Some(self.let_value(&param.name, Some(ty), literal))
+                Some(self.let_value(param.name.name.as_str(), Some(ty), literal))
             })
             .collect()
     }
@@ -333,7 +341,11 @@ impl Builder {
         Ok(())
     }
 
-    fn refuse_const_shadow_name(&self, name: &str, machine: &MachineDecl) -> Result<(), TypeError> {
+    fn refuse_const_shadow_name(
+        &self,
+        name: Ident,
+        machine: &MachineDecl,
+    ) -> Result<(), TypeError> {
         if machine.const_params.iter().any(|param| param.name == name) {
             return Err(self.error(format!(
                 "`{name}` is a const parameter of machine `{}` and cannot be rebound in a machine body",
@@ -374,19 +386,20 @@ impl Builder {
             self.origin = span.clone();
             // Register the rejected state declaration through the ordinary
             // namespace authority, without bodies that would add cascades.
-            if crate::ty::is_reserved_type_name(&machine.name) {
-                let mut declaration = self.enum_decl(&machine.name, &[], machine.visibility);
+            if crate::ty::is_reserved_type_name(machine.name.name.as_str()) {
+                let mut declaration =
+                    self.enum_decl(machine.name.name.as_str(), &[], machine.visibility);
                 declaration.origin = DeclarationOrigin::MachineState;
                 result[ordinal] = (Item::TypeDecl(declaration), span.clone());
                 continue;
             }
             self.transitions
-                .entry((module.to_string(), machine.name.clone()))
+                .entry((module.to_string(), machine.name.to_string()))
                 .or_insert_with(|| {
                     machine
                         .transitions
                         .iter()
-                        .map(|rule| (rule.source_state.clone(), rule.body.1.clone()))
+                        .map(|rule| (rule.source_state.to_string(), rule.body.1.clone()))
                         .collect()
                 });
             let source = sources.get(ordinal).cloned();
@@ -437,11 +450,11 @@ impl Builder {
             Some(machine.type_params.clone())
         };
         let mut state_enum = self.enum_decl(
-            &machine.name,
+            machine.name,
             &machine
                 .states
                 .iter()
-                .map(|state| (state.name.clone(), state.fields.clone()))
+                .map(|state| (state.name, state.fields.clone()))
                 .collect::<Vec<_>>(),
             machine.visibility,
         );
@@ -449,32 +462,32 @@ impl Builder {
         state_enum.type_params.clone_from(&params);
         state_enum.where_clause.clone_from(&machine.where_clause);
         let mut event_enum = self.enum_decl(
-            &format!("{}Event", machine.name),
+            format!("{}Event", machine.name),
             &machine
                 .events
                 .iter()
-                .map(|event| (event.name.clone(), event.fields.clone()))
+                .map(|event| (event.name, event.fields.clone()))
                 .collect::<Vec<_>>(),
             machine.visibility,
         );
         event_enum.type_params.clone_from(&params);
         event_enum.where_clause.clone_from(&machine.where_clause);
         let mut output_enum = self.enum_decl(
-            &format!("{}Output", machine.name),
+            format!("{}Output", machine.name),
             &machine
                 .emits
                 .iter()
-                .map(|event| (event.name.clone(), event.fields.clone()))
+                .map(|event| (event.name, event.fields.clone()))
                 .collect::<Vec<_>>(),
             machine.visibility,
         );
         output_enum.type_params.clone_from(&params);
         output_enum.where_clause.clone_from(&machine.where_clause);
         let disposition_enum = self.enum_decl(
-            &format!("{}StepDisposition", machine.name),
+            format!("{}StepDisposition", machine.name),
             &[
-                ("Taken".to_string(), Vec::new()),
-                ("Ignored".to_string(), Vec::new()),
+                (Ident::new("Taken"), Vec::new()),
+                (Ident::new("Ignored"), Vec::new()),
             ],
             machine.visibility,
         );
@@ -486,7 +499,7 @@ impl Builder {
                 machine
                     .type_params
                     .iter()
-                    .map(|param| param.name.as_str())
+                    .map(|param| param.name.name.as_str())
                     .collect::<Vec<_>>()
                     .join(", ")
             )
@@ -534,8 +547,8 @@ impl Builder {
             .states
             .iter()
             .map(|state| {
-                let pattern = self.pattern(&state.name, &state.fields, "_$machine_in_");
-                let body = self.expr(Expr::Literal(Literal::String(state.name.clone())));
+                let pattern = self.pattern(state.name, &state.fields, "_$machine_in_");
+                let body = self.expr(Expr::Literal(Literal::String(state.name.to_string())));
                 MatchArm {
                     pattern,
                     guard: None,
@@ -573,7 +586,7 @@ impl Builder {
 
     fn enum_decl(
         &mut self,
-        name: &str,
+        name: impl std::fmt::Display,
         variants: &[VariantFields],
         visibility: Visibility,
     ) -> TypeDecl {
@@ -581,14 +594,14 @@ impl Builder {
             origin: DeclarationOrigin::MachineCompanion,
             visibility,
             kind: TypeDeclKind::Enum,
-            name: name.to_string(),
+            name: Ident::new(&name.to_string()),
             type_params: None,
             where_clause: None,
             body: variants
                 .iter()
                 .map(|(name, fields)| {
                     TypeBodyItem::Variant(VariantDecl {
-                        name: name.clone(),
+                        name: *name,
                         doc_comment: None,
                         span: self.span(),
                         kind: if fields.is_empty() {
@@ -632,8 +645,8 @@ impl Builder {
         {
             let declared = matches!(
                 &predicate.ty.0,
-                TypeExpr::Named { name, type_args: None }
-                    if machine.type_params.iter().any(|param| param.name == *name)
+                TypeExpr::Named { path, type_args: None }
+                    if path.as_single().is_some_and(|name| machine.type_params.iter().any(|param| param.name == name))
             );
             if !declared {
                 return Err(self.error(format!(
@@ -647,12 +660,12 @@ impl Builder {
                 .events
                 .iter()
                 .any(|event| event.name == transition.event_name)
-                || (transition.source_state != "_"
+                || (transition.source_state.name != hew_parser::ast::sym::UNDERSCORE
                     && !machine
                         .states
                         .iter()
                         .any(|state| state.name == transition.source_state))
-                || (transition.target_state != "_"
+                || (transition.target_state.name != hew_parser::ast::sym::UNDERSCORE
                     && !machine
                         .states
                         .iter()
@@ -662,12 +675,12 @@ impl Builder {
                     self.error("machine transition references an undeclared state or input event")
                 );
             }
-            if transition.target_state != "_"
+            if transition.target_state.name != hew_parser::ast::sym::UNDERSCORE
                 && !returns_variant(
                     &transition.body.0,
-                    &transition.target_state,
-                    &transition.source_state,
-                    &machine.name,
+                    transition.target_state,
+                    transition.source_state,
+                    machine.name,
                 )
             {
                 return Err(self.error(format!(
@@ -702,28 +715,29 @@ impl Builder {
 
     fn step_body(&mut self, machine: &MachineDecl) -> Result<Block, TypeError> {
         let element_ty = self.machine_ty(machine, "Output");
+        let outputs_span = self.span();
         let outputs_ty = (
             TypeExpr::Named {
-                name: "Vec".to_string(),
+                path: Path::single(Ident::new("Vec"), outputs_span.clone()),
                 type_args: Some(vec![element_ty]),
             },
-            self.span(),
+            outputs_span,
         );
         let empty = self.expr(Expr::Array(Vec::new()));
         let outputs = self.var(OUTPUTS, Some(outputs_ty), empty);
         let disposition_ty = self.ty(format!("{}StepDisposition", machine.name));
-        let taken = self.variant("Taken", Vec::new());
+        let taken = self.variant(Ident::new("Taken"), Vec::new());
         let disposition = self.var(DISPOSITION, Some(disposition_ty), taken);
         let mut state_arms = Vec::new();
         for state in &machine.states {
-            let pattern = self.pattern(&state.name, &state.fields, "_$machine_in_");
+            let pattern = self.pattern(state.name, &state.fields, "_$machine_in_");
             let locals = self.state_locals(state);
             let mut event_arms = Vec::new();
             for event in &machine.events {
-                let event_pattern = self.pattern(&event.name, &event.fields, "_$machine_event_");
+                let event_pattern = self.pattern(event.name, &event.fields, "_$machine_event_");
                 let rules = rules_for(machine, state, event);
                 let current = self.state_value(machine, state);
-                let ignored = self.variant("Ignored", Vec::new());
+                let ignored = self.variant(Ident::new("Ignored"), Vec::new());
                 let target = self.ident(DISPOSITION);
                 let set_ignored = self.stmt(Stmt::Assign {
                     target,
@@ -773,11 +787,12 @@ impl Builder {
         // ordinary candidate/output failure cleanup precedes any commit.
         let output_value = self.ident(OUTPUTS);
         let disposition_value = self.ident(DISPOSITION);
+        let report_path = Path::single(Ident::new(&format!("{}Step", machine.name)), self.span());
         let report = self.expr(Expr::StructInit {
-            name: format!("{}Step", machine.name),
+            path: report_path,
             fields: vec![
-                ("outputs".to_string(), output_value),
-                ("disposition".to_string(), disposition_value),
+                (Ident::new("outputs"), output_value),
+                (Ident::new("disposition"), disposition_value),
             ],
             type_args: None,
             base: None,
@@ -827,12 +842,13 @@ impl Builder {
         stmts.push(self.let_value("_$machine_next", Some(state_ty), body));
         let mut arms = Vec::new();
         for next in &machine.states {
-            let pattern = self.pattern(&next.name, &next.fields, "_$machine_in_");
+            let pattern = self.pattern(next.name, &next.fields, "_$machine_in_");
             let mut locals = self.state_locals(next);
             // A fixed target reaches exactly one arm, so only that arm runs its
             // entry hook. Rewriting the others would check a hook against an
             // input it can never observe.
-            let reachable = rule.target_state == "_" || rule.target_state == next.name;
+            let reachable = rule.target_state.name == hew_parser::ast::sym::UNDERSCORE
+                || rule.target_state == next.name;
             if let (true, Some(entry)) = (reachable, &next.entry) {
                 let entry = self.rewrite_block(entry, machine, next, event)?;
                 let entry = self.expr(Expr::Block(entry));
@@ -858,14 +874,18 @@ impl Builder {
         let args: Vec<_> = machine
             .type_params
             .iter()
-            .map(|param| self.ty(&param.name))
+            .map(|param| self.ty(param.name))
             .collect();
+        let span = self.span();
         (
             TypeExpr::Named {
-                name: format!("{}{suffix}", machine.name),
+                path: Path::single(
+                    Ident::new(&format!("{}{suffix}", machine.name)),
+                    span.clone(),
+                ),
                 type_args: (!args.is_empty()).then_some(args),
             },
-            self.span(),
+            span,
         )
     }
 
@@ -986,32 +1006,34 @@ impl Builder {
         event: &MachineEvent,
     ) -> Result<(), TypeError> {
         match expr {
-            Expr::Identifier(name) if name == "self" => return Err(self.self_refusal()),
-            Expr::Identifier(name) if name == "state" => {
+            Expr::Ident(name) if name.name.as_str() == "self" => return Err(self.self_refusal()),
+            Expr::Ident(name) if name.name.as_str() == "state" => {
                 *expr = self.state_value(machine, state).0;
             }
-            Expr::Identifier(name) if machine.states.iter().any(|state| state.name == *name) => {
-                let name = name.clone();
-                *expr = self.qualified_variant(machine, &name, Vec::new()).0;
+            Expr::Ident(name) if machine.states.iter().any(|state| state.name == *name) => {
+                let name = *name;
+                *expr = self.qualified_variant(machine, name, Vec::new()).0;
             }
-            Expr::FieldAccess { object, field } if matches!(&object.0, Expr::Identifier(name) if name == "state") =>
+            Expr::FieldAccess { object, field } if matches!(&object.0, Expr::Ident(name) if name.name.as_str() == "state") =>
             {
-                if !state.fields.iter().any(|(name, _)| name == field) {
+                let field = field.0;
+                if !state.fields.iter().any(|(name, _)| *name == field) {
                     return Err(
                         self.error(format!("state `{}` has no field `{field}`", state.name))
                     );
                 }
-                *expr = Expr::Identifier(format!("_$machine_state_{field}"));
+                *expr = Expr::Ident(Ident::new(&format!("_$machine_state_{field}")));
             }
-            Expr::FieldAccess { object, field } if matches!(&object.0, Expr::Identifier(name) if name == "event") =>
+            Expr::FieldAccess { object, field } if matches!(&object.0, Expr::Ident(name) if name.name.as_str() == "event") =>
             {
-                if !event.fields.iter().any(|(name, _)| name == field) {
+                let field = field.0;
+                if !event.fields.iter().any(|(name, _)| *name == field) {
                     return Err(self.error(format!(
                         "input event `{}` has no field `{field}`",
                         event.name
                     )));
                 }
-                *expr = Expr::Identifier(format!("_$machine_event_{field}"));
+                *expr = Expr::Ident(Ident::new(&format!("_$machine_event_{field}")));
             }
             Expr::MachineEmit { event_name, fields } => {
                 if !machine
@@ -1026,11 +1048,12 @@ impl Builder {
                 for (_, value) in fields.iter_mut() {
                     *value = self.rewrite(value, machine, state, event)?;
                 }
-                let value = self.variant(event_name, fields.clone());
+                let value = self.variant(*event_name, fields.clone());
                 let receiver = self.ident(OUTPUTS);
+                let method = (Ident::new("push"), self.span());
                 *expr = Expr::MethodCall {
                     receiver: Box::new(receiver),
-                    method: "push".to_string(),
+                    method,
                     args: vec![CallArg::Positional(value)],
                 };
             }
@@ -1114,7 +1137,7 @@ impl Builder {
                 }
             }
             Expr::StructInit {
-                name,
+                path,
                 fields,
                 base,
                 type_args,
@@ -1126,27 +1149,29 @@ impl Builder {
                 // otherwise write, so `..state` resolves through the same
                 // state-field rule as `state.field`, and an unreadable base
                 // is refused by ordinary field-access checking.
-                let state_name = name
-                    .strip_prefix(&format!("{}.", machine.name))
-                    .unwrap_or(name)
-                    .to_string();
+                let state_name = match path.segments.as_slice() {
+                    [(owner, _), (leaf, _)] if *owner == machine.name => Some(*leaf),
+                    [(leaf, _)] => Some(*leaf),
+                    _ => None,
+                };
                 let declared = machine
                     .states
                     .iter()
-                    .find(|state| state.name == state_name)
+                    .find(|state| Some(state.name) == state_name)
                     .map(|state| state.fields.clone());
                 if let (Some(declared), Some(base_expr)) = (declared.as_ref(), base.clone()) {
                     let named: Vec<String> =
-                        fields.iter().map(|(field, _)| field.clone()).collect();
+                        fields.iter().map(|(field, _)| field.to_string()).collect();
                     for (field, _) in declared {
-                        if named.iter().any(|seen| seen == field) {
+                        if named.iter().any(|seen| seen == field.name.as_str()) {
                             continue;
                         }
+                        let field_span = self.span();
                         let read = self.expr(Expr::FieldAccess {
                             object: base_expr.clone(),
-                            field: field.clone(),
+                            field: (*field, field_span),
                         });
-                        fields.push((field.clone(), read));
+                        fields.push((*field, read));
                     }
                     *base = None;
                 }
@@ -1161,8 +1186,10 @@ impl Builder {
                         self.refresh_type(ty);
                     }
                 }
-                if machine.states.iter().any(|state| state.name == *name) {
-                    *expr = self.variant(name, fields.clone()).0;
+                if let Some(name) = path.as_single() {
+                    if machine.states.iter().any(|state| state.name == name) {
+                        *expr = self.variant(name, fields.clone()).0;
+                    }
                 }
             }
             Expr::Cast { expr, ty } => {
@@ -1185,7 +1212,7 @@ impl Builder {
                 }
             }
             Expr::Literal(_)
-            | Expr::Identifier(_)
+            | Expr::Ident(_)
             | Expr::RegexLiteral(_)
             | Expr::ByteStringLiteral(_)
             | Expr::ByteArrayLiteral(_) => {}
@@ -1239,7 +1266,7 @@ impl Builder {
     fn refresh_pattern(&mut self, pattern: &mut Spanned<Pattern>) {
         pattern.1 = self.span();
         match &mut pattern.0 {
-            Pattern::Constructor { patterns, .. } | Pattern::Tuple(patterns) => {
+            Pattern::Tuple(patterns) => {
                 for pattern in patterns {
                     self.refresh_pattern(pattern);
                 }
@@ -1248,7 +1275,7 @@ impl Builder {
                 self.refresh_pattern(left);
                 self.refresh_pattern(right);
             }
-            Pattern::Struct { fields, rest, .. } | Pattern::RecordShorthand { fields, rest } => {
+            Pattern::RecordShorthand { fields, rest } => {
                 for field in fields {
                     if let Some(pattern) = &mut field.pattern {
                         self.refresh_pattern(pattern);
@@ -1315,7 +1342,7 @@ impl Builder {
                     }
                 }
                 Stmt::Var { name, ty, value } => {
-                    self.refuse_const_shadow_name(name, machine)?;
+                    self.refuse_const_shadow_name(*name, machine)?;
                     if let Some(ty) = ty {
                         self.refresh_type(ty);
                     }
@@ -1391,10 +1418,10 @@ impl Builder {
 }
 
 /// Names a pattern binds, for the const-parameter shadowing refusal.
-fn collect_pattern_bindings<'a>(pattern: &'a Pattern, names: &mut Vec<&'a str>) {
+fn collect_pattern_bindings(pattern: &Pattern, names: &mut Vec<Ident>) {
     match pattern {
-        Pattern::Identifier(name) => names.push(name),
-        Pattern::Constructor { patterns, .. } | Pattern::Tuple(patterns) => {
+        Pattern::Identifier(name) => names.push(*name),
+        Pattern::Tuple(patterns) => {
             for (pattern, _) in patterns {
                 collect_pattern_bindings(pattern, names);
             }
@@ -1403,7 +1430,7 @@ fn collect_pattern_bindings<'a>(pattern: &'a Pattern, names: &mut Vec<&'a str>) 
             collect_pattern_bindings(&left.0, names);
             collect_pattern_bindings(&right.0, names);
         }
-        Pattern::Struct { fields, .. } | Pattern::RecordShorthand { fields, .. } => {
+        Pattern::RecordShorthand { fields, .. } => {
             collect_pattern_fields(fields, names);
         }
         Pattern::ContextVariant(ContextVariantPattern {
@@ -1431,12 +1458,12 @@ fn collect_pattern_bindings<'a>(pattern: &'a Pattern, names: &mut Vec<&'a str>) 
     }
 }
 
-fn collect_pattern_fields<'a>(fields: &'a [PatternField], names: &mut Vec<&'a str>) {
+fn collect_pattern_fields(fields: &[PatternField], names: &mut Vec<Ident>) {
     for field in fields {
         match &field.pattern {
             Some((pattern, _)) => collect_pattern_bindings(pattern, names),
             // `{ a }` shorthand binds the field name itself.
-            None => names.push(&field.name),
+            None => names.push(field.name),
         }
     }
 }
@@ -1453,12 +1480,10 @@ fn rules_for<'a>(
         .filter(|rule| rule.event_name == event.name && rule.source_state == state.name)
         .collect();
     if !rules.iter().any(|rule| rule.guard.is_none()) {
-        rules.extend(
-            machine
-                .transitions
-                .iter()
-                .filter(|rule| rule.event_name == event.name && rule.source_state == "_"),
-        );
+        rules.extend(machine.transitions.iter().filter(|rule| {
+            rule.event_name == event.name
+                && rule.source_state.name == hew_parser::ast::sym::UNDERSCORE
+        }));
     }
     rules
 }
@@ -1469,14 +1494,14 @@ fn rules_for<'a>(
 /// payload, so a rule whose source and target are the same state produces that
 /// state by naming it, and one whose source is a wildcard or a different state
 /// does not.
-fn returns_variant(expr: &Expr, target: &str, source: &str, machine: &str) -> bool {
+fn returns_variant(expr: &Expr, target: Ident, source: Ident, machine: Ident) -> bool {
     match expr {
         Expr::ContextVariant(context) => context.name == target,
-        Expr::Identifier(name) if name == "state" => source == target,
-        Expr::Identifier(name) => name == target,
-        Expr::StructInit { name, .. } => name == target || name == &format!("{machine}.{target}"),
+        Expr::Ident(name) if name.name.as_str() == "state" => source == target,
+        Expr::Ident(name) => *name == target,
+        Expr::StructInit { path, .. } => path_names_state(path, target, machine),
         Expr::FieldAccess { object, field } => {
-            field == target && matches!(&object.0, Expr::Identifier(name) if name == machine)
+            field.0 == target && matches!(&object.0, Expr::Ident(name) if *name == machine)
         }
         Expr::Block(block) => block
             .trailing_expr
@@ -1516,7 +1541,9 @@ fn redundant_target_refusal(
     transition: &MachineTransition,
     machine: &MachineDecl,
 ) -> Option<TypeError> {
-    if transition.target_state == "_" || transition.body_form != MachineTransitionBodyForm::Block {
+    if transition.target_state.name == hew_parser::ast::sym::UNDERSCORE
+        || transition.body_form != MachineTransitionBodyForm::Block
+    {
         return None;
     }
     let Expr::Block(block) = &transition.body.0 else {
@@ -1526,7 +1553,7 @@ fn redundant_target_refusal(
         return None;
     }
     let trailing = block.trailing_expr.as_deref()?;
-    if !names_target(&trailing.0, &transition.target_state, &machine.name) {
+    if !names_target(&trailing.0, transition.target_state, machine.name) {
         return None;
     }
     let target = &transition.target_state;
@@ -1552,21 +1579,30 @@ fn redundant_target_refusal(
 }
 
 /// Does `expr` name `target` directly, in any of its spellings?
-fn names_target(expr: &Expr, target: &str, machine: &str) -> bool {
+fn names_target(expr: &Expr, target: Ident, machine: Ident) -> bool {
     match expr {
-        Expr::Identifier(name) => name == target,
+        Expr::Ident(name) => *name == target,
         Expr::ContextVariant(context) => context.name == target,
-        Expr::StructInit { name, .. } => name == target || name == &format!("{machine}.{target}"),
+        Expr::StructInit { path, .. } => path_names_state(path, target, machine),
         Expr::FieldAccess { object, field } => {
-            field == target && matches!(&object.0, Expr::Identifier(name) if name == machine)
+            field.0 == target && matches!(&object.0, Expr::Ident(name) if *name == machine)
         }
+        _ => false,
+    }
+}
+
+/// `target` or `machine.target`: the two path spellings of a machine state.
+fn path_names_state(path: &Path, target: Ident, machine: Ident) -> bool {
+    match path.segments.as_slice() {
+        [(leaf, _)] => *leaf == target,
+        [(owner, _), (leaf, _)] => *owner == machine && *leaf == target,
         _ => false,
     }
 }
 
 fn item_sources(
     graph: &hew_parser::module::ModuleGraph,
-    id: &hew_parser::module::ModuleId,
+    id: &hew_parser::module::ModulePath,
 ) -> Vec<PathBuf> {
     let Some(module) = graph.modules.get(id) else {
         return Vec::new();

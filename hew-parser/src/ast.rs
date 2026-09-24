@@ -67,7 +67,7 @@ impl std::fmt::Display for CallableCapabilities {
 
 /// An identifier as written: its interned spelling and the hygiene context
 /// that wrote it. Source identifiers carry [`SyntaxContext::ROOT`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct Ident {
     pub name: Symbol,
     pub ctx: SyntaxContext,
@@ -90,9 +90,21 @@ impl Ident {
     }
 }
 
+/// Prints the spelling, with the context only when it is not the source
+/// context, so AST dumps read like source.
+impl std::fmt::Debug for Ident {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&self.name, f)?;
+        if self.ctx != SyntaxContext::ROOT {
+            write!(f, "#{:?}", self.ctx)?;
+        }
+        Ok(())
+    }
+}
+
 impl std::fmt::Display for Ident {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.name.fmt(f)
+        std::fmt::Display::fmt(&self.name, f)
     }
 }
 
@@ -115,6 +127,18 @@ impl Path {
         }
     }
 
+    /// A path the compiler writes rather than parses: source-context
+    /// segments with empty spans.
+    #[must_use]
+    pub fn from_spellings(spellings: &[&str]) -> Self {
+        Self {
+            segments: spellings
+                .iter()
+                .map(|spelling| (Ident::new(spelling), 0..0))
+                .collect(),
+        }
+    }
+
     /// The path spelled by an `Ident`/`FieldAccess` chain, or `None` when the
     /// expression is anything else.
     #[must_use]
@@ -130,14 +154,10 @@ impl Path {
         }
     }
 
-    /// The final segment.
-    ///
-    /// # Panics
-    ///
-    /// Panics on an empty path; the parser never builds one for a name.
+    /// The final segment; `None` only for the empty path of a file import.
     #[must_use]
-    pub fn last(&self) -> Ident {
-        self.segments.last().expect("a name path has a segment").0
+    pub fn last(&self) -> Option<Ident> {
+        self.segments.last().map(|(ident, _)| *ident)
     }
 
     /// The identifier when the path has exactly one segment.
@@ -157,7 +177,7 @@ impl std::fmt::Display for Path {
             if index > 0 {
                 f.write_str(".")?;
             }
-            segment.fmt(f)?;
+            std::fmt::Display::fmt(segment, f)?;
         }
         Ok(())
     }

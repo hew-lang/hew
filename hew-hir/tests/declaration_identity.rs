@@ -1,7 +1,7 @@
 use hew_hir::{lower_program, HirDiagnosticKind, HirItem, ResolutionCtx, TargetArch};
 use hew_parser::{
     ast::Program,
-    module::{Module, ModuleGraph, ModuleId},
+    module::{Module, ModuleGraph, ModulePath},
 };
 use hew_types::{module_registry::ModuleRegistry, Checker, TypeCheckOutput};
 
@@ -171,8 +171,8 @@ fn missing_or_desynchronised_identity_emits_no_source_artifact() {
 fn directory_peer_declarations_publish_under_the_assembling_module() {
     let parsed = hew_parser::parse("pub fn peer_value() -> i64 { 7 }");
     assert!(parsed.errors.is_empty());
-    let root = ModuleId::root();
-    let package = ModuleId::new(vec!["pkg".to_string()]);
+    let root = ModulePath::root();
+    let package = ModulePath::new(["pkg"]);
     let primary = std::path::PathBuf::from("/nonexistent/pkg/pkg.hew");
     let peer = std::path::PathBuf::from("/nonexistent/pkg/peer.hew");
     let mut graph = ModuleGraph::new(root.clone());

@@ -32,10 +32,10 @@ fn nested_same_final_modules_resolve_own_nominals_to_full_identity() {
 
     let annotation = (
         TypeExpr::Named {
-            name: "Box".to_string(),
+            path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("Box"), 0..0),
             type_args: Some(vec![(
                 TypeExpr::Named {
-                    name: "i64".to_string(),
+                    path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("i64"), 0..0),
                     type_args: None,
                 },
                 0..0,
@@ -75,7 +75,7 @@ fn root_enum_shadows_generated_delivery_type_member() {
     );
 
     let head = checker
-        .resolve_dotted_type_head(&(Expr::Identifier("Delivery".to_string()), 0..8), "Idle")
+        .resolve_dotted_type_head(&(Expr::Ident(Ident::new("Delivery")), 0..8), "Idle")
         .expect("root enum member resolves");
     assert_eq!(head.canonical_type, "Delivery");
 }
@@ -349,12 +349,12 @@ fn module_graph_body_type_error_is_reported() {
         attributes: vec![],
         is_generator: false,
         visibility: Visibility::Pub,
-        name: "bad".to_string(),
+        name: Ident::new("bad"),
         type_params: None,
         params: vec![],
         return_type: Some((
             TypeExpr::Named {
-                name: "i64".to_string(),
+                path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("i64"), 0..0),
                 type_args: None,
             },
             0..3,
@@ -404,7 +404,7 @@ fn module_graph_body_infer_return_resolves_without_error() {
         attributes: vec![],
         is_generator: false,
         visibility: Visibility::Pub,
-        name: "inferred".to_string(),
+        name: Ident::new("inferred"),
         type_params: None,
         params: vec![],
         return_type: Some((TypeExpr::Infer, 0..1)),
@@ -440,13 +440,16 @@ fn module_graph_body_local_binding_named_like_module_still_resolves_methods() {
         attributes: vec![],
         is_generator: false,
         visibility: Visibility::Pub,
-        name: "ok".to_string(),
+        name: Ident::new("ok"),
         type_params: None,
         params: vec![Param {
-            name: "math".to_string(),
+            name: Ident::new("math"),
             ty: (
                 TypeExpr::Named {
-                    name: "string".to_string(),
+                    path: hew_parser::ast::Path::single(
+                        hew_parser::ast::Ident::new("string"),
+                        0..0,
+                    ),
                     type_args: None,
                 },
                 0..6,
@@ -456,7 +459,7 @@ fn module_graph_body_local_binding_named_like_module_still_resolves_methods() {
         }],
         return_type: Some((
             TypeExpr::Named {
-                name: "bool".to_string(),
+                path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("bool"), 0..0),
                 type_args: None,
             },
             0..4,
@@ -466,8 +469,8 @@ fn module_graph_body_local_binding_named_like_module_still_resolves_methods() {
             stmts: vec![],
             trailing_expr: Some(Box::new((
                 Expr::MethodCall {
-                    receiver: Box::new((Expr::Identifier("math".to_string()), 0..4)),
-                    method: "contains".to_string(),
+                    receiver: Box::new((Expr::Ident(Ident::new("math")), 0..4)),
+                    method: (Ident::new("contains"), 0..0),
                     args: vec![CallArg::Positional((
                         Expr::Literal(Literal::String("x".to_string())),
                         5..8,
@@ -506,7 +509,7 @@ fn module_qualified_call_rejects_private_body_only_signature() {
         },
     );
 
-    let receiver = (Expr::Identifier("mymod".to_string()), 0..5);
+    let receiver = (Expr::Ident(Ident::new("mymod")), 0..5);
     let ty = checker.check_method_call(&receiver, "secret", &[], &(0..12));
 
     assert_eq!(ty, Ty::Error);
@@ -535,7 +538,7 @@ fn module_qualified_call_accepts_exported_signature() {
         },
     );
 
-    let receiver = (Expr::Identifier("mymod".to_string()), 0..5);
+    let receiver = (Expr::Ident(Ident::new("mymod")), 0..5);
     let ty = checker.check_method_call(&receiver, "visible", &[], &(0..13));
 
     assert_eq!(ty, Ty::I64);
@@ -551,15 +554,15 @@ fn module_graph_body_private_local_type_is_available() {
     let local_type = TypeDecl {
         origin: hew_parser::ast::DeclarationOrigin::Authored,
         visibility: Visibility::Private,
-        name: "Local".to_string(),
+        name: Ident::new("Local"),
         type_params: None,
         where_clause: None,
         kind: TypeDeclKind::Struct,
         body: vec![TypeBodyItem::Field {
-            name: "x".to_string(),
+            name: Ident::new("x"),
             ty: (
                 TypeExpr::Named {
-                    name: "i64".to_string(),
+                    path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("i64"), 0..0),
                     type_args: None,
                 },
                 0..1,
@@ -582,12 +585,12 @@ fn module_graph_body_private_local_type_is_available() {
         attributes: vec![],
         is_generator: false,
         visibility: Visibility::Pub,
-        name: "ok".to_string(),
+        name: Ident::new("ok"),
         type_params: None,
         params: vec![],
         return_type: Some((
             TypeExpr::Named {
-                name: "i64".to_string(),
+                path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("i64"), 0..0),
                 type_args: None,
             },
             0..3,
@@ -596,12 +599,15 @@ fn module_graph_body_private_local_type_is_available() {
         body: Block {
             stmts: vec![(
                 Stmt::Let {
-                    pattern: (Pattern::Identifier("a".to_string()), 0..1),
+                    pattern: (Pattern::Identifier(Ident::new("a")), 0..1),
                     ty: None,
                     value: Some((
                         Expr::StructInit {
-                            name: "Local".to_string(),
-                            fields: vec![("x".to_string(), make_int_literal(1, 0..1))],
+                            path: hew_parser::ast::Path::single(
+                                hew_parser::ast::Ident::new("Local"),
+                                0..0,
+                            ),
+                            fields: vec![(Ident::new("x"), make_int_literal(1, 0..1))],
                             type_args: None,
                             base: None,
                         },
@@ -613,8 +619,8 @@ fn module_graph_body_private_local_type_is_available() {
             )],
             trailing_expr: Some(Box::new((
                 Expr::FieldAccess {
-                    object: Box::new((Expr::Identifier("a".to_string()), 0..1)),
-                    field: "x".to_string(),
+                    object: Box::new((Expr::Ident(Ident::new("a")), 0..1)),
+                    field: (Ident::new("x"), 0..0),
                 },
                 11..14,
             ))),
@@ -647,11 +653,11 @@ fn module_graph_body_private_local_type_is_available() {
 )]
 fn module_graph_body_prefers_same_module_private_helper_over_global_bare_name() {
     let i64_ty = TypeExpr::Named {
-        name: "i64".to_string(),
+        path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("i64"), 0..0),
         type_args: None,
     };
     let string_ty = TypeExpr::Named {
-        name: "string".to_string(),
+        path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("string"), 0..0),
         type_args: None,
     };
 
@@ -660,7 +666,7 @@ fn module_graph_body_prefers_same_module_private_helper_over_global_bare_name() 
         attributes: vec![],
         is_generator: false,
         visibility: Visibility::Private,
-        name: "helper".to_string(),
+        name: Ident::new("helper"),
         type_params: None,
         params: vec![],
         return_type: Some((i64_ty.clone(), 0..3)),
@@ -681,7 +687,7 @@ fn module_graph_body_prefers_same_module_private_helper_over_global_bare_name() 
         attributes: vec![],
         is_generator: false,
         visibility: Visibility::Pub,
-        name: "ok".to_string(),
+        name: Ident::new("ok"),
         type_params: None,
         params: vec![],
         return_type: Some((i64_ty, 0..3)),
@@ -690,7 +696,7 @@ fn module_graph_body_prefers_same_module_private_helper_over_global_bare_name() 
             stmts: vec![],
             trailing_expr: Some(Box::new((
                 Expr::Call {
-                    function: Box::new((Expr::Identifier("helper".to_string()), 0..6)),
+                    function: Box::new((Expr::Ident(Ident::new("helper")), 0..6)),
                     type_args: None,
                     args: vec![],
                     is_tail_call: false,
@@ -710,7 +716,7 @@ fn module_graph_body_prefers_same_module_private_helper_over_global_bare_name() 
         attributes: vec![],
         is_generator: false,
         visibility: Visibility::Private,
-        name: "helper".to_string(),
+        name: Ident::new("helper"),
         type_params: None,
         params: vec![],
         return_type: Some((string_ty, 10..16)),
@@ -729,9 +735,9 @@ fn module_graph_body_prefers_same_module_private_helper_over_global_bare_name() 
         consumes_self: false,
     };
 
-    let root_id = ModuleId::root();
-    let alpha_id = ModuleId::new(vec!["alpha".to_string()]);
-    let beta_id = ModuleId::new(vec!["beta".to_string()]);
+    let root_id = ModulePath::root();
+    let alpha_id = ModulePath::new(["alpha"]);
+    let beta_id = ModulePath::new(["beta"]);
     let root_module = Module {
         id: root_id.clone(),
         items: vec![],
@@ -788,16 +794,16 @@ fn module_graph_body_prefers_same_module_private_helper_over_global_bare_name() 
 #[test]
 fn adopting_declaration_keeps_its_own_provenance() {
     let i64_ty = TypeExpr::Named {
-        name: "i64".to_string(),
+        path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("i64"), 0..0),
         type_args: None,
     };
     let declaration = |fn_name: &str, span: Span| ExternBlock {
         abi: "C".to_string(),
         functions: vec![ExternFnDecl {
             attributes: Vec::new(),
-            name: fn_name.to_string(),
+            name: Ident::new(fn_name),
             params: vec![hew_parser::ast::Param {
-                name: "x".to_string(),
+                name: Ident::new("x"),
                 ty: (i64_ty.clone(), 0..3),
                 is_mutable: false,
                 is_consume: false,
@@ -808,9 +814,9 @@ fn adopting_declaration_keeps_its_own_provenance() {
         }],
     };
 
-    let root_id = ModuleId::root();
-    let alpha_id = ModuleId::new(vec!["alpha".to_string()]);
-    let beta_id = ModuleId::new(vec!["beta".to_string()]);
+    let root_id = ModulePath::root();
+    let alpha_id = ModulePath::new(["alpha"]);
+    let beta_id = ModulePath::new(["beta"]);
     let mut mg = ModuleGraph::new(root_id.clone());
     mg.add_module(Module {
         id: root_id.clone(),
@@ -881,27 +887,27 @@ fn adopting_declaration_keeps_its_own_provenance() {
 #[test]
 fn same_module_span_colliding_drifting_declarations_conflict() {
     let string_ty = TypeExpr::Named {
-        name: "string".to_string(),
+        path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("string"), 0..0),
         type_args: None,
     };
     let i64_ty = TypeExpr::Named {
-        name: "i64".to_string(),
+        path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("i64"), 0..0),
         type_args: None,
     };
     let declaration = |param_ty: TypeExpr| ExternBlock {
         abi: "C".to_string(),
         functions: vec![ExternFnDecl {
             attributes: Vec::new(),
-            name: "hew_bytes_from_str".to_string(),
+            name: Ident::new("hew_bytes_from_str"),
             params: vec![hew_parser::ast::Param {
-                name: "s".to_string(),
+                name: Ident::new("s"),
                 ty: (param_ty, 0..6),
                 is_mutable: false,
                 is_consume: false,
             }],
             return_type: Some((
                 TypeExpr::Named {
-                    name: "bytes".to_string(),
+                    path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("bytes"), 0..0),
                     type_args: None,
                 },
                 10..15,
@@ -911,8 +917,8 @@ fn same_module_span_colliding_drifting_declarations_conflict() {
         }],
     };
 
-    let root_id = ModuleId::root();
-    let pkg_id = ModuleId::new(vec!["pkg".to_string()]);
+    let root_id = ModulePath::root();
+    let pkg_id = ModulePath::new(["pkg"]);
     let mut mg = ModuleGraph::new(root_id.clone());
     mg.add_module(Module {
         id: root_id.clone(),
@@ -958,11 +964,11 @@ fn same_module_span_colliding_drifting_declarations_conflict() {
 )]
 fn module_graph_body_prefers_same_module_private_extern_over_global_bare_name() {
     let i64_ty = TypeExpr::Named {
-        name: "i64".to_string(),
+        path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("i64"), 0..0),
         type_args: None,
     };
     let string_ty = TypeExpr::Named {
-        name: "string".to_string(),
+        path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("string"), 0..0),
         type_args: None,
     };
 
@@ -970,7 +976,7 @@ fn module_graph_body_prefers_same_module_private_extern_over_global_bare_name() 
         abi: "C".to_string(),
         functions: vec![ExternFnDecl {
             attributes: Vec::new(),
-            name: "hew_test_raw".to_string(),
+            name: Ident::new("hew_test_raw"),
             params: vec![],
             return_type: Some((i64_ty.clone(), 0..3)),
             is_variadic: false,
@@ -982,7 +988,7 @@ fn module_graph_body_prefers_same_module_private_extern_over_global_bare_name() 
         attributes: vec![],
         is_generator: false,
         visibility: Visibility::Pub,
-        name: "ok".to_string(),
+        name: Ident::new("ok"),
         type_params: None,
         params: vec![],
         return_type: Some((i64_ty, 0..3)),
@@ -994,10 +1000,7 @@ fn module_graph_body_prefers_same_module_private_extern_over_global_bare_name() 
                     stmts: vec![],
                     trailing_expr: Some(Box::new((
                         Expr::Call {
-                            function: Box::new((
-                                Expr::Identifier("hew_test_raw".to_string()),
-                                0..12,
-                            )),
+                            function: Box::new((Expr::Ident(Ident::new("hew_test_raw")), 0..12)),
                             type_args: None,
                             args: vec![],
                             is_tail_call: false,
@@ -1018,7 +1021,7 @@ fn module_graph_body_prefers_same_module_private_extern_over_global_bare_name() 
         abi: "C".to_string(),
         functions: vec![ExternFnDecl {
             attributes: Vec::new(),
-            name: "hew_test_raw".to_string(),
+            name: Ident::new("hew_test_raw"),
             params: vec![],
             return_type: Some((string_ty, 20..26)),
             is_variadic: false,
@@ -1026,9 +1029,9 @@ fn module_graph_body_prefers_same_module_private_extern_over_global_bare_name() 
         }],
     };
 
-    let root_id = ModuleId::root();
-    let alpha_id = ModuleId::new(vec!["alpha".to_string()]);
-    let beta_id = ModuleId::new(vec!["beta".to_string()]);
+    let root_id = ModulePath::root();
+    let alpha_id = ModulePath::new(["alpha"]);
+    let beta_id = ModulePath::new(["beta"]);
     let root_module = Module {
         id: root_id.clone(),
         items: vec![],
@@ -1155,8 +1158,8 @@ mod module_body_diagnostic_envelope {
     /// Build a minimal `Program` with a non-root module `mod_name` whose items
     /// are the supplied `items`.  The root module is empty.
     fn make_program_with_named_module(mod_name: &str, items: Vec<Spanned<Item>>) -> Program {
-        let root_id = ModuleId::root();
-        let mod_id = ModuleId::new(vec![mod_name.to_string()]);
+        let root_id = ModulePath::root();
+        let mod_id = ModulePath::new([mod_name.to_string()]);
 
         let non_root = Module {
             id: mod_id.clone(),
@@ -1184,12 +1187,12 @@ mod module_body_diagnostic_envelope {
             attributes: vec![],
             is_generator: false,
             visibility: Visibility::Pub,
-            name: name.to_string(),
+            name: Ident::new(name),
             type_params: None,
             params: vec![],
             return_type: Some((
                 TypeExpr::Named {
-                    name: "i64".to_string(),
+                    path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("i64"), 0..0),
                     type_args: None,
                 },
                 5..8,
@@ -1243,12 +1246,12 @@ mod module_body_diagnostic_envelope {
             attributes: vec![],
             is_generator: false,
             visibility: Visibility::Private,
-            name: "bad".to_string(),
+            name: Ident::new("bad"),
             type_params: None,
             params: vec![],
             return_type: Some((
                 TypeExpr::Named {
-                    name: "i64".to_string(),
+                    path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("i64"), 0..0),
                     type_args: None,
                 },
                 5..8,
@@ -1297,12 +1300,15 @@ mod module_body_diagnostic_envelope {
                 attributes: vec![],
                 is_generator: false,
                 visibility: Visibility::Pub,
-                name: fn_name.to_string(),
+                name: Ident::new(fn_name),
                 type_params: None,
                 params: vec![],
                 return_type: Some((
                     TypeExpr::Named {
-                        name: "i64".to_string(),
+                        path: hew_parser::ast::Path::single(
+                            hew_parser::ast::Ident::new("i64"),
+                            0..0,
+                        ),
                         type_args: None,
                     },
                     5..8,
@@ -1321,9 +1327,9 @@ mod module_body_diagnostic_envelope {
             (Item::Function(fd), 0..20)
         };
 
-        let root_id = ModuleId::root();
-        let alpha_id = ModuleId::new(vec!["alpha".to_string()]);
-        let beta_id = ModuleId::new(vec!["beta".to_string()]);
+        let root_id = ModulePath::root();
+        let alpha_id = ModulePath::new(["alpha"]);
+        let beta_id = ModulePath::new(["beta"]);
 
         let alpha = Module {
             id: alpha_id.clone(),
@@ -1393,11 +1399,11 @@ mod module_body_diagnostic_envelope {
         use hew_parser::ast::{Block, FnDecl, Param, Stmt, TypeExpr, Visibility};
 
         let cast_expr = Expr::Cast {
-            expr: Box::new((Expr::Identifier("x".to_string()), 20..21)),
+            expr: Box::new((Expr::Ident(Ident::new("x")), 20..21)),
             ty: (TypeExpr::Infer, 25..26),
         };
         let let_stmt = Stmt::Let {
-            pattern: (Pattern::Identifier("y".to_string()), 14..15),
+            pattern: (Pattern::Identifier(Ident::new("y")), 14..15),
             ty: None,
             value: Some((cast_expr, 18..27)),
             else_block: None,
@@ -1407,13 +1413,16 @@ mod module_body_diagnostic_envelope {
             attributes: vec![],
             is_generator: false,
             visibility: Visibility::Private,
-            name: "foo".to_string(),
+            name: Ident::new("foo"),
             type_params: None,
             params: vec![Param {
-                name: "x".to_string(),
+                name: Ident::new("x"),
                 ty: (
                     TypeExpr::Named {
-                        name: "i64".to_string(),
+                        path: hew_parser::ast::Path::single(
+                            hew_parser::ast::Ident::new("i64"),
+                            0..0,
+                        ),
                         type_args: None,
                     },
                     8..11,
@@ -1471,10 +1480,10 @@ mod module_body_diagnostic_envelope {
             attributes: vec![],
             is_generator: false,
             visibility: Visibility::Private,
-            name: "helper".to_string(),
+            name: Ident::new("helper"),
             type_params: None,
             params: vec![Param {
-                name: "v".to_string(),
+                name: Ident::new("v"),
                 ty: (TypeExpr::Infer, 10..11),
                 is_mutable: false,
                 is_consume: false,
@@ -1650,7 +1659,7 @@ mod warning_source_attribution {
         // register_import to follow the user-module branch and insert into
         // import_spans.
         ImportDecl {
-            path: vec!["fakemod".to_string()],
+            path: hew_parser::ast::Path::from_spellings(&["fakemod"]),
             spec: None,
             selection_trailing_comma: false,
             module_alias: None,
@@ -1667,7 +1676,7 @@ mod warning_source_attribution {
             attributes: vec![],
             is_generator: false,
             visibility: Visibility::Private,
-            name: name.to_string(),
+            name: Ident::new(name),
             type_params: None,
             params: vec![],
             return_type: None,
@@ -1694,7 +1703,7 @@ mod warning_source_attribution {
             attributes: vec![],
             is_generator: false,
             visibility: Visibility::Private,
-            name: name.to_string(),
+            name: Ident::new(name),
             type_params: None,
             params: vec![],
             return_type: None,
@@ -1709,8 +1718,8 @@ mod warning_source_attribution {
             intrinsic: None,
             consumes_self: false,
         };
-        let root_id = ModuleId::root();
-        let module_id = ModuleId::new(vec![module_name.to_string()]);
+        let root_id = ModulePath::root();
+        let module_id = ModulePath::new([module_name.to_string()]);
         let root_module = Module {
             id: root_id.clone(),
             items: vec![],
@@ -1742,8 +1751,8 @@ mod warning_source_attribution {
     ///   - a root module with `fn main()` (no imports, in program.items)
     ///   - a non-root module "submod" with an import of "fakemod" and `fn helper()`
     fn build_program_with_non_root_import_and_fn() -> Program {
-        let root_id = ModuleId::root();
-        let submod_id = ModuleId::new(vec!["submod".to_string()]);
+        let root_id = ModulePath::root();
+        let submod_id = ModulePath::new(["submod"]);
 
         let main_fn = make_trivial_fn("main");
         let helper_fn = make_trivial_fn("helper");
@@ -1933,7 +1942,7 @@ mod warning_source_attribution {
 
     fn make_named_import_decl(short_name: &str) -> ImportDecl {
         ImportDecl {
-            path: vec![short_name.to_string()],
+            path: hew_parser::ast::Path::from_spellings(&[short_name]),
             spec: None,
             selection_trailing_comma: false,
             module_alias: None,
@@ -1954,9 +1963,9 @@ mod warning_source_attribution {
         reason = "mod_a_id / mod_b_id are intentionally symmetric"
     )]
     fn same_short_name_imports_in_different_owners_each_warn_unused() {
-        let root_id = ModuleId::root();
-        let mod_a_id = ModuleId::new(vec!["mod_a".to_string()]);
-        let mod_b_id = ModuleId::new(vec!["mod_b".to_string()]);
+        let root_id = ModulePath::root();
+        let mod_a_id = ModulePath::new(["mod_a"]);
+        let mod_b_id = ModulePath::new(["mod_b"]);
 
         let import_a = make_named_import_decl("fakemod");
         let import_b = make_named_import_decl("fakemod");
@@ -2041,9 +2050,9 @@ mod warning_source_attribution {
         reason = "mod_a_id / mod_b_id are intentionally symmetric"
     )]
     fn used_import_in_one_owner_does_not_suppress_unused_in_another() {
-        let root_id = ModuleId::root();
-        let mod_a_id = ModuleId::new(vec!["mod_a".to_string()]);
-        let mod_b_id = ModuleId::new(vec!["mod_b".to_string()]);
+        let root_id = ModulePath::root();
+        let mod_a_id = ModulePath::new(["mod_a"]);
+        let mod_b_id = ModulePath::new(["mod_b"]);
 
         // mod_a: import fakemod  +  fn caller() { fakemod.helper() }
         // The call to fakemod.helper() marks fakemod as used in mod_a's context.
@@ -2055,7 +2064,7 @@ mod warning_source_attribution {
             attributes: vec![],
             is_generator: false,
             visibility: Visibility::Pub,
-            name: "helper".to_string(),
+            name: Ident::new("helper"),
             type_params: None,
             params: vec![],
             return_type: None,
@@ -2074,11 +2083,8 @@ mod warning_source_attribution {
         // caller() body: `fakemod.helper()` expressed as a MethodCall statement.
         let call_stmt = Stmt::Expression((
             Expr::MethodCall {
-                receiver: Box::new((
-                    Expr::Identifier("fakemod".to_string()),
-                    Span::from(200..206),
-                )),
-                method: "helper".to_string(),
+                receiver: Box::new((Expr::Ident(Ident::new("fakemod")), Span::from(200..206))),
+                method: (Ident::new("helper"), 0..0),
                 args: vec![],
             },
             Span::from(200..215),
@@ -2088,7 +2094,7 @@ mod warning_source_attribution {
             attributes: vec![],
             is_generator: false,
             visibility: Visibility::Private,
-            name: "caller".to_string(),
+            name: Ident::new("caller"),
             type_params: None,
             params: vec![],
             return_type: None,
@@ -2108,7 +2114,7 @@ mod warning_source_attribution {
         // the pub helper fn so the module is actually registered and
         // module_fn_exports gets "fakemod.helper".
         let import_a_with_items = ImportDecl {
-            path: vec!["fakemod".to_string()],
+            path: hew_parser::ast::Path::from_spellings(&["fakemod"]),
             spec: None,
             selection_trailing_comma: false,
             module_alias: None,
@@ -2189,24 +2195,27 @@ mod warning_source_attribution {
     /// short_name }`; a global trait table fallback would over-suppress this.
     #[test]
     fn recorded_trait_impl_elsewhere_does_not_suppress_unused_import() {
-        let root_id = ModuleId::root();
-        let owner_module_b_id = ModuleId::new(vec!["owner_module_b".to_string()]);
+        let root_id = ModulePath::root();
+        let owner_module_b_id = ModulePath::new(["owner_module_b"]);
 
         let fake_trait = TraitDecl {
             visibility: Visibility::Pub,
-            name: "FakeTrait".to_string(),
+            name: Ident::new("FakeTrait"),
             type_params: None,
             super_traits: None,
             items: vec![TraitItem::Method(TraitMethod {
                 attributes: vec![],
                 consumes_self: false,
-                name: "fake".to_string(),
+                name: Ident::new("fake"),
                 type_params: None,
                 params: vec![Param {
-                    name: "val".to_string(),
+                    name: Ident::new("val"),
                     ty: (
                         TypeExpr::Named {
-                            name: "Self".to_string(),
+                            path: hew_parser::ast::Path::single(
+                                hew_parser::ast::Ident::new("Self"),
+                                0..0,
+                            ),
                             type_args: None,
                         },
                         0..4,
@@ -2225,7 +2234,7 @@ mod warning_source_attribution {
             lang_item: None,
         };
         let import_b = ImportDecl {
-            path: vec!["fakemod".to_string()],
+            path: hew_parser::ast::Path::from_spellings(&["fakemod"]),
             spec: None,
             selection_trailing_comma: false,
             module_alias: None,
@@ -2631,9 +2640,9 @@ fn bad(r: Result<i64, string>) -> Result<i64, i64> {
             abi: "C".to_string(),
             functions: vec![ExternFnDecl {
                 attributes: Vec::new(),
-                name: fn_name.to_string(),
+                name: Ident::new(fn_name),
                 params: vec![Param {
-                    name: "p".to_string(),
+                    name: Ident::new("p"),
                     ty: (TypeExpr::Infer, 20..21),
                     is_mutable: false,
                     is_consume: false,
@@ -2653,8 +2662,8 @@ fn bad(r: Result<i64, string>) -> Result<i64, i64> {
     #[test]
     fn non_root_extern_fn_infer_param_fails_closed_with_source_module() {
         let extern_item = make_extern_block_with_infer_param("extfn");
-        let root_id = ModuleId::root();
-        let mymod_id = ModuleId::new(vec!["mymod".to_string()]);
+        let root_id = ModulePath::root();
+        let mymod_id = ModulePath::new(["mymod"]);
 
         let mymod = Module {
             id: mymod_id.clone(),
@@ -2755,7 +2764,7 @@ fn bad(r: Result<i64, string>) -> Result<i64, i64> {
         // fn warns() { let x = 42; }  — `x` is never read
         let stmts = vec![(
             Stmt::Let {
-                pattern: (Pattern::Identifier("x".to_string()), 10..11),
+                pattern: (Pattern::Identifier(Ident::new("x")), 10..11),
                 ty: None,
                 value: Some((
                     Expr::Literal(Literal::Integer {
@@ -2809,7 +2818,7 @@ fn root_and_imported_compiles_mint_one_fn_sig_identity() {
         attributes: vec![],
         is_generator: false,
         visibility: Visibility::Pub,
-        name: "shared_helper".to_string(),
+        name: Ident::new("shared_helper"),
         type_params: None,
         params: vec![],
         return_type: None,
@@ -2827,8 +2836,8 @@ fn root_and_imported_compiles_mint_one_fn_sig_identity() {
     let source = std::path::PathBuf::from("/hew-oracle-fixture/oracle_mod.hew");
 
     // Import axis: the file participates as module `oracle_mod`.
-    let root_id = ModuleId::root();
-    let oracle_id = ModuleId::new(vec!["oracle_mod".to_string()]);
+    let root_id = ModulePath::root();
+    let oracle_id = ModulePath::new(["oracle_mod"]);
     let mut mg = ModuleGraph::new(root_id.clone());
     mg.add_module(Module {
         id: root_id.clone(),

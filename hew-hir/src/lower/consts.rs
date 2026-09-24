@@ -11,7 +11,7 @@ impl LowerCtx {
         let id = self.ids.item();
         let ty = self.lower_type(&decl.ty);
         self.const_registry
-            .insert(decl.name.clone(), ConstEntry { id, ty });
+            .insert(decl.name.to_string(), ConstEntry { id, ty });
     }
 
     /// Emit-pass lowering of a module-level `const NAME: T = <expr>;`.
@@ -27,21 +27,22 @@ impl LowerCtx {
         span: std::ops::Range<usize>,
     ) -> Option<crate::node::HirConst> {
         // Reuse the stable ItemId + type pre-allocated during the first pass.
-        let (id, ty) = match self.const_registry.get(&decl.name) {
+        let (id, ty) = match self.const_registry.get(decl.name.name.as_str()) {
             Some(entry) => (entry.id, entry.ty.clone()),
             None => (self.ids.item(), self.lower_type(&decl.ty)),
         };
 
         let value = self.fold_const_expr(&decl.value.0, &ty, span.clone());
         if let crate::node::HirConstValue::Integer(value) = &value {
-            self.folded_integer_consts.insert(decl.name.clone(), *value);
+            self.folded_integer_consts
+                .insert(decl.name.to_string(), *value);
         }
 
         Some(crate::node::HirConst {
             id,
             node: self.ids.node(),
             declaration: self.source_declaration(&span, hew_types::DeclarationKind::Const, 0)?,
-            name: decl.name.clone(),
+            name: decl.name.to_string(),
             ty,
             value,
             span,

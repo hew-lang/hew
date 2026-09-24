@@ -14,6 +14,7 @@ use super::super::types::ImportBindingKey;
 use super::super::*;
 use super::*;
 use crate::BuiltinType;
+use hew_parser::ast::Ident;
 use hew_parser::ast::WireMetadata;
 
 impl Checker {
@@ -103,7 +104,7 @@ impl Checker {
 
     pub(super) fn insert_type_param_names(&mut self, tps: &[TypeParam]) {
         for tp in tps {
-            self.declared_type_param_names.insert(tp.name.clone());
+            self.declared_type_param_names.insert(tp.name.to_string());
         }
     }
 
@@ -130,14 +131,15 @@ impl Checker {
                     if bound.type_args.as_ref().is_some_and(|a| !a.is_empty()) {
                         self.report_error(
                             TypeErrorKind::UnknownTraitBoundShape {
-                                trait_name: bound.name.clone(),
+                                trait_name: bound.path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
                             },
                             span,
                             format!(
                                 "trait bound `{}` on type parameter `{}` carries positional \
                                  type arguments, which are not supported; use associated-type \
                                  bindings (`Trait<Assoc = Ty>`) instead",
-                                bound.name, param.name,
+                                bound.path,
+                                param.name, // TRANSITION(P1): deleted by A1 commit 2
                             ),
                         );
                     }
@@ -151,14 +153,14 @@ impl Checker {
                     if bound.type_args.as_ref().is_some_and(|a| !a.is_empty()) {
                         self.report_error(
                             TypeErrorKind::UnknownTraitBoundShape {
-                                trait_name: bound.name.clone(),
+                                trait_name: bound.path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
                             },
                             span,
                             format!(
                                 "trait bound `{}` in where-clause carries positional \
                                  type arguments, which are not supported; use associated-type \
                                  bindings (`Trait<Assoc = Ty>`) instead",
-                                bound.name,
+                                bound.path, // TRANSITION(P1): deleted by A1 commit 2
                             ),
                         );
                     }
@@ -187,7 +189,7 @@ impl Checker {
         let flat_file_import_modules = flat_file_import_module_ids(program);
         self.flat_file_import_module_names = flat_file_import_modules
             .iter()
-            .map(|module_id| module_id.path.join("."))
+            .map(hew_parser::module::ModulePath::dotted)
             .collect();
         // Process module graph items first (if multi-module).
         // Skip the root module — its items are already in program.items and
@@ -199,7 +201,7 @@ impl Checker {
                     continue;
                 }
                 if let Some(module) = mg.modules.get(mod_id) {
-                    let module_name = mod_id.path.join(".");
+                    let module_name = mod_id.dotted();
                     self.record_canonical_std_module_source(&module_name, &module.source_paths);
                     self.current_module = Some(module_name.clone());
                     self.registration_is_flat_file_import =
@@ -207,12 +209,12 @@ impl Checker {
                     self.current_module_direct_imports = module
                         .imports
                         .iter()
-                        .map(|import| import.target.path.join("."))
+                        .map(|import| import.target.dotted())
                         .collect();
                     self.current_module_direct_import_bindings = module
                         .imports
                         .iter()
-                        .map(|import| (import.target.path.join("."), import.spec.clone()))
+                        .map(|import| (import.target.dotted(), import.spec.clone()))
                         .collect();
                     // Scope local declarations to the module being registered.
                     let saved_local_type_defs = self.local_type_defs.clone();
@@ -220,12 +222,12 @@ impl Checker {
                     for (item, _) in &module.items {
                         match item {
                             Item::TypeDecl(td) => {
-                                self.local_type_defs.insert(td.name.clone());
-                                self.source_type_defs.insert(td.name.clone());
+                                self.local_type_defs.insert(td.name.to_string());
+                                self.source_type_defs.insert(td.name.to_string());
                             }
                             Item::Machine(md) => {
-                                self.local_type_defs.insert(md.name.clone());
-                                self.source_type_defs.insert(md.name.clone());
+                                self.local_type_defs.insert(md.name.to_string());
+                                self.source_type_defs.insert(md.name.to_string());
                                 let event_type_name = format!("{}Event", md.name);
                                 self.local_type_defs.insert(event_type_name.clone());
                                 self.source_type_defs.insert(event_type_name);
@@ -289,7 +291,7 @@ impl Checker {
             .map(|root| {
                 root.imports
                     .iter()
-                    .map(|import| import.target.path.join("."))
+                    .map(|import| import.target.dotted())
                     .collect()
             })
             .unwrap_or_default();
@@ -300,7 +302,7 @@ impl Checker {
             .map(|root| {
                 root.imports
                     .iter()
-                    .map(|import| (import.target.path.join("."), import.spec.clone()))
+                    .map(|import| (import.target.dotted(), import.spec.clone()))
                     .collect()
             })
             .unwrap_or_default();
@@ -320,7 +322,7 @@ impl Checker {
     pub(in crate::check) fn collect_function_item(&mut self, item: &Item, span: &Span) {
         match item {
             Item::Function(fd) => {
-                if self.reject_protected_prelude_declaration(&fd.name, span) {
+                if self.reject_protected_prelude_declaration(fd.name.name.as_str(), span) {
                     return;
                 }
                 // rc1-F1 stage A: `fn_def_spans`/`fn_visibility` are
@@ -330,7 +332,8 @@ impl Checker {
                 // `current_module` (None = root): it is the display/provenance
                 // axis, and the legacy root render at publication boundaries
                 // derives from it.
-                let scoped_name = Self::declared_fn_identity(self.canonical_fn_owner(), &fd.name);
+                let scoped_name =
+                    Self::declared_fn_identity(self.canonical_fn_owner(), fd.name.name.as_str());
                 if let Some((prev_span, _)) = self.fn_def_spans.get(&scoped_name) {
                     // Root diagnostics render the bare leaf, exactly as the
                     // declaration is spelled in source.
@@ -354,7 +357,7 @@ impl Checker {
                     self.fn_visibility.insert(scoped_name, fd.visibility);
                 }
                 self.register_fn_sig(fd);
-                self.record_root_value_binding(&fd.name);
+                self.record_root_value_binding(fd.name.name.as_str());
             }
             Item::Actor(ad) => {
                 // Module actors are identified by their full dotted source
@@ -366,7 +369,8 @@ impl Checker {
                 // already registered; restore it only if import registration
                 // replaced its bare compatibility slot with a non-actor type.
                 let module_identity = self.current_module.clone();
-                let identity = Self::actor_identity(module_identity.as_deref(), &ad.name);
+                let identity =
+                    Self::actor_identity(module_identity.as_deref(), ad.name.name.as_str());
                 let local_actor_needs_restore = self
                     .type_defs
                     .get(&identity)
@@ -422,18 +426,19 @@ impl Checker {
                 }
                 // Register impl methods with Type::method naming
                 if let TypeExpr::Named {
-                    name: target_name,
+                    path: named_path,
                     type_args,
                 } = &id.target_type.0
                 {
-                    // An impl target written through a module binding
-                    // (`impl Tagged for json.Value`) names a declaration whose
-                    // identity is `std.encoding.json.Value`. Resolve that
-                    // surface spelling ONCE, here, so every method table this
-                    // arm writes is keyed by the same identity method
-                    // resolution looks the receiver up under. Leaving it as
-                    // written registers the methods where nothing can find
-                    // them, and the impl is silently ignored.
+                    let target_name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
+                                                               // An impl target written through a module binding
+                                                               // (`impl Tagged for json.Value`) names a declaration whose
+                                                               // identity is `std.encoding.json.Value`. Resolve that
+                                                               // surface spelling ONCE, here, so every method table this
+                                                               // arm writes is keyed by the same identity method
+                                                               // resolution looks the receiver up under. Leaving it as
+                                                               // written registers the methods where nothing can find
+                                                               // them, and the impl is silently ignored.
                     let canonical_target = self.canonical_impl_target_identity(target_name);
                     let type_name = canonical_target.as_ref().unwrap_or(target_name);
                     let prev_impl_surface_target = self
@@ -497,14 +502,14 @@ impl Checker {
                         {
                             self.record_primitive_trait_impl_self_args(
                                 canonical.clone(),
-                                &tb.name,
+                                &tb.path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
                                 self_type_args.clone(),
                                 &id.target_type.1,
                             );
                             self.record_primitive_trait_impl_method(
                                 canonical,
-                                &tb.name,
-                                method.name.clone(),
+                                &tb.path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
+                                method.name.to_string(),
                                 sig,
                             );
                         }
@@ -514,22 +519,22 @@ impl Checker {
                     if let Some(tb) = &id.trait_bound {
                         self.record_trait_impl_methods(
                             type_name,
-                            &tb.name,
-                            id.methods.iter().map(|method| method.name.clone()),
+                            &tb.path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
+                            id.methods.iter().map(|method| method.name.to_string()),
                         );
-                        self.record_trait_impl(type_name, &tb.name);
+                        self.record_trait_impl(type_name, &tb.path.to_string()); // TRANSITION(P1): deleted by A1 commit 2
 
                         let overridden: HashSet<&str> =
-                            id.methods.iter().map(|m| m.name.as_str()).collect();
+                            id.methods.iter().map(|m| m.name.name.as_str()).collect();
                         // Owner-qualified key so a same-name trait in another
                         // module cannot inject the wrong default-method bodies.
-                        let trait_key = self.trait_defs_key_for_bound(&tb.name);
+                        let trait_key = self.trait_defs_key_for_bound(&tb.path.to_string()); // TRANSITION(P1): deleted by A1 commit 2
                         if let Some(trait_methods) = self.trait_defs.get(&trait_key) {
                             let defaults: Vec<_> = trait_methods
                                 .methods
                                 .iter()
                                 .filter(|m| {
-                                    m.body.is_some() && !overridden.contains(m.name.as_str())
+                                    m.body.is_some() && !overridden.contains(m.name.name.as_str())
                                 })
                                 .cloned()
                                 .collect();
@@ -538,10 +543,14 @@ impl Checker {
                                 let skip = usize::from(
                                     m.params.first().is_some_and(|p| self.is_receiver_param(p)),
                                 );
-                                let param_names: Vec<String> =
-                                    m.params.iter().skip(skip).map(|p| p.name.clone()).collect();
-                                self.register_trait_method_sig(&tb.name, &m, span);
-                                let trait_method_key = format!("{}::{}", tb.name, m.name);
+                                let param_names: Vec<String> = m
+                                    .params
+                                    .iter()
+                                    .skip(skip)
+                                    .map(|p| p.name.to_string())
+                                    .collect();
+                                self.register_trait_method_sig(&tb.path.to_string(), &m, span); // TRANSITION(P1): deleted by A1 commit 2
+                                let trait_method_key = format!("{}::{}", tb.path, m.name); // TRANSITION(P1): deleted by A1 commit 2
                                 let consumes_receiver = m.consumes_self;
                                 let returns_receiver_identity =
                                     Self::trait_receiver_identity_is_structurally_valid(&m);
@@ -623,7 +632,10 @@ impl Checker {
                                         .iter()
                                         .map(ResolvedTy::from_ty)
                                         .collect::<Result<Vec<_>, _>>(),
-                                    self.trait_method_call_target_ids(&tb.name, &m.name),
+                                    self.trait_method_call_target_ids(
+                                        &tb.path.to_string(),
+                                        m.name.name.as_str(),
+                                    ), // TRANSITION(P1): deleted by A1 commit 2
                                     receiver_nominal,
                                 ) {
                                     let declaration = crate::default_impl_method_declaration(
@@ -632,7 +644,7 @@ impl Checker {
                                             nominal: receiver_nominal,
                                             args: receiver_args,
                                         },
-                                        &m.name,
+                                        m.name.name.as_str(),
                                     );
                                     // A materialized default is keyed exactly
                                     // like an explicit impl method: the
@@ -642,14 +654,14 @@ impl Checker {
                                     // shared dispatch key.
                                     let keys = self.impl_method_declaration_keys(
                                         type_name,
-                                        &m.name,
+                                        m.name.name.as_str(),
                                         id.type_params.as_deref(),
                                     );
                                     self.publish_impl_method_declaration_id(&keys, &declaration);
                                 }
                                 self.publish_impl_method_sig(
                                     type_name,
-                                    &m.name,
+                                    m.name.name.as_str(),
                                     &FnSig {
                                         param_names,
                                         params,
@@ -694,11 +706,11 @@ impl Checker {
                         // refusal applies here as on `impl` blocks.
                         if let Some(type_tps) = td.type_params.as_ref() {
                             let enclosing: Vec<String> =
-                                type_tps.iter().map(|tp| tp.name.clone()).collect();
+                                type_tps.iter().map(|tp| tp.name.to_string()).collect();
                             if !enclosing.is_empty() {
                                 let owner = Self::method_declaration_key(
-                                    &self.declaration_owner_key(&td.name),
-                                    &method.name,
+                                    &self.declaration_owner_key(td.name.name.as_str()),
+                                    method.name.name.as_str(),
                                 );
                                 self.reject_shadowing_method_type_params(
                                     method.type_params.as_ref(),
@@ -719,7 +731,7 @@ impl Checker {
                             .params
                             .iter()
                             .skip(skip)
-                            .map(|p| p.name.clone())
+                            .map(|p| p.name.to_string())
                             .collect();
                         let params: Vec<Ty> = method
                             .params
@@ -731,11 +743,11 @@ impl Checker {
                             self.resolve_registered_annotation_ty_no_holes(ret)
                         });
                         self.exit_primary_sig_scope(method_sig_scope);
-                        let method_name = method.name.clone();
-                        let type_name = td.name.clone();
-                        if let Some(type_def) = self.lookup_type_def_mut(&type_name) {
+                        let method_name = method.name;
+                        let type_name = td.name;
+                        if let Some(type_def) = self.lookup_type_def_mut(type_name.name.as_str()) {
                             type_def.methods.insert(
-                                method_name,
+                                method_name.to_string(),
                                 FnSig {
                                     param_names,
                                     params,
@@ -751,7 +763,8 @@ impl Checker {
                 if let Some(supers) = &td.super_traits {
                     let owner = self.current_module.as_deref();
                     for super_trait in supers {
-                        self.mark_imported_trait_used(owner, &super_trait.name);
+                        self.mark_imported_trait_used(owner, &super_trait.path.to_string());
+                        // TRANSITION(P1): deleted by A1 commit 2
                     }
                 }
                 // A generic trait's own params (`trait Foo<T>`) are in scope for
@@ -763,7 +776,7 @@ impl Checker {
                     self.enter_primary_sig_scope(&[(td.type_params.as_ref(), None)]);
                 for trait_item in &td.items {
                     if let TraitItem::Method(method) = trait_item {
-                        self.register_trait_method_sig(&td.name, method, span);
+                        self.register_trait_method_sig(td.name.name.as_str(), method, span);
                     }
                 }
                 self.exit_primary_sig_scope(trait_sig_scope);
@@ -792,7 +805,7 @@ impl Checker {
     pub(in crate::check) fn impl_decl_is_drop_impl(id: &ImplDecl) -> bool {
         id.trait_bound
             .as_ref()
-            .is_some_and(|trait_bound| trait_bound.name == "Drop")
+            .is_some_and(|trait_bound| trait_bound.path.to_string() == "Drop") // TRANSITION(P1): deleted by A1 commit 2
     }
 
     pub(in crate::check) fn register_fn_sig(&mut self, fd: &FnDecl) {
@@ -806,7 +819,7 @@ impl Checker {
         // on a *different* item) is reported as unknown rather than silently
         // exempted.
         let guard = self.enter_primary_sig_scope(&[]);
-        self.register_fn_sig_with_name(&fd.name, fd);
+        self.register_fn_sig_with_name(fd.name.name.as_str(), fd);
         self.exit_primary_sig_scope(guard);
     }
 
@@ -908,7 +921,7 @@ impl Checker {
         let Some(method_tps) = method_type_params else {
             return;
         };
-        let mut shadowed: Vec<&str> = method_tps.iter().map(|tp| tp.name.as_str()).collect();
+        let mut shadowed: Vec<&str> = method_tps.iter().map(|tp| tp.name.name.as_str()).collect();
         shadowed.sort_unstable();
         shadowed.dedup();
         for name in shadowed {
@@ -989,7 +1002,7 @@ impl Checker {
         let mut map: HashMap<String, Vec<String>> = HashMap::new();
         if let Some(params) = type_params {
             for param in params {
-                map.entry(param.name.clone()).or_default();
+                map.entry(param.name.to_string()).or_default();
             }
         }
         let with_bounds = self.collect_type_param_bounds(type_params, where_clause);
@@ -1013,19 +1026,27 @@ impl Checker {
         let mut declared = HashSet::new();
         if let Some(params) = type_params {
             for param in params {
-                declared.insert(param.name.clone());
+                declared.insert(param.name.to_string());
                 if param.bounds.is_empty() {
                     continue;
                 }
-                let entry = bounds.entry(param.name.clone()).or_default();
+                let entry = bounds.entry(param.name.to_string()).or_default();
                 for bound in &param.bounds {
-                    Self::push_unique_bound(entry, &self.trait_defs_key_for_bound(&bound.name));
+                    Self::push_unique_bound(
+                        entry,
+                        &self.trait_defs_key_for_bound(&bound.path.to_string()),
+                    ); // TRANSITION(P1): deleted by A1 commit 2
                 }
             }
         }
         if let Some(wc) = where_clause {
             for predicate in &wc.predicates {
-                if let TypeExpr::Named { name, type_args } = &predicate.ty.0 {
+                if let TypeExpr::Named {
+                    path: named_path,
+                    type_args,
+                } = &predicate.ty.0
+                {
+                    let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
                     if !declared.contains(name) {
                         continue;
                     }
@@ -1034,7 +1055,10 @@ impl Checker {
                     }
                     let entry = bounds.entry(name.clone()).or_default();
                     for bound in &predicate.bounds {
-                        Self::push_unique_bound(entry, &self.trait_defs_key_for_bound(&bound.name));
+                        Self::push_unique_bound(
+                            entry,
+                            &self.trait_defs_key_for_bound(&bound.path.to_string()),
+                        ); // TRANSITION(P1): deleted by A1 commit 2
                     }
                 }
             }
@@ -1052,10 +1076,10 @@ impl Checker {
         let mut declared = HashSet::new();
         if let Some(params) = type_params {
             for param in params {
-                declared.insert(param.name.clone());
+                declared.insert(param.name.to_string());
                 for bound in &param.bounds {
                     self.collect_type_param_bound_assoc_bindings(
-                        &param.name,
+                        param.name.name.as_str(),
                         bound,
                         &mut bindings,
                         hole_vars,
@@ -1065,7 +1089,12 @@ impl Checker {
         }
         if let Some(wc) = where_clause {
             for predicate in &wc.predicates {
-                if let TypeExpr::Named { name, type_args } = &predicate.ty.0 {
+                if let TypeExpr::Named {
+                    path: named_path,
+                    type_args,
+                } = &predicate.ty.0
+                {
+                    let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
                     if !declared.contains(name) {
                         continue;
                     }
@@ -1093,12 +1122,12 @@ impl Checker {
         bindings: &mut HashMap<(String, String, String), Ty>,
         hole_vars: &mut Vec<TypeVar>,
     ) {
-        let trait_key = self.trait_defs_key_for_bound(&bound.name);
+        let trait_key = self.trait_defs_key_for_bound(&bound.path.to_string()); // TRANSITION(P1): deleted by A1 commit 2
         for binding in &bound.assoc_type_bindings {
             let key = (
                 param_name.to_string(),
                 trait_key.clone(),
-                binding.name.clone(),
+                binding.name.to_string(),
             );
             bindings
                 .entry(key)
@@ -1113,7 +1142,11 @@ impl Checker {
     /// removed — receivers are identified by type, not by name.
     pub(in crate::check) fn is_receiver_param(&mut self, p: &Param) -> bool {
         match &p.ty.0 {
-            TypeExpr::Named { name, type_args } => {
+            TypeExpr::Named {
+                path: named_path,
+                type_args,
+            } => {
+                let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
                 if name == "Self" {
                     return true;
                 }
@@ -1174,7 +1207,7 @@ impl Checker {
             .params
             .iter()
             .skip(skip)
-            .map(|p| p.name.clone())
+            .map(|p| p.name.to_string())
             .collect();
         let params = fd
             .params
@@ -1195,7 +1228,7 @@ impl Checker {
         let fn_assoc_bindings = fn_scope.assoc_bindings;
         let sig = FnSig {
             type_params: fd.type_params.as_ref().map_or(vec![], |params| {
-                params.iter().map(|p| p.name.clone()).collect()
+                params.iter().map(|p| p.name.to_string()).collect()
             }),
             type_param_bounds: self
                 .collect_type_param_bounds(fd.type_params.as_ref(), fd.where_clause.as_ref()),
@@ -1480,11 +1513,9 @@ impl Checker {
             return false;
         }
 
-        let direct_self_tail = method
-            .body
-            .trailing_expr
-            .as_deref()
-            .is_some_and(|(expr, _)| matches!(expr, Expr::Identifier(name) if name == "self"));
+        let direct_self_tail = method.body.trailing_expr.as_deref().is_some_and(
+            |(expr, _)| matches!(expr, Expr::Ident(name) if name.name.as_str() == "self"),
+        );
         let returns_self_type = match return_type {
             Ty::Named {
                 name,
@@ -1551,7 +1582,7 @@ impl Checker {
                 {
                     return None;
                 }
-                let identity = self.trait_defs_key_for_bound(&bound.name);
+                let identity = self.trait_defs_key_for_bound(&bound.path.to_string()); // TRANSITION(P1): deleted by A1 commit 2
                 let obligation = if self
                     .lang_items
                     .get(crate::LANG_ITEM_DISPLAY)
@@ -1572,15 +1603,16 @@ impl Checker {
             Some(())
         };
         for param in &params {
-            add_bounds(&param.name, &param.bounds)?;
+            add_bounds(param.name.name.as_str(), &param.bounds)?;
         }
         for clause in impl_where.into_iter().chain(method.where_clause.as_ref()) {
             for predicate in &clause.predicates {
-                let TypeExpr::Named { name, type_args } = &predicate.ty.0 else {
+                let TypeExpr::Named { path, type_args } = &predicate.ty.0 else {
                     return None;
                 };
+                let name = &path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
                 if type_args.as_ref().is_some_and(|args| !args.is_empty())
-                    || !params.iter().any(|param| param.name == *name)
+                    || !params.iter().any(|param| param.name == Ident::new(&*name))
                 {
                     return None;
                 }
@@ -1637,7 +1669,7 @@ impl Checker {
         // not reconstruct it from the trait's leaf spelling.
         if let Some(bound) = trait_bound {
             let type_identity = self.trait_impl_type_identity(type_name);
-            let trait_identity = self.trait_defs_key_for_bound(&bound.name);
+            let trait_identity = self.trait_defs_key_for_bound(&bound.path.to_string()); // TRANSITION(P1): deleted by A1 commit 2
             let receiver_args = self
                 .current_self_type
                 .as_ref()
@@ -1660,13 +1692,13 @@ impl Checker {
                     impl_params: impl_type_params
                         .into_iter()
                         .flatten()
-                        .map(|param| param.name.clone())
+                        .map(|param| param.name.to_string())
                         .collect(),
                     method_params: method
                         .type_params
                         .iter()
                         .flatten()
-                        .map(|param| param.name.clone())
+                        .map(|param| param.name.to_string())
                         .collect(),
                 },
             );
@@ -1693,12 +1725,12 @@ impl Checker {
                     (
                         exact_type_identity,
                         trait_identity.clone(),
-                        method.name.clone(),
+                        method.name.to_string(),
                     ),
                     declaration_id.clone(),
                 );
             }
-            let nominal_key = (type_identity, trait_identity, method.name.clone());
+            let nominal_key = (type_identity, trait_identity, method.name.to_string());
             if impl_type_params.is_some_and(|params| !params.is_empty()) {
                 // A concrete specialization must not occupy the generic fallback
                 // simply because it was registered before the generic impl.
@@ -1709,13 +1741,16 @@ impl Checker {
                     .entry(nominal_key)
                     .or_insert_with(|| declaration_id.clone());
             }
-            if let Some(ids) = self.trait_method_call_target_ids(&bound.name, &method.name) {
+            if let Some(ids) = self
+                .trait_method_call_target_ids(&bound.path.to_string(), method.name.name.as_str())
+            {
+                // TRANSITION(P1): deleted by A1 commit 2
                 self.trait_method_ids_by_binding.insert(
                     (
                         self.current_module.clone(),
                         self.current_module_idx,
-                        bound.name.clone(),
-                        method.name.clone(),
+                        bound.path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
+                        method.name.to_string(),
                     ),
                     ids,
                 );
@@ -1764,8 +1799,12 @@ impl Checker {
                 .unwrap_or_else(|| method_key.clone());
             if let Some(sig) = self.fn_sigs.get_mut(&key) {
                 for tp in impl_tps {
-                    if !sig.type_params.contains(&tp.name) {
-                        sig.type_params.push(tp.name.clone());
+                    if !sig
+                        .type_params
+                        .iter()
+                        .any(|param| param == tp.name.name.as_str())
+                    {
+                        sig.type_params.push(tp.name.to_string());
                     }
                 }
                 for (param, bounds) in impl_bounds {
@@ -1791,7 +1830,7 @@ impl Checker {
             .params
             .iter()
             .skip(skip)
-            .map(|p| p.name.clone())
+            .map(|p| p.name.to_string())
             .collect();
 
         // A method type parameter that shadows an enclosing one is REFUSED.
@@ -1803,23 +1842,26 @@ impl Checker {
         // reports once, naming both.
         let mut shadow_owners: Vec<(Vec<String>, String)> = Vec::new();
         if let Some(impl_tps) = impl_type_params {
-            let params: Vec<String> = impl_tps.iter().map(|tp| tp.name.clone()).collect();
+            let params: Vec<String> = impl_tps.iter().map(|tp| tp.name.to_string()).collect();
             if !params.is_empty() {
                 shadow_owners.push((params, format!("the `impl` block on `{type_name}`")));
             }
         }
         if let Some(bound) = trait_bound {
-            let params = self.trait_type_param_names(&bound.name);
+            let params = self.trait_type_param_names(&bound.path.to_string()); // TRANSITION(P1): deleted by A1 commit 2
             if !params.is_empty() {
-                shadow_owners.push((params, format!("trait `{}`", bound.name)));
+                shadow_owners.push((params, format!("trait `{}`", bound.path)));
+                // TRANSITION(P1): deleted by A1 commit 2
             }
         }
         if !shadow_owners.is_empty() {
             // The declaration is the impl METHOD, so its identity is the
             // implementing module's type and method name — not the trait's key,
             // which every file implementing that trait would share.
-            let owner =
-                Self::method_declaration_key(&self.declaration_owner_key(type_name), &method.name);
+            let owner = Self::method_declaration_key(
+                &self.declaration_owner_key(type_name),
+                method.name.name.as_str(),
+            );
             self.reject_shadowing_method_type_params(
                 method.type_params.as_ref(),
                 &shadow_owners,
@@ -1830,10 +1872,10 @@ impl Checker {
 
         // Collect type param names: impl-level + method-level.
         let mut all_type_params: Vec<String> = impl_type_params
-            .map(|tps| tps.iter().map(|tp| tp.name.clone()).collect())
+            .map(|tps| tps.iter().map(|tp| tp.name.to_string()).collect())
             .unwrap_or_default();
         if let Some(method_tps) = &method.type_params {
-            all_type_params.extend(method_tps.iter().map(|tp| tp.name.clone()));
+            all_type_params.extend(method_tps.iter().map(|tp| tp.name.to_string()));
         }
 
         // Collect bounds from both the impl's type params/where-clause and the
@@ -1885,7 +1927,7 @@ impl Checker {
                             .unwrap_or_else(|| self.trait_impl_type_identity(type_name)),
                     )
                     .cloned(),
-                name: method.name.clone(),
+                name: method.name.to_string(),
                 is_inherent: trait_bound.is_none(),
                 span: if method.decl_span.is_empty() {
                     method.fn_span.clone()
@@ -1940,7 +1982,7 @@ impl Checker {
                 .insert(method_key.clone(), origin.clone());
             self.extern_method_origins.insert(registered_key, origin);
         }
-        self.publish_impl_method_sig(type_name, &method.name, &sig);
+        self.publish_impl_method_sig(type_name, method.name.name.as_str(), &sig);
         // Preserve every exact declaration even when a trait method or concrete
         // specialisation shares the ordinary receiver/method lookup spelling.
         self.fn_sigs
@@ -1953,7 +1995,7 @@ impl Checker {
         // checked here (mirrors the HIR W3.030 discipline, which only walks
         // trait-free `impl T { fn close }` blocks); trait implementation
         // signatures are validated separately.
-        if method.name == "close"
+        if method.name == Ident::new("close")
             && !method.consumes_self
             && trait_bound.is_none()
             && (self.registry.is_resource(type_name)
@@ -1997,7 +2039,7 @@ impl Checker {
         // not yet been updated (e.g. method-set validation, external lookup).
         let keys = self.impl_method_declaration_keys(
             type_name,
-            &method.name,
+            method.name.name.as_str(),
             impl_type_params.map(Vec::as_slice),
         );
         self.publish_impl_method_declaration_id(&keys, &declaration_id);
@@ -2205,9 +2247,9 @@ impl Checker {
             || "inherent".to_string(),
             |bound| {
                 if self.registration_is_flat_file_import {
-                    bound.name.clone()
+                    bound.path.to_string() // TRANSITION(P1): deleted by A1 commit 2
                 } else {
-                    self.trait_defs_key_for_bound(&bound.name)
+                    self.trait_defs_key_for_bound(&bound.path.to_string()) // TRANSITION(P1): deleted by A1 commit 2
                 }
             },
         );
@@ -2252,10 +2294,10 @@ impl Checker {
         impl_method_tps: Option<&Vec<hew_parser::ast::TypeParam>>,
     ) -> Ty {
         let trait_names: Vec<&str> = trait_method_tps
-            .map(|v| v.iter().map(|tp| tp.name.as_str()).collect())
+            .map(|v| v.iter().map(|tp| tp.name.name.as_str()).collect())
             .unwrap_or_default();
         let impl_names: Vec<&str> = impl_method_tps
-            .map(|v| v.iter().map(|tp| tp.name.as_str()).collect())
+            .map(|v| v.iter().map(|tp| tp.name.name.as_str()).collect())
             .unwrap_or_default();
         if trait_names.is_empty() || trait_names.len() != impl_names.len() {
             return ty.clone();
@@ -2286,10 +2328,10 @@ impl Checker {
         if let Some(type_params) = &rf.type_params {
             for tp in type_params {
                 generic_bindings.insert(
-                    tp.name.clone(),
+                    tp.name.to_string(),
                     Ty::Named {
                         builtin: None,
-                        name: tp.name.clone(),
+                        name: tp.name.to_string(),
                         args: vec![],
                     },
                 );
@@ -2310,7 +2352,7 @@ impl Checker {
             self.current_type_param_bounds.push(rf_scope.clone());
         }
 
-        let param_names = rf.params.iter().map(|p| p.name.clone()).collect();
+        let param_names = rf.params.iter().map(|p| p.name.to_string()).collect();
         let params = rf
             .params
             .iter()
@@ -2336,7 +2378,7 @@ impl Checker {
             self.collect_type_param_bounds(rf.type_params.as_ref(), rf.where_clause.as_ref());
         let sig = FnSig {
             type_params: rf.type_params.as_ref().map_or(vec![], |params| {
-                params.iter().map(|p| p.name.clone()).collect()
+                params.iter().map(|p| p.name.to_string()).collect()
             }),
             type_param_bounds,
             param_names,
@@ -2377,7 +2419,7 @@ impl Checker {
         if pushed_bounds {
             self.current_type_param_bounds.push(scope.clone());
         }
-        let param_names = fd.params.iter().map(|p| p.name.clone()).collect();
+        let param_names = fd.params.iter().map(|p| p.name.to_string()).collect();
         let params = fd
             .params
             .iter()
@@ -2390,7 +2432,7 @@ impl Checker {
             self.current_type_param_bounds.pop();
         }
         let type_params = fd.type_params.as_ref().map_or(vec![], |params| {
-            params.iter().map(|p| p.name.clone()).collect()
+            params.iter().map(|p| p.name.to_string()).collect()
         });
         // E_GEN_RETURN_SPELLING recovery + generator/async-generator wrap.
         let return_type =

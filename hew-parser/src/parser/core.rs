@@ -776,6 +776,15 @@ impl<'src> Parser<'src> {
         self.expect_ident_spanned().map(|(ident, _)| ident)
     }
 
+    /// Consume an identifier-like word as text, or an empty string after
+    /// reporting the error. Attribute names and arguments and wire modifiers
+    /// are words, not language names, so they stay text.
+    pub(crate) fn expect_word(&mut self) -> String {
+        self.expect_ident()
+            .map(|ident| ident.to_string())
+            .unwrap_or_default()
+    }
+
     /// Consume an identifier and keep its span, for path segments and member
     /// names that tooling points at.
     pub(crate) fn expect_ident_spanned(&mut self) -> Option<Spanned<Ident>> {

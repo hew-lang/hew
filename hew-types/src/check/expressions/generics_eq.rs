@@ -198,10 +198,10 @@ impl Checker {
         env: &crate::env::TypeEnv,
         expr: &Expr,
     ) -> Option<TypeVar> {
-        let Expr::Identifier(name) = expr else {
+        let Expr::Ident(name) = expr else {
             return None;
         };
-        match env.lookup_ref(name)?.ty {
+        match env.lookup_ref(name.name.as_str())?.ty {
             Ty::Var(v) => Some(v),
             _ => None,
         }

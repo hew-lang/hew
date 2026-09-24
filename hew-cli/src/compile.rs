@@ -340,7 +340,7 @@ mod tests {
 
     fn make_module_import(path: &[&str]) -> Spanned<Item> {
         let decl = hew_parser::ast::ImportDecl {
-            path: path.iter().map(ToString::to_string).collect(),
+            path: hew_parser::ast::Path::from_spellings(path),
             spec: None,
             selection_trailing_comma: false,
             module_alias: None,
@@ -354,7 +354,7 @@ mod tests {
 
     fn make_file_import(file: &str) -> Spanned<Item> {
         let decl = hew_parser::ast::ImportDecl {
-            path: vec![],
+            path: hew_parser::ast::Path::from_spellings(&[]),
             spec: None,
             selection_trailing_comma: false,
             module_alias: None,
@@ -417,7 +417,13 @@ mod tests {
             .iter()
             .filter_map(|(item, _)| {
                 if let Item::Import(decl) = item {
-                    Some(decl.path.clone())
+                    Some(
+                        decl.path
+                            .segments
+                            .iter()
+                            .map(|(segment, _)| segment.to_string())
+                            .collect(),
+                    )
                 } else {
                     None
                 }

@@ -100,7 +100,7 @@ impl Checker {
         span: &Span,
     ) -> Ty {
         if type_args.is_some()
-            && matches!(&object.0, Expr::Identifier(name) if self.env.lookup_ref(name).is_some())
+            && matches!(&object.0, Expr::Ident(name) if self.env.lookup_ref(name.name.as_str()).is_some())
         {
             self.report_error(
                 TypeErrorKind::InvalidOperation,
@@ -158,11 +158,11 @@ impl Checker {
             field: type_name,
         } = &object.0
         {
-            if let Expr::Identifier(module_short) = &module.0 {
-                if self.module_binding_in_current_file(module_short)
-                    && self.env.lookup_ref(module_short).is_none()
+            if let Expr::Ident(module_short) = &module.0 {
+                if self.module_binding_in_current_file(module_short.name.as_str())
+                    && self.env.lookup_ref(module_short.name.as_str()).is_none()
                 {
-                    let constructor = format!("{module_short}.{type_name}::{field}");
+                    let constructor = format!("{module_short}.{}::{}", type_name.0, field);
                     return self.synthesize_identifier(&constructor, span);
                 }
             }
@@ -176,22 +176,22 @@ impl Checker {
         //
         // Mirrors the `module_fn_exports` guard pattern at
         // `check_method_call` (methods.rs).  Gated on:
-        //   - object is a bare `Expr::Identifier`
+        //   - object is a bare `Expr::Ident`
         //   - `field` contains `::` (the type-variant separator)
         //   - the identifier is neither a value binding nor a known type
         // The neither-binding-nor-type guard preserves all existing
         // field-on-value access semantics — only shapes that could only be a
         // module-qualified reference take the new path.  Nested-module paths
         // (`a.b.Type::Variant`) are out of scope for v0.5.
-        if let Expr::Identifier(name) = &object.0 {
+        if let Expr::Ident(name) = &object.0 {
             if let Some(pos) = field.find("::") {
-                let receiver_is_binding = self.env.lookup_ref(name).is_some();
-                let receiver_is_known_type = self.type_defs.contains_key(name);
+                let receiver_is_binding = self.env.lookup_ref(name.name.as_str()).is_some();
+                let receiver_is_known_type = self.type_defs.contains_key(name.name.as_str());
                 if !receiver_is_binding && !receiver_is_known_type {
                     let type_name = &field[..pos];
                     let variant_name = &field[pos + 2..];
                     return self.check_module_qualified_variant_ref(
-                        name,
+                        name.name.as_str(),
                         type_name,
                         variant_name,
                         span,
@@ -205,15 +205,15 @@ impl Checker {
         // arm above — the module short-name is not in env as a value binding.
         //
         // Gated on:
-        //   - object is a bare `Expr::Identifier`
+        //   - object is a bare `Expr::Ident`
         //   - field does NOT contain `::` (plain const name, not a variant)
         //   - receiver is not a value binding or known type
         //   - the lexical module binding resolves to an exact owner-qualified
         //     constant key registered in env
-        if let Expr::Identifier(name) = &object.0 {
+        if let Expr::Ident(name) = &object.0 {
             if !field.contains("::") {
-                let receiver_is_binding = self.env.lookup_ref(name).is_some();
-                let receiver_is_known_type = self.type_defs.contains_key(name);
+                let receiver_is_binding = self.env.lookup_ref(name.name.as_str()).is_some();
+                let receiver_is_known_type = self.type_defs.contains_key(name.name.as_str());
                 if !receiver_is_binding && !receiver_is_known_type {
                     let lexical_key = format!("{name}.{field}");
                     let qualified_key = self
@@ -221,16 +221,16 @@ impl Checker {
                         .get(&(
                             self.current_module.clone(),
                             self.current_module_idx,
-                            name.clone(),
+                            name.to_string(),
                         ))
                         .map_or_else(|| lexical_key.clone(), |owner| format!("{owner}.{field}"));
                     if let Some(binding) = self.env.lookup_ref(&qualified_key) {
                         let ty = binding.ty.clone();
-                        if self.module_binding_in_current_file(name) {
+                        if self.module_binding_in_current_file(name.name.as_str()) {
                             self.used_modules.borrow_mut().insert(ImportKey::in_file(
                                 self.current_module.clone(),
                                 self.current_module_idx,
-                                name.clone(),
+                                name.to_string(),
                             ));
                         }
                         return ty;
@@ -238,15 +238,19 @@ impl Checker {
                     // If the receiver looks like a module (known to self.modules) but
                     // the const is not exported, emit a targeted diagnostic rather than
                     // falling through to the generic "undefined variable `module`" error.
-                    if self.module_binding_in_current_file(name) {
+                    if self.module_binding_in_current_file(name.name.as_str()) {
                         if self.fn_sigs.contains_key(&qualified_key) {
                             self.used_modules.borrow_mut().insert(ImportKey::in_file(
                                 self.current_module.clone(),
                                 self.current_module_idx,
-                                name.clone(),
+                                name.to_string(),
                             ));
-                            self.reject_wasm_native_only_module_function(name, field, span);
-                            if self.is_shipped_crypto_module(name)
+                            self.reject_wasm_native_only_module_function(
+                                name.name.as_str(),
+                                field,
+                                span,
+                            );
+                            if self.is_shipped_crypto_module(name.name.as_str())
                                 && matches!(field, "random_bytes" | "try_random_bytes")
                             {
                                 self.reject_wasm_feature(
@@ -268,7 +272,10 @@ impl Checker {
                                 .filter_map(|k| k.strip_prefix(&format!("{name}.")))
                                 .filter(|k| !k.contains('.')),
                         );
-                        if self.resolve_module_type(name, field).is_some() {
+                        if self
+                            .resolve_module_type(name.name.as_str(), field)
+                            .is_some()
+                        {
                             self.report_error(
                                 TypeErrorKind::PathKindMismatch,
                                 span,
@@ -606,7 +613,7 @@ impl Checker {
     pub(in crate::check) fn check_lambda(
         &mut self,
         is_move: bool,
-        private_captures: &[Spanned<String>],
+        private_captures: &[Spanned<Ident>],
         type_params: Option<&[TypeParam]>,
         params: &[LambdaParam],
         return_type: Option<&Spanned<TypeExpr>>,
@@ -644,7 +651,7 @@ impl Checker {
     pub(super) fn check_lambda_body(
         &mut self,
         is_move: bool,
-        private_captures: &[Spanned<String>],
+        private_captures: &[Spanned<Ident>],
         type_params: Option<&[TypeParam]>,
         params: &[LambdaParam],
         return_type: Option<&Spanned<TypeExpr>>,
@@ -692,8 +699,8 @@ impl Checker {
         if let Some(tps) = type_params {
             for tp in tps {
                 let tv = TypeVar::fresh();
-                generic_bindings.insert(tp.name.clone(), Ty::Var(tv));
-                generic_param_names.insert(tv.0, tp.name.clone());
+                generic_bindings.insert(tp.name.to_string(), Ty::Var(tv));
+                generic_param_names.insert(tv.0, tp.name.to_string());
                 generic_type_vars.push(tv);
             }
         }
@@ -749,9 +756,13 @@ impl Checker {
             } else {
                 Ty::Var(TypeVar::fresh())
             };
-            self.check_shadowing(&p.name, &p.name_span);
-            self.env
-                .define_param_with_span(p.name.clone(), ty.clone(), false, p.name_span.clone());
+            self.check_shadowing(p.name.name.as_str(), &p.name_span);
+            self.env.define_param_with_span(
+                p.name.to_string(),
+                ty.clone(),
+                false,
+                p.name_span.clone(),
+            );
             param_tys.push(ty);
         }
 
@@ -811,17 +822,20 @@ impl Checker {
                             None
                         } else {
                             Some((
-                                tp.name.clone(),
-                                tp.bounds.iter().map(|bound| bound.name.clone()).collect(),
+                                tp.name.to_string(),
+                                tp.bounds
+                                    .iter()
+                                    .map(|bound| bound.path.to_string())
+                                    .collect(), // TRANSITION(P1): deleted by A1 commit 2
                             ))
                         }
                     })
                     .collect();
                 self.last_lambda_generic_sig = Some(GenericLambdaSig {
                     call_sig: FnSig {
-                        type_params: tps.iter().map(|tp| tp.name.clone()).collect(),
+                        type_params: tps.iter().map(|tp| tp.name.to_string()).collect(),
                         type_param_bounds,
-                        param_names: params.iter().map(|param| param.name.clone()).collect(),
+                        param_names: params.iter().map(|param| param.name.to_string()).collect(),
                         params: param_tys
                             .iter()
                             .map(|param| {
@@ -897,7 +911,7 @@ impl Checker {
     pub(in crate::check) fn check_struct_init(
         &mut self,
         name: &str,
-        fields: &[(String, Spanned<Expr>)],
+        fields: &[(Ident, Spanned<Expr>)],
         type_args: Option<&[Spanned<TypeExpr>]>,
         base: Option<&Spanned<Expr>>,
         span: &Span,
@@ -907,7 +921,7 @@ impl Checker {
         // that says which value wins.
         let mut named: HashSet<&str> = HashSet::new();
         for (field_name, (_, field_span)) in fields {
-            if !named.insert(field_name.as_str()) {
+            if !named.insert(field_name.name.as_str()) {
                 self.report_error(
                     TypeErrorKind::InvalidOperation,
                     field_span,
@@ -1245,7 +1259,7 @@ impl Checker {
             }
 
             for (field_name, (expr, es)) in fields {
-                if let Some(declared_ty) = td.fields.get(field_name) {
+                if let Some(declared_ty) = td.fields.get(field_name.name.as_str()) {
                     // Substitute already-inferred type params into the expected type.
                     // Use parallel substitution so a swap map {"A": B, "B": A} does not
                     // alias both params: each Named leaf is replaced in one structural pass.
@@ -1285,7 +1299,7 @@ impl Checker {
                     }
                 } else {
                     let similar = crate::error::find_similar(
-                        field_name,
+                        field_name.name.as_str(),
                         td.fields.keys().map(String::as_str),
                     );
                     self.report_error_with_suggestions(
@@ -1321,7 +1335,7 @@ impl Checker {
                 }
             } else {
                 // No base: all fields must be explicitly provided.
-                let provided: HashSet<&str> = fields.iter().map(|(n, _)| n.as_str()).collect();
+                let provided: HashSet<&str> = fields.iter().map(|(n, _)| n.name.as_str()).collect();
                 for declared in td.fields.keys() {
                     if !provided.contains(declared.as_str()) {
                         self.report_error(
@@ -1395,7 +1409,9 @@ impl Checker {
             }
 
             for (field_name, (expr, es)) in fields {
-                if let Some((_, declared_ty)) = variant_fields.iter().find(|(n, _)| n == field_name)
+                if let Some((_, declared_ty)) = variant_fields
+                    .iter()
+                    .find(|(n, _)| n == field_name.name.as_str())
                 {
                     // Substitute already-inferred type params into the expected type
                     let expected = declared_ty.substitute_named_params_parallel(&type_arg_map);
@@ -1433,7 +1449,7 @@ impl Checker {
                     }
                 } else {
                     let similar = crate::error::find_similar(
-                        field_name,
+                        field_name.name.as_str(),
                         variant_fields.iter().map(|(n, _)| n.as_str()),
                     );
                     self.report_error_with_suggestions(
@@ -1444,7 +1460,7 @@ impl Checker {
                     );
                 }
             }
-            let provided: HashSet<&str> = fields.iter().map(|(n, _)| n.as_str()).collect();
+            let provided: HashSet<&str> = fields.iter().map(|(n, _)| n.name.as_str()).collect();
             for (declared, _) in &variant_fields {
                 if !provided.contains(declared.as_str()) {
                     self.report_error(
@@ -1517,7 +1533,7 @@ impl Checker {
     pub(super) fn check_spawn_constructor_args(
         &mut self,
         actor_name: &str,
-        args: &[(String, Spanned<Expr>)],
+        args: &[(Ident, Spanned<Expr>)],
         type_subst: Option<&HashMap<String, Ty>>,
     ) {
         let actor_fields: Option<HashMap<String, Ty>> =
@@ -1541,7 +1557,7 @@ impl Checker {
         for (field_name, (arg, as_)) in args {
             let declared_init_param = init_params
                 .as_ref()
-                .and_then(|params| params.iter().find(|p| &p.name == field_name))
+                .and_then(|params| params.iter().find(|p| p.name == field_name.name.as_str()))
                 .map(|p| p.ty.clone());
             // A field init initializes has no spawn value (D447): one init
             // body cannot be a first store at one spawn site and a
@@ -1550,7 +1566,11 @@ impl Checker {
                 && self
                     .actor_deferred_fields
                     .get(actor_name)
-                    .is_some_and(|deferred| deferred.contains(field_name))
+                    .is_some_and(|deferred| {
+                        deferred
+                            .iter()
+                            .any(|field| field == field_name.name.as_str())
+                    })
             {
                 self.report_error(
                     TypeErrorKind::InvalidOperation,
@@ -1576,7 +1596,9 @@ impl Checker {
             // checker level -- the parameter, the field, and the two disagreeing
             // types -- and skip the per-arg check so no confusing secondary
             // diagnostic piles on.
-            let field_ty = actor_fields.as_ref().and_then(|f| f.get(field_name));
+            let field_ty = actor_fields
+                .as_ref()
+                .and_then(|f| f.get(field_name.name.as_str()));
             if let (Some(param_ty), Some(field_ty)) = (declared_init_param.as_ref(), field_ty) {
                 if param_ty != field_ty {
                     let param_display = param_ty.user_facing().to_string();
@@ -1604,9 +1626,11 @@ impl Checker {
                     continue;
                 }
             }
-            let declared = declared_init_param
-                .as_ref()
-                .or_else(|| actor_fields.as_ref().and_then(|f| f.get(field_name)));
+            let declared = declared_init_param.as_ref().or_else(|| {
+                actor_fields
+                    .as_ref()
+                    .and_then(|f| f.get(field_name.name.as_str()))
+            });
             // Substitute the spawn site's type arguments into the declared
             // type before checking, so a generic field/init param (`value: T`)
             // is compared against the instantiated type (`i64`) rather than
@@ -1661,20 +1685,26 @@ impl Checker {
             // module export). A bare name exported by 2+ modules with no
             // local actor is a typed error naming the candidates — never
             // silent first-wins.
-            Expr::Identifier(name) => match self.resolve_bare_spawn_target_identity(name) {
-                super::types::BareActorResolution::Resolved(identity) => Some(identity),
-                super::types::BareActorResolution::Ambiguous(candidate_modules) => {
-                    self.report_ambiguous_actor_reference(name, &candidate_modules, span);
-                    return Err(());
+            Expr::Ident(name) => {
+                match self.resolve_bare_spawn_target_identity(name.name.as_str()) {
+                    super::types::BareActorResolution::Resolved(identity) => Some(identity),
+                    super::types::BareActorResolution::Ambiguous(candidate_modules) => {
+                        self.report_ambiguous_actor_reference(
+                            name.name.as_str(),
+                            &candidate_modules,
+                            span,
+                        );
+                        return Err(());
+                    }
+                    // Unknown actor: keep the bare name so the pre-existing
+                    // unknown-actor diagnostics downstream fire unchanged.
+                    super::types::BareActorResolution::Unknown => Some(name.to_string()),
                 }
-                // Unknown actor: keep the bare name so the pre-existing
-                // unknown-actor diagnostics downstream fire unchanged.
-                super::types::BareActorResolution::Unknown => Some(name.clone()),
-            },
+            }
             // Handle module-qualified actor: spawn module.ActorName(args)
             Expr::FieldAccess { object, field } => {
-                if let Expr::Identifier(module) = &object.0 {
-                    if self.module_binding_in_current_file(module) {
+                if let Expr::Ident(module) = &object.0 {
+                    if self.module_binding_in_current_file(module.name.as_str()) {
                         // Verify the qualifier resolves to something spawnable
                         // that is a public export of `module` before stripping
                         // it to the bare name. `module_type_exports` membership
@@ -1692,17 +1722,17 @@ impl Checker {
                         // is not clobbered by a same-named root/other-module type).
                         // Fail closed before HIR/MIR rather than misroute.
                         let actor_identity = self
-                            .resolve_module_type(module, field)
+                            .resolve_module_type(module.name.as_str(), field.0.name.as_str())
                             .filter(|td| {
                                 matches!(td.kind, TypeDefKind::Actor | TypeDefKind::Supervisor)
                             })
                             .map(|td| td.name);
                         let Some(actor_identity) = actor_identity else {
                             let similar = self
-                                .module_type_exports_for_binding(module)
+                                .module_type_exports_for_binding(module.name.as_str())
                                 .map(|set| {
                                     crate::error::find_similar(
-                                        field,
+                                        field.0.name.as_str(),
                                         set.iter().map(String::as_str),
                                     )
                                 })
@@ -1712,7 +1742,8 @@ impl Checker {
                                 span,
                                 format!(
                                     "module `{module}` has no exported actor or supervisor \
-                                     `{field}`"
+                                     `{}`",
+                                    field.0
                                 ),
                                 similar,
                             );
@@ -1726,7 +1757,7 @@ impl Checker {
                         self.used_modules.borrow_mut().insert(ImportKey::in_file(
                             self.current_module.clone(),
                             self.current_module_idx,
-                            module.clone(),
+                            module.to_string(),
                         ));
                         // Keep the exact source identity recovered through the
                         // lexical module binding. The surface spelling may be
@@ -1747,7 +1778,7 @@ impl Checker {
         &mut self,
         target: &Spanned<Expr>,
         type_args: &[Spanned<TypeExpr>],
-        args: &[(String, Spanned<Expr>)],
+        args: &[(Ident, Spanned<Expr>)],
         span: &Span,
     ) -> Ty {
         let Ok(actor_name) = self.resolve_spawn_target(target, span) else {
@@ -1793,7 +1824,11 @@ impl Checker {
             self.check_spawn_constructor_args(&name, args, Some(&type_subst));
             if let Some(expected_args) = self.actor_spawn_args.get(&name).cloned() {
                 for (argument, required) in expected_args {
-                    if required && !args.iter().any(|(provided, _)| provided == &argument) {
+                    if required
+                        && !args
+                            .iter()
+                            .any(|(provided, _)| provided.name.as_str() == argument)
+                    {
                         self.report_error(
                             TypeErrorKind::MissingActorSpawnArgument,
                             span,

@@ -29,7 +29,7 @@ impl Checker {
             })
             .unwrap_or_default();
         for param in fd.type_params.iter().flatten() {
-            scope.bounds.entry(param.name.clone()).or_default();
+            scope.bounds.entry(param.name.to_string()).or_default();
         }
         scope
     }
@@ -38,7 +38,7 @@ impl Checker {
         match item {
             Item::Function(fd) => self.check_function(fd),
             Item::Actor(ad) => {
-                if !crate::ty::is_reserved_type_name(&ad.name) {
+                if !crate::ty::is_reserved_type_name(ad.name.name.as_str()) {
                     if matches!(
                         ad.overflow_policy.as_ref(),
                         Some(hew_parser::ast::OverflowPolicy::Coalesce {
@@ -60,12 +60,12 @@ impl Checker {
             Item::Const(cd) => self.check_const(cd, span),
             Item::Impl(id) => self.check_impl(id, span),
             Item::Trait(td) => {
-                if !crate::ty::is_reserved_type_name(&td.name) {
+                if !crate::ty::is_reserved_type_name(td.name.name.as_str()) {
                     for item in &td.items {
                         if let TraitItem::Method(method) = item {
                             if method.body.is_none() {
                                 self.check_boundary_resource_params(
-                                    &method.name,
+                                    method.name.name.as_str(),
                                     &method.params,
                                     "trait method signature",
                                     &method.span,
@@ -79,7 +79,7 @@ impl Checker {
             Item::ExternBlock(block) => {
                 for function in &block.functions {
                     self.check_boundary_resource_params(
-                        &function.name,
+                        function.name.name.as_str(),
                         &function.params,
                         "extern fn",
                         &function.span,
@@ -268,7 +268,7 @@ impl Checker {
         let scope = self.enter_primary_sig_scope(&[(Some(&sd.type_params), None)]);
         let bounds = self
             .type_defs
-            .get(&sd.name)
+            .get(sd.name.name.as_str())
             .map_or_else(HashMap::new, |definition| definition.bounds.clone());
         self.current_type_param_bounds
             .push(TypeParamScope::new(bounds, HashMap::new()));
@@ -277,7 +277,8 @@ impl Checker {
         // spurious unused-import warning when the supervisor is the only
         // reference.
         for child in &sd.children {
-            if let Some((module, _)) = child.actor_type.split_once('.') {
+            if let [(module, _), _, ..] = child.actor_type.segments.as_slice() {
+                let module = module.name.as_str();
                 if self.modules.contains(module) {
                     self.used_modules.borrow_mut().insert(ImportKey::in_file(
                         self.current_module.clone(),
@@ -322,7 +323,7 @@ impl Checker {
         } else {
             child.span.clone()
         };
-        let identity = self.resolve_supervisor_child_type(&child.actor_type);
+        let identity = self.resolve_supervisor_child_type(&child.actor_type.to_string()); // TRANSITION(P1): deleted by A1 commit 2
         let definition = identity.as_ref().and_then(|name| self.type_defs.get(name));
         if definition.is_some_and(|definition| {
             matches!(
@@ -377,7 +378,7 @@ impl Checker {
                 ),
             );
             self.env.define_param_with_span(
-                param.name.clone(),
+                param.name.to_string(),
                 ty,
                 param.is_mutable,
                 param.ty.1.clone(),
@@ -388,21 +389,23 @@ impl Checker {
             let Some(identity) = self.resolve_checked_supervisor_child(sd, child, span) else {
                 continue;
             };
-            let target = (Expr::Identifier(identity), child.span.clone());
+            let target = (Expr::Ident(Ident::new(&identity)), child.span.clone()); // TRANSITION(P1): deleted by A1 commit 2
             let handle = self.check_spawn(&target, &child.type_args, &child.args, &child.span);
             self.record_type(&child.span, &handle);
             if let Some(child_ty) = handle.as_actor_handle() {
                 // Keyed by the declaration identity, as registration writes it:
                 // a module supervisor answers to `{module}.{name}`, and this is
                 // where each child's refined handle carrier is published.
-                let identity = self.declaration_identity(&sd.name);
+                let identity = self.declaration_identity(sd.name.name.as_str());
                 if let Some(children) = self.supervisor_children.get_mut(&identity) {
                     let entries = if child.is_pool {
                         &mut children.pools
                     } else {
                         &mut children.statics
                     };
-                    if let Some((_, ty)) = entries.iter_mut().find(|(name, _)| name == &child.name)
+                    if let Some((_, ty)) = entries
+                        .iter_mut()
+                        .find(|(name, _)| name == child.name.name.as_str())
                     {
                         *ty = child_ty.clone();
                     }
@@ -572,7 +575,7 @@ impl Checker {
     fn check_supervisor_duplicate_children(&mut self, sd: &SupervisorDecl, span: &Span) {
         let mut seen: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
         for (i, child) in sd.children.iter().enumerate() {
-            match seen.entry(child.name.as_str()) {
+            match seen.entry(child.name.name.as_str()) {
                 std::collections::hash_map::Entry::Vacant(e) => {
                     e.insert(i);
                 }
@@ -617,7 +620,10 @@ impl Checker {
                 ));
             }
             if !static_children.is_empty() {
-                let names: Vec<&str> = static_children.iter().map(|c| c.name.as_str()).collect();
+                let names: Vec<&str> = static_children
+                    .iter()
+                    .map(|c| c.name.name.as_str())
+                    .collect();
                 self.errors.push(TypeError::new(
                     TypeErrorKind::SupervisorError {
                         subkind: SupervisorErrorKind::StrategyPoolMismatch,
@@ -634,7 +640,7 @@ impl Checker {
             }
         } else if !pool_children.is_empty() {
             // Any non-simple_one_for_one strategy (or no strategy specified) rejects pool children.
-            let names: Vec<&str> = pool_children.iter().map(|c| c.name.as_str()).collect();
+            let names: Vec<&str> = pool_children.iter().map(|c| c.name.name.as_str()).collect();
             let strategy_label = sd.strategy.map_or("default (one_for_one)", |s| match s {
                 SupervisorStrategy::OneForOne => "one_for_one",
                 SupervisorStrategy::OneForAll => "one_for_all",
@@ -668,8 +674,8 @@ impl Checker {
             .iter()
             .map(|c| {
                 (
-                    c.name.as_str(),
-                    self.canonical_supervisor_child_type(&c.actor_type),
+                    c.name.name.as_str(),
+                    self.canonical_supervisor_child_type(&c.actor_type.to_string()), // TRANSITION(P1): deleted by A1 commit 2
                 )
             })
             .collect();
@@ -701,7 +707,7 @@ impl Checker {
                 // the unknown-sibling check fires first if the name doesn't exist.
                 // If the child wires itself, it's a cycle; we flag it during cycle
                 // detection rather than here to avoid double-reporting.
-                if sibling_name.as_str() == child.name.as_str() {
+                if sibling_name.as_str() == child.name.name.as_str() {
                     // Will be caught by cycle detection.
                     continue;
                 }
@@ -709,10 +715,11 @@ impl Checker {
                 // ── Type compatibility ──────────────────────────────────────
                 // The dependent child's actor init must have a param named `param_key`
                 // typed as `sibling_type`'s own actor-handle type.
-                let dependent_identity = self.canonical_supervisor_child_type(&child.actor_type);
+                let dependent_identity =
+                    self.canonical_supervisor_child_type(&child.actor_type.to_string()); // TRANSITION(P1): deleted by A1 commit 2
                 self.check_supervisor_wired_to_type_compat(
-                    &sd.name,
-                    &child.name,
+                    sd.name.name.as_str(),
+                    child.name.name.as_str(),
                     &dependent_identity,
                     param_key,
                     sibling_type,
@@ -791,7 +798,7 @@ impl Checker {
 
         // Build an adjacency list: child_name → set of child_names it depends on.
         let child_names: std::collections::HashSet<&str> =
-            sd.children.iter().map(|c| c.name.as_str()).collect();
+            sd.children.iter().map(|c| c.name.name.as_str()).collect();
 
         // Only track deps that actually exist as siblings (unknown siblings already reported).
         // Maps child_name → list of siblings it depends on (via wired_to values).
@@ -809,7 +816,7 @@ impl Checker {
                             .collect()
                     })
                     .unwrap_or_default();
-                (c.name.as_str(), dep_list)
+                (c.name.name.as_str(), dep_list)
             })
             .collect();
 
@@ -885,7 +892,7 @@ impl Checker {
         // rc1-F1 stage A: body checking resolves the same canonical key
         // `register_fn_sig_with_name` minted — root items included — so
         // `current_function` (a `fn_sigs`-family key) is always canonical.
-        let fn_name = self.canonical_fn_identity(self.canonical_fn_owner(), &fd.name);
+        let fn_name = self.canonical_fn_identity(self.canonical_fn_owner(), fd.name.name.as_str());
         self.check_function_as(fd, &fn_name);
     }
 
@@ -940,23 +947,29 @@ impl Checker {
                 && !is_receiver
                 && self.parameter_has_independent_clone(&ty);
             if in_actor {
-                self.check_shadowing(&p.name, &p.ty.1);
+                self.check_shadowing(p.name.name.as_str(), &p.ty.1);
             }
             if is_receiver {
                 self.env.define_receiver_param_with_span(
-                    p.name.clone(),
+                    p.name.to_string(),
                     ty,
                     p.is_mutable,
                     p.ty.1.clone(),
                 );
             } else {
-                self.env
-                    .define_param_with_span(p.name.clone(), ty, p.is_mutable, p.ty.1.clone());
+                self.env.define_param_with_span(
+                    p.name.to_string(),
+                    ty,
+                    p.is_mutable,
+                    p.ty.1.clone(),
+                );
             }
-            self.env
-                .set_parameter_consume(&p.name, p.is_consume || (is_receiver && fd.consumes_self));
+            self.env.set_parameter_consume(
+                p.name.name.as_str(),
+                p.is_consume || (is_receiver && fd.consumes_self),
+            );
             if private_copy {
-                self.env.reinit_place(&p.name, &[]);
+                self.env.reinit_place(p.name.name.as_str(), &[]);
             }
         }
     }
@@ -1033,7 +1046,7 @@ impl Checker {
                     && fn_name.contains("::")
             })
             .filter(|param| self.is_receiver_param(param))
-            .map(|param| param.name.clone());
+            .map(|param| param.name.to_string());
         let prev_var_self_receiver =
             std::mem::replace(&mut self.var_self_receiver, var_self_receiver);
         let prev_machine_body_owner = std::mem::replace(
@@ -1186,7 +1199,7 @@ impl Checker {
                         attributes: vec![],
                         is_generator: false,
                         visibility: Visibility::Private,
-                        name: method.name.clone(),
+                        name: method.name,
                         type_params: method.type_params.clone(),
                         params: method.params.clone(),
                         return_type: method.return_type.clone(),
@@ -1221,7 +1234,7 @@ impl Checker {
                         sig.type_param_bounds
                             .entry("Self".to_string())
                             .or_insert_with(Vec::new)
-                            .push(td.name.clone());
+                            .push(td.name.to_string());
                     }
 
                     self.check_function_as(&fn_decl, &qualified);
@@ -1245,7 +1258,7 @@ impl Checker {
         // max-heap table key must use the same identity the registration
         // pass authored, or a same-named actor from another module would be
         // consulted instead.
-        let identity = Self::actor_identity(self.current_module.as_deref(), &ad.name);
+        let identity = Self::actor_identity(self.current_module.as_deref(), ad.name.name.as_str());
         let actor_ty = Ty::Named {
             builtin: None,
             name: identity.clone(),
@@ -1254,7 +1267,7 @@ impl Checker {
                 .iter()
                 .map(|parameter| Ty::Named {
                     builtin: None,
-                    name: parameter.name.clone(),
+                    name: parameter.name.to_string(),
                     args: Vec::new(),
                 })
                 .collect(),
@@ -1264,10 +1277,10 @@ impl Checker {
             .iter()
             .map(|parameter| {
                 (
-                    parameter.name.clone(),
+                    parameter.name.to_string(),
                     Ty::Named {
                         builtin: None,
-                        name: parameter.name.clone(),
+                        name: parameter.name.to_string(),
                         args: Vec::new(),
                     },
                 )
@@ -1290,7 +1303,10 @@ impl Checker {
             .cloned()
             .unwrap_or_default();
         for field in &ad.fields {
-            if deferred_fields.contains(&field.name) {
+            if deferred_fields
+                .iter()
+                .any(|deferred| deferred == field.name.name.as_str())
+            {
                 self.actor_deferred_field_decls
                     .insert(SpanKey::in_module(&field.ty.1, self.current_module_idx));
             }
@@ -1301,10 +1317,12 @@ impl Checker {
             ad.fields
                 .iter()
                 .map(|f| ActorFieldInfo {
-                    name: f.name.clone(),
+                    name: f.name.to_string(),
                     is_mutable: f.is_mutable,
                     decl_span: f.ty.1.clone(),
-                    deferred: deferred_fields.contains(&f.name),
+                    deferred: deferred_fields
+                        .iter()
+                        .any(|deferred| deferred == f.name.name.as_str()),
                 })
                 .collect(),
         );
@@ -1383,7 +1401,10 @@ impl Checker {
                 self.bind_actor_fields(&ad.fields);
                 let qualified = format!("{identity}::{}", method.name);
                 self.check_function_as(method, &qualified);
-                self.reject_unplugged_actor_state_fields(&ad.fields, Some(&method.name));
+                self.reject_unplugged_actor_state_fields(
+                    &ad.fields,
+                    Some(method.name.name.as_str()),
+                );
                 self.env.pop_scope();
                 continue;
             }
@@ -1401,8 +1422,11 @@ impl Checker {
             }
             let hook_attr = hook_attrs[0];
 
-            let Some(hook_kind_str) = self.resolve_on_hook_kind(&ad.name, &method.name, hook_attr)
-            else {
+            let Some(hook_kind_str) = self.resolve_on_hook_kind(
+                ad.name.name.as_str(),
+                method.name.name.as_str(),
+                hook_attr,
+            ) else {
                 continue;
             };
 
@@ -1445,11 +1469,11 @@ impl Checker {
                     continue;
                 }
                 "exit" => {
-                    self.check_exit_hook(&ad.name, method, &ad.fields);
+                    self.check_exit_hook(ad.name.name.as_str(), method, &ad.fields);
                     continue;
                 }
                 "down" => {
-                    self.check_down_hook(&ad.name, method, &ad.fields);
+                    self.check_down_hook(ad.name.name.as_str(), method, &ad.fields);
                     continue;
                 }
                 _ => {}
@@ -1458,10 +1482,10 @@ impl Checker {
             // Validate signature and body. Hooks bind actor fields in
             // scope (bare names) and have no parameters beyond `self`.
             let display_kind = format!("on({hook_kind_str})");
-            self.check_lifecycle_hook(&ad.name, method, &display_kind, &ad.fields);
+            self.check_lifecycle_hook(ad.name.name.as_str(), method, &display_kind, &ad.fields);
         }
         for hook in crash_hooks {
-            self.check_crash_hook(&ad.name, hook, &ad.fields);
+            self.check_crash_hook(ad.name.name.as_str(), hook, &ad.fields);
         }
     }
 
@@ -1529,7 +1553,7 @@ impl Checker {
         for field in fields {
             let field_ty = self.resolve_type_expr(&field.ty);
             self.env
-                .define(field.name.clone(), field_ty, field.is_mutable);
+                .define(field.name.to_string(), field_ty, field.is_mutable);
         }
     }
 
@@ -1568,20 +1592,20 @@ impl Checker {
             self.record_consumed_actor_state(fields, consumer);
         }
         for field in fields {
-            let Some(binding) = self.env.lookup_ref(&field.name) else {
+            let Some(binding) = self.env.lookup_ref(field.name.name.as_str()) else {
                 continue;
             };
             let (place, moved_at) = if binding.is_moved {
                 let Some(moved_at) = binding.moved_at.clone() else {
                     continue;
                 };
-                (field.name.clone(), moved_at)
+                (field.name.to_string(), moved_at)
             } else {
                 let Some(moved) = binding.moved_places.first() else {
                     continue;
                 };
                 (
-                    std::iter::once(field.name.as_str())
+                    std::iter::once(field.name.name.as_str())
                         .chain(moved.path.iter().map(String::as_str))
                         .collect::<Vec<_>>()
                         .join("."),
@@ -1615,7 +1639,7 @@ impl Checker {
         for field in fields {
             let Some(consumed_at) = self
                 .env
-                .lookup_ref(&field.name)
+                .lookup_ref(field.name.name.as_str())
                 .and_then(|binding| binding.consumed_at.clone())
             else {
                 continue;
@@ -1626,7 +1650,7 @@ impl Checker {
                 continue;
             }
             self.actor_consumed_state
-                .entry(field.name.clone())
+                .entry(field.name.to_string())
                 .or_insert_with(|| (consumer.to_string(), consumed_at));
         }
     }
@@ -1642,11 +1666,12 @@ impl Checker {
             let deferred = self
                 .current_actor_fields
                 .iter()
-                .any(|info| info.name == field.name && info.deferred);
+                .any(|info| info.name == field.name.name.as_str() && info.deferred);
             if deferred {
-                self.env.define_deferred_field(&field.name, field_ty);
+                self.env
+                    .define_deferred_field(field.name.name.as_str(), field_ty);
             } else {
-                self.env.define(field.name.clone(), field_ty, true);
+                self.env.define(field.name.to_string(), field_ty, true);
             }
         }
     }
@@ -1767,13 +1792,13 @@ impl Checker {
 
         // Bind init parameters
         for p in &init.params {
-            self.check_shadowing(&p.name, &p.ty.1);
+            self.check_shadowing(p.name.name.as_str(), &p.ty.1);
             let ty = self.resolve_annotation_with_holes(
                 &p.ty,
                 format!("init parameter `{}` of actor `{actor_name}`", p.name),
             );
             self.env
-                .define_param_with_span(p.name.clone(), ty, p.is_mutable, p.ty.1.clone());
+                .define_param_with_span(p.name.to_string(), ty, p.is_mutable, p.ty.1.clone());
         }
 
         // Init returns unit — no meaningful return type
@@ -1891,7 +1916,7 @@ impl Checker {
         self.in_actor_handler_context = prev_actor_handler_context;
 
         self.current_function = prev_function;
-        self.reject_unplugged_actor_state_fields(fields, Some(&hook.name));
+        self.reject_unplugged_actor_state_fields(fields, Some(hook.name.name.as_str()));
         self.env.pop_scope();
     }
 
@@ -2060,16 +2085,19 @@ impl Checker {
         self.bind_actor_fields(fields);
         self.crash_hook_consumed_fields = fields
             .iter()
-            .filter(|field| self.actor_consumed_state.contains_key(&field.name))
+            .filter(|field| {
+                self.actor_consumed_state
+                    .contains_key(field.name.name.as_str())
+            })
             .filter_map(|field| {
-                let binding = self.env.lookup_ref(&field.name)?;
-                Some((binding.id, field.name.clone()))
+                let binding = self.env.lookup_ref(field.name.name.as_str())?;
+                Some((binding.id, field.name.to_string()))
             })
             .collect();
         if let Some(p) = hook.params.first() {
             let pty = self.resolve_type_expr(&p.ty);
             self.env
-                .define_param_with_span(p.name.clone(), pty, p.is_mutable, p.ty.1.clone());
+                .define_param_with_span(p.name.to_string(), pty, p.is_mutable, p.ty.1.clone());
         }
 
         self.current_return_type = Some(return_ty);
@@ -2173,7 +2201,7 @@ impl Checker {
         if let Some(p) = hook.params.first() {
             let pty = self.resolve_type_expr(&p.ty);
             self.env
-                .define_param_with_span(p.name.clone(), pty, p.is_mutable, p.ty.1.clone());
+                .define_param_with_span(p.name.to_string(), pty, p.is_mutable, p.ty.1.clone());
         }
 
         self.current_return_type = Some(Ty::Unit);
@@ -2182,7 +2210,7 @@ impl Checker {
         self.in_actor_handler_context = prev_actor_handler_context;
 
         self.current_function = prev_function;
-        self.reject_unplugged_actor_state_fields(fields, Some(&hook.name));
+        self.reject_unplugged_actor_state_fields(fields, Some(hook.name.name.as_str()));
         self.env.pop_scope();
     }
 
@@ -2251,14 +2279,14 @@ impl Checker {
         if let Some(p) = hook.params.first() {
             let pty = self.resolve_type_expr(&p.ty);
             self.env
-                .define_param_with_span(p.name.clone(), pty, p.is_mutable, p.ty.1.clone());
+                .define_param_with_span(p.name.to_string(), pty, p.is_mutable, p.ty.1.clone());
         }
         self.current_return_type = Some(Ty::Unit);
         let _body_ty = self.check_block(&hook.body, None);
         self.current_return_type = None;
         self.in_actor_handler_context = prev_actor_handler_context;
         self.current_function = prev_function;
-        self.reject_unplugged_actor_state_fields(fields, Some(&hook.name));
+        self.reject_unplugged_actor_state_fields(fields, Some(hook.name.name.as_str()));
         self.env.pop_scope();
     }
 
@@ -2427,7 +2455,7 @@ impl Checker {
         rf: &ReceiveFnDecl,
         fields: &[FieldDecl],
     ) {
-        if rf.name == "stop" {
+        if rf.name == Ident::new("stop") {
             self.report_error_with_suggestions(
                 TypeErrorKind::InvalidOperation,
                 &rf.span,
@@ -2469,10 +2497,10 @@ impl Checker {
         if let Some(type_params) = &rf.type_params {
             for tp in type_params {
                 generic_bindings.insert(
-                    tp.name.clone(),
+                    tp.name.to_string(),
                     Ty::Named {
                         builtin: None,
-                        name: tp.name.clone(),
+                        name: tp.name.to_string(),
                         args: vec![],
                     },
                 );
@@ -2490,15 +2518,15 @@ impl Checker {
         self.env.push_scope();
 
         for p in &rf.params {
-            self.check_shadowing(&p.name, &p.ty.1);
+            self.check_shadowing(p.name.name.as_str(), &p.ty.1);
             let ty = self.resolve_type_expr(&p.ty);
             self.reject_opaque_message_payload(&ty, &p.ty.1, &qualified_name);
             self.env
-                .define_param_with_span(p.name.clone(), ty, p.is_mutable, p.ty.1.clone());
+                .define_param_with_span(p.name.to_string(), ty, p.is_mutable, p.ty.1.clone());
             // The receiving handler owns the delivered message. Its fields
             // may move out of an aggregate parameter just as they may from a
             // local owner; ordinary function parameters retain borrow semantics.
-            self.env.set_parameter_consume(&p.name, true);
+            self.env.set_parameter_consume(p.name.name.as_str(), true);
         }
 
         let declared_ret = if let Some(sig) = self.fn_sigs.get(&qualified_name) {
@@ -2602,12 +2630,12 @@ impl Checker {
             self.generic_ctx.pop();
         }
         self.env.pop_scope(); // params scope
-        self.reject_unplugged_actor_state_fields(fields, Some(&rf.name));
+        self.reject_unplugged_actor_state_fields(fields, Some(rf.name.name.as_str()));
         self.env.pop_scope(); // fields scope
     }
 
     pub(super) fn check_const(&mut self, cd: &ConstDecl, span: &Span) {
-        if self.reject_protected_prelude_declaration(&cd.name, span) {
+        if self.reject_protected_prelude_declaration(cd.name.name.as_str(), span) {
             return;
         }
         let expected =
@@ -2684,18 +2712,18 @@ impl Checker {
         } else {
             None
         };
-        self.env.define(cd.name.clone(), actual, false);
+        self.env.define(cd.name.to_string(), actual, false);
         if let Some(value) = const_value {
             let binding_id = self
                 .env
-                .lookup_ref(&cd.name)
+                .lookup_ref(cd.name.name.as_str())
                 .expect("constant binding was just defined")
                 .id;
-            self.const_values.insert(cd.name.clone(), value);
+            self.const_values.insert(cd.name.to_string(), value);
             self.declared_const_bindings
-                .insert(cd.name.clone(), binding_id);
+                .insert(cd.name.to_string(), binding_id);
         }
-        self.record_root_value_binding(&cd.name);
+        self.record_root_value_binding(cd.name.name.as_str());
     }
 
     /// A trait's supertraits are part of its obligation: `trait Error: Display`
@@ -2748,10 +2776,11 @@ impl Checker {
             return;
         }
         if let TypeExpr::Named {
-            name: type_name,
+            path: named_path,
             type_args: _,
         } = &id.target_type.0
         {
+            let type_name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
             if let Some(tb) = &id.trait_bound {
                 let type_is_local = self.local_type_defs.contains(type_name)
                     || self.intrinsic_type_is_local_to_builtin_surface(type_name);
@@ -2760,12 +2789,12 @@ impl Checker {
                 // resolver's local-shadow step), so the orphan-rule warning keys
                 // on the same authoritative identity every other trait-reference
                 // site does — never the bare spelling in isolation.
-                let trait_is_local = self.trait_ref_is_local(&tb.name);
-                // hew-compile loads the prelude's Display impls as the
-                // std.builtins module, from the standard-library root every
-                // `std` module resolves from (the toolchain's std or
-                // `HEW_STD`), or source-less from the compiled-in text for an
-                // analysis with no search path. A lookalike module has neither.
+                let trait_is_local = self.trait_ref_is_local(&tb.path.to_string()); // TRANSITION(P1): deleted by A1 commit 2
+                                                                                    // hew-compile loads the prelude's Display impls as the
+                                                                                    // std.builtins module, from the standard-library root every
+                                                                                    // `std` module resolves from (the toolchain's std or
+                                                                                    // `HEW_STD`), or source-less from the compiled-in text for an
+                                                                                    // analysis with no search path. A lookalike module has neither.
                 let is_embedded_builtins_impl = self
                     .checking_canonical_stdlib_source("std.builtins")
                     && self.current_item_source.as_ref().is_none_or(|source| {
@@ -2781,7 +2810,7 @@ impl Checker {
                         span: span.clone(),
                         message: format!(
                             "impl `{}` for `{type_name}`: neither the trait nor the type is defined in this module",
-                            tb.name
+                            tb.path // TRANSITION(P1): deleted by A1 commit 2
                         ),
                         notes: vec![],
                         suggestions: vec![
@@ -2791,7 +2820,8 @@ impl Checker {
                         source_module: self.current_module.clone(),
                     });
                 }
-                self.require_supertrait_impls(type_name, &tb.name, span);
+                self.require_supertrait_impls(type_name, &tb.path.to_string(), span);
+                // TRANSITION(P1): deleted by A1 commit 2
             }
 
             // Bind impl-level type params (e.g. T in `impl<T> Wrapper<T>`)
@@ -2800,10 +2830,10 @@ impl Checker {
             if let Some(tps) = &id.type_params {
                 for tp in tps {
                     generic_bindings.insert(
-                        tp.name.clone(),
+                        tp.name.to_string(),
                         Ty::Named {
                             builtin: None,
-                            name: tp.name.clone(),
+                            name: tp.name.to_string(),
                             args: vec![],
                         },
                     );

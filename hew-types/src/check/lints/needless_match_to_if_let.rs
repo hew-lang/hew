@@ -22,6 +22,7 @@
 //!   alone, matching the rule that the binding arm's value must not be consumed
 //!   as the match's result.
 
+use hew_parser::ast::Ident;
 use hew_parser::ast::{Block, Expr, MatchArm, NominalPatternPayload, Pattern, Span, Stmt};
 
 use crate::error::TypeError;
@@ -135,7 +136,7 @@ fn some_payload(pattern: &Pattern) -> Option<&Pattern> {
     let Pattern::ContextVariant(variant) = pattern else {
         return None;
     };
-    if variant.name != "Some" {
+    if variant.name != Ident::new("Some") {
         return None;
     }
     match variant.payload.as_ref()? {
@@ -151,7 +152,7 @@ fn is_none_pattern(pattern: &Pattern) -> bool {
     matches!(
         pattern,
         Pattern::ContextVariant(variant)
-            if variant.name == "None" && variant.payload.is_none()
+            if variant.name == Ident::new("None") && variant.payload.is_none()
     )
 }
 
@@ -159,7 +160,7 @@ fn is_none_pattern(pattern: &Pattern) -> bool {
 /// that render cleanly: a plain identifier or `_`.
 fn binding_name(pattern: &Pattern) -> Option<String> {
     match pattern {
-        Pattern::Identifier(name) => Some(name.clone()),
+        Pattern::Identifier(name) => Some(name.to_string()),
         Pattern::Wildcard => Some("_".to_string()),
         _ => None,
     }

@@ -12,7 +12,7 @@ use hew_hir::{
     ResolutionCtx, ResolvedRef,
 };
 use hew_parser::ast::{Item, Program};
-use hew_parser::module::{Module, ModuleGraph, ModuleId};
+use hew_parser::module::{Module, ModuleGraph, ModulePath};
 use hew_types::error::TypeErrorKind;
 use hew_types::{
     module_registry::ModuleRegistry, CallTarget, Checker, MethodCallRewrite, TypeCheckOutput,
@@ -33,8 +33,8 @@ fn build_program_with_imported_module(imported_src: &str, root_src: &str) -> Pro
         root.errors
     );
 
-    let imported_id = ModuleId::new(vec!["m".to_string()]);
-    let root_id = ModuleId::root();
+    let imported_id = ModulePath::new(["m"]);
+    let root_id = ModulePath::root();
 
     let imported_items: Vec<_> = imported
         .program
@@ -45,7 +45,7 @@ fn build_program_with_imported_module(imported_src: &str, root_src: &str) -> Pro
         .collect();
     for (item, _) in &mut root.program.items {
         if let Item::Import(import) = item {
-            if import.path == ["m"] {
+            if import.path.to_string() == "m" {
                 import.resolved_items = Some(imported_items.clone().into());
             }
         }

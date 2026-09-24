@@ -2,6 +2,7 @@
 
 use super::classify::{self, InputCompleteness, InputKind, ReplCommand};
 use super::session::{Session, SessionCounts, SyntheticDiagnosticView};
+use hew_parser::ast::Ident;
 use std::collections::HashMap;
 use std::fmt;
 use std::io::{Read, Write};
@@ -328,7 +329,7 @@ pub(crate) fn program_defines_main(program: &hew_parser::ast::Program) -> bool {
     program.items.iter().any(|(item, _)| {
         matches!(
             item,
-            hew_parser::ast::Item::Function(function) if function.name == "main"
+            hew_parser::ast::Item::Function(function) if function.name == Ident::new("main")
         )
     })
 }

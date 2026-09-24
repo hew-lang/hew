@@ -353,16 +353,18 @@ impl Checker {
 
     pub(in crate::check) fn expr_place(&self, expr: &Expr) -> Option<(String, PlacePath)> {
         match expr {
-            Expr::Identifier(name) => Some((name.clone(), PlacePath::new())),
+            Expr::Ident(name) => Some((name.to_string(), PlacePath::new())),
             Expr::FieldAccess { object, field } => {
                 // `self.count` in an actor body denotes the state binding
                 // `count`, so the place it names is rooted in that binding —
                 // never in a binding called `self`, which does not exist here.
-                if let Some(state_field) = self.actor_self_state_field(&object.0, field) {
+                if let Some(state_field) =
+                    self.actor_self_state_field(&object.0, field.0.name.as_str())
+                {
                     return Some((state_field.to_string(), PlacePath::new()));
                 }
                 let (root, mut path) = self.expr_place(&object.0)?;
-                path.push(field.clone());
+                path.push(field.0.to_string());
                 Some((root, path))
             }
             _ => None,
@@ -419,7 +421,7 @@ impl Checker {
     /// belongs to [`Self::check_field_access`], which reports it against the
     /// actor rather than letting the receiver be synthesised as a value.
     pub(in crate::check) fn is_actor_self_receiver(&self, object: &Expr) -> bool {
-        matches!(object, Expr::Identifier(name) if name == "self")
+        matches!(object, Expr::Ident(name) if name.name.as_str() == "self")
             && self.current_actor_type.is_some()
             && self.env.lookup_ref("self").is_none()
     }
@@ -685,7 +687,7 @@ impl Checker {
                         ..
                     }
                 ) {
-                    return Some((p.name.clone(), Some(p.name.clone())));
+                    return Some((p.name.to_string(), Some(p.name.to_string())));
                 }
                 None
             })
@@ -706,10 +708,10 @@ impl Checker {
         span: &Span,
         operation: &str,
     ) {
-        let Expr::Identifier(name) = expr else {
+        let Expr::Ident(name) = expr else {
             return;
         };
-        let Some(binding) = self.env.lookup_ref(name) else {
+        let Some(binding) = self.env.lookup_ref(name.name.as_str()) else {
             return;
         };
         let is_parameter = binding.is_param();

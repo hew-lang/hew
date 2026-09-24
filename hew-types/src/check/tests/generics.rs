@@ -91,7 +91,7 @@ fn contextual_lambda_binding_records_lambda_expr_type() {
         .items
         .iter()
         .find_map(|(item, _)| match item {
-            Item::Function(fd) if fd.name == "main" => {
+            Item::Function(fd) if fd.name == Ident::new("main") => {
                 fd.body.stmts.iter().find_map(|(stmt, _)| match stmt {
                     Stmt::Let {
                         value: Some((Expr::Lambda { .. }, span)),
@@ -263,7 +263,7 @@ fn turbofish_generic_call_records_call_type_args() {
         .items
         .iter()
         .find_map(|(item, _)| match item {
-            Item::Function(fd) if fd.name == "main" => {
+            Item::Function(fd) if fd.name == Ident::new("main") => {
                 fd.body.stmts.iter().find_map(|(stmt, _)| match stmt {
                     Stmt::Let {
                         value: Some((Expr::Call { .. }, span)),
@@ -362,7 +362,7 @@ fn return_type_polymorphic_call_records_call_type_args() {
         .items
         .iter()
         .find_map(|(item, _)| match item {
-            Item::Function(fd) if fd.name == "main" => Some(
+            Item::Function(fd) if fd.name == Ident::new("main") => Some(
                 fd.body
                     .stmts
                     .iter()
@@ -1018,7 +1018,7 @@ fn actor_ref_cycle_warning_uses_first_actor_decl_span() {
         .items
         .iter()
         .find_map(|(item, span)| match item {
-            Item::Actor(actor) if actor.name == "Alpha" => Some(span.clone()),
+            Item::Actor(actor) if actor.name == Ident::new("Alpha") => Some(span.clone()),
             _ => None,
         })
         .expect("expected Alpha actor item");
@@ -1441,7 +1441,7 @@ fn unconstrained_range_defaults_to_i64() {
         .items
         .iter()
         .find_map(|(item, _)| match item {
-            Item::Function(function) if function.name == "main" => Some(function),
+            Item::Function(function) if function.name == Ident::new("main") => Some(function),
             _ => None,
         })
         .expect("main function should exist");
@@ -2077,14 +2077,14 @@ fn let_bound_literal_coercion() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     // Simulate: let n = 5
     let let_stmt = Stmt::Let {
-        pattern: (Pattern::Identifier("n".to_string()), 4..5),
+        pattern: (Pattern::Identifier(Ident::new("n")), 4..5),
         ty: None,
         value: Some(make_int_literal(5, 8..9)),
         else_block: None,
     };
     checker.check_stmt(&let_stmt, &(0..10));
     // Now check: let x: i32 = n
-    let ident = (Expr::Identifier("n".to_string()), 15..16);
+    let ident = (Expr::Ident(Ident::new("n")), 15..16);
     let ty = checker.check_against(&ident.0, &ident.1, &Ty::I32);
     assert_eq!(ty, Ty::I32);
     assert!(
@@ -2099,14 +2099,14 @@ fn let_bound_literal_overflow() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     // Simulate: let n = 2147483648 (exceeds i32 max)
     let let_stmt = Stmt::Let {
-        pattern: (Pattern::Identifier("n".to_string()), 4..5),
+        pattern: (Pattern::Identifier(Ident::new("n")), 4..5),
         ty: None,
         value: Some(make_int_literal(2_147_483_648, 8..18)),
         else_block: None,
     };
     checker.check_stmt(&let_stmt, &(0..19));
     // Now check: let x: i32 = n — should fail with range error
-    let ident = (Expr::Identifier("n".to_string()), 24..25);
+    let ident = (Expr::Ident(Ident::new("n")), 24..25);
     let ty = checker.check_against(&ident.0, &ident.1, &Ty::I32);
     assert_eq!(ty, Ty::Error);
     assert!(
@@ -2123,7 +2123,7 @@ fn let_bound_literal_overflow() {
 fn derived_intliteral_identifier_coerces_without_const_values() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let source_stmt = Stmt::Let {
-        pattern: (Pattern::Identifier("n".to_string()), 4..5),
+        pattern: (Pattern::Identifier(Ident::new("n")), 4..5),
         ty: None,
         value: Some((
             Expr::Binary {
@@ -2143,15 +2143,15 @@ fn derived_intliteral_identifier_coerces_without_const_values() {
     );
 
     let target_stmt = Stmt::Let {
-        pattern: (Pattern::Identifier("y".to_string()), 20..21),
+        pattern: (Pattern::Identifier(Ident::new("y")), 20..21),
         ty: Some((
             TypeExpr::Named {
-                name: "i32".to_string(),
+                path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("i32"), 0..0),
                 type_args: None,
             },
             23..26,
         )),
-        value: Some((Expr::Identifier("n".to_string()), 29..30)),
+        value: Some((Expr::Ident(Ident::new("n")), 29..30)),
         else_block: None,
     };
     checker.check_stmt(&target_stmt, &(20..30));
@@ -2167,7 +2167,7 @@ fn derived_intliteral_identifier_coerces_without_const_values() {
 fn negated_literal_let_binding_coerces_signed() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let let_stmt = Stmt::Let {
-        pattern: (Pattern::Identifier("n".to_string()), 4..5),
+        pattern: (Pattern::Identifier(Ident::new("n")), 4..5),
         ty: None,
         value: Some((
             Expr::Unary {
@@ -2180,7 +2180,7 @@ fn negated_literal_let_binding_coerces_signed() {
     };
     checker.check_stmt(&let_stmt, &(0..11));
 
-    let ident = (Expr::Identifier("n".to_string()), 16..17);
+    let ident = (Expr::Ident(Ident::new("n")), 16..17);
     let ty = checker.check_against(&ident.0, &ident.1, &Ty::I8);
     assert_eq!(ty, Ty::I8);
     assert!(
@@ -2195,10 +2195,10 @@ fn const_default_width_registers_in_const_values() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let decl = ConstDecl {
         visibility: Visibility::Private,
-        name: "N".to_string(),
+        name: Ident::new("N"),
         ty: (
             TypeExpr::Named {
-                name: "i64".to_string(),
+                path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("i64"), 0..0),
                 type_args: None,
             },
             0..0,
@@ -2213,7 +2213,7 @@ fn const_default_width_registers_in_const_values() {
         Some(ConstValue::Integer(100))
     ));
 
-    let ident = (Expr::Identifier("N".to_string()), 10..11);
+    let ident = (Expr::Ident(Ident::new("N")), 10..11);
     let ty = checker.check_against(&ident.0, &ident.1, &Ty::I32);
     assert_eq!(ty, Ty::I32);
     assert!(
@@ -2231,10 +2231,10 @@ fn const_explicit_width_not_in_const_values() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let decl = ConstDecl {
         visibility: Visibility::Private,
-        name: "N".to_string(),
+        name: Ident::new("N"),
         ty: (
             TypeExpr::Named {
-                name: "i32".to_string(),
+                path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("i32"), 0..0),
                 type_args: None,
             },
             0..0,
@@ -2257,10 +2257,10 @@ fn const_explicit_width_assigned_to_wider_type_is_rejected() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let decl = ConstDecl {
         visibility: Visibility::Private,
-        name: "N".to_string(),
+        name: Ident::new("N"),
         ty: (
             TypeExpr::Named {
-                name: "i32".to_string(),
+                path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("i32"), 0..0),
                 type_args: None,
             },
             0..0,
@@ -2271,15 +2271,15 @@ fn const_explicit_width_assigned_to_wider_type_is_rejected() {
     checker.check_const(&decl, &(0..3));
 
     let target_stmt = Stmt::Let {
-        pattern: (Pattern::Identifier("y".to_string()), 10..11),
+        pattern: (Pattern::Identifier(Ident::new("y")), 10..11),
         ty: Some((
             TypeExpr::Named {
-                name: "i64".to_string(),
+                path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("i64"), 0..0),
                 type_args: None,
             },
             14..17,
         )),
-        value: Some((Expr::Identifier("N".to_string()), 20..21)),
+        value: Some((Expr::Ident(Ident::new("N")), 20..21)),
         else_block: None,
     };
     checker.check_stmt(&target_stmt, &(10..21));
@@ -2320,7 +2320,7 @@ fn const_explicit_width_assigned_to_wider_type_is_rejected() {
 fn mutable_var_initializer_keeps_integer_literal_inferable() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let var_stmt = Stmt::Var {
-        name: "n".to_string(),
+        name: Ident::new("n"),
         ty: None,
         value: Some(make_int_literal(5, 8..9)),
     };
@@ -2402,19 +2402,21 @@ fn bind_pattern_struct_fields_substitute_generic_type_args() {
     );
 
     checker.bind_pattern(
-        &Pattern::Struct {
-            name: "Pair".to_string(),
-            fields: vec![
-                hew_parser::ast::PatternField {
-                    name: "first".to_string(),
-                    pattern: None,
-                },
-                hew_parser::ast::PatternField {
-                    name: "second".to_string(),
-                    pattern: None,
-                },
-            ],
-            rest: None,
+        &Pattern::NominalPath {
+            path: hew_parser::ast::Path::from_spellings(&["Pair"]),
+            payload: Some(hew_parser::ast::NominalPatternPayload::Record {
+                fields: vec![
+                    hew_parser::ast::PatternField {
+                        name: Ident::new("first"),
+                        pattern: None,
+                    },
+                    hew_parser::ast::PatternField {
+                        name: Ident::new("second"),
+                        pattern: None,
+                    },
+                ],
+                rest: None,
+            }),
         },
         &Ty::Named {
             builtin: None,
@@ -2468,13 +2470,15 @@ fn struct_pattern_missing_type_def_emits_diagnostic() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
 
     checker.bind_pattern(
-        &Pattern::Struct {
-            name: "Ghost".to_string(),
-            fields: vec![hew_parser::ast::PatternField {
-                name: "value".to_string(),
-                pattern: None,
-            }],
-            rest: None,
+        &Pattern::NominalPath {
+            path: hew_parser::ast::Path::from_spellings(&["Ghost"]),
+            payload: Some(hew_parser::ast::NominalPatternPayload::Record {
+                fields: vec![hew_parser::ast::PatternField {
+                    name: Ident::new("value"),
+                    pattern: None,
+                }],
+                rest: None,
+            }),
         },
         &Ty::Named {
             builtin: None,
@@ -2732,8 +2736,8 @@ fn struct_init_coerces_literal_to_expected_type_arg() {
     // Wrapper { value: 42 } checked against Wrapper<i32>
     let init = (
         Expr::StructInit {
-            name: "Wrapper".to_string(),
-            fields: vec![("value".to_string(), make_int_literal(42, 10..12))],
+            path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("Wrapper"), 0..0),
+            fields: vec![(Ident::new("value"), make_int_literal(42, 10..12))],
             type_args: None,
             base: None,
         },
@@ -2762,8 +2766,8 @@ fn struct_init_infers_type_param_from_literal() {
     // a later coercion/defaulting boundary.
     let init = (
         Expr::StructInit {
-            name: "Wrapper".to_string(),
-            fields: vec![("value".to_string(), make_int_literal(42, 10..12))],
+            path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("Wrapper"), 0..0),
+            fields: vec![(Ident::new("value"), make_int_literal(42, 10..12))],
             type_args: None,
             base: None,
         },
@@ -2793,8 +2797,8 @@ fn struct_init_overflow_in_expected_type() {
     // Wrapper { value: 256 } checked against Wrapper<u8> — should error
     let init = (
         Expr::StructInit {
-            name: "Wrapper".to_string(),
-            fields: vec![("value".to_string(), make_int_literal(256, 10..13))],
+            path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("Wrapper"), 0..0),
+            fields: vec![(Ident::new("value"), make_int_literal(256, 10..13))],
             type_args: None,
             base: None,
         },
@@ -2869,14 +2873,14 @@ fn struct_init_explicit_type_arg_arity_mismatch_errors() {
     let type_args = Some(vec![
         (
             TypeExpr::Named {
-                name: "i64".to_string(),
+                path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("i64"), 0..0),
                 type_args: None,
             },
             0..3_usize,
         ),
         (
             TypeExpr::Named {
-                name: "string".to_string(),
+                path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("string"), 0..0),
                 type_args: None,
             },
             4..10_usize,
@@ -2884,8 +2888,8 @@ fn struct_init_explicit_type_arg_arity_mismatch_errors() {
     ]);
     let init = (
         Expr::StructInit {
-            name: "Wrapper".to_string(),
-            fields: vec![("value".to_string(), make_int_literal(1, 20..21))],
+            path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("Wrapper"), 0..0),
+            fields: vec![(Ident::new("value"), make_int_literal(1, 20..21))],
             type_args,
             base: None,
         },
@@ -3000,14 +3004,14 @@ fn struct_init_explicit_type_arg_on_enum_variant_in_check_against_errors() {
     // Explicit type args on an enum variant struct form in check_against path.
     let type_args = Some(vec![(
         TypeExpr::Named {
-            name: "i64".to_string(),
+            path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("i64"), 0..0),
             type_args: None,
         },
         0..3_usize,
     )]);
     let init = Expr::StructInit {
-        name: "Holding".to_string(),
-        fields: vec![("value".to_string(), make_int_literal(42, 10..12))],
+        path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("Holding"), 0..0),
+        fields: vec![(Ident::new("value"), make_int_literal(42, 10..12))],
         type_args,
         base: None,
     };
@@ -3061,14 +3065,14 @@ fn struct_init_explicit_type_arg_on_enum_variant_synthesize_seeds_correctly() {
     let span = 0..30_usize;
     let type_args = Some(vec![(
         TypeExpr::Named {
-            name: "i64".to_string(),
+            path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("i64"), 0..0),
             type_args: None,
         },
         0..3_usize,
     )]);
     let init = Expr::StructInit {
-        name: "Keeper::Holding".to_string(),
-        fields: vec![("value".to_string(), make_int_literal(42, 10..12))],
+        path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("Keeper::Holding"), 0..0),
+        fields: vec![(Ident::new("value"), make_int_literal(42, 10..12))],
         type_args,
         base: None,
     };
@@ -4774,7 +4778,7 @@ fn shadow_report_is_keyed_by_declaration_not_registering_module() {
     // anywhere reports once.
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let method_params = vec![hew_parser::ast::TypeParam {
-        name: "T".to_string(),
+        name: Ident::new("T"),
         bounds: vec![],
     }];
     let enclosing = vec!["T".to_string()];
@@ -4805,7 +4809,7 @@ fn shadow_report_key_separates_declarations_sharing_a_span() {
     // collided, and the second declaration's diagnostic was swallowed.
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let method_params = vec![hew_parser::ast::TypeParam {
-        name: "T".to_string(),
+        name: Ident::new("T"),
         bounds: vec![],
     }];
     let enclosing = vec!["T".to_string()];

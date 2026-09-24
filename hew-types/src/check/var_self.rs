@@ -73,7 +73,7 @@ impl Checker {
             Expr::Call { .. } if self.call_can_fail(&key) => "this call".to_string(),
             Expr::MethodCall {
                 receiver, method, ..
-            } if self.method_call_can_fail(&key, receiver) => format!("`{method}(...)`"),
+            } if self.method_call_can_fail(&key, receiver) => format!("`{}(...)`", method.0),
             Expr::Binary { op, .. } if checked_integer_op(*op, &self.subst.resolve(ty)) => {
                 "this arithmetic".to_string()
             }

@@ -1,4 +1,5 @@
 use crate::common;
+use hew_parser::ast::Ident;
 
 use hew_types::Ty;
 
@@ -26,7 +27,7 @@ fn spawn_returns_the_actor_type() {
         .items
         .iter()
         .find_map(|(item, _)| match item {
-            hew_parser::ast::Item::Function(fd) if fd.name == "main" => Some(fd),
+            hew_parser::ast::Item::Function(fd) if fd.name == Ident::new("main") => Some(fd),
             _ => None,
         })
         .expect("no main");

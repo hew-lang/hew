@@ -523,13 +523,13 @@ impl Parser<'_> {
         for group in composite_groups {
             for transition in transitions.iter_mut() {
                 if transition.target_state == group.name {
-                    transition.target_composite = Some(group.name.clone());
+                    transition.target_composite = Some(group.name);
                     transition.target_state.clone_from(&group.initial);
                     // Rewrite a bare-identifier passthrough body that named the
                     // composite to name the initial substate instead.
                     if let Expr::Ident(name) = &transition.body.0 {
                         if name == &group.name {
-                            transition.body.0 = Expr::Ident(group.initial.clone());
+                            transition.body.0 = Expr::Ident(group.initial);
                         }
                     }
                 }
@@ -618,11 +618,11 @@ impl Parser<'_> {
             // asks the author to change.
             let body_expr = if target_is_contextual {
                 Expr::ContextVariant(ContextVariantExpr {
-                    name: target_state.clone(),
+                    name: target_state,
                     record: None,
                 })
             } else {
-                Expr::Ident(target_state.clone())
+                Expr::Ident(target_state)
             };
             (
                 body_expr,
@@ -642,7 +642,7 @@ impl Parser<'_> {
             // state enum exactly as `=> .Faulted,` does.
             let payload = if target_is_contextual {
                 Expr::ContextVariant(ContextVariantExpr {
-                    name: target_state.clone(),
+                    name: target_state,
                     record: Some(Box::new(ContextVariantRecord { fields, base })),
                 })
             } else {
@@ -867,7 +867,7 @@ impl Parser<'_> {
         for member in &mut members {
             for (fname, fty) in &fields {
                 if !member.fields.iter().any(|(n, _)| n == fname) {
-                    member.fields.push((fname.clone(), fty.clone()));
+                    member.fields.push((*fname, fty.clone()));
                 }
             }
         }

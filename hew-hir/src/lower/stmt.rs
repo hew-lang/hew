@@ -1,6 +1,7 @@
 //! Block and statement lowering.
 
 use super::*;
+use hew_parser::ast::Ident;
 
 impl LowerCtx {
     pub(super) fn lower_block(&mut self, block: &Block, expected_ty: &ResolvedTy) -> HirBlock {
@@ -140,9 +141,12 @@ impl LowerCtx {
             // already bound the field names in the checker's env; HIR mirrors
             // those bindings via `self.bind(...)` below.
             let source_fields_opt = match &pattern.0 {
-                Pattern::Struct { fields, .. } | Pattern::RecordShorthand { fields, .. } => {
-                    Some(fields)
-                }
+                Pattern::RecordShorthand { fields, .. } => Some(fields),
+                // TRANSITION(P1): deleted by A1 commit 2
+                Pattern::NominalPath {
+                    path,
+                    payload: Some(hew_parser::ast::NominalPatternPayload::Record { fields, .. }),
+                } if path.segments.len() == 1 => Some(fields),
                 _ => None,
             };
             if let Some(source_fields) = source_fields_opt {
@@ -196,7 +200,7 @@ impl LowerCtx {
                     };
                     let field_pattern = match field.sub {
                         hew_types::PlanSub::Binding(name) => {
-                            (Pattern::Identifier(name), field.span.clone())
+                            (Pattern::Identifier(Ident::new(&name)), field.span.clone())
                         }
                         hew_types::PlanSub::Wildcard => (Pattern::Wildcard, field.span.clone()),
                         hew_types::PlanSub::Literal(literal) => {
@@ -205,7 +209,7 @@ impl LowerCtx {
                         hew_types::PlanSub::Nested(_) => {
                             let Some(source_pattern) = source_fields
                                 .iter()
-                                .find(|source| source.name == field.name)
+                                .find(|source| source.name == Ident::new(&field.name))
                                 .and_then(|source| source.pattern.clone())
                             else {
                                 let _ = self.lower_expr(value_expr, IntentKind::Consume);
@@ -375,10 +379,11 @@ impl LowerCtx {
                     // Pre-bind in the current scope; record the id so
                     // we can detect a self-reference inside the body
                     // walk via builder state.
-                    let pre_binding = self.bind(name.clone(), binding_ty, false, pattern.1.clone());
+                    let pre_binding =
+                        self.bind(name.to_string(), binding_ty, false, pattern.1.clone());
                     let prior = self
                         .current_actor_self
-                        .replace((pre_binding.id, name.clone()));
+                        .replace((pre_binding.id, name.to_string()));
                     let lowered_value = self.lower_expr(
                         value.as_ref().expect("value Some checked above"),
                         IntentKind::Consume,
@@ -419,7 +424,7 @@ impl LowerCtx {
                     },
                     |ty| self.lower_type(ty),
                 );
-                let binding = self.bind(name.clone(), binding_ty, true, span.clone());
+                let binding = self.bind(name.to_string(), binding_ty, true, span.clone());
                 HirStmtKind::Let(binding, value)
             }
             Stmt::Assign { target, op, value } => {
@@ -574,7 +579,7 @@ impl LowerCtx {
                     ty: ResolvedTy::Unit,
                     intent: IntentKind::Read,
                     kind: HirExprKind::While {
-                        label: label.clone(),
+                        label: label.map(|ident| ident.to_string()),
                         condition: Box::new(cond_hir),
                         body: body_block,
                     },
@@ -619,7 +624,7 @@ impl LowerCtx {
                     ty: ResolvedTy::Unit,
                     intent: IntentKind::Read,
                     kind: HirExprKind::Loop {
-                        label: label.clone(),
+                        label: label.map(|ident| ident.to_string()),
                         body: loop_body,
                     },
                     span: span.clone(),
@@ -659,7 +664,7 @@ impl LowerCtx {
                         if spec.step_before_rev =>
                     {
                         let binding_name = match &pattern.0 {
-                            Pattern::Identifier(var_name) => var_name.clone(),
+                            Pattern::Identifier(var_name) => var_name.to_string(),
                             Pattern::Wildcard => {
                                 format!("__hew_for_wildcard_{}", self.ids.binding().0)
                             }
@@ -696,7 +701,7 @@ impl LowerCtx {
                     }
                     (Some(spec), Pattern::Identifier(_) | Pattern::Wildcard) => {
                         let binding_name = match &pattern.0 {
-                            Pattern::Identifier(var_name) => var_name.clone(),
+                            Pattern::Identifier(var_name) => var_name.to_string(),
                             Pattern::Wildcard => {
                                 format!("__hew_for_wildcard_{}", self.ids.binding().0)
                             }
@@ -779,7 +784,7 @@ impl LowerCtx {
                         self.pop_scope();
 
                         HirExprKind::ForRange {
-                            label: label.clone(),
+                            label: label.map(|ident| ident.to_string()),
                             binding,
                             start: Box::new(start_hir),
                             end: Box::new(end_hir),
@@ -793,7 +798,7 @@ impl LowerCtx {
                         pattern,
                         iterable,
                         body,
-                        label.as_ref(),
+                        label.map(|label| label.to_string()).as_ref(),
                         span.clone(),
                     ),
                     _ => {
@@ -857,7 +862,7 @@ impl LowerCtx {
                 // a break-less loop in if/match branch position to unify with
                 // the other branch's type instead of forcing the whole
                 // expression to `Unit`.
-                let loop_ty = if hew_parser::loop_body_has_break(body, label.as_deref()) {
+                let loop_ty = if hew_parser::loop_body_has_break(body, *label) {
                     ResolvedTy::Unit
                 } else {
                     ResolvedTy::Never
@@ -869,7 +874,7 @@ impl LowerCtx {
                     ty: loop_ty,
                     intent: IntentKind::Read,
                     kind: HirExprKind::Loop {
-                        label: label.clone(),
+                        label: label.map(|ident| ident.to_string()),
                         body: body_block,
                     },
                     span: span.clone(),
@@ -896,7 +901,7 @@ impl LowerCtx {
                     ty: ResolvedTy::Unit,
                     intent: IntentKind::Read,
                     kind: HirExprKind::Break {
-                        label: label.clone(),
+                        label: label.map(|ident| ident.to_string()),
                         value: value_hir,
                     },
                     span: span.clone(),
@@ -913,7 +918,7 @@ impl LowerCtx {
                     ty: ResolvedTy::Unit,
                     intent: IntentKind::Read,
                     kind: HirExprKind::Continue {
-                        label: label.clone(),
+                        label: label.map(|ident| ident.to_string()),
                     },
                     span: span.clone(),
                 };

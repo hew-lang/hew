@@ -11,6 +11,7 @@ use super::types::ImportBindingKey;
 )]
 use super::*;
 use crate::BuiltinType;
+use hew_parser::ast::Ident;
 use hew_parser::ast::WireMetadata;
 
 mod builtins;
@@ -836,7 +837,7 @@ fn derive_opaque_resource_candidate_graph(
 /// imports remain module-qualified.
 pub(in crate::check) fn flat_file_import_module_ids(
     program: &Program,
-) -> HashSet<hew_parser::module::ModuleId> {
+) -> HashSet<hew_parser::module::ModulePath> {
     let Some(module_graph) = program.module_graph.as_ref() else {
         return HashSet::new();
     };
@@ -862,8 +863,8 @@ pub(in crate::check) fn flat_file_import_module_ids(
 /// Mirrors the HIR lowering helper of the same shape (#2208).
 fn collision_item_declares_type_name(item: &Item, type_name: &str) -> bool {
     match item {
-        Item::TypeDecl(decl) => decl.name == type_name,
-        Item::Record(decl) => decl.name == type_name,
+        Item::TypeDecl(decl) => decl.name == Ident::new(type_name),
+        Item::Record(decl) => decl.name == Ident::new(type_name),
         _ => false,
     }
 }
@@ -879,8 +880,8 @@ fn collision_item_declares_type_name(item: &Item, type_name: &str) -> bool {
 /// stays unique and is never owner-qualified (#2208).
 fn collision_preferred_package_module_ids(
     program: &Program,
-    file_import_modules: &HashSet<hew_parser::module::ModuleId>,
-) -> HashSet<hew_parser::module::ModuleId> {
+    file_import_modules: &HashSet<hew_parser::module::ModulePath>,
+) -> HashSet<hew_parser::module::ModulePath> {
     use std::path::{Path, PathBuf};
 
     let mut preferred = HashSet::new();
@@ -888,7 +889,7 @@ fn collision_preferred_package_module_ids(
         return preferred;
     };
 
-    let mut candidates: Vec<(&hew_parser::module::ModuleId, HashSet<&Path>, usize)> = Vec::new();
+    let mut candidates: Vec<(&hew_parser::module::ModulePath, HashSet<&Path>, usize)> = Vec::new();
     for (pos, id) in mg.topo_order.iter().enumerate() {
         if *id == mg.root || file_import_modules.contains(id) {
             continue;
@@ -932,8 +933,8 @@ fn collision_preferred_package_module_ids(
 /// file before considering distinct children.
 fn member_item_is_absorbed_from_distinct_child(
     program: &Program,
-    preferred_modules: &HashSet<hew_parser::module::ModuleId>,
-    current_module: &hew_parser::module::ModuleId,
+    preferred_modules: &HashSet<hew_parser::module::ModulePath>,
+    current_module: &hew_parser::module::ModulePath,
     item: &Item,
     item_span: &Span,
 ) -> bool {
@@ -943,8 +944,8 @@ fn member_item_is_absorbed_from_distinct_child(
     let Some(module_graph) = program.module_graph.as_ref() else {
         return false;
     };
-    let current_leaf = current_module.path.last();
-    let appears_in = |module_id: &hew_parser::module::ModuleId| {
+    let current_leaf = current_module.segments.last();
+    let appears_in = |module_id: &hew_parser::module::ModulePath| {
         module_graph.modules.get(module_id).is_some_and(|module| {
             module
                 .items
@@ -954,13 +955,13 @@ fn member_item_is_absorbed_from_distinct_child(
     };
     if preferred_modules
         .iter()
-        .any(|module_id| module_id.path.last() == current_leaf && appears_in(module_id))
+        .any(|module_id| module_id.segments.last() == current_leaf && appears_in(module_id))
     {
         return false;
     }
     preferred_modules
         .iter()
-        .any(|module_id| module_id.path.last() != current_leaf && appears_in(module_id))
+        .any(|module_id| module_id.segments.last() != current_leaf && appears_in(module_id))
 }
 
 /// Whether `type_name` is declared by 2+ distinct non-root modules (package or,
@@ -970,8 +971,8 @@ fn member_item_is_absorbed_from_distinct_child(
 /// collision notion the checker owner-qualification must agree with (#2208).
 fn collision_imported_type_name_collides(
     program: &Program,
-    file_import_modules: &HashSet<hew_parser::module::ModuleId>,
-    preferred_modules: &HashSet<hew_parser::module::ModuleId>,
+    file_import_modules: &HashSet<hew_parser::module::ModulePath>,
+    preferred_modules: &HashSet<hew_parser::module::ModulePath>,
     type_name: &str,
 ) -> bool {
     let Some(module_graph) = program.module_graph.as_ref() else {

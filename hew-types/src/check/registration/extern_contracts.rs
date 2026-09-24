@@ -14,6 +14,7 @@ use super::super::types::ImportBindingKey;
 use super::super::*;
 use super::*;
 use crate::BuiltinType;
+use hew_parser::ast::Ident;
 use hew_parser::ast::WireMetadata;
 
 impl Checker {
@@ -443,11 +444,11 @@ impl Checker {
         if eb.abi == "rt" {
             let stable = crate::jit_symbols::stable_symbols();
             for f in &eb.functions {
-                if !stable.contains(f.name.as_str()) {
+                if !stable.contains(f.name.name.as_str()) {
                     self.errors.push(TypeError {
                         severity: crate::error::Severity::Error,
                         kind: TypeErrorKind::ExternRtSymbolUnclassified {
-                            symbol_name: f.name.clone(),
+                            symbol_name: f.name.to_string(),
                             hint: format!(
                                 "add `\"{}\"` to the `stable` list in \
                                  scripts/runtime-export-classification.toml, \
@@ -485,7 +486,7 @@ impl Checker {
 
         for (declaration_ordinal, f) in eb.functions.iter().enumerate() {
             let mut hole_vars = Vec::new();
-            let param_names = f.params.iter().map(|p| p.name.clone()).collect();
+            let param_names = f.params.iter().map(|p| p.name.to_string()).collect();
             let params: Vec<Ty> = f
                 .params
                 .iter()
@@ -540,7 +541,7 @@ impl Checker {
                 ..FnSig::default()
             };
             let source_symbol = sig.extern_symbol.as_ref().map_or_else(
-                || f.name.clone(),
+                || f.name.to_string(),
                 |spec| {
                     if spec.template.is_monomorphic() {
                         spec.template.raw.clone()
@@ -570,8 +571,8 @@ impl Checker {
             // Extern declarations use the same canonical owner spelling as
             // ordinary free functions. Their exact DefId comes from the
             // enclosing source occurrence inventoried before registration.
-            let key = scoped_module_item_name(self.canonical_fn_owner(), &f.name)
-                .unwrap_or_else(|| f.name.clone());
+            let key = scoped_module_item_name(self.canonical_fn_owner(), f.name.name.as_str())
+                .unwrap_or_else(|| f.name.to_string());
             let consuming_params = f
                 .params
                 .iter()
@@ -607,7 +608,7 @@ impl Checker {
                     });
             }
 
-            self.record_root_value_binding(&f.name);
+            self.record_root_value_binding(f.name.name.as_str());
         }
     }
 

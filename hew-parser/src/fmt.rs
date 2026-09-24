@@ -416,7 +416,7 @@ impl<'a> Formatter<'a> {
     /// Append `s`. Each token of `s` that is the formatter's copy of the
     /// next source token first emits the comments written before that
     /// token, so a comment keeps its place between the same two tokens.
-    fn write_ident(&mut self, ident: &Ident) {
+    fn write_ident(&mut self, ident: Ident) {
         self.write(ident.name.as_str());
     }
 
@@ -667,7 +667,7 @@ impl<'a> Formatter<'a> {
         bounds: Option<(usize, usize)>,
     ) {
         let write_field = |f: &mut Self, (name, value): &(Ident, Spanned<Expr>)| {
-            f.write_ident(name);
+            f.write_ident(*name);
             f.write(": ");
             f.format_expr(value);
         };
@@ -1211,10 +1211,10 @@ impl<'a> Formatter<'a> {
                             false,
                             decl.selection_trailing_comma,
                             |f, n| {
-                                f.write_ident(&n.name);
+                                f.write_ident(n.name);
                                 if let Some(alias) = &n.alias {
                                     f.write(" as ");
-                                    f.write_ident(alias);
+                                    f.write_ident(*alias);
                                 }
                             },
                         );
@@ -1226,7 +1226,7 @@ impl<'a> Formatter<'a> {
             // with a `::{ }` / `::*` spec.
             if let Some(alias) = &decl.module_alias {
                 self.write(" as ");
-                self.write_ident(alias);
+                self.write_ident(*alias);
             }
         }
         self.write_token(";\n", |t| matches!(t, hew_lexer::Token::Semicolon));
@@ -1237,7 +1237,7 @@ impl<'a> Formatter<'a> {
         self.write_indent();
         self.write_visibility(decl.visibility);
         self.write("const ");
-        self.write_ident(&decl.name);
+        self.write_ident(decl.name);
         self.write(": ");
         self.format_type_expr(&decl.ty.0);
         self.write(" = ");
@@ -1250,7 +1250,7 @@ impl<'a> Formatter<'a> {
         self.write_indent();
         self.write_visibility(decl.visibility);
         self.write("type ");
-        self.write_ident(&decl.name);
+        self.write_ident(decl.name);
         self.format_opt_type_params(decl.type_params.as_ref());
         self.write(" = ");
         self.format_type_expr(&decl.ty.0);
@@ -1262,7 +1262,7 @@ impl<'a> Formatter<'a> {
         self.write_indent();
         self.write_visibility(decl.visibility);
         self.write("type ");
-        self.write_ident(&decl.name);
+        self.write_ident(decl.name);
         self.format_opt_type_params(decl.type_params.as_ref());
         self.format_opt_where_clause(decl.where_clause.as_ref());
         match &decl.kind {
@@ -1272,7 +1272,7 @@ impl<'a> Formatter<'a> {
                 for (i, field) in fields.iter().enumerate() {
                     self.write_outer_doc(field.doc_comment.as_ref());
                     self.write_indent();
-                    self.write_ident(&field.name);
+                    self.write_ident(field.name);
                     self.write(": ");
                     self.format_type_expr(&field.ty.0);
                     if i + 1 < fields.len() {
@@ -1315,7 +1315,7 @@ impl<'a> Formatter<'a> {
             TypeDeclKind::Struct => self.write("type "),
             TypeDeclKind::Enum => self.write("enum "),
         }
-        self.write_ident(&decl.name);
+        self.write_ident(decl.name);
         self.format_opt_type_params(decl.type_params.as_ref());
         self.format_opt_where_clause(decl.where_clause.as_ref());
         self.write(" {\n");
@@ -1338,7 +1338,7 @@ impl<'a> Formatter<'a> {
                     self.write_outer_doc(doc_comment.as_ref());
                     self.format_attributes(attributes);
                     self.write_indent();
-                    self.write_ident(name);
+                    self.write_ident(*name);
                     self.write(": ");
                     self.format_type_expr(&ty.0);
                     self.write(",");
@@ -1417,7 +1417,7 @@ impl<'a> Formatter<'a> {
             self.write("gen ");
         }
         self.write("fn ");
-        self.write_ident(&decl.name);
+        self.write_ident(decl.name);
         self.format_opt_type_params(decl.type_params.as_ref());
         self.write("(");
         if has_consuming_self {
@@ -1454,7 +1454,7 @@ impl<'a> Formatter<'a> {
             TypeDeclKind::Struct => self.write("type "),
             TypeDeclKind::Enum => self.write("enum "),
         }
-        self.write_ident(&decl.name);
+        self.write_ident(decl.name);
         self.write(" {\n");
         self.indent += 1;
         match decl.kind {
@@ -1464,7 +1464,7 @@ impl<'a> Formatter<'a> {
                         self.flush_comments_before(span.start);
                         self.prev_source_pos = span.start;
                         self.write_indent();
-                        self.write_ident(name);
+                        self.write_ident(*name);
                         self.write(": ");
                         self.format_type_expr(&ty.0);
                         // Emit wire field metadata
@@ -1610,7 +1610,7 @@ impl<'a> Formatter<'a> {
     fn format_variant(&mut self, v: &VariantDecl, trailing_comma: bool) {
         self.write_outer_doc(v.doc_comment.as_ref());
         self.write_indent();
-        self.write_ident(&v.name);
+        self.write_ident(v.name);
         match &v.kind {
             VariantKind::Unit => {}
             VariantKind::Tuple(fields) => {
@@ -1623,7 +1623,7 @@ impl<'a> Formatter<'a> {
             VariantKind::Struct(fields) => {
                 self.write(" { ");
                 self.comma_sep(fields, |f, (name, ty)| {
-                    f.write_ident(name);
+                    f.write_ident(*name);
                     f.write(": ");
                     f.format_type_expr(&ty.0);
                 });
@@ -1647,7 +1647,7 @@ impl<'a> Formatter<'a> {
         self.write_indent();
         self.write_visibility(decl.visibility);
         self.write("trait ");
-        self.write_ident(&decl.name);
+        self.write_ident(decl.name);
         self.format_opt_type_params(decl.type_params.as_ref());
         if let Some(supers) = &decl.super_traits {
             self.write(": ");
@@ -1671,7 +1671,7 @@ impl<'a> Formatter<'a> {
                     self.begin_member(span.start, i > 0);
                     self.write_indent();
                     self.write("type ");
-                    self.write_ident(name);
+                    self.write_ident(*name);
                     if !bounds.is_empty() {
                         self.write(": ");
                         self.format_trait_bound_list(bounds);
@@ -1705,7 +1705,7 @@ impl<'a> Formatter<'a> {
         self.flush_after_attributes(&m.attributes);
         self.write_indent();
         self.write("fn ");
-        self.write_ident(&m.name);
+        self.write_ident(m.name);
         if m.consumes_self {
             self.format_opt_type_params(m.type_params.as_ref());
             self.write("(consume self");
@@ -1771,7 +1771,7 @@ impl<'a> Formatter<'a> {
                 Ok(alias) => {
                     self.write_indent();
                     self.write("type ");
-                    self.write_ident(&alias.name);
+                    self.write_ident(alias.name);
                     self.write(" = ");
                     self.format_type_expr(&alias.ty.0);
                     self.write_token(";\n", |t| matches!(t, hew_lexer::Token::Semicolon));
@@ -1818,7 +1818,7 @@ impl<'a> Formatter<'a> {
         self.format_attributes(&f.attributes);
         self.write_indent();
         self.write("fn ");
-        self.write_ident(&f.name);
+        self.write_ident(f.name);
         self.write("(");
         self.format_params(&f.params);
         if f.is_variadic {
@@ -1846,7 +1846,7 @@ impl<'a> Formatter<'a> {
         self.write_indent();
         self.write_visibility(decl.visibility);
         self.write("actor ");
-        self.write_ident(&decl.name);
+        self.write_ident(decl.name);
         if !decl.type_params.is_empty() {
             self.write("<");
             let mut first = true;
@@ -1855,7 +1855,7 @@ impl<'a> Formatter<'a> {
                     self.write(", ");
                 }
                 first = false;
-                self.write_ident(&param.name);
+                self.write_ident(param.name);
                 if !param.bounds.is_empty() {
                     self.write(": ");
                     self.format_trait_bound_list(&param.bounds);
@@ -1948,7 +1948,7 @@ impl<'a> Formatter<'a> {
                     fallback,
                 } => {
                     self.write("coalesce(");
-                    self.write_ident(key_field);
+                    self.write_ident(*key_field);
                     self.write(")");
                     if let Some(fb) = fallback {
                         self.write(" fallback ");
@@ -1970,7 +1970,7 @@ impl<'a> Formatter<'a> {
         self.write_indent();
         self.write_visibility(decl.visibility);
         self.write("machine ");
-        self.write_ident(&decl.name);
+        self.write_ident(decl.name);
         if !decl.type_params.is_empty() || !decl.const_params.is_empty() {
             self.write("<");
             let mut first = true;
@@ -1979,7 +1979,7 @@ impl<'a> Formatter<'a> {
                     self.write(", ");
                 }
                 first = false;
-                self.write_ident(&param.name);
+                self.write_ident(param.name);
                 if !param.bounds.is_empty() {
                     self.write(": ");
                     self.format_trait_bound_list(&param.bounds);
@@ -1991,7 +1991,7 @@ impl<'a> Formatter<'a> {
                 }
                 first = false;
                 self.write("const ");
-                self.write_ident(&param.name);
+                self.write_ident(param.name);
                 self.write(": ");
                 match param.ty {
                     crate::ast::ConstParamTy::Usize => self.write("usize"),
@@ -2150,7 +2150,7 @@ impl<'a> Formatter<'a> {
         for event in events {
             self.begin_member(event.span.start, false);
             self.write_indent();
-            self.write_ident(&event.name);
+            self.write_ident(event.name);
             self.format_machine_field_list(&event.fields);
             self.write("\n");
             self.end_member(event.span.end);
@@ -2173,7 +2173,7 @@ impl<'a> Formatter<'a> {
                 if i > 0 {
                     self.write(" ");
                 }
-                self.write_ident(name);
+                self.write_ident(*name);
                 self.write(": ");
                 self.format_type_expr(&ty.0);
                 self.write(",");
@@ -2186,14 +2186,14 @@ impl<'a> Formatter<'a> {
     fn format_machine_leaf_state(&mut self, state: &MachineState) {
         self.write_indent();
         self.write("state ");
-        self.write_ident(&state.name);
+        self.write_ident(state.name);
         let has_entry_exit = state.entry.is_some() || state.exit.is_some();
         if has_entry_exit {
             self.write(" {\n");
             self.indent += 1;
             for (name, ty) in &state.fields {
                 self.write_indent();
-                self.write_ident(name);
+                self.write_ident(*name);
                 self.write(": ");
                 self.format_type_expr(&ty.0);
                 self.write(",\n");
@@ -2217,7 +2217,7 @@ impl<'a> Formatter<'a> {
             self.write(" {");
             for (name, ty) in &state.fields {
                 self.write(" ");
-                self.write_ident(name);
+                self.write_ident(*name);
                 self.write(": ");
                 self.format_type_expr(&ty.0);
                 self.write(",");
@@ -2232,7 +2232,7 @@ impl<'a> Formatter<'a> {
     /// Caller writes the leading indent.
     fn format_machine_transition(&mut self, transition: &MachineTransition, span_end: usize) {
         self.write("on ");
-        self.write_ident(&transition.event_name);
+        self.write_ident(transition.event_name);
         // Re-emit the `on E(a, b):` head binding from the side-list. The
         // parser splices a `let a = event.a;` prelude into the body for
         // lowering; we strip that prelude below so it does not double up.
@@ -2242,7 +2242,7 @@ impl<'a> Formatter<'a> {
                 if i > 0 {
                     self.write(", ");
                 }
-                self.write_ident(name);
+                self.write_ident(*name);
             }
             self.write(")");
         }
@@ -2252,7 +2252,7 @@ impl<'a> Formatter<'a> {
         // authored-spelling flag — never inferred from the body expression,
         // which is not the authority for it and does not exist in the
         // block/payload-shorthand forms.
-        self.write_ident(&transition.source_state);
+        self.write_ident(transition.source_state);
         self.write_token(" => ", |t| matches!(t, hew_lexer::Token::FatArrow));
         if transition.target_is_contextual {
             self.write(".");
@@ -2260,8 +2260,7 @@ impl<'a> Formatter<'a> {
         self.write_ident(
             transition
                 .target_composite
-                .as_ref()
-                .unwrap_or(&transition.target_state),
+                .unwrap_or(transition.target_state),
         );
         if transition.reenter {
             self.write(" reenter");
@@ -2329,7 +2328,7 @@ impl<'a> Formatter<'a> {
                         if i > 0 {
                             self.write(", ");
                         }
-                        self.write_ident(fname);
+                        self.write_ident(*fname);
                         self.write(": ");
                         self.format_expr(fval);
                     }
@@ -2433,13 +2432,13 @@ impl<'a> Formatter<'a> {
     ) {
         self.write_indent();
         self.write("state ");
-        self.write_ident(&group.name);
+        self.write_ident(group.name);
         self.write(" {\n");
         self.indent += 1;
 
         for (name, ty) in &group.fields {
             self.write_indent();
-            self.write_ident(name);
+            self.write_ident(*name);
             self.write(": ");
             self.format_type_expr(&ty.0);
             self.write(",\n");
@@ -2495,7 +2494,7 @@ impl<'a> Formatter<'a> {
                 .iter()
                 .filter(|(fname, _)| !group.fields.iter().any(|(gn, _)| gn == fname))
                 .collect();
-            self.format_machine_substate(&state.name, &own_fields, state, span_end);
+            self.format_machine_substate(state.name, &own_fields, state, span_end);
             self.end_member(state.span.end);
         }
         if self.has_comments() {
@@ -2511,7 +2510,7 @@ impl<'a> Formatter<'a> {
     /// modifier (when present) is already written by the caller.
     fn format_machine_substate(
         &mut self,
-        name: &Ident,
+        name: Ident,
         own_fields: &[&(Ident, Spanned<TypeExpr>)],
         state: &MachineState,
         _span_end: usize,
@@ -2524,7 +2523,7 @@ impl<'a> Formatter<'a> {
             self.indent += 1;
             for (fname, ty) in own_fields {
                 self.write_indent();
-                self.write_ident(fname);
+                self.write_ident(*fname);
                 self.write(": ");
                 self.format_type_expr(&ty.0);
                 self.write(",\n");
@@ -2548,7 +2547,7 @@ impl<'a> Formatter<'a> {
             self.write(" {");
             for (fname, ty) in own_fields {
                 self.write(" ");
-                self.write_ident(fname);
+                self.write_ident(*fname);
                 self.write(": ");
                 self.format_type_expr(&ty.0);
                 self.write(",");
@@ -2575,7 +2574,7 @@ impl<'a> Formatter<'a> {
         } else if !bare {
             self.write("let ");
         }
-        self.write_ident(&f.name);
+        self.write_ident(f.name);
         self.write(": ");
         self.format_type_expr(&f.ty.0);
         if let Some(default) = &f.default {
@@ -2687,7 +2686,7 @@ impl<'a> Formatter<'a> {
         } else {
             self.write("receive fn ");
         }
-        self.write_ident(&recv.name);
+        self.write_ident(recv.name);
         self.format_fn_signature(
             recv.span.start,
             recv.type_params.as_ref(),
@@ -2704,7 +2703,7 @@ impl<'a> Formatter<'a> {
         self.write_indent();
         self.write_visibility(decl.visibility);
         self.write("supervisor ");
-        self.write_ident(&decl.name);
+        self.write_ident(decl.name);
         if !decl.type_params.is_empty() {
             self.format_opt_type_params(Some(&decl.type_params));
         }
@@ -2811,7 +2810,7 @@ impl<'a> Formatter<'a> {
         // simple_one_for_one child, not a static one. The old formatter always
         // wrote `child`, silently dropping pool-ness; preserve it here.
         self.write(if spec.is_pool { "pool " } else { "child " });
-        self.write_ident(&spec.name);
+        self.write_ident(spec.name);
         self.write(": ");
         self.format_path(&spec.actor_type);
         if !spec.type_args.is_empty() {
@@ -2824,7 +2823,7 @@ impl<'a> Formatter<'a> {
         if !spec.args.is_empty() || self.child_writes_parens(spec) {
             self.write("(");
             self.comma_sep(&spec.args, |f, (field_name, arg)| {
-                f.write_ident(field_name);
+                f.write_ident(*field_name);
                 f.write(": ");
                 f.format_expr(arg);
             });
@@ -2883,7 +2882,7 @@ impl<'a> Formatter<'a> {
             self.write("gen ");
         }
         self.write("fn ");
-        self.write_ident(&decl.name);
+        self.write_ident(decl.name);
         // An inherent-impl `consume self` receiver is materialised as the
         // leading `self: Self` parameter; emit the `consume self` spelling and
         // skip that synthetic first parameter, mirroring the type-body formatter.
@@ -2960,7 +2959,7 @@ impl<'a> Formatter<'a> {
                 self.write(">");
                 for member in &assoc.members {
                     self.write(".");
-                    self.write_ident(member);
+                    self.write_ident(*member);
                 }
             }
             TypeExpr::Result { ok, err } => {
@@ -3065,7 +3064,7 @@ impl<'a> Formatter<'a> {
         if let Some(params) = params {
             self.write("<");
             self.comma_sep(params, |f, p| {
-                f.write_ident(&p.name);
+                f.write_ident(p.name);
                 if !p.bounds.is_empty() {
                     f.write(": ");
                     f.format_trait_bound_list(&p.bounds);
@@ -3093,7 +3092,7 @@ impl<'a> Formatter<'a> {
                 if needs_comma {
                     self.write(", ");
                 }
-                self.write_ident(&binding.name);
+                self.write_ident(binding.name);
                 self.write(" = ");
                 self.format_type_expr(&binding.ty.0);
                 needs_comma = true;
@@ -3155,7 +3154,7 @@ impl<'a> Formatter<'a> {
         if p.is_mutable {
             self.write("var ");
         }
-        self.write_ident(&p.name);
+        self.write_ident(p.name);
         self.write(": ");
         self.format_type_expr(&p.ty.0);
     }
@@ -3484,7 +3483,7 @@ impl<'a> Formatter<'a> {
             }
             Stmt::Var { name, ty, value } => {
                 self.write("var ");
-                self.write_ident(name);
+                self.write_ident(*name);
                 if let Some(ty) = ty {
                     self.write(": ");
                     self.format_type_expr(&ty.0);
@@ -3511,7 +3510,7 @@ impl<'a> Formatter<'a> {
                 self.write("break");
                 if let Some(label) = label {
                     self.write(" @");
-                    self.write_ident(label);
+                    self.write_ident(*label);
                 }
                 if let Some(expr) = value {
                     self.write(" ");
@@ -3523,7 +3522,7 @@ impl<'a> Formatter<'a> {
                 self.write("continue");
                 if let Some(label) = label {
                     self.write(" @");
-                    self.write_ident(label);
+                    self.write_ident(*label);
                 }
                 self.write(";");
             }
@@ -3585,7 +3584,7 @@ impl<'a> Formatter<'a> {
             Stmt::Var { name, ty, value } => {
                 self.write_indent();
                 self.write("var ");
-                self.write_ident(name);
+                self.write_ident(*name);
                 if let Some(ty) = ty {
                     self.write(": ");
                     self.format_type_expr(&ty.0);
@@ -3678,7 +3677,7 @@ impl<'a> Formatter<'a> {
                 self.write_indent();
                 if let Some(label) = label {
                     self.write("@");
-                    self.write_ident(label);
+                    self.write_ident(*label);
                     self.write(": ");
                 }
                 self.write("loop ");
@@ -3694,7 +3693,7 @@ impl<'a> Formatter<'a> {
                 self.write_indent();
                 if let Some(label) = label {
                     self.write("@");
-                    self.write_ident(label);
+                    self.write_ident(*label);
                     self.write(": ");
                 }
                 self.write("for ");
@@ -3713,7 +3712,7 @@ impl<'a> Formatter<'a> {
                 self.write_indent();
                 if let Some(label) = label {
                     self.write("@");
-                    self.write_ident(label);
+                    self.write_ident(*label);
                     self.write(": ");
                 }
                 self.write("while ");
@@ -3730,7 +3729,7 @@ impl<'a> Formatter<'a> {
                 self.write_indent();
                 if let Some(label) = label {
                     self.write("@");
-                    self.write_ident(label);
+                    self.write_ident(*label);
                     self.write(": ");
                 }
                 self.write("while ");
@@ -3744,7 +3743,7 @@ impl<'a> Formatter<'a> {
                 self.write("break");
                 if let Some(label) = label {
                     self.write(" @");
-                    self.write_ident(label);
+                    self.write_ident(*label);
                 }
                 if let Some(val) = value {
                     self.write(" ");
@@ -3757,7 +3756,7 @@ impl<'a> Formatter<'a> {
                 self.write("continue");
                 if let Some(label) = label {
                     self.write(" @");
-                    self.write_ident(label);
+                    self.write_ident(*label);
                 }
                 self.write_token(";\n", |t| matches!(t, hew_lexer::Token::Semicolon));
             }
@@ -4081,10 +4080,10 @@ impl<'a> Formatter<'a> {
                 }
             }
             Expr::Literal(lit) => self.format_literal(lit, &expr.1),
-            Expr::Ident(name) => self.write_ident(name),
+            Expr::Ident(name) => self.write_ident(*name),
             Expr::ContextVariant(context) => {
                 self.write(".");
-                self.write_ident(&context.name);
+                self.write_ident(context.name);
                 if let Some(record) = &context.record {
                     self.format_record_literal_body(&record.fields, record.base.as_deref(), None);
                 }
@@ -4125,7 +4124,7 @@ impl<'a> Formatter<'a> {
                 self.write(">");
                 for member in &assoc.members {
                     self.write(".");
-                    self.write_ident(member);
+                    self.write_ident(*member);
                 }
             }
             Expr::Clone(operand) => {
@@ -4160,14 +4159,14 @@ impl<'a> Formatter<'a> {
                         self.write("break");
                         if let Some(label) = label {
                             self.write(" @");
-                            self.write_ident(label);
+                            self.write_ident(*label);
                         }
                     }
                     Some(Stmt::Continue { label }) => {
                         self.write("continue");
                         if let Some(label) = label {
                             self.write(" @");
-                            self.write_ident(label);
+                            self.write_ident(*label);
                         }
                     }
                     _ => self.format_block(block, self.source.len()),
@@ -4252,7 +4251,7 @@ impl<'a> Formatter<'a> {
                     self.write("capture(");
                     self.comma_sep(private_captures, |f, (name, _)| {
                         f.write("var ");
-                        f.write_ident(name);
+                        f.write_ident(*name);
                     });
                     self.write(") ");
                 }
@@ -4307,7 +4306,7 @@ impl<'a> Formatter<'a> {
                 if !args.is_empty() || self.span_ends_with_paren(&expr.1) {
                     self.write("(");
                     self.comma_sep(args, |f, (name, value)| {
-                        f.write_ident(name);
+                        f.write_ident(*name);
                         f.write(": ");
                         f.format_expr(value);
                     });
@@ -4421,7 +4420,7 @@ impl<'a> Formatter<'a> {
                 self.format_receiver(receiver);
                 self.flush_comments_before_token_after(receiver.1.end);
                 self.write(".");
-                self.write_ident(&method.0);
+                self.write_ident(method.0);
                 self.own_call_parens(&expr.1);
                 let bounds = self.trailing_list(&expr.1, ")");
                 self.format_call_args(args, bounds);
@@ -4519,7 +4518,7 @@ impl<'a> Formatter<'a> {
                 }
                 self.flush_comments_before_token_after(object.1.end);
                 self.write(".");
-                self.write_ident(&field.0);
+                self.write_ident(field.0);
             }
             Expr::Index { object, index } => {
                 self.format_receiver(object);
@@ -4554,7 +4553,7 @@ impl<'a> Formatter<'a> {
             } => {
                 self.format_expr_prec(operand, 1, false);
                 self.write(" handle ");
-                self.write_ident(&error.0);
+                self.write_ident(error.0);
                 self.write(" ");
                 self.format_expr(body);
             }
@@ -4626,7 +4625,7 @@ impl<'a> Formatter<'a> {
             Expr::Is { .. } => self.format_expr_prec_bare(expr, 0, false),
             Expr::MachineEmit { event_name, fields } => {
                 self.write("emit ");
-                self.write_ident(event_name);
+                self.write_ident(*event_name);
                 if fields.is_empty() {
                     self.write(" {}");
                 } else {
@@ -4635,7 +4634,7 @@ impl<'a> Formatter<'a> {
                         if i > 0 {
                             self.write(", ");
                         }
-                        self.write_ident(name);
+                        self.write_ident(*name);
                         self.write(": ");
                         self.format_expr(val);
                     }
@@ -4682,7 +4681,7 @@ impl<'a> Formatter<'a> {
     fn format_call_args(&mut self, args: &[CallArg], bounds: Option<(usize, usize)>) {
         self.delimited_list("(", ")", args, bounds, false, true, |f, arg| match arg {
             CallArg::Named { name, value } => {
-                f.write_ident(name);
+                f.write_ident(*name);
                 f.write(": ");
                 f.format_expr(value);
             }
@@ -4692,7 +4691,7 @@ impl<'a> Formatter<'a> {
 
     fn format_lambda_params(&mut self, params: &[LambdaParam]) {
         self.comma_sep(params, |f, p| {
-            f.write_ident(&p.name);
+            f.write_ident(p.name);
             if let Some(ty) = &p.ty {
                 f.write(": ");
                 f.format_type_expr(&ty.0);
@@ -4786,7 +4785,7 @@ impl<'a> Formatter<'a> {
         match &pat.0 {
             Pattern::Wildcard => self.write("_"),
             Pattern::Literal(lit) => self.format_literal(lit, &pat.1),
-            Pattern::Identifier(name) => self.write_ident(name),
+            Pattern::Identifier(name) => self.write_ident(*name),
             // A one-segment constructor with no operands is written bare.
             Pattern::NominalPath {
                 path,
@@ -4798,7 +4797,7 @@ impl<'a> Formatter<'a> {
             }
             Pattern::ContextVariant(context) => {
                 self.write(".");
-                self.write_ident(&context.name);
+                self.write_ident(context.name);
                 self.format_nominal_pattern_payload(context.payload.as_ref());
             }
             Pattern::RecordShorthand { fields, rest } => {
@@ -4838,7 +4837,7 @@ impl<'a> Formatter<'a> {
     }
 
     fn format_pattern_field(&mut self, f: &PatternField) {
-        self.write_ident(&f.name);
+        self.write_ident(f.name);
         if let Some(pat) = &f.pattern {
             self.write(": ");
             self.format_pattern(pat);

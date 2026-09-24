@@ -11,36 +11,65 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::ast::{ImportSpec, Item, Span, Spanned};
+use crate::ast::{ImportSpec, Item, Span, Spanned, Symbol};
 
-// ── ModuleId ─────────────────────────────────────────────────────────
+// ── ModulePath ───────────────────────────────────────────────────────
 
-/// Unique identifier for a module, based on its path segments
-/// (e.g. `["std", "net", "http"]` for `std::net::http`).
+/// A module's source path as interned segments (e.g. `std`, `net`, `http`
+/// for `std.net.http`). This is the module graph's key; semantic module
+/// identity is the checker's `ModulePath`.
+///
+/// Ordering follows segment spelling, so graph iteration and topological
+/// seeding do not depend on interning order.
 #[derive(Debug, Clone, Hash, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
-pub struct ModuleId {
-    pub path: Vec<String>,
+pub struct ModulePath {
+    pub segments: Vec<Symbol>,
 }
 
-impl ModuleId {
+impl ModulePath {
+    /// The module path spelled by `segments`, as written in an import or
+    /// derived from a source file's location.
     #[must_use]
-    pub fn new(path: Vec<String>) -> Self {
-        Self { path }
+    pub fn new<S: AsRef<str>>(segments: impl IntoIterator<Item = S>) -> Self {
+        Self {
+            segments: segments
+                .into_iter()
+                .map(|segment| Symbol::intern(segment.as_ref()))
+                .collect(),
+        }
     }
 
-    /// Create a root module id (empty path).
+    /// Create a root module path (no segments).
     #[must_use]
     pub fn root() -> Self {
-        Self { path: Vec::new() }
+        Self {
+            segments: Vec::new(),
+        }
+    }
+
+    /// The segments joined with `.`, the spelling module sources are keyed by.
+    #[must_use]
+    pub fn dotted(&self) -> String {
+        self.join(".")
+    }
+
+    /// The segments joined with `separator`; empty for the root.
+    #[must_use]
+    pub fn join(&self, separator: &str) -> String {
+        self.segments
+            .iter()
+            .map(|segment| segment.as_str())
+            .collect::<Vec<_>>()
+            .join(separator)
     }
 }
 
-impl fmt::Display for ModuleId {
+impl fmt::Display for ModulePath {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.path.is_empty() {
+        if self.segments.is_empty() {
             write!(f, "(root)")
         } else {
-            write!(f, "{}", self.path.join("::"))
+            write!(f, "{}", self.join("::"))
         }
     }
 }
@@ -50,7 +79,7 @@ impl fmt::Display for ModuleId {
 /// A single module in the module graph.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Module {
-    pub id: ModuleId,
+    pub id: ModulePath,
     /// Items defined directly in this module.
     pub items: Vec<Spanned<Item>>,
     /// Imports declared in this module.
@@ -152,7 +181,7 @@ fn collect_file_import_chain_sources(items: &[Spanned<Item>], sources: &mut Hash
 /// A resolved import within a module.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ModuleImport {
-    pub target: ModuleId,
+    pub target: ModulePath,
     pub spec: Option<ImportSpec>,
     pub span: Span,
 }
@@ -163,7 +192,7 @@ pub struct ModuleImport {
 #[derive(Debug, Clone, PartialEq)]
 pub struct DuplicateModule {
     /// The id of the module that was already present.
-    pub id: ModuleId,
+    pub id: ModulePath,
 }
 
 impl fmt::Display for DuplicateModule {
@@ -180,7 +209,7 @@ impl std::error::Error for DuplicateModule {}
 #[derive(Debug, Clone)]
 pub struct CycleError {
     /// The cycle as a list of module ids (first == last).
-    pub cycle: Vec<ModuleId>,
+    pub cycle: Vec<ModulePath>,
     /// The source span of each import statement on the cycle path.
     ///
     /// `import_spans[i]` is the span of the import in `cycle[i]` that
@@ -218,21 +247,21 @@ pub struct ModuleGraph {
     /// hash-seeded map here made function order, `BindingId`s and diagnostic
     /// order drift between compiles of one unchanged program.
     ///
-    /// Custom serialization converts `ModuleId` keys to strings (JSON requires
+    /// Custom serialization converts `ModulePath` keys to strings (JSON requires
     /// string keys).  Format: `"std::net::http"` or `"(root)"` for the root.
     #[serde(
         serialize_with = "serialize_module_map",
         deserialize_with = "deserialize_module_map"
     )]
-    pub modules: BTreeMap<ModuleId, Module>,
+    pub modules: BTreeMap<ModulePath, Module>,
     /// The root module (entry point).
-    pub root: ModuleId,
+    pub root: ModulePath,
     /// Topological order for processing (dependencies before dependents).
     ///
     /// Where the import DAG leaves freedom (a diamond, unrelated siblings) the
-    /// order is fixed by `ModuleId` ordering of the DFS seeds, so it is the
+    /// order is fixed by `ModulePath` ordering of the DFS seeds, so it is the
     /// same for every graph built from the same modules.
-    pub topo_order: Vec<ModuleId>,
+    pub topo_order: Vec<ModulePath>,
     /// Per-item defining source file for each module, keyed by the module's
     /// dotted path and parallel to that module's `items` vector. A directory
     /// module assembles its primary file plus every peer `.hew` file; the
@@ -268,8 +297,8 @@ pub struct ModuleGraph {
 /// has source files; the root compilation unit keeps index 0.
 #[derive(Debug, Clone, Default)]
 pub struct FileSpanIndices {
-    module_base: HashMap<ModuleId, u32>,
-    item_index: HashMap<ModuleId, Vec<u32>>,
+    module_base: HashMap<ModulePath, u32>,
+    item_index: HashMap<ModulePath, Vec<u32>>,
     by_path: HashMap<PathBuf, u32>,
     module_name: HashMap<u32, String>,
 }
@@ -278,14 +307,14 @@ impl FileSpanIndices {
     /// The index of a module's ENTRY file — the fallback for any item whose
     /// defining file was not recorded.
     #[must_use]
-    pub fn module_base(&self, id: &ModuleId) -> Option<u32> {
+    pub fn module_base(&self, id: &ModulePath) -> Option<u32> {
         self.module_base.get(id).copied()
     }
 
     /// The index for `modules[id].items[item_idx]`, attributed to the file that
     /// actually declares it.
     #[must_use]
-    pub fn item_index(&self, id: &ModuleId, item_idx: usize) -> Option<u32> {
+    pub fn item_index(&self, id: &ModulePath, item_idx: usize) -> Option<u32> {
         self.item_index
             .get(id)
             .and_then(|indices| indices.get(item_idx).copied())
@@ -309,7 +338,7 @@ impl FileSpanIndices {
 
 impl ModuleGraph {
     #[must_use]
-    pub fn new(root: ModuleId) -> Self {
+    pub fn new(root: ModulePath) -> Self {
         Self {
             modules: BTreeMap::new(),
             root,
@@ -322,8 +351,8 @@ impl ModuleGraph {
     /// per-item attribution was recorded and disagrees are impossible: the
     /// recorded vector must be parallel to the module's items.
     #[must_use]
-    pub fn item_source(&self, id: &ModuleId, item_idx: usize) -> Option<&PathBuf> {
-        self.item_sources.get(&id.path.join("."))?.get(item_idx)
+    pub fn item_source(&self, id: &ModulePath, item_idx: usize) -> Option<&PathBuf> {
+        self.item_sources.get(&id.dotted())?.get(item_idx)
     }
 
     /// Allocate one span-key discriminator per SOURCE FILE in the graph.
@@ -344,7 +373,7 @@ impl ModuleGraph {
                 // consumer only.
                 continue;
             };
-            let dotted = module_id.path.join(".");
+            let dotted = module_id.dotted();
             let mut files: Vec<PathBuf> = Vec::new();
             for path in &module.source_paths {
                 if !files.contains(path) {
@@ -407,7 +436,7 @@ impl ModuleGraph {
 
     /// Return the direct dependencies (import targets) of a module.
     #[must_use]
-    pub fn dependencies(&self, id: &ModuleId) -> Vec<&ModuleId> {
+    pub fn dependencies(&self, id: &ModulePath) -> Vec<&ModulePath> {
         self.modules
             .get(id)
             .map(|m| m.imports.iter().map(|imp| &imp.target).collect())
@@ -425,19 +454,19 @@ impl ModuleGraph {
         }
 
         fn visit(
-            id: &ModuleId,
+            id: &ModulePath,
             entry_span: Span,
-            modules: &BTreeMap<ModuleId, Module>,
-            marks: &mut HashMap<ModuleId, Mark>,
-            order: &mut Vec<ModuleId>,
-            stack: &mut Vec<(ModuleId, Span)>,
+            modules: &BTreeMap<ModulePath, Module>,
+            marks: &mut HashMap<ModulePath, Mark>,
+            order: &mut Vec<ModulePath>,
+            stack: &mut Vec<(ModulePath, Span)>,
         ) -> Result<(), CycleError> {
             match marks.get(id) {
                 Some(Mark::Permanent) => return Ok(()),
                 Some(Mark::Temporary) => {
                     // Build cycle path from the stack.
                     let start = stack.iter().position(|(s, _)| s == id).unwrap_or(0);
-                    let cycle: Vec<ModuleId> = stack[start..]
+                    let cycle: Vec<ModulePath> = stack[start..]
                         .iter()
                         .map(|(m, _)| m.clone())
                         .chain(std::iter::once(id.clone()))
@@ -470,13 +499,13 @@ impl ModuleGraph {
             Ok(())
         }
 
-        let mut marks: HashMap<ModuleId, Mark> = HashMap::new();
-        let mut order: Vec<ModuleId> = Vec::new();
+        let mut marks: HashMap<ModulePath, Mark> = HashMap::new();
+        let mut order: Vec<ModulePath> = Vec::new();
 
         // Collect keys up-front to avoid borrow issues. `modules` is ordered,
         // so the seeds (and with them the order among unrelated modules) are
         // the same on every run.
-        let ids: Vec<ModuleId> = self.modules.keys().cloned().collect();
+        let ids: Vec<ModulePath> = self.modules.keys().cloned().collect();
 
         for id in &ids {
             if !marks.contains_key(id) {
@@ -496,14 +525,14 @@ impl ModuleGraph {
     }
 }
 
-// ── ModuleId ↔ String map serialization ─────────────────────────────
+// ── ModulePath ↔ String map serialization ─────────────────────────────
 //
-// JSON requires object keys to be strings.  `ModuleId` is a struct, so
-// serde_json refuses to serialize `BTreeMap<ModuleId, _>` by default.
+// JSON requires object keys to be strings.  `ModulePath` is a struct, so
+// serde_json refuses to serialize `BTreeMap<ModulePath, _>` by default.
 // These helpers convert keys via `Display` / `FromStr`-style parsing.
 
 fn serialize_module_map<S>(
-    map: &BTreeMap<ModuleId, Module>,
+    map: &BTreeMap<ModulePath, Module>,
     serializer: S,
 ) -> Result<S::Ok, S::Error>
 where
@@ -517,7 +546,7 @@ where
     ser_map.end()
 }
 
-fn deserialize_module_map<'de, D>(deserializer: D) -> Result<BTreeMap<ModuleId, Module>, D::Error>
+fn deserialize_module_map<'de, D>(deserializer: D) -> Result<BTreeMap<ModulePath, Module>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
@@ -526,9 +555,9 @@ where
         .into_iter()
         .map(|(k, v)| {
             let id = if k == "(root)" {
-                ModuleId::root()
+                ModulePath::root()
             } else {
-                ModuleId::new(k.split("::").map(String::from).collect())
+                ModulePath::new(k.split("::"))
             };
             (id, v)
         })
@@ -541,12 +570,12 @@ mod tests {
 
     fn module(id: &str, deps: &[&str]) -> Module {
         Module {
-            id: ModuleId::new(vec![id.to_string()]),
+            id: ModulePath::new([id.to_string()]),
             items: Vec::new(),
             imports: deps
                 .iter()
                 .map(|d| ModuleImport {
-                    target: ModuleId::new(vec![d.to_string()]),
+                    target: ModulePath::new([d.to_string()]),
                     spec: None,
                     span: 0..0,
                 })
@@ -558,26 +587,30 @@ mod tests {
 
     #[test]
     fn display_module_id() {
-        let id = ModuleId::new(vec!["std".into(), "net".into(), "http".into()]);
+        let id = ModulePath::new(["std", "net", "http"]);
         assert_eq!(id.to_string(), "std::net::http");
-        assert_eq!(ModuleId::root().to_string(), "(root)");
+        assert_eq!(ModulePath::root().to_string(), "(root)");
     }
 
     #[test]
     fn topo_order_linear() {
-        let mut g = ModuleGraph::new(ModuleId::new(vec!["a".into()]));
+        let mut g = ModuleGraph::new(ModulePath::new(["a"]));
         g.add_module(module("a", &["b"])).unwrap();
         g.add_module(module("b", &["c"])).unwrap();
         g.add_module(module("c", &[])).unwrap();
         g.compute_topo_order().unwrap();
-        let names: Vec<&str> = g.topo_order.iter().map(|id| id.path[0].as_str()).collect();
+        let names: Vec<&str> = g
+            .topo_order
+            .iter()
+            .map(|id| id.segments[0].as_str())
+            .collect();
         // c before b before a
         assert_eq!(names, vec!["c", "b", "a"]);
     }
 
     #[test]
     fn topo_order_diamond() {
-        let mut g = ModuleGraph::new(ModuleId::new(vec!["a".into()]));
+        let mut g = ModuleGraph::new(ModulePath::new(["a"]));
         g.add_module(module("a", &["b", "c"])).unwrap();
         g.add_module(module("b", &["d"])).unwrap();
         g.add_module(module("c", &["d"])).unwrap();
@@ -586,7 +619,7 @@ mod tests {
         let pos = |name: &str| {
             g.topo_order
                 .iter()
-                .position(|id| id.path[0] == name)
+                .position(|id| id.segments[0].as_str() == name)
                 .unwrap()
         };
         assert!(pos("d") < pos("b"));
@@ -605,13 +638,13 @@ mod tests {
     fn topo_order_diamond_is_identical_across_fresh_graphs() {
         let orders: Vec<Vec<String>> = (0..20)
             .map(|_| {
-                let mut g = ModuleGraph::new(ModuleId::new(vec!["a".into()]));
+                let mut g = ModuleGraph::new(ModulePath::new(["a"]));
                 g.add_module(module("a", &["b", "c"])).unwrap();
                 g.add_module(module("b", &["d"])).unwrap();
                 g.add_module(module("c", &["d"])).unwrap();
                 g.add_module(module("d", &[])).unwrap();
                 g.compute_topo_order().unwrap();
-                g.topo_order.iter().map(ModuleId::to_string).collect()
+                g.topo_order.iter().map(ModulePath::to_string).collect()
             })
             .collect();
         for order in &orders[1..] {
@@ -624,7 +657,7 @@ mod tests {
 
     #[test]
     fn cycle_detected() {
-        let mut g = ModuleGraph::new(ModuleId::new(vec!["a".into()]));
+        let mut g = ModuleGraph::new(ModulePath::new(["a"]));
         g.add_module(module("a", &["b"])).unwrap();
         g.add_module(module("b", &["a"])).unwrap();
         let err = g.compute_topo_order().unwrap_err();
@@ -633,12 +666,12 @@ mod tests {
 
     #[test]
     fn dependencies() {
-        let mut g = ModuleGraph::new(ModuleId::new(vec!["a".into()]));
+        let mut g = ModuleGraph::new(ModulePath::new(["a"]));
         g.add_module(module("a", &["b", "c"])).unwrap();
         g.add_module(module("b", &[])).unwrap();
         g.add_module(module("c", &[])).unwrap();
-        let deps = g.dependencies(&ModuleId::new(vec!["a".into()]));
-        let names: Vec<&str> = deps.iter().map(|id| id.path[0].as_str()).collect();
+        let deps = g.dependencies(&ModulePath::new(["a"]));
+        let names: Vec<&str> = deps.iter().map(|id| id.segments[0].as_str()).collect();
         assert!(names.contains(&"b"));
         assert!(names.contains(&"c"));
         assert_eq!(deps.len(), 2);
@@ -648,13 +681,13 @@ mod tests {
     fn cycle_error_carries_import_spans() {
         // Build a two-module cycle with distinct import spans so we can
         // verify each span is threaded into CycleError.import_spans.
-        let mut g = ModuleGraph::new(ModuleId::new(vec!["a".into()]));
+        let mut g = ModuleGraph::new(ModulePath::new(["a"]));
 
         let module_a = Module {
-            id: ModuleId::new(vec!["a".into()]),
+            id: ModulePath::new(["a"]),
             items: vec![],
             imports: vec![ModuleImport {
-                target: ModuleId::new(vec!["b".into()]),
+                target: ModulePath::new(["b"]),
                 spec: None,
                 span: 10..20,
             }],
@@ -662,10 +695,10 @@ mod tests {
             doc: None,
         };
         let module_b = Module {
-            id: ModuleId::new(vec!["b".into()]),
+            id: ModulePath::new(["b"]),
             items: vec![],
             imports: vec![ModuleImport {
-                target: ModuleId::new(vec!["a".into()]),
+                target: ModulePath::new(["a"]),
                 spec: None,
                 span: 30..40,
             }],
@@ -714,17 +747,17 @@ mod tests {
 
     #[test]
     fn duplicate_module_detected() {
-        let mut g = ModuleGraph::new(ModuleId::new(vec!["a".into()]));
+        let mut g = ModuleGraph::new(ModulePath::new(["a"]));
         g.add_module(module("a", &[])).unwrap();
 
         let err = g.add_module(module("a", &[])).unwrap_err();
-        assert_eq!(err.id, ModuleId::new(vec!["a".into()]));
+        assert_eq!(err.id, ModulePath::new(["a"]));
         assert!(
             err.to_string().contains("duplicate module"),
             "error message should describe the collision: {err}"
         );
 
         // Original entry must be unchanged.
-        assert!(g.modules.contains_key(&ModuleId::new(vec!["a".into()])));
+        assert!(g.modules.contains_key(&ModulePath::new(["a"])));
     }
 }

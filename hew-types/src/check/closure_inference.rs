@@ -1,5 +1,6 @@
 //! Conservative syntactic escape classification for closure bindings.
 
+use hew_parser::ast::Ident;
 use hew_parser::ast::{condition_exprs, Block, Expr, Spanned, Stmt, StringPart};
 
 use super::types::{ClosureEscapeFact, ClosureEscapeKind, ClosureEscapeRule};
@@ -157,8 +158,8 @@ fn esc_visit_stmt(stmt: &Stmt, name: &str, in_fork: bool, acc: &mut EscapeAccumu
             if let Some((e, _)) = opt {
                 // A bare reference to our closure-bound name in a
                 // return statement is the textbook `Returned` rule.
-                if let Expr::Identifier(n) = e {
-                    if n == name {
+                if let Expr::Ident(n) = e {
+                    if n.name.as_str() == name {
                         acc.any_use = true;
                         if in_fork {
                             acc.forked_use = true;
@@ -203,7 +204,7 @@ fn esc_visit_expr(
     is_tail: bool,
 ) {
     match expr {
-        Expr::Identifier(n) if n == name => {
+        Expr::Ident(n) if n.name.as_str() == name => {
             acc.any_use = true;
             if in_fork {
                 acc.forked_use = true;
@@ -213,10 +214,10 @@ fn esc_visit_expr(
                 acc.record_nonlocal(ClosureEscapeRule::StoredOrSent);
             }
         }
-        Expr::Identifier(_) => {}
+        Expr::Ident(_) => {}
         Expr::Call { function, args, .. } => {
             // Direct call `name(args)` is the only safe shape.
-            let direct = matches!(&function.0, Expr::Identifier(n) if n == name);
+            let direct = matches!(&function.0, Expr::Ident(n) if n.name.as_str() == name);
             if direct {
                 acc.any_use = true;
                 if in_fork {
@@ -258,7 +259,7 @@ fn esc_visit_expr(
             body,
         } => {
             esc_visit_expr(&operand.0, name, in_fork, acc, false);
-            if error.0 != name {
+            if error.0 != Ident::new(name) {
                 esc_visit_expr(&body.0, name, in_fork, acc, is_tail);
             }
         }
@@ -450,8 +451,8 @@ fn esc_visit_expr(
 /// Argument-position walker — a bare reference to the closure-bound
 /// name as an argument flags `PassedToHigherOrder`.
 fn esc_visit_arg(expr: &Expr, name: &str, in_fork: bool, acc: &mut EscapeAccumulator) {
-    if let Expr::Identifier(n) = expr {
-        if n == name {
+    if let Expr::Ident(n) = expr {
+        if n.name.as_str() == name {
             acc.any_use = true;
             if in_fork {
                 acc.forked_use = true;

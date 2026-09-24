@@ -36,9 +36,10 @@ pub fn generate(repo: &Path, out: &Path) -> String {
         );
         for (item, _) in parsed.program.items {
             let Item::Impl(decl) = item else { continue };
-            let TypeExpr::Named { name, .. } = decl.target_type.0 else {
+            let TypeExpr::Named { path, .. } = decl.target_type.0 else {
                 continue;
             };
+            let name = path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
             for method in decl.methods {
                 if let Some((family, row)) = render_method(module, &name, &method) {
                     assert!(
@@ -188,13 +189,14 @@ fn take<'a>(fields: &mut BTreeMap<&str, &'a str>, key: &str) -> &'a str {
 }
 
 fn scalar(ty: &TypeExpr) -> &'static str {
-    let TypeExpr::Named { name, type_args } = ty else {
+    let TypeExpr::Named { path, type_args } = ty else {
         panic!("direct runtime type must be a scalar");
     };
     assert!(
         type_args.is_none(),
         "direct runtime scalar cannot have type arguments"
     );
+    let name = path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
     match name.as_str() {
         "i64" => "I64",
         "u8" => "U8",
@@ -309,10 +311,9 @@ fn render_direct(
         ("truth_bool", "Bool") => "TruthBool",
         _ => panic!("invalid direct runtime C return conversion"),
     };
-    let receiver_param = method
-        .params
-        .first()
-        .is_some_and(|p| matches!(&p.ty.0, TypeExpr::Named {name, ..} if name == receiver));
+    let receiver_param = method.params.first().is_some_and(
+        |p| matches!(&p.ty.0, TypeExpr::Named {path, ..} if path.to_string() == receiver),
+    );
     let logical_params = &params[usize::from(receiver_param)..];
     let signature_key = format!("{receiver}::{}", method.name);
     let logical = logical_params
@@ -368,10 +369,10 @@ mod tests {
         let Item::Impl(decl) = &parsed.program.items[0].0 else {
             panic!("impl");
         };
-        let TypeExpr::Named { name, .. } = &decl.target_type.0 else {
+        let TypeExpr::Named { path, .. } = &decl.target_type.0 else {
             panic!("named receiver");
         };
-        render_method("std.builtins", name, &decl.methods[0])
+        render_method("std.builtins", &path.to_string(), &decl.methods[0])
             .unwrap()
             .1
     }

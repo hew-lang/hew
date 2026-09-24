@@ -280,14 +280,14 @@ fn parse_shipped_std_sources(std_root: &Path) -> (ParsedStdModules, BTreeSet<Str
                 let Item::Impl(implementation) = item else {
                     return None;
                 };
-                let TypeExpr::Named { name, .. } = &implementation.target_type.0 else {
+                let TypeExpr::Named { path, .. } = &implementation.target_type.0 else {
                     return None;
                 };
                 implementation
                     .methods
                     .iter()
-                    .any(|method| method.name == "close" && method.consumes_self)
-                    .then(|| name.clone())
+                    .any(|method| method.name == Ident::new("close") && method.consumes_self)
+                    .then(|| path.to_string())
             })
             .collect();
         for (item, _) in &parsed.program.items {
@@ -303,8 +303,8 @@ fn parse_shipped_std_sources(std_root: &Path) -> (ParsedStdModules, BTreeSet<Str
                 declaration
                     .consuming_methods
                     .iter()
-                    .any(|method| method == "close")
-                    || inherent_closes.contains(&declaration.name),
+                    .any(|method| method.name.as_str() == "close")
+                    || inherent_closes.contains(declaration.name.name.as_str()),
                 "{}.{} must expose one consuming close method",
                 module_path.join("."),
                 declaration.name
@@ -323,7 +323,7 @@ fn parse_shipped_std_sources(std_root: &Path) -> (ParsedStdModules, BTreeSet<Str
 }
 
 fn shipped_std_module_graph(parsed_modules: &ParsedStdModules) -> ModuleGraph {
-    let mut module_graph = ModuleGraph::new(ModuleId::root());
+    let mut module_graph = ModuleGraph::new(ModulePath::root());
     for (module_path, source_items) in parsed_modules {
         let mut items = source_items.clone();
         let mut imports = Vec::new();
@@ -331,23 +331,25 @@ fn shipped_std_module_graph(parsed_modules: &ParsedStdModules) -> ModuleGraph {
             let Item::Import(declaration) = item else {
                 continue;
             };
-            let resolved = parsed_modules.get(&declaration.path).unwrap_or_else(|| {
-                panic!(
-                    "{} imports missing shipped module {}",
-                    module_path.join("."),
-                    declaration.path.join(".")
-                )
-            });
+            let resolved = parsed_modules
+                .get(&import_spellings(&declaration.path))
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{} imports missing shipped module {}",
+                        module_path.join("."),
+                        declaration.path
+                    )
+                });
             declaration.resolved_items = Some(resolved.clone().into());
             imports.push(hew_parser::module::ModuleImport {
-                target: ModuleId::new(declaration.path.clone()),
+                target: ModulePath::new(import_spellings(&declaration.path)),
                 spec: declaration.spec.clone(),
                 span: span.clone(),
             });
         }
         module_graph
             .add_module(Module {
-                id: ModuleId::new(module_path.clone()),
+                id: ModulePath::new(module_path.clone()),
                 items,
                 imports,
                 source_paths: vec![],
@@ -801,8 +803,8 @@ fn synthetic_borrowed_view_without_disposer_is_excluded() {
 fn checker_with_registered_module(source: &str, module_path: &[&str]) -> Checker {
     let parsed = hew_parser::parse(source);
     assert!(parsed.errors.is_empty(), "{:#?}", parsed.errors);
-    let root_id = ModuleId::root();
-    let module_id = ModuleId::new(module_path.iter().map(ToString::to_string).collect());
+    let root_id = ModulePath::root();
+    let module_id = ModulePath::new(module_path.iter());
     let module = Module {
         id: module_id.clone(),
         items: parsed.program.items,
@@ -830,10 +832,10 @@ fn checker_with_registered_module(source: &str, module_path: &[&str]) -> Checker
 }
 
 fn checker_with_resolved_module_graph(sources: &[(&[&str], &str)]) -> Checker {
-    let root_id = ModuleId::root();
+    let root_id = ModulePath::root();
     let module_ids: Vec<_> = sources
         .iter()
-        .map(|(path, _)| ModuleId::new(path.iter().map(ToString::to_string).collect()))
+        .map(|(path, _)| ModulePath::new(path.iter()))
         .collect();
     let mut parsed_items = Vec::with_capacity(sources.len());
     for (_, source) in sources {
@@ -852,7 +854,9 @@ fn checker_with_resolved_module_graph(sources: &[(&[&str], &str)]) -> Checker {
             };
             let target_index = module_ids
                 .iter()
-                .position(|candidate| candidate.path == declaration.path)
+                .position(|candidate| {
+                    *candidate == ModulePath::new(import_spellings(&declaration.path))
+                })
                 .expect("test import target must be present in the graph");
             declaration.resolved_items = Some(parsed_items[target_index].clone().into());
             imports.push(hew_parser::module::ModuleImport {
@@ -1532,4 +1536,11 @@ fn resource_handle_field_is_affine_outside_close() {
         fn plain(p: Pair) -> Dq {{ p.a }}"
     ));
     assert!(accepted.errors.is_empty(), "{:#?}", accepted.errors);
+}
+
+fn import_spellings(path: &hew_parser::ast::Path) -> Vec<String> {
+    path.segments
+        .iter()
+        .map(|(segment, _)| segment.to_string())
+        .collect()
 }

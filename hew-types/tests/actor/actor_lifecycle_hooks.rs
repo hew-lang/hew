@@ -10,10 +10,11 @@
 //! a reject twin so the rule is observable from both sides).
 
 use crate::common;
+use hew_parser::ast::Ident;
 
 use common::typecheck_isolated as typecheck;
 use hew_parser::ast::Item;
-use hew_parser::module::{Module, ModuleGraph, ModuleId, ModuleImport};
+use hew_parser::module::{Module, ModuleGraph, ModuleImport, ModulePath};
 use hew_types::error::TypeErrorKind;
 
 /// The isolated lifecycle tests intentionally exercise the no-search-path
@@ -27,8 +28,9 @@ fn typecheck_with_resolved_std(source: &str) -> hew_types::TypeCheckOutput {
             };
             let source = match decl
                 .path
+                .segments
                 .iter()
-                .map(String::as_str)
+                .map(|(segment, _)| segment.name.as_str())
                 .collect::<Vec<_>>()
                 .as_slice()
             {
@@ -76,7 +78,7 @@ fn typecheck_with_spoofed_std_import(owner: &str, source: &str) -> hew_types::Ty
         let Item::Import(decl) = item else {
             continue;
         };
-        if decl.path == ["std", owner] {
+        if decl.path.to_string() == format!("std.{owner}") {
             decl.resolved_items = Some(common::parse_program(module_source).items.into());
             decl.resolved_source_paths =
                 vec![common::repo_root().join(format!("tests/fixtures/spoofed-{owner}.hew"))];
@@ -87,13 +89,8 @@ fn typecheck_with_spoofed_std_import(owner: &str, source: &str) -> hew_types::Ty
 }
 
 fn typecheck_module_body(module_path: &[&str], source: &str) -> hew_types::TypeCheckOutput {
-    let root_id = ModuleId::root();
-    let module_id = ModuleId::new(
-        module_path
-            .iter()
-            .map(|segment| (*segment).to_string())
-            .collect(),
-    );
+    let root_id = ModulePath::root();
+    let module_id = ModulePath::new(module_path.iter());
     let mut graph = ModuleGraph::new(root_id.clone());
     graph
         .add_module(Module {
@@ -134,14 +131,18 @@ fn typecheck_with_transitive_std(owner: &str, root_source: &str) -> hew_types::T
         let Item::Import(decl) = item else {
             continue;
         };
-        if decl.path.last().is_some_and(|segment| segment == owner) {
+        if decl
+            .path
+            .last()
+            .is_some_and(|segment| segment == Ident::new(owner))
+        {
             let mut imported = common::parse_program(std_source).items;
             if owner == "link_monitor" {
                 for (nested, _) in &mut imported {
                     let Item::Import(nested_decl) = nested else {
                         continue;
                     };
-                    if nested_decl.path == ["std", "failure"] {
+                    if nested_decl.path.to_string() == "std.failure" {
                         nested_decl.resolved_items = Some(
                             common::parse_program(include_str!("../../../std/failure.hew"))
                                 .items
@@ -159,7 +160,7 @@ fn typecheck_with_transitive_std(owner: &str, root_source: &str) -> hew_types::T
         let Item::Import(decl) = item else {
             continue;
         };
-        if decl.path == ["app", "helper"] {
+        if decl.path.to_string() == "app.helper" {
             decl.resolved_items = Some(helper.items.clone().into());
         }
     }
@@ -171,14 +172,9 @@ fn typecheck_link_monitor_import_edge(
     target_path: &[&str],
     target_source: &str,
 ) -> hew_types::TypeCheckOutput {
-    let root_id = ModuleId::root();
-    let target_id = ModuleId::new(
-        target_path
-            .iter()
-            .map(|segment| (*segment).to_string())
-            .collect(),
-    );
-    let consumer_id = ModuleId::new(vec!["std".to_string(), "link_monitor".to_string()]);
+    let root_id = ModulePath::root();
+    let target_id = ModulePath::new(target_path.iter());
+    let consumer_id = ModulePath::new(["std", "link_monitor"]);
     let target_items = common::parse_program(target_source).items;
     let mut consumer = common::parse_program(&format!(
         "import {}.{{CrashKind}};\n\
@@ -594,7 +590,7 @@ fn sibling_loading_failure_does_not_authorize_root_qualified_exit_payload() {
         let Item::Import(decl) = item else {
             continue;
         };
-        if decl.path == ["std", "failure"] {
+        if decl.path.to_string() == "std.failure" {
             decl.resolved_items = Some(
                 common::parse_program(include_str!("../../../std/failure.hew"))
                     .items
@@ -619,7 +615,7 @@ fn sibling_loading_failure_does_not_authorize_root_qualified_exit_payload() {
         let Item::Import(decl) = item else {
             continue;
         };
-        if decl.path == ["app", "helper"] {
+        if decl.path.to_string() == "app.helper" {
             decl.resolved_items = Some(helper.items.clone().into());
         }
     }
@@ -726,7 +722,7 @@ fn sibling_loading_link_monitor_does_not_authorize_root_qualified_down_payload()
         let Item::Import(decl) = item else {
             continue;
         };
-        if decl.path == ["std", "failure"] {
+        if decl.path.to_string() == "std.failure" {
             decl.resolved_items = Some(
                 common::parse_program(include_str!("../../../std/failure.hew"))
                     .items
@@ -740,7 +736,7 @@ fn sibling_loading_link_monitor_does_not_authorize_root_qualified_down_payload()
         let Item::Import(decl) = item else {
             continue;
         };
-        if decl.path == ["std", "link_monitor"] {
+        if decl.path.to_string() == "std.link_monitor" {
             decl.resolved_items = Some(monitor.items.clone().into());
         }
     }
@@ -759,7 +755,7 @@ fn sibling_loading_link_monitor_does_not_authorize_root_qualified_down_payload()
         let Item::Import(decl) = item else {
             continue;
         };
-        if decl.path == ["app", "helper"] {
+        if decl.path.to_string() == "app.helper" {
             decl.resolved_items = Some(helper.items.clone().into());
         }
     }

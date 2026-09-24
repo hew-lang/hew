@@ -1,6 +1,7 @@
 //! Iterator shapes, `for` loop desugaring and range adapters.
 
 use super::*;
+use hew_parser::ast::Ident;
 
 /// Walk each monomorphisation's origin fn body, substitute the
 /// per-monomorphisation type-arg map into every inner Call site's
@@ -348,7 +349,7 @@ impl LowerCtx {
             span: span.clone(),
         };
         let tail = self.make_hashmap_iter_init(
-            (Expr::Identifier(temp_name), span.clone()),
+            (Expr::Ident(Ident::new(&temp_name)), span.clone()),
             key_ty,
             val_ty,
             iter_ty.clone(),
@@ -387,7 +388,7 @@ impl LowerCtx {
         let keys_call = (
             Expr::MethodCall {
                 receiver: Box::new(receiver.clone()),
-                method: "keys".to_string(),
+                method: (Ident::new("keys"), keys_span.clone()),
                 args: Vec::new(),
             },
             keys_span,
@@ -395,7 +396,7 @@ impl LowerCtx {
         let values_call = (
             Expr::MethodCall {
                 receiver: Box::new(receiver),
-                method: "values".to_string(),
+                method: (Ident::new("values"), values_span.clone()),
                 args: Vec::new(),
             },
             values_span,
@@ -458,7 +459,7 @@ impl LowerCtx {
     /// instead ([`Self::bind_for_in_source`]).
     pub(super) fn for_in_iterable_is_place(expr: &Expr) -> bool {
         match expr {
-            Expr::Identifier(_) => true,
+            Expr::Ident(_) => true,
             Expr::FieldAccess { object, .. } | Expr::Index { object, .. } => {
                 Self::for_in_iterable_is_place(&object.0)
             }
@@ -474,7 +475,7 @@ impl LowerCtx {
     /// projection receivers directly. The temp owns the collection and its
     /// scope-exit drop frees it exactly once; the projections borrow the temp
     /// (Read), so the temp stays the sole owner. Returns the temp's name (for
-    /// building `Expr::Identifier` receivers) and the `Let` statement to prepend
+    /// building `Expr::Ident` receivers) and the `Let` statement to prepend
     /// to the for-in's outer block.
     pub(super) fn bind_for_in_source(
         &mut self,
@@ -499,7 +500,7 @@ impl LowerCtx {
     /// the cursor's per-`(K, V)` layout monomorphises exactly like any user
     /// record. `receiver` is the spanned projection receiver — the iterable AST
     /// with its original span for a place source (re-read per projection,
-    /// drop-safe), or an `Expr::Identifier` for the single-eval temp of a
+    /// drop-safe), or an `Expr::Ident` for the single-eval temp of a
     /// non-place rvalue source.
     /// The `keys()`/`values()` calls are spanned at two synthetic zero-width
     /// spans (`iterable.start..start`, `iterable.end..end`) the checker recorded
@@ -552,7 +553,7 @@ impl LowerCtx {
         let keys_call = (
             Expr::MethodCall {
                 receiver: Box::new(receiver.clone()),
-                method: "keys".to_string(),
+                method: (Ident::new("keys"), keys_span.clone()),
                 args: Vec::new(),
             },
             keys_span,
@@ -560,7 +561,7 @@ impl LowerCtx {
         let values_call = (
             Expr::MethodCall {
                 receiver: Box::new(receiver.clone()),
-                method: "values".to_string(),
+                method: (Ident::new("values"), values_span.clone()),
                 args: Vec::new(),
             },
             values_span,
@@ -993,7 +994,7 @@ impl LowerCtx {
                 args,
             } => {
                 let mut chain = Self::peel_range_adapter_chain(&receiver.0)?;
-                match method.as_str() {
+                match method.0.name.as_str() {
                     "rev" => {
                         // `.rev()` carries no arguments (the checker rejects any).
                         // Reversing twice is the forward direction again.
@@ -1203,7 +1204,7 @@ impl LowerCtx {
         span: Span,
     ) -> HirExprKind {
         let (var_name, destructure_pattern) = if let Pattern::Identifier(var_name) = &pattern.0 {
-            (var_name.clone(), None)
+            (var_name.to_string(), None)
         } else {
             (
                 format!("__forelem_{}", self.ids.binding().0),
@@ -1332,7 +1333,7 @@ impl LowerCtx {
                     let (src_name, src_stmt) =
                         self.bind_for_in_source(lowered_iterable, source_ty, &iterable.1);
                     source_prelude.push(src_stmt);
-                    let receiver = (Expr::Identifier(src_name), iterable.1.clone());
+                    let receiver = (Expr::Ident(Ident::new(&src_name)), iterable.1.clone());
                     self.lower_hashmap_for_in_init(iterable, &receiver, key_ty, val_ty)
                 }
             }
@@ -1369,12 +1370,12 @@ impl LowerCtx {
                     let (src_name, src_stmt) =
                         self.bind_for_in_source(lowered_iterable, source_ty, &iterable.1);
                     source_prelude.push(src_stmt);
-                    (Expr::Identifier(src_name), iterable.1.clone())
+                    (Expr::Ident(Ident::new(&src_name)), iterable.1.clone())
                 };
                 let to_vec_call = (
                     Expr::MethodCall {
                         receiver: Box::new(to_vec_receiver),
-                        method: "to_vec".to_string(),
+                        method: (Ident::new("to_vec"), to_vec_span.clone()),
                         args: Vec::new(),
                     },
                     to_vec_span,
@@ -1501,7 +1502,7 @@ impl LowerCtx {
 
         let next_expr = match next_call {
             ForIterNextCall::BuiltinVecIter => {
-                let next_receiver = (Expr::Identifier(iter_name), iterable.1.clone());
+                let next_receiver = (Expr::Ident(Ident::new(&iter_name)), iterable.1.clone());
                 let (next_kind, next_ty) =
                     self.lower_builtin_vec_iter_next(&next_receiver, &elem_ty, iterable.1.clone());
                 self.make_expr(next_kind, next_ty, IntentKind::Read, iterable.1.clone())
@@ -1533,7 +1534,7 @@ impl LowerCtx {
                         iterable.1.clone(),
                     )
                 } else {
-                    let next_receiver = (Expr::Identifier(iter_name), iterable.1.clone());
+                    let next_receiver = (Expr::Ident(Ident::new(&iter_name)), iterable.1.clone());
                     let lowered_receiver = self.lower_expr(&next_receiver, IntentKind::Consume);
                     let receiver_ty = iter_ty.clone();
                     let next = self.make_expr(

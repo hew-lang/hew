@@ -14,6 +14,7 @@ use super::super::types::ImportBindingKey;
 use super::super::*;
 use super::*;
 use crate::BuiltinType;
+use hew_parser::ast::Ident;
 use hew_parser::ast::WireMetadata;
 
 impl Checker {
@@ -414,7 +415,11 @@ impl Checker {
                     self.current_module = saved_module;
                     let canonical = format!("std.builtins.{}", td.name);
                     if let Some(source_def) = self.type_defs.get(&canonical).cloned() {
-                        self.register_canonical_type_def("std.builtins", &td.name, &source_def);
+                        self.register_canonical_type_def(
+                            "std.builtins",
+                            td.name.name.as_str(),
+                            &source_def,
+                        );
                     }
                     // Compiler-carrier builtins (`RemotePid`, `NodeId`, ...)
                     // retain the catalog's canonical identity; this source file
@@ -422,9 +427,9 @@ impl Checker {
                     // into `std.builtins.*` user nominals. Builtin error enums
                     // that need an explicit bare prelude binding are published
                     // separately after every declaration has its true owner.
-                    if crate::lookup_builtin_type(&td.name).is_none() {
+                    if crate::lookup_builtin_type(td.name.name.as_str()).is_none() {
                         self.record_published_bare_type(
-                            &td.name,
+                            td.name.name.as_str(),
                             &format!("std.builtins.{}", td.name),
                         );
                     }
@@ -505,12 +510,12 @@ impl Checker {
                 for function in &block.functions {
                     let canonical = format!("std.builtins.{}", function.name);
                     self.publish_stdlib_hew_function_binding(
-                        function.name.clone(),
+                        function.name.to_string(),
                         &canonical,
                         StdlibBarePublication::Prelude,
                     );
                     self.builtin_call_targets.insert(
-                        function.name.clone(),
+                        function.name.to_string(),
                         self.call_target_for_signature(&canonical),
                     );
                 }
@@ -534,7 +539,7 @@ impl Checker {
             self.current_module_idx,
         );
         self.trait_defs
-            .entry(tr.name.clone())
+            .entry(tr.name.to_string())
             .or_insert_with(|| info.clone());
         let qualified = format!("builtins.{}", tr.name);
         self.trait_defs
@@ -550,10 +555,10 @@ impl Checker {
         if let Some(supers) = &tr.super_traits {
             let super_keys: Vec<String> = supers
                 .iter()
-                .map(|s| format!("std.builtins.{}", s.name))
+                .map(|s| format!("std.builtins.{}", s.path)) // TRANSITION(P1): deleted by A1 commit 2
                 .collect();
             for key in [
-                tr.name.clone(),
+                tr.name.to_string(),
                 format!("builtins.{}", tr.name),
                 canonical.clone(),
             ] {
@@ -564,7 +569,7 @@ impl Checker {
             .entry((
                 self.current_module.clone(),
                 self.current_module_idx,
-                tr.name.clone(),
+                tr.name.to_string(),
             ))
             .or_default()
             .insert(canonical);
@@ -577,7 +582,7 @@ impl Checker {
         let trait_scope = self.enter_primary_sig_scope(&[(tr.type_params.as_ref(), None)]);
         for trait_item in &tr.items {
             if let TraitItem::Method(method) = trait_item {
-                self.register_trait_method_sig(&tr.name, method, span);
+                self.register_trait_method_sig(tr.name.name.as_str(), method, span);
             }
         }
         self.exit_primary_sig_scope(trait_scope);
@@ -618,7 +623,7 @@ impl Checker {
                 .items
                 .into_iter()
                 .filter(
-                    |(item, _)| !matches!(item, Item::TypeDecl(decl) if decl.name == "LinkError"),
+                    |(item, _)| !matches!(item, Item::TypeDecl(decl) if decl.name == Ident::new("LinkError")),
                 )
                 .collect();
             self.register_stdlib_hew_items(
@@ -995,18 +1000,18 @@ impl Checker {
             let Some(module) = module_graph.modules.get(module_id) else {
                 continue;
             };
-            let owner = module_id.path.join(".");
+            let owner = module_id.dotted();
             for (item, span) in &module.items {
                 let name = match item {
-                    Item::Const(item) => Some(item.name.as_str()),
-                    Item::TypeDecl(item) => Some(item.name.as_str()),
-                    Item::TypeAlias(item) => Some(item.name.as_str()),
-                    Item::Trait(item) => Some(item.name.as_str()),
-                    Item::Function(item) => Some(item.name.as_str()),
-                    Item::Actor(item) => Some(item.name.as_str()),
-                    Item::Supervisor(item) => Some(item.name.as_str()),
-                    Item::Machine(item) => Some(item.name.as_str()),
-                    Item::Record(item) => Some(item.name.as_str()),
+                    Item::Const(item) => Some(item.name.name.as_str()),
+                    Item::TypeDecl(item) => Some(item.name.name.as_str()),
+                    Item::TypeAlias(item) => Some(item.name.name.as_str()),
+                    Item::Trait(item) => Some(item.name.name.as_str()),
+                    Item::Function(item) => Some(item.name.name.as_str()),
+                    Item::Actor(item) => Some(item.name.name.as_str()),
+                    Item::Supervisor(item) => Some(item.name.name.as_str()),
+                    Item::Machine(item) => Some(item.name.name.as_str()),
+                    Item::Record(item) => Some(item.name.name.as_str()),
                     Item::Import(_) | Item::Impl(_) | Item::ExternBlock(_) => None,
                 };
                 if let Some(name) = name {

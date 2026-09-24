@@ -14,6 +14,7 @@ use super::super::types::ImportBindingKey;
 use super::super::*;
 use super::*;
 use crate::BuiltinType;
+use hew_parser::ast::Ident;
 use hew_parser::ast::WireMetadata;
 
 impl Checker {
@@ -47,12 +48,12 @@ impl Checker {
         sd: &SupervisorDecl,
         identity: &str,
     ) {
-        let type_params: Vec<_> = sd.type_params.iter().map(|p| p.name.clone()).collect();
+        let type_params: Vec<_> = sd.type_params.iter().map(|p| p.name.to_string()).collect();
         let scope = self.enter_primary_sig_scope(&[(Some(&sd.type_params), None)]);
         let fields = sd
             .params
             .iter()
-            .map(|param| (param.name.clone(), self.resolve_type_expr(&param.ty)))
+            .map(|param| (param.name.to_string(), self.resolve_type_expr(&param.ty)))
             .collect();
         let mut bounds = self.collect_type_param_bounds(Some(&sd.type_params), None);
         for parameter in &type_params {
@@ -69,7 +70,11 @@ impl Checker {
                 type_params,
                 bounds,
                 fields,
-                field_order: sd.params.iter().map(|param| param.name.clone()).collect(),
+                field_order: sd
+                    .params
+                    .iter()
+                    .map(|param| param.name.to_string())
+                    .collect(),
                 variants: HashMap::new(),
                 methods: HashMap::new(),
                 doc_comment: None,
@@ -88,10 +93,10 @@ impl Checker {
                 .map(|arg| self.resolve_type_expr(arg))
                 .collect();
             let entry = (
-                c.name.clone(),
+                c.name.to_string(),
                 Ty::Named {
                     builtin: None,
-                    name: self.canonical_supervisor_child_type(&c.actor_type),
+                    name: self.canonical_supervisor_child_type(&c.actor_type.to_string()), // TRANSITION(P1): deleted by A1 commit 2
                     args: type_args,
                 },
             );
@@ -110,8 +115,8 @@ impl Checker {
     }
 
     pub(in crate::check) fn register_actor_decl(&mut self, ad: &ActorDecl) {
-        let identity = ad.name.clone();
-        self.register_actor_decl_as(ad, &identity);
+        let identity = ad.name;
+        self.register_actor_decl_as(ad, identity.name.as_str());
     }
 
     /// Register an actor declaration under an explicit identity key.
@@ -142,8 +147,11 @@ impl Checker {
         // init parameters are resolved, or a field's `HashMap<K, V>` key
         // admission cannot see K's declared bounds and is rejected as if K
         // had none.
-        let type_param_names: Vec<String> =
-            ad.type_params.iter().map(|tp| tp.name.clone()).collect();
+        let type_param_names: Vec<String> = ad
+            .type_params
+            .iter()
+            .map(|tp| tp.name.to_string())
+            .collect();
         let mut type_param_bounds = self.collect_type_param_bounds(Some(&ad.type_params), None);
         for parameter in &type_param_names {
             let bounds = type_param_bounds.entry(parameter.clone()).or_default();
@@ -164,8 +172,8 @@ impl Checker {
         let mut hole_vars = Vec::new();
         for field in &ad.fields {
             let field_ty = self.resolve_registered_annotation_ty(&field.ty, &mut hole_vars);
-            field_order.push(field.name.clone());
-            fields.insert(field.name.clone(), field_ty);
+            field_order.push(field.name.to_string());
+            fields.insert(field.name.to_string(), field_ty);
         }
 
         let type_def = TypeDef {
@@ -206,7 +214,7 @@ impl Checker {
                     let ty =
                         self.resolve_registered_annotation_ty(&p.ty, &mut init_param_hole_vars);
                     ActorInitParamInfo {
-                        name: p.name.clone(),
+                        name: p.name.to_string(),
                         ty,
                     }
                 })
@@ -226,8 +234,8 @@ impl Checker {
             let assigned = hew_parser::init_analysis::assigned_bare_names(&init.body);
             ad.fields
                 .iter()
-                .filter(|field| field.default.is_none() && assigned.contains(&field.name))
-                .map(|field| field.name.clone())
+                .filter(|field| field.default.is_none() && assigned.contains(&field.name.name))
+                .map(|field| field.name.to_string())
                 .collect()
         });
         self.actor_deferred_fields
@@ -235,14 +243,14 @@ impl Checker {
         let mut spawn_args = ad
             .fields
             .iter()
-            .filter(|field| !deferred.contains(&field.name))
-            .map(|field| (field.name.clone(), field.default.is_none()))
+            .filter(|field| !deferred.iter().any(|name| name == field.name.name.as_str()))
+            .map(|field| (field.name.to_string(), field.default.is_none()))
             .collect::<Vec<_>>();
         if let Some(init) = &ad.init {
             spawn_args.extend(
                 init.params
                     .iter()
-                    .map(|parameter| (parameter.name.clone(), true)),
+                    .map(|parameter| (parameter.name.to_string(), true)),
             );
         }
         self.actor_spawn_args
@@ -279,7 +287,7 @@ impl Checker {
                 self.lang_items.insert(
                     key.clone(),
                     crate::LangItemBinding {
-                        trait_name: td.name.clone(),
+                        trait_name: td.name.to_string(),
                         trait_id: trait_id.clone(),
                         method_name: None,
                         method_id: None,
@@ -298,9 +306,9 @@ impl Checker {
                         self.lang_items.insert(
                             key.clone(),
                             crate::LangItemBinding {
-                                trait_name: td.name.clone(),
+                                trait_name: td.name.to_string(),
                                 trait_id: trait_id.clone(),
-                                method_name: Some(m.name.clone()),
+                                method_name: Some(m.name.to_string()),
                                 method_id,
                             },
                         );
@@ -325,7 +333,7 @@ impl Checker {
     /// Duplicate keys raise `TypeError::duplicate_definition` against the
     /// trait's span so the registry remains one-binding-per-key.
     pub(in crate::check) fn register_trait_lang_items(&mut self, td: &TraitDecl, span: Span) {
-        let trait_path = self.trait_ref_lookup_key(&td.name);
+        let trait_path = self.trait_ref_lookup_key(td.name.name.as_str());
         let Some(trait_id) = self.require_declaration_path(&trait_path, &span) else {
             return;
         };
@@ -337,7 +345,7 @@ impl Checker {
                 self.lang_items.insert(
                     key.clone(),
                     crate::LangItemBinding {
-                        trait_name: td.name.clone(),
+                        trait_name: td.name.to_string(),
                         trait_id: trait_id.clone(),
                         method_name: None,
                         method_id: None,
@@ -363,9 +371,9 @@ impl Checker {
                         self.lang_items.insert(
                             key.clone(),
                             crate::LangItemBinding {
-                                trait_name: td.name.clone(),
+                                trait_name: td.name.to_string(),
                                 trait_id: trait_id.clone(),
-                                method_name: Some(m.name.clone()),
+                                method_name: Some(m.name.to_string()),
                                 method_id,
                             },
                         );
@@ -396,16 +404,16 @@ impl Checker {
                     default,
                     span,
                 } => {
-                    if let Some(prev_span) = seen_assoc.insert(name.clone(), span.clone()) {
+                    if let Some(prev_span) = seen_assoc.insert(name.to_string(), span.clone()) {
                         errors.push(TypeError::duplicate_definition(
                             span.clone(),
-                            name,
+                            name.name.as_str(),
                             prev_span,
                         ));
                         continue;
                     }
                     associated_types.push(TraitAssociatedTypeInfo {
-                        name: name.clone(),
+                        name: name.to_string(),
                         bounds: bounds.clone(),
                         default: default.clone(),
                         span: span.clone(),
@@ -416,7 +424,7 @@ impl Checker {
         let type_params = tr
             .type_params
             .as_ref()
-            .map(|params| params.iter().map(|p| p.name.clone()).collect())
+            .map(|params| params.iter().map(|p| p.name.to_string()).collect())
             .unwrap_or_default();
         TraitInfo {
             source_module,
@@ -475,7 +483,7 @@ impl Checker {
             // declaration-table compatibility key and may retain a bare
             // presentation spelling while the consumer has already resolved
             // the trait through its canonical module owner.
-            let tb_key = self.trait_ref_lookup_key(&tb.name);
+            let tb_key = self.trait_ref_lookup_key(&tb.path.to_string()); // TRANSITION(P1): deleted by A1 commit 2
             let assoc_names: Vec<String> = self
                 .trait_defs
                 .get(&tb_key)
@@ -519,7 +527,7 @@ impl Checker {
                 // owner-qualified identity, so two modules importing same-named
                 // traits cannot let one's empty `trait_defs[name]` mask the
                 // other's required `type` and accept an incomplete impl.
-                let trait_key = self.trait_defs_key_for_bound(&tb.name);
+                let trait_key = self.trait_defs_key_for_bound(&tb.path.to_string()); // TRANSITION(P1): deleted by A1 commit 2
                 let trait_snapshot = self
                     .trait_defs
                     .get(&trait_key)
@@ -531,7 +539,7 @@ impl Checker {
                         .cloned()
                         .collect();
                     let target_name_owned = target_name.to_string();
-                    let tb_name = tb.name.clone();
+                    let tb_name = tb.path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
                     for assoc in missing {
                         self.report_error_with_note(
                             TypeErrorKind::UndefinedType,
@@ -622,7 +630,7 @@ impl Checker {
         let impl_param_names: HashSet<String> = id
             .type_params
             .as_ref()
-            .map(|tps| tps.iter().map(|tp| tp.name.clone()).collect())
+            .map(|tps| tps.iter().map(|tp| tp.name.to_string()).collect())
             .unwrap_or_default();
 
         for assoc in associated_types {
@@ -643,7 +651,7 @@ impl Checker {
                 continue;
             }
             for bound in &assoc.bounds {
-                let bound_name = &bound.name;
+                let bound_name = &bound.path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
                 let bound_key = self.trait_defs_key_for_bound(bound_name);
                 let satisfied = match &resolved {
                     Ty::Named { name, .. } if impl_param_names.contains(name) => {
@@ -741,10 +749,10 @@ impl Checker {
             };
             let keys: Vec<String> = supers
                 .iter()
-                .map(|bound| self.trait_ref_lookup_key(&bound.name))
+                .map(|bound| self.trait_ref_lookup_key(&bound.path.to_string())) // TRANSITION(P1): deleted by A1 commit 2
                 .collect();
-            if self.trait_super.contains_key(&td.name) {
-                self.trait_super.insert(td.name.clone(), keys);
+            if self.trait_super.contains_key(td.name.name.as_str()) {
+                self.trait_super.insert(td.name.to_string(), keys);
             }
         }
     }
@@ -790,7 +798,7 @@ impl Checker {
         // implementing modules an inherited default is re-registered under.
         let trait_params = self.trait_type_param_names(trait_name);
         if !trait_params.is_empty() {
-            let owner = Self::method_declaration_key(&declaration_key, &method.name);
+            let owner = Self::method_declaration_key(&declaration_key, method.name.name.as_str());
             self.reject_shadowing_method_type_params(
                 method.type_params.as_ref(),
                 &[(trait_params, format!("trait `{trait_name}`"))],
@@ -814,7 +822,7 @@ impl Checker {
                     None,
                     self.current_module_idx,
                     trait_name.to_string(),
-                    method.name.clone(),
+                    method.name.to_string(),
                 ),
                 ids,
             );
@@ -846,7 +854,7 @@ impl Checker {
             attributes,
             is_generator: false,
             visibility: hew_parser::ast::Visibility::Private,
-            name: method.name.clone(),
+            name: method.name,
             type_params: method.type_params.clone(),
             params: method.params.clone(),
             return_type: method.return_type.clone(),
@@ -895,15 +903,15 @@ impl Checker {
         let returns_self_type = method.return_type.as_ref().is_some_and(|(ty, _)| {
             matches!(
                 ty,
-                TypeExpr::Named { name, type_args }
-                    if name == "Self" && type_args.as_ref().is_none_or(Vec::is_empty)
+                TypeExpr::Named { path, type_args }
+                    if path.as_single().is_some_and(|name| name.name.as_str() == "Self")
+                        && type_args.as_ref().is_none_or(Vec::is_empty)
             )
         });
         let body_is_exact = method.body.as_ref().is_none_or(|body| {
-            let direct_self_tail = body
-                .trailing_expr
-                .as_deref()
-                .is_some_and(|(expr, _)| matches!(expr, Expr::Identifier(name) if name == "self"));
+            let direct_self_tail = body.trailing_expr.as_deref().is_some_and(
+                |(expr, _)| matches!(expr, Expr::Ident(name) if name.name.as_str() == "self"),
+            );
             direct_self_tail && !block_has_explicit_return(body)
         });
         identity_attributes.len() == 1
@@ -1223,7 +1231,8 @@ impl Checker {
             self.current_module.clone_from(&info.source_module);
             self.current_module_idx = info.file_index;
             let identity = self.identity_from_trait_defs_key(&key);
-            let mut names: HashSet<String> = info.methods.iter().map(|m| m.name.clone()).collect();
+            let mut names: HashSet<String> =
+                info.methods.iter().map(|m| m.name.to_string()).collect();
             self.collect_super_trait_method_names(&key, &mut names, &mut HashSet::new());
             for name in names {
                 let Some(owner) = self.resolve_declaring_trait_identity(&identity, &key, &name)
@@ -1312,9 +1321,9 @@ impl Checker {
         let mut required = HashSet::new();
         let mut known = HashSet::new();
         for m in &info.methods {
-            known.insert(m.name.clone());
+            known.insert(m.name.to_string());
             if m.body.is_none() {
-                required.insert(m.name.clone());
+                required.insert(m.name.to_string());
             }
         }
         // Fold every (transitive) super-trait's declared methods into `known`
@@ -1383,7 +1392,7 @@ impl Checker {
             };
             if let Some(super_info) = self.trait_defs.get(&resolved_super) {
                 for m in &super_info.methods {
-                    known.insert(m.name.clone());
+                    known.insert(m.name.to_string());
                 }
             }
             self.collect_super_trait_method_names(&resolved_super, known, visited);
@@ -1451,11 +1460,11 @@ impl Checker {
         primary_key: &str,
         method_name: &str,
     ) -> Option<ResolvedTraitIdentity> {
-        if self
-            .trait_defs
-            .get(primary_key)
-            .is_some_and(|info| info.methods.iter().any(|m| m.name == method_name))
-        {
+        if self.trait_defs.get(primary_key).is_some_and(|info| {
+            info.methods
+                .iter()
+                .any(|m| m.name == Ident::new(method_name))
+        }) {
             return Some(ResolvedTraitIdentity {
                 owner: primary_identity.owner.clone(),
                 source_trait_name: primary_identity.source_trait_name.clone(),
@@ -1472,10 +1481,11 @@ impl Checker {
             if !visited.insert(super_key.clone()) {
                 continue;
             }
-            let declares = self
-                .trait_defs
-                .get(&super_key)
-                .is_some_and(|info| info.methods.iter().any(|m| m.name == method_name));
+            let declares = self.trait_defs.get(&super_key).is_some_and(|info| {
+                info.methods
+                    .iter()
+                    .any(|m| m.name == Ident::new(method_name))
+            });
             if declares {
                 return Some(self.identity_from_trait_defs_key(&super_key));
             }
@@ -1520,7 +1530,7 @@ impl Checker {
         impl_methods: &[FnDecl],
         impl_span: &Span,
     ) {
-        let trait_name = &trait_bound.name;
+        let trait_name = &trait_bound.path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
         let identity = self.resolve_trait_conformance_identity(trait_name);
         let trait_key = self.trait_defs_key_for_identity(&identity);
         self.mark_imported_trait_used(self.current_module.as_deref(), trait_name);
@@ -1558,7 +1568,8 @@ impl Checker {
         };
 
         let type_identity = self.trait_impl_type_identity(type_name);
-        let mut provided: HashSet<String> = impl_methods.iter().map(|m| m.name.clone()).collect();
+        let mut provided: HashSet<String> =
+            impl_methods.iter().map(|m| m.name.to_string()).collect();
         // Split trait surfaces are cumulative on one exact nominal identity.
         // This is how a subtrait that redeclares inherited methods is satisfied
         // by the already-registered supertrait impl for the same type. Never
@@ -1623,8 +1634,8 @@ impl Checker {
         // Extra: an impl method that is not declared on the trait at all.
         let mut extra: Vec<String> = impl_methods
             .iter()
-            .map(|m| m.name.clone())
-            .filter(|name| !known.contains(name))
+            .map(|m| m.name.to_string())
+            .filter(|name| !known.contains(name.as_str()))
             .collect();
         extra.sort_unstable();
         extra.dedup();
@@ -1826,7 +1837,7 @@ impl Checker {
             }
         }
 
-        let trait_name = trait_bound.name.clone();
+        let trait_name = trait_bound.path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
 
         // Resolve the trait as written in the impl (`impl C for X`) to its
         // OWNER-QUALIFIED identity, uniformly across all three reference kinds
@@ -1844,9 +1855,11 @@ impl Checker {
         // through the OWNER-QUALIFIED super chain — and key the signature check
         // off THAT trait's identity. Skipping inherited methods here is a
         // fail-open: a wrong-signature inline supermethod would never be compared.
-        let Some(identity) =
-            self.resolve_declaring_trait_identity(&primary_identity, &primary_key, &method.name)
-        else {
+        let Some(identity) = self.resolve_declaring_trait_identity(
+            &primary_identity,
+            &primary_key,
+            method.name.name.as_str(),
+        ) else {
             return;
         };
         // The declaring trait's `trait_defs` entry supplies the trait method AST
@@ -1889,7 +1902,7 @@ impl Checker {
             // is keyed (`identity.source_trait_name`): for an inline supermethod
             // of a local sub-trait this is the supertrait that declares it, not
             // the sub-trait written in the impl.
-            match self.lookup_trait_method(&identity.source_trait_name, &method.name) {
+            match self.lookup_trait_method(&identity.source_trait_name, method.name.name.as_str()) {
                 Some(sig) => sig,
                 None => return,
             }
@@ -1949,7 +1962,7 @@ impl Checker {
             .get("index")
             .is_some_and(|binding| binding.trait_id.full_path() == declaring_key)
             && trait_info.type_params.len() == 1
-            && matches!(method.name.as_str(), "get" | "at")
+            && matches!(method.name.name.as_str(), "get" | "at")
         {
             // Legacy `impl Index for T` elides `Index<Idx>` and determines
             // `Idx` from the handler's concrete index parameter. Keep that
@@ -2047,7 +2060,7 @@ impl Checker {
             self.report_error_with_note(
                 TypeErrorKind::TraitImplSignatureMismatch {
                     trait_name: trait_name.clone(),
-                    method_name: method.name.clone(),
+                    method_name: method.name.to_string(),
                     detail: "receiver ownership",
                 },
                 &report_span,
@@ -2066,7 +2079,7 @@ impl Checker {
             self.report_error_with_note(
                 TypeErrorKind::TraitImplSignatureMismatch {
                     trait_name: trait_name.clone(),
-                    method_name: method.name.clone(),
+                    method_name: method.name.to_string(),
                     detail: "receiver identity",
                 },
                 &report_span,
@@ -2090,7 +2103,7 @@ impl Checker {
             self.report_error_with_note(
                 TypeErrorKind::TraitImplSignatureMismatch {
                     trait_name: trait_name.clone(),
-                    method_name: method.name.clone(),
+                    method_name: method.name.to_string(),
                     detail: "arity",
                 },
                 &report_span,
@@ -2170,7 +2183,7 @@ impl Checker {
             self.report_error_with_note(
                 TypeErrorKind::TraitImplSignatureMismatch {
                     trait_name: trait_name.clone(),
-                    method_name: method.name.clone(),
+                    method_name: method.name.to_string(),
                     detail: "receiver mutability",
                 },
                 &report_span,
@@ -2251,7 +2264,7 @@ impl Checker {
                 self.report_error_with_note(
                     TypeErrorKind::TraitImplSignatureMismatch {
                         trait_name: trait_name.clone(),
-                        method_name: method.name.clone(),
+                        method_name: method.name.to_string(),
                         detail: "parameter",
                     },
                     &report_span,
@@ -2276,7 +2289,7 @@ impl Checker {
             self.report_error_with_note(
                 TypeErrorKind::TraitImplSignatureMismatch {
                     trait_name: trait_name.clone(),
-                    method_name: method.name.clone(),
+                    method_name: method.name.to_string(),
                     detail: "return type",
                 },
                 &report_span,

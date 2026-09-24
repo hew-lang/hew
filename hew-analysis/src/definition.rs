@@ -1,5 +1,6 @@
 //! Go-to-definition analysis: find the definition site of an identifier in the AST.
 
+use hew_parser::ast::Ident;
 use hew_parser::ast::{FnDecl, Item, Param, Span, TraitItem, TypeBodyItem};
 use hew_parser::ParseResult;
 use hew_types::{Ty, TypeCheckOutput};
@@ -24,12 +25,12 @@ pub fn find_definition(source: &str, parse_result: &ParseResult, word: &str) -> 
         // Search inside actors for fields, receive methods, and methods.
         if let Item::Actor(a) = item {
             for field in &a.fields {
-                if field.name == word {
+                if field.name == Ident::new(word) {
                     return Some(crate::util::find_name_span(source, span.start, word));
                 }
             }
             for recv in &a.receive_fns {
-                if recv.name == word {
+                if recv.name == Ident::new(word) {
                     // Use the receive fn's own span when available; fall back to
                     // the enclosing item span.
                     let search_from = if recv.span.is_empty() {
@@ -41,7 +42,7 @@ pub fn find_definition(source: &str, parse_result: &ParseResult, word: &str) -> 
                 }
             }
             for method in &a.methods {
-                if method.name == word {
+                if method.name == Ident::new(word) {
                     return Some(crate::util::find_name_span(
                         source,
                         method.decl_span.start,
@@ -55,13 +56,13 @@ pub fn find_definition(source: &str, parse_result: &ParseResult, word: &str) -> 
         if let Item::TypeDecl(td) = item {
             for body_item in &td.body {
                 match body_item {
-                    TypeBodyItem::Field { name, .. } if name == word => {
+                    TypeBodyItem::Field { name, .. } if name.name.as_str() == word => {
                         return Some(crate::util::find_name_span(source, span.start, word));
                     }
-                    TypeBodyItem::Variant(v) if v.name == word => {
+                    TypeBodyItem::Variant(v) if v.name == Ident::new(word) => {
                         return Some(crate::util::find_name_span(source, span.start, word));
                     }
-                    TypeBodyItem::Method(m) if m.name == word => {
+                    TypeBodyItem::Method(m) if m.name == Ident::new(word) => {
                         return Some(crate::util::find_name_span(source, m.decl_span.start, word));
                     }
                     _ => {}
@@ -73,10 +74,10 @@ pub fn find_definition(source: &str, parse_result: &ParseResult, word: &str) -> 
         if let Item::Trait(t) = item {
             for trait_item in &t.items {
                 match trait_item {
-                    TraitItem::Method(m) if m.name == word => {
+                    TraitItem::Method(m) if m.name == Ident::new(word) => {
                         return Some(crate::util::find_name_span(source, span.start, word));
                     }
-                    TraitItem::AssociatedType { name, .. } if name == word => {
+                    TraitItem::AssociatedType { name, .. } if name.name.as_str() == word => {
                         return Some(crate::util::find_name_span(source, span.start, word));
                     }
                     _ => {}
@@ -87,7 +88,7 @@ pub fn find_definition(source: &str, parse_result: &ParseResult, word: &str) -> 
         // Search inside Impl for methods.
         if let Item::Impl(i) = item {
             for method in &i.methods {
-                if method.name == word {
+                if method.name == Ident::new(word) {
                     return Some(crate::util::find_name_span(source, span.start, word));
                 }
             }
@@ -96,7 +97,7 @@ pub fn find_definition(source: &str, parse_result: &ParseResult, word: &str) -> 
         // Search inside extern blocks for function declarations.
         if let Item::ExternBlock(extern_block) = item {
             for function in &extern_block.functions {
-                if function.name == word {
+                if function.name == Ident::new(word) {
                     return Some(crate::util::find_name_span(source, span.start, word));
                 }
             }
@@ -222,13 +223,13 @@ fn find_param_in_decl(
     }
     params
         .iter()
-        .find(|param| param.name == word)
+        .find(|param| param.name == Ident::new(word))
         .map(param_name_span)
 }
 
 fn param_name_span(param: &Param) -> OffsetSpan {
     let end = param.ty.1.start.saturating_sub(2);
-    let start = end.saturating_sub(param.name.len());
+    let start = end.saturating_sub(param.name.name.as_str().len());
     OffsetSpan { start, end }
 }
 
@@ -271,22 +272,26 @@ fn find_type_field_definition(
         let Item::TypeDecl(type_decl) = item else {
             continue;
         };
-        if !Ty::names_match_qualified(type_name, &type_decl.name) {
+        if !Ty::names_match_qualified(type_name, type_decl.name.name.as_str()) {
             continue;
         }
         let mut search_from = item_span.start;
         for body_item in &type_decl.body {
             match body_item {
                 TypeBodyItem::Field { name, ty, .. } => {
-                    let span = crate::util::find_name_span(source, search_from, name);
-                    if name == field_name {
+                    let span = crate::util::find_name_span(source, search_from, name.name.as_str());
+                    if name.name.as_str() == field_name {
                         return Some(span);
                     }
                     search_from = ty.1.end.max(span.end);
                 }
                 TypeBodyItem::Variant(variant) => {
-                    search_from =
-                        crate::util::find_name_span(source, search_from, &variant.name).end;
+                    search_from = crate::util::find_name_span(
+                        source,
+                        search_from,
+                        variant.name.name.as_str(),
+                    )
+                    .end;
                 }
                 TypeBodyItem::Method(method) => {
                     search_from = search_from.max(method.decl_span.end);

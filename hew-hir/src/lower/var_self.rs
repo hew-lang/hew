@@ -43,13 +43,16 @@ impl LowerCtx {
 
     pub(super) fn is_receiver_param_for_type(param: &Param, self_type_name: &str) -> bool {
         match &param.ty.0 {
-            TypeExpr::Named { name, .. } => name == "Self" || name == self_type_name,
+            TypeExpr::Named { path, .. } => {
+                let name = path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
+                name == "Self" || name == self_type_name
+            }
             _ => false,
         }
     }
 
     pub(super) fn is_receiver_param(param: &Param) -> bool {
-        matches!(&param.ty.0, TypeExpr::Named { name, .. } if name == "Self")
+        matches!(&param.ty.0, TypeExpr::Named { path, .. } if path.as_single().is_some_and(|name| name.name.as_str() == "Self"))
     }
 
     pub(super) fn var_self_dual_return_ty(

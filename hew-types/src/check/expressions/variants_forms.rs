@@ -514,7 +514,7 @@ else needs `impl Display for {rendered}`)"
                 }
                 // Unit variants are values (no call needed); struct variants
                 // are constructed via `Expr::StructInit`, not
-                // `Expr::Identifier` — this path is not reached for them.
+                // `Expr::Ident` — this path is not reached for them.
                 VariantDef::Unit | VariantDef::Struct(_) => return_type,
             });
         }
@@ -1134,11 +1134,11 @@ else needs `impl Display for {rendered}`)"
     }
 
     pub(super) fn resolve_is_type_pattern(&self, rhs: &Expr) -> Option<Ty> {
-        let Expr::Identifier(name) = rhs else {
+        let Expr::Ident(name) = rhs else {
             return None;
         };
-        Ty::from_name(name).or_else(|| {
-            self.lookup_type_def(name)
+        Ty::from_name(name.name.as_str()).or_else(|| {
+            self.lookup_type_def(name.name.as_str())
                 .map(|type_def| Ty::normalize_named(type_def.name, vec![]))
         })
     }
@@ -1187,7 +1187,7 @@ else needs `impl Display for {rendered}`)"
                 ),
             );
         } else if lhs_ok && rhs_ok {
-            if !matches!(lhs.0, Expr::Identifier(_)) {
+            if !matches!(lhs.0, Expr::Ident(_)) {
                 self.report_error(
                     TypeErrorKind::InvalidOperation,
                     &lhs.1,

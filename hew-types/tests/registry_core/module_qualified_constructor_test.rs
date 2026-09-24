@@ -81,8 +81,9 @@ fn typecheck_with_modules(
             .find(|(path, _)| {
                 import
                     .path
+                    .segments
                     .iter()
-                    .map(String::as_str)
+                    .map(|(segment, _)| segment.name.as_str())
                     .eq(path.iter().copied())
             })
             .expect("every fixture import should have module source");

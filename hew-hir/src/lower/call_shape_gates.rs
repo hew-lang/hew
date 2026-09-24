@@ -806,23 +806,23 @@ pub(super) fn scan_expr_for_supervisor_spawn(
             // `string-identifier-fragility-vs-structured-resolution` and
             // the rev2 independent review finding on module-context threading.
             let resolved: Option<(&str, bool)> = match &target.0 {
-                Expr::Identifier(name) => {
+                Expr::Ident(name) => {
                     let set = match current_module.module {
                         Some(m) => registry.by_module.get(m),
                         None => Some(&registry.root),
                     };
                     set.and_then(|s| {
-                        s.get_key_value(name)
+                        s.get_key_value(name.name.as_str())
                             .map(|(n, has_cfg)| (n.as_str(), *has_cfg))
                     })
                 }
                 Expr::FieldAccess { object, field } => {
-                    if let Expr::Identifier(module) = &object.0 {
+                    if let Expr::Ident(module) = &object.0 {
                         registry
-                            .resolve_module_binding(current_module, module)
+                            .resolve_module_binding(current_module, module.name.as_str())
                             .and_then(|owner| registry.by_module.get(owner))
                             .and_then(|set| {
-                                set.get_key_value(field)
+                                set.get_key_value(field.0.name.as_str())
                                     .map(|(n, has_cfg)| (n.as_str(), *has_cfg))
                             })
                     } else {

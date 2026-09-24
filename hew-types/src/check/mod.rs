@@ -10,6 +10,7 @@ use crate::type_facts::{TypeFactContext, TypeFactService, TypeFacts, TypeInstanc
 use crate::unify::unify;
 use crate::{WasmFeatureDisposition, WasmUnsupportedFeature};
 use hew_parser::ast::condition_exprs;
+use hew_parser::ast::Ident;
 use hew_parser::ast::{
     ActorDecl, ActorInit, ArrayElement, Attribute, AttributeArg, BinaryOp, Block, CallArg,
     ChildSpec, ConditionItem, ConstDecl, Expr, ExternBlock, ExternFnDecl, FieldDecl, FnDecl,
@@ -911,7 +912,7 @@ impl Checker {
                 continue;
             };
             let canonical = crate::module_registry::canonical_source_module_identity(
-                &mod_id.path.join("."),
+                &mod_id.dotted(),
                 &module.source_paths,
             );
             self.identity.mint_module(&canonical, &module.source_paths);
@@ -929,7 +930,7 @@ impl Checker {
             let Some(module) = module_graph.modules.get(mod_id) else {
                 continue;
             };
-            let dotted = mod_id.path.join(".");
+            let dotted = mod_id.dotted();
             let canonical = crate::module_registry::canonical_source_module_identity(
                 &dotted,
                 &module.source_paths,
@@ -961,7 +962,7 @@ impl Checker {
                 let Some(module) = graph.modules.get(module_id) else {
                     continue;
                 };
-                let dotted = module_id.path.join(".");
+                let dotted = module_id.dotted();
                 let namespace = if *module_id == graph.root {
                     NominalNamespace::RootBare
                 } else if flat_file_imports.contains(module_id) {
@@ -1361,7 +1362,7 @@ impl Checker {
                 program.items.iter().enumerate().find_map(
                     |(item_index, (item, span))| match item {
                         Item::Function(declaration)
-                            if declaration.name == "main"
+                            if declaration.name == Ident::new("main")
                                 && declaration.type_params.as_ref().is_none_or(Vec::is_empty) =>
                         {
                             Some((
@@ -1569,26 +1570,33 @@ impl Checker {
         match item {
             Item::Import(_) | Item::Impl(_) => {}
             Item::Const(decl) => {
-                declare(Kind::Const, 0, owner_path(&decl.name), false);
-                if let Some(alias) = nominal_alias(&decl.name) {
+                declare(Kind::Const, 0, owner_path(decl.name.name.as_str()), false);
+                if let Some(alias) = nominal_alias(decl.name.name.as_str()) {
                     declare(Kind::Const, 0, alias, true);
                 }
             }
-            Item::Function(decl) => declare(Kind::Function, 0, fn_path(&decl.name), false),
+            Item::Function(decl) => {
+                declare(Kind::Function, 0, fn_path(decl.name.name.as_str()), false);
+            }
             Item::ExternBlock(block) => {
                 for (index, decl) in block.functions.iter().enumerate() {
-                    declare(Kind::ExternFunction, index, fn_path(&decl.name), false);
+                    declare(
+                        Kind::ExternFunction,
+                        index,
+                        fn_path(decl.name.name.as_str()),
+                        false,
+                    );
                 }
             }
             Item::TypeDecl(decl) => {
-                let owner = owner_path(&decl.name);
+                let owner = owner_path(decl.name.name.as_str());
                 let kind = if decl.origin == hew_parser::ast::DeclarationOrigin::MachineState {
                     Kind::Machine
                 } else {
                     Kind::Type
                 };
                 declare(kind, 0, owner.clone(), false);
-                if let Some(alias) = nominal_alias(&decl.name) {
+                if let Some(alias) = nominal_alias(decl.name.name.as_str()) {
                     declare(kind, 0, alias, true);
                 }
                 for (index, method) in decl
@@ -1610,23 +1618,28 @@ impl Checker {
                 }
             }
             Item::TypeAlias(decl) => {
-                declare(Kind::TypeAlias, 0, owner_path(&decl.name), false);
+                declare(
+                    Kind::TypeAlias,
+                    0,
+                    owner_path(decl.name.name.as_str()),
+                    false,
+                );
                 if matches!(namespace, NominalNamespace::RootBare) {
-                    if let Some(alias) = nominal_alias(&decl.name) {
+                    if let Some(alias) = nominal_alias(decl.name.name.as_str()) {
                         declare(Kind::TypeAlias, 0, alias, true);
                     }
                 }
             }
             Item::Record(decl) => {
-                declare(Kind::Record, 0, owner_path(&decl.name), false);
-                if let Some(alias) = nominal_alias(&decl.name) {
+                declare(Kind::Record, 0, owner_path(decl.name.name.as_str()), false);
+                if let Some(alias) = nominal_alias(decl.name.name.as_str()) {
                     declare(Kind::Record, 0, alias, true);
                 }
             }
             Item::Trait(decl) => {
-                let owner = owner_path(&decl.name);
+                let owner = owner_path(decl.name.name.as_str());
                 declare(Kind::Trait, 0, owner.clone(), false);
-                if let Some(alias) = nominal_alias(&decl.name) {
+                if let Some(alias) = nominal_alias(decl.name.name.as_str()) {
                     declare(Kind::Trait, 0, alias, true);
                 }
                 for (index, method) in decl
@@ -1647,9 +1660,9 @@ impl Checker {
                 }
             }
             Item::Actor(decl) => {
-                let owner = owner_path(&decl.name);
+                let owner = owner_path(decl.name.name.as_str());
                 declare(Kind::Actor, 0, owner.clone(), false);
-                if let Some(alias) = nominal_alias(&decl.name) {
+                if let Some(alias) = nominal_alias(decl.name.name.as_str()) {
                     declare(Kind::Actor, 0, alias, true);
                 }
                 if decl.init.is_some() {
@@ -1673,9 +1686,9 @@ impl Checker {
                 }
             }
             Item::Supervisor(decl) => {
-                let owner = owner_path(&decl.name);
+                let owner = owner_path(decl.name.name.as_str());
                 declare(Kind::Supervisor, 0, owner.clone(), false);
-                if let Some(alias) = nominal_alias(&decl.name) {
+                if let Some(alias) = nominal_alias(decl.name.name.as_str()) {
                     declare(Kind::Supervisor, 0, alias, true);
                 }
                 declare(
@@ -1686,9 +1699,9 @@ impl Checker {
                 );
             }
             Item::Machine(decl) => {
-                let owner = owner_path(&decl.name);
+                let owner = owner_path(decl.name.name.as_str());
                 declare(Kind::Machine, 0, owner.clone(), false);
-                if let Some(alias) = nominal_alias(&decl.name) {
+                if let Some(alias) = nominal_alias(decl.name.name.as_str()) {
                     declare(Kind::Machine, 0, alias, true);
                 }
                 for (index, state) in decl.states.iter().enumerate() {
@@ -1798,7 +1811,7 @@ impl Checker {
                 .get(&module_graph.root)
                 .is_some_and(|root| root.source_paths.is_empty());
             for (module_id, module) in &module_graph.modules {
-                let module_full_path = module_id.path.join(".");
+                let module_full_path = module_id.dotted();
                 if !module.source_paths.is_empty() {
                     self.module_source_paths
                         .insert(module_full_path.clone(), module.source_paths.clone());
@@ -1928,7 +1941,7 @@ impl Checker {
                     continue;
                 }
                 if let Some(module) = mg.modules.get(mod_id) {
-                    let module_name = mod_id.path.join(".");
+                    let module_name = mod_id.dotted();
                     self.current_module = Some(module_name.clone());
                     // Index per SOURCE FILE, not per module: a directory
                     // module assembles its peer `.hew` files into one module
@@ -1945,8 +1958,8 @@ impl Checker {
                     for (item, _) in &module.items {
                         match item {
                             Item::TypeDecl(td) => {
-                                self.local_type_defs.insert(td.name.clone());
-                                self.source_type_defs.insert(td.name.clone());
+                                self.local_type_defs.insert(td.name.to_string());
+                                self.source_type_defs.insert(td.name.to_string());
                             }
                             Item::Machine(md) => {
                                 // Parallel to the TypeDecl arm: seed the machine's
@@ -1956,8 +1969,8 @@ impl Checker {
                                 // type so event-typed parameters and bare event
                                 // ctors in imported machine modules resolve as
                                 // locally-non-generic.
-                                self.local_type_defs.insert(md.name.clone());
-                                self.source_type_defs.insert(md.name.clone());
+                                self.local_type_defs.insert(md.name.to_string());
+                                self.source_type_defs.insert(md.name.to_string());
                                 let event_type_name = format!("{}Event", md.name);
                                 self.local_type_defs.insert(event_type_name.clone());
                                 self.source_type_defs.insert(event_type_name);
@@ -1967,11 +1980,11 @@ impl Checker {
                                 // `impl ImportedTrait for ThisActor` is therefore
                                 // local-typed, not an orphan. Seed both sets so the
                                 // orphan rule treats it like any other local type.
-                                self.local_type_defs.insert(ad.name.clone());
-                                self.source_type_defs.insert(ad.name.clone());
+                                self.local_type_defs.insert(ad.name.to_string());
+                                self.source_type_defs.insert(ad.name.to_string());
                             }
                             Item::Trait(tr) => {
-                                self.local_trait_defs.insert(tr.name.clone());
+                                self.local_trait_defs.insert(tr.name.to_string());
                             }
                             _ => {}
                         }
@@ -1992,9 +2005,9 @@ impl Checker {
                     // "std::" / "hew::" / "ecosystem::" (the double-colon
                     // guarantees 2+ segments).
                     let saved_is_stdlib_source = self.is_stdlib_source;
-                    if mod_id.path.len() >= 2
+                    if mod_id.segments.len() >= 2
                         && matches!(
-                            mod_id.path.first().map(String::as_str),
+                            mod_id.segments.first().map(|segment| segment.as_str()),
                             Some("std" | "hew" | "ecosystem")
                         )
                     {
@@ -2836,15 +2849,15 @@ impl Checker {
                 // Real stdlib modules are at least 2 path segments deep
                 // (e.g. ["std", "iter"]).  A single-segment module named
                 // ["std"] is a user file (std.hew) and must still be linted.
-                if mod_id.path.len() >= 2
+                if mod_id.segments.len() >= 2
                     && matches!(
-                        mod_id.path.first().map(String::as_str),
+                        mod_id.segments.first().map(|segment| segment.as_str()),
                         Some("std" | "hew" | "ecosystem")
                     )
                 {
                     continue;
                 }
-                let module_name = mod_id.path.join(".");
+                let module_name = mod_id.dotted();
                 let module_base = span_indices
                     .as_ref()
                     .and_then(|indices| indices.module_base(mod_id))
@@ -3060,7 +3073,7 @@ impl Checker {
                             &block.stmts,
                             block.trailing_expr.as_deref(),
                             i,
-                            binding_name,
+                            binding_name.name.as_str(),
                             in_fork,
                         );
                         self.closure_escape_facts.insert(
@@ -3571,7 +3584,7 @@ impl Checker {
             }
             Expr::GenBlock { body } => self.classify_escapes_in_block(body, in_fork),
             Expr::Literal(_)
-            | Expr::Identifier(_)
+            | Expr::Ident(_)
             | Expr::QualifiedAssoc(_)
             | Expr::RegexLiteral(_)
             | Expr::ByteStringLiteral(_)
@@ -4005,7 +4018,7 @@ fn collect_lambda_spans_in_expr(
             }
         }
         Expr::Literal(_)
-        | Expr::Identifier(_)
+        | Expr::Ident(_)
         | Expr::QualifiedAssoc(_)
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
@@ -4097,7 +4110,7 @@ fn collect_program_actors(program: &Program) -> Vec<(String, &ActorDecl)> {
     let mut actors: Vec<(String, &ActorDecl)> = Vec::new();
     for (item, _) in &program.items {
         if let Item::Actor(ad) = item {
-            actors.push((ad.name.clone(), ad));
+            actors.push((ad.name.to_string(), ad));
         }
     }
     if let Some(mg) = &program.module_graph {
@@ -4105,15 +4118,15 @@ fn collect_program_actors(program: &Program) -> Vec<(String, &ActorDecl)> {
             if *mod_id == mg.root {
                 continue;
             }
-            let module_owner = mod_id.path.join(".");
+            let module_owner = mod_id.dotted();
             for (item, _) in &module.items {
                 if let Item::Actor(ad) = item {
                     let owner_identity = if module_owner.is_empty() {
-                        ad.name.clone()
+                        ad.name.to_string()
                     } else {
                         format!("{module_owner}.{}", ad.name)
                     };
-                    actors.push((owner_identity, ad));
+                    actors.push((owner_identity.clone(), ad));
                 }
             }
         }
@@ -4187,7 +4200,7 @@ fn build_actor_protocol_descriptors(
             // codegen through this `symbol` field.
             let symbol = format!("{actor_identity}__{}", rf.name);
             specs.push(crate::actor_protocol::ActorHandlerSpec {
-                name: rf.name.clone(),
+                name: rf.name.to_string(),
                 param_tys,
                 return_ty,
                 symbol,
@@ -4214,7 +4227,7 @@ fn build_actor_protocol_descriptors(
                     let span = ad
                         .receive_fns
                         .iter()
-                        .find(|rf| rf.name == h.name)
+                        .find(|rf| rf.name == Ident::new(&h.name))
                         .map_or(0..0, |rf| rf.span.clone());
                     cross_actor_seen.push((h.msg_id, actor_identity.clone(), h.name.clone(), span));
                 }
@@ -4230,7 +4243,7 @@ fn build_actor_protocol_descriptors(
                 let span = ad
                     .receive_fns
                     .iter()
-                    .find(|rf| rf.name == collision.handler_b)
+                    .find(|rf| rf.name == Ident::new(&collision.handler_b))
                     .map_or(0..0, |rf| rf.span.clone());
                 let message = format!(
                     "actor `{}` has two `receive fn`s with the same msg_id 0x{:08x}: `{}` and `{}`",

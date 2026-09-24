@@ -114,7 +114,7 @@ pub fn derive_builtin_enums(
             }
             if !BUILTIN_ENUM_ABI
                 .iter()
-                .any(|abi| abi.module == source.module && abi.name == decl.name)
+                .any(|abi| abi.module == source.module && abi.name == decl.name.name.as_str())
             {
                 continue;
             }
@@ -131,10 +131,10 @@ pub fn derive_builtin_enums(
                         name = decl.name
                     ));
                 }
-                variants.push(variant.name);
+                variants.push(variant.name.to_string());
             }
             declarations.insert(
-                (source.module.to_string(), decl.name),
+                (source.module.to_string(), decl.name.to_string()),
                 (source.module.to_string(), variants),
             );
         }
@@ -195,14 +195,15 @@ pub fn derive_monitor_ref_projection(
         for (item, span) in parsed.program.items {
             let projected = match item {
                 Item::TypeDecl(decl)
-                    if source.module == "std.builtins" && decl.name == "LinkError" =>
+                    if source.module == "std.builtins"
+                        && decl.name.name.as_str() == "LinkError" =>
                 {
                     Some(Item::TypeDecl(decl))
                 }
                 Item::TypeDecl(decl)
                     if source.module == "std.link_monitor"
                         && matches!(
-                            decl.name.as_str(),
+                            decl.name.name.as_str(),
                             "MonitorError"
                                 | "PartitionPolicy"
                                 | "MonitorId"
@@ -219,13 +220,13 @@ pub fn derive_monitor_ref_projection(
                         && impl_target_name(&decl) == Some("MonitorRef") =>
                 {
                     decl.methods
-                        .retain(|method| method.name == "close" || method.name == "id");
+                        .retain(|method| matches!(method.name.name.as_str(), "close" | "id"));
                     (!decl.methods.is_empty()).then_some(Item::Impl(decl))
                 }
                 Item::ExternBlock(mut block) if source.module == "std.link_monitor" => {
                     block
                         .functions
-                        .retain(|function| function.name == "hew_actor_demonitor");
+                        .retain(|function| function.name.name.as_str() == "hew_actor_demonitor");
                     (!block.functions.is_empty()).then_some(Item::ExternBlock(block))
                 }
                 _ => None,
@@ -261,7 +262,7 @@ fn ensure_monitor_projection_complete(items: &[Item]) -> Result<(), String> {
     ] {
         if !items
             .iter()
-            .any(|item| matches!(item, Item::TypeDecl(decl) if decl.name == expected))
+            .any(|item| matches!(item, Item::TypeDecl(decl) if decl.name.name.as_str() == expected))
         {
             return Err(format!(
                 "monitor prelude projection is missing owning declaration `{expected}`"
@@ -273,7 +274,7 @@ fn ensure_monitor_projection_complete(items: &[Item]) -> Result<(), String> {
             item,
             Item::Impl(decl)
                 if impl_target_name(decl) == Some("MonitorRef")
-                    && decl.methods.iter().any(|method| method.name == "close")
+                    && decl.methods.iter().any(|method| method.name.name.as_str() == "close")
         )
     }) {
         return Err("monitor prelude projection is missing `MonitorRef::close`".to_string());
@@ -282,7 +283,7 @@ fn ensure_monitor_projection_complete(items: &[Item]) -> Result<(), String> {
         matches!(
             item,
             Item::ExternBlock(ExternBlock { functions, .. })
-                if functions.iter().any(|function| function.name == "hew_actor_demonitor")
+                if functions.iter().any(|function| function.name.name.as_str() == "hew_actor_demonitor")
         )
     }) {
         return Err(
@@ -294,7 +295,7 @@ fn ensure_monitor_projection_complete(items: &[Item]) -> Result<(), String> {
 
 fn impl_target_name(decl: &ImplDecl) -> Option<&str> {
     match &decl.target_type.0 {
-        TypeExpr::Named { name, .. } => Some(name),
+        TypeExpr::Named { path, .. } => path.as_single().map(|ident| ident.name.as_str()),
         _ => None,
     }
 }

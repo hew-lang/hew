@@ -1365,9 +1365,9 @@ mod every_attribute {
         let root_parsed = hew_parser::parse(root_src);
         assert!(root_parsed.errors.is_empty());
 
-        let root_id = ModuleId::root();
-        let alpha_id = ModuleId::new(alpha_path);
-        let beta_id = ModuleId::new(beta_path);
+        let root_id = ModulePath::root();
+        let alpha_id = ModulePath::new(alpha_path);
+        let beta_id = ModulePath::new(beta_path);
 
         let alpha_module = Module {
             id: alpha_id.clone(),
@@ -1487,8 +1487,8 @@ mod every_attribute {
         // have its protocol descriptor published under its full owner identity.
         let parsed = hew_parser::parse("actor Alpha { receive fn increment() {} }");
         assert!(parsed.errors.is_empty(), "parse: {:?}", parsed.errors);
-        let root_id = ModuleId::root();
-        let mod_id = ModuleId::new(vec!["a".to_string(), "b".to_string()]);
+        let root_id = ModulePath::root();
+        let mod_id = ModulePath::new(["a", "b"]);
         let module = Module {
             id: mod_id.clone(),
             items: parsed.program.items,

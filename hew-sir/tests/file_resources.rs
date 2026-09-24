@@ -2,7 +2,7 @@
 use hew_hir::{lower_program_host_target, ResolutionCtx};
 use hew_parser::{
     ast::Item,
-    module::{Module, ModuleGraph, ModuleId},
+    module::{Module, ModuleGraph, ModulePath},
 };
 use hew_sir::{ResourceRelease, SirLoweringStatus};
 use hew_types::{module_registry::ModuleRegistry, Checker, CloneKind, DefId};
@@ -36,8 +36,8 @@ fn resource_module() -> hew_sir::SemModule {
         .unwrap()
         .join("std/fs.hew")];
     let source_paths = import.resolved_source_paths.clone();
-    let root = ModuleId::root();
-    let encoding = ModuleId::new(vec!["std".into(), "fs".into()]);
+    let root = ModulePath::root();
+    let encoding = ModulePath::new(["std", "fs"]);
     let mut graph = ModuleGraph::new(root.clone());
     graph
         .add_module(Module {

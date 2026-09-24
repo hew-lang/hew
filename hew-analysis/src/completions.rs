@@ -515,7 +515,7 @@ fn try_spawn_completions(
         match item {
             Item::Actor(a) => {
                 items.push(CompletionItem {
-                    label: a.name.clone(),
+                    label: a.name.to_string(),
                     kind: CompletionKind::Actor,
                     detail: Some("actor".to_string()),
                     documentation: None,
@@ -526,7 +526,7 @@ fn try_spawn_completions(
             }
             Item::Supervisor(s) => {
                 items.push(CompletionItem {
-                    label: s.name.clone(),
+                    label: s.name.to_string(),
                     kind: CompletionKind::Actor,
                     detail: Some("supervisor".to_string()),
                     documentation: None,
@@ -607,24 +607,24 @@ fn collect_locals_at(parse_result: &hew_parser::ParseResult, offset: usize) -> V
         match item {
             Item::Function(f) => {
                 for p in &f.params {
-                    locals.push(local_completion(&p.name));
+                    locals.push(local_completion(p.name.name.as_str()));
                 }
                 collect_locals_from_block(&f.body, offset, &mut locals);
             }
             Item::Actor(a) => {
                 for field in &a.fields {
-                    locals.push(local_completion(&field.name));
+                    locals.push(local_completion(field.name.name.as_str()));
                 }
                 if let Some(init) = &a.init {
                     for p in &init.params {
-                        locals.push(local_completion(&p.name));
+                        locals.push(local_completion(p.name.name.as_str()));
                     }
                     collect_locals_from_block(&init.body, offset, &mut locals);
                 }
                 for recv in &a.receive_fns {
                     if span_contains_offset(&recv.span, offset) {
                         for p in &recv.params {
-                            locals.push(local_completion(&p.name));
+                            locals.push(local_completion(p.name.name.as_str()));
                         }
                         collect_locals_from_block(&recv.body, offset, &mut locals);
                     }
@@ -632,7 +632,7 @@ fn collect_locals_at(parse_result: &hew_parser::ParseResult, offset: usize) -> V
                 for method in &a.methods {
                     if span_contains_offset(&method.fn_span, offset) {
                         for p in &method.params {
-                            locals.push(local_completion(&p.name));
+                            locals.push(local_completion(p.name.name.as_str()));
                         }
                         collect_locals_from_block(&method.body, offset, &mut locals);
                     }
@@ -643,7 +643,7 @@ fn collect_locals_at(parse_result: &hew_parser::ParseResult, offset: usize) -> V
                     if let TypeBodyItem::Method(method) = body_item {
                         if span_contains_offset(&method.fn_span, offset) {
                             for p in &method.params {
-                                locals.push(local_completion(&p.name));
+                                locals.push(local_completion(p.name.name.as_str()));
                             }
                             collect_locals_from_block(&method.body, offset, &mut locals);
                         }
@@ -654,7 +654,7 @@ fn collect_locals_at(parse_result: &hew_parser::ParseResult, offset: usize) -> V
                 for method in &i.methods {
                     if span_contains_offset(&method.fn_span, offset) {
                         for p in &method.params {
-                            locals.push(local_completion(&p.name));
+                            locals.push(local_completion(p.name.name.as_str()));
                         }
                         collect_locals_from_block(&method.body, offset, &mut locals);
                     }
@@ -665,7 +665,7 @@ fn collect_locals_at(parse_result: &hew_parser::ParseResult, offset: usize) -> V
                     if let TraitItem::Method(method) = trait_item {
                         if span_contains_offset(&method.span, offset) {
                             for p in &method.params {
-                                locals.push(local_completion(&p.name));
+                                locals.push(local_completion(p.name.name.as_str()));
                             }
                             if let Some(body) = &method.body {
                                 collect_locals_from_block(body, offset, &mut locals);
@@ -770,7 +770,7 @@ fn collect_locals_from_stmt(
             {
                 collect_locals_from_spanned_expr(value, offset, locals);
             } else {
-                locals.push(local_completion(name));
+                locals.push(local_completion(name.name.as_str()));
             }
         }
         Stmt::For { pattern, body, .. } if in_stmt_scope => {
@@ -905,7 +905,7 @@ fn collect_locals_from_expr(expr: &Expr, offset: usize, locals: &mut Vec<Complet
         } => {
             collect_locals_from_spanned_expr(operand, offset, locals);
             if span_contains_offset(&body.1, offset) {
-                locals.push(local_completion(&error.0));
+                locals.push(local_completion(error.0.name.as_str()));
                 collect_locals_from_spanned_expr(body, offset, locals);
             }
         }
@@ -1010,8 +1010,8 @@ fn collect_condition_names(conditions: &[ConditionItem], locals: &mut Vec<Comple
 
 fn collect_pattern_names(pattern: &Pattern, locals: &mut Vec<CompletionItem>) {
     match pattern {
-        Pattern::Identifier(name) => locals.push(local_completion(name)),
-        Pattern::Constructor { patterns, .. } | Pattern::Tuple(patterns) => {
+        Pattern::Identifier(name) => locals.push(local_completion(name.name.as_str())),
+        Pattern::Tuple(patterns) => {
             for (p, _) in patterns {
                 collect_pattern_names(p, locals);
             }
@@ -1026,12 +1026,12 @@ fn collect_pattern_names(pattern: &Pattern, locals: &mut Vec<CompletionItem>) {
                 collect_nominal_payload_names(payload, locals);
             }
         }
-        Pattern::Struct { fields, .. } | Pattern::RecordShorthand { fields, .. } => {
+        Pattern::RecordShorthand { fields, .. } => {
             for field in fields {
                 if let Some((pattern, _)) = &field.pattern {
                     collect_pattern_names(pattern, locals);
                 } else {
-                    locals.push(local_completion(&field.name));
+                    locals.push(local_completion(field.name.name.as_str()));
                 }
             }
         }
@@ -1063,7 +1063,7 @@ fn collect_nominal_payload_names(
                 if let Some((pattern, _)) = &field.pattern {
                     collect_pattern_names(pattern, locals);
                 } else {
-                    locals.push(local_completion(&field.name));
+                    locals.push(local_completion(field.name.name.as_str()));
                 }
             }
         }
@@ -1324,10 +1324,10 @@ mod tests {
                 );
                 (
                     Item::Import(ImportDecl {
-                        path: path.iter().map(ToString::to_string).collect(),
+                        path: hew_parser::ast::Path::from_spellings(path),
                         spec: None,
                         selection_trailing_comma: false,
-                        module_alias: module_alias.map(str::to_string),
+                        module_alias: module_alias.map(hew_parser::ast::Ident::new),
                         file_path: None,
                         resolved_items: Some(parsed.program.items.into()),
                         resolved_item_source_paths: Vec::new(),

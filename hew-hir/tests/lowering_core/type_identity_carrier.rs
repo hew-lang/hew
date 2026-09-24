@@ -11,7 +11,7 @@
 
 use hew_hir::{dump_hir, lower_program_host_target, HirItem, HirTypeDecl, ResolutionCtx};
 use hew_parser::ast::{Item, Program};
-use hew_parser::module::{Module, ModuleGraph, ModuleId};
+use hew_parser::module::{Module, ModuleGraph, ModulePath};
 use hew_types::{module_registry::ModuleRegistry, Checker, ResolvedTy, TypeCheckOutput};
 
 /// Build a `Program` containing a non-root module `bank` with arbitrary
@@ -30,8 +30,8 @@ fn build_program_with_imported_module(imported_src: &str, root_src: &str) -> Pro
         root.errors
     );
 
-    let imported_id = ModuleId::new(vec!["bank".to_string()]);
-    let root_id = ModuleId::root();
+    let imported_id = ModulePath::new(["bank"]);
+    let root_id = ModulePath::root();
 
     let imported_items: Vec<_> = imported
         .program

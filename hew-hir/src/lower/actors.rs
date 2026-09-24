@@ -38,7 +38,7 @@ impl LowerCtx {
             &mut self.current_fn_type_params,
             decl.type_params
                 .iter()
-                .map(|parameter| parameter.name.clone())
+                .map(|parameter| parameter.name.to_string())
                 .collect(),
         );
 
@@ -75,7 +75,7 @@ impl LowerCtx {
                     self.diagnostics.push(
                         HirDiagnostic::new(
                             HirDiagnosticKind::CheckerBoundaryViolation {
-                                name: child.actor_type.clone(),
+                                name: child.actor_type.to_string(),
                                 reason: "supervisor child has no checked handle type".to_string(),
                             },
                             child.span.clone(),
@@ -86,7 +86,7 @@ impl LowerCtx {
                     ResolvedTy::Unit
                 });
                 HirSupervisorChild {
-                    name: child.name.clone(),
+                    name: child.name.to_string(),
                     ty: child_ty,
                     restart_policy: child.restart.map(|r| match r {
                         RestartPolicy::Permanent => HirRestartPolicy::Permanent,
@@ -106,7 +106,7 @@ impl LowerCtx {
                         .iter()
                         .map(|(field_name, spanned_expr)| {
                             let hir_expr = self.lower_expr(spanned_expr, IntentKind::Read);
-                            (field_name.clone(), hir_expr)
+                            (field_name.to_string(), hir_expr)
                         })
                         .collect(),
                     // Pool arity comes from the `count:` clause. The parser
@@ -140,11 +140,11 @@ impl LowerCtx {
             node: self.ids.node(),
             declaration,
             bootstrap_declaration,
-            name: decl.name.clone(),
+            name: decl.name.to_string(),
             type_params: decl
                 .type_params
                 .iter()
-                .map(|parameter| parameter.name.clone())
+                .map(|parameter| parameter.name.to_string())
                 .collect(),
             params,
             strategy,
@@ -168,15 +168,15 @@ impl LowerCtx {
         let state_names: Vec<&str> = decl
             .states
             .iter()
-            .map(|state| state.name.as_str())
+            .map(|state| state.name.name.as_str())
             .collect();
         let event_names: Vec<&str> = decl
             .events
             .iter()
-            .map(|event| event.name.as_str())
+            .map(|event| event.name.name.as_str())
             .collect();
         for (name, variants) in [
-            (decl.name.clone(), state_names),
+            (decl.name.to_string(), state_names),
             (format!("{}Event", decl.name), event_names),
         ] {
             let canonical =
@@ -228,10 +228,10 @@ impl LowerCtx {
         let assoc_bindings: Vec<(String, ResolvedTy)> = tb
             .assoc_type_bindings
             .iter()
-            .map(|b| (b.name.clone(), self.lower_type(&b.ty)))
+            .map(|b| (b.name.to_string(), self.lower_type(&b.ty)))
             .collect();
         hew_types::ResolvedTraitBound {
-            trait_name: tb.name.clone(),
+            trait_name: tb.path.to_string(), // TRANSITION(P1): deleted by A1 commit 2
             args,
             assoc_bindings,
         }
@@ -348,7 +348,7 @@ impl LowerCtx {
         // only call sites the checker admits, so this is the whole visibility
         // window. `#[on(...)]` hooks are excluded: the runtime enters them.
         let registry_owner = decl_module.map_or_else(
-            || decl.name.clone(),
+            || decl.name.to_string(),
             |module| format!("{module}.{}", decl.name),
         );
         for method in &decl.methods {
@@ -362,7 +362,7 @@ impl LowerCtx {
             &mut self.current_fn_type_params,
             decl.type_params
                 .iter()
-                .map(|parameter| parameter.name.clone())
+                .map(|parameter| parameter.name.to_string())
                 .collect(),
         );
         let state_fields: Vec<HirField> = decl
@@ -371,7 +371,7 @@ impl LowerCtx {
             .map(|f| {
                 let lowered_ty = self.lower_type(&f.ty);
                 HirField {
-                    name: f.name.clone(),
+                    name: f.name.to_string(),
                     ty: self.canonicalize_actor_ref_field_ty(lowered_ty, decl_module),
                     default: f
                         .default
@@ -418,14 +418,14 @@ impl LowerCtx {
         // use the bare name. Never retry a module actor by leaf name because
         // two nested modules may legitimately export the same actor leaf.
         let actor_identity = decl_module.map_or_else(
-            || decl.name.clone(),
+            || decl.name.to_string(),
             |module| format!("{module}.{}", decl.name),
         );
         let protocol_descriptor = self
             .actor_protocol_descriptors
-            .get(&actor_identity)
+            .get(actor_identity.as_str())
             .cloned();
-        let cycle_capable = self.cycle_capable_actors.contains(&actor_identity);
+        let cycle_capable = self.cycle_capable_actors.contains(actor_identity.as_str());
 
         self.current_fn_type_params = previous_type_params;
 
@@ -433,7 +433,7 @@ impl LowerCtx {
             id: self.ids.item(),
             node: self.ids.node(),
             declaration,
-            name: decl.name.clone(),
+            name: decl.name.to_string(),
             // File-import items are flattened for source-order lowering, but
             // flattening does not erase declaration ownership.  The third
             // pass supplies their checker-aligned module identity here; a
@@ -443,7 +443,7 @@ impl LowerCtx {
             type_params: decl
                 .type_params
                 .iter()
-                .map(|param| param.name.clone())
+                .map(|param| param.name.to_string())
                 .collect(),
             state_fields,
             init,
@@ -647,7 +647,7 @@ impl LowerCtx {
             None => {
                 self.diagnostics.push(HirDiagnostic::new(
                     HirDiagnosticKind::ActorStateGuardMissing {
-                        handler: rf.name.clone(),
+                        handler: rf.name.to_string(),
                     },
                     rf.span.clone(),
                     "missing checker-owned actor-state guard fact",
@@ -664,7 +664,7 @@ impl LowerCtx {
         HirActorReceiveFn {
             declaration,
             state_bindings,
-            name: rf.name.clone(),
+            name: rf.name.to_string(),
             is_generator: rf.is_generator,
             params,
             return_ty,
@@ -713,7 +713,7 @@ impl LowerCtx {
                     declaration: declaration.clone(),
                     state_bindings,
                     kind,
-                    name: method.name.clone(),
+                    name: method.name.to_string(),
                     params,
                     return_ty,
                     body,
@@ -722,7 +722,7 @@ impl LowerCtx {
                 None => plain.push(HirActorMethod {
                     declaration: declaration.clone(),
                     state_bindings,
-                    name: method.name.clone(),
+                    name: method.name.to_string(),
                     params,
                     return_ty,
                     body,
@@ -755,7 +755,7 @@ pub(super) fn collect_emitted_events(expr: &Expr) -> Vec<String> {
 
 pub(super) fn collect_emitted_events_inner(expr: &Expr, out: &mut Vec<String>) {
     match expr {
-        Expr::MachineEmit { event_name, .. } => out.push(event_name.clone()),
+        Expr::MachineEmit { event_name, .. } => out.push(event_name.to_string()),
         Expr::Block(block) => {
             for (stmt, _) in &block.stmts {
                 if let Stmt::Expression((e, _)) = stmt {

@@ -893,7 +893,7 @@ fn parse_match_block_arm_precedes_contextual_variant_pattern() {
     let names = arms
         .iter()
         .map(|arm| match &arm.pattern.0 {
-            Pattern::ContextVariant(variant) => variant.name.clone(),
+            Pattern::ContextVariant(variant) => variant.name,
             other => panic!("expected contextual variant pattern, got {other:?}"),
         })
         .collect::<Vec<_>>();

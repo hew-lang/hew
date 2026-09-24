@@ -41,14 +41,14 @@ pub(super) fn build_code_lenses(
         match item {
             Item::Function(f) => {
                 let range = span_to_range(source, lo, item_span);
-                lenses.push(ref_lens(range, &f.name));
+                lenses.push(ref_lens(range, f.name.name.as_str()));
                 if has_test_attribute(&f.attributes) {
                     lenses.push(CodeLens {
                         range,
                         command: Some(Command {
                             title: "\u{25b6} Run test".to_string(),
                             command: "hew.runTest".to_string(),
-                            arguments: Some(vec![serde_json::Value::String(f.name.clone())]),
+                            arguments: Some(vec![serde_json::Value::String(f.name.to_string())]),
                         }),
                         data: None,
                     });
@@ -56,14 +56,14 @@ pub(super) fn build_code_lenses(
             }
             Item::Actor(a) => {
                 let range = span_to_range(source, lo, item_span);
-                lenses.push(ref_lens(range, &a.name));
+                lenses.push(ref_lens(range, a.name.name.as_str()));
                 for recv in &a.receive_fns {
                     let recv_range = if recv.span.is_empty() {
                         range
                     } else {
                         span_to_range(source, lo, &recv.span)
                     };
-                    lenses.push(ref_lens(recv_range, &recv.name));
+                    lenses.push(ref_lens(recv_range, recv.name.name.as_str()));
                 }
             }
             _ => {}

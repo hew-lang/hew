@@ -22,7 +22,7 @@ use hew_hir::{
     dump_hir, lower_program_host_target, HirExpr, HirExprKind, HirItem, HirStmtKind, ResolutionCtx,
 };
 use hew_parser::ast::{Item, Program};
-use hew_parser::module::{Module, ModuleGraph, ModuleId};
+use hew_parser::module::{Module, ModuleGraph, ModulePath};
 use hew_types::{module_registry::ModuleRegistry, CallTarget, Checker};
 
 fn lower(source: &str) -> hew_hir::LowerOutput {
@@ -45,7 +45,7 @@ fn multi_module_program(root_src: &str, modules: &[(&str, &str)]) -> Program {
         "root parse errors: {:#?}",
         root.errors
     );
-    let root_id = ModuleId::root();
+    let root_id = ModulePath::root();
     let mut graph = ModuleGraph::new(root_id.clone());
     let mut source_items = std::collections::HashMap::new();
 
@@ -63,7 +63,7 @@ fn multi_module_program(root_src: &str, modules: &[(&str, &str)]) -> Program {
             .filter(|(item, _)| !matches!(item, Item::Import(_)))
             .cloned()
             .collect();
-        let id = ModuleId::new(name.split("::").map(String::from).collect());
+        let id = ModulePath::new(name.split("::"));
         graph
             .add_module(Module {
                 id: id.clone(),
@@ -80,7 +80,13 @@ fn multi_module_program(root_src: &str, modules: &[(&str, &str)]) -> Program {
     let mut root_items = root.program.items.clone();
     for (item, _) in &mut root_items {
         if let Item::Import(import) = item {
-            let full_path = import.path.join("::");
+            let full_path = import
+                .path
+                .segments
+                .iter()
+                .map(|(segment, _)| segment.name.as_str())
+                .collect::<Vec<_>>()
+                .join("::");
             if let Some(items) = source_items.get(&full_path) {
                 import.resolved_items = Some(items.clone().into());
             }

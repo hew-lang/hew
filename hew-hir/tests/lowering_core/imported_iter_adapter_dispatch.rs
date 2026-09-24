@@ -6,7 +6,7 @@ use crate::support;
 use hew_hir::dispatch::{build_trait_impl_method_index, lookup_trait_impl_entry_by_id};
 use hew_parser::{
     ast::{Item, Program},
-    module::{Module, ModuleGraph, ModuleId},
+    module::{Module, ModuleGraph, ModulePath},
 };
 use hew_types::{DefId, NominalId, NominalInstance};
 
@@ -32,8 +32,8 @@ fn std_iter_output(root_body: &str) -> hew_hir::LowerOutput {
         }
     }
 
-    let iter_id = ModuleId::new(vec!["std".to_string(), "iter".to_string()]);
-    let root_id = ModuleId::root();
+    let iter_id = ModulePath::new(["std", "iter"]);
+    let root_id = ModulePath::root();
     let mut graph = ModuleGraph::new(root_id.clone());
     graph
         .add_module(Module {

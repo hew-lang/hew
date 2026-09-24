@@ -8,7 +8,7 @@
 
 use hew_hir::HirDiagnosticKind;
 use hew_parser::ast::{Item, Program};
-use hew_parser::module::{Module, ModuleGraph, ModuleId};
+use hew_parser::module::{Module, ModuleGraph, ModulePath};
 
 use crate::support;
 
@@ -205,8 +205,8 @@ fn build_two_module_program(root_src: &str, module_short_name: &str, module_src:
         module_parsed.errors
     );
 
-    let module_id = ModuleId::new(vec![module_short_name.to_string()]);
-    let root_id = ModuleId::root();
+    let module_id = ModulePath::new([module_short_name.to_string()]);
+    let root_id = ModulePath::root();
 
     let module_items: Vec<_> = module_parsed
         .program

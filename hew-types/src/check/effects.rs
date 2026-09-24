@@ -187,7 +187,7 @@ impl Checker {
                         object: receiver.clone(),
                         field: method.clone(),
                     };
-                    if let Some(ty) = self.record_fn_field_type(receiver, method) {
+                    if let Some(ty) = self.record_fn_field_type(receiver, method.0.name.as_str()) {
                         self.check_fork_transfer(&field, &branch.1, &ty);
                     }
                 } else if !matches!(
@@ -354,9 +354,10 @@ impl Checker {
             .get(&SpanKey::in_module(&callee.1, self.current_module_idx))
             .cloned()
             .or_else(|| match &callee.0 {
-                Expr::Identifier(name) => {
-                    self.env.lookup_ref(name).map(|binding| binding.ty.clone())
-                }
+                Expr::Ident(name) => self
+                    .env
+                    .lookup_ref(name.name.as_str())
+                    .map(|binding| binding.ty.clone()),
                 _ => None,
             })
     }
@@ -386,7 +387,7 @@ impl Checker {
                 })
         };
         match expr {
-            Expr::Identifier(name) => match self.env.lookup_ref(name) {
+            Expr::Ident(name) => match self.env.lookup_ref(name.name.as_str()) {
                 Some(binding) if self.effect_graph.bindings.contains_key(&binding.id) => {
                     CallableOrigin::Binding {
                         binding: binding.id,
@@ -416,7 +417,7 @@ impl Checker {
                     .iter()
                     .map(|(name, value)| {
                         (
-                            name.clone(),
+                            name.to_string(),
                             self.expression_callable_origin(&value.0, &value.1),
                         )
                     })
@@ -424,7 +425,7 @@ impl Checker {
             ),
             Expr::FieldAccess { object, field } => self
                 .expression_callable_origin(&object.0, &object.1)
-                .project(field),
+                .project(field.0.name.as_str()),
             _ => typed(span),
         }
     }
@@ -457,7 +458,7 @@ impl Checker {
             } => {
                 let Some((binding, ty)) = self
                     .env
-                    .lookup_ref(name)
+                    .lookup_ref(name.name.as_str())
                     .map(|binding| (binding.id, binding.ty.clone()))
                 else {
                     return;
@@ -541,8 +542,8 @@ impl Checker {
                 Expr::Call { function, .. } => (
                     self.callee_value_type(function),
                     match &function.0 {
-                        Expr::Identifier(name) => name.clone(),
-                        Expr::FieldAccess { field, .. } => field.clone(),
+                        Expr::Ident(name) => name.to_string(),
+                        Expr::FieldAccess { field, .. } => field.0.to_string(),
                         _ => "callee".to_string(),
                     },
                 ),
@@ -561,16 +562,16 @@ impl Checker {
                             })
                         }
                         Some(MethodCallRewrite::RecordFnFieldCall { .. }) => {
-                            self.record_fn_field_type(receiver, method)
+                            self.record_fn_field_type(receiver, method.0.name.as_str())
                         }
                         _ if self.direct_call_targets.get(&key)
                             == Some(&CallTarget::IndirectFunctionValue) =>
                         {
-                            self.record_fn_field_type(receiver, method)
+                            self.record_fn_field_type(receiver, method.0.name.as_str())
                         }
                         _ => None,
                     };
-                    (callee, method.clone())
+                    (callee, method.0.to_string())
                 }
                 _ => (None, "send".to_string()),
             };

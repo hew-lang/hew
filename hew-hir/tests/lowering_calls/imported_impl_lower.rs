@@ -26,7 +26,7 @@
 
 use hew_hir::{HirDiagnosticKind, HirItem};
 use hew_parser::ast::{Item, Program};
-use hew_parser::module::{Module, ModuleGraph, ModuleId};
+use hew_parser::module::{Module, ModuleGraph, ModulePath};
 
 use crate::support;
 
@@ -150,8 +150,8 @@ fn build_imported_module_program_src(imported_src: &str, root_src: &str) -> Prog
         root.errors
     );
 
-    let imported_id = ModuleId::new(vec!["shapes".to_string()]);
-    let root_id = ModuleId::root();
+    let imported_id = ModulePath::new(["shapes"]);
+    let root_id = ModulePath::root();
 
     let imported_items: Vec<_> = imported
         .program

@@ -200,7 +200,7 @@ pub(super) fn collect_supervisor_registry(
     let mut root: std::collections::HashMap<String, bool> = std::collections::HashMap::new();
     for (item, _) in &program.items {
         if let Item::Supervisor(decl) = item {
-            root.insert(decl.name.clone(), !decl.params.is_empty());
+            root.insert(decl.name.to_string(), !decl.params.is_empty());
         }
     }
     let mut by_module: std::collections::HashMap<String, std::collections::HashMap<String, bool>> =
@@ -210,14 +210,14 @@ pub(super) fn collect_supervisor_registry(
             if *mod_id == mg.root {
                 continue;
             }
-            let module_owner = mod_id.path.join(".");
+            let module_owner = mod_id.dotted();
             if module_owner.is_empty() {
                 continue;
             }
             let entry = by_module.entry(module_owner).or_default();
             for (item, _) in &module.items {
                 if let Item::Supervisor(decl) = item {
-                    entry.insert(decl.name.clone(), !decl.params.is_empty());
+                    entry.insert(decl.name.to_string(), !decl.params.is_empty());
                 }
             }
         }
@@ -281,7 +281,7 @@ pub(super) fn check_supervisor_spawn_gate(ctx: &mut LowerCtx, program: &Program)
             if *mod_id == mg.root {
                 continue;
             }
-            let module_owner = mod_id.path.join(".");
+            let module_owner = mod_id.dotted();
             for (item_idx, (item, _)) in module.items.iter().enumerate() {
                 scan_item_for_supervisor_spawn(
                     item,
@@ -510,7 +510,7 @@ pub(super) fn scan_for_iterable_for_binop_gates(iterable: &Spanned<Expr>, ctx: &
             receiver,
             method,
             args,
-        } if matches!(method.as_str(), "rev" | "step_by") => {
+        } if matches!(method.0.name.as_str(), "rev" | "step_by") => {
             // Recurse into the receiver as a for-iterable (peeling further
             // adapters / reaching the base range); scan the adapter arguments
             // as plain value-position expressions.

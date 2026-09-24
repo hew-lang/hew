@@ -47,7 +47,7 @@ impl Checker {
                 *span
             }
         };
-        let Some(variant) = builtin.enum_variant(&context.name) else {
+        let Some(variant) = builtin.enum_variant(context.name.name.as_str()) else {
             self.report_error(
                 TypeErrorKind::PathMemberNotFound,
                 span,
@@ -77,7 +77,7 @@ impl Checker {
             span: span.clone(),
         };
         let actual = self
-            .dispatch_builtin_variant_member(&head, &context.name, usage)
+            .dispatch_builtin_variant_member(&head, context.name.name.as_str(), usage)
             .expect("validated builtin variant has a member contract");
         self.expect_type(expected, &actual, span);
         let actual = self.subst.resolve(&actual);
@@ -101,45 +101,53 @@ impl Checker {
         };
 
         let (canonical_type, builtin) = match &target.0 {
-            Expr::Identifier(surface) => {
-                if self.env.lookup_ref(surface).is_some()
-                    || self.module_binding_in_current_file(surface)
+            Expr::Ident(surface) => {
+                if self.env.lookup_ref(surface.name.as_str()).is_some()
+                    || self.module_binding_in_current_file(surface.name.as_str())
                 {
                     return None;
                 }
                 let canonical = self
-                    .source_nominal_declaration(surface)
-                    .or_else(|| self.resolve_nominal_declaration(NominalOrigin::Lexical, surface))
+                    .source_nominal_declaration(surface.name.as_str())
+                    .or_else(|| {
+                        self.resolve_nominal_declaration(
+                            NominalOrigin::Lexical,
+                            surface.name.as_str(),
+                        )
+                    })
                     .filter(|identity| {
                         self.lookup_type_def(identity).is_some()
                             || self.resolved_builtin_type(identity).is_some()
                     })
-                    .or_else(|| self.resolved_builtin_type(surface).map(|_| surface.clone()))
+                    .or_else(|| {
+                        self.resolved_builtin_type(surface.name.as_str())
+                            .map(|_| surface.to_string())
+                    })
                     .or_else(|| {
                         self.fn_sigs
                             .contains_key(&format!("{surface}::{member}"))
-                            .then(|| surface.clone())
+                            .then(|| surface.to_string())
                     })?;
                 let builtin = self.resolved_builtin_type(&canonical);
                 (canonical, builtin)
             }
             Expr::FieldAccess { object, field } => {
-                let Expr::Identifier(module_short) = &object.0 else {
+                let Expr::Ident(module_short) = &object.0 else {
                     return None;
                 };
-                if self.env.lookup_ref(module_short).is_some() {
+                if self.env.lookup_ref(module_short.name.as_str()).is_some() {
                     return None;
                 }
-                self.resolve_module_type(module_short, field)?;
+                self.resolve_module_type(module_short.name.as_str(), field.0.name.as_str())?;
                 self.used_modules.borrow_mut().insert(ImportKey::in_file(
                     self.current_module.clone(),
                     self.current_module_idx,
-                    module_short.clone(),
+                    module_short.to_string(),
                 ));
                 let canonical = format!(
                     "{}.{}",
-                    self.canonical_module_import_owner(module_short),
-                    field
+                    self.canonical_module_import_owner(module_short.name.as_str()),
+                    field.0
                 );
                 let builtin = self.resolved_builtin_type(&canonical);
                 (canonical, builtin)
@@ -209,7 +217,10 @@ impl Checker {
                 span,
             } if matches!(variant, VariantDef::Unit | VariantDef::Tuple(_)) => {
                 let constructor_name = format!("{}::{member}", head.canonical_type);
-                let constructor = (Expr::Identifier(constructor_name), head.span.clone());
+                let constructor = (
+                    Expr::Ident(Ident::new(&constructor_name)), // TRANSITION(P1): deleted by A1 commit 2
+                    head.span.clone(),
+                );
                 let result = expected
                     .filter(|_| head.type_args.is_none())
                     .and_then(|expected| {
@@ -367,7 +378,7 @@ impl Checker {
             None
         };
         if let Some(checker_member) = checker_member {
-            let function = (Expr::Identifier(checker_member.clone()), head.span.clone());
+            let function = (Expr::Ident(Ident::new(&checker_member)), head.span.clone()); // TRANSITION(P1): deleted by A1 commit 2
             if let Some(result) = expected.and_then(|expected| {
                 self.check_call_against_expected_constructor(
                     &function,

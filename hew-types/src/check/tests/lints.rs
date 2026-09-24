@@ -3135,7 +3135,7 @@ fn stdlib_import_registers_trait_impls_for_generic_bounds() {
         .items
         .iter()
         .find_map(|(item, _)| match item {
-            Item::Function(fd) if fd.name == "describe_label" => {
+            Item::Function(fd) if fd.name == Ident::new("describe_label") => {
                 fd.body.trailing_expr.as_ref().map(|expr| expr.1.clone())
             }
             _ => None,

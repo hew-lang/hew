@@ -1,4 +1,5 @@
 use crate::common;
+use hew_parser::ast::Ident;
 
 use common::{parse_and_typecheck_isolated, typecheck_isolated};
 use hew_types::{ActorStateGuard, SpanKey};
@@ -23,7 +24,7 @@ fn receive_handler_emits_guard_fact() {
         output.errors
     );
     let actor = program.items.iter().find_map(|(item, _)| match item {
-        hew_parser::ast::Item::Actor(actor) if actor.name == "Counter" => Some(actor),
+        hew_parser::ast::Item::Actor(actor) if actor.name == Ident::new("Counter") => Some(actor),
         _ => None,
     });
     let receive = &actor.expect("Counter actor").receive_fns[0];

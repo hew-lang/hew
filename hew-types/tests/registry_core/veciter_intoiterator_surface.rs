@@ -18,6 +18,7 @@
 )]
 
 use crate::common;
+use hew_parser::ast::Ident;
 
 use common::{checker, parse_program};
 use hew_parser::ast::Item;
@@ -35,7 +36,7 @@ fn stdlib_vec_declares_veciter_record() {
     let src = read_stdlib_builtins();
     let program = parse_program(&src);
     let record = program.items.iter().find_map(|(item, _)| match item {
-        Item::TypeDecl(td) if td.name == "VecIter" => Some(td),
+        Item::TypeDecl(td) if td.name == Ident::new("VecIter") => Some(td),
         _ => None,
     });
     assert!(
@@ -62,10 +63,10 @@ fn stdlib_vec_declares_iterator_impl_for_veciter() {
         Item::Impl(b) => {
             b.trait_bound
                 .as_ref()
-                .is_some_and(|tb| tb.name == "Iterator")
+                .is_some_and(|tb| tb.path.to_string() == "Iterator") // TRANSITION(P1): deleted by A1 commit 2
                 && matches!(
                     &b.target_type.0,
-                    hew_parser::ast::TypeExpr::Named { name, .. } if name == "VecIter"
+                    hew_parser::ast::TypeExpr::Named { path, .. } if path.to_string() == "VecIter"
                 )
         }
         _ => false,
@@ -84,10 +85,10 @@ fn stdlib_vec_declares_intoiterator_impl_for_vec() {
         Item::Impl(b) => {
             b.trait_bound
                 .as_ref()
-                .is_some_and(|tb| tb.name == "IntoIterator")
+                .is_some_and(|tb| tb.path.to_string() == "IntoIterator") // TRANSITION(P1): deleted by A1 commit 2
                 && matches!(
                     &b.target_type.0,
-                    hew_parser::ast::TypeExpr::Named { name, .. } if name == "Vec"
+                    hew_parser::ast::TypeExpr::Named { path, .. } if path.to_string() == "Vec"
                 )
         }
         _ => false,
@@ -112,10 +113,10 @@ fn stdlib_vec_intoiterator_impl_binds_intoiter_assoc_to_veciter() {
             Item::Impl(b)
                 if b.trait_bound
                     .as_ref()
-                    .is_some_and(|tb| tb.name == "IntoIterator")
+                    .is_some_and(|tb| tb.path.to_string() == "IntoIterator") // TRANSITION(P1): deleted by A1 commit 2
                     && matches!(
                         &b.target_type.0,
-                        hew_parser::ast::TypeExpr::Named { name, .. } if name == "Vec"
+                        hew_parser::ast::TypeExpr::Named { path, .. } if path.to_string() == "Vec"
                     ) =>
             {
                 Some(b)
@@ -127,15 +128,15 @@ fn stdlib_vec_intoiterator_impl_binds_intoiter_assoc_to_veciter() {
     let mut saw_item = false;
     let mut saw_into_iter = false;
     for assoc in &impl_block.type_aliases {
-        if assoc.name == "Item" {
+        if assoc.name == Ident::new("Item") {
             saw_item = true;
         }
-        if assoc.name == "IntoIter" {
+        if assoc.name == Ident::new("IntoIter") {
             saw_into_iter = true;
             // Confirm the binding is `VecIter<...>`.
             let is_veciter = matches!(
                 &assoc.ty.0,
-                hew_parser::ast::TypeExpr::Named { name, .. } if name == "VecIter"
+                hew_parser::ast::TypeExpr::Named { path, .. } if path.to_string() == "VecIter"
             );
             assert!(
                 is_veciter,

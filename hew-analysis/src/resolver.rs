@@ -8,6 +8,7 @@
 //! This path covers intra-file navigation. Cross-file and cross-module
 //! resolution remain caller-owned while navigation consolidation continues.
 
+use hew_parser::ast::Ident;
 use hew_parser::ast::{Item, TypeBodyItem};
 
 use crate::OffsetSpan;
@@ -270,8 +271,8 @@ fn classify_item(item: &Item, word: &str, def_span: OffsetSpan, uri: &str) -> Op
 
     match item {
         Item::Actor(a) => {
-            if a.receive_fns.iter().any(|r| r.name == word)
-                || a.methods.iter().any(|m| m.name == word)
+            if a.receive_fns.iter().any(|r| r.name == Ident::new(word))
+                || a.methods.iter().any(|m| m.name == Ident::new(word))
             {
                 Some(make_method())
             } else {
@@ -281,7 +282,7 @@ fn classify_item(item: &Item, word: &str, def_span: OffsetSpan, uri: &str) -> Op
         Item::Trait(t) => {
             if t.items
                 .iter()
-                .any(|ti| matches!(ti, hew_parser::ast::TraitItem::Method(m) if m.name == word))
+                .any(|ti| matches!(ti, hew_parser::ast::TraitItem::Method(m) if m.name == Ident::new(word)))
             {
                 Some(make_method())
             } else {
@@ -289,8 +290,10 @@ fn classify_item(item: &Item, word: &str, def_span: OffsetSpan, uri: &str) -> Op
             }
         }
         Item::TypeDecl(td) => classify_type_body(td, word, def_span, uri),
-        Item::Impl(i) if i.methods.iter().any(|m| m.name == word) => Some(make_method()),
-        Item::ExternBlock(eb) if eb.functions.iter().any(|f| f.name == word) => {
+        Item::Impl(i) if i.methods.iter().any(|m| m.name == Ident::new(word)) => {
+            Some(make_method())
+        }
+        Item::ExternBlock(eb) if eb.functions.iter().any(|f| f.name == Ident::new(word)) => {
             Some(make_function())
         }
         Item::Function(_)
@@ -311,7 +314,7 @@ fn classify_type_body(
     def_span: OffsetSpan,
     uri: &str,
 ) -> Option<Resolution> {
-    if td.name == word {
+    if td.name == Ident::new(word) {
         return Some(Resolution::TypeDef {
             uri: uri.to_string(),
             def_span,
@@ -320,21 +323,21 @@ fn classify_type_body(
     }
     for body_item in &td.body {
         match body_item {
-            TypeBodyItem::Variant(v) if v.name == word => {
+            TypeBodyItem::Variant(v) if v.name == Ident::new(word) => {
                 return Some(Resolution::Variant {
                     uri: uri.to_string(),
                     def_span,
                     name: word.to_string(),
                 });
             }
-            TypeBodyItem::Method(m) if m.name == word => {
+            TypeBodyItem::Method(m) if m.name == Ident::new(word) => {
                 return Some(Resolution::MethodDef {
                     uri: uri.to_string(),
                     def_span,
                     name: word.to_string(),
                 });
             }
-            TypeBodyItem::Field { name, .. } if name == word => {
+            TypeBodyItem::Field { name, .. } if name.name.as_str() == word => {
                 return Some(Resolution::Field {
                     uri: uri.to_string(),
                     def_span,
@@ -363,7 +366,9 @@ pub fn find_matching_import(
         match &import.spec {
             Some(hew_parser::ast::ImportSpec::Names(names)) => {
                 for name in names {
-                    let visible = name.alias.as_deref().unwrap_or(name.name.as_str());
+                    let visible = name
+                        .alias
+                        .map_or(name.name.name.as_str(), |ident| ident.name.as_str());
                     if visible == word {
                         return Some(OffsetSpan {
                             start: span.start,

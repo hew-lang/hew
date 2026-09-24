@@ -102,7 +102,7 @@ impl LowerCtx {
         call_span: &std::ops::Range<usize>,
         call_site: SiteId,
     ) {
-        let Expr::Identifier(name) = callee_expr else {
+        let Expr::Ident(name) = callee_expr else {
             // Only direct-name callees are candidates here. A `module.fn(...)`
             // direct call parses as `Expr::MethodCall`, not `Expr::Call`, so it
             // never reaches `lower_regular_call`/this site; its
@@ -113,11 +113,11 @@ impl LowerCtx {
             // complex callee expressions are out of scope.
             return;
         };
-        let registry_name = if self.lookup(name).is_none() {
-            self.resolved_bare_function_symbol(name)
-                .unwrap_or_else(|| name.clone())
+        let registry_name = if self.lookup(name.name.as_str()).is_none() {
+            self.resolved_bare_function_symbol(name.name.as_str())
+                .unwrap_or_else(|| name.to_string())
         } else {
-            name.clone()
+            name.to_string()
         };
         self.register_free_fn_monomorphisation(&registry_name, None, call_span, call_site);
     }
@@ -135,14 +135,14 @@ impl LowerCtx {
         callee_expr: &hew_parser::ast::Expr,
         call_span: &std::ops::Range<usize>,
     ) -> bool {
-        let Expr::Identifier(name) = callee_expr else {
+        let Expr::Ident(name) = callee_expr else {
             return false;
         };
-        let registry_name = if self.lookup(name).is_none() {
-            self.resolved_bare_function_symbol(name)
-                .unwrap_or_else(|| name.clone())
+        let registry_name = if self.lookup(name.name.as_str()).is_none() {
+            self.resolved_bare_function_symbol(name.name.as_str())
+                .unwrap_or_else(|| name.to_string())
         } else {
-            name.clone()
+            name.to_string()
         };
         let is_generic_user_fn = self
             .fn_registry
@@ -176,7 +176,7 @@ impl LowerCtx {
     /// free function whose callee resolved to `registry_name` in `fn_registry`.
     ///
     /// This is the single authority both direct-call callee shapes feed:
-    /// - a bare `Expr::Identifier` callee (`first([1,2,3])`,
+    /// - a bare `Expr::Ident` callee (`first([1,2,3])`,
     ///   `helper([1,2,3])` after import rewrite) via `record_monomorphisation`;
     /// - a module-qualified `module.fn([1,2,3])` callee (which parses as
     ///   `Expr::MethodCall` → `RewriteModuleQualifiedToFunction`) with the

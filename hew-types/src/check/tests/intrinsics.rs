@@ -546,12 +546,8 @@ fn utf8_module_with_another_floors_source_path_is_rejected() {
     "#,
     );
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-    let root = ModuleId::root();
-    let utf8 = ModuleId::new(vec![
-        "std".to_string(),
-        "encoding".to_string(),
-        "utf8".to_string(),
-    ]);
+    let root = ModulePath::root();
+    let utf8 = ModulePath::new(["std", "encoding", "utf8"]);
     let mut graph = ModuleGraph::new(root.clone());
     graph
         .add_module(Module {

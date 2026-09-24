@@ -1936,13 +1936,13 @@ pub enum HirExprKind {
     /// Tagged-union variant constructor — shared by machine states and user-defined
     /// enum unit variants.
     ///
-    /// **Machine states**: produced by HIR lowering when an `Expr::Identifier` or
+    /// **Machine states**: produced by HIR lowering when an `Expr::Ident` or
     /// `Expr::StructInit` names a declared state of the enclosing machine — either
     /// a bare state reference like `Green` (unit state, no payload) or a struct-init
     /// form like `SynReceived { remote_port: remote_port }` (state with payload).
     ///
     /// **User-defined enum unit variants**: produced by HIR lowering when an
-    /// `Expr::Identifier` resolves to a unit variant of an enum type declared with
+    /// `Expr::Ident` resolves to a unit variant of an enum type declared with
     /// `type Colour { enum Red; Green; Blue; }`. The same tagged-union substrate
     /// (`Place::MachineTag` / `EnumLayout`) handles both surface forms.
     ///

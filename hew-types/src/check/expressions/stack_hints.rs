@@ -21,6 +21,7 @@ use crate::check::types::{
 };
 use crate::env::{PlaceConflict, PlacePath};
 use crate::BuiltinType;
+use hew_parser::ast::Ident;
 use std::collections::VecDeque;
 
 impl Checker {
@@ -69,10 +70,10 @@ impl Checker {
                 if let Some((expr, expr_span)) = value {
                     let class = self.classify_alloc(expr, expr_span);
                     let name = match &pattern.0 {
-                        Pattern::Identifier(n) => n.clone(),
-                        _ => String::new(),
+                        Pattern::Identifier(n) => n.name.as_str(),
+                        _ => "",
                     };
-                    self.maybe_record_stack_hint(stmt_span, &name, class);
+                    self.maybe_record_stack_hint(stmt_span, name, class);
                     // Descend into the RHS to classify nested bindings inside
                     // block expressions (`let x = { let y = ...; y }`).
                     self.scan_expr_for_stack_hints(expr);
@@ -81,7 +82,7 @@ impl Checker {
             Stmt::Var { name, value, .. } => {
                 if let Some((expr, expr_span)) = value {
                     let class = self.classify_alloc(expr, expr_span);
-                    self.maybe_record_stack_hint(stmt_span, name, class);
+                    self.maybe_record_stack_hint(stmt_span, name.name.as_str(), class);
                     self.scan_expr_for_stack_hints(expr);
                 }
             }

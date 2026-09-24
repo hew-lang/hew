@@ -2425,11 +2425,11 @@ fn migrate_source_file(file_path: &Path, file: &str, source: &str) -> Result<Str
         .iter()
         .flat_map(|graph| graph.modules.values())
         .filter(|module| {
-            !module.id.path.is_empty()
+            !module.id.segments.is_empty()
                 && module.source_paths.len() == 1
                 && std::fs::canonicalize(&module.source_paths[0]).ok() == own_path
         })
-        .map(|module| module.id.path.join("."))
+        .map(|module| module.id.dotted())
         .collect();
     let tokens = hew_lexer::lex(source);
     let mut variants = Vec::new();

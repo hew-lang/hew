@@ -48,7 +48,7 @@ fn classify(value: string, fallback: string) -> string {
 }
 
 fn main() {
-    var state = Idle;
+    var state = JobState.Idle;
     let _ = state.step(.Start);
 
     let ledger = spawn Ledger(total: 0);

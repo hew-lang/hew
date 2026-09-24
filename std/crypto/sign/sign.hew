@@ -67,9 +67,9 @@ pub fn sign(message: bytes, private_key: bytes) -> bytes {
 /// Any malformed input (wrong key length, wrong signature length, bit-flip)
 /// returns `false` — never panics.
 pub fn verify(message: bytes, signature: bytes, public_key: bytes) -> bool {
-    unsafe {
+    (unsafe {
         hew_ed25519_verify_hew(message, signature, public_key)
-    } == 1
+    }) == 1
 }
 
 // ── FFI bindings ──────────────────────────────────────────────────────────

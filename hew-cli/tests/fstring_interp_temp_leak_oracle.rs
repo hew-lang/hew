@@ -353,7 +353,7 @@ fn fstring_conditional_var_param_return_loop_source(frames: usize) -> String {
 fn fstring_enum_payload_interp_loop_source(frames: usize) -> String {
     let expected_len: usize = (0..frames).map(|i| format!("tok{i}").len()).sum();
     format!(
-        "fn mkopt(i: i64) -> Option<string> {{ Some(f\"tok{{i}}\") }}\n\
+        "fn mkopt(i: i64) -> Option<string> {{ .Some(f\"tok{{i}}\") }}\n\
          fn main() -> i64 {{\n\
          \x20   var i: i64 = 0;\n\
          \x20   var total: i64 = 0;\n\
@@ -393,7 +393,7 @@ fn fstring_result_payload_interp_loop_source(frames: usize) -> String {
         .sum();
     format!(
         "fn mkres(i: i64) -> Result<string, string> {{\n\
-         \x20   if i % 2 == 0 {{ Ok(f\"tok{{i}}\") }} else {{ Err(f\"bad{{i}}\") }}\n\
+         \x20   if i % 2 == 0 {{ .Ok(f\"tok{{i}}\") }} else {{ .Err(f\"bad{{i}}\") }}\n\
          }}\n\
          fn main() -> i64 {{\n\
          \x20   var i: i64 = 0;\n\
@@ -428,7 +428,7 @@ fn fstring_enum_payload_escapes_loop_source(frames: usize) -> String {
     let expected_len: usize = (0..frames).map(|i| format!("tok{i}").len()).sum();
     let last = format!("tok{}", frames - 1);
     format!(
-        "fn mkopt(i: i64) -> Option<string> {{ Some(f\"tok{{i}}\") }}\n\
+        "fn mkopt(i: i64) -> Option<string> {{ .Some(f\"tok{{i}}\") }}\n\
          fn main() -> i64 {{\n\
          \x20   var i: i64 = 0;\n\
          \x20   var total: i64 = 0;\n\

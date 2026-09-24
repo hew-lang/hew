@@ -68,9 +68,9 @@ pub fn v7() -> string {
 /// }
 /// ```
 pub fn is_valid(s: string) -> bool {
-    unsafe {
+    (unsafe {
         hew_uuid_parse(s)
-    } != 0
+    }) != 0
 }
 
 // ── FFI bindings ──────────────────────────────────────────────────────

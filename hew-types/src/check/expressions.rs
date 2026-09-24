@@ -2466,8 +2466,8 @@ else needs `impl Display for {rendered}`)"
             // A bare enum variant used as a value (`let c = Red;`,
             // `xs.map(Wrap)`) is refused like its call form; nothing here
             // selects the enum, so the fix-it qualifies it.
-            // Machine states are not variants at the surface (§3.11.3), even
-            // though their companion enum is one internally.
+            // A machine's states are written bare only inside that machine
+            // (§3.11.3); elsewhere they follow the same rule (D550).
             if !surface_name.contains("::") {
                 if let Some((owner, _, _)) =
                     self.lookup_variant_constructor(name)
@@ -2475,10 +2475,7 @@ else needs `impl Display for {rendered}`)"
                             self.type_defs
                                 .get(owner)
                                 .is_some_and(|td| td.kind == TypeDefKind::Enum)
-                                && !self.lookup_declaration(owner).is_some_and(|def| {
-                                    self.identity.declaration_kind_by_path(def.full_path())
-                                        == Some(crate::DeclarationKind::Machine)
-                                })
+                                && !self.machine_state_is_bare_here(owner)
                         })
                 {
                     let replacement =
@@ -5198,10 +5195,9 @@ else needs `impl Display for {rendered}`)"
                 // type, and resolving it here must not suggest the enum
                 // `.Variant` fix-it — that fix-it is for real enum bare
                 // variants (#3264).
-                let is_machine_state =
-                    expected_type_def.is_some_and(|td| matches!(td.kind, TypeDefKind::Machine));
+                let bare_state_here = self.machine_state_is_bare_here(expected_type_name);
                 if is_unit_variant {
-                    if !name.contains("::") && !is_machine_state {
+                    if !name.contains("::") && !bare_state_here {
                         self.report_bare_variant_expr(name, &format!(".{name}"), span);
                     }
                     self.enforce_type_def_instantiation_bounds(
@@ -6691,9 +6687,14 @@ else needs `impl Display for {rendered}`)"
                     self.emit_borrowed_param_return(name, &source_param, span);
                 }
             }
-            // Descend into block expressions: `{ r }` wraps the identifier
-            // in an Expr::Block whose local bindings may also shadow params.
+            // Descend into block expressions: `{ r }` or `unsafe { r }` wraps
+            // the identifier in a block whose local bindings may also shadow
+            // params.
             Expr::Block(blk) => {
+                let mut nested_scopes = scopes.to_vec();
+                self.scan_block_for_rc_param_return(blk, &mut nested_scopes);
+            }
+            Expr::UnsafeBlock(blk) => {
                 let mut nested_scopes = scopes.to_vec();
                 self.scan_block_for_rc_param_return(blk, &mut nested_scopes);
             }
@@ -6803,6 +6804,20 @@ else needs `impl Display for {rendered}`)"
     /// (spurious `BorrowedParamReturn`), and a lowercase user variant (`wrap(r)`)
     /// is no longer a false miss (a real aggregate escape that the old uppercase
     /// heuristic silently dropped).
+    /// Whether `owner` is a machine whose own generated body is being
+    /// checked, the one place its state names are written bare.
+    fn machine_state_is_bare_here(&self, owner: &str) -> bool {
+        let is_machine = self.lookup_declaration(owner).is_some_and(|def| {
+            self.identity.declaration_kind_by_path(def.full_path())
+                == Some(crate::DeclarationKind::Machine)
+        });
+        is_machine
+            && self.machine_body_owner.as_deref().is_some_and(|current| {
+                super::calls::variant_owner_spelling(current)
+                    == super::calls::variant_owner_spelling(owner)
+            })
+    }
+
     pub(super) fn callee_is_aggregate_constructor(&self, function: &Expr) -> bool {
         let name = match function {
             Expr::Identifier(name) => name,
@@ -7038,7 +7053,12 @@ else needs `impl Display for {rendered}`)"
                 }
                 None
             }
-            Expr::Block(blk) => {
+            Expr::Block(_) | Expr::UnsafeBlock(_) => {
+                let blk: &Block = match expr {
+                    Expr::UnsafeBlock(blk) => blk,
+                    Expr::Block(blk) => blk,
+                    _ => unreachable!("guarded by the arm pattern"),
+                };
                 let mut nested_scopes = scopes.to_vec();
                 nested_scopes.push(HashMap::new());
                 self.scan_stmts_for_rc_param_return(&blk.stmts, &mut nested_scopes);

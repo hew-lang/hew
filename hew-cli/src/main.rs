@@ -2036,6 +2036,15 @@ fn cmd_fmt(a: &args::FmtArgs) {
     if a.migrate && had_errors {
         std::process::exit(1);
     }
+    if a.migrate {
+        let outputs = formatted_files
+            .iter()
+            .map(|(path, file, _, formatted)| (path.as_path(), file.as_str(), formatted.as_str()))
+            .collect::<Vec<_>>();
+        if !recheck_migrated_sources(&outputs) {
+            std::process::exit(1);
+        }
+    }
 
     for (file_path, file, source, formatted) in formatted_files {
         if a.check {
@@ -2273,6 +2282,21 @@ fn migration_snapshot_needs_changes(files: &[PathBuf], root: Option<&Path>) -> R
         regenerated.push((mapped, source, formatted));
     }
 
+    let outputs = mapped_files
+        .iter()
+        .zip(&regenerated)
+        .map(|((original, _), (mapped, _, formatted))| {
+            (
+                mapped.as_path(),
+                original.to_str().unwrap_or_default(),
+                formatted.as_str(),
+            )
+        })
+        .collect::<Vec<_>>();
+    if !recheck_migrated_sources(&outputs) {
+        return Err(());
+    }
+
     for (mapped, source, formatted) in regenerated {
         if formatted != source {
             std::fs::write(mapped, formatted).map_err(|error| {
@@ -2489,10 +2513,20 @@ fn migrate_source_file(file_path: &Path, file: &str, source: &str) -> Result<Str
         .iter()
         .map(|variant| (variant.span.start, variant.span.end))
         .collect::<std::collections::HashSet<_>>();
+    // A machine names its own states bare inside its declaration (§3.11.3),
+    // so tokens there are never unmigrated variants.
+    let machine_spans = state
+        .program
+        .items
+        .iter()
+        .filter(|(item, _)| matches!(item, hew_parser::ast::Item::Machine(_)))
+        .map(|(_, span)| span.clone())
+        .collect::<Vec<_>>();
     refusals.extend(unlisted_bare_variant_refusals(
         typecheck,
         &tokens,
         &selected_variant_spans,
+        &machine_spans,
         file,
     ));
 
@@ -2517,12 +2551,43 @@ fn migrate_source_file(file_path: &Path, file: &str, source: &str) -> Result<Str
     }
 }
 
+/// Check every migrated source as it would be written, with the whole
+/// migrated set visible to import resolution, and name each file whose
+/// output no longer parses and type-checks. A migration is only reported as
+/// done when this passes.
+fn recheck_migrated_sources(outputs: &[(&Path, &str, &str)]) -> bool {
+    let mut documents = hew_compile::DocumentSet::new();
+    for (path, _, formatted) in outputs {
+        let key = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        documents.insert(key, *formatted);
+    }
+    let mut options = compile::frontend_options_for_check(&compile::CompileOptions::default());
+    options.documents = documents;
+    let mut clean = true;
+    for (path, file, formatted) in outputs {
+        let recheck =
+            hew_compile::run_source_frontend(formatted, &path.display().to_string(), &options);
+        if let Some(failure) = recheck.stopped {
+            compile::render_frontend_diagnostics(&failure.diagnostics);
+            eprintln!("Error: migration refused {file}: the migrated source does not type-check");
+            clean = false;
+        }
+    }
+    clean
+}
+
 fn unlisted_bare_variant_refusals(
     typecheck: &hew_types::check::TypeCheckOutput,
     tokens: &[(hew_lexer::Token<'_>, hew_lexer::Span)],
     selected: &std::collections::HashSet<(usize, usize)>,
+    machine_spans: &[std::ops::Range<usize>],
     file: &str,
 ) -> Vec<String> {
+    let in_machine = |span: &hew_lexer::Span| {
+        machine_spans
+            .iter()
+            .any(|machine| machine.start <= span.start && span.end <= machine.end)
+    };
     let mut refusals = Vec::new();
     let mut refused = std::collections::HashSet::new();
 
@@ -2550,6 +2615,7 @@ fn unlisted_bare_variant_refusals(
                 || span.end > expression_span.end
                 || !type_def.variants.contains_key(*name)
                 || selected.contains(&(span.start, span.end))
+                || in_machine(span)
                 || token_has_variant_qualifier(tokens, index)
                 || !refused.insert((span.start, span.end))
             {
@@ -2578,6 +2644,7 @@ fn unlisted_bare_variant_refusals(
             };
             if *name != variant_match.variant_name.as_str()
                 || selected.contains(&(span.start, span.end))
+                || in_machine(span)
                 || token_has_variant_qualifier(tokens, index)
                 || !refused.insert((span.start, span.end))
             {

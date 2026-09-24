@@ -52,8 +52,8 @@ machine Beacon {
 }
 
 fn main() {
-    var a = Armed;
-    var b = Idle;
+    var a = Alarm.Armed;
+    var b = Beacon.Idle;
     let a_report = a.step(.Trigger);
     let b_report = b.step(.Trigger);
     println(a_report.outputs.len());

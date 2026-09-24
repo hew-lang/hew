@@ -25,7 +25,7 @@ machine Tank {
 }
 
 fn main() {
-    var t = Filling;
+    var t = Tank.Filling;
     println(t.state_name());
     // Unhandled (Filling, Fill): stays in Filling.
     t.step(.Fill);

@@ -264,6 +264,7 @@ impl Parser<'_> {
         // Taken (not read) so the restriction covers this expression only: the
         // statements inside the arm's block parse with ordinary postfix rules.
         let block_arm_body = self.take_block_arm_body();
+        let statement_block = self.statement_block.replace(false);
 
         // `&expr` is not an expression in Hew. `&` is infix bitwise-and and the
         // type-level borrow marker (`&T`, ABI substrate); there is no
@@ -368,6 +369,11 @@ impl Parser<'_> {
 
         // Infix + postfix
         loop {
+            // A block-like statement ends at its `}`; only a `handle` clause
+            // still attaches to it.
+            if statement_block && !matches!(self.peek(), Some(Token::Identifier("handle"))) {
+                break;
+            }
             if self.record_init_suffix_allowed(&lhs.0) {
                 lhs = self.parse_record_init_postfix(lhs)?;
                 continue;
@@ -1109,9 +1115,7 @@ impl Parser<'_> {
                 // block is no longer ambiguous: lift `no_struct_literal` so a
                 // struct literal INSIDE this block parses. Restored on arm exit.
                 let _allow_struct = self.set_no_struct_literal(false);
-                if matches!(self.peek_at(self.pos + 1), Some(Token::StringLit(_)))
-                    && self.peek_at(self.pos + 2) == Some(&Token::Colon)
-                {
+                if self.peek_opens_map_literal() {
                     self.advance(); // consume '{'
                     self.parse_map_literal_entries()?
                 } else {

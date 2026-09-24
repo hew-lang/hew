@@ -323,6 +323,8 @@ fn grade(n: i64) -> string {
 
 Use if/else as an expression to produce a value; the last expression of each block is its value. An `if` used as an expression needs an `else`, and every branch must produce the same type.
 
+A block-like form that starts a statement — a block, `unsafe { }`, `scope`, `select`, `race`, `fork { }`, `gen { }`, `if`, `match`, a loop or `defer` — ends the statement at its closing `}`. A `.Ok(value)` on the next line is therefore the function's tail, not a method call on the block. To use such a block as an operand at the start of a statement, parenthesize it: `(unsafe { f() }) != 0`; without the parentheses the compiler reports `E_BLOCK_STATEMENT_OPERAND`.
+
 ### match on literals with wildcard
 
 ```hew
@@ -2137,7 +2139,8 @@ fn main() {
 
 Outside the machine — constructing a value, matching one — a state *is* an enum
 variant and takes the usual contextual dot: `var switch: Switch = .Off;`,
-`.NonZero { value } => ...`.
+`.NonZero { value } => ...`. With no expected type, qualify it:
+`var switch = Switch.Off;`. A bare `Off` there is `E_BARE_VARIANT_EXPR`.
 
 ### Transition bodies: `state` and `event`
 

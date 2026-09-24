@@ -725,7 +725,10 @@ Both diagnostics carry a machine-applicable fix-it that replaces `X` with
 program is rewritten rather than hand-edited.
 
 State names inside a `machine` declaration are not variants at the surface,
-and this rule does not reach them (§3.11.3).
+and this rule does not reach them (§3.11.3). Outside the machine that declares
+it, a state follows the variant spelling: `Door.Shut`, or `.Shut` where the
+expected type is the machine. A bare state name there is `E_BARE_VARIANT_EXPR`
+with the same fix-it.
 
 #### Spread in literals (normative)
 
@@ -3977,7 +3980,8 @@ machine's `state` declarations. It is not an enum variant in expression
 position, so the variant-spelling rule of §3.1 does not reach it and
 `on Toggle: Off => On,` is well formed as written. A machine's states desugar
 to an enum below the surface, and that desugar — not the source spelling — owns
-their identity.
+their identity. Outside the declaring machine, a state is written `Door.Shut`
+or, where the expected type is the machine, `.Shut` (§3.1).
 
 ### 3.11.4 Guards, Wildcards and Priority
 
@@ -6425,6 +6429,19 @@ The methods `.try_to_i8()`, `.try_to_i16()`, `.try_to_i32()`, `.try_to_i64()`, `
 > **Comparison associativity:** comparison operators are left-associative. `a < b < c` parses as `(a < b) < c`, which compares a bool against an integer and is almost certainly a bug. Use `a < b && b < c` for chained comparisons.
 
 > **Float context widening:** In a float-typed context, an integer literal widens to the contextual float type. `let f: f64 = 1;` is accepted and `1` is treated as `1.0`. This does not affect type annotations or wire shapes.
+
+> **Block-like statements (normative):** a block-like form at the start of a
+> statement ends that statement at its closing `}`. The forms are a block
+> (`{ … }`, but not a map literal `{"k": v}`), `unsafe { … }`, `scope`,
+> `select`, `race`, `fork { … }`, `gen { … }`, a lambda `actor`, and the
+> statements `if`, `if let`, `match`, `for`, `while`, `loop` and `defer`. What
+> follows starts the next statement, so a contextual variant tail such as
+> `.Ok(x)` on the next line is its own expression. Only a `handle` clause still
+> attaches. To call a method on the value or use it as an operand at statement
+> start, parenthesize it: `(unsafe { f() }) != 0`. A method call or operator
+> written directly after the `}` is refused with `E_BLOCK_STATEMENT_OPERAND`
+> and that fix-it. The same forms in operand position (`let n = { s }.len();`)
+> are ordinary expressions.
 
 ### 12.3 Duration Literals
 

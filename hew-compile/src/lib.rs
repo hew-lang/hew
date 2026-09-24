@@ -1000,17 +1000,25 @@ fn retain_user_facing_diagnostics(
     stdlib_roots: &[PathBuf],
     diagnostics: &mut Vec<FrontendDiagnostic>,
 ) {
-    let root = Path::new(root_filename);
-    diagnostics.retain(|diagnostic| {
-        let Some(filename) = diagnostic.filename.as_deref() else {
-            return true;
-        };
-        let diagnostic_path = Path::new(filename);
-        paths_name_same_file(root, diagnostic_path)
-            || !stdlib_roots
-                .iter()
-                .any(|stdlib_root| path_is_below(diagnostic_path, stdlib_root))
-    });
+    diagnostics
+        .retain(|diagnostic| !is_stdlib_owned_diagnostic(root_filename, stdlib_roots, diagnostic));
+}
+
+/// Whether a diagnostic belongs to an imported standard-library source rather
+/// than the file being checked.
+fn is_stdlib_owned_diagnostic(
+    root_filename: &str,
+    stdlib_roots: &[PathBuf],
+    diagnostic: &FrontendDiagnostic,
+) -> bool {
+    let Some(filename) = diagnostic.filename.as_deref() else {
+        return false;
+    };
+    let diagnostic_path = Path::new(filename);
+    !paths_name_same_file(Path::new(root_filename), diagnostic_path)
+        && stdlib_roots
+            .iter()
+            .any(|stdlib_root| path_is_below(diagnostic_path, stdlib_root))
 }
 
 /// If `options.warnings_as_errors` is set and `diagnostics` contains any
@@ -2223,7 +2231,9 @@ fn build_module_graph_with_diagnostics(
         ));
     }
 
-    add_prelude_std_modules(&mut graph);
+    add_prelude_std_modules(&mut graph, |name| {
+        resolve_prelude_std_source(ctx, &input_canonical, name).map(|(path, source)| (Some(path), source))
+    })?;
 
     rewrite_direct_stdlib_module_root(
         &mut graph,
@@ -2261,11 +2271,13 @@ fn build_module_graph_with_diagnostics(
 
 /// Give a single-source program, parsed without import resolution, the same
 /// standard-library modules [`build_module_graph`] adds to every program, so
-/// an editor analysis lowers builtin-type methods exactly as a build does.
+/// an editor analysis lowers builtin-type methods exactly as a build does. It
+/// has no module search path, so the sources are the ones compiled in.
 ///
 /// # Panics
 ///
-/// Never in practice: the root module is added to a freshly created graph.
+/// Never in practice: the root module is added to a freshly created graph,
+/// and the compiled-in prelude sources parse.
 pub fn attach_prelude_std_modules(program: &mut Program) {
     use hew_parser::module::{Module, ModuleGraph, ModuleId};
     let graph = program.module_graph.get_or_insert_with(|| {
@@ -2283,7 +2295,14 @@ pub fn attach_prelude_std_modules(program: &mut Program) {
         graph.topo_order.push(root);
         graph
     });
-    add_prelude_std_modules(graph);
+    add_prelude_std_modules(graph, |name| {
+        let (_, source) = COMPILED_PRELUDE_STD_SOURCES
+            .iter()
+            .find(|(leaf, _)| *leaf == name)
+            .expect("every prelude module has a compiled-in source");
+        Ok((None, (*source).to_string()))
+    })
+    .expect("the compiled-in prelude sources parse");
 }
 
 /// Methods on builtin types are always available, like `.len()`: the
@@ -2291,66 +2310,105 @@ pub fn attach_prelude_std_modules(program: &mut Program) {
 /// modules unless the program already imports them. The builtins prelude is
 /// loaded out of band, so only its Display impls take this path; its other
 /// declarations retain their compiler-owned registration.
-fn add_prelude_std_modules(graph: &mut hew_parser::module::ModuleGraph) {
-    for (name, source) in PRELUDE_STD_SOURCES {
-        if name == "builtins" {
-            add_embedded_std_module(graph, name, source, |item| {
-                matches!(item, Item::Impl(decl) if decl
-                    .trait_bound
-                    .as_ref()
-                    .is_some_and(|bound| bound.name == "Display"))
-            });
-        } else {
-            add_embedded_std_module(graph, name, source, |_| true);
+fn add_prelude_std_modules(
+    graph: &mut hew_parser::module::ModuleGraph,
+    mut source_for: impl FnMut(&str) -> Result<(Option<PathBuf>, String), FrontendFailure>,
+) -> Result<(), FrontendFailure> {
+    use hew_parser::module::{Module, ModuleId};
+    for (name, _) in COMPILED_PRELUDE_STD_SOURCES {
+        let id = ModuleId::new(vec!["std".to_string(), name.to_string()]);
+        if graph.modules.contains_key(&id) {
+            continue;
         }
+        let (path, source) = source_for(name)?;
+        let filename = path
+            .as_ref()
+            .map_or_else(|| format!("std/{name}.hew"), |path| path.display().to_string());
+        let parsed = hew_parser::parse(&source);
+        if parsed
+            .errors
+            .iter()
+            .any(|error| error.severity == hew_parser::Severity::Error)
+        {
+            return Err(FrontendFailure::new(
+                format!("Error: the standard library source {filename} does not parse"),
+                parsed
+                    .errors
+                    .into_iter()
+                    .map(|error| FrontendDiagnostic::parse(&source, &filename, error))
+                    .collect(),
+            ));
+        }
+        let items = parsed
+            .program
+            .items
+            .into_iter()
+            .filter(|(item, _)| {
+                name != "builtins"
+                    || matches!(item, Item::Impl(decl) if decl
+                        .trait_bound
+                        .as_ref()
+                        .is_some_and(|bound| bound.name == "Display"))
+            })
+            .collect();
+        graph
+            .add_module(Module {
+                id: id.clone(),
+                items,
+                imports: Vec::new(),
+                source_paths: path.into_iter().collect(),
+                doc: None,
+            })
+            .expect("prelude module absence was checked");
+        graph.topo_order.push(id);
     }
+    Ok(())
 }
 
-/// The embedded standard-library sources [`add_prelude_std_modules`] injects,
-/// by `std.<name>` leaf. They have no on-disk path, so diagnostics inside them
-/// render against this text.
-const PRELUDE_STD_SOURCES: [(&str, &str); 4] = [
+/// The prelude standard-library modules by `std.<name>` leaf, with the source
+/// compiled into the host. A build resolves each through the std search path
+/// instead ([`resolve_prelude_std_source`]); only an analysis with no search
+/// path uses this text.
+const COMPILED_PRELUDE_STD_SOURCES: [(&str, &str); 4] = [
     ("builtins", include_str!("../../std/builtins.hew")),
     ("option", include_str!("../../std/option.hew")),
     ("result", include_str!("../../std/result.hew")),
     ("iter", include_str!("../../std/iter.hew")),
 ];
 
-/// Add the selected items of an embedded `std.<name>` source as a module of
-/// their own, unless the program already imports that module.
-fn add_embedded_std_module(
-    graph: &mut hew_parser::module::ModuleGraph,
+/// Resolve the prelude source `std/<name>.hew` in the candidate order of a
+/// `std` import: the source's directory, the working directory unless it
+/// belongs to another checkout, then the std search path. `HEW_STD` and a
+/// checkout's own `std/` therefore apply, and the module carries the path its
+/// diagnostics belong to.
+fn resolve_prelude_std_source(
+    ctx: &ImportResolutionContext<'_>,
+    source_file: &Path,
     name: &str,
-    source: &str,
-    keep: impl Fn(&Item) -> bool,
-) {
-    use hew_parser::module::{Module, ModuleId};
-    let id = ModuleId::new(vec!["std".to_string(), name.to_string()]);
-    if graph.modules.contains_key(&id) {
-        return;
-    }
-    let parsed = hew_parser::parse(source);
-    assert!(
-        parsed.errors.is_empty(),
-        "embedded std/{name}.hew must parse: {:?}",
-        parsed.errors
+) -> Result<(PathBuf, String), FrontendFailure> {
+    let source_dir = source_file.parent().unwrap_or(Path::new("."));
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let source_hew_root = hew_types::module_registry::find_enclosing_hew_root(source_file);
+    let cwd_crosses_root = source_hew_root.is_some()
+        && hew_types::module_registry::find_enclosing_hew_root(&cwd) != source_hew_root;
+    let search_paths = ctx.module_search_paths.map_or_else(
+        || hew_types::module_registry::build_module_search_paths_for(Some(source_file)),
+        <[PathBuf]>::to_vec,
     );
-    let items = parsed
-        .program
-        .items
-        .into_iter()
-        .filter(|(item, _)| keep(item))
-        .collect();
-    graph
-        .add_module(Module {
-            id: id.clone(),
-            items,
-            imports: Vec::new(),
-            source_paths: Vec::new(),
-            doc: None,
+    std::iter::once(source_dir.to_path_buf())
+        .chain((!cwd_crosses_root).then_some(cwd))
+        .chain(search_paths)
+        .find_map(|root| {
+            let candidate = root.join("std").join(format!("{name}.hew"));
+            let path = resolve_candidate(ctx.documents, &candidate)?;
+            let source = read_source(ctx.documents, &path).ok()?;
+            Some((path, source))
         })
-        .expect("embedded module absence was checked");
-    graph.topo_order.push(id);
+        .ok_or_else(|| {
+            FrontendFailure::message_only(format!(
+                "Error: the standard library source `std/{name}.hew` is not on the module search path"
+            ))
+        })
 }
 
 fn check_ambiguous_module_import_bindings(
@@ -3442,6 +3500,13 @@ fn run_frontend_after_parse(
     let type_check_failed = type_check_failed(&typecheck_result);
     state.typecheck_result = Some(typecheck_result);
     if type_check_failed {
+        // A std source's warnings are not the user's to act on; its errors
+        // stay, because they are why the check failed.
+        let stdlib_roots = configured_stdlib_roots(options);
+        state.diagnostics.retain(|diagnostic| {
+            !is_warning_diagnostic(diagnostic)
+                || !is_stdlib_owned_diagnostic(input, &stdlib_roots, diagnostic)
+        });
         return state.stop(FrontendFailure::message_only("type errors found"));
     }
 
@@ -6278,12 +6343,16 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         let stdlib_dir = stdlib_root.join("std");
         fs::create_dir_all(&stdlib_dir).expect("create explicit stdlib root");
         write_source(&stdlib_dir, "builtins.hew", "// explicit stdlib marker\n");
-        // Every program loads the prelude's `std.link_monitor`.
+        // Every program loads the prelude's `std.link_monitor`, and the
+        // prelude modules behind builtin-type methods.
         write_source(
             &stdlib_dir,
             "link_monitor.hew",
             "// prelude module marker\n",
         );
+        for prelude in ["option.hew", "result.hew", "iter.hew"] {
+            write_source(&stdlib_dir, prelude, "// prelude impl marker\n");
+        }
         let expected = Path::new(&write_source(
             &stdlib_dir,
             "fs.hew",

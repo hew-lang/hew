@@ -1036,6 +1036,15 @@ impl Checker {
             .map(|param| param.name.clone());
         let prev_var_self_receiver =
             std::mem::replace(&mut self.var_self_receiver, var_self_receiver);
+        let machine_body_owner = matches!(
+            fd.origin,
+            hew_parser::ast::DeclarationOrigin::MachineStep
+                | hew_parser::ast::DeclarationOrigin::MachineCompanion
+        )
+        .then(|| fn_name.split_once("::").map(|(owner, _)| owner.to_string()))
+        .flatten();
+        let prev_machine_body_owner =
+            std::mem::replace(&mut self.machine_body_owner, machine_body_owner);
 
         // Use the return type from the already-registered fn signature so that
         // TypeExpr::Infer (-> _) reuses the same Ty::Var that call sites see.
@@ -1153,6 +1162,7 @@ impl Checker {
         }
         self.emit_scope_warnings();
         self.var_self_receiver = prev_var_self_receiver;
+        self.machine_body_owner = prev_machine_body_owner;
     }
 
     fn function_body_return_type(&self, fd: &FnDecl, declared: &Ty) -> Ty {

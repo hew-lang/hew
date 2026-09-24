@@ -84,9 +84,9 @@ pub fn max_random_bytes_len() -> i64 {
 /// Returns `true` if they are equal (same length and same content).
 /// Always runs in time proportional to the length to avoid timing leaks.
 pub fn constant_time_eq(a: bytes, b: bytes) -> bool {
-    unsafe {
+    (unsafe {
         hew_constant_time_eq_hew(a, b)
-    } == 1
+    }) == 1
 }
 
 // ── FFI bindings ──────────────────────────────────────────────────────

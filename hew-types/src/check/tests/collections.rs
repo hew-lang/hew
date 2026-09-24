@@ -3130,7 +3130,7 @@ fn machine_state_user_machine_stays_nominal_not_builtin_marker() {
         }
 
         fn main() {
-            var m = Idle;
+            var m = MachineState.Idle;
             m.step(.Tick);
         }
         ",

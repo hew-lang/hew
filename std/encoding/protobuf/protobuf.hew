@@ -90,9 +90,9 @@ impl MessageMethods for Message {
     /// Test whether a field is present in the message.
     fn has_field(msg: Message, field_number: i64) -> bool {
         validate_field_number(field_number);
-        unsafe {
+        (unsafe {
             hew_proto_msg_has_field(msg.handle, field_number as i32)
-        } != 0 // INTERNAL-ABI: C ABI returns i32 (1=present, 0=absent); explicit != 0 required (no implicit i32→bool)
+        }) != 0 // INTERNAL-ABI: C ABI returns i32 (1=present, 0=absent); explicit != 0 required (no implicit i32→bool)
     }
 }
 

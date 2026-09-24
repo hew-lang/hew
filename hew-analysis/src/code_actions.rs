@@ -162,6 +162,18 @@ pub fn build_code_actions(source: &str, diagnostics: &[DiagnosticInfo]) -> Vec<C
                 }
             }
 
+            // A bare variant: apply the checker's fix-it, which names the
+            // dotted or owner-qualified spelling. The diagnostic span opens
+            // with the variant name.
+            Some("E_BARE_VARIANT_EXPR" | "E_BARE_VARIANT_PATTERN") => {
+                if let Some(edit) = bare_variant_fix(source, diag) {
+                    actions.push(CodeAction {
+                        title: format!("Replace with `{}`", edit.new_text),
+                        edits: vec![edit],
+                    });
+                }
+            }
+
             // All other diagnostic kinds have no mechanical fix available.
             _ => {}
         }
@@ -170,6 +182,23 @@ pub fn build_code_actions(source: &str, diagnostics: &[DiagnosticInfo]) -> Vec<C
 }
 
 // ── Private helpers ──────────────────────────────────────────────────
+
+/// The edit behind a `replace `X` with `Y`` bare-variant fix-it.
+fn bare_variant_fix(source: &str, diag: &DiagnosticInfo) -> Option<RenameEdit> {
+    let (name, replacement) = diag.suggestions.iter().find_map(|suggestion| {
+        let rest = suggestion.strip_prefix("replace `")?;
+        let (name, rest) = rest.split_once("` with `")?;
+        Some((name, rest.strip_suffix('`')?))
+    })?;
+    let end = diag.span.start + name.len();
+    (source.get(diag.span.start..end) == Some(name)).then(|| RenameEdit {
+        span: OffsetSpan {
+            start: diag.span.start,
+            end,
+        },
+        new_text: replacement.to_string(),
+    })
+}
 
 /// Extract a suggested name from `` Did you mean `foo`? `` style strings.
 fn extract_suggestion_name(suggestion: &str) -> String {
@@ -545,6 +574,50 @@ mod tests {
         assert_eq!(actions.len(), 1);
         assert_eq!(actions[0].title, "Replace with `Bar`");
         assert_eq!(actions[0].edits[0].new_text, "Bar");
+    }
+
+    #[test]
+    fn bare_variant_actions_apply_the_checker_fix_it() {
+        let source = "fn f() -> Option<i64> { Some(1) }\nfn g() { let x = Some(2); }";
+        let start = source.find("Some(1)").unwrap();
+        let contextual = diag_with_suggestions(
+            "E_BARE_VARIANT_EXPR",
+            "E_BARE_VARIANT_EXPR: bare variant `Some` is not an expression",
+            start,
+            start + 7,
+            vec!["replace `Some` with `.Some`"],
+        );
+        let start = source.find("Some(2)").unwrap();
+        let qualified = diag_with_suggestions(
+            "E_BARE_VARIANT_EXPR",
+            "E_BARE_VARIANT_EXPR: bare variant `Some` is not an expression",
+            start,
+            start + 7,
+            vec!["replace `Some` with `Option.Some`"],
+        );
+        let actions = build_code_actions(source, &[contextual, qualified]);
+        assert_eq!(actions.len(), 2);
+        let mut fixed = source.to_string();
+        for action in actions.iter().rev() {
+            fixed = apply_edit(&fixed, &action.edits[0]);
+        }
+        assert_eq!(
+            fixed,
+            "fn f() -> Option<i64> { .Some(1) }\nfn g() { let x = Option.Some(2); }"
+        );
+    }
+
+    #[test]
+    fn bare_variant_action_refuses_a_span_that_does_not_open_with_the_name() {
+        let source = "fn f() -> Option<i64> { Some(1) }";
+        let d = diag_with_suggestions(
+            "E_BARE_VARIANT_PATTERN",
+            "E_BARE_VARIANT_PATTERN",
+            0,
+            2,
+            vec!["replace `Some` with `.Some`"],
+        );
+        assert!(build_code_actions(source, &[d]).is_empty());
     }
 
     #[test]

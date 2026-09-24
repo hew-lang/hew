@@ -147,9 +147,9 @@ pub fn decode_insecure(token: string) -> string {
 /// ```
 pub fn validate(token: string, secret: string, algorithm: string) -> bool {
     let algo = algo_to_i32(algorithm);
-    unsafe {
+    (unsafe {
         hew_jwt_validate(token, secret, algo)
-    } == 1
+    }) == 1
 }
 
 // ── FFI bindings ──────────────────────────────────────────────────────

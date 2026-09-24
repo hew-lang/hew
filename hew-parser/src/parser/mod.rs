@@ -705,6 +705,10 @@ pub struct Parser<'src> {
     /// `parse_expr_bp` takes and clears it, so the restriction applies to the
     /// arm body itself and never to expressions nested inside it.
     pub(crate) block_arm_body: Rc<Cell<bool>>,
+    /// Set for the one `parse_expr_bp` call that parses a block-like form at
+    /// statement start: the form ends at its `}`, with no postfix or infix
+    /// continuation. Taken on entry, so nested expressions parse normally.
+    pub(crate) statement_block: Cell<bool>,
     /// End byte of the most recently consumed token (absolute).
     ///
     /// For a full-program parse this starts at 0.  For an f-string sub-parser

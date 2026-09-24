@@ -208,9 +208,9 @@ impl RequestMethods for Request {
     /// Send a full HTTP response with status, content-type, and body.
     fn respond(req: Request, status: i64, content_type: string, body: string) -> Result<(), net.NetError> {
         let n = if valid_response_status(status) {
-            unsafe {
+            (unsafe {
                 hew_http_respond_bridge(req, status as i32, content_type, body)
-            } as i64
+            }) as i64
         } else {
             -1
         };
@@ -223,9 +223,9 @@ impl RequestMethods for Request {
     /// Send a plain-text HTTP response.
     fn respond_text(req: Request, status: i64, body: string) -> Result<(), net.NetError> {
         let n = if valid_response_status(status) {
-            unsafe {
+            (unsafe {
                 hew_http_respond_text(req, status as i32, body)
-            } as i64
+            }) as i64
         } else {
             -1
         };
@@ -238,9 +238,9 @@ impl RequestMethods for Request {
     /// Send a JSON HTTP response with `Content-Type: application/json`.
     fn respond_json(req: Request, status: i64, json: string) -> Result<(), net.NetError> {
         let n = if valid_response_status(status) {
-            unsafe {
+            (unsafe {
                 hew_http_respond_json(req, status as i32, json)
-            } as i64
+            }) as i64
         } else {
             -1
         };

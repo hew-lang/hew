@@ -3317,6 +3317,10 @@ pub struct Checker {
     pub(super) lambda_capture_depth: Option<usize>,
     /// The receiver binding of the `var self` method being checked (A418).
     pub(super) var_self_receiver: Option<String>,
+    /// The machine whose generated body is being checked. Its state names are
+    /// written bare inside it (§3.11.3); everywhere else they follow the
+    /// variant spelling rule (D550).
+    pub(super) machine_body_owner: Option<String>,
     /// Operations already refused for a hole in the `var self` receiver.
     pub(super) var_self_hole_reports: HashSet<SpanKey>,
     /// Captured variable types accumulated during lambda body checking.
@@ -4133,6 +4137,7 @@ impl Checker {
             actor_spawn_args: HashMap::new(),
             lambda_capture_depth: None,
             var_self_receiver: None,
+            machine_body_owner: None,
             var_self_hole_reports: HashSet::new(),
             lambda_captures: Vec::new(),
             lambda_capture_facts: Vec::new(),

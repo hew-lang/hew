@@ -330,8 +330,8 @@ fn machine_is_machine_rejected() {
             }
 
             fn main() {
-                let t = Filling;
-                let u = Draining;
+                let t = Tank.Filling;
+                let u = Tank.Draining;
                 let _eq: bool = t is u;
             }
         ",

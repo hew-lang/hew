@@ -144,11 +144,22 @@ impl Parser<'_> {
                 continue;
             }
 
-            // A block at statement start is never a method receiver: when a
-            // `.` follows its closing brace, the block ends the statement and
-            // the `.Some(x)` after it begins the next expression.
-            if self.statement_block_precedes_dot() {
-                stmts.push(self.parse_statement_block()?);
+            // A block-like expression at statement start ends at its closing
+            // `}`, as `if`, `match` and the loops do: what follows begins the
+            // next statement, so a `.Ok(x)` tail on the next line is its own
+            // expression. Using the block's value needs parentheses.
+            if self.peek_opens_statement_block() {
+                let Some(expr) = self.parse_statement_block_expr() else {
+                    continue;
+                };
+                if self.peek() == Some(&Token::RightBrace) {
+                    trailing_expr = Some(Box::new(expr));
+                    break;
+                }
+                self.refuse_statement_block_continuation();
+                self.eat(&Token::Semicolon);
+                let span = expr.1.clone();
+                stmts.push((Stmt::Expression(expr), span));
                 continue;
             }
 
@@ -229,16 +240,51 @@ impl Parser<'_> {
         })
     }
 
-    /// Parse a block or `unsafe` block as a whole expression statement.
-    fn parse_statement_block(&mut self) -> Option<Spanned<Stmt>> {
-        let start = self.peek_span().start;
-        let block = if self.eat(&Token::Unsafe) {
-            Expr::UnsafeBlock(Box::new(self.parse_block()?))
-        } else {
-            Expr::Block(self.parse_block()?)
+    /// Parse the block-like expression that opens a statement, without the
+    /// postfix and infix continuations an operand would take.
+    fn parse_statement_block_expr(&mut self) -> Option<Spanned<Expr>> {
+        self.statement_block.set(true);
+        let expr = self.parse_expr();
+        self.statement_block.set(false);
+        expr
+    }
+
+    /// A statement-start block cannot be an operand. Name the fix when the
+    /// source plainly meant one: a method call (`{ s }.len()`) or a binary
+    /// operator (`unsafe { f() } != 0`).
+    fn refuse_statement_block_continuation(&mut self) {
+        let continues = match self.peek() {
+            Some(Token::Dot) => matches!(
+                self.peek_at(self.pos + 1),
+                Some(Token::Identifier(name)) if name.starts_with(|c: char| c.is_lowercase() || c == '_')
+            ),
+            Some(
+                Token::As
+                | Token::EqualEqual
+                | Token::NotEqual
+                | Token::Less
+                | Token::LessEqual
+                | Token::Greater
+                | Token::GreaterEqual
+                | Token::AmpAmp
+                | Token::PipePipe
+                | Token::QuestionQuestion
+                | Token::Question
+                | Token::Plus
+                | Token::Slash
+                | Token::Percent
+                | Token::Caret,
+            ) => true,
+            _ => false,
         };
-        let span = start..self.peek_span().start;
-        Some((Stmt::Expression((block, span.clone())), span))
+        if continues {
+            self.error_with_hint(
+                "E_BLOCK_STATEMENT_OPERAND: a block at the start of a statement ends at its `}` \
+                 and is not an operand"
+                    .to_string(),
+                "wrap the block in parentheses to call a method on its value or use it in an expression",
+            );
+        }
     }
 
     /// Parse the arm after an `if let`'s `else`, which the caller has already

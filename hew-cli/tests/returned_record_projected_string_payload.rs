@@ -100,15 +100,15 @@ type Pair {{
     first: string, second: string }}
 
 fn cleanup() -> Result<(), CleanupError> {{
-    Err(CleanupError.Dirty("dirty worktree " + f"{{42}}"))
+    .Err(CleanupError.Dirty("dirty worktree " + f"{{42}}"))
 }}
 
 fn build() -> Result<Pair, string> {{
     match cleanup() {{
-        .Ok(_) => Ok(Pair {{ first: "", second: "" }}),
+        .Ok(_) => .Ok(Pair {{ first: "", second: "" }}),
         .Err(CleanupError.Dirty(message)) => {{
             {alias_binding}
-            Ok(Pair {{ first: message, second: {second} }})
+            .Ok(Pair {{ first: message, second: {second} }})
         }},
     }}
 }}

@@ -101,6 +101,7 @@ impl<'src> Parser<'src> {
             allow_implicit_self_params: false,
             no_struct_literal: Rc::new(Cell::new(false)),
             block_arm_body: Rc::new(Cell::new(false)),
+            statement_block: Cell::new(false),
             last_token_end: offset,
         }
     }
@@ -212,30 +213,25 @@ impl<'src> Parser<'src> {
         )
     }
 
-    /// Whether the current position is a block or `unsafe` block whose closing
-    /// brace is followed by `.`.
-    pub(crate) fn statement_block_precedes_dot(&self) -> bool {
-        let open = match self.peek() {
-            Some(Token::LeftBrace) => self.pos,
-            Some(Token::Unsafe) if self.peek_at(self.pos + 1) == Some(&Token::LeftBrace) => {
-                self.pos + 1
+    /// Whether the current token opens a block-like expression that ends its
+    /// statement at the closing `}`: a block (not a map literal), `unsafe`,
+    /// `scope`, `select`, `race`, `fork { }`, `gen { }` or a lambda `actor`.
+    pub(crate) fn peek_opens_statement_block(&self) -> bool {
+        match self.peek() {
+            Some(Token::Unsafe | Token::Scope | Token::Select | Token::Race) => true,
+            Some(Token::Fork | Token::Gen) => self.peek_at(self.pos + 1) == Some(&Token::LeftBrace),
+            Some(Token::Actor) => {
+                matches!(self.peek_at(self.pos + 1), Some(Token::Pipe | Token::Move))
             }
-            _ => return false,
-        };
-        let mut depth = 0usize;
-        for index in open..self.tokens.len() {
-            match self.peek_at(index) {
-                Some(Token::LeftBrace) => depth += 1,
-                Some(Token::RightBrace) => {
-                    depth -= 1;
-                    if depth == 0 {
-                        return self.peek_at(index + 1) == Some(&Token::Dot);
-                    }
-                }
-                _ => {}
-            }
+            Some(Token::LeftBrace) => !self.peek_opens_map_literal(),
+            _ => false,
         }
-        false
+    }
+
+    /// Whether the `{` at the cursor opens a map literal (`{"k": v}`).
+    pub(crate) fn peek_opens_map_literal(&self) -> bool {
+        matches!(self.peek_at(self.pos + 1), Some(Token::StringLit(_)))
+            && self.peek_at(self.pos + 2) == Some(&Token::Colon)
     }
 
     pub(crate) fn at_end(&self) -> bool {

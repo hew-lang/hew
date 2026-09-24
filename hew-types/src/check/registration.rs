@@ -5537,8 +5537,35 @@ impl Checker {
             self.current_item_ordinal = item_ordinal;
             self.collect_function_item(item, span);
         }
+        self.canonicalize_root_super_trait_edges(program);
         self.current_module_direct_imports.clear();
         self.current_module_direct_import_bindings.clear();
+    }
+
+    /// Point each root trait's supertrait edges at the supertrait's
+    /// `trait_defs` key, as imported traits' edges already are.
+    ///
+    /// `collect_types` records a root trait's edges before the root's imports
+    /// are bound, so it can only keep the source spelling. Once the imports
+    /// are bound here, `trait Pretty: Display` or a flat-imported `trait Mine:
+    /// Left` resolves to its declaring trait, and every walk of the chain,
+    /// such as a trait object's layout, reaches that trait's identity.
+    fn canonicalize_root_super_trait_edges(&mut self, program: &Program) {
+        for (item, _) in &program.items {
+            let Item::Trait(td) = item else {
+                continue;
+            };
+            let Some(supers) = &td.super_traits else {
+                continue;
+            };
+            let keys: Vec<String> = supers
+                .iter()
+                .map(|bound| self.trait_ref_lookup_key(&bound.name))
+                .collect();
+            if self.trait_super.contains_key(&td.name) {
+                self.trait_super.insert(td.name.clone(), keys);
+            }
+        }
     }
 
     #[expect(

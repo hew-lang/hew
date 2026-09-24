@@ -9019,32 +9019,42 @@ impl Checker {
             // Trait object method dispatch: the method's slot in the whole
             // trait object's layout, the one numbering the coercion shares.
             (Ty::TraitObject { traits }, _) => {
-                let dispatch = self.dyn_dispatch_slot(traits, method);
-                if let Err(declaring_traits) = &dispatch {
-                    if declaring_traits.len() > 1 {
-                        for arg in args {
-                            let (expr, sp) = arg.expr();
-                            self.synthesize(expr, sp);
-                        }
-                        self.report_error(
-                            TypeErrorKind::AmbiguousTraitMethod,
-                            span,
-                            format!(
-                                "ambiguous trait method `{method}` on `{}`: traits {} each \
-                                 declare it, and a call on a trait object cannot name one \
-                                 trait; rename the method in all but one of them",
-                                resolved.user_facing(),
-                                declaring_traits
-                                    .iter()
-                                    .map(|name| format!("`{name}`"))
-                                    .collect::<Vec<_>>()
-                                    .join(" and ")
-                            ),
-                        );
-                        return Ty::Error;
+                let Some(layout) = self.dyn_layout(traits, span) else {
+                    for arg in args {
+                        let (expr, sp) = arg.expr();
+                        self.synthesize(expr, sp);
                     }
+                    return Ty::Error;
+                };
+                // Every slot of that name, as the static-bound path collects
+                // them for `T: A + B` (plan §4 V14).
+                let mut matching: Vec<_> = layout
+                    .into_iter()
+                    .filter(|slot| slot.method_name == method)
+                    .collect();
+                if matching.len() > 1 {
+                    for arg in args {
+                        let (expr, sp) = arg.expr();
+                        self.synthesize(expr, sp);
+                    }
+                    self.report_error(
+                        TypeErrorKind::AmbiguousTraitMethod,
+                        span,
+                        format!(
+                            "ambiguous trait method `{method}` on `{}`: traits {} each declare \
+                             it, and a call on a trait object cannot name one trait; rename \
+                             the method in all but one of them",
+                            resolved.user_facing(),
+                            matching
+                                .iter()
+                                .map(|slot| format!("`{}`", slot.trait_spelling))
+                                .collect::<Vec<_>>()
+                                .join(" and ")
+                        ),
+                    );
+                    return Ty::Error;
                 }
-                if let Ok(layout_slot) = dispatch {
+                if let Some(layout_slot) = matching.pop() {
                     let bound = &traits[layout_slot.bound];
                     let Some(mut sig) = self.lookup_trait_method(&layout_slot.trait_key, method)
                     else {
@@ -9618,6 +9628,39 @@ mod tests {
             builtin_methods > 0,
             "the builtin prelude registered no traits"
         );
+    }
+
+    /// A root trait written over a prelude trait by its bare spelling keeps
+    /// an edge to the prelude trait's declaration, so the dyn layout reaches
+    /// the supertrait's method identities.
+    #[test]
+    fn root_supertrait_edges_name_the_prelude_declaration() {
+        let source = r"
+            trait Pretty: Display { fn pretty(self) -> string; }
+            trait Named: Iterator { fn name(self) -> string; }
+            trait Failure: Error { fn code(self) -> i64; }
+            fn main() {}
+        ";
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&hew_parser::parse(source).program);
+        assert!(output.errors.is_empty(), "{:?}", output.errors);
+        for (subtrait, expected) in [
+            ("Pretty", "std.builtins.Display"),
+            ("Named", "std.builtins.Iterator"),
+            ("Failure", "std.builtins.Error"),
+        ] {
+            let edges = &checker.trait_super[subtrait];
+            assert_eq!(edges, &vec![expected.to_string()], "`{subtrait}` edges");
+            for method in &checker.trait_defs[expected].methods {
+                assert!(
+                    output
+                        .trait_method_ids
+                        .contains_key(&format!("{expected}::{}", method.name)),
+                    "`{expected}.{}` has no declaration identity",
+                    method.name
+                );
+            }
+        }
     }
 
     #[test]

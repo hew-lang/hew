@@ -477,6 +477,12 @@ const PARITY_CASES: &[ParityCase] = &[
         test_name: "dyn_multibound_dispatch",
         source_rel: "tests/core-acceptance/cases/dyn-multibound-dispatch.hew",
     },
+    ParityCase {
+        // A user trait extending `Display` reaches `Display.fmt` through its
+        // trait object, reusing the core-acceptance fixture.
+        test_name: "dyn_subtrait_display",
+        source_rel: "tests/core-acceptance/cases/dyn-subtrait-display.hew",
+    },
 ];
 
 #[derive(Debug, Clone, Copy)]
@@ -585,6 +591,7 @@ fn assert_exact_stdout(case: &ParityCase, native: &Output) {
         ),
         "f32_arithmetic_precision" => Some("16777216\n"),
         "pointer_width_native64" => Some("4294967296\n4294967296\n"),
+        "dyn_subtrait_display" => Some("point at 1\n(1, 2)\npoint at 3 / (3, 4)\n"),
         "dyn_multibound_dispatch" => {
             Some("alpha 3\nbeta 3\n300\nalpha 3\nbeta 5 alpha 5 500\nright\nleft\ntag 7\n")
         }

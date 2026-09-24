@@ -1213,19 +1213,8 @@ impl Checker {
                 // than a concrete declaration: the slot the coercion site
                 // published is the whole realization.
                 if let Ty::TraitObject { traits } = &error_ty {
-                    let Ok(generics::DynLayoutSlot { slot, method, .. }) =
-                        self.dyn_dispatch_slot(traits, "fmt")
-                    else {
-                        self.errors.push(TypeError::new(
-                            TypeErrorKind::BoundsNotSatisfied,
-                            span.clone(),
-                            format!(
-                                "process entry error type `{}` publishes no Display vtable slot",
-                                error_ty.user_facing()
-                            ),
-                        ));
-                        return None;
-                    };
+                    let generics::DynLayoutSlot { slot, method, .. } =
+                        self.dyn_layout_slot_of(traits, "std.builtins.Display", "fmt", span)?;
                     return Some(EntryExitAction::Result {
                         result_ty: resolved_return_type?,
                         error_ty: ResolvedTy::from_ty(&error_ty).ok()?,

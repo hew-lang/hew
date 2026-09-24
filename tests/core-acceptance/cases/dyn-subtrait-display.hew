@@ -1,0 +1,33 @@
+// A user trait extending `Display` publishes `Display.fmt` in its trait
+// object, beside its own methods.
+trait Pretty: Display {
+    fn pretty(self) -> string;
+}
+
+type Point {
+    x: i64,
+    y: i64,
+}
+
+impl Display for Point {
+    fn fmt(value: Point) -> string {
+        f"({value.x}, {value.y})"
+    }
+}
+
+impl Pretty for Point {
+    fn pretty(self) -> string {
+        f"point at {self.x}"
+    }
+}
+
+fn describe(value: dyn Pretty) -> string {
+    f"{value.pretty()} / {value.fmt()}"
+}
+
+fn main() {
+    let shown: dyn Pretty = Point { x: 1, y: 2 };
+    println(shown.pretty());
+    println(shown.fmt());
+    println(describe(Point { x: 3, y: 4 }));
+}

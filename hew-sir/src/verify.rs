@@ -2577,7 +2577,20 @@ fn verify_dyn_call(
     }
     let context = context
         .ok_or_else(|| "dynamic dispatch requires its module's dispatch tables".to_string())?;
-    for table in context.vtables_for(ty) {
+    // WHY: `ResolvedTy::TraitObject` names its traits by spelling, so two
+    // same-named traits from different modules erase to one `dyn_ty`. A table
+    // of the call's own trait object publishes the called method somewhere;
+    // a same-spelled neighbour's table never does, because distinct traits
+    // declare distinct methods.
+    // WHEN obsolete: once trait-object types carry trait declaration identity.
+    // WHAT: select the tables by the exact `dyn_ty` alone.
+    let own_tables = context.vtables_for(ty).filter(|table| {
+        table
+            .slots
+            .iter()
+            .any(|published| published.method == *method)
+    });
+    for table in own_tables {
         let published = table
             .slots
             .iter()

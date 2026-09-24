@@ -1,0 +1,11 @@
+pub trait Core {
+    fn core(self) -> string;
+}
+
+pub trait Left: Core {
+    fn left(self) -> string;
+}
+
+pub trait Right: Core {
+    fn right(self) -> string;
+}

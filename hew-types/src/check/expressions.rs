@@ -3345,7 +3345,8 @@ else needs `impl Display for {rendered}`)"
         span: &Span,
     ) {
         let trait_name = bound.trait_name.as_str();
-        let Ok(layout_slot) = self.dyn_dispatch_slot(traits, "at") else {
+        let index_key = self.trait_ref_lookup_key(trait_name);
+        let Some(layout_slot) = self.dyn_layout_slot_of(traits, &index_key, "at", span) else {
             return;
         };
         let slot = layout_slot.slot;

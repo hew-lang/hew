@@ -654,14 +654,11 @@ impl Checker {
         // Both are rejected with `E_TRAIT_NOT_OBJECT_SAFE`.
         // Every trait whose methods reach the vtable must be object safe,
         // including the supertraits whose slots this bound publishes.
+        let layout = self.dyn_layout(std::slice::from_ref(bound), span)?;
         let declaring_keys: Vec<String> = {
             let mut seen = std::collections::HashSet::new();
             std::iter::once(trait_lookup_key.clone())
-                .chain(
-                    self.dyn_layout(std::slice::from_ref(bound))
-                        .into_iter()
-                        .map(|slot| slot.trait_key),
-                )
+                .chain(layout.into_iter().map(|slot| slot.trait_key))
                 .filter(|key| seen.insert(key.clone()))
                 .collect()
         };
@@ -750,7 +747,10 @@ impl Checker {
         let assoc_bindings = canonical_dyn_assoc_bindings(traits);
         let mut method_table: Vec<(String, String)> = Vec::new();
         let mut vtable_entries: Vec<DynVtableEntry> = Vec::new();
-        for slot in self.dyn_layout(traits) {
+        let Some(layout) = self.dyn_layout(traits, span) else {
+            return false;
+        };
+        for slot in layout {
             let bound = &traits[slot.bound];
             let impl_fn_key = format!("{canonical_type_name}::{}", slot.method_name);
             let Some(mut signature) = self.lookup_trait_method(&slot.trait_key, &slot.method_name)
@@ -773,7 +773,7 @@ impl Checker {
             } else {
                 self.trait_impl_method_declaration(
                     concrete_type,
-                    &slot.trait_spelling,
+                    &slot.trait_key,
                     &slot.method_name,
                 )
                 .map(|(declaration, _)| declaration)

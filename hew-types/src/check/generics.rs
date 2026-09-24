@@ -1729,26 +1729,49 @@ impl Checker {
     /// `Display.fmt` first. A method reached through two bounds, such as a
     /// shared supertrait's, occupies one slot. Two traits that each declare
     /// a method of the same name keep separate slots; a call by that name is
-    /// ambiguous (see [`Self::dyn_dispatch_slot`]).
+    /// ambiguous.
     ///
     /// This is the one slot numbering: the coercion site fills the vtable in
     /// this order and every dispatch site reads its slot from the same list.
     /// A published slot index is `DYN_VTABLE_PREFIX + position`, past the
     /// runtime's fixed `drop_in_place`/`size_of`/`align_of` prefix
     /// (`hew-runtime/src/trait_object.rs`).
-    pub(super) fn dyn_layout(&self, traits: &[crate::ty::TraitObjectBound]) -> Vec<DynLayoutSlot> {
+    ///
+    /// A method without a declaration identity cannot be told apart from
+    /// another trait's method of the same name, so it is reported at `span`
+    /// and no layout is returned.
+    pub(super) fn dyn_layout(
+        &mut self,
+        traits: &[crate::ty::TraitObjectBound],
+        span: &Span,
+    ) -> Option<Vec<DynLayoutSlot>> {
         let mut layout = Vec::new();
         let mut visited = std::collections::HashSet::new();
         for (bound, trait_object_bound) in traits.iter().enumerate() {
-            self.push_dyn_layout_trait(
+            let pushed = self.push_dyn_layout_trait(
                 &self.trait_ref_lookup_key(&trait_object_bound.trait_name),
                 &trait_object_bound.trait_name,
                 bound,
                 &mut visited,
                 &mut layout,
             );
+            if let Err(unidentified) = pushed {
+                self.report_error(
+                    TypeErrorKind::InvalidOperation,
+                    span,
+                    format!(
+                        "trait method `{unidentified}` has no declaration identity, so \
+                         `{}` cannot dispatch it",
+                        Ty::TraitObject {
+                            traits: traits.to_vec()
+                        }
+                        .user_facing()
+                    ),
+                );
+                return None;
+            }
         }
-        layout
+        Some(layout)
     }
 
     fn push_dyn_layout_trait(
@@ -1758,29 +1781,21 @@ impl Checker {
         bound: usize,
         visited: &mut std::collections::HashSet<String>,
         layout: &mut Vec<DynLayoutSlot>,
-    ) {
+    ) -> Result<(), String> {
         if !visited.insert(key.to_string()) {
-            return;
+            return Ok(());
         }
         for super_key in self.trait_super.get(key).cloned().unwrap_or_default() {
             let super_spelling = super_key.rsplit('.').next().unwrap_or(super_key.as_str());
-            self.push_dyn_layout_trait(&super_key, super_spelling, bound, visited, layout);
+            self.push_dyn_layout_trait(&super_key, super_spelling, bound, visited, layout)?;
         }
         let Some(info) = self.trait_defs.get(key) else {
-            return;
+            return Ok(());
         };
         for method in &info.methods {
-            let Some((declaring_trait, method_id)) =
-                self.trait_method_ids_for_key(key, &method.name)
-            else {
-                // JUSTIFIED: registration mints an identity for every method
-                // it records in `trait_defs`; a slot without one could not be
-                // told apart from another trait's method of the same name.
-                unreachable!(
-                    "trait method `{key}.{}` is registered without a declaration identity",
-                    method.name
-                );
-            };
+            let (declaring_trait, method_id) = self
+                .trait_method_ids_for_key(key, &method.name)
+                .ok_or_else(|| format!("{spelling}.{}", method.name))?;
             if layout.iter().any(|slot| slot.method == method_id) {
                 continue;
             }
@@ -1795,27 +1810,42 @@ impl Checker {
                 bound,
             });
         }
+        Ok(())
     }
 
-    /// Resolve a call of `method` on a trait object to its one layout slot.
-    ///
-    /// Collects every slot of that name, as the static-bound path does for
-    /// `T: A + B` (plan §4 V14). `Err` carries the declaring traits when more
-    /// than one declares the name; an empty `Err` means none does.
-    pub(super) fn dyn_dispatch_slot(
-        &self,
+    /// The layout slot of one trait method declaration, for a dispatch the
+    /// language fixes to that method (`Display.fmt` on the entry exit path,
+    /// `Index.at` for `[]`). `trait_key` is the declaring trait's
+    /// `trait_defs` key. A miss is reported at `span`.
+    pub(super) fn dyn_layout_slot_of(
+        &mut self,
         traits: &[crate::ty::TraitObjectBound],
+        trait_key: &str,
         method: &str,
-    ) -> Result<DynLayoutSlot, Vec<String>> {
-        let mut matches: Vec<DynLayoutSlot> = self
-            .dyn_layout(traits)
+        span: &Span,
+    ) -> Option<DynLayoutSlot> {
+        let method_id = self
+            .trait_method_ids_for_key(trait_key, method)
+            .map(|(_, method_id)| method_id);
+        let slot = self
+            .dyn_layout(traits, span)?
             .into_iter()
-            .filter(|slot| slot.method_name == method)
-            .collect();
-        if matches.len() == 1 {
-            return Ok(matches.remove(0));
+            .find(|slot| Some(&slot.method) == method_id.as_ref());
+        if slot.is_none() {
+            let trait_name = trait_key.rsplit('.').next().unwrap_or(trait_key);
+            self.report_error(
+                TypeErrorKind::BoundsNotSatisfied,
+                span,
+                format!(
+                    "`{}` has no vtable slot for `{trait_name}.{method}`",
+                    Ty::TraitObject {
+                        traits: traits.to_vec()
+                    }
+                    .user_facing()
+                ),
+            );
         }
-        Err(matches.into_iter().map(|slot| slot.trait_key).collect())
+        slot
     }
 
     /// Walk `trait_name` and ALL of its (transitive) supertraits, collecting

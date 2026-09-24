@@ -265,15 +265,22 @@ impl Checker {
                 expected,
                 span,
             } => {
-                let function = (Expr::Identifier(constructor.to_string()), head.span.clone());
+                // The owner is already the builtin enum, so check its
+                // constructor directly. Re-resolving the bare variant name
+                // would let a same-named user variant (`Maybe.Some`) win.
                 let result = expected
                     .filter(|_| head.type_args.is_none())
                     .and_then(|expected| {
-                        self.check_call_against_expected_constructor(
-                            &function, None, args, expected, span,
+                        let resolved = self.subst.resolve(expected);
+                        self.check_builtin_variant_against_expected(
+                            constructor,
+                            args,
+                            &resolved,
+                            span,
                         )
                     })
-                    .unwrap_or_else(|| self.check_call(&function, None, args, span));
+                    .or_else(|| self.check_builtin_variant_call(constructor, args, span))
+                    .expect("builtin enum variants are Some, None, Ok and Err");
                 self.record_method_call_receiver_kind(
                     span,
                     MethodCallReceiverKind::EnumConstructorPath {
@@ -335,7 +342,6 @@ impl Checker {
                 MethodCallRewrite::RewriteModuleQualifiedToFunction {
                     target,
                     c_symbol: c_symbol.to_string(),
-                    elem_ty: None,
                 },
             );
         }
@@ -441,7 +447,6 @@ impl Checker {
             MethodCallRewrite::RewriteModuleQualifiedToFunction {
                 target: declaration,
                 c_symbol: internal_member,
-                elem_ty: None,
             },
         );
         Some(self.qualify_method_return_to_receiver_owner(

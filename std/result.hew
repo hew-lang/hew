@@ -1,11 +1,9 @@
-//! Result helper functions — pure Hew alternatives to the Rust FFI runtime.
+//! Result methods and helper functions.
 //!
-//! These functions provide idiomatic Hew wrappers for common `Result<T, E>`
-//! operations.  They use `match` on the built-in `Result` type and avoid
-//! FFI calls entirely for the supported element types.
-//!
-//! Results may carry both bitcopy and heap-owning payloads. Heap-owning values
-//! are released through tag-aware drop glue when the result remains owned.
+//! The `impl Result<T, E>` block below is the method surface every program sees
+//! without an import (`map`, `map_err`, `and_then` and the rest). The
+//! free functions are older type-specific helpers reached through
+//! `import std.result`.
 //!
 //! # Examples
 //!
@@ -75,16 +73,16 @@ pub fn unwrap_or_int(r: Result<i64, i64>, fallback: i64) -> i64 {
 /// Apply `f` to the contained `Ok` value, or return `Err` unchanged.
 pub fn map_int(r: Result<i64, i64>, f: fn(i64) -> i64) -> Result<i64, i64> {
     match r {
-        .Ok(v) => Ok(f(v)),
-        .Err(e) => Err(e),
+        .Ok(v) => .Ok(f(v)),
+        .Err(e) => .Err(e),
     }
 }
 
 /// Apply `f` to the contained `Err` value, or return `Ok` unchanged.
 pub fn map_err_int(r: Result<i64, i64>, f: fn(i64) -> i64) -> Result<i64, i64> {
     match r {
-        .Ok(v) => Ok(v),
-        .Err(e) => Err(f(e)),
+        .Ok(v) => .Ok(v),
+        .Err(e) => .Err(f(e)),
     }
 }
 
@@ -188,62 +186,87 @@ pub fn unwrap_or_f64(r: Result<f64, string>, fallback: f64) -> f64 {
     }
 }
 
+// ── Methods ─────────────────────────────────────────────────────────
+//
+// Every program sees these methods without an import, like `.len()`.
 impl<T, E> Result<T, E> {
-    fn is_ok(r: Result<T, E>) -> bool {
-        match r {
+    /// Returns `true` if the result contains an `Ok` value.
+    pub fn is_ok(self) -> bool {
+        match self {
             .Ok(_) => true,
             .Err(_) => false,
         }
     }
-    fn is_err(r: Result<T, E>) -> bool {
-        match r {
+    /// Returns `true` if the result contains an `Err` value.
+    pub fn is_err(self) -> bool {
+        match self {
             .Ok(_) => false,
             .Err(_) => true,
         }
     }
-    fn expect(r: Result<T, E>, reason: string) -> T {
-        match r {
+    /// Unwrap the `Ok` value. Panics with `reason` if the result is `Err`.
+    pub fn expect(consume self, reason: string) -> T {
+        match self {
             .Ok(v) => v,
             .Err(_) => panic(f"expect failed: {reason}"),
         }
     }
-    fn unwrap_or(r: Result<T, E>, fallback: T) -> T {
-        match r {
+    /// Unwrap the `Ok` value, or return `fallback` if `Err`.
+    pub fn unwrap_or(consume self, fallback: T) -> T {
+        match self {
             .Ok(v) => v,
             .Err(_) => fallback,
         }
     }
-}
-
-// ── Generic combinators ────────────────────────────────────────────────
-//
-// Plain module functions (`result.map(r, f)`), not `impl` methods, for the
-// same reason as `std.option`'s combinators: the checker only lowers a
-// `impl Result<T, E> { ... }` block when every method is one of the
-// `is_ok`/`is_err`/`expect`/`unwrap_or` markers `hew-hir` intercepts
-// directly at the call site; any other method (a fluent `map`/`map_err`)
-// hits `E_HIR: impl-block shape not yet lowered` as soon as the module
-// compiles. Report by number to the owning compiler lane (hew-lang/hew#2933).
-/// Discard the `Err` value, converting to `Some` on `Ok` or `None` on `Err`.
-pub fn ok<T, E>(r: Result<T, E>) -> Option<T> {
-    match r {
-        .Ok(v) => Some(v),
-        .Err(_) => None,
+    /// Unwrap the `Ok` value, or compute a fallback from the error with `f`.
+    pub fn unwrap_or_else(consume self, f: fn(E) -> T) -> T {
+        match self {
+            .Ok(v) => v,
+            .Err(e) => f(e),
+        }
     }
-}
-
-/// Apply `f` to the contained `Ok` value, or return the `Err` unchanged.
-pub fn map<T, E, U>(r: Result<T, E>, f: fn(T) -> U) -> Result<U, E> {
-    match r {
-        .Ok(v) => Ok(f(v)),
-        .Err(e) => Err(e),
+    /// Discard the error, converting to `Some` on `Ok` or `None` on `Err`.
+    pub fn ok(consume self) -> Option<T> {
+        match self {
+            .Ok(v) => .Some(v),
+            .Err(_) => .None,
+        }
     }
-}
-
-/// Apply `f` to the contained `Err` value, or return the `Ok` unchanged.
-pub fn map_err<T, E, F>(r: Result<T, E>, f: fn(E) -> F) -> Result<T, F> {
-    match r {
-        .Ok(v) => Ok(v),
-        .Err(e) => Err(f(e)),
+    /// Discard the value, converting to `Some` on `Err` or `None` on `Ok`.
+    pub fn err(consume self) -> Option<E> {
+        match self {
+            .Ok(_) => .None,
+            .Err(e) => .Some(e),
+        }
+    }
+    /// Apply `f` to the contained `Ok` value, or return the `Err` unchanged.
+    pub fn map<U>(consume self, f: fn(T) -> U) -> Result<U, E> {
+        match self {
+            .Ok(v) => .Ok(f(v)),
+            .Err(e) => .Err(e),
+        }
+    }
+    /// Apply `f` to the contained `Err` value, or return the `Ok` unchanged.
+    pub fn map_err<F>(consume self, f: fn(E) -> F) -> Result<T, F> {
+        match self {
+            .Ok(v) => .Ok(v),
+            .Err(e) => .Err(f(e)),
+        }
+    }
+    /// Apply `f` (itself `Result`-returning) to the contained `Ok` value, or
+    /// return the `Err` unchanged.
+    pub fn and_then<U>(consume self, f: fn(T) -> Result<U, E>) -> Result<U, E> {
+        match self {
+            .Ok(v) => f(v),
+            .Err(e) => .Err(e),
+        }
+    }
+    /// Return the result unchanged if it is `Ok`, otherwise the result
+    /// computed by `f` from the error.
+    pub fn or_else<F>(consume self, f: fn(E) -> Result<T, F>) -> Result<T, F> {
+        match self {
+            .Ok(v) => .Ok(v),
+            .Err(e) => f(e),
+        }
     }
 }

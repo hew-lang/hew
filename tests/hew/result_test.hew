@@ -141,15 +141,13 @@ fn test_unwrap_err_str_ok_panics() {
     result.unwrap_err_str(x);
 }
 
-// ── Generic combinators (hew-lang/hew#2933) ──────────────────────────
+// ── Methods ──────────────────────────────────────────────────────────
 //
-// `ok`/`map`/`map_err` are plain generic functions (`result.map(r, f)`),
-// not `impl Result<T, E>` methods, for the same reason as `std.option`'s
-// combinators — see that module's impl block doc comment.
+// Result methods are available on every Result without an import.
 #[test]
 fn test_ok_converts_ok_to_some() {
     let x: Result<i64, string> = Ok(10);
-    match result.ok(x) {
+    match x.ok() {
         .Some(v) => testing.assert_eq(v, 10),
         .None => testing.assert_true(false),
     }
@@ -159,16 +157,19 @@ fn test_ok_converts_ok_to_some() {
 fn test_ok_converts_err_to_none() {
     let x: Result<i64, string> = Err("bad");
     // Negative control: `Err` must discard its payload and become `None`.
-    match result.ok(x) {
-        .Some(_) => testing.assert_true(false),
-        .None => testing.assert_true(true),
-    }
+    testing.assert_true(x.ok().is_none());
+}
+
+#[test]
+fn test_err_converts_err_to_some() {
+    let x: Result<i64, string> = Err("bad");
+    testing.assert_eq_str(x.err().expect("error"), "bad");
 }
 
 #[test]
 fn test_map_applies_f_on_ok() {
     let x: Result<i64, string> = Ok(10);
-    match result.map(x, |v: i64| v + 1) {
+    match x.map(|v: i64| v + 1) {
         .Ok(v) => testing.assert_eq(v, 11),
         .Err(_) => testing.assert_true(false),
     }
@@ -178,7 +179,7 @@ fn test_map_applies_f_on_ok() {
 fn test_map_leaves_err_unchanged() {
     let x: Result<i64, string> = Err("bad");
     // Negative control: `f` must not run on the `Err` path.
-    match result.map(x, |v: i64| v + 1) {
+    match x.map(|v: i64| v + 1) {
         .Ok(_) => testing.assert_true(false),
         .Err(e) => testing.assert_eq_str(e, "bad"),
     }
@@ -187,7 +188,7 @@ fn test_map_leaves_err_unchanged() {
 #[test]
 fn test_map_err_applies_f_on_err() {
     let x: Result<i64, string> = Err("bad");
-    match result.map_err(x, |e: string| e + "!") {
+    match x.map_err(|e: string| e + "!") {
         .Ok(_) => testing.assert_true(false),
         .Err(e) => testing.assert_eq_str(e, "bad!"),
     }
@@ -197,8 +198,36 @@ fn test_map_err_applies_f_on_err() {
 fn test_map_err_leaves_ok_unchanged() {
     let x: Result<i64, string> = Ok(10);
     // Negative control: `f` must not run on the `Ok` path.
-    match result.map_err(x, |e: string| e + "!") {
+    match x.map_err(|e: string| e + "!") {
         .Ok(v) => testing.assert_eq(v, 10),
         .Err(_) => testing.assert_true(false),
     }
+}
+
+#[test]
+fn test_and_then_chains_on_ok() {
+    let x: Result<i64, string> = Ok(4);
+    let halved = x.and_then(|v: i64| if v % 2 == 0 { Ok(v / 2) } else { Err("odd") });
+    testing.assert_eq(halved.unwrap_or(-1), 2);
+}
+
+#[test]
+fn test_and_then_stops_at_err() {
+    let x: Result<i64, string> = Ok(3);
+    // Negative control: `f` returns `Err`, which must surface unchanged.
+    let halved = x.and_then(|v: i64| if v % 2 == 0 { Ok(v / 2) } else { Err("odd") });
+    testing.assert_true(halved.is_err());
+}
+
+#[test]
+fn test_unwrap_or_else_computes_from_err() {
+    let x: Result<i64, string> = Err("four");
+    testing.assert_eq(x.unwrap_or_else(|e: string| e.len()), 4);
+}
+
+#[test]
+fn test_or_else_recovers_from_err() {
+    let x: Result<i64, string> = Err("bad");
+    let recovered: Result<i64, i64> = x.or_else(|e: string| Ok(e.len()));
+    testing.assert_eq(recovered.unwrap_or(0), 3);
 }

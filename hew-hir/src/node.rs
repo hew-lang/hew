@@ -1185,15 +1185,12 @@ pub enum HirVarSelfMethodTarget {
     /// This marker carries no linker spelling, preventing var-self lowering
     /// from re-selecting an impl method by `Type::method` text.
     Direct,
+    /// Reached through a generic bound. The trait-method identity lives in
+    /// the sibling `call_target`; the implementation is selected once the
+    /// receiver parameter is substituted.
     StaticTrait {
         /// Type-parameter name that carries the bound (e.g. "T").
         receiver_type_param: String,
-        /// The bound trait through which the method was reached.
-        bound_trait: String,
-        /// The trait that directly declares the method (canonical identity for impl lookup).
-        declaring_trait: String,
-        /// Method name within the declaring trait.
-        method_name: String,
     },
 }
 

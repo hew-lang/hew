@@ -680,7 +680,6 @@ impl EffectVisitor<'_> {
             ) => self.target(target, span, call),
             Some(
                 MethodCallRewrite::GenericMathIntrinsic { .. }
-                | MethodCallRewrite::BuiltinOptionResult { .. }
                 | MethodCallRewrite::BuiltinVecIntoIter
                 | MethodCallRewrite::BuiltinVecIter
                 | MethodCallRewrite::BuiltinVecIterNext

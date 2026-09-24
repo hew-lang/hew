@@ -60,8 +60,8 @@ impl<I, A, B> Iterator for Map<I, A, B> where I: Iterator<Item = A> {
         // The receiver stays whole throughout, so a failing `f` or inner
         // `next` hands this adapter back to its caller intact.
         match self.iter.next() {
-            .Some(x) => Some((self.f)(x)),
-            .None => None,
+            .Some(x) => .Some((self.f)(x)),
+            .None => .None,
         }
     }
 }
@@ -84,11 +84,11 @@ impl<I, A> Iterator for Filter<I, A> where I: Iterator<Item = A> {
             match self.iter.next() {
                 .Some(x) => {
                     if (self.pred)(x) {
-                        return Some(x);
+                        return .Some(x);
                     }
                 },
                 .None => {
-                    return None;
+                    return .None;
                 },
             }
         }
@@ -117,7 +117,7 @@ impl<I, A> Iterator for Take<I, A> where I: Iterator<Item = A> {
         // Once the quota is exhausted the adapter reports `None` without
         // touching the inner iterator.
         if self.remaining <= 0 {
-            return None;
+            return .None;
         }
         self.remaining = self.remaining - 1;
         self.iter.next()
@@ -148,7 +148,7 @@ impl<I, A> Iterator for Skip<I, A> where I: Iterator<Item = A> {
                     self.remaining = self.remaining - 1;
                 },
                 .None => {
-                    return None;
+                    return .None;
                 },
             }
         }
@@ -172,9 +172,9 @@ impl<I, A> Iterator for Enumerate<I, A> where I: Iterator<Item = A> {
             .Some(item) => {
                 let index = self.index;
                 self.index = self.index + 1;
-                Some((index, item))
+                .Some((index, item))
             },
-            .None => None,
+            .None => .None,
         }
     }
 }
@@ -315,11 +315,11 @@ pub fn find<I, A>(consume it: I, pred: fn(A) -> bool) -> Option<A> where I: Iter
         match iter.next() {
             .Some(item) => {
                 if pred(item) {
-                    return Some(item);
+                    return .Some(item);
                 }
             },
             .None => {
-                return None;
+                return .None;
             },
         }
     }

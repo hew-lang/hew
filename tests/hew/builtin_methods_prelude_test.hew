@@ -1,0 +1,54 @@
+//! Methods on builtin types need no import: `Option`, `Result` and the
+//! `VecIter` adapter chain resolve their std methods like `.len()`.
+
+import std.testing;
+
+type Claim {
+    run_id: string,
+    amount: i64,
+}
+
+#[test]
+fn test_vec_chain_without_import() {
+    let values = [1, 2, 3, 4, 5, 6];
+    let doubled_evens = values.into_iter().filter(|value: i64| value % 2 == 0).map(|value: i64| value * 10).collect();
+    testing.assert_eq(doubled_evens.len(), 3);
+    testing.assert_eq(doubled_evens[0], 20);
+    testing.assert_eq(doubled_evens[2], 60);
+}
+
+#[test]
+fn test_record_chain_moves_owned_fields() {
+    let claims = [Claim { run_id: "a", amount: 5 }, Claim { run_id: "b", amount: 7 }];
+    let ids = claims.into_iter().filter(|claim: Claim| claim.amount > 5).map(|claim: Claim| claim.run_id).collect();
+    testing.assert_eq(ids.len(), 1);
+    testing.assert_eq_str(ids[0], "b");
+}
+
+#[test]
+fn test_chain_terminal_on_empty_vec() {
+    let values: Vec<i64> = [];
+    // Negative control: nothing survives the filter, so `find` is `None`.
+    testing.assert_true(values.into_iter().find(|value: i64| value > 0).is_none());
+}
+
+#[test]
+fn test_option_chain_into_result() {
+    let port: Option<string> = Some("8080");
+    let parsed: Result<i64, string> = port.map(|text: string| text.len()).ok_or("no port");
+    testing.assert_eq(parsed.unwrap_or(0), 4);
+}
+
+#[test]
+fn test_option_chain_on_none_uses_error() {
+    let port: Option<string> = None;
+    let parsed: Result<i64, string> = port.map(|text: string| text.len()).ok_or("no port");
+    testing.assert_eq_str(parsed.err().expect("error"), "no port");
+}
+
+#[test]
+fn test_result_chain_recovers() {
+    let raw: Result<string, string> = Err("missing");
+    let value = raw.map(|text: string| text.len()).unwrap_or_else(|error: string| error.len() * 100);
+    testing.assert_eq(value, 700);
+}

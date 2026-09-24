@@ -2787,11 +2787,8 @@ fn main() {
 
 `r.unwrap_or(fallback)`/`.is_ok()`/`.is_err()` also work directly as method
 calls on `Result`, with no import needed (`Option` has the matching
-`.is_some()`/`.is_none()`/`.expect()`/`.unwrap_or()` — see below). The
-hand-rolled `match` helper above stays useful for any other combinator:
-`std.option`/`std.result` add generic ones (`map`, `and_then`, `ok_or`,
-`ok`, `map_err`) as plain functions — `option.map(o, f)`, not `o.map(f)` —
-see "std.option / std.result — generic combinators" below.
+`.is_some()`/`.is_none()`/`.expect()`/`.unwrap_or()` — see below), along
+with the combinators in "Option and Result methods" below.
 
 ### Option .is_some() / .is_none()
 
@@ -2808,30 +2805,29 @@ fn main() -> i64 {
 
 For Option presence checks, `.is_some()`/`.is_none()` read cleanly and return `bool`.
 
-### std.option / std.result — generic combinators
+### Option and Result methods
 
 ```hew
-import std.option;
-import std.result;
 fn main() {
     let some_five: Option<i64> = Some(5);
     let none_i64: Option<i64> = None;
-    println(option.unwrap_or_int(option.map(some_five, |x: i64| x * 2), 0));  // 10
-    println(option.unwrap_or_else(none_i64, || 99));                         // 99
+    println(some_five.map(|x: i64| x * 2).unwrap_or(0));  // 10
+    println(none_i64.unwrap_or_else(|| 99));              // 99
 
     let ok: Result<i64, string> = Ok(10);
-    match result.map(ok, |x: i64| x + 1) { .Ok(v) => println(v), .Err(_) => {} }  // 11
+    match ok.map(|x: i64| x + 1) { .Ok(v) => println(v), .Err(_) => {} }  // 11
+    let missing: Option<i64> = None;
+    let port: Result<i64, string> = missing.ok_or("no port");
+    println(port.is_err());                               // true
 }
 ```
 
-`option.map`/`and_then`/`unwrap_or_else`/`ok_or` and `result.ok`/`map`/`map_err`
-are plain generic functions taking the value as their first argument, not
-`.method()` calls: the checker only lowers an inherent `impl Option<T>`/
-`impl Result<T, E>` block when every method is one of the small marker set
-(`is_some`/`is_none`/`expect`/`unwrap_or`, `is_ok`/`is_err`) it dispatches
-directly, so a `.map()`/`.and_then()` method form is not available on these
-two builtin types yet. Any other unwrap need not covered above still reads
-well as a `match`.
+Like `.len()`, these methods need no import. `Option` has `map`,
+`and_then`, `or_else`, `unwrap_or_else`, `ok_or` and `take`; `Result` has
+`map`, `map_err`, `and_then`, `or_else`, `unwrap_or_else`, `ok` and `err`.
+The extracting and combining methods consume the value they are called
+on, so a borrowed parameter needs `consume` to use them; `??` supplies a
+default without consuming.
 
 ### Option .take()
 

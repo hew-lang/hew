@@ -2470,6 +2470,14 @@ impl Checker {
     /// declarations and returns `None` when no owner proof exists.
     pub(super) fn canonicalize_nominal_identity(&self, ty: &Ty) -> Ty {
         match ty {
+            // The checker keeps type-parameter binders as bare names. A bare
+            // spelling some generic declaration binds is that binder, never an
+            // unrelated module's `type U` or an import alias `C` found by leaf.
+            Ty::Named {
+                name,
+                args,
+                builtin: None,
+            } if args.is_empty() && self.declared_type_param_names.contains(name) => ty.clone(),
             Ty::Named {
                 name,
                 args,
@@ -3018,7 +3026,17 @@ impl Checker {
                 for argument in args.iter_mut() {
                     self.canonicalize_actor_handles(argument);
                 }
-                if builtin.is_none() && self.name_is_actor_handle_nominal(name) {
+                // A type parameter in scope is its own binder, even when an
+                // actor or handler trait elsewhere shares its spelling.
+                let is_type_param = self
+                    .current_type_param_bounds
+                    .iter()
+                    .any(|scope| scope.bounds.contains_key(name.as_str()))
+                    || self
+                        .generic_ctx
+                        .iter()
+                        .any(|scope| scope.contains_key(name.as_str()));
+                if builtin.is_none() && !is_type_param && self.name_is_actor_handle_nominal(name) {
                     *builtin = Some(crate::BuiltinType::ActorHandle);
                 }
             }

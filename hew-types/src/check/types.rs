@@ -1748,18 +1748,6 @@ pub enum MethodCallReceiverKind {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OptionResultMethod {
-    OptionIsSome,
-    OptionIsNone,
-    OptionExpect,
-    OptionUnwrapOr,
-    ResultIsOk,
-    ResultIsErr,
-    ResultExpect,
-    ResultUnwrapOr,
-}
-
 /// Closed checker-owned identity for the `Rc<T>`/`Weak<T>` intrinsic surface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RcIntrinsicOp {
@@ -1786,13 +1774,6 @@ pub enum MethodCallRewrite {
     },
     /// Rewrite a receiver-based method call to a runtime function and inject
     /// the receiver as the first argument.
-    ///
-    /// `elem_ty` is a forward-compatible carry-channel for the element type
-    /// of generic containers (e.g. `Vec<T>`). It is currently always `None`
-    /// — the per-suffix C symbol (`hew_vec_get_f64`) still encodes the
-    /// element type. A later slice will collapse those per-suffix symbols
-    /// to a single generic symbol (`hew_vec_get_generic`) and route the
-    /// element type through this field instead.
     ///
     /// `descriptor` is the typed cross-layer identity for closed
     /// runtime/builtin calls the checker resolves with first-class family
@@ -1838,7 +1819,6 @@ pub enum MethodCallRewrite {
         /// Present only for open-set `#[extern_symbol]` methods. Carries both
         /// declaration identity and the exact expanded endpoint.
         extern_identity: Option<ExternMethodCallIdentity>,
-        elem_ty: Option<crate::resolved_ty::ResolvedTy>,
         consumes_receiver: bool,
         /// Checked source receiver contract. HIR carries writeback explicitly;
         /// an emitted body symbol is not a key for rediscovering this fact.
@@ -1857,13 +1837,10 @@ pub enum MethodCallRewrite {
     /// is the sole legitimate open-set checker-side symbol after the
     /// typed-descriptor migration (Q182=(b)) and is intentionally NOT
     /// fronted by a typed descriptor — do not attempt to type it away.
-    ///
-    /// See `RewriteToFunction::elem_ty` for the semantics of `elem_ty`.
     RewriteModuleQualifiedToFunction {
         /// Checker-selected source declaration or typed runtime endpoint.
         target: crate::check::dispatch::CallTarget,
         c_symbol: String,
-        elem_ty: Option<crate::resolved_ty::ResolvedTy>,
     },
     /// Rewrite a generic `math.abs/min/max` call to the concrete intrinsic
     /// selected from the lowered argument type in HIR.
@@ -1871,12 +1848,6 @@ pub enum MethodCallRewrite {
         op: MathGenericOp,
     },
     DeferToLowering,
-    /// Checker-authoritative lowering for builtin `Option<T>` / `Result<T, E>`
-    /// receiver methods. HIR consumes this closed marker by synthesising a
-    /// generic-enum `match`, so no Option/Result runtime symbol is involved.
-    BuiltinOptionResult {
-        method: OptionResultMethod,
-    },
     /// Checker-authoritative `CancellationToken.is_cancelled()` intrinsic.
     ///
     /// HIR/MIR consume this structured marker without re-checking the
@@ -2011,16 +1982,6 @@ pub enum MethodCallRewrite {
         /// (e.g. "T" in `fn foo<T: Show>(x: T)`). Used by MIR to look up the
         /// concrete type from the monomorphization substitution map.
         receiver_type_param: String,
-        /// The bound on the type parameter through which the method was reached
-        /// (e.g. "B" in `T: B` where `trait B: A`). Used for error messages and
-        /// for impl lookup when bound != declaring.
-        bound_trait: String,
-        /// The trait that directly declares the method in its `trait_defs` entry.
-        /// If method is inherited, `declaring_trait` != `bound_trait`.
-        /// Used as the canonical identity for impl resolution.
-        declaring_trait: String,
-        /// Method identity within the trait.
-        method_name: String,
         /// Checker-owned receiver ABI bit from the declaring trait signature.
         requires_mutable_receiver: bool,
         /// Checker-owned receiver ownership bit from the declaring trait.
@@ -3892,15 +3853,17 @@ pub struct Checker {
     ///
     /// This table is populated ONLY from the stdlib source and is never written
     /// by user-impl registration, so it is the origin-based source of truth for
-    /// dispatch on a builtin `Result`/`Option` receiver. Each stored `FnSig`
-    /// retains its impl-level `type_params` and `extern_symbol`, so call sites
-    /// instantiate it against the receiver's type arguments exactly as
-    /// `lookup_named_method_sig` would have.
-    pub(super) builtin_result_option_method_sigs: HashMap<(crate::BuiltinType, String), FnSig>,
+    /// dispatch on a builtin `Result`/`Option` receiver. Each entry pairs the
+    /// impl's own type parameters with the method signature, so call sites
+    /// instantiate the impl parameters from the receiver's type arguments and
+    /// leave method-level parameters (`map<U>`) generic.
+    pub(super) builtin_result_option_method_sigs:
+        HashMap<(crate::BuiltinType, String), (Vec<String>, FnSig)>,
     /// Canonical runtime-backed `Vec<T>` method signatures parsed from the
-    /// compiled-in `std/builtins.hew` inherent impl. Kept origin-separated from
-    /// user `Vec` declarations so builtin dispatch cannot be shadowed.
-    pub(super) builtin_vec_method_sigs: HashMap<String, FnSig>,
+    /// compiled-in `std/builtins.hew` inherent impl, paired with the impl's
+    /// type parameters. Kept origin-separated from user `Vec` declarations so
+    /// builtin dispatch cannot be shadowed.
+    pub(super) builtin_vec_method_sigs: HashMap<String, (Vec<String>, FnSig)>,
     /// Resolved reporting level for every semantic lint (see [`super::run_lints`]).
     ///
     /// Defaults to [`super::LintLevels::from_defaults`]; the CLI layer threads

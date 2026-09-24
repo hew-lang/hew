@@ -11463,14 +11463,22 @@ impl Checker {
                             id.trait_bound.as_ref(),
                         );
                         if let Some(builtin) = builtin_receiver {
+                            let impl_params: Vec<String> = id
+                                .type_params
+                                .iter()
+                                .flatten()
+                                .map(|param| param.name.clone())
+                                .collect();
                             if builtin == BuiltinType::Vec {
                                 if id.trait_bound.is_none() {
                                     self.builtin_vec_method_sigs
-                                        .insert(method.name.clone(), sig.clone());
+                                        .insert(method.name.clone(), (impl_params, sig.clone()));
                                 }
                             } else {
-                                self.builtin_result_option_method_sigs
-                                    .insert((builtin, method.name.clone()), sig.clone());
+                                self.builtin_result_option_method_sigs.insert(
+                                    (builtin, method.name.clone()),
+                                    (impl_params, sig.clone()),
+                                );
                             }
                         }
                         // Also register on qualified type name

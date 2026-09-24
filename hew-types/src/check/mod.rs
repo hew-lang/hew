@@ -74,8 +74,8 @@ pub use self::types::{
     ExternMethodCallIdentity, ExternMethodSignature, FnSig, MachineMethodKind, MathGenericOp,
     MethodCallReceiverKind, MethodCallRewrite, OpaqueResourceCandidateGraph,
     OpaqueResourceLifecycleCandidate, OpaqueResourceLifecycleConflict,
-    OpaqueResourceLifecycleConflictKind, OptionResultMethod, PatternKind, PatternPlan,
-    PayloadBinding, PayloadLiteralPattern, PayloadVariantPattern, PlanField, PlanSub, PoolAccessor,
+    OpaqueResourceLifecycleConflictKind, PatternKind, PatternPlan, PayloadBinding,
+    PayloadLiteralPattern, PayloadVariantPattern, PlanField, PlanSub, PoolAccessor,
     PoolAccessorKind, RcIntrinsicOp, ReceiverUpdate, RecoveryKind, ResolvedTraitDefault,
     ResultReturnKind, SpanKey, StackHint, TryConversionKind, TryWidthCastLowering, TypeAliasDef,
     TypeCheckOutput, TypeDef, TypeDefKind, UserComparisonDispatch, VariantDef, VariantMatch,
@@ -3638,16 +3638,16 @@ impl Checker {
 /// (`Expr::Lambda` / `Expr::SpawnLambdaActor`) it finds, paired with
 /// the capture-name when the literal is the value of a top-level
 /// `let <name> = |...| ...` binding (None otherwise — for diagnostic
-/// hint only) and the owning `module_idx` (0 for the root unit, N for
-/// the N-th non-root module in topo order).
+/// hint only) and the owning `module_idx` (0 for the root unit, otherwise
+/// the per-file index of the declaring file).
 ///
 /// The `module_idx` MUST be assigned exactly as the checker assigns
-/// `current_module_idx` while body-checking (`check_program`: iterate
-/// `module_graph.topo_order`, skip the root, and bump a 1-based index
-/// only when the module is actually present in `modules`). The
-/// capture/escape facts for each closure are stamped with that same
-/// index, so the fail-closed lookup below can only line up if this walk
-/// reproduces the assignment site-for-site.
+/// `current_module_idx` while body-checking: the file index
+/// [`hew_parser::module::ModuleGraph::file_span_indices`] gives each item.
+/// A directory module owns one index per file, so counting modules drifts
+/// for every module after it. The capture/escape facts for each closure are
+/// stamped with that same index, so the fail-closed lookup below can only
+/// line up if this walk reproduces the assignment site-for-site.
 fn collect_closure_literal_spans(program: &Program, out: &mut Vec<(Span, Option<String>, u32)>) {
     let mut root_sites: Vec<(Span, Option<String>)> = Vec::new();
     for (item, _) in &program.items {
@@ -3657,19 +3657,21 @@ fn collect_closure_literal_spans(program: &Program, out: &mut Vec<(Span, Option<
         out.push((span, name, 0));
     }
     if let Some(mg) = &program.module_graph {
-        let mut module_idx: u32 = 0;
+        let span_indices = mg.file_span_indices();
         for mod_id in &mg.topo_order {
             if *mod_id == mg.root {
                 continue;
             }
             if let Some(module) = mg.modules.get(mod_id) {
-                module_idx += 1;
-                let mut module_sites: Vec<(Span, Option<String>)> = Vec::new();
-                for (item, _) in &module.items {
-                    collect_lambda_spans_in_item(item, &mut module_sites);
-                }
-                for (span, name) in module_sites {
-                    out.push((span, name, module_idx));
+                for (item_idx, (item, _)) in module.items.iter().enumerate() {
+                    let module_idx = span_indices
+                        .item_index(mod_id, item_idx)
+                        .unwrap_or_default();
+                    let mut item_sites: Vec<(Span, Option<String>)> = Vec::new();
+                    collect_lambda_spans_in_item(item, &mut item_sites);
+                    for (span, name) in item_sites {
+                        out.push((span, name, module_idx));
+                    }
                 }
             }
         }

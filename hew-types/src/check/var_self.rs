@@ -10,7 +10,7 @@
 
 use hew_parser::ast::{BinaryOp, CompoundAssignOp, Expr, Span, Spanned, StringPart};
 
-use super::{CallTarget, Checker, MethodCallRewrite, OptionResultMethod, SpanKey};
+use super::{CallTarget, Checker, MethodCallRewrite, SpanKey};
 use crate::error::TypeErrorKind;
 use crate::Ty;
 
@@ -195,17 +195,6 @@ impl Checker {
                 MethodCallRewrite::RewriteToFunction { target, .. }
                 | MethodCallRewrite::RewriteModuleQualifiedToFunction { target, .. },
             ) => self.target_can_fail(target, receiver_ty),
-            Some(MethodCallRewrite::BuiltinOptionResult { method }) => match method {
-                OptionResultMethod::OptionExpect | OptionResultMethod::ResultExpect => true,
-                // The unused alternative is released.
-                OptionResultMethod::OptionUnwrapOr | OptionResultMethod::ResultUnwrapOr => {
-                    receiver_ty.is_none_or(|ty| self.release_may_run_close(ty))
-                }
-                OptionResultMethod::OptionIsSome
-                | OptionResultMethod::OptionIsNone
-                | OptionResultMethod::ResultIsOk
-                | OptionResultMethod::ResultIsErr => false,
-            },
             Some(
                 MethodCallRewrite::CopyCloneNoop
                 | MethodCallRewrite::CancellationTokenIsCancelled

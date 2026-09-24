@@ -25,9 +25,9 @@ impl Parser<'_> {
 
     /// Parses the `'label` suffix shared by `break` and `continue`, in both
     /// statement and expression position.
-    pub(crate) fn parse_control_flow_label(&mut self) -> Option<String> {
+    pub(crate) fn parse_control_flow_label(&mut self) -> Option<Ident> {
         if let Some(Token::Label(l)) = self.peek() {
-            let name = l[1..].to_string();
+            let name = Ident::new(&l[1..]);
             self.advance();
             Some(name)
         } else {
@@ -180,7 +180,7 @@ impl Parser<'_> {
                     let span = expr.1.start..value.1.end;
                     // `_ = expr;` is the explicit discard: the same statement as
                     // `let _ = expr;`, spelled without a binding no one reads.
-                    if matches!(&expr.0, Expr::Identifier(name) if name == "_") {
+                    if matches!(&expr.0, Expr::Ident(name) if name.name == sym::UNDERSCORE) {
                         stmts.push((
                             Stmt::Let {
                                 pattern: (Pattern::Wildcard, expr.1.clone()),
@@ -875,7 +875,7 @@ impl Parser<'_> {
     pub(crate) fn parse_labeled_stmt(&mut self, start: usize) -> Option<Spanned<Stmt>> {
         let label_tok = self.advance()?;
         let label = if let (Token::Label(l), _) = label_tok {
-            l[1..].to_string()
+            Ident::new(&l[1..])
         } else {
             return None;
         };

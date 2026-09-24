@@ -3,6 +3,7 @@
 ///
 /// The parser preserves the final dotted segment as a method call; nominal
 /// constructor resolution happens later in the type checker.
+use hew_parser::ast::Ident;
 use hew_parser::ast::{CallArg, Expr, Item, Stmt};
 
 fn first_body_expr(source: &str) -> Expr {
@@ -46,11 +47,11 @@ fn cross_module_enum_variant_tuple_payload_parses() {
     };
     assert!(
         matches!(&receiver.0, Expr::FieldAccess { object, field }
-            if matches!(&object.0, Expr::Identifier(n) if n == "a") && field == "B"),
+            if matches!(&object.0, Expr::Ident(n) if n.name.as_str() == "a") && field.0.name.as_str() == "B"),
         "expected a.B receiver, got: {:?}",
         receiver.0
     );
-    assert_eq!(method, "C");
+    assert_eq!(method.0, Ident::new("C"));
     assert_eq!(args.len(), 1);
     let CallArg::Positional((Expr::Literal(lit), _)) = &args[0] else {
         panic!("expected positional literal arg, got: {:?}", args[0]);
@@ -75,13 +76,13 @@ fn cross_module_enum_nested_segments_parses() {
         panic!("expected MethodCall, got: {expr:?}");
     };
     assert!(
-        matches!(&receiver.0, Expr::FieldAccess { object, field } if field == "C"
-            && matches!(&object.0, Expr::FieldAccess { object, field } if field == "B"
-                && matches!(&object.0, Expr::Identifier(n) if n == "a"))),
+        matches!(&receiver.0, Expr::FieldAccess { object, field } if field.0.name.as_str() == "C"
+            && matches!(&object.0, Expr::FieldAccess { object, field } if field.0.name.as_str() == "B"
+                && matches!(&object.0, Expr::Ident(n) if n.name.as_str() == "a"))),
         "expected a.B.C receiver, got: {:?}",
         receiver.0
     );
-    assert_eq!(method, "D");
+    assert_eq!(method.0, Ident::new("D"));
     assert_eq!(args.len(), 1);
 }
 
@@ -100,13 +101,13 @@ fn cross_module_enum_chained_field_then_variant_parses() {
         panic!("expected MethodCall, got: {expr:?}");
     };
     assert!(
-        matches!(&receiver.0, Expr::FieldAccess { object, field } if field == "C"
-            && matches!(&object.0, Expr::FieldAccess { object, field } if field == "b"
-                && matches!(&object.0, Expr::Identifier(n) if n == "a"))),
+        matches!(&receiver.0, Expr::FieldAccess { object, field } if field.0.name.as_str() == "C"
+            && matches!(&object.0, Expr::FieldAccess { object, field } if field.0.name.as_str() == "b"
+                && matches!(&object.0, Expr::Ident(n) if n.name.as_str() == "a"))),
         "expected a.b.C receiver, got: {:?}",
         receiver.0
     );
-    assert_eq!(method, "D");
+    assert_eq!(method.0, Ident::new("D"));
     assert_eq!(args.len(), 1);
 }
 
@@ -124,10 +125,10 @@ fn single_segment_method_call_regression() {
         panic!("expected MethodCall, got: {expr:?}");
     };
     assert!(
-        matches!(receiver.0, Expr::Identifier(ref n) if n == "obj"),
+        matches!(receiver.0, Expr::Ident(ref n) if n.name.as_str() == "obj"),
         "expected Identifier(obj) receiver"
     );
-    assert_eq!(method, "method");
+    assert_eq!(method.0, Ident::new("method"));
     assert!(args.is_empty());
 }
 
@@ -140,10 +141,10 @@ fn field_access_regression() {
         panic!("expected FieldAccess, got: {expr:?}");
     };
     assert!(
-        matches!(object.0, Expr::Identifier(ref n) if n == "obj"),
+        matches!(object.0, Expr::Ident(ref n) if n.name.as_str() == "obj"),
         "expected Identifier(obj) object"
     );
-    assert_eq!(field, "field");
+    assert_eq!(field.0, Ident::new("field"));
 }
 
 // --- Positive: multi-arg cross-module variant ---
@@ -161,10 +162,10 @@ fn cross_module_enum_variant_multi_arg_parses() {
     };
     assert!(
         matches!(&receiver.0, Expr::FieldAccess { object, field }
-            if matches!(&object.0, Expr::Identifier(n) if n == "mod") && field == "Outer"),
+            if matches!(&object.0, Expr::Ident(n) if n.name.as_str() == "mod") && field.0.name.as_str() == "Outer"),
         "expected mod.Outer receiver, got: {:?}",
         receiver.0
     );
-    assert_eq!(method, "Inner");
+    assert_eq!(method.0, Ident::new("Inner"));
     assert_eq!(args.len(), 2);
 }

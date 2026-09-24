@@ -136,7 +136,7 @@ fn labelled_break_in_match_arm_parses() {
     };
     assert!(matches!(
         &stmts[0].0,
-        Stmt::Break { label: Some(l), value: None } if l == "outer"
+        Stmt::Break { label: Some(l), value: None } if l.name.as_str() == "outer"
     ));
 }
 

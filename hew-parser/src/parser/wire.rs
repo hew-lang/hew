@@ -65,7 +65,10 @@ impl Parser<'_> {
                 }
                 Some(tok) if Self::is_ident_token(tok) => {
                     let saved = self.save_pos();
-                    let ident = self.expect_ident().unwrap_or_default();
+                    let ident = self
+                        .expect_ident()
+                        .map(|ident| ident.to_string())
+                        .unwrap_or_default();
                     match ident.as_str() {
                         "repeated" => {
                             modifiers.is_repeated = true;
@@ -272,7 +275,7 @@ impl Parser<'_> {
                 span: field_start..self.last_token_end,
             });
             field_meta.push((
-                field_name,
+                field_name.to_string(),
                 parsed_field.explicit_number,
                 parsed_field.modifiers.is_optional,
                 parsed_field.modifiers.is_deprecated,

@@ -3,6 +3,7 @@
 ///
 /// Slice I-a: parser-only substrate.  Checker resolution (Slice I-b) is a
 /// separate lane; tests here verify AST shape, not type correctness.
+use hew_parser::ast::Ident;
 use hew_parser::ast::{Expr, Item, Stmt};
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -56,12 +57,12 @@ fn first_body_expr_with_let(source: &str) -> Expr {
 // ── Positive: struct literal with named fields ────────────────────────────────
 
 /// `fs.IoError.Custom { code: 42 }` parses to
-/// `StructInit { name: "fs.IoError.Custom", fields: [("code", 42)], ... }`
+/// `StructInit { path: fs.IoError.Custom, fields: [("code", 42)], ... }`
 #[test]
 fn module_qualified_struct_literal_with_field_parses() {
     let expr = first_body_expr_with_let("fn f() { let e = fs.IoError.Custom { code: 42 }; }");
     let Expr::StructInit {
-        name,
+        path,
         fields,
         type_args,
         base,
@@ -69,9 +70,9 @@ fn module_qualified_struct_literal_with_field_parses() {
     else {
         panic!("expected StructInit, got: {expr:?}");
     };
-    assert_eq!(name, "fs.IoError.Custom");
+    assert_eq!(path.to_string(), "fs.IoError.Custom");
     assert_eq!(fields.len(), 1);
-    assert_eq!(fields[0].0, "code");
+    assert_eq!(fields[0].0, Ident::new("code"));
     assert!(type_args.is_none());
     assert!(base.is_none());
 }
@@ -80,23 +81,23 @@ fn module_qualified_struct_literal_with_field_parses() {
 #[test]
 fn module_qualified_struct_literal_multiple_fields_parses() {
     let expr = first_body_expr_with_let("fn f() { let e = m.E.V { x: 1, y: 2 }; }");
-    let Expr::StructInit { name, fields, .. } = expr else {
+    let Expr::StructInit { path, fields, .. } = expr else {
         panic!("expected StructInit, got: {expr:?}");
     };
-    assert_eq!(name, "m.E.V");
+    assert_eq!(path.to_string(), "m.E.V");
     assert_eq!(fields.len(), 2);
-    assert_eq!(fields[0].0, "x");
-    assert_eq!(fields[1].0, "y");
+    assert_eq!(fields[0].0, Ident::new("x"));
+    assert_eq!(fields[1].0, Ident::new("y"));
 }
 
 /// Empty braces: `m.E.V {}` is an empty struct literal, not a block.
 #[test]
 fn module_qualified_struct_literal_empty_braces_parses() {
     let expr = first_body_expr_with_let("fn f() { let e = m.E.V {}; }");
-    let Expr::StructInit { name, fields, .. } = expr else {
+    let Expr::StructInit { path, fields, .. } = expr else {
         panic!("expected StructInit, got: {expr:?}");
     };
-    assert_eq!(name, "m.E.V");
+    assert_eq!(path.to_string(), "m.E.V");
     assert!(fields.is_empty());
 }
 
@@ -105,14 +106,14 @@ fn module_qualified_struct_literal_empty_braces_parses() {
 fn module_qualified_struct_literal_functional_update_parses() {
     let expr = first_body_expr_with_let("fn f() { let e = m.E.V { x: 1, ..old }; }");
     let Expr::StructInit {
-        name, fields, base, ..
+        path, fields, base, ..
     } = expr
     else {
         panic!("expected StructInit, got: {expr:?}");
     };
-    assert_eq!(name, "m.E.V");
+    assert_eq!(path.to_string(), "m.E.V");
     assert_eq!(fields.len(), 1);
-    assert_eq!(fields[0].0, "x");
+    assert_eq!(fields[0].0, Ident::new("x"));
     assert!(base.is_some());
 }
 
@@ -120,10 +121,10 @@ fn module_qualified_struct_literal_functional_update_parses() {
 #[test]
 fn module_qualified_struct_literal_trailing_comma_parses() {
     let expr = first_body_expr_with_let("fn f() { let e = m.E.V { x: 1, }; }");
-    let Expr::StructInit { name, fields, .. } = expr else {
+    let Expr::StructInit { path, fields, .. } = expr else {
         panic!("expected StructInit, got: {expr:?}");
     };
-    assert_eq!(name, "m.E.V");
+    assert_eq!(path.to_string(), "m.E.V");
     assert_eq!(fields.len(), 1);
 }
 
@@ -142,15 +143,15 @@ fn regression_cross_module_enum_variant_call_unaffected() {
     else {
         panic!("expected MethodCall, got: {expr:?}");
     };
-    assert_eq!(method, "TimedOut");
+    assert_eq!(method.0, Ident::new("TimedOut"));
     assert!(
         matches!(
             receiver.0,
             Expr::FieldAccess {
                 ref object,
                 ref field,
-            } if matches!(object.0, Expr::Identifier(ref name) if name == "fs")
-                && field == "IoError"
+            } if matches!(object.0, Expr::Ident(ref name) if name.name.as_str() == "fs")
+                && field.0.name.as_str() == "IoError"
         ),
         "receiver must be the fs.IoError field path, got: {:?}",
         receiver.0
@@ -224,8 +225,8 @@ fn module_qualified_struct_literal_bad_field_value_emits_error() {
 #[test]
 fn module_qualified_struct_literal_three_segment_path_parses() {
     let expr = first_body_expr_with_let("fn f() { let e = m.A.B.C { x: 1 }; }");
-    let Expr::StructInit { name, .. } = expr else {
+    let Expr::StructInit { path, .. } = expr else {
         panic!("expected StructInit, got: {expr:?}");
     };
-    assert_eq!(name, "m.A.B.C");
+    assert_eq!(path.to_string(), "m.A.B.C");
 }

@@ -68,7 +68,7 @@ fn main() {
             ..
         } => {
             assert!(
-                matches!(&function.0, Expr::Identifier(name) if name == "link"),
+                matches!(&function.0, Expr::Ident(name) if name.name.as_str() == "link"),
                 "expected Identifier(\"link\") as function; got {:?}",
                 &function.0
             );
@@ -85,7 +85,7 @@ fn main() {
                 }
             };
             assert!(
-                matches!(arg_expr, Expr::Identifier(n) if n == "actor_handle"),
+                matches!(arg_expr, Expr::Ident(n) if n.name.as_str() == "actor_handle"),
                 "expected Identifier(\"actor_handle\"); got {arg_expr:?}"
             );
         }
@@ -126,7 +126,7 @@ fn main() {
             ..
         } => {
             assert!(
-                matches!(&function.0, Expr::Identifier(name) if name == "monitor"),
+                matches!(&function.0, Expr::Ident(name) if name.name.as_str() == "monitor"),
                 "expected Identifier(\"monitor\") as function; got {:?}",
                 &function.0
             );
@@ -142,7 +142,7 @@ fn main() {
                 }
             };
             assert!(
-                matches!(arg_expr, Expr::Identifier(n) if n == "actor_handle"),
+                matches!(arg_expr, Expr::Ident(n) if n.name.as_str() == "actor_handle"),
                 "expected Identifier(\"actor_handle\"); got {arg_expr:?}"
             );
         }

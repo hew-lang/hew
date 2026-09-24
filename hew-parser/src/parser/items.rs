@@ -68,7 +68,7 @@ impl Parser<'_> {
         while self.peek() == Some(&Token::HashBracket) {
             let start = self.peek_span().start;
             self.advance(); // consume `#[`
-            let Some(name) = self.expect_ident() else {
+            let Some(name) = self.expect_ident().map(|ident| ident.to_string()) else {
                 break;
             };
             let mut args = Vec::new();
@@ -76,12 +76,19 @@ impl Parser<'_> {
                 while self.peek() != Some(&Token::RightParen) && !self.at_end() {
                     if self.peek().is_some_and(|tok| Self::is_ident_token(tok)) {
                         // Safe to call: we know the token is identifier-like
-                        let key = self.expect_ident().unwrap_or_default();
+                        let key = self
+                            .expect_ident()
+                            .map(|ident| ident.to_string())
+                            .unwrap_or_default();
                         // Check for key = value syntax
                         if self.eat(&Token::Equal) {
                             let value = if self.peek().is_some_and(|tok| Self::is_ident_token(tok))
                             {
-                                Some(self.expect_ident().unwrap_or_default())
+                                Some(
+                                    self.expect_ident()
+                                        .map(|ident| ident.to_string())
+                                        .unwrap_or_default(),
+                                )
                             } else if let Some(Token::StringLit(s) | Token::RawString(s)) =
                                 self.peek()
                             {
@@ -143,7 +150,10 @@ impl Parser<'_> {
                             Self::is_ident_token(tok)
                                 && !matches!(tok, Token::RightParen | Token::Comma)
                         }) {
-                            let unit = self.expect_ident().unwrap_or_default();
+                            let unit = self
+                                .expect_ident()
+                                .map(|ident| ident.to_string())
+                                .unwrap_or_default();
                             args.push(AttributeArg::Positional(unit));
                         }
                     } else {
@@ -667,10 +677,13 @@ impl Parser<'_> {
             params.insert(
                 0,
                 Param {
-                    name: "self".to_string(),
+                    name: Ident::from_symbol(sym::SELF_VALUE),
                     ty: (
                         TypeExpr::Named {
-                            name: "Self".to_string(),
+                            path: Path::single(
+                                Ident::from_symbol(sym::SELF_TYPE),
+                                consuming_self_span.clone(),
+                            ),
                             type_args: None,
                         },
                         consuming_self_span,
@@ -1325,10 +1338,13 @@ impl Parser<'_> {
                     params.insert(
                         0,
                         Param {
-                            name: "self".to_string(),
+                            name: Ident::from_symbol(sym::SELF_VALUE),
                             ty: (
                                 TypeExpr::Named {
-                                    name: "Self".to_string(),
+                                    path: Path::single(
+                                        Ident::from_symbol(sym::SELF_TYPE),
+                                        consuming_self_span.clone(),
+                                    ),
                                     type_args: None,
                                 },
                                 consuming_self_span,
@@ -1610,7 +1626,9 @@ impl Parser<'_> {
             self.expect(&Token::Semicolon)?;
             let file_path = unquote_str(raw).to_owned();
             return Some(ImportDecl {
-                path: Vec::new(),
+                path: Path {
+                    segments: Vec::new(),
+                },
                 spec: None,
                 selection_trailing_comma: false,
                 module_alias: None,
@@ -1721,7 +1739,7 @@ impl Parser<'_> {
         self.expect(&Token::Semicolon)?;
 
         Some(ImportDecl {
-            path,
+            path: Path { segments: path },
             spec,
             selection_trailing_comma,
             module_alias,
@@ -1732,12 +1750,12 @@ impl Parser<'_> {
         })
     }
 
-    fn diagnose_hyphenated_import_package(&mut self, path: &[String]) -> bool {
+    fn diagnose_hyphenated_import_package(&mut self, path: &[Spanned<Ident>]) -> bool {
         if path.len() != 1 || self.peek() != Some(&Token::Minus) {
             return false;
         }
 
-        let mut invalid_name = path[0].clone();
+        let mut invalid_name = path[0].0.to_string();
         let mut lookahead = 0;
         while self.peek_at(self.pos + lookahead) == Some(&Token::Minus) {
             let Some(segment) = self

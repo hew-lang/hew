@@ -1,3 +1,4 @@
+use hew_parser::ast::Ident;
 use hew_parser::ast::{CallableCallMode, Expr, Item, Stmt, TypeExpr};
 use hew_parser::{ast_eq::program_eq_ignoring_spans, fmt::format_source, parse};
 
@@ -38,7 +39,7 @@ fn compose(flag: bool, left: fn[clone]() -> Option<i64>, right: fn[once, clone](
         panic!("private closure")
     };
     assert!(!is_move);
-    assert_eq!(private_captures[0].0, "count");
+    assert_eq!(private_captures[0].0, Ident::new("count"));
     let formatted = format_source(source, &parsed.program);
     assert!(formatted.contains("move capture(var count) |x: i64| -> i64"));
     let reparsed = parse(&formatted);

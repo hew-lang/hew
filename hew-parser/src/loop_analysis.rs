@@ -3,7 +3,7 @@
 /// Provides break-detection over the raw AST so both the type checker
 /// (`hew-types`) and HIR lowering (`hew-hir`) can share the logic without
 /// duplicating it.
-use crate::ast::{condition_exprs, Block, Expr, Stmt};
+use crate::ast::{condition_exprs, Block, Expr, Ident, Stmt};
 
 /// Returns `true` if the `body` of a `loop { … }` contains a `break`
 /// statement that would exit THAT loop — i.e., a break that targets the
@@ -26,16 +26,16 @@ use crate::ast::{condition_exprs, Block, Expr, Stmt};
 /// escapes to the outer loop.  The inverse (`_ => false`) is the unsound
 /// direction: it would cause an infinite loop to be mis-typed as `Never`.
 #[must_use]
-pub fn loop_body_has_break(body: &Block, self_label: Option<&str>) -> bool {
+pub fn loop_body_has_break(body: &Block, self_label: Option<Ident>) -> bool {
     ast_block_has_break(body, BreakQuery::TargetsLoop(self_label), 0)
 }
 
 /// What a walk is looking for.
 #[derive(Clone, Copy)]
-enum BreakQuery<'a> {
+enum BreakQuery {
     /// A `break` that exits the loop identified by this label — the question
     /// [`loop_body_has_break`] asks.
-    TargetsLoop(Option<&'a str>),
+    TargetsLoop(Option<Ident>),
     /// Any `break` or `continue` that transfers control OUT of the region being
     /// walked, to a loop written outside it.
     LeavesRegion,
@@ -72,7 +72,7 @@ pub fn stmt_leaves_enclosing_loop(stmt: &Stmt) -> bool {
     ast_stmt_has_break(stmt, BreakQuery::LeavesRegion, 0)
 }
 
-fn ast_block_has_break(block: &Block, query: BreakQuery<'_>, depth: usize) -> bool {
+fn ast_block_has_break(block: &Block, query: BreakQuery, depth: usize) -> bool {
     for (stmt, _) in &block.stmts {
         if ast_stmt_has_break(stmt, query, depth) {
             return true;
@@ -88,7 +88,7 @@ fn ast_block_has_break(block: &Block, query: BreakQuery<'_>, depth: usize) -> bo
     clippy::too_many_lines,
     reason = "exhaustive walker over every Stmt variant; splitting would hide completeness guarantees"
 )]
-fn ast_stmt_has_break(stmt: &Stmt, query: BreakQuery<'_>, depth: usize) -> bool {
+fn ast_stmt_has_break(stmt: &Stmt, query: BreakQuery, depth: usize) -> bool {
     match stmt {
         Stmt::Break { label, value } => {
             // Does THIS break leave the region under analysis?
@@ -96,11 +96,11 @@ fn ast_stmt_has_break(stmt: &Stmt, query: BreakQuery<'_>, depth: usize) -> bool 
                 BreakQuery::TargetsLoop(self_label) => {
                     if depth == 0 {
                         // An unlabeled break, or a break with our own label, exits this loop.
-                        label.is_none() || label.as_deref() == self_label
+                        label.is_none() || *label == self_label
                     } else {
                         // Inside an inner loop, only a break that explicitly names OUR
                         // label escapes to the outer loop.
-                        label.as_deref() == self_label && self_label.is_some()
+                        *label == self_label && self_label.is_some()
                     }
                 }
                 // A break written directly in the region targets a loop outside
@@ -253,7 +253,7 @@ fn ast_stmt_has_break(stmt: &Stmt, query: BreakQuery<'_>, depth: usize) -> bool 
     clippy::too_many_lines,
     reason = "exhaustive walker over every Expr variant; splitting would hide completeness guarantees"
 )]
-fn ast_expr_has_break(expr: &Expr, query: BreakQuery<'_>, depth: usize) -> bool {
+fn ast_expr_has_break(expr: &Expr, query: BreakQuery, depth: usize) -> bool {
     match expr {
         // ── Structural forms with direct block/statement children ─────────
         Expr::Block(block) => ast_block_has_break(block, query, depth),
@@ -470,7 +470,7 @@ fn ast_expr_has_break(expr: &Expr, query: BreakQuery<'_>, depth: usize) -> bool 
         Expr::Lambda { .. }
         | Expr::SpawnLambdaActor { .. }
         | Expr::Literal(_)
-        | Expr::Identifier(_)
+        | Expr::Ident(_)
         | Expr::QualifiedAssoc(_)
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
@@ -510,7 +510,7 @@ mod tests {
 
     fn labeled_break(label: &str) -> Spanned<Stmt> {
         sp(Stmt::Break {
-            label: Some(label.to_owned()),
+            label: Some(Ident::new(label)),
             value: None,
         })
     }
@@ -577,7 +577,7 @@ mod tests {
     fn break_inside_expr_iflet_then_detected() {
         // `loop { if let _ = v { break } }` — Expr::IfLet then-body
         let if_let_expr = sp(Expr::IfLet {
-            conditions: vec![wildcard_let(sp(Expr::Identifier("v".into())))],
+            conditions: vec![wildcard_let(sp(Expr::Ident(Ident::new("v"))))],
             body: block_with_stmts(vec![bare_break()]),
             else_body: None,
         });
@@ -588,7 +588,7 @@ mod tests {
     #[test]
     fn break_inside_expr_iflet_else_detected() {
         let if_let_expr = sp(Expr::IfLet {
-            conditions: vec![wildcard_let(sp(Expr::Identifier("v".into())))],
+            conditions: vec![wildcard_let(sp(Expr::Ident(Ident::new("v"))))],
             body: empty_block(),
             else_body: Some(Box::new(sp(Expr::Block(block_with_stmts(vec![
                 bare_break(),
@@ -646,7 +646,7 @@ mod tests {
             body: inner_body,
         });
         let body = block_with_stmts(vec![inner_loop]);
-        assert!(loop_body_has_break(&body, Some("outer")));
+        assert!(loop_body_has_break(&body, Some(Ident::new("outer"))));
     }
 
     #[test]
@@ -655,7 +655,7 @@ mod tests {
         // the inner loop, not the unlabeled outer loop.
         let inner_body = block_with_stmts(vec![labeled_break("inner")]);
         let inner_loop = sp(Stmt::Loop {
-            label: Some("inner".into()),
+            label: Some(Ident::new("inner")),
             body: inner_body,
         });
         let body = block_with_stmts(vec![inner_loop]);
@@ -669,7 +669,7 @@ mod tests {
         // `loop { f({ break }) }` — break inside a block passed as a call arg
         let arg_block = sp(Expr::Block(block_with_stmts(vec![bare_break()])));
         let call_expr = sp(Expr::Call {
-            function: Box::new(sp(Expr::Identifier("f".into()))),
+            function: Box::new(sp(Expr::Ident(Ident::new("f")))),
             type_args: None,
             args: vec![crate::ast::CallArg::Positional(arg_block)],
             is_tail_call: false,
@@ -685,7 +685,7 @@ mod tests {
         // `loop { if c { break } }` — break in then-block exits the loop
         let then_block = block_with_stmts(vec![bare_break()]);
         let if_stmt = sp(Stmt::If {
-            condition: sp(Expr::Identifier("c".into())),
+            condition: sp(Expr::Ident(Ident::new("c"))),
             then_block,
             else_block: None,
         });
@@ -743,7 +743,7 @@ mod tests {
             })))),
         ]);
         let binary = sp(Expr::Binary {
-            left: Box::new(sp(Expr::Identifier("a".into()))),
+            left: Box::new(sp(Expr::Ident(Ident::new("a")))),
             op: BinaryOp::Add,
             right: Box::new(sp(Expr::Block(rhs_block))),
         });
@@ -820,7 +820,7 @@ mod tests {
         // `loop { while cond { } }` — a plain identifier condition has no break.
         let while_stmt = sp(Stmt::While {
             label: None,
-            condition: sp(Expr::Identifier("cond".into())),
+            condition: sp(Expr::Ident(Ident::new("cond"))),
             body: empty_block(),
         });
         assert!(!loop_body_has_break(
@@ -836,7 +836,7 @@ mod tests {
         // outer loop (the iterable is evaluated in the enclosing scope).
         let for_stmt = sp(Stmt::For {
             label: None,
-            pattern: sp(Pattern::Identifier("x".into())),
+            pattern: sp(Pattern::Identifier(Ident::new("x"))),
             iterable: break_block_expr(),
             body: empty_block(),
         });
@@ -850,8 +850,8 @@ mod tests {
         // not the outer loop, so the outer loop stays break-less.
         let for_stmt = sp(Stmt::For {
             label: None,
-            pattern: sp(Pattern::Identifier("x".into())),
-            iterable: sp(Expr::Identifier("v".into())),
+            pattern: sp(Pattern::Identifier(Ident::new("x"))),
+            iterable: sp(Expr::Ident(Ident::new("v"))),
             body: block_with_stmts(vec![bare_break()]),
         });
         assert!(!loop_body_has_break(
@@ -891,7 +891,7 @@ mod tests {
             body: sp(Expr::Literal(int_lit(1))),
         };
         let m = sp(Stmt::Match {
-            scrutinee: sp(Expr::Identifier("v".into())),
+            scrutinee: sp(Expr::Ident(Ident::new("v"))),
             arms: vec![arm],
         });
         assert!(loop_body_has_break(&block_with_stmts(vec![m]), None));
@@ -971,7 +971,7 @@ mod tests {
             body: sp(Expr::Literal(int_lit(2))),
         };
         let m = sp(Expr::Match {
-            scrutinee: Box::new(sp(Expr::Identifier("v".into()))),
+            scrutinee: Box::new(sp(Expr::Ident(Ident::new("v")))),
             arms: vec![guarded, fallback],
         });
         assert!(loop_body_has_break(
@@ -1005,7 +1005,7 @@ mod tests {
         });
         assert!(loop_body_has_break(
             &block_with_stmts(vec![while_stmt]),
-            Some("outer")
+            Some(Ident::new("outer"))
         ));
     }
 
@@ -1037,12 +1037,12 @@ mod tests {
             value: Some(labeled_break_block_expr("outer")),
         });
         let inner_loop = sp(Stmt::Loop {
-            label: Some("inner".into()),
+            label: Some(Ident::new("inner")),
             body: block_with_stmts(vec![inner_break]),
         });
         assert!(loop_body_has_break(
             &block_with_stmts(vec![inner_loop]),
-            Some("outer")
+            Some(Ident::new("outer"))
         ));
     }
 }

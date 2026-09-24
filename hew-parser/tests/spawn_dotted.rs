@@ -1,3 +1,4 @@
+use hew_parser::ast::Ident;
 use hew_parser::ast::{Expr, Item};
 
 #[test]
@@ -33,7 +34,7 @@ fn main() {
     let mut found_field_access = false;
     for (item, _) in &result.program.items {
         if let Item::Function(f) = item {
-            if f.name == "main" {
+            if f.name == Ident::new("main") {
                 // Walk into the block to find the spawn
                 for (stmt, _) in &f.body.stmts {
                     if let hew_parser::ast::Stmt::Let {
@@ -42,7 +43,7 @@ fn main() {
                     } = stmt
                     {
                         if let Expr::FieldAccess { field, .. } = &target.0 {
-                            assert_eq!(field, "Worker");
+                            assert_eq!(field.0, Ident::new("Worker"));
                             found_field_access = true;
                         }
                     }

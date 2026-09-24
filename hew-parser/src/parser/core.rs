@@ -772,17 +772,24 @@ impl<'src> Parser<'src> {
         }
     }
 
-    pub(crate) fn expect_ident(&mut self) -> Option<String> {
+    pub(crate) fn expect_ident(&mut self) -> Option<Ident> {
+        self.expect_ident_spanned().map(|(ident, _)| ident)
+    }
+
+    /// Consume an identifier and keep its span, for path segments and member
+    /// names that tooling points at.
+    pub(crate) fn expect_ident_spanned(&mut self) -> Option<Spanned<Ident>> {
+        let span = self.peek_span();
         match self.peek() {
             Some(Token::Identifier(name)) => {
-                let name = name.to_string();
+                let ident = Ident::new(name);
                 self.advance();
-                Some(name)
+                Some((ident, span))
             }
             Some(tok) => {
                 if let Some(name) = Self::contextual_keyword_name(tok) {
                     self.advance();
-                    Some(name.to_string())
+                    Some((Ident::new(name), span))
                 } else if let Some(kw) = tok.keyword_str() {
                     // Reserved keyword in a name position — emit a targeted
                     // diagnostic so the user knows the word is off-limits.
@@ -839,20 +846,21 @@ impl<'src> Parser<'src> {
         }
     }
 
-    pub(crate) fn expect_import_path_segment(&mut self) -> Option<String> {
+    pub(crate) fn expect_import_path_segment(&mut self) -> Option<Spanned<Ident>> {
+        let span = self.peek_span();
         match self.peek() {
             Some(tok) => {
                 if let Some(name) = Self::import_path_segment_keyword(tok) {
                     self.advance();
-                    Some(name.to_string())
+                    Some((Ident::new(name), span))
                 } else if let Some(name) = Self::contextual_keyword_name(tok) {
                     self.advance();
-                    Some(name.to_string())
+                    Some((Ident::new(name), span))
                 } else {
-                    self.expect_ident()
+                    self.expect_ident_spanned()
                 }
             }
-            None => self.expect_ident(),
+            None => self.expect_ident_spanned(),
         }
     }
 

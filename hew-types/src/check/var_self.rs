@@ -4,13 +4,13 @@
 //! as last written, instead of releasing it. A field moved out of the receiver
 //! and not yet restored would leave that place with a hole, so every operation
 //! that can fail while a receiver field is out is refused here, naming the
-//! field and the operation. The rule is deliberately conservative: an
-//! operation counts as fallible unless it is a construction, a read, a
-//! comparison or plain control flow.
+//! field and the operation. A call fails where SIR gives it a failure edge:
+//! a source callee always can, and a runtime operation can where its
+//! semantic contract says so.
 
-use hew_parser::ast::{BinaryOp, CompoundAssignOp, Expr, Span};
+use hew_parser::ast::{BinaryOp, CompoundAssignOp, Expr, Span, Spanned, StringPart};
 
-use super::{CallTarget, Checker, SpanKey};
+use super::{CallTarget, Checker, MethodCallRewrite, OptionResultMethod, SpanKey};
 use crate::error::TypeErrorKind;
 use crate::Ty;
 
@@ -68,17 +68,30 @@ impl Checker {
         if self.var_self_receiver_in_scope().is_none() {
             return;
         }
+        let key = SpanKey::in_module(span, self.current_module_idx);
         let operation = match expr {
-            Expr::Call { .. } if self.call_can_fail(span) => "this call",
-            Expr::MethodCall { method, .. } => {
-                let operation = format!("`{method}(...)`");
-                self.refuse_fallible_with_receiver_hole(span, &operation);
-                return;
-            }
+            Expr::Call { .. } if self.call_can_fail(&key) => "this call".to_string(),
+            Expr::MethodCall {
+                receiver, method, ..
+            } if self.method_call_can_fail(&key, receiver) => format!("`{method}(...)`"),
             Expr::Binary { op, .. } if checked_integer_op(*op, &self.subst.resolve(ty)) => {
-                "this arithmetic"
+                "this arithmetic".to_string()
             }
-            Expr::Index { .. } => "this index",
+            // A user `Eq`/`Ord` implementation is an ordinary call.
+            Expr::Binary { .. } if self.user_comparison_dispatch.contains_key(&key) => {
+                "this comparison".to_string()
+            }
+            // A user `Display` implementation is an ordinary call.
+            Expr::InterpolatedString(parts)
+                if parts.iter().any(|part| {
+                    matches!(part, StringPart::Expr(value)
+                        if self.interpolation_display_types.contains_key(
+                            &SpanKey::in_module(&value.1, self.current_module_idx)))
+                }) =>
+            {
+                "this interpolation".to_string()
+            }
+            Expr::Index { .. } => "this index".to_string(),
             Expr::Await(_)
             | Expr::AwaitRestart(_)
             | Expr::Spawn { .. }
@@ -88,10 +101,10 @@ impl Checker {
             | Expr::ForkChild { .. }
             | Expr::ForkBlock { .. }
             | Expr::Select { .. }
-            | Expr::Race(_) => "this operation",
+            | Expr::Race(_) => "this operation".to_string(),
             _ => return,
         };
-        self.refuse_fallible_with_receiver_hole(span, operation);
+        self.refuse_fallible_with_receiver_hole(span, &operation);
     }
 
     /// A compound assignment on an integer place can overflow; a plain one
@@ -153,13 +166,76 @@ impl Checker {
         }
     }
 
-    fn call_can_fail(&self, span: &Span) -> bool {
-        let key = SpanKey::in_module(span, self.current_module_idx);
-        match self.direct_call_targets.get(&key) {
-            Some(CallTarget::RecordConstructor(_)) => false,
-            Some(_) => true,
-            None => self.resolved_calls.contains_key(&key),
+    fn call_can_fail(&self, key: &SpanKey) -> bool {
+        match self.direct_call_targets.get(key) {
+            Some(target) => self.target_can_fail(target, None),
+            None => self
+                .resolved_calls
+                .get(key)
+                .is_some_and(|call| self.target_can_fail(&call.target, None)),
         }
+    }
+
+    fn method_call_can_fail(&self, key: &SpanKey, receiver: &Spanned<Expr>) -> bool {
+        let receiver_ty = self
+            .expr_types
+            .get(&SpanKey::in_module(&receiver.1, self.current_module_idx))
+            .map(|ty| self.subst.resolve(ty));
+        let receiver_ty = receiver_ty.as_ref();
+        if let Some(target) = self
+            .resolved_calls
+            .get(key)
+            .map(|call| &call.target)
+            .or_else(|| self.direct_call_targets.get(key))
+        {
+            return self.target_can_fail(target, receiver_ty);
+        }
+        match self.method_call_rewrites.get(key) {
+            Some(
+                MethodCallRewrite::RewriteToFunction { target, .. }
+                | MethodCallRewrite::RewriteModuleQualifiedToFunction { target, .. },
+            ) => self.target_can_fail(target, receiver_ty),
+            Some(MethodCallRewrite::BuiltinOptionResult { method }) => match method {
+                OptionResultMethod::OptionExpect | OptionResultMethod::ResultExpect => true,
+                // The unused alternative is released.
+                OptionResultMethod::OptionUnwrapOr | OptionResultMethod::ResultUnwrapOr => {
+                    receiver_ty.is_none_or(|ty| self.release_may_run_close(ty))
+                }
+                OptionResultMethod::OptionIsSome
+                | OptionResultMethod::OptionIsNone
+                | OptionResultMethod::ResultIsOk
+                | OptionResultMethod::ResultIsErr => false,
+            },
+            Some(
+                MethodCallRewrite::CopyCloneNoop
+                | MethodCallRewrite::CancellationTokenIsCancelled
+                | MethodCallRewrite::BuiltinVecIter
+                | MethodCallRewrite::BuiltinVecIntoIter,
+            ) => false,
+            _ => true,
+        }
+    }
+
+    /// Whether a checked call target has a failure edge. A runtime operation
+    /// fails where its semantic contract, the one SIR lowers, says it does,
+    /// or where it releases receiver contents that can reach a `close`; a
+    /// source-level callee can always fail.
+    fn target_can_fail(&self, target: &CallTarget, receiver: Option<&Ty>) -> bool {
+        let family = match target {
+            CallTarget::RecordConstructor(_) => return false,
+            CallTarget::Runtime(family) | CallTarget::DeclaredRuntime { family, .. } => *family,
+            CallTarget::RuntimeCollection(method) => match method.runtime_family() {
+                Some(family) => family,
+                None => return true,
+            },
+            _ => return true,
+        };
+        let Some(contract) = family.semantic_contract() else {
+            return true;
+        };
+        !contract.failures.is_empty()
+            || (family.releases_receiver_contents()
+                && receiver.is_none_or(|ty| self.release_may_run_close(ty)))
     }
 
     /// Whether releasing a value of `ty` can run an authored `close`. An

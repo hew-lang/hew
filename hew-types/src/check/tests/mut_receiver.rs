@@ -526,8 +526,8 @@ fn var_self_receiver_stays_whole_wherever_it_can_fail() {
     let declarations = r"
         #[resource]
         type Conn { fd: i64 }
-        impl Conn { fn close(consume self) {} }
-        type Holder { conn: Conn, count: i64, spare: Option<Conn>, items: Vec<i64> }
+        impl Conn { fn close(consume self) {} fn weight(self) -> i64 { self.fd } }
+        type Holder { conn: Conn, count: i64, spare: Option<Conn>, items: Vec<i64>, pool: Vec<Conn> }
         fn work() -> i64 { 1 }
         trait Touch { fn touch(var self, divisor: i64) -> i64; }
     ";
@@ -555,6 +555,15 @@ fn var_self_receiver_stays_whole_wherever_it_can_fail() {
         (
             "let conn = self.conn; { let extra = Conn { fd: 3 }; } self.conn = conn; 0",
             "releasing `extra`",
+        ),
+        (
+            "let conn = self.conn; let n = conn.weight(); self.conn = conn; n",
+            "`weight(...)`",
+        ),
+        // Clearing releases elements that can reach a `close`.
+        (
+            "let conn = self.conn; self.pool.clear(); self.conn = conn; 0",
+            "`clear(...)`",
         ),
     ] {
         let output = check_source(&format!(
@@ -589,6 +598,11 @@ fn var_self_receiver_stays_whole_wherever_it_can_fail() {
         "match self.spare.take() { .Some(conn) => conn.fd / divisor, .None => 0 }",
         // Fields stay in place.
         "self.count += 1; self.conn.fd = self.conn.fd + work(); self.count",
+        // A runtime operation fails only where its contract says so.
+        "let conn = self.conn; self.count = self.items.len(); self.conn = conn; 0",
+        "let conn = self.conn; let label = f\"{divisor}\"; self.count = label.len(); self.conn = conn; 0",
+        "let conn = self.conn; let spare = self.spare.is_some(); self.conn = conn; if spare { 1 } else { 0 }",
+        "let conn = self.conn; self.items.clear(); self.conn = conn; 0",
     ] {
         let output = check_source(&format!(
             "{declarations} impl Touch for Holder {{ fn touch(var self, divisor: i64) -> i64 {{ {body} }} }}"

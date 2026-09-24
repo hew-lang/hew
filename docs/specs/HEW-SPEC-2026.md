@@ -1649,8 +1649,11 @@ The method must therefore keep `self` whole wherever it can fail. While a field
 of `self` is moved out, the checker refuses every operation that can fail - a
 call, checked integer arithmetic, an index, an assignment or scope exit that
 releases a value with a `close` - naming the field and the operation
-(`E_OWN_PARTIAL_CONSUME`). Call the field's own methods in place, move it out
-of an `Option` field with `take()`, or assign a replacement to the field before
+(`E_OWN_PARTIAL_CONSUME`). A call to a source function or method can always
+fail; a built-in operation can fail only where it can index out of bounds,
+overflow, call back into source code or release a value with a `close`, so
+`len()` is admitted. Call the field's own methods in place, move it out of an
+`Option` field with `take()`, or assign a replacement to the field before
 anything that can fail.
 
 The consuming receiver is spelled `consume self`, matching a consuming
@@ -3127,10 +3130,11 @@ A handle is never `#[wire]`, so sending one to a remote `Pid` stays
 `E_OPAQUE_MESSAGE_PAYLOAD` (User): a remote payload must be CBOR-serializable
 and a handle has no serializable layout.
 
-**A handle field of a resource is affine outside `close` (normative).** A
+**A handle a resource holds is affine outside `close` (normative).** A
 marker-free `#[opaque]` handle passes to a borrowing `extern "C"` parameter as
-a plain pointer, but when a `#[resource]` record holds one, that record's
-`close` releases it. Outside that `close`, reading the field by value -
+a plain pointer, but when a `#[resource]` record holds one - as a field, in a
+plain record below it or inside an `Option` - that record's `close` releases
+it. Outside that `close`, reading a value that carries the handle by value -
 returning it, binding it, storing it or passing it to a `consume` parameter -
 is `E_OWN_PARTIAL_CONSUME`, because it would leave two owners of one handle.
 Destructuring hands the handle out without running `close`:
@@ -3813,7 +3817,10 @@ and their transitive helpers may compute and mutate local value data, but
 cannot perform I/O, interact with actors, spawn, suspend or access unsafe
 memory. Purity restricts what a transition does, not the types its state
 holds: `Rc`, actor handles and `#[resource]` values move through transitions
-as values. An unknown or indirect call has no purity proof and is rejected.
+as values. Releasing a `#[resource]` runs its `close`, so the `close` of every
+resource a transition, its helpers or its states and events can reach is judged
+like any other call. An unknown or indirect call has no purity proof and is
+rejected.
 Checked computation faults remain possible. A step stages an independent copy
 of its machine until it commits, so a `#[resource]` held directly in a state
 payload is refused at the transition that takes it, naming the machine, state,

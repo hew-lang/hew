@@ -150,17 +150,22 @@ fn agreeing_duplicate_declarations_resolve_to_one_contract() {
         .established("hew_one_contract")
         .expect("symbol must carry a contract");
     assert_eq!(
-        contract.owner.full_path(),
+        output.defs.path(contract.owner),
         "first",
         "the first declaration owns the contract"
     );
     let first = output
         .extern_contracts
-        .contract_for_declaration("first")
+        .contract_for_declaration(output.defs.lookup_path("first").expect("first declaration"))
         .expect("minting declaration resolves to the contract");
     let second = output
         .extern_contracts
-        .contract_for_declaration("second")
+        .contract_for_declaration(
+            output
+                .defs
+                .lookup_path("second")
+                .expect("second declaration"),
+        )
         .expect("agreeing re-declaration adopts the contract");
     assert_eq!(
         first.owner, second.owner,

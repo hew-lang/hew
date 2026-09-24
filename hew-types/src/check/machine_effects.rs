@@ -103,7 +103,7 @@ pub(super) fn validate(
             );
         }
         lints::walk_body(&body.function.body, &mut visitor);
-        summaries.insert(declaration.clone(), visitor.summary);
+        summaries.insert(*declaration, visitor.summary);
     }
     let mut facts =
         TypeFactService::new(output.type_fact_context.clone(), output.type_facts.clone());
@@ -115,7 +115,14 @@ pub(super) fn validate(
         let mut visiting = HashSet::new();
         let mut proven = HashSet::new();
         let sites = instantiation_sites(&shape, output);
-        let proof = prove(&declaration, &summaries, &mut visiting, &mut proven).and_then(|()| {
+        let proof = prove(
+            &output.defs,
+            declaration,
+            &summaries,
+            &mut visiting,
+            &mut proven,
+        )
+        .and_then(|()| {
             prove_instantiation_releases(
                 &sites,
                 output,
@@ -262,10 +269,10 @@ fn prove_instantiation_releases(
         };
         for ty in [machine, &event] {
             for resource in released_resources(ty, output, cache) {
-                let Some(close) = resource_closes.get(&resource).cloned() else {
+                let Some(close) = resource_closes.get(&resource).copied() else {
                     return Err((site.clone(), unknown_close(&resource)));
                 };
-                prove(&close, summaries, &mut HashSet::new(), proven)
+                prove(&output.defs, close, summaries, &mut HashSet::new(), proven)
                     .map_err(|(_, reason)| (site.clone(), releasing(&resource, &reason)))?;
             }
         }
@@ -457,13 +464,13 @@ fn collect_bodies<'a>(
                         kind,
                         0,
                     );
-                    if let Some(declaration) = output.identity.declaration(occurrence) {
+                    if let Some(declaration) = output.defs.declaration(occurrence) {
                         if function.origin == DeclarationOrigin::MachineStep
-                            && !machines.iter().any(|(id, _)| id == declaration)
+                            && !machines.iter().any(|(id, _)| *id == declaration)
                         {
-                            machines.push((declaration.clone(), shape.clone()));
+                            machines.push((declaration, shape.clone()));
                         }
-                        bodies.entry(declaration.clone()).or_insert_with(|| Body {
+                        bodies.entry(declaration).or_insert_with(|| Body {
                             function,
                             module_idx,
                             source_module: source_module.clone(),
@@ -510,7 +517,7 @@ fn collect_bodies<'a>(
         program
             .items
             .iter()
-            .map(|_| (output.identity.root_module(), 0, None))
+            .map(|_| (output.defs.root_module(), 0, None))
             .collect(),
     );
     if let Some(graph) = &program.module_graph {
@@ -531,8 +538,8 @@ fn collect_bodies<'a>(
                     let owner = graph
                         .item_source(id, ordinal)
                         .or_else(|| module.source_paths.first())
-                        .and_then(|source| output.identity.module_for_source(source))
-                        .or_else(|| output.identity.module_for_path(&dotted));
+                        .and_then(|source| output.defs.module_for_source(source))
+                        .or_else(|| output.defs.module_for_path(&dotted));
                     (
                         owner,
                         indices.item_index(id, ordinal).unwrap_or_default(),
@@ -564,20 +571,21 @@ fn machine_shape(implementation: &hew_parser::ast::ImplDecl) -> MachineShape {
 }
 
 fn prove(
-    declaration: &DefId,
+    defs: &crate::DefTable,
+    declaration: DefId,
     summaries: &HashMap<DefId, Summary>,
     visiting: &mut HashSet<DefId>,
     proven: &mut HashSet<DefId>,
 ) -> Result<(), (Span, String)> {
-    if proven.contains(declaration) || !visiting.insert(declaration.clone()) {
+    if proven.contains(&declaration) || !visiting.insert(declaration) {
         return Ok(());
     }
-    let Some(summary) = summaries.get(declaration) else {
+    let Some(summary) = summaries.get(&declaration) else {
         return Err((
             0..0,
             format!(
                 "helper `{}` has no inspectable checked body",
-                declaration.display_name()
+                defs.display(declaration)
             ),
         ));
     };
@@ -585,20 +593,20 @@ fn prove(
         return Err(refusal.clone());
     }
     for (callee, span) in &summary.calls {
-        if let Err((_, reason)) = prove(callee, summaries, visiting, proven) {
+        if let Err((_, reason)) = prove(defs, *callee, summaries, visiting, proven) {
             return Err((
                 span.clone(),
-                format!("call to `{}`: {reason}", callee.display_name()),
+                format!("call to `{}`: {reason}", defs.display(*callee)),
             ));
         }
     }
     for (close, resource, span) in &summary.releases {
-        if let Err((_, reason)) = prove(close, summaries, visiting, proven) {
+        if let Err((_, reason)) = prove(defs, *close, summaries, visiting, proven) {
             return Err((span.clone(), releasing(resource, &reason)));
         }
     }
-    visiting.remove(declaration);
-    proven.insert(declaration.clone());
+    visiting.remove(&declaration);
+    proven.insert(declaration);
     Ok(())
 }
 
@@ -631,7 +639,7 @@ impl EffectVisitor<'_> {
             {
                 continue;
             }
-            match self.resource_closes.get(&resource).cloned() {
+            match self.resource_closes.get(&resource).copied() {
                 Some(close) => self.summary.releases.push((close, resource, span.clone())),
                 None => self.refuse(span, unknown_close(&resource)),
             }
@@ -641,7 +649,7 @@ impl EffectVisitor<'_> {
     fn target(&mut self, target: &CallTarget, span: &Span, call: &str) {
         match target {
             CallTarget::User(declaration) | CallTarget::ImplMethod(declaration) => {
-                self.summary.calls.push((declaration.clone(), span.clone()));
+                self.summary.calls.push((*declaration, span.clone()));
             }
             CallTarget::Runtime(family) if pure_runtime(*family) => {}
             CallTarget::RuntimeCollection(MethodTargetFamily::Vec(method))
@@ -708,7 +716,7 @@ impl NodeVisitor for EffectVisitor<'_> {
             let (UserComparisonDispatch::Eq { method }
             | UserComparisonDispatch::Ord { method }
             | UserComparisonDispatch::PartialOrd { method }) = dispatch;
-            self.summary.calls.push((method.clone(), span.clone()));
+            self.summary.calls.push((*method, span.clone()));
         }
         match expr {
             Expr::Call { function, .. } => {

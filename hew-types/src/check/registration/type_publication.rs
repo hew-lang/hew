@@ -530,8 +530,8 @@ impl Checker {
         // program module graph. Establish its exact declarations in the same
         // table before any semantic registration; aliases and later graph
         // visits resolve the existing module/path rows and cannot mint again.
-        let identity_module = self.identity.mint_module(module_full_path, &[]);
-        if !self.identity.module_has_declarations(identity_module) {
+        let identity_module = self.defs.mint_module(module_full_path, &[]);
+        if !self.defs.module_has_declarations(identity_module) {
             for (item_ordinal, (item, span)) in items.iter().enumerate() {
                 self.mint_item_declaration_identities(
                     Some(identity_module),
@@ -1760,7 +1760,7 @@ impl Checker {
                             continue;
                         };
                         let Some(method_id) = self.require_declaration_path(
-                            &format!("{}::{}", trait_id.full_path(), method.name),
+                            &format!("{}::{}", self.defs.path(trait_id), method.name),
                             &method.span,
                         ) else {
                             continue;
@@ -1772,7 +1772,7 @@ impl Checker {
                                 qualified_binding.clone(),
                                 method.name.to_string(),
                             ),
-                            (trait_id.clone(), method_id),
+                            (trait_id, method_id),
                         );
                     }
 
@@ -1833,7 +1833,7 @@ impl Checker {
                                 continue;
                             };
                             let Some(method_id) = self.require_declaration_path(
-                                &format!("{}::{}", trait_id.full_path(), method.name),
+                                &format!("{}::{}", self.defs.path(trait_id), method.name),
                                 &method.span,
                             ) else {
                                 continue;
@@ -1845,7 +1845,7 @@ impl Checker {
                                     binding_name.clone(),
                                     method.name.to_string(),
                                 ),
-                                (trait_id.clone(), method_id),
+                                (trait_id, method_id),
                             );
                         }
                         self.unqualified_to_module.insert(

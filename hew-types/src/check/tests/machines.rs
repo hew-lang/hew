@@ -89,14 +89,14 @@ fn ordinary_machine_preserves_original_declaration_occurrence() {
         (function_span, 1, crate::DeclarationKind::Function),
     ] {
         let occurrence = crate::DeclarationOccurrence::new_with_synthetic_ordinal(
-            output.identity.root_module(),
+            output.defs.root_module(),
             &span,
             ordinal,
             kind,
             0,
         );
         assert!(
-            output.identity.declaration(occurrence).is_some(),
+            output.defs.declaration(occurrence).is_some(),
             "authored occurrence lost: {occurrence:?}"
         );
     }

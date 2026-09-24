@@ -2474,10 +2474,9 @@ fn selected_eq_uses_nested_user_methods_for_otherwise_ineligible_members() {
     );
     assert!(output.errors.is_empty(), "{:?}", output.errors);
     let expected = output
-        .identity
-        .declaration_by_path("Key::<impl Eq for Key>::eq")
-        .unwrap()
-        .clone();
+        .defs
+        .lookup_path("Key::<impl Eq for Key>::eq")
+        .unwrap();
     let mut service = crate::TypeFactService::new(output.type_fact_context, output.type_facts);
     let selected = service
         .capability_plan(
@@ -2577,10 +2576,9 @@ fn selected_eq_composes_exact_generic_user_method_for_bytes() {
     );
     assert!(output.errors.is_empty(), "{:?}", output.errors);
     let expected = output
-        .identity
-        .declaration_by_path("Key::<impl Eq for Key<T>>::eq")
-        .unwrap()
-        .clone();
+        .defs
+        .lookup_path("Key::<impl Eq for Key<T>>::eq")
+        .unwrap();
     let mut service = crate::TypeFactService::new(output.type_fact_context, output.type_facts);
     let key = ResolvedTy::named_user("Key", vec![ResolvedTy::Bytes]);
     let selected = service
@@ -2629,5 +2627,40 @@ fn selected_eq_keeps_aggregate_ordering_gate_during_operand_inference() {
         }),
         "{:?}",
         output.errors
+    );
+}
+
+/// Member rows name the declaration they belong to, so a trait's methods and
+/// an actor's handlers are reachable from the owner's row without a spelling.
+#[test]
+fn member_declarations_record_their_owner() {
+    let parsed = hew_parser::parse(
+        "trait Gate { fn open(self) -> i64; } \
+         actor Door { receive fn knock() {} fn peek() -> i64 { 1 } } fn main() {}",
+    );
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let output = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    let defs = &output.defs;
+    let row = |kind: crate::DeclarationKind, name: &str| {
+        defs.declarations()
+            .map(|(_, id)| id)
+            .find(|id| defs.kind(*id) == kind && defs.name(*id) == Symbol::intern(name))
+            .unwrap_or_else(|| panic!("no {kind:?} row named `{name}`"))
+    };
+    let gate = row(crate::DeclarationKind::Trait, "Gate");
+    let door = row(crate::DeclarationKind::Actor, "Door");
+    assert_eq!(defs.owner(gate), None);
+    assert_eq!(
+        defs.owner(row(crate::DeclarationKind::TraitMethod, "open")),
+        Some(gate)
+    );
+    assert_eq!(
+        defs.owner(row(crate::DeclarationKind::ActorReceive, "knock")),
+        Some(door)
+    );
+    assert_eq!(
+        defs.owner(row(crate::DeclarationKind::ActorMethod, "peek")),
+        Some(door)
     );
 }

@@ -99,8 +99,8 @@ mod tests {
             .or_default()
             .insert("left.Render".to_string());
 
-        let wrong_trait = crate::DefId::for_test("right.Render");
-        let wrong_method = crate::DefId::for_test("right.Render::render");
+        let wrong_trait = checker.defs.mint_for_test("right.Render");
+        let wrong_method = checker.defs.mint_for_test("right.Render::render");
         checker
             .trait_method_ids
             .insert("Render::render".to_string(), (wrong_trait, wrong_method));
@@ -111,11 +111,11 @@ mod tests {
             "a canonical lookup miss must not retry the first-write-wins bare key",
         );
 
-        let canonical_trait = crate::DefId::for_test("left.Render");
-        let canonical_method = crate::DefId::for_test("left.Render::render");
+        let canonical_trait = checker.defs.mint_for_test("left.Render");
+        let canonical_method = checker.defs.mint_for_test("left.Render::render");
         checker.trait_method_ids.insert(
             "left.Render::render".to_string(),
-            (canonical_trait.clone(), canonical_method.clone()),
+            (canonical_trait, canonical_method),
         );
         assert_eq!(
             checker.trait_method_call_target_ids("Render", "render"),

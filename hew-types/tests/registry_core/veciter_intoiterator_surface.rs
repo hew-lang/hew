@@ -161,7 +161,7 @@ fn stdlib_vec_typechecks_with_iterator_traits_registered() {
     let src = read_stdlib_builtins();
     let program = parse_program(&src);
     let mut checker = checker();
-    let output = checker.check_embedded_builtins(&program);
+    let output = checker.check_embedded_builtins(&program, &hew_types::DefTable::new());
     // We only assert that no diagnostic mentions VecIter or our new impls —
     // any other pre-existing red is out of scope for this stage.
     let veciter_red = output.errors.iter().find(|e| e.message.contains("VecIter"));

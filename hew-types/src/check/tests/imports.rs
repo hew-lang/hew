@@ -980,8 +980,9 @@ fn imported_actor_record_impl_and_extern_share_exact_owner() {
                     .collect::<Vec<_>>()
             )
         });
-    assert!(echo_id
-        .full_path()
+    assert!(output
+        .defs
+        .path(*echo_id)
         .starts_with("hew.testffi.TestResult::<impl "));
 }
 
@@ -1004,7 +1005,7 @@ fn module_private_extern_call_publishes_exact_executable_target() {
                     declaration,
                     endpoint,
                     ..
-                } if declaration.full_path() == "hew.testffi.hew_testffi_query"
+                } if output.defs.path(*declaration) == "hew.testffi.hew_testffi_query"
                     && endpoint == "hew_testffi_query"
             )
         }),
@@ -1076,11 +1077,13 @@ fn same_leaf_impl_methods_publish_distinct_full_declaration_ids() {
         .get("right.render.CollisionResult::echo")
         .expect("right emitted impl symbol");
     assert_ne!(left_id, right_id);
-    assert!(left_id
-        .full_path()
+    assert!(output
+        .defs
+        .path(*left_id)
         .starts_with("left.render.CollisionResult::<impl "));
-    assert!(right_id
-        .full_path()
+    assert!(output
+        .defs
+        .path(*right_id)
         .starts_with("right.render.CollisionResult::<impl "));
 }
 
@@ -2746,7 +2749,7 @@ fn flat_file_imported_pub_fn_publishes_root_call_target() {
         output.direct_call_targets.values().any(|target| matches!(
             target,
             crate::check::dispatch::CallTarget::User(declaration)
-                if declaration.full_path() == "helper.double"
+                if output.defs.path(*declaration) == "helper.double"
         )),
         "flat imported bare call must retain helper.double: {:#?}",
         output.direct_call_targets

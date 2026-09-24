@@ -89,7 +89,7 @@ fn user_supervisor_stop_shadow_keeps_user_target() {
         output.direct_call_targets.values().any(|target| matches!(
             target,
             crate::check::dispatch::CallTarget::User(id)
-                if id.full_path() == "supervisor_stop"
+                if output.defs.path(*id) == "supervisor_stop"
         )),
         "user supervisor_stop must publish the user declaration target: {:#?}",
         output.direct_call_targets

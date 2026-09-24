@@ -1499,8 +1499,8 @@ impl Checker {
     /// lifecycle hook shares the `ActorMethod` kind but gets no row, because
     /// the runtime, not Hew code, enters it).
     fn actor_method_owner(&self, signature_key: &str) -> Option<String> {
-        if self.identity.declaration_kind_by_path(signature_key)
-            != Some(crate::identity::DeclarationKind::ActorMethod)
+        if self.defs.declaration_kind_by_path(signature_key)
+            != Some(crate::def_table::DeclarationKind::ActorMethod)
         {
             return None;
         }
@@ -1513,8 +1513,8 @@ impl Checker {
 
     pub(super) fn source_call_target(&self, declaration: crate::DefId) -> CallTarget {
         if self
-            .identity
-            .declaration_kind_by_path(declaration.full_path())
+            .defs
+            .declaration_kind_by_path(self.defs.path(declaration))
             == Some(crate::DeclarationKind::Record)
         {
             CallTarget::RecordConstructor(declaration)
@@ -1533,7 +1533,6 @@ impl Checker {
             },
         );
         self.lookup_declaration(&declaration)
-            .cloned()
             .map(|declaration| self.source_call_target(declaration))
     }
 
@@ -1552,9 +1551,8 @@ impl Checker {
         // is also importable in its own right publishes both `pkg.f` and
         // `pkg.file.f`), and the extern table is keyed by the identity, not by
         // a spelling. Resolve the key first, then read the extern row.
-        let resolved = self.lookup_declaration(signature_key).cloned();
-        if self.identity.declaration_kind_by_path(signature_key)
-            == Some(crate::DeclarationKind::Record)
+        let resolved = self.lookup_declaration(signature_key);
+        if self.defs.declaration_kind_by_path(signature_key) == Some(crate::DeclarationKind::Record)
         {
             if let Some(declaration) = resolved {
                 return CallTarget::RecordConstructor(declaration);
@@ -1562,7 +1560,7 @@ impl Checker {
         }
         if let Some(extern_decl) = resolved
             .as_ref()
-            .and_then(|declaration| self.extern_table.declaration(declaration.full_path()))
+            .and_then(|declaration| self.extern_table.declaration(*declaration))
         {
             if extern_decl.symbol.is_empty() {
                 return CallTarget::Unsupported {
@@ -1578,14 +1576,14 @@ impl Checker {
             // stays user-provenance even when its spelling collides with an
             // audited runtime endpoint, in either registration order).
             //
-            let Some(declaration) = resolved.clone() else {
+            let Some(declaration) = resolved else {
                 return CallTarget::Unsupported {
                     reason: format!(
                         "checker identity table has no extern declaration `{signature_key}`"
                     ),
                 };
             };
-            if let Some(family) = self.source_runtime_target(&declaration, extern_decl) {
+            if let Some(family) = self.source_runtime_target(declaration, extern_decl) {
                 return CallTarget::Runtime(family);
             }
             return CallTarget::Extern {
@@ -1612,7 +1610,7 @@ impl Checker {
             && !self.builtin_call_targets.contains_key(signature_key)
         {
             if let Some(declaration) = self.impl_method_declaration_ids.get(signature_key) {
-                return CallTarget::ImplMethod(declaration.clone());
+                return CallTarget::ImplMethod(*declaration);
             }
         }
         if let Some(target) = self.user_call_target_for_declared_fn(signature_key) {
@@ -1678,7 +1676,7 @@ impl Checker {
                 // populated by an earlier graph-registration pass that did
                 // not retain a second `fn_def_spans` compatibility entry.
                 if let Some(declaration) = self.lookup_declaration(&declaration) {
-                    return self.source_call_target(declaration.clone());
+                    return self.source_call_target(declaration);
                 }
                 return CallTarget::Unsupported {
                     reason: format!(
@@ -1702,7 +1700,7 @@ impl Checker {
             self.current_module_idx,
             signature_key.to_string(),
         )) {
-            return self.lookup_declaration(source_key).cloned().map_or_else(
+            return self.lookup_declaration(source_key).map_or_else(
                 || CallTarget::Unsupported {
                     reason: format!(
                         "checker identity table has no imported declaration `{source_key}`"
@@ -1733,7 +1731,7 @@ impl Checker {
     /// declaration was first to mint the shared C ABI contract.
     fn source_runtime_target(
         &self,
-        declaration: &crate::DefId,
+        declaration: crate::DefId,
         extern_decl: &crate::extern_table::ExternDeclaration,
     ) -> Option<crate::RuntimeCallFamily> {
         let module = extern_decl.declaring_module.as_deref()?;
@@ -1750,13 +1748,11 @@ impl Checker {
         {
             return None;
         }
-        let contract = self
-            .extern_table
-            .contract_for_declaration(declaration.full_path())?;
+        let contract = self.extern_table.contract_for_declaration(declaration)?;
         if contract.is_variadic {
             return None;
         }
-        let signature = self.fn_sigs.get(declaration.full_path())?;
+        let signature = self.fn_sigs.get(self.defs.path(declaration))?;
         if !signature.type_params.is_empty() {
             return None;
         }
@@ -1769,28 +1765,28 @@ impl Checker {
         let result = ResolvedTy::from_ty(&self.subst.resolve(&signature.return_type)).ok()?;
         (family.matches_encoding_extern(
             module,
-            declaration.full_path(),
+            self.defs.path(declaration),
             &extern_decl.symbol,
             &params,
             &result,
             &contract.consuming_params,
         ) || family.matches_file_read_extern(
             module,
-            declaration.full_path(),
+            self.defs.path(declaration),
             &extern_decl.symbol,
             &params,
             &result,
             &contract.consuming_params,
         ) || family.matches_tcp_extern(
             module,
-            declaration.full_path(),
+            self.defs.path(declaration),
             &extern_decl.symbol,
             &params,
             &result,
             &contract.consuming_params,
         ) || family.matches_async_io_extern(
             module,
-            declaration.full_path(),
+            self.defs.path(declaration),
             &extern_decl.symbol,
             &params,
             &result,

@@ -11,6 +11,8 @@ pub mod builtin_names;
 pub mod builtin_type;
 pub mod check;
 pub mod cycle;
+pub mod def_table;
+pub mod dump;
 pub mod env;
 pub(crate) mod eq_eligibility;
 pub mod error;
@@ -18,7 +20,6 @@ pub mod extern_symbol;
 pub mod extern_table;
 pub mod ffi_contracts;
 pub(crate) mod hash_eligibility;
-pub mod identity;
 pub mod jit_symbols;
 pub mod lang_items;
 pub mod lowering_facts;
@@ -73,14 +74,16 @@ pub use check::{
     VecHigherOrderOp, VecMethod, WidthCastKind, WidthCastLowering, WireCodecDirection,
     WireFieldLayout, WireFieldPresence, WireLayoutEntry, WireLayoutTable, WireTextFormat,
 };
+pub use def_table::{
+    DeclarationIdentityError, DeclarationKind, DeclarationOccurrence, DefId, DefTable, ModuleId,
+    NominalId,
+};
 pub use error::TypeError;
 pub use extern_symbol::{
     ExternSymbolSpec, ExternSymbolTemplate, PlaceholderName, TemplateError, TemplateExpansionError,
     TemplateSegment,
 };
-pub use identity::{
-    DeclarationIdentityError, DeclarationKind, DeclarationOccurrence, IdentityView, ModuleId,
-};
+pub use hew_parser::ast::Symbol;
 pub use lang_items::{
     LangItem, LangItemBinding, LangItemRegistry, LANG_ITEM_DISPLAY, LANG_ITEM_DISPLAY_FMT,
 };
@@ -88,9 +91,7 @@ pub use lowering_facts::{
     DropKind, HashSetAbi, HashSetElementType, LoweringFact, LoweringFactError, LoweringKind,
 };
 pub use mangle::mangle_resolved_ty;
-pub use resolved_ty::{
-    default_impl_method_declaration, BoundaryError, NominalInstance, ResolvedTraitBound, ResolvedTy,
-};
+pub use resolved_ty::{BoundaryError, NominalInstance, ResolvedTraitBound, ResolvedTy};
 pub use runtime_call::{
     vector_element_type, AsyncSuspendKind, DescriptorError, EncodingFormat, EncodingOp,
     MathIntrinsic, RuntimeArgumentContract, RuntimeArgumentEffect, RuntimeCReturn,
@@ -121,140 +122,6 @@ pub use wasm_capabilities_generated::{
     NATIVE_ONLY_WASM_MODULES, NATIVE_ONLY_WASM_MODULE_REJECTIONS,
 };
 
-/// Canonical identity of one declared definition.
-///
-/// A `DefId` deliberately stores the complete declaration path rather than a
-/// leaf spelling.  It is suitable for semantic maps and dispatch tables; use
-/// [`DefId::display_name`] only when rendering a diagnostic.
-///
-/// # Compile-time boundary
-///
-/// A downstream layer cannot mint a definition identity from a leaf spelling:
-///
-/// ```compile_fail
-/// use hew_types::DefId;
-///
-/// let leaf = "Widget";
-/// let _identity = DefId::new(leaf);
-/// ```
-///
-/// Fixture construction is test-only as well:
-///
-/// ```compile_fail
-/// use hew_types::DefId;
-///
-/// let leaf = "Widget";
-/// let _identity = DefId::for_test(leaf);
-/// ```
-///
-/// The resolver/checker owns declaration minting; downstream phases receive a
-/// `DefId` and carry it unchanged.
-#[derive(
-    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
-)]
-#[serde(transparent)]
-pub struct DefId {
-    full_path: String,
-}
-
-impl std::borrow::Borrow<str> for DefId {
-    fn borrow(&self) -> &str {
-        &self.full_path
-    }
-}
-
-impl DefId {
-    /// Construct an identity from a path minted by the checker/resolver.
-    ///
-    /// This is intentionally crate-private: declaration identity is minted
-    /// once while resolving declarations, then carried through later compiler
-    /// phases.
-    ///
-    /// # Panics
-    ///
-    /// Panics when `full_path` is empty, because an empty declaration path has
-    /// no canonical identity.
-    #[must_use]
-    pub(crate) fn from_minted_path(
-        full_path: impl Into<String>,
-        _authority: crate::identity::MintingAuthority,
-    ) -> Self {
-        let full_path = full_path.into();
-        assert!(
-            !full_path.is_empty(),
-            "DefId requires a non-empty canonical declaration path"
-        );
-        Self { full_path }
-    }
-
-    /// Create a fixture identity without granting production code a minting API.
-    ///
-    /// This seam exists only in test builds or with the explicit
-    /// `test` feature for direct test dependencies.
-    #[cfg(any(test, feature = "test"))]
-    #[doc(hidden)]
-    #[must_use]
-    pub fn for_test(full_path: impl Into<String>) -> Self {
-        crate::identity::test_def_id(full_path)
-    }
-
-    /// The canonical full declaration path used for identity and linker
-    /// derivation.
-    #[must_use]
-    pub fn full_path(&self) -> &str {
-        &self.full_path
-    }
-
-    /// The non-authoritative display leaf for diagnostics.
-    #[must_use]
-    pub fn display_name(&self) -> &str {
-        short_name(&self.full_path)
-    }
-}
-
-/// Canonical identity of a declared nominal type.
-///
-/// A nominal is backed by the declaration identity, so two `Box` declarations
-/// from different modules can never compare equal merely because they share a
-/// leaf spelling.
-#[derive(
-    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
-)]
-pub struct NominalId {
-    declaration: DefId,
-}
-
-impl NominalId {
-    #[must_use]
-    pub(crate) fn from_minted_declaration(declaration: DefId) -> Self {
-        Self { declaration }
-    }
-
-    /// Create a fixture nominal identity without granting production code a
-    /// minting API.
-    #[cfg(any(test, feature = "test"))]
-    #[doc(hidden)]
-    #[must_use]
-    pub fn for_test(full_path: impl Into<String>) -> Self {
-        crate::identity::test_nominal_id(full_path)
-    }
-
-    #[must_use]
-    pub fn declaration(&self) -> &DefId {
-        &self.declaration
-    }
-
-    #[must_use]
-    pub fn full_path(&self) -> &str {
-        self.declaration.full_path()
-    }
-
-    #[must_use]
-    pub fn display_name(&self) -> &str {
-        self.declaration.display_name()
-    }
-}
-
 /// Return the final segment of a dot-qualified name.
 #[must_use]
 pub fn short_name(name: &str) -> &str {
@@ -279,7 +146,7 @@ pub fn current_module_qualified_type_candidate(
 }
 #[cfg(test)]
 mod tests {
-    use super::{current_module_qualified_type_candidate, short_name, DefId, NominalId};
+    use super::{current_module_qualified_type_candidate, short_name, DefTable, Symbol};
 
     #[test]
     fn short_name_uses_the_final_qualified_segment() {
@@ -301,11 +168,19 @@ mod tests {
 
     #[test]
     fn canonical_ids_keep_same_leaf_declarations_distinct() {
-        let left = NominalId::for_test("left.Box");
-        let right = NominalId::for_test("right.Box");
+        let mut defs = DefTable::new();
+        let left = defs.mint_nominal_for_test("left.Box");
+        let right = defs.mint_nominal_for_test("right.Box");
         assert_ne!(left, right);
-        assert_eq!(left.display_name(), "Box");
-        assert_eq!(left.full_path(), "left.Box");
-        assert_ne!(DefId::for_test("left.Box"), DefId::for_test("right.Box"));
+        assert_eq!(defs.name(left.declaration()), Symbol::intern("left.Box"));
+        assert_eq!(defs.display(left.declaration()), "Box");
+        assert_eq!(defs.path(left.declaration()), "left.Box");
+    }
+
+    #[test]
+    fn def_id_is_copy() {
+        fn assert_copy<T: Copy>() {}
+        assert_copy::<super::DefId>();
+        assert_copy::<super::NominalId>();
     }
 }

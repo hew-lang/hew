@@ -160,7 +160,7 @@ fn zero_argument_function_item_remains_a_callable_value() {
             ret,
             identity: crate::ty::EffectBody::Declaration(id),
             ..
-        } if capabilities.clone && params.is_empty() && **ret == Ty::I64 && id.full_path() == "value"
+        } if capabilities.clone && params.is_empty() && **ret == Ty::I64 && output.defs.path(*id) == "value"
     )));
 }
 
@@ -1002,7 +1002,7 @@ fn generic_function_values_instantiate_each_reference() {
                 .any(|args| args == &[Ty::I64])
         );
         assert!(output.direct_call_targets.values().any(|target|
-            matches!(target, crate::CallTarget::User(declaration) if declaration.full_path() == "id")));
+            matches!(target, crate::CallTarget::User(declaration) if output.defs.path(*declaration) == "id")));
     }
 }
 

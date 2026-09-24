@@ -1,7 +1,5 @@
 //! Checked sender policies and source-defined message value contracts.
 
-use serde::{Deserialize, Serialize};
-
 use crate::Ty;
 
 pub const MESSAGE_TYPE: &str = "std.builtins.Message";
@@ -34,7 +32,7 @@ pub const DECLARATIONS: &[&str] = &[
 ];
 
 /// A view's policy is immutable and determines its submission effect.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SendPolicy {
     Reject,
     Wait,
@@ -104,7 +102,7 @@ pub fn dropped_delivery_outcome(ty: &Ty) -> Option<&'static str> {
 }
 
 /// Selected operations carried independently of source and linker spellings.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ActorDeliveryCall {
     Close,
     AwaitClosed,

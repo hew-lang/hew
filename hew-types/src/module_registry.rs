@@ -232,13 +232,13 @@ pub fn stdlib_search_paths() -> Vec<PathBuf> {
     compiler_stdlib_root().into_iter().collect()
 }
 
-/// Return the canonical dotted stdlib owner for an exact shipped source file.
+/// Return the canonical stdlib owner for an exact shipped source file.
 ///
 /// Package directories are owned by their primary `{name}.hew` source, so a
 /// peer file in that directory has the same owner. A directory without such a
 /// primary source leaves each `.hew` file as its own module.
 #[must_use]
-pub fn canonical_stdlib_module_for_source(source_file: &std::path::Path) -> Option<String> {
+pub fn canonical_stdlib_module_for_source(source_file: &std::path::Path) -> Option<ModulePath> {
     let input_canonical = std::fs::canonicalize(source_file).ok()?;
 
     stdlib_search_paths().into_iter().find_map(|root| {
@@ -265,13 +265,14 @@ pub fn canonical_stdlib_module_for_source(source_file: &std::path::Path) -> Opti
         } else {
             relative.with_extension("")
         };
-        let dotted = module_path
-            .iter()
-            .map(|component| component.to_str())
-            .collect::<Option<Vec<_>>>()?
-            .join(".");
+        let module = ModulePath::new(
+            module_path
+                .iter()
+                .map(|component| component.to_str())
+                .collect::<Option<Vec<_>>>()?,
+        );
 
-        is_canonical_stdlib_module_source(&input_canonical, &dotted).then_some(dotted)
+        is_canonical_stdlib_module_source(&input_canonical, &module.dotted()).then_some(module)
     })
 }
 
@@ -356,9 +357,9 @@ fn canonical_stdlib_module_source_in_roots(
 /// Return the declaration owner selected by an import's resolved source.
 #[must_use]
 pub fn canonical_source_module_identity(
-    requested_dotted: &str,
+    requested: &ModulePath,
     source_paths: &[PathBuf],
-) -> String {
+) -> ModulePath {
     // Directory-module peers are alternate physical spellings of the same
     // shipped module.  Resolve their owner from the trusted source path so a
     // direct `std.net.http.http_client` import cannot create a second nominal
@@ -366,7 +367,7 @@ pub fn canonical_source_module_identity(
     source_paths
         .iter()
         .find_map(|source| canonical_stdlib_module_for_source(source))
-        .unwrap_or_else(|| requested_dotted.to_string())
+        .unwrap_or_else(|| requested.clone())
 }
 
 #[derive(Debug)]
@@ -511,7 +512,7 @@ impl ModuleRegistry {
                 return None;
             }
             let source_paths = info.source_path.iter().cloned().collect::<Vec<_>>();
-            return Some(canonical_source_module_identity(owner, &source_paths));
+            return Some(canonical_source_module_identity(&module_id, &source_paths).dotted());
         }
         self.search_paths.iter().find_map(|search_path| {
             let info = load_module_checked(&loader_path, search_path)
@@ -521,7 +522,7 @@ impl ModuleRegistry {
                 return None;
             }
             let source_paths = info.source_path.iter().cloned().collect::<Vec<_>>();
-            Some(canonical_source_module_identity(owner, &source_paths))
+            Some(canonical_source_module_identity(&module_id, &source_paths).dotted())
         })
     }
 
@@ -756,8 +757,7 @@ impl ModuleRegistry {
         };
 
         let source_paths = info.source_path.iter().cloned().collect::<Vec<_>>();
-        let canonical_owner = canonical_source_module_identity(&id.dotted(), &source_paths);
-        let canonical_id = module_id_from_identity(&canonical_owner);
+        let canonical_id = canonical_source_module_identity(&id, &source_paths);
         if !self.module_info_has_stdlib_authority(&canonical_id, &info) {
             return Err(CompilerModuleError::SourceOutsideAuthority {
                 module_path: module_path.to_string(),
@@ -768,7 +768,7 @@ impl ModuleRegistry {
         if let Some(active) = self.active.modules.get(&canonical_id) {
             if !self.module_info_has_stdlib_authority(&canonical_id, active) {
                 return Err(CompilerModuleError::ConflictingActiveModule {
-                    module_path: canonical_owner,
+                    module_path: canonical_id.dotted(),
                     loaded_source: active.source_path.clone(),
                 });
             }
@@ -820,8 +820,7 @@ impl ModuleRegistry {
                 info
             };
             let source_paths = info.source_path.iter().cloned().collect::<Vec<_>>();
-            let canonical_owner = canonical_source_module_identity(&id.dotted(), &source_paths);
-            let canonical_id = module_id_from_identity(&canonical_owner);
+            let canonical_id = canonical_source_module_identity(&id, &source_paths);
             return Ok(self.activate_module(&canonical_id, info));
         }
 
@@ -1163,20 +1162,24 @@ mod tests {
     fn canonical_stdlib_owner_follows_flat_package_and_peer_layouts() {
         let stdlib = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../std");
         assert_eq!(
-            canonical_stdlib_module_for_source(&stdlib.join("string.hew")).as_deref(),
-            Some("std.string")
+            canonical_stdlib_module_for_source(&stdlib.join("string.hew"))
+                .map(|module| module.dotted()),
+            Some("std.string".to_string())
         );
         assert_eq!(
-            canonical_stdlib_module_for_source(&stdlib.join("net/http/http.hew")).as_deref(),
-            Some("std.net.http")
+            canonical_stdlib_module_for_source(&stdlib.join("net/http/http.hew"))
+                .map(|module| module.dotted()),
+            Some("std.net.http".to_string())
         );
         assert_eq!(
-            canonical_stdlib_module_for_source(&stdlib.join("net/http/http_client.hew")).as_deref(),
-            Some("std.net.http")
+            canonical_stdlib_module_for_source(&stdlib.join("net/http/http_client.hew"))
+                .map(|module| module.dotted()),
+            Some("std.net.http".to_string())
         );
         assert_eq!(
-            canonical_stdlib_module_for_source(&stdlib.join("io/scanner.hew")).as_deref(),
-            Some("std.io.scanner")
+            canonical_stdlib_module_for_source(&stdlib.join("io/scanner.hew"))
+                .map(|module| module.dotted()),
+            Some("std.io.scanner".to_string())
         );
     }
 
@@ -1185,19 +1188,25 @@ mod tests {
         let stdlib = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../std");
         assert_eq!(
             canonical_source_module_identity(
-                "std.net.http.http_client",
+                &ModulePath::new(["std", "net", "http", "http_client"]),
                 &[stdlib.join("net/http/http_client.hew")]
             ),
-            "std.net.http"
+            ModulePath::new(["std", "net", "http"])
         );
         assert_eq!(
-            canonical_source_module_identity("std.net.http", &[stdlib.join("net/http/http.hew")]),
-            "std.net.http"
+            canonical_source_module_identity(
+                &ModulePath::new(["std", "net", "http"]),
+                &[stdlib.join("net/http/http.hew")]
+            ),
+            ModulePath::new(["std", "net", "http"])
         );
         let user_lookalike = std::env::temp_dir().join("user/std/net/http/http_client.hew");
         assert_eq!(
-            canonical_source_module_identity("std.net.http.http_client", &[user_lookalike]),
-            "std.net.http.http_client",
+            canonical_source_module_identity(
+                &ModulePath::new(["std", "net", "http", "http_client"]),
+                &[user_lookalike]
+            ),
+            ModulePath::new(["std", "net", "http", "http_client"]),
             "only a shipped source names a directory module; a user source keeps its own owner"
         );
     }

@@ -194,5 +194,5 @@ fn entry_dyn_error_renders_through_the_display_fmt_slot() {
     // `Pretty.fmt` occupies slot 3; `Display.fmt`, reached through `Error`,
     // is slot 4.
     assert_eq!(*slot, 4);
-    assert_eq!(method.full_path(), "std.builtins.Display::fmt");
+    assert_eq!(output.defs.path(*method), "std.builtins.Display::fmt");
 }

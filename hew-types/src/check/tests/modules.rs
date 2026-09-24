@@ -861,11 +861,16 @@ fn adopting_declaration_keeps_its_own_provenance() {
         .extern_contracts
         .established("shared_raw")
         .expect("one contract for the symbol");
-    assert_eq!(contract.owner.full_path(), "alpha.shared_raw");
+    assert_eq!(output.defs.path(contract.owner), "alpha.shared_raw");
     assert_eq!(contract.declaring_module.as_deref(), Some("alpha"));
     let adopter = output
         .extern_contracts
-        .declaration("beta.shared_raw")
+        .declaration(
+            output
+                .defs
+                .lookup_path("beta.shared_raw")
+                .expect("beta declaration"),
+        )
         .expect("adopting declaration registers its own record");
     assert!(
         adopter.contract.is_some(),
@@ -1109,11 +1114,16 @@ fn module_graph_body_prefers_same_module_private_extern_over_global_bare_name() 
         .extern_contracts
         .established("hew_test_raw")
         .expect("the symbol carries one established contract");
-    assert_eq!(contract.owner.full_path(), "alpha.hew_test_raw");
+    assert_eq!(output.defs.path(contract.owner), "alpha.hew_test_raw");
     assert_eq!(contract.return_type, Ty::I64);
     let beta_declaration = output
         .extern_contracts
-        .declaration("beta.hew_test_raw")
+        .declaration(
+            output
+                .defs
+                .lookup_path("beta.hew_test_raw")
+                .expect("beta declaration"),
+        )
         .expect("a conflicting declaration still registers (unsafe gate, call target)");
     assert!(
         beta_declaration.contract.is_none(),
@@ -2897,7 +2907,7 @@ fn root_and_imported_compiles_mint_one_fn_sig_identity() {
         "root axis must mint the import-equal canonical declaration identity; keys: {:?}",
         root_checker.fn_def_spans.keys().collect::<Vec<_>>()
     );
-    let root_module = root_out.identity.root_module().expect("source-backed root");
+    let root_module = root_out.defs.root_module().expect("source-backed root");
     let occurrence = crate::DeclarationOccurrence::new(
         Some(root_module),
         &(0..10),
@@ -2906,9 +2916,9 @@ fn root_and_imported_compiles_mint_one_fn_sig_identity() {
     );
     assert_eq!(
         root_out
-            .identity
+            .defs
             .declaration(occurrence)
-            .map(crate::DefId::full_path),
+            .map(|id| root_out.defs.path(id)),
         Some("oracle_mod.shared_helper"),
         "the identity table publishes the exact root declaration"
     );

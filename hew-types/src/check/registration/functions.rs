@@ -638,13 +638,13 @@ impl Checker {
                                     ), // TRANSITION(P1): deleted by A1 commit 2
                                     receiver_nominal,
                                 ) {
-                                    let declaration = crate::default_impl_method_declaration(
-                                        &declaring_trait,
+                                    let declaration = self.defs.mint_default_impl_body(
+                                        declaring_trait,
                                         &crate::NominalInstance {
                                             nominal: receiver_nominal,
                                             args: receiver_args,
                                         },
-                                        m.name.name.as_str(),
+                                        m.name.name,
                                     );
                                     // A materialized default is keyed exactly
                                     // like an explicit impl method: the
@@ -657,7 +657,7 @@ impl Checker {
                                         m.name.name.as_str(),
                                         id.type_params.as_deref(),
                                     );
-                                    self.publish_impl_method_declaration_id(&keys, &declaration);
+                                    self.publish_impl_method_declaration_id(&keys, declaration);
                                 }
                                 self.publish_impl_method_sig(
                                     type_name,
@@ -1586,7 +1586,7 @@ impl Checker {
                 let obligation = if self
                     .lang_items
                     .get(crate::LANG_ITEM_DISPLAY)
-                    .is_some_and(|binding| binding.trait_id.full_path() == identity)
+                    .is_some_and(|binding| self.defs.path(binding.trait_id) == identity)
                     || identity == "Display"
                 {
                     crate::type_facts::ImplMethodObligation::Display
@@ -1659,8 +1659,7 @@ impl Checker {
             return FnSig::default();
         };
         if trait_bound.is_none() && method.consumes_self {
-            self.consuming_inherent_methods
-                .insert(declaration_id.clone());
+            self.consuming_inherent_methods.insert(declaration_id);
         }
         // Preserve the exact trait declaration selected while this impl's
         // source scope is active. A bare module import can make a trait
@@ -1681,7 +1680,7 @@ impl Checker {
                 builtin: None,
             });
             self.trait_impl_method_binders.insert(
-                declaration_id.clone(),
+                declaration_id,
                 crate::type_facts::ImplMethodBinders {
                     receiver: self.normalize_for_use(&receiver),
                     obligations: self.value_method_obligations(
@@ -1727,7 +1726,7 @@ impl Checker {
                         trait_identity.clone(),
                         method.name.to_string(),
                     ),
-                    declaration_id.clone(),
+                    declaration_id,
                 );
             }
             let nominal_key = (type_identity, trait_identity, method.name.to_string());
@@ -1735,11 +1734,11 @@ impl Checker {
                 // A concrete specialization must not occupy the generic fallback
                 // simply because it was registered before the generic impl.
                 self.trait_impl_method_declaration_ids
-                    .insert(nominal_key, declaration_id.clone());
+                    .insert(nominal_key, declaration_id);
             } else {
                 self.trait_impl_method_declaration_ids
                     .entry(nominal_key)
-                    .or_insert_with(|| declaration_id.clone());
+                    .or_insert_with(|| declaration_id);
             }
             if let Some(ids) = self
                 .trait_method_call_target_ids(&bound.path.to_string(), method.name.name.as_str())
@@ -1919,14 +1918,12 @@ impl Checker {
 
         let mut sig = FnSig {
             impl_method: Some(super::types::ImplMethodProvenance {
-                declaration: declaration_id.clone(),
-                receiver: self
-                    .lookup_declaration(
-                        &self
-                            .canonical_nominal_name(type_name)
-                            .unwrap_or_else(|| self.trait_impl_type_identity(type_name)),
-                    )
-                    .cloned(),
+                declaration: declaration_id,
+                receiver: self.lookup_declaration(
+                    &self
+                        .canonical_nominal_name(type_name)
+                        .unwrap_or_else(|| self.trait_impl_type_identity(type_name)),
+                ),
                 name: method.name.to_string(),
                 is_inherent: trait_bound.is_none(),
                 span: if method.decl_span.is_empty() {
@@ -1986,7 +1983,7 @@ impl Checker {
         // Preserve every exact declaration even when a trait method or concrete
         // specialisation shares the ordinary receiver/method lookup spelling.
         self.fn_sigs
-            .insert(declaration_id.full_path().to_string(), sig.clone());
+            .insert(self.defs.path(declaration_id).to_string(), sig.clone());
         // D442: a `#[resource]` / `#[opaque]` type's inherent `close` must
         // consume its receiver. A borrowing `close(self)` runs the implicit
         // scope-exit release a second time when a caller invokes `close()`
@@ -2042,7 +2039,7 @@ impl Checker {
             method.name.name.as_str(),
             impl_type_params.map(Vec::as_slice),
         );
-        self.publish_impl_method_declaration_id(&keys, &declaration_id);
+        self.publish_impl_method_declaration_id(&keys, declaration_id);
         for key in keys.canonical.iter().chain(&keys.mangled) {
             // Publish the signature under the same module-owned identity as
             // the declaration, including imported non-generic methods. A previous
@@ -2187,7 +2184,7 @@ impl Checker {
     pub(super) fn publish_impl_method_declaration_id(
         &mut self,
         keys: &ImplMethodDeclarationKeys,
-        declaration_id: &crate::DefId,
+        declaration_id: crate::DefId,
     ) {
         if let Some(shared) = &keys.shared {
             if self.registration_is_flat_file_import {
@@ -2196,16 +2193,16 @@ impl Checker {
                 // module's compatibility alias, independent of graph/import
                 // traversal order.
                 self.impl_method_declaration_ids
-                    .insert(shared.clone(), declaration_id.clone());
+                    .insert(shared.clone(), declaration_id);
             } else {
                 self.impl_method_declaration_ids
                     .entry(shared.clone())
-                    .or_insert_with(|| declaration_id.clone());
+                    .or_insert_with(|| declaration_id);
             }
         }
         for key in keys.canonical.iter().chain(&keys.mangled) {
             self.impl_method_declaration_ids
-                .insert(key.clone(), declaration_id.clone());
+                .insert(key.clone(), declaration_id);
         }
     }
 
@@ -2264,7 +2261,12 @@ impl Checker {
             crate::DeclarationKind::ImplMethod,
             0,
         );
-        if let Ok(declaration) = self.identity.declare(occurrence, path.clone()) {
+        // An impl block has no row of its own, so an impl method carries no
+        // owner until A1 gives it one.
+        if let Ok(declaration) = self
+            .defs
+            .declare(occurrence, method.name.name, None, path.clone())
+        {
             return Some(declaration);
         }
         // Impl methods are registered per route, and a shipped module reached
@@ -2274,7 +2276,7 @@ impl Checker {
         // established row for it is that same method: resolve it rather than
         // mint a second identity. A genuinely duplicated impl method collides
         // on this path too, and impl registration reports that.
-        self.lookup_declaration(&path).cloned()
+        self.lookup_declaration(&path)
     }
 
     /// Rename method-level type parameter names in `ty` from the trait's

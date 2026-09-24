@@ -10,7 +10,6 @@ use crate::type_facts::{TypeFactContext, TypeFactService, TypeFacts, TypeInstanc
 use crate::unify::unify;
 use crate::{WasmFeatureDisposition, WasmUnsupportedFeature};
 use hew_parser::ast::condition_exprs;
-use hew_parser::ast::Ident;
 use hew_parser::ast::{
     ActorDecl, ActorInit, ArrayElement, Attribute, AttributeArg, BinaryOp, Block, CallArg,
     ChildSpec, ConditionItem, ConstDecl, Expr, ExternBlock, ExternFnDecl, FieldDecl, FnDecl,
@@ -19,6 +18,7 @@ use hew_parser::ast::{
     SupervisorDecl, SupervisorStrategy, TraitBound, TraitDecl, TraitItem, TypeBodyItem, TypeDecl,
     TypeDeclKind, TypeExpr, TypeParam, UnaryOp, VariantKind, WhereClause,
 };
+use hew_parser::ast::{Ident, Symbol};
 use std::collections::{hash_map::Entry, BTreeMap, HashMap, HashSet};
 use std::sync::OnceLock;
 
@@ -740,6 +740,7 @@ impl Checker {
             })
             .collect();
         TypeFactContext::new(rendered, self.registry.clone(), self.type_defs.clone())
+            .with_defs(std::sync::Arc::new(self.defs.clone()))
             .with_aliases(self.type_aliases.clone())
             .with_wire_types(self.wire_layouts.keys().cloned().collect())
             .with_impl_methods(
@@ -748,7 +749,7 @@ impl Checker {
             )
             .with_display_trait(self.lang_items.get(crate::LANG_ITEM_DISPLAY).map_or_else(
                 || self.trait_defs_key_for_bound("Display"),
-                |binding| binding.trait_id.full_path().to_string(),
+                |binding| self.defs.path(binding.trait_id).to_string(),
             ))
     }
 
@@ -779,7 +780,7 @@ impl Checker {
     pub(super) fn canonical_fn_owner(&self) -> Option<&str> {
         self.current_module
             .as_deref()
-            .or_else(|| self.identity.root_module_path())
+            .or_else(|| self.defs.root_module_path())
     }
 
     /// Mint the declaration-table identity for a free function owned by a
@@ -875,7 +876,7 @@ impl Checker {
         if key.contains("::") {
             return None;
         }
-        match self.identity.root_module_path() {
+        match self.defs.root_module_path() {
             Some(root) => key
                 .strip_prefix(root)
                 .and_then(|rest| rest.strip_prefix('.'))
@@ -898,9 +899,9 @@ impl Checker {
     /// paths) receive the reserved synthetic occurrence authority rather than
     /// borrowing a display-name namespace.
     fn mint_module_identities(&mut self, program: &Program) {
-        self.identity = crate::identity::IdentityTable::new();
+        self.defs = self.seed_defs.take().unwrap_or_default();
         let Some(module_graph) = &program.module_graph else {
-            self.identity.mint_synthetic_root();
+            self.defs.mint_synthetic_root();
             return;
         };
         // Deterministic mint order: the topo order, root last.
@@ -912,10 +913,11 @@ impl Checker {
                 continue;
             };
             let canonical = crate::module_registry::canonical_source_module_identity(
-                &mod_id.dotted(),
+                mod_id,
                 &module.source_paths,
             );
-            self.identity.mint_module(&canonical, &module.source_paths);
+            self.defs
+                .mint_module(&canonical.dotted(), &module.source_paths);
         }
         // Second pass — per-file identities for directory modules' peer
         // files (rc1-F1 stage C): a peer file's declarations carry the
@@ -930,20 +932,20 @@ impl Checker {
             let Some(module) = module_graph.modules.get(mod_id) else {
                 continue;
             };
-            let dotted = mod_id.dotted();
             let canonical = crate::module_registry::canonical_source_module_identity(
-                &dotted,
+                mod_id,
                 &module.source_paths,
-            );
+            )
+            .dotted();
             for source in module.source_paths.iter().skip(1) {
-                self.identity.mint_source_file_module(&canonical, source);
+                self.defs.mint_source_file_module(&canonical, source);
             }
         }
         if self.repl_fragment {
-            self.identity.mint_synthetic_root();
+            self.defs.mint_synthetic_root();
         } else if let Some(root) = module_graph.modules.get(&module_graph.root) {
-            if self.identity.mint_root_module(&root.source_paths).is_none() {
-                self.identity.mint_synthetic_root();
+            if self.defs.mint_root_module(&root.source_paths).is_none() {
+                self.defs.mint_synthetic_root();
             }
         }
     }
@@ -973,11 +975,11 @@ impl Checker {
                 let assembler = module
                     .source_paths
                     .first()
-                    .and_then(|source| self.identity.module_for_source(source))
-                    .or_else(|| self.identity.module_for_path(&dotted))
+                    .and_then(|source| self.defs.module_for_source(source))
+                    .or_else(|| self.defs.module_for_path(&dotted))
                     .or_else(|| {
                         (*module_id == graph.root)
-                            .then(|| self.identity.root_module())
+                            .then(|| self.defs.root_module())
                             .flatten()
                     });
                 for (item_index, (item, span)) in module.items.iter().enumerate() {
@@ -987,7 +989,7 @@ impl Checker {
                     // The file is the occurrence axis: two peer files whose
                     // items share a span must stay distinguishable.
                     let occurrence_module = source
-                        .and_then(|source| self.identity.module_for_source(source))
+                        .and_then(|source| self.defs.module_for_source(source))
                         .or(assembler);
                     // The render axis is the module being assembled, which is
                     // the module the checker keys by: `pkg/helpers.hew`'s
@@ -1010,7 +1012,7 @@ impl Checker {
             // idempotent. File imports are flattened into `Program::items`
             // only after type checking, so the checker never sees an imported
             // item on this surface.
-            let root = self.identity.root_module();
+            let root = self.defs.root_module();
             for (item_index, (item, span)) in program.items.iter().enumerate() {
                 self.mint_item_declaration_identities(
                     root,
@@ -1022,7 +1024,7 @@ impl Checker {
                 );
             }
         } else {
-            let root = self.identity.root_module();
+            let root = self.defs.root_module();
             for (item_index, (item, span)) in program.items.iter().enumerate() {
                 self.mint_item_declaration_identities(
                     root,
@@ -1039,23 +1041,23 @@ impl Checker {
     pub(super) fn current_declaration_module(&self) -> Option<crate::ModuleId> {
         self.current_item_source
             .as_deref()
-            .and_then(|source| self.identity.module_for_source(source))
+            .and_then(|source| self.defs.module_for_source(source))
             .or_else(|| {
                 self.current_module
                     .as_deref()
-                    .and_then(|module| self.identity.module_for_path(module))
+                    .and_then(|module| self.defs.module_for_path(module))
             })
-            .or_else(|| self.identity.root_module())
+            .or_else(|| self.defs.root_module())
     }
 
     /// Resolve a declaration path the checker holds: its canonical render, or
     /// the other name a nominal answers to in its namespace. The published
     /// identity view carries only canonical renders.
-    pub(super) fn lookup_declaration(&self, path: &str) -> Option<&crate::DefId> {
-        self.identity.declaration_by_path(path).or_else(|| {
+    pub(super) fn lookup_declaration(&self, path: &str) -> Option<crate::DefId> {
+        self.defs.lookup_path(path).or_else(|| {
             self.nominal_namespace_claims
                 .get(path)
-                .and_then(|occurrence| self.identity.declaration(*occurrence))
+                .and_then(|occurrence| self.defs.declaration(*occurrence))
         })
     }
 
@@ -1065,7 +1067,7 @@ impl Checker {
         span: &std::ops::Range<usize>,
     ) -> Option<crate::DefId> {
         if let Some(declaration) = self.lookup_declaration(path) {
-            return Some(declaration.clone());
+            return Some(declaration);
         }
         self.errors.push(TypeError::new(
             TypeErrorKind::InvalidOperation,
@@ -1084,15 +1086,26 @@ impl Checker {
     pub(super) fn declare_lambda_actor(&mut self, span: &std::ops::Range<usize>) {
         let module = self.current_declaration_module();
         let actor_path =
-            crate::identity::lambda_actor_declaration_path(self.current_module.as_deref(), span);
-        let handler_path = crate::identity::lambda_actor_handler_path(&actor_path);
-        let mut minted = Vec::new();
-        for (kind, path) in [
-            (crate::DeclarationKind::Actor, actor_path.clone()),
-            (crate::DeclarationKind::ActorReceive, handler_path),
+            crate::def_table::lambda_actor_declaration_path(self.current_module.as_deref(), span);
+        let handler_path = crate::def_table::lambda_actor_handler_path(&actor_path);
+        let mut minted: Vec<crate::DefId> = Vec::new();
+        for (kind, name, path) in [
+            (
+                crate::DeclarationKind::Actor,
+                Symbol::intern("actor"),
+                actor_path.clone(),
+            ),
+            (
+                crate::DeclarationKind::ActorReceive,
+                Symbol::intern("call"),
+                handler_path,
+            ),
         ] {
             let occurrence = crate::DeclarationOccurrence::new(module, span, kind, 0);
-            match self.identity.declare(occurrence, path) {
+            match self
+                .defs
+                .declare(occurrence, name, minted.first().copied(), path)
+            {
                 Ok(declaration) => minted.push(declaration),
                 Err(error) => {
                     self.errors.push(TypeError::new(
@@ -1131,8 +1144,8 @@ impl Checker {
             kind,
             ordinal,
         );
-        if let Some(declaration) = self.identity.declaration(occurrence) {
-            return Some(declaration.clone());
+        if let Some(declaration) = self.defs.declaration(occurrence) {
+            return Some(declaration);
         }
         self.errors.push(TypeError::new(
             TypeErrorKind::InvalidOperation,
@@ -1150,7 +1163,7 @@ impl Checker {
     ) -> Option<(crate::DeclarationOccurrence, &'a std::ops::Range<usize>)> {
         let selected_entry = self.entry_selection?;
         let selected_entry = if selected_entry.module().is_none() {
-            selected_entry.with_module(self.identity.root_module())
+            selected_entry.with_module(self.defs.root_module())
         } else {
             selected_entry
         };
@@ -1163,7 +1176,7 @@ impl Checker {
                     return None;
                 };
                 let occurrence = crate::DeclarationOccurrence::new_with_synthetic_ordinal(
-                    self.identity.root_module(),
+                    self.defs.root_module(),
                     span,
                     item_index,
                     crate::DeclarationKind::Function,
@@ -1246,7 +1259,7 @@ impl Checker {
                         span.clone(),
                         format!(
                             "checker has no resolved signature for entry Display target `{}`",
-                            display_declaration.display_name()
+                            self.defs.display(display_declaration)
                         ),
                     ));
                     return None;
@@ -1367,7 +1380,7 @@ impl Checker {
                         {
                             Some((
                                 crate::DeclarationOccurrence::new_with_synthetic_ordinal(
-                                    self.identity.root_module(),
+                                    self.defs.root_module(),
                                     span,
                                     item_index,
                                     crate::DeclarationKind::Function,
@@ -1380,9 +1393,9 @@ impl Checker {
                     },
                 )?
             };
-        let entry = self.identity.declaration(occurrence)?.clone();
+        let entry = self.defs.declaration(occurrence)?;
         let Some(return_type) = resolved_fn_sigs
-            .get(entry.full_path())
+            .get(self.defs.path(entry))
             .map(|signature| signature.return_type.clone())
         else {
             self.errors.push(TypeError::new(
@@ -1390,7 +1403,7 @@ impl Checker {
                 span.clone(),
                 format!(
                     "checker has no resolved signature for process entry `{}`",
-                    entry.display_name()
+                    self.defs.display(entry)
                 ),
             ));
             return None;
@@ -1432,7 +1445,7 @@ impl Checker {
         use crate::{DeclarationKind as Kind, DeclarationOccurrence as Occurrence};
 
         let module_path = owner.or(module).and_then(|owner| {
-            let path = self.identity.module_path(owner);
+            let path = self.defs.module_path(owner);
             (path != "#synthetic-root").then(|| path.to_string())
         });
         let fn_path = |leaf: &str| {
@@ -1466,12 +1479,21 @@ impl Checker {
         // `alias` marks the other name a nominal answers to in its namespace.
         // It is claimed there for collision reporting and never becomes a
         // second spelling of the declaration's identity.
-        let mut declare = |kind: Kind, ordinal: usize, path: String, alias: bool| {
+        // Declares one row and answers its identity, which a member row takes
+        // as its owner.
+        let mut declare = |kind: Kind,
+                           ordinal: usize,
+                           name: Symbol,
+                           owner: Option<crate::DefId>,
+                           path: String,
+                           alias: bool|
+         -> Option<crate::DefId> {
             let occurrence =
                 Occurrence::new_with_synthetic_ordinal(module, span, item_ordinal, kind, ordinal);
+            let mut minted = None;
             let collision = if alias {
                 let claimant = self
-                    .identity
+                    .defs
                     .occurrence_by_path(&path)
                     .or_else(|| self.nominal_namespace_claims.get(&path).copied());
                 match claimant {
@@ -1484,12 +1506,14 @@ impl Checker {
                     }
                 }
             } else {
-                match self.identity.declare(occurrence, path.clone()) {
-                    Ok(_) => self
-                        .nominal_namespace_claims
-                        .get(&path)
-                        .copied()
-                        .filter(|claimant| *claimant != occurrence),
+                match self.defs.declare(occurrence, name, owner, path.clone()) {
+                    Ok(id) => {
+                        minted = Some(id);
+                        self.nominal_namespace_claims
+                            .get(&path)
+                            .copied()
+                            .filter(|claimant| *claimant != occurrence)
+                    }
                     // An `extern "C"` symbol is the one declaration form where
                     // two occurrences under one path are genuinely one
                     // declaration: the linker binds every call to a single
@@ -1499,18 +1523,20 @@ impl Checker {
                     // contract. Peer files of one directory module routinely
                     // re-declare a runtime symbol, so binding the further
                     // occurrence is what keeps their declarations resolvable.
-                    Err(crate::identity::DeclarationIdentityError::PathAlreadyDeclared {
+                    Err(crate::def_table::DeclarationIdentityError::PathAlreadyDeclared {
                         ..
                     }) if kind == Kind::ExternFunction => {
-                        self.identity.bind_redeclaration(occurrence, &path);
+                        self.defs.bind_redeclaration(occurrence, &path);
                         None
                     }
-                    Err(crate::identity::DeclarationIdentityError::PathAlreadyDeclared {
+                    Err(crate::def_table::DeclarationIdentityError::PathAlreadyDeclared {
                         established_occurrence,
                         ..
                     }) => Some(established_occurrence),
                     Err(
-                        error @ crate::identity::DeclarationIdentityError::SecondSpelling { .. },
+                        error @ crate::def_table::DeclarationIdentityError::SecondSpelling {
+                            ..
+                        },
                     ) => {
                         self.errors.push(TypeError::new(
                             TypeErrorKind::InvalidOperation,
@@ -1522,7 +1548,7 @@ impl Checker {
                 }
             };
             let Some(established_occurrence) = collision else {
-                return;
+                return minted;
             };
             // Everything else is a redefinition. Registration reports the
             // ones it can see, which is one file at a time; a collision
@@ -1537,14 +1563,14 @@ impl Checker {
             if established_module == module
                 || !self.reported_declaration_collisions.insert(path.clone())
             {
-                return;
+                return minted;
             }
-            let leaf = path.rsplit(['.', ':']).next().unwrap_or(&path).to_string();
+            let leaf = name.to_string();
             let established_file = established_module
-                .and_then(|module| self.identity.module_source(module))
+                .and_then(|module| self.defs.module_source(module))
                 .map(|source| source.display().to_string());
             let conflicting_file = module
-                .and_then(|module| self.identity.module_source(module))
+                .and_then(|module| self.defs.module_source(module))
                 .map(|source| source.display().to_string());
             let mut error = TypeError::new(
                 TypeErrorKind::DuplicateDefinition,
@@ -1566,38 +1592,45 @@ impl Checker {
             }
             error.source_module = conflicting_file;
             self.errors.push(error);
+            minted
         };
         match item {
             Item::Import(_) | Item::Impl(_) => {}
             Item::Const(decl) => {
-                declare(Kind::Const, 0, owner_path(decl.name.name.as_str()), false);
-                if let Some(alias) = nominal_alias(decl.name.name.as_str()) {
-                    declare(Kind::Const, 0, alias, true);
+                let name = decl.name.name;
+                declare(Kind::Const, 0, name, None, owner_path(name.as_str()), false);
+                if let Some(alias) = nominal_alias(name.as_str()) {
+                    declare(Kind::Const, 0, name, None, alias, true);
                 }
             }
             Item::Function(decl) => {
-                declare(Kind::Function, 0, fn_path(decl.name.name.as_str()), false);
+                let name = decl.name.name;
+                declare(Kind::Function, 0, name, None, fn_path(name.as_str()), false);
             }
             Item::ExternBlock(block) => {
                 for (index, decl) in block.functions.iter().enumerate() {
+                    let name = decl.name.name;
                     declare(
                         Kind::ExternFunction,
                         index,
-                        fn_path(decl.name.name.as_str()),
+                        name,
+                        None,
+                        fn_path(name.as_str()),
                         false,
                     );
                 }
             }
             Item::TypeDecl(decl) => {
-                let owner = owner_path(decl.name.name.as_str());
+                let name = decl.name.name;
+                let path = owner_path(name.as_str());
                 let kind = if decl.origin == hew_parser::ast::DeclarationOrigin::MachineState {
                     Kind::Machine
                 } else {
                     Kind::Type
                 };
-                declare(kind, 0, owner.clone(), false);
-                if let Some(alias) = nominal_alias(decl.name.name.as_str()) {
-                    declare(kind, 0, alias, true);
+                let owner = declare(kind, 0, name, None, path.clone(), false);
+                if let Some(alias) = nominal_alias(name.as_str()) {
+                    declare(kind, 0, name, None, alias, true);
                 }
                 for (index, method) in decl
                     .body
@@ -1612,35 +1645,49 @@ impl Checker {
                     declare(
                         Kind::TypeMethod,
                         index,
-                        format!("{owner}::{}", method.name),
+                        method.name.name,
+                        owner,
+                        format!("{path}::{}", method.name),
                         false,
                     );
                 }
             }
             Item::TypeAlias(decl) => {
+                let name = decl.name.name;
                 declare(
                     Kind::TypeAlias,
                     0,
-                    owner_path(decl.name.name.as_str()),
+                    name,
+                    None,
+                    owner_path(name.as_str()),
                     false,
                 );
                 if matches!(namespace, NominalNamespace::RootBare) {
-                    if let Some(alias) = nominal_alias(decl.name.name.as_str()) {
-                        declare(Kind::TypeAlias, 0, alias, true);
+                    if let Some(alias) = nominal_alias(name.as_str()) {
+                        declare(Kind::TypeAlias, 0, name, None, alias, true);
                     }
                 }
             }
             Item::Record(decl) => {
-                declare(Kind::Record, 0, owner_path(decl.name.name.as_str()), false);
-                if let Some(alias) = nominal_alias(decl.name.name.as_str()) {
-                    declare(Kind::Record, 0, alias, true);
+                let name = decl.name.name;
+                declare(
+                    Kind::Record,
+                    0,
+                    name,
+                    None,
+                    owner_path(name.as_str()),
+                    false,
+                );
+                if let Some(alias) = nominal_alias(name.as_str()) {
+                    declare(Kind::Record, 0, name, None, alias, true);
                 }
             }
             Item::Trait(decl) => {
-                let owner = owner_path(decl.name.name.as_str());
-                declare(Kind::Trait, 0, owner.clone(), false);
-                if let Some(alias) = nominal_alias(decl.name.name.as_str()) {
-                    declare(Kind::Trait, 0, alias, true);
+                let name = decl.name.name;
+                let path = owner_path(name.as_str());
+                let owner = declare(Kind::Trait, 0, name, None, path.clone(), false);
+                if let Some(alias) = nominal_alias(name.as_str()) {
+                    declare(Kind::Trait, 0, name, None, alias, true);
                 }
                 for (index, method) in decl
                     .items
@@ -1654,25 +1701,37 @@ impl Checker {
                     declare(
                         Kind::TraitMethod,
                         index,
-                        format!("{owner}::{}", method.name),
+                        method.name.name,
+                        owner,
+                        format!("{path}::{}", method.name),
                         false,
                     );
                 }
             }
             Item::Actor(decl) => {
-                let owner = owner_path(decl.name.name.as_str());
-                declare(Kind::Actor, 0, owner.clone(), false);
-                if let Some(alias) = nominal_alias(decl.name.name.as_str()) {
-                    declare(Kind::Actor, 0, alias, true);
+                let name = decl.name.name;
+                let path = owner_path(name.as_str());
+                let owner = declare(Kind::Actor, 0, name, None, path.clone(), false);
+                if let Some(alias) = nominal_alias(name.as_str()) {
+                    declare(Kind::Actor, 0, name, None, alias, true);
                 }
                 if decl.init.is_some() {
-                    declare(Kind::ActorInit, 0, format!("{owner}::<init>"), false);
+                    declare(
+                        Kind::ActorInit,
+                        0,
+                        Symbol::intern("init"),
+                        owner,
+                        format!("{path}::<init>"),
+                        false,
+                    );
                 }
                 for (index, receive) in decl.receive_fns.iter().enumerate() {
                     declare(
                         Kind::ActorReceive,
                         index,
-                        format!("{owner}::{}", receive.name),
+                        receive.name.name,
+                        owner,
+                        format!("{path}::{}", receive.name),
                         false,
                     );
                 }
@@ -1680,38 +1739,53 @@ impl Checker {
                     declare(
                         Kind::ActorMethod,
                         index,
-                        format!("{owner}::{}", method.name),
+                        method.name.name,
+                        owner,
+                        format!("{path}::{}", method.name),
                         false,
                     );
                 }
             }
             Item::Supervisor(decl) => {
-                let owner = owner_path(decl.name.name.as_str());
-                declare(Kind::Supervisor, 0, owner.clone(), false);
-                if let Some(alias) = nominal_alias(decl.name.name.as_str()) {
-                    declare(Kind::Supervisor, 0, alias, true);
+                let name = decl.name.name;
+                let path = owner_path(name.as_str());
+                let owner = declare(Kind::Supervisor, 0, name, None, path.clone(), false);
+                if let Some(alias) = nominal_alias(name.as_str()) {
+                    declare(Kind::Supervisor, 0, name, None, alias, true);
                 }
                 declare(
                     Kind::SupervisorBootstrap,
                     0,
-                    format!("{owner}::<bootstrap>"),
+                    Symbol::intern("bootstrap"),
+                    owner,
+                    format!("{path}::<bootstrap>"),
                     false,
                 );
             }
             Item::Machine(decl) => {
-                let owner = owner_path(decl.name.name.as_str());
-                declare(Kind::Machine, 0, owner.clone(), false);
-                if let Some(alias) = nominal_alias(decl.name.name.as_str()) {
-                    declare(Kind::Machine, 0, alias, true);
+                let name = decl.name.name;
+                let path = owner_path(name.as_str());
+                let owner = declare(Kind::Machine, 0, name, None, path.clone(), false);
+                if let Some(alias) = nominal_alias(name.as_str()) {
+                    declare(Kind::Machine, 0, name, None, alias, true);
                 }
                 for (index, state) in decl.states.iter().enumerate() {
-                    let state_owner = format!("{owner}::state {}", state.name);
-                    declare(Kind::MachineState, index, state_owner.clone(), false);
+                    let state_path = format!("{path}::state {}", state.name);
+                    let state_owner = declare(
+                        Kind::MachineState,
+                        index,
+                        state.name.name,
+                        owner,
+                        state_path.clone(),
+                        false,
+                    );
                     if state.entry.is_some() {
                         declare(
                             Kind::MachineStateEntry,
                             index,
-                            format!("{state_owner}::<entry>"),
+                            Symbol::intern("entry"),
+                            state_owner,
+                            format!("{state_path}::<entry>"),
                             false,
                         );
                     }
@@ -1719,7 +1793,9 @@ impl Checker {
                         declare(
                             Kind::MachineStateExit,
                             index,
-                            format!("{state_owner}::<exit>"),
+                            Symbol::intern("exit"),
+                            state_owner,
+                            format!("{state_path}::<exit>"),
                             false,
                         );
                     }
@@ -1728,7 +1804,9 @@ impl Checker {
                     declare(
                         Kind::MachineEvent,
                         index,
-                        format!("{owner}::event {}", event.name),
+                        event.name.name,
+                        owner,
+                        format!("{path}::event {}", event.name),
                         false,
                     );
                 }
@@ -1736,7 +1814,9 @@ impl Checker {
                     declare(
                         Kind::MachineTransition,
                         index,
-                        format!("{owner}::<transition#{index}>"),
+                        Symbol::intern("transition"),
+                        owner,
+                        format!("{path}::<transition#{index}>"),
                         false,
                     );
                 }
@@ -1745,8 +1825,15 @@ impl Checker {
     }
 
     /// Check the compiler-embedded builtin source under its declaration
-    /// authority. User programs must enter through [`Self::check_program`].
-    pub fn check_embedded_builtins(&mut self, program: &Program) -> TypeCheckOutput {
+    /// authority, minting into a fork of `base` so the declarations it shares
+    /// with the compilation keep their identities. User programs must enter
+    /// through [`Self::check_program`].
+    pub fn check_embedded_builtins(
+        &mut self,
+        program: &Program,
+        base: &crate::DefTable,
+    ) -> TypeCheckOutput {
+        self.seed_defs = Some(base.fork_for_embedded());
         self.checking_embedded_builtins = true;
         let output = self.check_program(program);
         self.checking_embedded_builtins = false;
@@ -1838,6 +1925,7 @@ impl Checker {
                 if directly_checked_stdlib {
                     for owner in module.source_paths.iter().filter_map(|source| {
                         crate::module_registry::canonical_stdlib_module_for_source(source)
+                            .map(|owner| owner.dotted())
                     }) {
                         self.canonical_std_module_sources.insert(owner.clone());
                         self.canonical_std_root_sources.insert(owner);
@@ -2524,6 +2612,7 @@ impl Checker {
         } else {
             HashMap::new()
         };
+        let defs = std::sync::Arc::new(std::mem::take(&mut self.defs));
         let mut output = TypeCheckOutput {
             normalized_machines: normalized_machines.clone(),
             select_sources: std::mem::take(&mut self.select_sources),
@@ -2543,7 +2632,7 @@ impl Checker {
             owning_take_vec_cursors: std::mem::take(&mut self.owning_take_vec_cursors),
             borrowed_element_option_reads: std::mem::take(&mut self.borrowed_element_option_reads),
             type_facts,
-            type_fact_context,
+            type_fact_context: type_fact_context.with_defs(std::sync::Arc::clone(&defs)),
             resolved_expr_types: resolved_expr_types_typed,
             is_type_patterns: std::mem::take(&mut self.is_type_patterns),
             method_call_receiver_kinds: std::mem::take(&mut self.method_call_receiver_kinds),
@@ -2587,7 +2676,7 @@ impl Checker {
             type_defs: resolved_type_defs,
             resolved_type_aliases,
             internal_builtin_enum_names,
-            identity: std::mem::take(&mut self.identity).freeze(),
+            defs,
             entry_exit_plan,
             extern_contracts: std::mem::take(&mut self.extern_table),
             fn_sigs: resolved_fn_sigs,

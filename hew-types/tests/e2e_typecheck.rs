@@ -755,7 +755,7 @@ fn respond(req: http.Request) -> i64 {
         output.method_call_rewrites.values().any(|rewrite| matches!(
             rewrite,
             MethodCallRewrite::RewriteToFunction { target: hew_types::check::CallTarget::ImplMethod(def), .. }
-                if def.full_path().ends_with("::respond_text")
+                if output.defs.path(*def).ends_with("::respond_text")
         )),
         "resource-wrapper methods must dispatch through their impl body, got: {:?}",
         output.method_call_rewrites
@@ -2618,7 +2618,7 @@ fn http_request_close_dispatches_through_resource_impl() {
         output.method_call_rewrites.values().any(|rewrite| matches!(
             rewrite,
             MethodCallRewrite::RewriteToFunction { target: hew_types::check::CallTarget::ImplMethod(def), .. }
-                if def.full_path().starts_with("std.net.http.Request::")
+                if output.defs.path(*def).starts_with("std.net.http.Request::")
         )),
         "resource-wrapper close must dispatch through the authored impl, got: {:?}",
         output.method_call_rewrites

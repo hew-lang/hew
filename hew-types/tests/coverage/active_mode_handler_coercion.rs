@@ -227,12 +227,15 @@ fn declared_transport_methods_carry_concrete_receive_endpoints() {
             .expect("attach must carry a declaration-owned runtime invocation");
         assert_eq!(*selected, family);
         assert_eq!(*receiver_consumed, consumes);
-        assert_eq!(endpoints.actor.full_path(), "Handler");
+        assert_eq!(output.defs.path(endpoints.actor), "Handler");
         assert_eq!(
-            endpoints.data.handler.full_path(),
+            output.defs.path(endpoints.data.handler),
             format!("Handler::{data_handler}")
         );
-        assert_eq!(endpoints.close.handler.full_path(), "Handler::on_close");
+        assert_eq!(
+            output.defs.path(endpoints.close.handler),
+            "Handler::on_close"
+        );
         let protocol = &output.actor_protocol_descriptors["Handler"];
         assert_eq!(
             Some(endpoints.data.msg_id),

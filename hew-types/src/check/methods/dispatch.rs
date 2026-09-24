@@ -474,7 +474,7 @@ impl Checker {
                     }
                 }
                 let impl_key = format!("{name}::{method}");
-                if let Some(declaration) = self.impl_method_declaration_ids.get(&impl_key).cloned()
+                if let Some(declaration) = self.impl_method_declaration_ids.get(&impl_key).copied()
                 {
                     let target = CallTarget::ImplMethod(declaration);
                     self.record_method_call_rewrite(
@@ -2301,12 +2301,12 @@ impl Checker {
                                 Some(BuiltinType::Option | BuiltinType::Result) => sig
                                     .impl_method
                                     .as_ref()
-                                    .map(|provenance| provenance.declaration.clone()),
+                                    .map(|provenance| provenance.declaration),
                                 _ => self
                                     .impl_method_declaration_ids
                                     .get(&dispatch_key)
                                     .or_else(|| self.impl_method_declaration_ids.get(&method_key))
-                                    .cloned(),
+                                    .copied(),
                             };
                             self.record_method_call_rewrite(
                                 span,

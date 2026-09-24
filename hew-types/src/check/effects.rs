@@ -291,7 +291,6 @@ impl Checker {
     ) -> Option<EffectBody> {
         let body = self
             .lookup_declaration(qualified_name)
-            .cloned()
             .map(EffectBody::Declaration);
         if let Some(body) = &body {
             self.effect_graph.bodies.entry(body.clone()).or_default();
@@ -654,7 +653,7 @@ impl Checker {
                 | CallTarget::ImplMethod(id)
                 | CallTarget::StaticTraitMethod { method: id, .. },
             ) => bodies
-                .get(&EffectBody::Declaration(id.clone()))
+                .get(&EffectBody::Declaration(*id))
                 .copied()
                 .unwrap_or(true),
             Some(CallTarget::Runtime(family) | CallTarget::DeclaredRuntime { family, .. }) => {
@@ -821,7 +820,7 @@ impl Checker {
                 continue;
             }
             let subject = match &obligation.body {
-                EffectBody::Declaration(id) => format!("function `{}`", id.display_name()),
+                EffectBody::Declaration(id) => format!("function `{}`", self.defs.display(*id)),
                 _ => "closure".to_string(),
             };
             let witness = witnesses

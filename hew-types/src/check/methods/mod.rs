@@ -51,7 +51,7 @@ impl Checker {
                 trait_name.to_string(),
                 method_name.to_string(),
             ))
-            .cloned()
+            .copied()
             .or_else(|| {
                 self.trait_method_ids_for_key(&self.trait_ref_lookup_key(trait_name), method_name)
             })
@@ -71,10 +71,10 @@ impl Checker {
         // the file that declares it.
         let declaring_trait = self
             .lookup_declaration(key)
-            .map_or(key, |declaration| declaration.full_path());
+            .map_or(key, |declaration| self.defs.path(declaration));
         self.trait_method_ids
             .get(&format!("{declaring_trait}::{method_name}"))
-            .cloned()
+            .copied()
     }
 }
 

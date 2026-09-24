@@ -399,13 +399,16 @@ fn imported_source_result_matches(
     imported_result_surface_matches(declaration, name, qualified)
 }
 
-fn lifecycle_description(candidate: &OpaqueResourceLifecycleCandidate) -> String {
+fn lifecycle_description(
+    defs: &crate::DefTable,
+    candidate: &OpaqueResourceLifecycleCandidate,
+) -> String {
     format!(
         "resource={}, close={}, release={}({})@{}, depth={:?}, result={:?}, retention={:?}",
-        candidate.resource_declaration.full_path(),
-        candidate.close_declaration.full_path(),
+        defs.path(candidate.resource_declaration),
+        defs.path(candidate.close_declaration),
         candidate.release_symbol,
-        candidate.release_declaration.full_path(),
+        defs.path(candidate.release_declaration),
         candidate.release_param_index,
         candidate.discharge_depth,
         candidate.result_ownership,
@@ -532,7 +535,7 @@ fn validated_resource_candidate(
         resource_type: typed_result.resource_type.to_string(),
         owner_module: typed_result.owner_module.to_string(),
         close_declaration,
-        release_declaration: release_declaration.declaration.clone(),
+        release_declaration: release_declaration.declaration,
         release_symbol: typed_result.release_symbol.to_string(),
         release_param_index: release_contract
             .params
@@ -547,9 +550,7 @@ fn validated_resource_candidate(
         result_ownership: typed_result.result,
         result_retention: typed_result.result_retention,
         producer_symbols: [producer_symbol.to_string()].into_iter().collect(),
-        producer_declarations: [producer_declaration.declaration.clone()]
-            .into_iter()
-            .collect(),
+        producer_declarations: [producer_declaration.declaration].into_iter().collect(),
         producer_modules: producer_declaration
             .declaring_module
             .iter()
@@ -576,7 +577,7 @@ fn derive_source_resource_candidate(
         &str,
         &crate::ffi_contracts::ExternOwnershipContract,
     >,
-    identity: &crate::identity::IdentityTable,
+    identity: &crate::DefTable,
 ) -> SourceCandidateOutcome {
     let Some(typed_result) =
         crate::ffi_contracts::owned_resource_result_for_contract(producer_contract)
@@ -600,10 +601,7 @@ fn derive_source_resource_candidate(
         release_symbol: typed_result.release_symbol.to_string(),
         kind,
     };
-    let Some(resource_declaration) = identity
-        .declaration_by_path(typed_result.resource_type)
-        .cloned()
-    else {
+    let Some(resource_declaration) = identity.lookup_path(typed_result.resource_type) else {
         return failure(
             OpaqueResourceLifecycleConflictKind::ProducerResultMismatch {
                 actual: "<missing source declaration identity>".to_string(),
@@ -689,7 +687,7 @@ fn derive_source_resource_candidate(
     let close_dispatch_key = format!("{}::close", typed_result.resource_type);
     let Some(close_declaration) = impl_method_declaration_ids
         .get(&close_dispatch_key)
-        .cloned()
+        .copied()
     else {
         return failure(OpaqueResourceLifecycleConflictKind::CloseDeclarationMissing);
     };
@@ -723,7 +721,7 @@ fn derive_opaque_resource_candidate_graph(
     import_type_name_aliases: &HashMap<ImportBindingKey, String>,
     impl_method_declaration_ids: &HashMap<String, crate::DefId>,
     contracts: &[(&str, crate::ffi_contracts::ExternOwnershipContract)],
-    identity: &crate::identity::IdentityTable,
+    identity: &crate::DefTable,
 ) -> OpaqueResourceCandidateGraph {
     let contracts_by_symbol: std::collections::BTreeMap<
         &str,
@@ -758,8 +756,8 @@ fn derive_opaque_resource_candidate_graph(
                     release_symbol,
                     kind,
                 } => {
-                    if let Some(declaration) = identity.declaration_by_path(&resource_type) {
-                        conflicted_types.insert(declaration.clone());
+                    if let Some(declaration) = identity.lookup_path(&resource_type) {
+                        conflicted_types.insert(declaration);
                     }
                     graph.conflicts.push(OpaqueResourceLifecycleConflict {
                         resource_type,
@@ -771,8 +769,8 @@ fn derive_opaque_resource_candidate_graph(
                 }
                 SourceCandidateOutcome::Candidate(candidate) => candidate,
             };
-            let resource_declaration = candidate.resource_declaration.clone();
-            match graph.candidates.entry(resource_declaration.clone()) {
+            let resource_declaration = candidate.resource_declaration;
+            match graph.candidates.entry(resource_declaration) {
                 std::collections::btree_map::Entry::Vacant(entry) => {
                     entry.insert(candidate);
                 }
@@ -786,15 +784,15 @@ fn derive_opaque_resource_candidate_graph(
                     entry
                         .get_mut()
                         .producer_declarations
-                        .insert(producer_declaration.declaration.clone());
+                        .insert(producer_declaration.declaration);
                     entry
                         .get_mut()
                         .producer_modules
                         .extend(candidate.producer_modules);
                 }
                 std::collections::btree_map::Entry::Occupied(entry) => {
-                    let established = lifecycle_description(entry.get());
-                    let conflicting = lifecycle_description(&candidate);
+                    let established = lifecycle_description(identity, entry.get());
+                    let conflicting = lifecycle_description(identity, &candidate);
                     graph.conflicts.push(OpaqueResourceLifecycleConflict {
                         resource_type: candidate.resource_type.clone(),
                         producer_symbol: (*producer_symbol).to_string(),

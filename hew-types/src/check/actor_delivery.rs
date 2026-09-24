@@ -579,6 +579,7 @@ impl Checker {
     /// Register it here so later specialization consumes checker facts even
     /// when the request has crossed a binding or generic function boundary.
     fn register_request_protocol(&mut self, method_id: &str) {
+        self.defs.request_protocol(method_id);
         self.type_defs
             .entry(method_id.to_string())
             .or_insert_with(|| super::TypeDef {

@@ -521,7 +521,7 @@ fn structural_impl_populates_method_table_for_dyn_named() {
     let inherent = output
         .impl_method_declaration_ids
         .get("Widget::name")
-        .cloned();
+        .copied();
     assert!(
         inherent.is_some(),
         "the inherent impl must publish a declaration identity: {:#?}",

@@ -223,7 +223,9 @@ impl RuntimeValueKind {
             Self::ActorRequestOwner => actor_request_owner_ty(),
             Self::ActorHandle => {
                 let actor = receiver?;
-                actor.actor_handle_instance()?;
+                if !actor.is_builtin(BuiltinType::ActorHandle) {
+                    return None;
+                }
                 actor.clone()
             }
             Self::ActorRequestAdmission => {
@@ -396,11 +398,12 @@ impl RuntimeVariantResultKind {
                 },
             ) if args.len() == 2
                 && args[0] == ResolvedTy::String
-                && args[1].nominal_instance().is_some_and(|instance| {
-                    instance.args.is_empty()
-                        && instance.nominal.declaration().full_path()
-                            == "std.encoding.utf8.Utf8Error"
-                }) =>
+                // TRANSITION(P2): deleted by A1 commit 2.
+                && matches!(
+                    &args[1],
+                    ResolvedTy::Named { name, args, builtin: None, .. }
+                        if args.is_empty() && name == "std.encoding.utf8.Utf8Error"
+                ) =>
             {
                 Some((&args[0], &args[1]))
             }
@@ -664,7 +667,7 @@ fn runtime_receiver_builtin(ty: &ResolvedTy) -> Option<BuiltinType> {
     }
     // An actor is the type of its handle, so the handle's arguments are the
     // actor declaration's own and may be empty.
-    if ty.actor_handle_instance().is_some() {
+    if ty.is_builtin(BuiltinType::ActorHandle) {
         return Some(BuiltinType::ActorHandle);
     }
     match ty {

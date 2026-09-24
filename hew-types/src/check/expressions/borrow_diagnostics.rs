@@ -168,7 +168,7 @@ impl Checker {
     /// checked, the one place its state names are written bare.
     pub(super) fn machine_state_is_bare_here(&self, owner: &str) -> bool {
         let is_machine = self.lookup_declaration(owner).is_some_and(|def| {
-            self.identity.declaration_kind_by_path(def.full_path())
+            self.defs.declaration_kind_by_path(self.defs.path(def))
                 == Some(crate::DeclarationKind::Machine)
         });
         is_machine

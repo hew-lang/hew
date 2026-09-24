@@ -2592,8 +2592,8 @@ impl Checker {
             },
         );
         if let Some(declaration) = self.lookup_declaration(&local) {
-            if self.type_aliases.contains_key(declaration.full_path()) {
-                return Some(declaration.full_path().to_string());
+            if self.type_aliases.contains_key(self.defs.path(declaration)) {
+                return Some(self.defs.path(declaration).to_string());
             }
             return None;
         }
@@ -2604,8 +2604,8 @@ impl Checker {
                 name.to_string(),
             ))
             .and_then(|source| self.lookup_declaration(source))
-            .filter(|declaration| self.type_aliases.contains_key(declaration.full_path()))
-            .map(|declaration| declaration.full_path().to_string())
+            .filter(|declaration| self.type_aliases.contains_key(self.defs.path(*declaration)))
+            .map(|declaration| self.defs.path(declaration).to_string())
     }
 
     fn type_reference_is_visible(&mut self, name: &str, span: &Span) -> bool {

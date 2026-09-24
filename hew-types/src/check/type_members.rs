@@ -444,7 +444,7 @@ impl Checker {
         let declaration = self
             .impl_method_declaration_ids
             .get(&internal_member)
-            .cloned()
+            .copied()
             .map_or_else(
                 || CallTarget::Unsupported {
                     reason: format!(

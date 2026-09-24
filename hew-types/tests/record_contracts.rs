@@ -19,7 +19,10 @@ fn vector_cursor_uses_its_source_record_fields_and_recursive_copy() {
         let cursor =
             ResolvedTy::named_builtin("VecIter", BuiltinType::VecIter, vec![element.clone()]);
         let (instance, fields) = service.record_fields(&cursor).unwrap();
-        assert_eq!(instance.nominal.full_path(), "std.builtins.VecIter");
+        assert_eq!(
+            service.defs().path(instance.nominal.declaration()),
+            "std.builtins.VecIter"
+        );
         assert_eq!(
             fields,
             vec![
@@ -128,7 +131,7 @@ fn value_capabilities_preserve_selected_methods_and_derived_defaults() {
             panic!("user override must be selected");
         };
         assert!(type_args.is_empty());
-        methods.push(method.clone());
+        methods.push(*method);
         let plain = ResolvedTy::named_user("Plain", vec![]);
         let derived = service
             .capability_plan(&plain, capability)
@@ -351,15 +354,14 @@ fn value_capabilities_keep_trait_identity_when_a_lookalike_method_is_registered_
     let output = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
     assert!(output.errors.is_empty(), "{:?}", output.errors);
     let selected = output
-        .identity
-        .declaration_by_path("Key::<impl Hash for Key>::hash")
-        .unwrap()
-        .clone();
-    let lookalike = output
-        .identity
-        .declaration_by_path("Key::<impl Other for Key>::hash")
+        .defs
+        .lookup_path("Key::<impl Hash for Key>::hash")
         .unwrap();
-    assert_ne!(&selected, lookalike);
+    let lookalike = output
+        .defs
+        .lookup_path("Key::<impl Other for Key>::hash")
+        .unwrap();
+    assert_ne!(selected, lookalike);
     let mut service = TypeFactService::new(output.type_fact_context, output.type_facts);
     assert_eq!(
         service
@@ -560,10 +562,9 @@ fn concrete_comparisons_and_capability_queries_select_the_same_eq_specialization
     let output = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
     assert!(output.errors.is_empty(), "{:?}", output.errors);
     let selected = output
-        .identity
-        .declaration_by_path("Key::<impl Eq for Key<i64>>::eq")
-        .unwrap()
-        .clone();
+        .defs
+        .lookup_path("Key::<impl Eq for Key<i64>>::eq")
+        .unwrap();
     assert!(output.user_comparison_dispatch.values().any(
         |dispatch| matches!(dispatch, UserComparisonDispatch::Eq { method } if *method == selected)
     ));

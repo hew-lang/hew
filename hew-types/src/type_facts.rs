@@ -158,18 +158,20 @@ impl ImplMethodBinders {
     #[cfg(test)]
     fn instantiate(
         &self,
-        method: &crate::DefId,
+        defs: &crate::DefTable,
+        method: crate::DefId,
         receiver: &ResolvedTy,
         registry: &TraitRegistry,
     ) -> Result<Vec<ResolvedTy>, ClassError> {
-        self.instantiate_with(method, receiver, registry, &mut |_, _| Ok(false))
+        self.instantiate_with(defs, method, receiver, registry, &mut |_, _| Ok(false))
     }
 
     /// Instantiate the impl binders from `receiver`, deciding each bound the
     /// registry cannot answer (`Display`, `Serializable`) through `decide`.
     fn instantiate_with(
         &self,
-        method: &crate::DefId,
+        defs: &crate::DefTable,
+        method: crate::DefId,
         receiver: &ResolvedTy,
         registry: &TraitRegistry,
         decide: &mut dyn FnMut(&ResolvedTy, ImplMethodObligation) -> Result<bool, ClassError>,
@@ -195,7 +197,7 @@ impl ImplMethodBinders {
         let receiver_ty = receiver.to_ty();
         crate::unify::unify_exact(&mut subst, &pattern, &receiver_ty).map_err(|_| {
             ClassError::UnknownDeclaration {
-                name: method.display_name().to_string(),
+                name: defs.display(method).to_string(),
             }
         })?;
         let type_args: Vec<_> = self
@@ -219,7 +221,7 @@ impl ImplMethodBinders {
             })
             .collect::<Result<_, _>>()?;
         let refusal = || ClassError::UnknownDeclaration {
-            name: method.display_name().to_string(),
+            name: defs.display(method).to_string(),
         };
         for (param, obligation) in self.obligations.as_ref().ok_or_else(refusal)? {
             let position = self
@@ -271,7 +273,7 @@ pub(crate) fn selected_impl_method(
                 trait_name.to_string(),
                 method_name.to_string(),
             ))
-            .cloned()
+            .copied()
             .map(|id| (id, owner))
         })
 }
@@ -289,6 +291,8 @@ pub struct TypeFactContext {
     type_defs: HashMap<String, TypeDef>,
     method_ids: HashMap<(String, String, String), crate::DefId>,
     method_binders: HashMap<crate::DefId, ImplMethodBinders>,
+    /// The declaration table every `DefId` above indexes.
+    defs: std::sync::Arc<crate::DefTable>,
     display_trait: String,
     aliases: HashMap<String, crate::check::TypeAliasDef>,
     rendering_members: HashMap<String, RenderingMembers>,
@@ -351,6 +355,7 @@ impl TypeFactContext {
             type_defs,
             method_ids: HashMap::new(),
             method_binders: HashMap::new(),
+            defs: std::sync::Arc::default(),
             display_trait: "Display".to_string(),
             aliases: HashMap::new(),
             rendering_members: HashMap::new(),
@@ -371,6 +376,18 @@ impl TypeFactContext {
     #[must_use]
     pub fn declarations(&self) -> &BTreeMap<String, DeclaredType> {
         &self.declarations
+    }
+
+    #[must_use]
+    pub fn with_defs(mut self, defs: std::sync::Arc<crate::DefTable>) -> Self {
+        self.defs = defs;
+        self
+    }
+
+    /// The declaration table this context's identities index.
+    #[must_use]
+    pub fn defs(&self) -> &crate::DefTable {
+        &self.defs
     }
 
     pub(crate) fn with_display_trait(mut self, identity: String) -> Self {
@@ -418,6 +435,12 @@ impl TypeFactService {
         Self { context, rows }
     }
 
+    /// The declaration table the service's identities index.
+    #[must_use]
+    pub fn defs(&self) -> &crate::DefTable {
+        &self.context.defs
+    }
+
     #[must_use]
     pub fn rows(&self) -> &BTreeMap<TypeInstanceKey, TypeFacts> {
         &self.rows
@@ -440,13 +463,13 @@ impl TypeFactService {
         &self,
         ty: &ResolvedTy,
     ) -> Result<(crate::NominalInstance, Vec<(String, ResolvedTy)>), String> {
-        let instance = ty.nominal_instance().ok_or_else(|| {
+        let instance = ty.nominal_instance(&self.context.defs).ok_or_else(|| {
             format!(
                 "`{}` is not a checker-resolved named record",
                 ty.user_facing()
             )
         })?;
-        let name = instance.nominal.full_path();
+        let name = self.context.defs.path(instance.nominal.declaration());
         let definition = self.context.type_defs.get(name).ok_or_else(|| {
             format!(
                 "aggregate `{}` has no exact checker declaration",
@@ -506,12 +529,12 @@ impl TypeFactService {
     /// This query does not grant transparent field access.
     pub fn declaration_marker(&self, ty: &ResolvedTy) -> Result<crate::DeclarationMarker, String> {
         let instance = ty
-            .nominal_instance()
+            .nominal_instance(&self.context.defs)
             .ok_or_else(|| format!("`{}` has no nominal declaration", ty.user_facing()))?;
         let declaration = self
             .context
             .declarations
-            .get(instance.nominal.full_path())
+            .get(self.context.defs.path(instance.nominal.declaration()))
             .ok_or_else(|| format!("`{}` has no declaration facts", ty.user_facing()))?;
         if declaration.type_params.len() != instance.args.len() {
             return Err(format!(
@@ -611,20 +634,21 @@ impl TypeFactService {
         };
         let binders = self.context.method_binders.get(&method).ok_or_else(|| {
             ClassError::UnknownDeclaration {
-                name: method.display_name().to_string(),
+                name: self.context.defs.display(method).to_string(),
             }
         })?;
-        let args =
-            binders.instantiate_with(&method, ty, &self.context.registry, &mut |ty, bound| {
-                match bound {
-                    ImplMethodObligation::Serializable => {
-                        Ok(self.is_serializable(ty, &|_, _| false))
-                    }
-                    _ => self
-                        .select_display_method(ty, ty, visiting)
-                        .map(|selected| selected.is_some()),
-                }
-            })?;
+        let args = binders.instantiate_with(
+            &self.context.defs,
+            method,
+            ty,
+            &self.context.registry,
+            &mut |ty, bound| match bound {
+                ImplMethodObligation::Serializable => Ok(self.is_serializable(ty, &|_, _| false)),
+                _ => self
+                    .select_display_method(ty, ty, visiting)
+                    .map(|selected| selected.is_some()),
+            },
+        )?;
         visiting.remove(ty);
         Ok(Some((method, args)))
     }
@@ -760,11 +784,12 @@ impl TypeFactService {
             }
             let binders = self.context.method_binders.get(&method).ok_or_else(|| {
                 ClassError::UnknownDeclaration {
-                    name: method.display_name().to_string(),
+                    name: self.context.defs.display(method).to_string(),
                 }
             })?;
             let type_args = binders.instantiate_with(
-                &method,
+                &self.context.defs,
+                method,
                 ty,
                 &self.context.registry,
                 &mut |ty, bound| {
@@ -841,9 +866,14 @@ impl TypeFactService {
                 builtin,
                 ..
             } => {
-                let owner = ty.nominal_instance().map_or_else(
+                let owner = ty.nominal_instance(&self.context.defs).map_or_else(
                     || name.clone(),
-                    |instance| instance.nominal.full_path().to_string(),
+                    |instance| {
+                        self.context
+                            .defs
+                            .path(instance.nominal.declaration())
+                            .to_string()
+                    },
                 );
                 let Some(definition) = self.context.type_defs.get(&owner) else {
                     // A builtin, or a memberless declaration such as a
@@ -1028,10 +1058,10 @@ impl TypeFactService {
                 name: ty.user_facing().to_string(),
             });
         };
-        let nominal = ty.nominal_instance();
-        let name = nominal
-            .as_ref()
-            .map_or(name.as_str(), |instance| instance.nominal.full_path());
+        let nominal = ty.nominal_instance(&self.context.defs);
+        let name = nominal.as_ref().map_or(name.as_str(), |instance| {
+            self.context.defs.path(instance.nominal.declaration())
+        });
         let declaration =
             self.context
                 .declarations
@@ -1321,9 +1351,12 @@ mod tests {
         let binders = generic_impl_binders("local.Wrapper");
         let receiver = named("foreign.Wrapper", None, vec![ResolvedTy::I64]);
 
+        let mut defs = crate::DefTable::new();
+        let method = defs.mint_for_test("local.Wrapper::eq");
         assert!(matches!(
             binders.instantiate(
-                &crate::DefId::for_test("local.Wrapper::eq"),
+                &defs,
+                method,
                 &receiver,
                 &crate::traits::TraitRegistry::new(),
             ),
@@ -1344,9 +1377,12 @@ mod tests {
             ResolvedTy::named_builtin("Option", BuiltinType::Option, vec![opaque.clone()]);
         let receiver = named("owner.Wrapper", None, vec![argument.clone()]);
 
+        let mut defs = crate::DefTable::new();
+        let method = defs.mint_for_test("owner.Wrapper::eq");
         let inferred = binders
             .instantiate(
-                &crate::DefId::for_test("owner.Wrapper::eq"),
+                &defs,
+                method,
                 &receiver,
                 &crate::traits::TraitRegistry::new(),
             )
@@ -1957,7 +1993,10 @@ mod tests {
         for ty in &instances {
             // None of the five produces a nominal instance, which is the whole
             // argument for the structural key.
-            assert!(ty.nominal_instance().is_none(), "`{ty:?}` has no NominalId");
+            assert!(
+                ty.nominal_instance(&crate::DefTable::new()).is_none(),
+                "`{ty:?}` has no NominalId"
+            );
             let facts = TypeFacts::of_type(ty, &context, SendFact::Known(true), false, false)
                 .expect("§1.1 classes every one of these");
             table.insert(TypeInstanceKey(ty.clone()), facts);

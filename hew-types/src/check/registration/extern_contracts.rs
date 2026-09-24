@@ -146,7 +146,7 @@ impl Checker {
             if declares(file) {
                 return Some(format!(
                     "{}.{name}",
-                    self.identity.module_path_for_source(file)?
+                    self.defs.module_path_for_source(file)?
                 ));
             }
         }
@@ -160,7 +160,7 @@ impl Checker {
         }
         Some(format!(
             "{}.{name}",
-            self.identity.module_path_for_source(single)?
+            self.defs.module_path_for_source(single)?
         ))
     }
 
@@ -217,7 +217,7 @@ impl Checker {
             // slot; they still register as extern declarations (call-target
             // resolution, `unsafe` gating).
             self.extern_table.register_detached_declaration(
-                declaration.clone(),
+                declaration,
                 String::new(),
                 self.current_module.clone(),
             );
@@ -240,7 +240,7 @@ impl Checker {
             .map(|(id, contract)| (id, contract.clone()))
         else {
             self.extern_table.mint(crate::extern_table::ExternContract {
-                owner: declaration.clone(),
+                owner: declaration,
                 symbol: source_symbol.to_string(),
                 params: resolved_params,
                 return_type: resolved_return,
@@ -261,7 +261,7 @@ impl Checker {
             // another name of the ONE established ABI contract, keeping its
             // OWN provenance (declaring module, endpoint).
             self.extern_table.adopt_declaration(
-                declaration.clone(),
+                declaration,
                 source_symbol.to_string(),
                 self.current_module.clone(),
                 established_id,
@@ -272,7 +272,7 @@ impl Checker {
             // hard error propagates (the unsafe registry is not conditional
             // on ABI agreement).
             self.extern_table.register_detached_declaration(
-                declaration.clone(),
+                declaration,
                 source_symbol.to_string(),
                 self.current_module.clone(),
             );
@@ -382,10 +382,11 @@ impl Checker {
         &mut self,
         module: crate::ModuleId,
         module_path: &str,
+        name: hew_parser::ast::Symbol,
         key: &str,
     ) {
         let declaration = if let Some(existing) = self.lookup_declaration(key) {
-            existing.clone()
+            existing
         } else {
             // One occurrence per source-less extern declaration in this
             // module. The registry mirror and the layout witnesses are two
@@ -405,7 +406,7 @@ impl Checker {
                 0,
             );
             *ordinal += 1;
-            match self.identity.declare(occurrence, key) {
+            match self.defs.declare(occurrence, name, None, key) {
                 Ok(declaration) => declaration,
                 Err(error) => {
                     self.errors.push(TypeError::new(
@@ -417,7 +418,7 @@ impl Checker {
                 }
             }
         };
-        if !self.extern_table.requires_unsafe(key) {
+        if !self.extern_table.requires_unsafe(declaration) {
             self.extern_table.register_contractless_declaration(
                 declaration,
                 key.to_string(),
@@ -630,7 +631,7 @@ impl Checker {
             &self.import_type_name_aliases,
             &self.impl_method_declaration_ids,
             crate::ffi_contracts::FFI_OWNERSHIP_CONTRACTS,
-            &self.identity,
+            &self.defs,
         )
     }
 
@@ -647,7 +648,7 @@ impl Checker {
             &self.import_type_name_aliases,
             &self.impl_method_declaration_ids,
             contracts,
-            &self.identity,
+            &self.defs,
         )
     }
 }

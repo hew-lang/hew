@@ -103,12 +103,11 @@ fn encoding_values_select_only_explicit_eq_methods() {
         let output = check_source_in_canonical_std_module(&source, &module);
         assert!(output.errors.is_empty(), "{:?}", output.errors);
         let expected = output
-            .identity
-            .declaration_by_path(&format!(
+            .defs
+            .lookup_path(&format!(
                 "std.encoding.{format}.Value::<impl Eq for std.encoding.{format}.Value>::eq"
             ))
-            .unwrap()
-            .clone();
+            .unwrap();
         let mut service = TypeFactService::new(output.type_fact_context, output.type_facts);
         for opaque in [false, true] {
             let mut resolved = ResolvedTy::from_ty(&encoding_ty(kind)).unwrap();
@@ -123,7 +122,7 @@ fn encoding_values_select_only_explicit_eq_methods() {
             assert_eq!(
                 selected.plan(),
                 &ValueMethodPlan::User {
-                    method: expected.clone(),
+                    method: expected,
                     type_args: vec![]
                 }
             );

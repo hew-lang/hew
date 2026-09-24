@@ -310,5 +310,5 @@ fn stdlib_builtins_carries_iterator_and_intoiterator_decls() {
     // Run the checker end-to-end so registration paths execute. Pre-existing
     // reds are tolerated — this test asserts trait surface, not stdlib cleanness.
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    let _ = checker.check_embedded_builtins(&parsed.program);
+    let _ = checker.check_embedded_builtins(&parsed.program, &hew_types::DefTable::new());
 }

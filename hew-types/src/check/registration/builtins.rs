@@ -377,7 +377,7 @@ impl Checker {
         if !parsed.errors.is_empty() {
             return;
         }
-        let builtins_module = self.identity.mint_module("std.builtins", &[]);
+        let builtins_module = self.defs.mint_module("std.builtins", &[]);
         for (item_ordinal, (item, span)) in parsed.program.items.iter().enumerate() {
             self.mint_item_declaration_identities(
                 Some(builtins_module),

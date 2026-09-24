@@ -42,22 +42,19 @@
 //!
 //! This is the non-negotiable invariant that keeps the eventual
 //! `.hew`-source migration of the registry mechanical (the entire point
-//! of Q281=A). It is enforced structurally by the `Serialize +
-//! Deserialize` derives on every type below: a `Box<dyn Fn(...)>` cannot
-//! implement `Serialize`, so adding one trips the build, and the
-//! `resolved_call_registry_lookup` round-trip test demonstrates the
-//! shape is genuinely serialisable.
+//! of Q281=A). It is enforced structurally by the `Eq + Hash` derives on
+//! every type below: a `Box<dyn Fn(...)>` implements neither, so adding one
+//! trips the build.
 
 use crate::traits::MarkerTrait;
 use crate::{DefId, RuntimeCallFamily};
-use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
 /// Opaque, checker-allocated identity of one impl in the registry.
 ///
 /// Numeric (not string-keyed) per `§7 risk #11` of the design notes:
 /// string-tuple impl identity is a known fragility class (DI-001).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ImplId(pub u32);
 
 /// The runtime calling convention for the receiver-side argument of a
@@ -66,7 +63,7 @@ pub struct ImplId(pub u32);
 /// Stage A enumerates the conventions used by existing HashMap/HashSet/Vec
 /// callees so Stage E can re-key MIR drop-plan attachment from string-symbol
 /// families onto `ImplId` without changing the set of conventions.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RuntimeAbi {
     /// Receiver is passed by value (e.g. `Copy` primitives).
     ByValue,
@@ -81,7 +78,7 @@ pub enum RuntimeAbi {
 }
 
 /// How the call is lowered at MIR/codegen time.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CallAbiHint {
     /// Direct call to the symbol named by [`MethodTarget::symbol_name`].
     Direct,
@@ -91,15 +88,14 @@ pub enum CallAbiHint {
     RuntimeShim,
 }
 
-/// A data-only type pattern. Independent of [`crate::ty::Ty`] so it
-/// round-trips via serde and stays mechanically migratable to `.hew`
-/// source.
+/// A data-only type pattern. Independent of [`crate::ty::Ty`] so it stays
+/// mechanically migratable to `.hew` source.
 ///
 /// The resolver's caller is responsible for translating a `Ty` into a
 /// `TyPattern` for matching, and for evaluating bound-satisfaction on
 /// concrete `TyPattern`s. Storing `Ty` directly inside `ImplDef` is
 /// rejected because `Ty` is checker-internal and not serialisable.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum TyPattern {
     /// Pattern variable bound to whatever concrete pattern appears at this
     /// position (e.g. the `K` in `HashMap<K, V>`). Variable names are local
@@ -152,7 +148,7 @@ impl std::fmt::Display for TyPattern {
 /// `var` MUST name a [`TyPattern::Var`] that appears somewhere in the
 /// enclosing [`ImplDef::self_pattern`]. The resolver evaluates each bound
 /// against the concrete pattern bound to that variable at match time.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Bound {
     pub trait_name: MarkerTrait,
     pub var: String,
@@ -163,7 +159,7 @@ pub struct Bound {
 ///
 /// Stage A captures the fields Stage B's resolver will populate and Stage
 /// E's MIR/codegen pickup will consume. No production reader exists yet.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct MethodTarget {
     /// Runtime symbol name (e.g. `"hew_hashmap_insert_layout"`).
     ///
@@ -197,7 +193,7 @@ pub struct MethodTarget {
 }
 
 /// One checker-selected actor receive endpoint used by a runtime callback.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ResolvedActorEndpoint {
     pub handler: DefId,
     pub msg_id: u32,
@@ -206,7 +202,7 @@ pub struct ResolvedActorEndpoint {
 /// The concrete actor protocol selected before handler-trait coercion erases
 /// the source argument's type. Message IDs come from the actor protocol table;
 /// declaration identities come from the existing resolver identity table.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ResolvedActorEndpoints {
     pub actor: DefId,
     pub data: ResolvedActorEndpoint,
@@ -214,7 +210,7 @@ pub struct ResolvedActorEndpoints {
 }
 
 /// Source result adaptation selected from a trusted declaration contract.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ResolvedRuntimeResult {
     DiscardStatus,
     StatusResult { error: super::types::VariantMatch },
@@ -224,7 +220,7 @@ pub enum ResolvedRuntimeResult {
 ///
 /// A linker label may be carried beside this value after resolution, but it is
 /// never an authority-bearing lookup key.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum CallTarget {
     /// A direct user function declaration.
     User(DefId),
@@ -337,7 +333,7 @@ impl MethodTarget {
 /// instead of this closed collection family. Their linker labels may remain
 /// open-set, but declaration identity never falls back to a `Type::method`
 /// string key. This enum is for runtime-known builtin generics only.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MethodTargetFamily {
     /// `HashMap` method dispatch. Arity invariant: 2 type-args (K, V).
     HashMap(HashMapMethod),
@@ -365,7 +361,7 @@ impl MethodTargetFamily {
 /// `HashMap` dispatch methods. Mirrors the methods registered for the
 /// `Map for HashMap<K, V>` impl in
 /// `collection_dispatch_registry_impl`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum HashMapMethod {
     Insert,
     Get,
@@ -383,7 +379,7 @@ pub enum HashMapMethod {
 
 /// `HashSet` dispatch methods. Mirrors the methods registered for the
 /// `Set for HashSet<T>` impl in `collection_dispatch_registry_impl`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum HashSetMethod {
     Insert,
     Contains,
@@ -398,7 +394,7 @@ pub enum HashSetMethod {
 
 /// Vec dispatch methods. Mirrors the methods registered for the
 /// `Seq for Vec<T>` impl in `collection_dispatch_registry_impl`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum VecMethod {
     Push,
     Pop,
@@ -417,8 +413,8 @@ pub enum VecMethod {
 /// One impl declaration in the registry, e.g.
 /// `impl<K, V> Map for HashMap<K, V> where K: Hash + Eq`.
 ///
-/// **Data-only.** No Rust callbacks. Every field round-trips via serde.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// **Data-only.** No Rust callbacks.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ImplDef {
     /// The trait this impl implements (e.g. `"Map"`, `"Set"`, `"Vec"`).
     pub trait_name: String,
@@ -427,8 +423,7 @@ pub struct ImplDef {
     /// `where`-clause bounds the receiver's type-args must satisfy.
     pub where_bounds: Vec<Bound>,
     /// Methods this impl provides. Stored as a vector (not a map) so the
-    /// declared order is preserved across serde round-trips, which keeps
-    /// the data format stable for the eventual `.hew`-source migration.
+    /// declared order is preserved for the eventual `.hew`-source migration.
     pub methods: Vec<(String, MethodTarget)>,
 }
 
@@ -438,7 +433,7 @@ pub struct ImplDef {
 /// `TypeCheckOutput::resolved_calls: HashMap<SpanKey, ResolvedCall>` from
 /// the resolver. In Stage C, HIR lowering will consult it as the dispatch
 /// authority for HashMap/HashSet. Stage A defines the shape only.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ResolvedCall {
     /// Identity of the impl that satisfied this call.
     pub impl_id: ImplId,
@@ -447,7 +442,7 @@ pub struct ResolvedCall {
     /// Concrete type-arguments resolved at the call site, in
     /// first-occurrence order of [`TyPattern::Var`]s in
     /// [`ImplDef::self_pattern`]. Carried as [`TyPattern`] (not [`Ty`])
-    /// for the same data-only / serde reasons as [`ImplDef`].
+    /// for the same data-only reasons as [`ImplDef`].
     pub type_args: Vec<TyPattern>,
     /// Canonical target selected at the resolver boundary. Every admitted
     /// call carries this independently of its linker/display payload.
@@ -463,7 +458,7 @@ pub struct ResolvedCall {
 /// one of: a `ResolvedCall`, or a `LookupError` that names exactly what
 /// failed. Stage B and C consumers fail closed on a missing
 /// `resolved_calls` entry (DI-003 fail-closed-by-absence).
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum LookupError {
     /// No impl in the registry matched `(trait_name, receiver shape)`.
     NoImpl {
@@ -525,7 +520,7 @@ impl std::fmt::Display for LookupError {
 /// Stage A seeds this in tests only; Stage B populates it from the
 /// checker's builtin-trait registration sites. The registry stays
 /// data-only and is the input to [`resolve_method_call`].
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ImplRegistry {
     impls: HashMap<ImplId, ImplDef>,
     next_id: u32,

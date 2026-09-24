@@ -100,7 +100,6 @@ impl Checker {
             .ok_or_else(|| format!("actor `{canonical}` has no receive protocol"))?;
         let actor = self
             .lookup_declaration(&canonical)
-            .cloned()
             .ok_or_else(|| format!("actor `{canonical}` has no declaration identity"))?;
         let endpoint = |name: &str| -> Result<ResolvedActorEndpoint, String> {
             let receive = protocol
@@ -115,7 +114,6 @@ impl Checker {
             }
             let handler = self
                 .lookup_declaration(&format!("{canonical}::{name}"))
-                .cloned()
                 .ok_or_else(|| {
                     format!("handler `{canonical}::{name}` has no declaration identity")
                 })?;

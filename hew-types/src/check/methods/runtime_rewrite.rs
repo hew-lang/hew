@@ -395,7 +395,7 @@ impl Checker {
 
         let extern_identity = ExternMethodCallIdentity {
             endpoint: declaration.symbol.clone(),
-            signature_key: declaration_key.full_path().to_string(),
+            signature_key: self.defs.path(*declaration_key).to_string(),
             declaring_module: declaration.declaring_module.clone(),
             trusted_compiled_stdlib: self.canonical_std_module_sources.contains(owner_module),
         };
@@ -405,7 +405,7 @@ impl Checker {
             span,
             MethodCallRewrite::RewriteToFunction {
                 target: CallTarget::Extern {
-                    declaration: declaration_key.clone(),
+                    declaration: *declaration_key,
                     endpoint: extern_identity.endpoint.clone(),
                     trusted_compiled_stdlib: extern_identity.trusted_compiled_stdlib,
                 },
@@ -476,7 +476,7 @@ impl Checker {
             || {
                 self.impl_method_declaration_ids
                     .get(&extern_identity.signature_key)
-                    .cloned()
+                    .copied()
                     .map_or_else(
                         || CallTarget::Unsupported {
                             reason: format!(
@@ -486,7 +486,7 @@ impl Checker {
                         },
                         |declaration| {
                             self.publish_extern_method_signature(
-                                &declaration,
+                                declaration,
                                 &extern_identity,
                                 sig,
                                 receiver_ty,
@@ -524,7 +524,7 @@ impl Checker {
     /// re-deriving a signature from the endpoint spelling.
     pub(super) fn publish_extern_method_signature(
         &mut self,
-        declaration: &crate::DefId,
+        declaration: crate::DefId,
         identity: &ExternMethodCallIdentity,
         sig: &FnSig,
         receiver_ty: &Ty,
@@ -555,7 +555,7 @@ impl Checker {
             declaring_module: identity.declaring_module.clone(),
         };
         self.extern_method_signatures
-            .insert((declaration.clone(), identity.endpoint.clone()), signature);
+            .insert((declaration, identity.endpoint.clone()), signature);
     }
 
     pub(super) fn record_monomorphic_extern_symbol_rewrite_if_any(
@@ -729,14 +729,12 @@ impl Checker {
         {
             CallTarget::Runtime(family)
         } else {
-            self.lookup_declaration(&source_declaration)
-                .cloned()
-                .map_or_else(
-                    || CallTarget::Builtin {
-                        endpoint: c_symbol.clone(),
-                    },
-                    |declaration| self.source_call_target(declaration),
-                )
+            self.lookup_declaration(&source_declaration).map_or_else(
+                || CallTarget::Builtin {
+                    endpoint: c_symbol.clone(),
+                },
+                |declaration| self.source_call_target(declaration),
+            )
         };
         self.record_method_call_rewrite(
             span,
@@ -856,7 +854,7 @@ impl Checker {
             let declaration = self
                 .impl_method_declaration_ids
                 .get(&key)
-                .cloned()
+                .copied()
                 .ok_or_else(|| format!("runtime method `{key}` has no declaration identity"))?;
             let [handler] = args else {
                 return Err(format!("runtime method `{key}` requires one actor handler"));

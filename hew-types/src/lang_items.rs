@@ -210,7 +210,7 @@ impl LangItemRegistry {
     #[must_use]
     pub fn display_method_identity(&self) -> Option<(DefId, DefId)> {
         let binding = self.entries.get(LANG_ITEM_DISPLAY_FMT)?;
-        Some((binding.trait_id.clone(), binding.method_id.clone()?))
+        Some((binding.trait_id, binding.method_id?))
     }
 
     /// Iterate registered (key, binding) pairs in arbitrary order.

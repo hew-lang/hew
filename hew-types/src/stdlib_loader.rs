@@ -151,7 +151,7 @@ pub(crate) fn load_module_checked(
     // is owned by its package (`std.net.http`), so it extracts as `http.T`,
     // not `http_async_server.T`, or the projection has nothing to join.
     let module_short = crate::module_registry::canonical_stdlib_module_for_source(&hew_path)
-        .and_then(|owner| owner.rsplit('.').next().map(str::to_string))
+        .and_then(|owner| owner.segments.last().map(ToString::to_string))
         .unwrap_or_else(|| module_short_name(module_path));
     let mut info = extract_module_info(&result.program, &module_short);
     info.source_path = Some(hew_path);

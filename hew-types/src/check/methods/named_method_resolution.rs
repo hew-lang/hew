@@ -201,7 +201,7 @@ impl Checker {
         let Some(dispatch_key) = self.named_source_method_dispatch_key(receiver_ty, method) else {
             return;
         };
-        let Some(declaration) = self.impl_method_declaration_ids.get(&dispatch_key).cloned() else {
+        let Some(declaration) = self.impl_method_declaration_ids.get(&dispatch_key).copied() else {
             return;
         };
         let consumes_receiver = sig.consumes_receiver

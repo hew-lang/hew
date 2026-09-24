@@ -61,7 +61,7 @@ impl Checker {
         method: &str,
     ) -> Option<crate::DefId> {
         let key = self.named_source_method_dispatch_key(receiver_ty, method)?;
-        self.impl_method_declaration_ids.get(&key).cloned()
+        self.impl_method_declaration_ids.get(&key).copied()
     }
 
     /// Stage A2: dispatch a method call on a primitive or compiler-builtin
@@ -174,7 +174,7 @@ impl Checker {
             .impl_method_declaration_ids
             .get(&c_symbol)
             .or_else(|| self.impl_method_declaration_ids.get(&method_key))
-            .cloned()
+            .copied()
             .map_or_else(
                 || CallTarget::Unsupported {
                     reason: format!(

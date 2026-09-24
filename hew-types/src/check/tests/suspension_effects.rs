@@ -104,7 +104,7 @@ fn main() {
         );
     }
     assert!(output.suspension_effects.bodies.iter().any(|(body, effect)|
-        matches!(body, crate::check::effects::EffectBody::Generator(id) if id.full_path() == "delayed")
+        matches!(body, crate::check::effects::EffectBody::Generator(id) if output.defs.path(*id) == "delayed")
             && *effect == SuspensionEffect::MaySuspend));
     assert!(output
         .suspension_effects
@@ -574,7 +574,7 @@ fn plain_calls_inherit_suspension_transparently() {
         .bodies
         .iter()
         .any(|(body, effect)| matches!(body,
-        crate::check::effects::EffectBody::Declaration(id) if id.full_path() == "main")
+        crate::check::effects::EffectBody::Declaration(id) if output.defs.path(*id) == "main")
             && *effect == SuspensionEffect::MaySuspend));
 }
 #[test]
@@ -749,7 +749,7 @@ fn named_actor_handlers_publish_body_effects() {
         .bodies
         .iter()
         .any(|(body, effect)| matches!(body,
-        crate::check::effects::EffectBody::Declaration(id) if id.full_path() == "Worker::run")
+        crate::check::effects::EffectBody::Declaration(id) if output.defs.path(*id) == "Worker::run")
             && *effect == SuspensionEffect::MaySuspend));
 }
 

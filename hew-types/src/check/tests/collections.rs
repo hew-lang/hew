@@ -2812,7 +2812,9 @@ fn builtin_result_methods_resolve_on_actor_ask_wrapper() {
             MethodCallRewrite::RewriteToFunction {
                 target: CallTarget::ImplMethod(declaration),
                 ..
-            } if declaration.full_path().ends_with("::is_ok") => Some(declaration.full_path()),
+            } if output.defs.path(*declaration).ends_with("::is_ok") => {
+                Some(output.defs.path(*declaration))
+            }
             _ => None,
         })
         .collect();
@@ -2851,7 +2853,13 @@ fn builtin_option_extractors_consume_the_receiver() {
                 MethodCallRewrite::RewriteToFunction {
                     target: CallTarget::ImplMethod(declaration),
                     ..
-                } if declaration.full_path().ends_with(&format!("::{method}")) => Some(key.clone()),
+                } if output
+                    .defs
+                    .path(*declaration)
+                    .ends_with(&format!("::{method}")) =>
+                {
+                    Some(key.clone())
+                }
                 _ => None,
             })
             .unwrap_or_else(|| panic!("missing std Option dispatch for {method}"));
@@ -2936,7 +2944,7 @@ fn user_option_and_result_methods_do_not_get_builtin_rewrites() {
             MethodCallRewrite::RewriteToFunction {
                 target: CallTarget::ImplMethod(declaration),
                 ..
-            } if declaration.full_path().starts_with("std.")
+            } if output.defs.path(*declaration).starts_with("std.")
         )),
         "same-spelling user types must not dispatch to std Option/Result methods: {:#?}",
         output.method_call_rewrites

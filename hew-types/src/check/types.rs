@@ -102,7 +102,7 @@ pub(super) struct ActorInitParamInfo {
 /// The fact is derived exclusively by joining generated producer contracts to
 /// exact source extern declarations and their consuming release declaration.
 /// Downstream stages may consume it; they must not rebuild it from names.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpaqueResourceLifecycleCandidate {
     /// Canonical identity of the opaque nominal declaration.
     pub resource_declaration: crate::DefId,
@@ -131,7 +131,7 @@ pub struct OpaqueResourceLifecycleCandidate {
 }
 
 /// Why an otherwise provenance-matched producer failed lifecycle admission.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OpaqueResourceLifecycleConflictKind {
     ProducerResultMismatch {
         actual: String,
@@ -148,7 +148,7 @@ pub enum OpaqueResourceLifecycleConflictKind {
 }
 
 /// Structured conflict retained for source diagnostics in the next stage.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpaqueResourceLifecycleConflict {
     pub resource_type: String,
     pub producer_symbol: String,
@@ -157,7 +157,7 @@ pub struct OpaqueResourceLifecycleConflict {
 }
 
 /// Checker-authoritative candidate graph for closeable opaque lifecycles.
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct OpaqueResourceCandidateGraph {
     pub candidates: BTreeMap<crate::DefId, OpaqueResourceLifecycleCandidate>,
     pub conflicts: Vec<OpaqueResourceLifecycleConflict>,
@@ -586,11 +586,11 @@ pub struct TypeCheckOutput {
     /// catalog consumed by MIR's
     /// `register_builtin_monomorphic_enum_layouts`.
     pub internal_builtin_enum_names: HashSet<String>,
-    /// The compile's single module and source-declaration identity authority.
-    /// Root, import, and alias routes converge before later stages look up an
-    /// exact declaration occurrence; no downstream canonical-string alias is
-    /// published.
-    pub identity: crate::IdentityView,
+    /// The compile's declaration table: the single module and declaration
+    /// identity authority. Root, import, and alias routes converge before
+    /// later stages look up an exact declaration occurrence; every `DefId` in
+    /// this output indexes it.
+    pub defs: std::sync::Arc<crate::DefTable>,
     /// The checker-selected process entry and its complete exit contract.
     pub entry_exit_plan: Option<EntryExitPlan>,
     /// The compile's single-owner extern contract table (rc1-F1 stage B):
@@ -1485,7 +1485,7 @@ impl Default for TypeCheckOutput {
             type_defs: HashMap::new(),
             resolved_type_aliases: HashMap::new(),
             internal_builtin_enum_names: HashSet::new(),
-            identity: crate::IdentityView::default(),
+            defs: std::sync::Arc::default(),
             entry_exit_plan: None,
             extern_contracts: crate::extern_table::ExternTable::new(),
             fn_sigs: HashMap::new(),
@@ -3557,11 +3557,14 @@ pub struct Checker {
     pub(super) current_module: Option<String>,
     /// The compile's identity interner (rc1-F1 stage A). Minted once in
     /// `check_program` from the module graph before any registration pass;
-    /// moved into [`TypeCheckOutput::identity`] at publication. The root
+    /// moved into [`TypeCheckOutput::defs`] at publication. The root
     /// compilation unit's canonical identity (when it has a source) lives
-    /// here — `identity.root_module_path()` — and is the authority the
+    /// here — `defs.root_module_path()` — and is the authority the
     /// fn-sig mint chokepoint (`canonical_fn_owner`) resolves through.
-    pub(super) identity: crate::identity::IdentityTable,
+    pub(super) defs: crate::DefTable,
+    /// The table the next `check_program` mints into instead of a fresh one;
+    /// set only by [`crate::Checker::check_embedded_builtins`].
+    pub(super) seed_defs: Option<crate::DefTable>,
     /// The compile's single-owner extern contract table (rc1-F1 stage B).
     /// The ONE authority for extern symbol identity and `unsafe` gating:
     /// contracts are minted at `register_extern_block`, contract-less extern
@@ -3590,7 +3593,7 @@ pub struct Checker {
     /// declaration spellings: the identity table never resolves them, and
     /// they exist so two declarations sharing one namespace name are reported
     /// as a duplicate definition.
-    pub(super) nominal_namespace_claims: HashMap<String, crate::identity::DeclarationOccurrence>,
+    pub(super) nominal_namespace_claims: HashMap<String, crate::def_table::DeclarationOccurrence>,
     /// Bare record/type-decl names that genuinely collide across modules
     /// (2+ distinct declaring package/file-import modules share the bare name,
     /// after re-export subsumption). Mirrors the HIR/MIR authoritative
@@ -4175,7 +4178,8 @@ impl Checker {
             in_unsafe: false,
             task_scope_depth: 0,
             current_module: None,
-            identity: crate::identity::IdentityTable::new(),
+            defs: crate::DefTable::new(),
+            seed_defs: None,
             extern_table: crate::extern_table::ExternTable::new(),
             contractless_extern_occurrences: std::collections::HashMap::new(),
             reported_declaration_collisions: std::collections::HashSet::new(),

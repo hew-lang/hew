@@ -36,7 +36,7 @@ fn option_result_methods_dispatch_to_std_declarations() {
             MethodCallRewrite::RewriteToFunction {
                 target: CallTarget::ImplMethod(declaration),
                 ..
-            } => Some(declaration.full_path()),
+            } => Some(output.defs.path(*declaration)),
             _ => None,
         })
         .collect();

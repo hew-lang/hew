@@ -90,7 +90,7 @@ impl Checker {
                 |binding| {
                     (
                         binding.trait_name.clone(),
-                        binding.trait_id.full_path().to_string(),
+                        self.defs.path(binding.trait_id).to_string(),
                     )
                 },
             );
@@ -874,9 +874,16 @@ else needs `impl Display for {rendered}`)"
         // The canonical-owner probe covers root extern declarations, which
         // key `{root_module}.{name}` inside the checker while root call
         // sites spell the bare leaf.
+        // TRANSITION(P2): the path lookups are deleted by A1 commit 3, when
+        // the call carries its resolved declaration.
+        let requires_unsafe = |path: &str| {
+            self.defs
+                .lookup_path(path)
+                .is_some_and(|declaration| self.extern_table.requires_unsafe(declaration))
+        };
         let scoped_unsafe = scoped_module_item_name(self.canonical_fn_owner(), name)
-            .is_some_and(|qualified| self.extern_table.requires_unsafe(&qualified));
-        if !self.in_unsafe && (scoped_unsafe || self.extern_table.requires_unsafe(name)) {
+            .is_some_and(|qualified| requires_unsafe(&qualified));
+        if !self.in_unsafe && (scoped_unsafe || requires_unsafe(name)) {
             self.report_error(
                 TypeErrorKind::InvalidOperation,
                 span,

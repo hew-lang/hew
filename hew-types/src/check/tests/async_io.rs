@@ -14,7 +14,7 @@ fn canonical_io_declarations_publish_suspension_without_symbol_alias_authority()
         ))
     )));
     assert!(output.suspension_effects.bodies.iter().any(|(body, effect)|
-        matches!(body, crate::check::effects::EffectBody::Declaration(id) if id.full_path() == "std.fs.read")
+        matches!(body, crate::check::effects::EffectBody::Declaration(id) if output.defs.path(*id) == "std.fs.read")
             && *effect == SuspensionEffect::MaySuspend));
     let user = check_source(source);
     assert!(user.errors.is_empty(), "{:?}", user.errors);

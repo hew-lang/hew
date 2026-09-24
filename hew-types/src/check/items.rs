@@ -982,10 +982,9 @@ impl Checker {
     pub(super) fn check_function_as(&mut self, fd: &FnDecl, fn_name: &str) {
         let body = self
             .lookup_declaration(fn_name)
-            .cloned()
-            .or_else(|| self.impl_method_declaration_ids.get(fn_name).cloned())
+            .or_else(|| self.impl_method_declaration_ids.get(fn_name).copied())
             .map(|id| {
-                let creator = super::effects::EffectBody::Declaration(id.clone());
+                let creator = super::effects::EffectBody::Declaration(id);
                 if fd.is_generator {
                     self.effect_graph.bodies.entry(creator).or_default();
                     super::effects::EffectBody::Generator(id)
@@ -2485,7 +2484,6 @@ impl Checker {
         self.current_function = Some(qualified_name.clone());
         let effect_body = self
             .lookup_declaration(&qualified_name)
-            .cloned()
             .map(super::effects::EffectBody::Declaration);
         let previous_effect_body =
             std::mem::replace(&mut self.effect_graph.current_body, effect_body.clone());

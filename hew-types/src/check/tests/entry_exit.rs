@@ -31,8 +31,8 @@ fn unit_main_produces_unit_entry_exit_plan() {
         .entry_exit_plan
         .expect("unit main must publish an exit plan");
     assert_eq!(
-        Some(&plan.entry),
-        output.identity.declaration_by_path("main"),
+        Some(plan.entry),
+        output.defs.lookup_path("main"),
         "the selected entry must be the checker-minted declaration identity"
     );
     assert_eq!(plan.action, EntryExitAction::Unit);

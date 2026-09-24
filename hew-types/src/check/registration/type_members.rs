@@ -381,7 +381,7 @@ impl Checker {
         let Some(declaration) = self.require_declaration_path(&path, span) else {
             return;
         };
-        let identity = declaration.full_path().to_string();
+        let identity = self.defs.path(declaration).to_string();
         self.known_types.insert(identity.clone());
         self.type_visibility.insert(
             identity.clone(),
@@ -431,7 +431,7 @@ impl Checker {
             alias.target = self
                 .normalize_for_type_params(&alias.target, &alias.type_params)
                 .materialize_literal_defaults();
-            resolved.insert(alias.declaration.clone(), alias);
+            resolved.insert(alias.declaration, alias);
         }
         self.current_module = previous_module;
         self.current_module_idx = previous_index;
@@ -1306,13 +1306,13 @@ impl Checker {
         if td.origin == hew_parser::ast::DeclarationOrigin::MachineReport {
             let qualified = self
                 .current_declaration_module()
-                .map(|module| format!("{}.{}", self.identity.module_path(module), td.name));
+                .map(|module| format!("{}.{}", self.defs.module_path(module), td.name));
             if let Some(declaration) = qualified
                 .as_deref()
                 .and_then(|name| self.lookup_declaration(name))
                 .or_else(|| self.lookup_declaration(td.name.name.as_str()))
             {
-                self.must_use_types.insert(declaration.clone());
+                self.must_use_types.insert(declaration);
             }
         }
         // #1295: record `#[resource]` types so their inherent `close(self)`

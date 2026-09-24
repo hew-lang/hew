@@ -73,9 +73,9 @@ impl NodeVisitor for MustUse<'_> {
             if self
                 .ctx
                 .checker
-                .identity
-                .declaration_by_path(&name)
-                .is_some_and(|declaration| self.ctx.checker.must_use_types.contains(declaration))
+                .defs
+                .lookup_path(&name)
+                .is_some_and(|declaration| self.ctx.checker.must_use_types.contains(&declaration))
             {
                 self.hits.push(Hit {
                     span: expr_span.clone(),

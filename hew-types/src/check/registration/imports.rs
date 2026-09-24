@@ -16,6 +16,7 @@ use super::*;
 use crate::BuiltinType;
 use hew_parser::ast::Ident;
 use hew_parser::ast::WireMetadata;
+use hew_parser::module::ModulePath;
 
 impl Checker {
     pub(super) fn mark_import_module_used_for_owner(
@@ -506,7 +507,7 @@ impl Checker {
         match declarations.as_slice() {
             [(single, source_name)] => Some(format!(
                 "{}.{source_name}",
-                self.identity.module_path_for_source(single)?
+                self.defs.module_path_for_source(single)?
             )),
             _ => None,
         }
@@ -659,20 +660,21 @@ impl Checker {
         let mut resolved_module_owner: Option<String> = None;
         if let Some(items) = decl.resolved_items.as_ref() {
             let requested_owner = if decl.path.segments.is_empty() {
-                decl.file_path
+                ModulePath::new([decl
+                    .file_path
                     .as_deref()
                     .and_then(|path| std::path::Path::new(path).file_stem())
                     .and_then(std::ffi::OsStr::to_str)
-                    .unwrap_or("file")
-                    .to_string()
+                    .unwrap_or("file")])
             } else {
-                decl.path.to_string() // TRANSITION(P1): deleted by A1 commit 2
+                import_module_path(decl)
             };
-            let primary = self.identity.mint_module(
+            let primary = self.defs.mint_module(
                 &crate::module_registry::canonical_source_module_identity(
                     &requested_owner,
                     &decl.resolved_source_paths,
-                ),
+                )
+                .dotted(),
                 &decl.resolved_source_paths,
             );
             // The identity table interns by canonical source, so a module the
@@ -680,10 +682,10 @@ impl Checker {
             // render it was minted under. That render is the one owner every
             // registration below keys by; the requested spelling is only how
             // this importer wrote it.
-            let owner = self.identity.module_path(primary).to_string();
+            let owner = self.defs.module_path(primary).to_string();
             resolved_module_owner = Some(owner.clone());
             for source in decl.resolved_source_paths.iter().skip(1) {
-                self.identity.mint_source_file_module(&owner, source);
+                self.defs.mint_source_file_module(&owner, source);
             }
             // A file import (`import "helper.hew";`, empty path) flattens its
             // items into the root's namespace, so its nominals answer bare as
@@ -693,12 +695,12 @@ impl Checker {
             // distinct declarations.
             let namespace =
                 crate::check::NominalNamespace::for_import(decl.path.segments.is_empty());
-            if !self.identity.module_has_declarations(primary) {
+            if !self.defs.module_has_declarations(primary) {
                 for (index, (item, span)) in items.iter().enumerate() {
                     let module = decl
                         .resolved_item_source_paths
                         .get(index)
-                        .and_then(|source| self.identity.module_for_source(source))
+                        .and_then(|source| self.defs.module_for_source(source))
                         .unwrap_or(primary);
                     self.mint_item_declaration_identities(
                         Some(module),
@@ -740,14 +742,15 @@ impl Checker {
                             || requested_owner.clone(),
                             |source_path| {
                                 crate::module_registry::canonical_source_module_identity(
-                                    &requested_owner,
+                                    &import_module_path(decl),
                                     std::slice::from_ref(source_path),
                                 )
+                                .dotted()
                             },
                         )
                     });
                     let registry_module = self
-                        .identity
+                        .defs
                         .mint_module(&canonical_owner, resolved_source_path.as_slice());
                     if let Some(source_path) = resolved_source_path {
                         self.record_canonical_std_module_source(
@@ -796,6 +799,7 @@ impl Checker {
                         self.declare_contractless_extern(
                             registry_module,
                             &canonical_owner,
+                            hew_parser::ast::Symbol::intern(&func.name),
                             &func.name,
                         );
                         self.fn_sigs.insert(func.name, sig);
@@ -884,6 +888,7 @@ impl Checker {
                                 self.declare_contractless_extern(
                                     registry_module,
                                     &canonical_owner,
+                                    hew_parser::ast::Symbol::intern(method),
                                     &key,
                                 );
                             }
@@ -1161,7 +1166,7 @@ impl Checker {
                 }
                 Item::Trait(decl) if decl.visibility.is_pub() => {
                     let canonical = format!("{module_full_path}.{}", decl.name);
-                    let Some(trait_id) = self.lookup_declaration(&canonical).cloned() else {
+                    let Some(trait_id) = self.lookup_declaration(&canonical) else {
                         continue;
                     };
                     let mut bindings = vec![format!("{module_short}.{}", decl.name)];
@@ -1194,20 +1199,17 @@ impl Checker {
                                 self.current_module_idx,
                                 binding.clone(),
                             ),
-                            trait_id.clone(),
+                            trait_id,
                         );
                         for method in &decl.items {
                             let TraitItem::Method(method) = method else {
                                 continue;
                             };
-                            let Some(method_id) = self
-                                .lookup_declaration(&format!(
-                                    "{}::{}",
-                                    trait_id.full_path(),
-                                    method.name
-                                ))
-                                .cloned()
-                            else {
+                            let Some(method_id) = self.lookup_declaration(&format!(
+                                "{}::{}",
+                                self.defs.path(trait_id),
+                                method.name
+                            )) else {
                                 continue;
                             };
                             self.trait_method_ids_by_binding.insert(
@@ -1217,7 +1219,7 @@ impl Checker {
                                     binding.clone(),
                                     method.name.to_string(),
                                 ),
-                                (trait_id.clone(), method_id),
+                                (trait_id, method_id),
                             );
                         }
                     }
@@ -1901,5 +1903,17 @@ impl Checker {
             self.type_def_spans.remove(key);
             self.registry.remove_type_marker_key(key);
         }
+    }
+}
+
+/// The module an import names, segment by segment.
+fn import_module_path(decl: &ImportDecl) -> ModulePath {
+    ModulePath {
+        segments: decl
+            .path
+            .segments
+            .iter()
+            .map(|(ident, _)| ident.name)
+            .collect(),
     }
 }

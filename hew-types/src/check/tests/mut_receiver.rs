@@ -3,7 +3,7 @@
     reason = "submodules mirror the legacy check namespace during the split"
 )]
 pub(super) use super::*;
-use crate::{DefId, LangItem};
+use crate::LangItem;
 
 #[test]
 fn var_self_methods_accept_mutable_field_places_and_reject_immutable_roots() {
@@ -511,9 +511,9 @@ fn builtin_iterator_lang_item_publishes_exact_next_identity() {
         .expect("the prelude Iterator::next must publish its lang-item identity");
     assert_eq!(binding.trait_name, "Iterator");
     assert_eq!(binding.method_name.as_deref(), Some("next"));
-    assert_eq!(binding.trait_id.full_path(), "std.builtins.Iterator");
+    assert_eq!(output.defs.path(binding.trait_id), "std.builtins.Iterator");
     assert_eq!(
-        binding.method_id.as_ref().map(DefId::full_path),
+        binding.method_id.map(|id| output.defs.path(id)),
         Some("std.builtins.Iterator::next")
     );
 }

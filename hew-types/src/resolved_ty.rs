@@ -17,8 +17,9 @@
 use std::fmt;
 
 use crate::builtin_type::BuiltinType;
+use crate::def_table::BuiltinAnchor;
 use crate::ty::{TraitObjectBound, Ty, TypeVar};
-use crate::{CallableCapabilities, DefId, NominalId};
+use crate::{CallableCapabilities, DefTable, NominalId};
 
 /// A concrete use of a declared nominal type.
 ///
@@ -28,35 +29,6 @@ use crate::{CallableCapabilities, DefId, NominalId};
 pub struct NominalInstance {
     pub nominal: NominalId,
     pub args: Vec<ResolvedTy>,
-}
-
-/// Allocate the direct-body identity for a trait default materialized in one
-/// concrete impl. The trait method identity remains the dispatch key; this
-/// identity names the selected body for the exact receiver instance.
-#[must_use]
-pub fn default_impl_method_declaration(
-    declaring_trait: &DefId,
-    receiver: &NominalInstance,
-    method: &str,
-) -> DefId {
-    let nominal = receiver.nominal.full_path();
-    let rendered_receiver = if receiver.args.is_empty() {
-        nominal.to_string()
-    } else {
-        format!(
-            "{nominal}<{}>",
-            receiver
-                .args
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join(", ")
-        )
-    };
-    crate::identity::mint_def_id(format!(
-        "{nominal}::<default impl {} for {rendered_receiver}>::{method}",
-        declaring_trait.full_path(),
-    ))
 }
 
 /// A fully-resolved, concrete type that has crossed the checker output
@@ -318,7 +290,7 @@ impl ResolvedTy {
     /// `nominal_instance`: a handle is an opaque pointer, never a record whose
     /// fields a consumer may walk.
     #[must_use]
-    pub fn actor_handle_instance(&self) -> Option<NominalInstance> {
+    pub fn actor_handle_instance(&self, defs: &DefTable) -> Option<NominalInstance> {
         match self {
             Self::Named {
                 name,
@@ -326,7 +298,8 @@ impl ResolvedTy {
                 builtin: Some(crate::BuiltinType::ActorHandle),
                 ..
             } => Some(NominalInstance {
-                nominal: crate::identity::mint_nominal_id(name.clone()),
+                // TRANSITION(P2): deleted by A1 commit 2 (`TypeHead::Actor`).
+                nominal: defs.lookup_nominal(name)?,
                 args: args.clone(),
             }),
             _ => None,
@@ -373,8 +346,11 @@ impl ResolvedTy {
     /// this method is the only Stage-1 conversion from `ResolvedTy::Named` to
     /// semantic nominal identity. Source-defined builtin records retain their
     /// closed discriminator while selecting their canonical declaration.
+    ///
+    /// TRANSITION(P2): the path lookups are deleted by A1 commit 2, when the
+    /// type's head carries its `NominalId`.
     #[must_use]
-    pub fn nominal_instance(&self) -> Option<NominalInstance> {
+    pub fn nominal_instance(&self, defs: &DefTable) -> Option<NominalInstance> {
         match self {
             // The two compiler-owned cursor records. Both are declared in
             // `std/builtins.hew` as ordinary generic records and are reached
@@ -387,7 +363,7 @@ impl ResolvedTy {
                 builtin: Some(crate::BuiltinType::VecIter),
                 ..
             } => Some(NominalInstance {
-                nominal: crate::identity::mint_nominal_id("std.builtins.VecIter"),
+                nominal: defs.lookup_nominal("std.builtins.VecIter")?,
                 args: args.clone(),
             }),
             Self::Named {
@@ -395,7 +371,7 @@ impl ResolvedTy {
                 builtin: Some(crate::BuiltinType::HashMapIter),
                 ..
             } => Some(NominalInstance {
-                nominal: crate::identity::mint_nominal_id("std.builtins.HashMapIter"),
+                nominal: defs.lookup_nominal("std.builtins.HashMapIter")?,
                 args: args.clone(),
             }),
             Self::Named {
@@ -422,7 +398,7 @@ impl ResolvedTy {
                 )) =>
             {
                 Some(NominalInstance {
-                    nominal: crate::identity::mint_nominal_id(name.clone()),
+                    nominal: defs.lookup_nominal(name)?,
                     args: args.clone(),
                 })
             }
@@ -440,13 +416,14 @@ impl ResolvedTy {
     /// `impl Show for i64` names them. Returns `None` for shapes that cannot
     /// anchor an impl (closures, function types, type parameters).
     #[must_use]
-    pub fn impl_receiver_instance(&self) -> Option<NominalInstance> {
-        let primitive = |name: &str| {
+    pub fn impl_receiver_instance(&self, defs: &DefTable) -> Option<NominalInstance> {
+        let anchored = |anchor: BuiltinAnchor, args: Vec<ResolvedTy>| {
             Some(NominalInstance {
-                nominal: crate::identity::mint_nominal_id(name),
-                args: Vec::new(),
+                nominal: crate::NominalId::from_minted_declaration(DefTable::anchor(anchor)),
+                args,
             })
         };
+        let primitive = |anchor: BuiltinAnchor| anchored(anchor, Vec::new());
         match self {
             Self::Named {
                 args,
@@ -455,48 +432,51 @@ impl ResolvedTy {
             } => {
                 // An actor is the type of its handle, so its nominal identity
                 // is the actor declaration's own, read off the handle.
-                if let Some(instance) = self.actor_handle_instance() {
+                if let Some(instance) = self.actor_handle_instance(defs) {
                     return Some(instance);
                 }
-                let nominal = match builtin {
+                let anchor = match builtin {
                     BuiltinType::VecIter | BuiltinType::HashMapIter => {
-                        return self.nominal_instance();
+                        return self.nominal_instance(defs);
                     }
-                    BuiltinType::Generator => "Generator",
-                    BuiltinType::Vec => "Vec",
-                    BuiltinType::HashMap => "HashMap",
-                    BuiltinType::ChildRef => "ChildRef",
-                    BuiltinType::RemotePid => "RemotePid",
-                    BuiltinType::NodeId => "NodeId",
-                    BuiltinType::Location => "Location",
+                    BuiltinType::Generator => BuiltinAnchor::Generator,
+                    BuiltinType::Vec => BuiltinAnchor::Vec,
+                    BuiltinType::HashMap => BuiltinAnchor::HashMap,
+                    BuiltinType::ChildRef => BuiltinAnchor::ChildRef,
+                    BuiltinType::RemotePid => BuiltinAnchor::RemotePid,
+                    BuiltinType::NodeId => BuiltinAnchor::NodeId,
+                    BuiltinType::Location => BuiltinAnchor::Location,
                     // A shipped `#[opaque]` encoding value (`json.Value`) is a
                     // declaration in its own module; the catalogue owns that
                     // module path.
-                    other if other.is_encoding_value() => other.canonical_name(),
+                    // TRANSITION(P2): deleted by A1 commit 2.
+                    other if other.is_encoding_value() => {
+                        return Some(NominalInstance {
+                            nominal: defs.lookup_nominal(other.canonical_name())?,
+                            args: args.clone(),
+                        });
+                    }
                     _ => return None,
                 };
-                Some(NominalInstance {
-                    nominal: crate::identity::mint_nominal_id(nominal),
-                    args: args.clone(),
-                })
+                anchored(anchor, args.clone())
             }
-            Self::Named { .. } => self.nominal_instance(),
-            Self::I8 => primitive("i8"),
-            Self::I16 => primitive("i16"),
-            Self::I32 => primitive("i32"),
-            Self::I64 => primitive("i64"),
-            Self::U8 => primitive("u8"),
-            Self::U16 => primitive("u16"),
-            Self::U32 => primitive("u32"),
-            Self::U64 => primitive("u64"),
-            Self::Isize => primitive("isize"),
-            Self::Usize => primitive("usize"),
-            Self::F32 => primitive("f32"),
-            Self::F64 => primitive("f64"),
-            Self::Bool => primitive("bool"),
-            Self::Char => primitive("char"),
-            Self::String => primitive("string"),
-            Self::Bytes => primitive("bytes"),
+            Self::Named { .. } => self.nominal_instance(defs),
+            Self::I8 => primitive(BuiltinAnchor::I8),
+            Self::I16 => primitive(BuiltinAnchor::I16),
+            Self::I32 => primitive(BuiltinAnchor::I32),
+            Self::I64 => primitive(BuiltinAnchor::I64),
+            Self::U8 => primitive(BuiltinAnchor::U8),
+            Self::U16 => primitive(BuiltinAnchor::U16),
+            Self::U32 => primitive(BuiltinAnchor::U32),
+            Self::U64 => primitive(BuiltinAnchor::U64),
+            Self::Isize => primitive(BuiltinAnchor::Isize),
+            Self::Usize => primitive(BuiltinAnchor::Usize),
+            Self::F32 => primitive(BuiltinAnchor::F32),
+            Self::F64 => primitive(BuiltinAnchor::F64),
+            Self::Bool => primitive(BuiltinAnchor::Bool),
+            Self::Char => primitive(BuiltinAnchor::Char),
+            Self::String => primitive(BuiltinAnchor::String),
+            Self::Bytes => primitive(BuiltinAnchor::Bytes),
             _ => None,
         }
     }

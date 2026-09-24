@@ -19,12 +19,6 @@
 //!    [`LookupError::NoImpl`].
 //! 4. **Unknown method**: impl matches and bounds satisfied, method
 //!    name absent → [`LookupError::UnknownMethod`].
-//! 5. **Serde round-trip**: the entire seeded registry encodes to JSON
-//!    and decodes back to an identical registry. This is the
-//!    structural enforcement of the Q281=A data-only discipline — a
-//!    `Box<dyn Fn>` or closure smuggled into `ImplDef` would not be
-//!    serialisable and this round-trip would fail to compile or fail
-//!    at runtime. Per §7 risk #3 of the design notes.
 //!
 //! This test does NOT touch `TypeCheckOutput`. Stage A's invariant is
 //! that no production reader of `resolved_calls` exists; the field is
@@ -282,29 +276,6 @@ fn match_pattern_round_trip_via_dispatch_lookup() {
     let subst = match_pattern(&pat, &concrete).expect("must match");
     assert_eq!(subst.get("K"), Some(&primitive("i32")));
     assert_eq!(subst.get("V"), Some(&primitive("bool")));
-}
-
-#[test]
-fn registry_round_trips_via_serde_json_proving_data_only_shape() {
-    // The structural enforcement of Q281=A data-only discipline. A
-    // `Box<dyn Fn>` in ImplDef / TyPattern / Bound / MethodTarget would
-    // not implement Serialize, so this test would fail to compile.
-    // Adding the test ensures the discipline cannot regress silently.
-    let (r, _, _, _) = seed_registry();
-    let json = serde_json::to_string(&r).expect("registry must serialize to JSON");
-    let decoded: ImplRegistry =
-        serde_json::from_str(&json).expect("registry must round-trip from JSON");
-    assert_eq!(r, decoded);
-
-    // Also round-trip a successfully resolved call, since `ResolvedCall`
-    // is what populates `TypeCheckOutput::resolved_calls` in Stage B.
-    let receiver = app("HashSet", vec![primitive("char")]);
-    let resolved = resolve_method_call(&r, "Set", "insert", &receiver, &hash_eq_satisfied)
-        .expect("HashSet<char> resolves");
-    let resolved_json = serde_json::to_string(&resolved).expect("ResolvedCall serializes");
-    let decoded_resolved: hew_types::check::dispatch::ResolvedCall =
-        serde_json::from_str(&resolved_json).expect("ResolvedCall round-trips");
-    assert_eq!(resolved, decoded_resolved);
 }
 
 #[test]

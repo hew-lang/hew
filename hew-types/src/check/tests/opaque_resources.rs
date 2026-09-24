@@ -192,7 +192,12 @@ fn tcp_like_owned_results_join_one_qualified_lifecycle() {
     let candidate = output
         .opaque_resource_candidates
         .candidates
-        .get("std.net.Connection")
+        .get(
+            &output
+                .defs
+                .lookup_path("std.net.Connection")
+                .expect("declared resource"),
+        )
         .expect("TCP producers must join their qualified lifecycle");
     assert_eq!(candidate.owner_module, "std.net");
     assert_eq!(candidate.release_symbol, "hew_tcp_close");
@@ -230,7 +235,7 @@ fn canonical_std_module(std_root: &Path, source: &Path) -> Vec<String> {
     // physical spelling of its package owner, not a second nominal module. The
     // registry owns that rule; do not re-derive it from the path here.
     if let Some(owner) = crate::module_registry::canonical_stdlib_module_for_source(source) {
-        return owner.split('.').map(str::to_string).collect();
+        return owner.segments.iter().map(ToString::to_string).collect();
     }
     let relative = source.strip_prefix(std_root).expect("source is below std/");
     let mut module = vec!["std".to_string()];
@@ -363,7 +368,11 @@ fn shipped_std_module_graph(parsed_modules: &ParsedStdModules) -> ModuleGraph {
     module_graph
 }
 
-fn shipped_std_candidate_inventory() -> (BTreeSet<String>, OpaqueResourceCandidateGraph) {
+fn shipped_std_candidate_inventory() -> (
+    BTreeSet<String>,
+    OpaqueResourceCandidateGraph,
+    crate::DefTable,
+) {
     let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("hew-types is below repository root")
@@ -386,7 +395,7 @@ fn shipped_std_candidate_inventory() -> (BTreeSet<String>, OpaqueResourceCandida
     checker.type_decls_registered = true;
     checker.collect_functions(&program);
     let graph = checker.derive_opaque_resource_candidate_graph(&checker.fn_sigs);
-    (resource_types, graph)
+    (resource_types, graph, std::mem::take(&mut checker.defs))
 }
 
 #[derive(Debug, Deserialize)]
@@ -500,7 +509,7 @@ fn source_derived_resource_key(source_path: &str, resource: &str) -> String {
         .expect("hew-types is below repository root")
         .join(path);
     if let Some(owner) = crate::module_registry::canonical_stdlib_module_for_source(&absolute) {
-        return format!("{owner}.{resource}");
+        return format!("{}.{resource}", owner.dotted());
     }
     let mut module: Vec<_> = path
         .parent()
@@ -520,7 +529,7 @@ fn source_derived_resource_key(source_path: &str, resource: &str) -> String {
 
 #[test]
 fn shipped_source_and_checker_lifecycle_inventories_are_a_bijection() {
-    let (source_resources, graph) = shipped_std_candidate_inventory();
+    let (source_resources, graph, defs) = shipped_std_candidate_inventory();
     assert!(
         !source_resources.is_empty(),
         "the source inventory must have teeth"
@@ -533,7 +542,7 @@ fn shipped_source_and_checker_lifecycle_inventories_are_a_bijection() {
     let candidate_resources: BTreeSet<_> = graph
         .candidates
         .keys()
-        .map(|declaration| declaration.full_path().to_string())
+        .map(|declaration| defs.path(*declaration).to_string())
         .collect();
     assert_eq!(
         candidate_resources, source_resources,
@@ -543,20 +552,11 @@ fn shipped_source_and_checker_lifecycle_inventories_are_a_bijection() {
         assert!(!candidate.producer_symbols.is_empty());
         assert!(!candidate.release_symbol.is_empty());
     }
-
-    let json = serde_json::to_value(&graph).expect("candidate graph is machine-readable");
-    assert_eq!(
-        json["candidates"]
-            .as_object()
-            .expect("JSON candidate map")
-            .len(),
-        source_resources.len()
-    );
 }
 
 #[test]
 fn shipped_lifecycle_evidence_is_complete_for_the_structural_inventory() {
-    let (source_resources, graph) = shipped_std_candidate_inventory();
+    let (source_resources, graph, defs) = shipped_std_candidate_inventory();
     let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("hew-types is below repository root")
@@ -592,7 +592,8 @@ fn shipped_lifecycle_evidence_is_complete_for_the_structural_inventory() {
         );
         assert_eq!(
             evidence.release_symbol,
-            graph.candidates[resource.as_str()].release_symbol,
+            graph.candidates[&defs.lookup_path(&resource).expect("declared resource")]
+                .release_symbol,
             "{resource} evidence must name the source-derived release authority"
         );
         assert_test_anchor(&repo_root, &evidence.runtime, "runtime", &resource);
@@ -608,7 +609,7 @@ fn generated_contract_without_source_or_unknown_source_family_never_enters_inven
         .opaque_resource_candidates
         .candidates
         .keys()
-        .all(|name| name.full_path() == "std.builtins.ActorRequestOwner"));
+        .all(|name| missing_source.defs.path(*name) == "std.builtins.ActorRequestOwner"));
 
     let unknown_family = check_source_in_module(
         r#"
@@ -629,7 +630,7 @@ fn generated_contract_without_source_or_unknown_source_family_never_enters_inven
         .opaque_resource_candidates
         .candidates
         .keys()
-        .all(|name| name.full_path() == "std.builtins.ActorRequestOwner"));
+        .all(|name| unknown_family.defs.path(*name) == "std.builtins.ActorRequestOwner"));
     assert!(unknown_family
         .opaque_resource_candidates
         .conflicts
@@ -643,7 +644,7 @@ fn root_symbol_spoof_cannot_inherit_qualified_lifecycle() {
         .opaque_resource_candidates
         .candidates
         .keys()
-        .all(|name| name.full_path() == "std.builtins.ActorRequestOwner"));
+        .all(|name| output.defs.path(*name) == "std.builtins.ActorRequestOwner"));
     assert!(output.opaque_resource_candidates.conflicts.is_empty());
 }
 
@@ -657,7 +658,7 @@ fn foreign_module_symbol_and_type_spoof_cannot_inherit_lifecycle() {
         .opaque_resource_candidates
         .candidates
         .keys()
-        .all(|name| name.full_path() == "std.builtins.ActorRequestOwner"));
+        .all(|name| output.defs.path(*name) == "std.builtins.ActorRequestOwner"));
     assert!(output.opaque_resource_candidates.conflicts.is_empty());
 }
 
@@ -681,7 +682,7 @@ fn short_name_collision_records_result_mismatch_without_candidate() {
         .opaque_resource_candidates
         .candidates
         .keys()
-        .all(|name| name.full_path() == "std.builtins.ActorRequestOwner"));
+        .all(|name| output.defs.path(*name) == "std.builtins.ActorRequestOwner"));
     assert!(matches!(
         output.opaque_resource_candidates.conflicts.as_slice(),
         [OpaqueResourceLifecycleConflict {
@@ -711,7 +712,7 @@ fn mismatched_source_consume_release_records_conflict() {
         .opaque_resource_candidates
         .candidates
         .keys()
-        .all(|name| name.full_path() == "std.builtins.ActorRequestOwner"));
+        .all(|name| output.defs.path(*name) == "std.builtins.ActorRequestOwner"));
     assert!(matches!(
         output.opaque_resource_candidates.conflicts.as_slice(),
         [OpaqueResourceLifecycleConflict {
@@ -738,7 +739,7 @@ fn missing_source_release_records_conflict() {
         .opaque_resource_candidates
         .candidates
         .keys()
-        .all(|name| name.full_path() == "std.builtins.ActorRequestOwner"));
+        .all(|name| output.defs.path(*name) == "std.builtins.ActorRequestOwner"));
     assert!(matches!(
         output.opaque_resource_candidates.conflicts.as_slice(),
         [OpaqueResourceLifecycleConflict {
@@ -766,7 +767,7 @@ fn borrowed_or_untyped_results_do_not_mint_candidates() {
         .opaque_resource_candidates
         .candidates
         .keys()
-        .all(|name| name.full_path() == "std.builtins.ActorRequestOwner"));
+        .all(|name| output.defs.path(*name) == "std.builtins.ActorRequestOwner"));
     assert!(output.opaque_resource_candidates.conflicts.is_empty());
 }
 
@@ -964,7 +965,12 @@ fn generic_extern_template_joins_only_exact_canonical_contract_expansions() {
         checker.derive_opaque_resource_candidate_graph_for_contracts(&checker.fn_sigs, &contracts);
     let candidate = graph
         .candidates
-        .get("example.owner.Socket")
+        .get(
+            &checker
+                .defs
+                .lookup_path("example.owner.Socket")
+                .expect("declared resource"),
+        )
         .expect("canonical `{T}` expansion must join the qualified lifecycle");
     assert_eq!(
         candidate.producer_symbols,
@@ -1008,7 +1014,12 @@ fn foreign_producer_joins_release_declared_only_by_nominal_owner() {
         checker.derive_opaque_resource_candidate_graph_for_contracts(&checker.fn_sigs, &contracts);
     let candidate = graph
         .candidates
-        .get("example.owner.Socket")
+        .get(
+            &checker
+                .defs
+                .lookup_path("example.owner.Socket")
+                .expect("declared resource"),
+        )
         .expect("direct imported result must join the owner release");
     assert_eq!(candidate.owner_module, "example.owner");
     assert_eq!(
@@ -1051,7 +1062,7 @@ fn module_and_named_import_aliases_preserve_imported_owner() {
             .derive_opaque_resource_candidate_graph_for_contracts(&checker.fn_sigs, &contracts);
         let candidate = graph
             .candidates
-            .get("example.owner.Socket")
+            .get(&checker.defs.lookup_path("example.owner.Socket").expect("declared resource"))
             .unwrap_or_else(|| {
                 panic!(
                     "resolved import alias must retain owner identity; producer={producer_path:?}; graph={graph:#?}"
@@ -1180,7 +1191,12 @@ fn imported_producers_aggregate_only_with_matching_lifecycle() {
         checker.derive_opaque_resource_candidate_graph_for_contracts(&checker.fn_sigs, &contracts);
     let matching = matching_graph
         .candidates
-        .get("example.owner.Socket")
+        .get(
+            &checker
+                .defs
+                .lookup_path("example.owner.Socket")
+                .expect("declared resource"),
+        )
         .unwrap_or_else(|| {
             panic!("matching imported producers must aggregate: {matching_graph:#?}")
         });
@@ -1202,7 +1218,10 @@ fn imported_producers_aggregate_only_with_matching_lifecycle() {
 
     let graph =
         checker.derive_opaque_resource_candidate_graph_for_contracts(&checker.fn_sigs, &contracts);
-    assert!(!graph.candidates.contains_key("example.owner.Socket"));
+    assert!(!checker
+        .defs
+        .lookup_path("example.owner.Socket")
+        .is_some_and(|id| graph.candidates.contains_key(&id)));
     assert!(graph.conflicts.iter().any(|conflict| matches!(
         conflict.kind,
         OpaqueResourceLifecycleConflictKind::MultipleProducerLifecycle { .. }
@@ -1258,7 +1277,12 @@ fn synthetic_non_net_contract_uses_the_same_candidate_graph() {
         checker.derive_opaque_resource_candidate_graph_for_contracts(&checker.fn_sigs, &contracts);
     let candidate = graph
         .candidates
-        .get("example.io.Socket")
+        .get(
+            &checker
+                .defs
+                .lookup_path("example.io.Socket")
+                .expect("declared resource"),
+        )
         .expect("synthetic family must use generic qualified support");
     assert_eq!(candidate.owner_module, "example.io");
     assert_eq!(candidate.release_symbol, "example_socket_close");
@@ -1323,7 +1347,10 @@ fn disagreeing_producers_record_conflict_instead_of_selecting_a_release() {
     let graph =
         checker.derive_opaque_resource_candidate_graph_for_contracts(&checker.fn_sigs, &contracts);
     assert!(
-        !graph.candidates.contains_key("example.io.Socket"),
+        !checker
+            .defs
+            .lookup_path("example.io.Socket")
+            .is_some_and(|id| graph.candidates.contains_key(&id)),
         "conflicting lifecycle must have no deterministic winner"
     );
     assert!(graph.conflicts.iter().any(|conflict| matches!(

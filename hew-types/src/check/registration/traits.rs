@@ -288,7 +288,7 @@ impl Checker {
                     key.clone(),
                     crate::LangItemBinding {
                         trait_name: td.name.to_string(),
-                        trait_id: trait_id.clone(),
+                        trait_id,
                         method_name: None,
                         method_id: None,
                     },
@@ -300,14 +300,14 @@ impl Checker {
                 if let Some(key) = &m.lang_item {
                     if self.lang_items.get(key).is_none() {
                         let method_id = self.require_declaration_path(
-                            &format!("{}::{}", trait_id.full_path(), m.name),
+                            &format!("{}::{}", self.defs.path(trait_id), m.name),
                             &m.span,
                         );
                         self.lang_items.insert(
                             key.clone(),
                             crate::LangItemBinding {
                                 trait_name: td.name.to_string(),
-                                trait_id: trait_id.clone(),
+                                trait_id,
                                 method_name: Some(m.name.to_string()),
                                 method_id,
                             },
@@ -346,7 +346,7 @@ impl Checker {
                     key.clone(),
                     crate::LangItemBinding {
                         trait_name: td.name.to_string(),
-                        trait_id: trait_id.clone(),
+                        trait_id,
                         method_name: None,
                         method_id: None,
                     },
@@ -365,14 +365,14 @@ impl Checker {
                             .push(TypeError::duplicate_definition(method_span, key, prev));
                     } else {
                         let method_id = self.require_declaration_path(
-                            &format!("{}::{}", trait_id.full_path(), m.name),
+                            &format!("{}::{}", self.defs.path(trait_id), m.name),
                             &m.span,
                         );
                         self.lang_items.insert(
                             key.clone(),
                             crate::LangItemBinding {
                                 trait_name: td.name.to_string(),
-                                trait_id: trait_id.clone(),
+                                trait_id,
                                 method_name: Some(m.name.to_string()),
                                 method_id,
                             },
@@ -809,13 +809,13 @@ impl Checker {
         let Some(trait_id) = self.require_declaration_path(&declaration_key, span) else {
             return;
         };
-        let method_path = format!("{}::{}", trait_id.full_path(), method.name);
+        let method_path = format!("{}::{}", self.defs.path(trait_id), method.name);
         let Some(method_id) = self.require_declaration_path(&method_path, &method.span) else {
             return;
         };
         let ids = (trait_id, method_id);
         self.trait_method_ids
-            .insert(ids.1.full_path().to_string(), ids.clone());
+            .insert(self.defs.path(ids.1).to_string(), ids);
         if self.registration_is_flat_file_import {
             self.trait_method_ids_by_binding.insert(
                 (
@@ -1217,15 +1217,14 @@ impl Checker {
             .iter()
             .filter_map(|(key, info)| {
                 self.lookup_declaration(key)
-                    .cloned()
                     .map(|id| (key.clone(), id, info.clone()))
             })
             .collect();
-        declarations.sort_by_key(|(key, id, _)| (key != id.full_path(), key.clone()));
+        declarations.sort_by_key(|(key, id, _)| (key != self.defs.path(*id), key.clone()));
         let mut defaults = HashMap::new();
         let mut visited = HashSet::new();
         for (key, trait_id, info) in declarations {
-            if !visited.insert(trait_id.clone()) {
+            if !visited.insert(trait_id) {
                 continue;
             }
             self.current_module.clone_from(&info.source_module);
@@ -1243,24 +1242,25 @@ impl Checker {
                 let Some(owner_id) = self.lookup_declaration(&owner_key) else {
                     continue;
                 };
-                let method_key = format!("{}::{name}", owner_id.full_path());
-                let Some(ids) = self.trait_method_ids.get(&method_key).cloned() else {
+                let method_key = format!("{}::{name}", self.defs.path(owner_id));
+                let Some(ids) = self.trait_method_ids.get(&method_key).copied() else {
                     continue;
                 };
                 self.trait_method_ids
-                    .insert(format!("{}::{name}", trait_id.full_path()), ids);
+                    .insert(format!("{}::{name}", self.defs.path(trait_id)), ids);
             }
             let bodies = info
                 .methods
                 .into_iter()
                 .filter(|method| method.body.is_some())
                 .filter_map(|method| {
-                    let (_, method_id) = self
-                        .trait_method_ids
-                        .get(&format!("{}::{}", trait_id.full_path(), method.name))?
-                        .clone();
+                    let (_, method_id) = *self.trait_method_ids.get(&format!(
+                        "{}::{}",
+                        self.defs.path(trait_id),
+                        method.name
+                    ))?;
                     Some(super::types::ResolvedTraitDefault {
-                        trait_id: trait_id.clone(),
+                        trait_id,
                         method_id,
                         method,
                         source_module: info.source_module.clone(),
@@ -1271,7 +1271,7 @@ impl Checker {
             defaults.insert(trait_id, bodies);
         }
         for (binding, trait_id) in &self.trait_bindings {
-            let prefix = format!("{}::", trait_id.full_path());
+            let prefix = format!("{}::", self.defs.path(*trait_id));
             for (key, ids) in &self.trait_method_ids {
                 if let Some(method) = key.strip_prefix(&prefix) {
                     self.trait_method_ids_by_binding.insert(
@@ -1281,7 +1281,7 @@ impl Checker {
                             binding.2.clone(),
                             method.to_string(),
                         ),
-                        ids.clone(),
+                        *ids,
                     );
                 }
             }
@@ -1534,7 +1534,7 @@ impl Checker {
         let identity = self.resolve_trait_conformance_identity(trait_name);
         let trait_key = self.trait_defs_key_for_identity(&identity);
         self.mark_imported_trait_used(self.current_module.as_deref(), trait_name);
-        if let Some(declaration) = self.lookup_declaration(&trait_key).cloned() {
+        if let Some(declaration) = self.lookup_declaration(&trait_key) {
             self.trait_bindings.insert(
                 (
                     self.current_module.clone(),
@@ -1960,7 +1960,7 @@ impl Checker {
         } else if self
             .lang_items
             .get("index")
-            .is_some_and(|binding| binding.trait_id.full_path() == declaring_key)
+            .is_some_and(|binding| self.defs.path(binding.trait_id) == declaring_key)
             && trait_info.type_params.len() == 1
             && matches!(method.name.name.as_str(), "get" | "at")
         {

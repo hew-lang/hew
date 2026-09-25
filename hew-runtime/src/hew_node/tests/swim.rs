@@ -135,10 +135,11 @@ fn dead_node_is_detected_by_survivor_via_driven_swim() {
 /// This is load-immune: the SWIM thresholds are in sim time, so high CPU
 /// overhead (e.g. from `TSan` or coverage instrumentation) never causes a
 /// false-DEAD verdict.
-#[cfg_attr(windows, ignore)]
 // WINDOWS-TODO: loopback TCP on Windows has higher round-trip latency
 // (15 ms OS timer granularity) than this test's real-sleep window.  Fix
-// requires the IOCP reactor (Phase 2) timer infrastructure.
+// requires the IOCP reactor (Phase 2) timer infrastructure. Tracked as a
+// windows row in tests/expected-failures.tsv rather than an ignore, so
+// recovery is detected automatically.
 #[cfg(feature = "quic")]
 #[test]
 fn alive_node_is_not_falsely_killed_by_driven_swim() {

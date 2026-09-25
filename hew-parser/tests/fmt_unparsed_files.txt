@@ -1,33 +1,14 @@
 # Workspace .hew files that do not parse, so they are not formatter input.
-# fmt_roundtrip_corpus.rs requires this list to match exactly: remove a file
-# when it starts to parse, and fix rather than add a file that stops parsing.
+# A path under a reject/ directory needs no row here (fmt_roundtrip_corpus.rs
+# exempts it automatically): it is a deliberate parse-refusal fixture. This
+# file holds only the remainder, migrated into tests/expected-failures.tsv
+# once xtask's ratchet `Expect` enum gains a `skip`/`unparsed` kind (blocked
+# on L1's ledger work); until then fmt_roundtrip_corpus.rs requires this list
+# to match exactly: remove a file when it starts to parse, and fix rather
+# than add a file that stops parsing.
 hew-lsp/tests/fixtures/v05_async_await.hew
 hew-parser/fuzz/corpus/fuzz_machine_decls/seed.hew
 hew-parser/fuzz/corpus/fuzz_supervisor_decls/seed.hew
-hew-parser/tests/fixtures/reject/legacy_glob_import.hew
-hew-parser/tests/fixtures/reject/legacy_path_separator.hew
-hew-parser/tests/fixtures/reject/legacy_turbofish.hew
 tests/core-acceptance/cases/machine-composite-depth-refused.hew
 tests/core-acceptance/cases/named-argument-after-positional-gap.hew
 tests/core-acceptance/cases/spread-parse-refusals.hew
-tests/vertical-slice/reject/borrow_type_outside_extern.hew
-tests/vertical-slice/reject/break_value_operand.hew
-tests/vertical-slice/reject/fork_outside_scope.hew
-tests/vertical-slice/reject/hashmap_new_turbofish_arity_mismatch.hew
-tests/vertical-slice/reject/hashset_new_turbofish_arity_mismatch.hew
-tests/vertical-slice/reject/lambda_arrow_operator.hew
-tests/vertical-slice/reject/machine_semicolon_body.hew
-tests/vertical-slice/reject/noncancellable_attribute_removed_reject.hew
-tests/vertical-slice/reject/opaque_handle_non_empty_body.hew
-tests/vertical-slice/reject/resource_marker_on_fn_reject.hew
-tests/vertical-slice/reject/resource_marker_on_record_reject.hew
-tests/vertical-slice/reject/scope_deadline_body.hew
-tests/vertical-slice/reject/scope_handle_legacy_launch.hew
-tests/vertical-slice/reject/spawn_lambda_removed.hew
-tests/vertical-slice/reject/supervisor_count_clause_on_static_child.hew
-tests/vertical-slice/reject/supervisor_pool_count_init_arg.hew
-tests/vertical-slice/reject/unknown_attribute_on_actor_member_reject.hew
-tests/vertical-slice/reject/unknown_attribute_on_field_reject.hew
-tests/vertical-slice/reject/unknown_attribute_on_fn_reject.hew
-tests/vertical-slice/reject/unknown_attribute_on_impl_method_reject.hew
-tests/vertical-slice/reject/vec_new_turbofish_arity_mismatch.hew

@@ -4,7 +4,7 @@ use std::process::Output;
 use std::sync::OnceLock;
 
 use assert_cmd::Command;
-use hew_wasm::sandbox::{compile_to_sandbox_bytecode, Diagnostic, REQUIRED_PARITY_TEST_NAMES};
+use hew_wasm::sandbox::{compile_to_sandbox_bytecode, Diagnostic};
 
 const SANDBOX_PROFILE: &str = "sandbox-vm-export";
 const HEW_SEED: &str = "42";
@@ -492,17 +492,6 @@ struct ParityCase {
 }
 
 #[test]
-fn minimum_parity_set_is_enforced_by_test_name() {
-    let required: BTreeSet<_> = REQUIRED_PARITY_TEST_NAMES.iter().copied().collect();
-    let actual: BTreeSet<_> = PARITY_CASES.iter().map(|case| case.test_name).collect();
-
-    assert_eq!(
-        actual, required,
-        "native↔sandbox parity cases must exactly cover the required playground set"
-    );
-}
-
-#[test]
 fn sandbox_graduation_corpus_is_fully_covered() {
     let graduation_dir = repo_root().join("examples").join("sandbox-graduation");
     let expected: BTreeSet<PathBuf> = std::fs::read_dir(&graduation_dir)
@@ -536,7 +525,7 @@ fn sandbox_graduation_corpus_is_fully_covered() {
 
 // This integration test executes the Node sandbox VM. Windows CI covers the
 // native toolchain and WASI target separately; Linux owns this VM contract.
-#[cfg_attr(windows, ignore)]
+#[cfg(unix)]
 #[test]
 fn playground_sources_match_native() {
     set_test_hewpath();

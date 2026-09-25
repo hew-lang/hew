@@ -1536,19 +1536,6 @@ fn for_range_mixed_width_bounds_runs_and_returns_correct_value() {
     );
 }
 
-/// Regression oracle — negative integer literal range bounds lower correctly
-/// when the loop variable is narrowed to a concrete integer type.
-///
-/// `for i in -5..5` with `id_i32(i)`.  The checker narrows the deferred
-/// range `TypeVar` to `i32`.  Before the fix, the inner literal `5` inside
-/// the negated start bound `-5` kept the `IntLiteral`→`I64` materialized
-/// default, while the outer `-5` span was re-recorded as `i32`.  MIR
-/// codegen then rejected `IntNegChecked` because dest (i32) ≠ operand (i64).
-///
-/// Sum of {-5,-4,-3,-2,-1,0,1,2,3,4} = -5.  Exit code 256 - 5 = 251.
-// WINDOWS-TODO: Windows preserves signed exit codes; test expects Unix u8-wrapped value (251 vs -5).
-#[cfg_attr(windows, ignore)]
-
 /// `.step_by(k)` before `.rev()` does not commute with the supported
 /// `.rev()`-then-`.step_by(k)` order and is rejected fail-closed at check time
 /// rather than silently miscompiled.

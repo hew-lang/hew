@@ -1,0 +1,15 @@
+type Holder {
+    items: [string],
+}
+
+fn take_items() -> [string] {
+    var v: [Holder] = [];
+    v.push(Holder { items: ["left", "right"] });
+    let items = v[0].items;
+    items
+}
+
+fn main() -> i64 {
+    let items = take_items();
+    if items.len() == 2 { 0 } else { 75 }
+}

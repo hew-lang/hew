@@ -1,0 +1,20 @@
+import std.string;
+type Wrapper { inner: (string, i64), tag: string }
+type T { pair: (Wrapper, i64), churn: string }
+fn mk() -> T {
+    let b = T {
+        pair: (Wrapper { inner: (string.repeat("k", 32), 9), tag: string.repeat("w", 32) }, 5),
+        churn: string.repeat("a", 32),
+    };
+    T { churn: string.repeat("b", 32), ..b }
+}
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 50 {
+        let r = mk();
+        total = total + r.churn.len();
+        i = i + 1;
+    }
+    total - total
+}

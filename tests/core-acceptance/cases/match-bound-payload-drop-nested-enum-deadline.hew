@@ -1,0 +1,39 @@
+import std.stream;
+import std.net;
+
+// The child parks on a gate nobody opens, so the scope deadline always expires
+// while the matched payload's owned message is live.
+fn cancellation_window(gate: stream.Stream<i64>) -> i64 {
+    let result = net.parse_endpoint("nested-enum-cancel", "missing-port");
+    match result {
+        .Ok(endpoint) => endpoint.port,
+        .Err(err) => {
+            let message = to_string(err);
+            gate.recv();
+            message.len()
+        },
+    }
+}
+
+actor Worker {
+    receive fn run() -> bool {
+        let (_shut, gate) = stream.pipe(1).expect("gate");
+        scope within 20ms {
+            fork {
+                cancellation_window(gate);
+            };
+            false
+        } handle failure {
+            match failure {
+                .Deadline { message } => true,
+                .Fault { message } => panic(message),
+            }
+        }
+    }
+}
+
+fn main() {
+    let worker = spawn Worker;
+    assert(worker.run().expect("worker completion"));
+    println("deadline recovered");
+}

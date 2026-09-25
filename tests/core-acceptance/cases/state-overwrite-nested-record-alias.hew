@@ -1,0 +1,34 @@
+type Leaf {
+    text: string,
+}
+
+type Wrap {
+    leaf: Leaf,
+}
+
+actor Keeper {
+    var cur: Wrap,
+
+    receive fn rewrite() {
+        cur = Wrap { leaf: cur.leaf };
+    }
+
+    receive fn size() -> i64 {
+        cur.leaf.text.len()
+    }
+}
+
+fn main() -> i64 {
+    let keeper = spawn Keeper(cur: Wrap {
+        leaf: Leaf { text: "record-alias".to_upper() },
+    });
+    var i: i64 = 0;
+    while i < 50 {
+        let _ = keeper.rewrite();
+        i = i + 1;
+    }
+    match keeper.size() {
+        .Ok(n) => n,
+        .Err(_) => -1,
+    }
+}

@@ -1,0 +1,10 @@
+[[case]]
+id = "actor-handler-unused-owned-param-actor-handler-unused-recursive-record"
+intent = "Actor-handler owned-parameter disposition oracle. Shape `actor_handler_unused_recursive_record_high` (ignored recursive record param has flat leak slope) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/actor-handler-unused-owned-param-actor-handler-unused-recursive-record.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

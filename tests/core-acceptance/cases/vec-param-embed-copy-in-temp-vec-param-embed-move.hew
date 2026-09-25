@@ -1,0 +1,10 @@
+type Wrap { f: Option<string> }
+
+fn main() -> i64 {
+    for i in 0..50 {
+        var v: Vec<Wrap> = [];
+        v.push(Wrap { f: .Some(f"item-{i}") });
+        if v.len() != 1 { return 41; }
+    }
+    0
+}

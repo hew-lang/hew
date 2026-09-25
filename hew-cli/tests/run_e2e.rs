@@ -1498,44 +1498,6 @@ fn run_fstring_dispatches_user_defined_display() {
     assert_eq!(String::from_utf8_lossy(&output.stdout), "got Point(7)\n",);
 }
 
-/// Regression oracle — mixed-width range bounds (i32..i64) produce a loop
-/// variable typed at the wider bound (i64), not the narrower start bound.
-///
-/// `for i in a..b` with `a: i32 = 2, b: i64 = 6` passed to `id_i64(i64)`.
-/// The checker resolves `Range<i64>` (common width of i32 and i64 is i64).
-/// Before the fix, HIR derived element type from `start_hir.ty = i32`,
-/// causing `call i64 @id_i64(i32 %arg)` which LLVM rejected.
-///
-/// Sums 2+3+4+5 = 14; exit code 14.
-#[test]
-fn for_range_mixed_width_bounds_runs_and_returns_correct_value() {
-    require_codegen();
-
-    let fixture = repo_root().join("tests/vertical-slice/accept/for_range_mixed_width_bounds.hew");
-    assert!(fixture.exists(), "fixture missing: {}", fixture.display());
-
-    let output = Command::new(hew_binary())
-        .arg("run")
-        .arg(&fixture)
-        .current_dir(repo_root())
-        .output()
-        .expect("invoke hew run");
-
-    assert_eq!(
-        output.status.code(),
-        Some(14),
-        "expected exit 14 (sum 2..6 as i64); stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    assert!(
-        output.stderr.is_empty(),
-        "expected no diagnostics; stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-}
-
 /// `.step_by(k)` before `.rev()` does not commute with the supported
 /// `.rev()`-then-`.step_by(k)` order and is rejected fail-closed at check time
 /// rather than silently miscompiled.

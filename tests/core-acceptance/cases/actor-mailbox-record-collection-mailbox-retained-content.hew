@@ -1,0 +1,23 @@
+type Boxed { payload: Vec<i64> }
+
+actor ProbeSink {
+    var store: Vec<i64>,
+    receive fn take(b: Boxed) {
+        store = b.payload;
+    }
+    receive fn peek() -> i64 { store[0] }
+}
+
+fn main() -> i64 {
+    let sink = spawn ProbeSink(store: []);
+    var i: i64 = 0;
+    while i < 7 {
+        let b = Boxed { payload: [i * 10, i, i] };
+        let _ = sink.take(b);
+        i = i + 1;
+    }
+    match sink.peek() {
+        .Ok(v) => v,
+        .Err(_e) => 99,
+    }
+}

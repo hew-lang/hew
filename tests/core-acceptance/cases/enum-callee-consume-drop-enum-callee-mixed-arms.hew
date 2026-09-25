@@ -1,0 +1,11 @@
+fn ef(e: Result<string, string>) -> string { match e { .Ok(x) => x, .Err(y) => "e" + "rr" } }
+fn main() -> i64 {
+    var total: i64 = 0;
+    for i in 0..50 {
+        let s = ef(.Ok("a" + "b"));
+        let t = ef(.Err("c" + "d"));
+        total = total + s.len() + t.len();
+    }
+    if total != 50 * 5 { return 76; }
+    0
+}

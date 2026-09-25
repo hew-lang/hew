@@ -1,0 +1,13 @@
+type Holder { s: string }
+fn borrowLen(h: Holder) -> i64 { h.s.len() }
+type Wrap { h: Holder }
+fn getself(w: Wrap) -> Holder { w.h }
+fn main() -> i64 {
+    var total: i64 = 0;
+    for i in 0..50 {
+        let w: Wrap = Wrap { h: Holder { s: "a" + "b" } };
+        total = total + borrowLen(getself(w));
+    }
+    if total != 50 * 2 { return 63; }
+    0
+}

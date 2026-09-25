@@ -1,0 +1,10 @@
+[[case]]
+id = "owned-project-literal-predicate-drop-owned-project-predicate-consume"
+intent = "Leak, poisoned-allocator, and exact-close oracle for owned literal-predicate project matches. Shape `owned_project_predicate_consume_high` (owned project predicate consume leak slope is flat, owned project predicate consume releases each owner once) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/owned-project-literal-predicate-drop-owned-project-predicate-consume.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "1\n2\n3\n4\n5\n6\n7\n8\n1\n2\n3\n4\n5\n6\n7\n8\n1\n2\n3\n4\n5\n6\n7\n8\n1\n2\n3\n4\n5\n6\n7\n8\n1\n2\n3\n4\n5\n6\n7\n8\n1\n2\n3\n4\n5\n6\n7\n8\n1\n2\n3\n4\n5\n6\n7\n8\n1\n2\n3\n4\n5\n6\n7\n8\n1\n2\n3\n4\n5\n6\n7\n8\n1\n2\n3\n4\n5\n6\n7\n8\n1\n2\n3\n4\n5\n6\n7\n8\n1\n2\n3\n4\n5\n6\n7\n8\n1\n2\n3\n4\n5\n6\n7\n8\n1\n2\n3\n4\n5\n6\n7\n8\n1\n2\n3\n4\n5\n6\n7\n8\n1\n2\n3\n4\n5\n6\n7\n8\n1\n2\n3\n4\n5\n6\n7\n8\n1\n2\n3\n4\n5\n6\n7\n8\n1\n2\n3\n4\n5\n6\n7\n8\n1\n2\n3\n4\n5\n6\n7\n8\n1\n2\n3\n4\n5\n6\n7\n8\n1\n2\n3\n4\n5\n6\n7\n8\n1\n2\n3\n4\n5\n6\n7\n8\n1\n2\n3\n4\n5\n6\n7\n8\n1\n2\n3\n4\n5\n6\n7\n8\n1\n2\n3\n4\n5\n6\n7\n8\n1\n2\n3\n4\n5\n6\n7\n8\n1\n2\n3\n4\n5\n6\n7\n8\n1\n2\n3\n4\n5\n6\n7\n8\n1\n2\n3\n4\n5\n6\n7\n8\n1\n2\n3\n4\n5\n6\n7\n8\n1\n2\n3\n4\n5\n6\n7\n8\n1\n2\n3\n4\n5\n6\n7\n8\n1\n2\n3\n4\n5\n6\n7\n8\n1\n2\n3\n4\n5\n6\n7\n8\n1\n2\n3\n4\n5\n6\n7\n8\n1\n2\n3\n4\n5\n6\n7\n8\n1\n2\n3\n4\n5\n6\n7\n8\n1\n2\n3\n4\n5\n6\n7\n8\n1\n2\n3\n4\n5\n6\n7\n8\n1\n2\n3\n4\n5\n6\n7\n8\n1\n2\n3\n4\n5\n6\n7\n8\n1\n2\n3\n4\n5\n6\n7\n8\n1\n2\n3\n4\n5\n6\n7\n8\n1\n2\n3\n4\n5\n6\n7\n8\n1\n2\n3\n4\n5\n6\n7\n8\n1\n2\n3\n4\n5\n6\n7\n8\n1\n2\n3\n4\n5\n6\n7\n8\n1\n2\n3\n4\n5\n6\n7\n8\n1\n2\n3\n4\n5\n6\n7\n8\npredicate-consume-ok\n"
+exit = 0

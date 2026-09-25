@@ -1,0 +1,30 @@
+fn main() -> i64 {
+    var xs: Vec<string> = Vec.new();
+    xs.push("elem-0");
+    xs.push("elem-1");
+    xs.push("elem-2");
+    xs.push("elem-3");
+    xs.push("elem-4");
+    xs.push("elem-5");
+    xs.push("elem-6");
+    xs.push("elem-7");
+    var hits: i64 = 0;
+    let s0 = xs[0];
+    if s0 == "elem-0" { hits = hits + 1; }
+    let s1 = xs[1];
+    if s1 == "elem-1" { hits = hits + 1; }
+    let s2 = xs[2];
+    if s2 == "elem-2" { hits = hits + 1; }
+    let s3 = xs[3];
+    if s3 == "elem-3" { hits = hits + 1; }
+    let s4 = xs[4];
+    if s4 == "elem-4" { hits = hits + 1; }
+    let s5 = xs[5];
+    if s5 == "elem-5" { hits = hits + 1; }
+    let s6 = xs[6];
+    if s6 == "elem-6" { hits = hits + 1; }
+    let s7 = xs[7];
+    if s7 == "elem-7" { hits = hits + 1; }
+    if hits != 8 { return 80; }
+    0
+}

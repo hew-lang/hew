@@ -1,0 +1,17 @@
+actor Maker {
+    receive gen fn items() -> string {
+        for i in 0..50 {
+            yield f"item-{i}";
+        }
+    }
+}
+fn main() -> i64 {
+    var seen: i64 = 0;
+    let m = spawn Maker;
+    for v in m.items() {
+        if v.len() < 6 { return 91; }
+        seen = seen + 1;
+    }
+    if seen != 50 { return 92; }
+    0
+}

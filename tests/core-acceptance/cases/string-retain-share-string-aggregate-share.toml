@@ -1,0 +1,10 @@
+[[case]]
+id = "string-retain-share-string-aggregate-share"
+intent = "Leak-slope coverage for string retain-on-share mint points. Shape `string_aggregate_share_high` (string aggregate share no per frame leak slope) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/string-retain-share-string-aggregate-share.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 178

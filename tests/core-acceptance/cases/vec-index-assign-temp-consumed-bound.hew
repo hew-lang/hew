@@ -1,0 +1,18 @@
+type Holder { items: Vec<string> }
+fn mkItems(i: i64) -> Vec<string> {
+    var xs: Vec<string> = Vec.new();
+    xs.push("deep-elem-a");
+    xs.push("deep-elem-b");
+    return xs;
+}
+fn indexAssignBound() -> i64 {
+    var v: Vec<Holder> = Vec.new();
+    v.push(Holder { items: mkItems(0) });
+    let h = Holder { items: mkItems(1) };
+    v[0] = h;
+    return v[0].items.len();
+}
+fn main() {
+    print(indexAssignBound());
+    print("OK");
+}

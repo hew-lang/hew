@@ -1,0 +1,45 @@
+fn push_then_maybe_crash(var value: bytes, trigger: i64) {
+    value.push(0x40 as u8);
+    if trigger != 0 {
+        panic("crash during returned bytes loan");
+    }
+}
+
+fn build_packet(trigger: i64) -> bytes {
+    let value = bytes.new();
+    push_then_maybe_crash(value, trigger);
+    value
+}
+
+actor Gate {
+    receive fn tick() -> i64 {
+        7
+    }
+}
+
+actor Runner {
+    let gate: Gate,
+
+    receive fn run(trigger: i64) -> i64 {
+        let seed = match gate.tick() {
+            .Ok(value) => value,
+            .Err(_) => 0,
+        };
+        let packet = build_packet(trigger);
+        packet.len() + seed
+    }
+}
+
+fn main() {
+    let gate = spawn Gate;
+    let runner = spawn Runner(gate: gate);
+    match runner.run(0) {
+        .Ok(value) => println(f"ok={value}"),
+        .Err(_) => println("bad"),
+    }
+    match runner.run(1) {
+        .Ok(value) => println(f"unexpected={value}"),
+        .Err(_) => println("handled-crash"),
+    }
+    println("survived");
+}

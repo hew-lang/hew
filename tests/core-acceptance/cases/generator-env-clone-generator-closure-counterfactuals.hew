@@ -1,0 +1,53 @@
+type Label {
+    text: string,
+}
+
+fn ordinary_factory(label: Label) -> fn() -> i64 {
+    || label.text.len()
+}
+
+fn noncapturing_generator_factory() -> fn() -> Generator<i64, ()> {
+    || {
+        gen {
+            yield 1;
+            yield 2;
+        }
+    }
+}
+
+fn ordinary_capture(i: i64) {
+    let label = Label { text: "ordinary-" + f"{i}" };
+    let read = ordinary_factory(label);
+    if read() <= 0 {
+        panic("ordinary capture");
+    }
+}
+
+fn noncapturing_generator() {
+    let make = noncapturing_generator_factory();
+    let g = make();
+    var total: i64 = 0;
+    loop {
+        match g.next() {
+            .Some(value) => { total = total + value; },
+            .None => { break; },
+        }
+    }
+    if total != 3 {
+        panic("noncapturing generator");
+    }
+}
+
+fn main() {
+    var ordinary: i64 = 0;
+    var noncapturing: i64 = 0;
+    var i: i64 = 0;
+    while i < 128 {
+        ordinary_capture(i);
+        ordinary = ordinary + 1;
+        noncapturing_generator();
+        noncapturing = noncapturing + 1;
+        i = i + 1;
+    }
+    print(f"{ordinary}:{noncapturing}:OK");
+}

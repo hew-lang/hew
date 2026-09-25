@@ -1,0 +1,10 @@
+[[case]]
+id = "heap-owning-record-in-tuple-record-in-tuple"
+intent = "Constant-leak oracle for a heap-owning record reached as a TUPLE MEMBER. Shape `record_in_tuple` (record in tuple no leak) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/heap-owning-record-in-tuple-record-in-tuple.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

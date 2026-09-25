@@ -1,0 +1,10 @@
+[[case]]
+id = "hashmap-index-owned-hashmap-index-single-roundtrip"
+intent = "`HashMap` `m[k]` owned-value leak oracle (indexed-accessor convergence). Shape `hashmap_index_single_roundtrip` (hashmap index owned value exact contents under malloc scribble) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/hashmap-index-owned-hashmap-index-single-roundtrip.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "owned-ok"
+exit = 0

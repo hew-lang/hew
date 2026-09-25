@@ -1,0 +1,20 @@
+actor Maker {
+    receive gen fn items() -> string {
+        yield "escaped";
+        yield "rest";
+    }
+}
+fn wrap(v: string) -> string {
+    return v;
+}
+fn main() {
+    println("before");
+    let m = spawn Maker;
+    var carry = "init";
+    for v in m.items() {
+        carry = wrap(v);
+        break;
+    }
+    println(carry);
+    println("after");
+}

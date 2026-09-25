@@ -1,0 +1,10 @@
+[[case]]
+id = "actor-mailbox-record-collection-mailbox-record-borrow-only-slice"
+intent = "Actor mailbox record-with-collection-field drop canary (hew-lang/hew#2722). Shape `mailbox_record_borrow_only_slice_high` (mailbox record borrow only slice leak slope below tolerance) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/actor-mailbox-record-collection-mailbox-record-borrow-only-slice.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

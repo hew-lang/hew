@@ -1,0 +1,10 @@
+[[case]]
+id = "indirect-enum-drop-var-overwrite-loop"
+intent = "Indirect-enum heap-node drop leak oracle. Shape `var_overwrite_loop_df` (indirect enum var overwrite loop leak slope below tolerance, indirect enum var overwrite loop no corruption under malloc scribble) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/indirect-enum-drop-var-overwrite-loop.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "ok"
+exit = 0

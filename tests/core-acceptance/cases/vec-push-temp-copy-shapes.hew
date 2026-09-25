@@ -1,0 +1,35 @@
+type Holder { items: Vec<string> }
+fn mkItems(i: i64) -> Vec<string> {
+    var xs: Vec<string> = Vec.new();
+    xs.push("deep-elem-a");
+    xs.push("deep-elem-b");
+    return xs;
+}
+fn sharedTwice() -> i64 {
+    var v: Vec<Holder> = Vec.new();
+    var i: i64 = 0;
+    while i < 3 {
+        let h = Holder { items: mkItems(i) };
+        v.push(h);
+        v.push(h);
+        i = i + 1;
+    }
+    v.len()
+}
+fn readAfter() -> i64 {
+    var v: Vec<Holder> = Vec.new();
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 3 {
+        let h = Holder { items: mkItems(i) };
+        v.push(h);
+        total = total + h.items.len();
+        i = i + 1;
+    }
+    total
+}
+fn main() {
+    print(sharedTwice());
+    print(readAfter());
+    print("OK");
+}

@@ -1,0 +1,40 @@
+fn clear_then_maybe_crash(trigger: i64) -> i64 {
+    var value: bytes = "owned-bytes".to_bytes();
+    value.clear();
+    if trigger != 0 {
+        panic("crash after bytes.clear");
+    }
+    value.len()
+}
+
+actor Gate {
+    receive fn tick() -> i64 {
+        7
+    }
+}
+
+actor Runner {
+    let gate: Gate,
+
+    receive fn run(trigger: i64) -> i64 {
+        let seed = match gate.tick() {
+            .Ok(value) => value,
+            .Err(_) => 0,
+        };
+        clear_then_maybe_crash(trigger) + seed
+    }
+}
+
+fn main() {
+    let gate = spawn Gate;
+    let runner = spawn Runner(gate: gate);
+    match runner.run(0) {
+        .Ok(value) => println(f"ok={value}"),
+        .Err(_) => println("bad"),
+    }
+    match runner.run(1) {
+        .Ok(value) => println(f"unexpected={value}"),
+        .Err(_) => println("handled-crash"),
+    }
+    println("survived");
+}

@@ -1,0 +1,21 @@
+type Row { name: string, id: i64, }
+
+actor Maker {
+    receive fn make(n: i64) -> Row {
+        Row { name: to_string(n).to_upper(), id: n }
+    }
+}
+
+fn main() -> i64 {
+    let m = spawn Maker;
+    var i: i64 = 0;
+    var hits: i64 = 0;
+    while i < 50 {
+        let r = select {
+            _row from m.make(i) => 1,
+        };
+        hits = hits + r;
+        i = i + 1;
+    }
+    if hits == 50 { 0 } else { 1 }
+}

@@ -1,0 +1,26 @@
+#[wire]
+enum Wide { A, B(i64), C(string), }
+#[wire]
+enum Narrow { A, B(i64), }
+
+actor Decoder { 
+    let seq: i64,
+    receive fn decode_it(raw: bytes) -> i64 {
+        let back = Narrow.decode(raw);
+        match back { Narrow.A => 0, Narrow.B(n) => n }
+    }
+}
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 50 {
+        let w = Narrow.B(1);
+        let raw = w.encode();
+        let a = spawn Decoder(seq: i);
+        let r = a.decode_it(raw);
+        match r { .Ok(v) => { total = total + v; }, .Err(_) => { total = total + 1; }, }
+        i = i + 1;
+    }
+    total
+}

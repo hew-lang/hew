@@ -1,0 +1,38 @@
+actor Gate {
+    receive fn tick() -> i64 {
+        1
+    }
+}
+
+fn borrow_len(value: string) -> i64 {
+    value.len()
+}
+
+actor Runner {
+    let gate: Gate,
+
+    receive fn go(frames: i64) -> i64 {
+        let gate_pid = gate;
+        let delayed_identity = |value: string| {
+            let _ = match gate_pid.tick() {
+                .Ok(n) => n,
+                .Err(_) => 0,
+            };
+            value
+        };
+        for _ in 0..frames {
+            let returned = delayed_identity("suspending-owner".to_upper());
+            if borrow_len(returned) != 16 {
+                panic("suspending closure returned the wrong string");
+            }
+            println("completed");
+        }
+        frames
+    }
+}
+
+fn main() {
+    let gate = spawn Gate;
+    let runner = spawn Runner(gate: gate);
+    let _ = runner.go(1);
+}

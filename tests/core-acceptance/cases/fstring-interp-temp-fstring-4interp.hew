@@ -1,0 +1,11 @@
+fn main() -> i64 {
+    var i: i64 = 0;
+    var total: i64 = 0;
+    while i < 200 {
+        println(f"s0={i} s1={i} s2={i} s3={i}");
+        total = total + i;
+        i = i + 1;
+    }
+    if total != 19900 { return 94; }
+    0
+}

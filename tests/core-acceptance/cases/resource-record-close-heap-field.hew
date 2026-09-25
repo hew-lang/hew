@@ -1,0 +1,19 @@
+#[resource] type Box { payload: Vec<i64>, fd: i64, }
+impl Box { fn close(consume self) { } }
+fn build(n: i64) -> i64 {
+    var v: Vec<i64> = Vec.new();
+    v.push(n);
+    v.push(n + 1);
+    let b = Box { payload: v, fd: n };
+    b.fd
+}
+fn run_loop(frames: i64) -> i64 {
+    var total: i64 = 0;
+    for i in 0..frames { total = total + build(i); }
+    total
+}
+fn main() -> i64 {
+    let total = run_loop(200);
+    if total != 19900 { return 70; }
+    0
+}

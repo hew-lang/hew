@@ -1,0 +1,10 @@
+[[case]]
+id = "closure-capture-owned-parameter-record-one-field"
+intent = "Per-iteration leak / double-free oracle for the closure-env KEYSTONE: an escaping (heap-boxed) closure that captures an OWNED value (`string`, `Vec`, a heap-owning record, an owned-payload enum) must free that captured value EXACTLY once… Shape `parameter_record_one_field_high` (parameter record capture one field leak slope below tolerance) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/closure-capture-owned-parameter-record-one-field.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

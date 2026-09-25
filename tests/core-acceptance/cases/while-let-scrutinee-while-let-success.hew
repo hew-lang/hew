@@ -1,0 +1,12 @@
+fn next(i: i64, cap: i64) -> Result<string, string> {
+    if i < cap { .Ok("while-let-ok".to_upper()) } else { .Err("done".to_upper()) }
+}
+fn main() -> i64 {
+    var i = 0;
+    var total = 0;
+    while let .Ok(value) = next(i, 50) {
+        total = total + value.len();
+        i = i + 1;
+    }
+    if total > 0 { 0 } else { 1 }
+}

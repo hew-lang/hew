@@ -1,0 +1,14 @@
+fn make_counter() -> fn[var, clone]() -> i64 {
+    var count: i64 = 0;
+    capture(var count) || { count = count + 1; count }
+}
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 50 {
+        var c = make_counter();
+        total = total + c() + c();
+        i = i + 1;
+    }
+    total
+}

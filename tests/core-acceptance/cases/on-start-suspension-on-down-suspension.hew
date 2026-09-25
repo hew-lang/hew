@@ -1,0 +1,40 @@
+import std.link_monitor;
+
+actor Target { receive fn ping() -> i64 { 1 } }
+
+actor Watcher {
+    var downs: i64 = 0,
+    receive fn watch(target: Target) -> link_monitor.MonitorRef {
+        monitor(target).expect("monitor")
+    }
+    receive fn seen() -> i64 { downs }
+    #[on(down)] fn down(_note: link_monitor.DownNotification) {
+        sleep(1ms);
+        downs = downs + 1;
+        println("down");
+    }
+}
+
+fn main() {
+    let t0 = spawn Target;
+    let w0 = spawn Watcher;
+    let m0 = w0.watch(t0).expect("watch");
+    close(t0);
+    while w0.seen().expect("seen") == 0 { sleep(1ms); }
+    m0.close();
+    close(w0);
+    let t1 = spawn Target;
+    let w1 = spawn Watcher;
+    let m1 = w1.watch(t1).expect("watch");
+    close(t1);
+    while w1.seen().expect("seen") == 0 { sleep(1ms); }
+    m1.close();
+    close(w1);
+    let t2 = spawn Target;
+    let w2 = spawn Watcher;
+    let m2 = w2.watch(t2).expect("watch");
+    close(t2);
+    while w2.seen().expect("seen") == 0 { sleep(1ms); }
+    m2.close();
+    close(w2);
+}

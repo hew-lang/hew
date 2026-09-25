@@ -1,0 +1,10 @@
+[[case]]
+id = "param-record-field-loop-drop-rvalue-root-projection"
+intent = "Regression oracle for a `for` loop iterating a field of a BY-VALUE record parameter. Shape `rvalue_root_projection` (rvalue rooted projection cursor still frees its snapshot) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/param-record-field-loop-drop-rvalue-root-projection.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "total=30\n"
+exit = 0

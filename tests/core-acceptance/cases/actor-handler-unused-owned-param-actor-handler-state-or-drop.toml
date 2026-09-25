@@ -1,0 +1,10 @@
+[[case]]
+id = "actor-handler-unused-owned-param-actor-handler-state-or-drop"
+intent = "Actor-handler owned-parameter disposition oracle. Shape `actor_handler_state_or_drop_high` (state transfer and borrow branch are exactly once) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/actor-handler-unused-owned-param-actor-handler-state-or-drop.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

@@ -1,0 +1,50 @@
+#[resource] type Token { id: i64, }
+impl Token {
+    fn close(consume self) {
+        if self.id == 1 { println("record-match-close"); }
+        else if self.id == 2 { println("record-mismatch-close"); }
+        else if self.id == 3 { println("tuple-match-close"); }
+        else { println("tuple-mismatch-close"); }
+    }
+}
+type Packet { tag: string, token: Token }
+fn classify_record(p: Packet) -> i64 {
+    match p {
+        Packet { tag: "hit", token: _ } => 1,
+        Packet { tag: _, token: _ } => 2,
+    }
+}
+fn classify_tuple(p: (string, Token)) -> i64 {
+    match p {
+        ("hit", _) => 3,
+        (_, _) => 4,
+    }
+}
+fn record_match() -> i64 {
+    let p = Packet { tag: "h" + "it", token: Token { id: 1 } };
+    classify_record(p)
+}
+fn record_mismatch() -> i64 {
+    let p = Packet { tag: "m" + "iss", token: Token { id: 2 } };
+    classify_record(p)
+}
+fn tuple_match() -> i64 {
+    let p = ("h" + "it", Token { id: 3 });
+    classify_tuple(p)
+}
+fn tuple_mismatch() -> i64 {
+    let p = ("m" + "iss", Token { id: 4 });
+    classify_tuple(p)
+}
+fn main() -> i64 {
+    var total: i64 = 0;
+    for _ in 0..50 {
+        total = total + record_match();
+        total = total + record_mismatch();
+        total = total + tuple_match();
+        total = total + tuple_mismatch();
+    }
+    if total != 50 * 10 { return 79; }
+    println("predicate-borrow-ok");
+    0
+}

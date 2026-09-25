@@ -1,0 +1,51 @@
+actor Slow { 
+    var value: i64 = 0, 
+    #[on(start)] fn started() {
+        sleep(5ms); 
+        value = 1; 
+  }
+    receive fn get() -> i64 { value }
+}
+
+fn main() {
+    let a0 = spawn Slow;
+    let a1 = spawn Slow;
+    let a2 = spawn Slow;
+    let a3 = spawn Slow;
+    let a4 = spawn Slow;
+    let a5 = spawn Slow;
+    let a6 = spawn Slow;
+    let a7 = spawn Slow;
+    let a8 = spawn Slow;
+    let a9 = spawn Slow;
+    let a10 = spawn Slow;
+    let a11 = spawn Slow;
+    let a12 = spawn Slow;
+    let a13 = spawn Slow;
+    let a14 = spawn Slow;
+    let a15 = spawn Slow;
+    let a16 = spawn Slow;
+    let a17 = spawn Slow;
+    let a18 = spawn Slow;
+    let a19 = spawn Slow;
+    let a20 = spawn Slow;
+    let a21 = spawn Slow;
+    let a22 = spawn Slow;
+    let a23 = spawn Slow;
+    let a24 = spawn Slow;
+    let a25 = spawn Slow;
+    let a26 = spawn Slow;
+    let a27 = spawn Slow;
+    let a28 = spawn Slow;
+    let a29 = spawn Slow;
+    let a30 = spawn Slow;
+    let a31 = spawn Slow;
+    let a32 = spawn Slow;
+    let a33 = spawn Slow;
+    let a34 = spawn Slow;
+    let a35 = spawn Slow;
+    let a36 = spawn Slow;
+    let a37 = spawn Slow;
+    let a38 = spawn Slow;
+    let a39 = spawn Slow;
+}

@@ -1,0 +1,21 @@
+#[resource]
+#[opaque]
+type Dq {}
+impl Dq {
+fn close(consume self) { unsafe { hew_deque_free(self) }; println("closed"); }
+}
+extern "C" {
+fn hew_deque_new() -> Dq;
+fn hew_deque_free(consume dq: Dq);
+}
+type Holder { dq: Dq }
+actor Keeper {
+let h: Holder,
+receive fn ping() -> i64 { 1 }
+}
+fn main() -> i64 {
+let k = spawn Keeper(h: Holder { dq: unsafe { hew_deque_new() } });
+let _ = select { reply from k.ping() => 1, after 50ms => 0 };
+println("done");
+0
+}

@@ -1,0 +1,11 @@
+type Row { name: string, }
+
+fn run() {
+    let rows: Vec<Row> = [ Row { name: "neg-alias-heap-name".to_upper() } ];
+    let r = rows[0];
+    if r.name.len() > 0 { print("nz"); }
+}
+
+fn main() {
+    run();
+}

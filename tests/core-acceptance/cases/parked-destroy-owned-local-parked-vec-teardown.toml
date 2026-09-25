@@ -1,0 +1,10 @@
+[[case]]
+id = "parked-destroy-owned-local-parked-vec-teardown"
+intent = "Destroy-while-parked owned-local leak / double-free oracle (#2395). Shape `parked_vec_teardown` (parked destroy frees owned local zero leaks) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/parked-destroy-owned-local-parked-vec-teardown.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "stopped\n"
+exit = 0

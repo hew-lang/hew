@@ -1,0 +1,18 @@
+type Boxed { payload: Vec<i64> }
+
+fn build(n: i64) -> i64 {
+    var inner: Vec<i64> = Vec.new();
+    inner.push(n);
+    inner.push(n + 1);
+    let pair = (Boxed { payload: inner }, n);
+    pair.1
+}
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    for i in 0..64 {
+        total = total + build(i);
+    }
+    if total != 2016 { return 71; }
+    0
+}

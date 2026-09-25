@@ -1,0 +1,10 @@
+[[case]]
+id = "while-let-scrutinee-while-let-false"
+intent = "Leak and exactly-once guards for from-call `while let` scrutinee owners. Shape `while_let_false_high` (while let final false scrutinee has flat leak slope) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/while-let-scrutinee-while-let-false.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

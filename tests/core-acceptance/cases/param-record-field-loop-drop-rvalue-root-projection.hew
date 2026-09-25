@@ -1,0 +1,23 @@
+type Claim {
+    run_id: string,
+    amount: i64,
+}
+
+type ClaimsLedger {
+    claims: Vec<Claim>,
+}
+
+fn make_ledger() -> ClaimsLedger {
+    var claims: Vec<Claim> = Vec.new();
+    claims.push(Claim { run_id: "r1", amount: 10 });
+    claims.push(Claim { run_id: "r2", amount: 20 });
+    ClaimsLedger { claims: claims }
+}
+
+fn main() {
+    var total: i64 = 0;
+    for claim in make_ledger().claims {
+        total = total + claim.amount;
+    }
+    println(f"total={total}");
+}

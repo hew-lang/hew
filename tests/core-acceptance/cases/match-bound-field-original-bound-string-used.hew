@@ -1,0 +1,19 @@
+type Inner {
+    v: i64,
+}
+
+type Outer {
+    inner: Inner,
+    c: string,
+}
+
+fn main() -> i64 {
+    let o = Outer { inner: Inner { v: 7 }, c: "scribble-heap".to_upper() };
+    let n = match o {
+        Outer { inner: _, c } => c.len(),
+    };
+    if n == 13 {
+        print("k");
+    }
+    0
+}

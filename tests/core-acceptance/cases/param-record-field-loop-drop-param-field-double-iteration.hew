@@ -1,0 +1,27 @@
+type Claim {
+    run_id: string,
+    amount: i64,
+}
+
+type ClaimsLedger {
+    claims: Vec<Claim>,
+}
+
+fn sum_twice(ledger: ClaimsLedger) -> i64 {
+    var total: i64 = 0;
+    for claim in ledger.claims {
+        total = total + claim.amount;
+    }
+    for claim in ledger.claims {
+        total = total + claim.amount;
+    }
+    total
+}
+
+fn main() {
+    var claims: Vec<Claim> = Vec.new();
+    claims.push(Claim { run_id: "r1", amount: 10 });
+    claims.push(Claim { run_id: "r2", amount: 20 });
+    let ledger = ClaimsLedger { claims: claims };
+    println(f"total={sum_twice(ledger)}");
+}

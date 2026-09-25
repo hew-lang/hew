@@ -1,0 +1,46 @@
+enum Blob {
+    Data(bytes),
+    Empty,
+}
+
+fn same_scope(i: i64) -> i64 {
+    let b = Blob.Data(f"same-{i}".to_bytes());
+    match b {
+        .Data(data) => {
+            let inner = data;
+            inner.len() + data.len()
+        },
+        .Empty => 0,
+    }
+}
+
+fn nested_scope(i: i64) -> i64 {
+    let b = Blob.Data(f"nested-{i}".to_bytes());
+    match b {
+        .Data(data) => {
+            let n = {
+                let inner = data;
+                inner.len()
+            };
+            n + data.len()
+        },
+        .Empty => 0,
+    }
+}
+
+fn direct(i: i64) -> i64 {
+    let b = Blob.Data(f"direct-{i}".to_bytes());
+    match b {
+        .Data(data) => data.len(),
+        .Empty => 0,
+    }
+}
+
+fn main() -> i64 {
+    var total = 0;
+    for i in 0..50 {
+        total = total + same_scope(i) + nested_scope(i) + direct(i);
+        println("frame");
+    }
+    if total > 0 { 0 } else { 91 }
+}

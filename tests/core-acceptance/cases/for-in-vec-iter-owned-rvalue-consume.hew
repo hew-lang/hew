@@ -1,0 +1,15 @@
+fn mk() -> Vec<string> {
+    var v: Vec<string> = Vec.new();
+    v.push("a" + "1");
+    v.push("b" + "2");
+    return v;
+}
+
+fn main() {
+    var counts: HashMap<string, i64> = HashMap.new();
+    for w in mk() {
+        counts.insert(w, 1);
+    }
+    print(counts.len());
+    print("OK");
+}

@@ -1,0 +1,10 @@
+[[case]]
+id = "match-payload-field-load-drop-g64-match-bare-field"
+intent = "Retained string field-load drop leak oracle — the match/if-let payload arm. Shape `g64_match_bare_field` (match payload bare field load no double free under malloc scribble) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/match-payload-field-load-drop-g64-match-bare-field.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "m"
+exit = 0

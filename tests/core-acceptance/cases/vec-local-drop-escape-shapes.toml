@@ -1,0 +1,10 @@
+[[case]]
+id = "vec-local-drop-escape-shapes"
+intent = "Plain `Vec<T>` local scope-exit drop oracles: per-iteration leak slope plus poisoned-allocator no-double-free pins for the escape shapes. Shape `escape_shapes` (vec escape shapes run clean under malloc scribble) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/vec-local-drop-escape-shapes.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "63OK"
+exit = 0

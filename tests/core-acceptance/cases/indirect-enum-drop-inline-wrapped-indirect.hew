@@ -1,0 +1,20 @@
+enum Wrap { W(Tree), }
+indirect enum Tree { Leaf(i64), Node(Wrap), }
+fn val(t: Tree) -> i64 {
+    match t {
+        .Leaf(n) => n,
+        .Node(w) => match w { .W(inner) => val(inner), },
+    }
+}
+fn run_loop() -> i64 {
+    var total = 0;
+    for i in 0..50 {
+        let t = Tree.Node(.W(.Leaf(3)));
+        total = total + val(t);
+    }
+    total
+}
+fn main() {
+    let r = run_loop();
+    if r == 150 { print("ok"); } else { print("BAD"); }
+}

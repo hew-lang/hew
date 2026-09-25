@@ -1,0 +1,15 @@
+enum Box { Full(string), Empty, }
+
+fn overwrite_once() {
+    var value: Box = Box.Full(("control-" + "payload"));
+    value = Box.Empty;
+}
+
+fn main() {
+    var i: i64 = 0;
+    while i < 50 {
+        overwrite_once();
+        println("tick");
+        i = i + 1;
+    }
+}

@@ -1,0 +1,15 @@
+import std.net.websocket;
+
+fn main() {
+    match websocket.listen("not an address") {
+        .Ok(server) => {
+            server.close();
+            panic("invalid WebSocket address unexpectedly bound");
+        },
+        .Err(_) => {
+            for _ in 0..50 {
+                println(websocket.last_error().len());
+            }
+        },
+    }
+}

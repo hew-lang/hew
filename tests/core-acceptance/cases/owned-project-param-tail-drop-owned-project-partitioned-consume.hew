@@ -1,0 +1,29 @@
+#[resource] type Conn { fd: i64, }
+impl Conn { fn close(consume self) { println("closed-" + self.fd.fmt()); } }
+type Wire { conn: Conn }
+type Packet { tag: string, body: string }
+fn pick(p: Packet, left: bool) -> i64 {
+    if left {
+        return match p { Packet { tag, body } => tag.len() };
+    }
+    match p { Packet { tag, body } => body.len() }
+}
+fn pick_wire(consume w: Wire, left: bool) -> i64 {
+    if left {
+        return match w { Wire { conn } => conn.fd };
+    }
+    match w { Wire { conn } => conn.fd }
+}
+fn main() -> i64 {
+    var total: i64 = 0;
+    for i in 0..50 {
+        total = total + pick(Packet { tag: "l" + "t", body: "ab" + "c" }, true);
+        total = total + pick(Packet { tag: "r" + "t", body: "de" + "f" }, false);
+    }
+    if total != 50 * 5 { return 73; }
+    let a = pick_wire(Wire { conn: Conn { fd: 1 } }, true);
+    let b = pick_wire(Wire { conn: Conn { fd: 2 } }, false);
+    if a + b != 3 { return 74; }
+    println("partitioned-ok");
+    0
+}

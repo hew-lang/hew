@@ -1,0 +1,9 @@
+type Node { value: i64, }
+type Holder { r: Rc<Node>, tag: string, }
+
+fn main() -> i64 {
+    let shared: Rc<Node> = Rc.new(Node { value: 7 });
+    let holder = Holder { r: shared, tag: "tag" };
+    let _copied = clone holder;
+    0
+}

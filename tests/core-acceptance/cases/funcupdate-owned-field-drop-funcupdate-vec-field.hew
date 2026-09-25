@@ -1,0 +1,18 @@
+type VecHolder {
+    items: Vec<i64>,
+    tag: i64,
+}
+
+fn main() -> i64 {
+    var init: Vec<i64> = Vec.new();
+    init.push(99);
+    var h = VecHolder { items: init, tag: 0 };
+    var i: i64 = 0;
+    while i < 50 {
+        var next: Vec<i64> = Vec.new();
+        next.push(i);
+        h = VecHolder { items: next, ..h };
+        i = i + 1;
+    }
+    h.tag
+}

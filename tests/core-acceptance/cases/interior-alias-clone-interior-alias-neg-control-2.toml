@@ -1,0 +1,10 @@
+[[case]]
+id = "interior-alias-clone-interior-alias-neg-control-2"
+intent = "Interior-alias clone-out leak oracle (hew-lang/hew gap #54). Shape `interior_alias_neg_control_high` (interior alias true alias leak slope below tolerance) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/interior-alias-clone-interior-alias-neg-control-2.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 182

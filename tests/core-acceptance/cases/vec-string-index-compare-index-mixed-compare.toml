@@ -1,0 +1,10 @@
+[[case]]
+id = "vec-string-index-compare-index-mixed-compare"
+intent = "Constant-leak oracle for the `Vec<string>` index-temp-into-string-compare shape and the owned array-repeat (`[\"x\"; N]`) clone shape. Shape `index_mixed_compare` (vec string index mixed compare no constant leak) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/vec-string-index-compare-index-mixed-compare.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

@@ -1,0 +1,10 @@
+[[case]]
+id = "array-repeat-owned-element-zero-count-value"
+intent = "Double-free / independent-owner oracle for array-repeat `[x; N]` of an owned (heap-owning) record element. Shape `zero_count_value` (array repeat zero count value source drops once) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/array-repeat-owned-element-zero-count-value.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "0OK"
+exit = 0

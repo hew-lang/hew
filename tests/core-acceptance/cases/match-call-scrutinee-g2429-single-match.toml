@@ -1,0 +1,10 @@
+[[case]]
+id = "match-call-scrutinee-g2429-single-match"
+intent = "From-call match-scrutinee enum-payload leak oracle (#2429 guard). Shape `g2429_single_match_scribble` (single from call match no double free under malloc scribble) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/match-call-scrutinee-g2429-single-match.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "m"
+exit = 0

@@ -1,0 +1,9 @@
+fn emit_full() -> i64 {
+    let full = "left-" + "middle".to_upper() + "-right";
+    full.len()
+}
+fn main() -> i64 {
+    var total = 0;
+    for i in 0..200 { total = total + emit_full(); }
+    if total == 3400 { 0 } else { 93 }
+}

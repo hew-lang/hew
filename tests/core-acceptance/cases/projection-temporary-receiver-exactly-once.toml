@@ -1,0 +1,10 @@
+[[case]]
+id = "projection-temporary-receiver-exactly-once"
+intent = "Leak and double-free oracle for owned temporaries used as method receivers. Shape `projection_temporary_receiver_exactly_once` (all temporary shapes have flat leak slope, all temporary shapes release exactly once) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/projection-temporary-receiver-exactly-once.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

@@ -1,0 +1,10 @@
+type Holder { payload: bytes }
+fn main() -> i64 {
+    var h = Holder { payload: "initial".to_bytes() };
+    var i: i64 = 0;
+    while i < 50 {
+        h.payload = "replacement".to_bytes();
+        i = i + 1;
+    }
+    if h.payload.len() == 11 { 0 } else { 1 }
+}

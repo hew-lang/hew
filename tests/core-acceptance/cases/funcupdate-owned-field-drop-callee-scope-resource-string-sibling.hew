@@ -1,0 +1,21 @@
+import std.string;
+#[resource]
+type Handle { fd: i64 }
+impl Handle { fn close(consume self) {} }
+type Carrier { handle: Handle, note: string }
+fn consume_it(seed: string) -> i64 {
+    var c = Carrier { handle: Handle { fd: 1 }, note: seed };
+    c.note = string.repeat("b", 32);
+    let n = c.note.len();
+    c.handle.close();
+    n
+}
+fn main() -> i64 {
+    var acc: i64 = 0;
+    var i: i64 = 0;
+    while i < 50 {
+        acc = acc + consume_it(string.repeat("a", 32));
+        i = i + 1;
+    }
+    if acc > 0 { 0 } else { 1 }
+}

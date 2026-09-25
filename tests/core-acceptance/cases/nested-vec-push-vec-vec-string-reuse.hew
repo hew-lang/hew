@@ -1,0 +1,27 @@
+fn build_rows(n: i64) -> Vec<Vec<string>> {
+    var rows: Vec<Vec<string>> = [];
+    var cur_row: Vec<string> = [];
+    var i: i64 = 0;
+    while i < n {
+        cur_row.push(f"r{i}c0");
+        cur_row.push(f"r{i}c1");
+        rows.push(cur_row);
+        cur_row.clear();
+        i = i + 1;
+    }
+    rows
+}
+
+fn main() {
+    let rows = build_rows(3);
+    var out: string = "";
+    for r in 0 .. rows.len() {
+        let row = rows[r];
+        for c in 0 .. row.len() {
+            out = out + row[c] + "|";
+        }
+        out = out + ";";
+    }
+    print(out);
+    print("OK");
+}

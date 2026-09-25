@@ -1,0 +1,14 @@
+fn borrow_len(value: string) -> i64 { value.len() }
+fn invoke(make: fn() -> string) -> string { make() }
+fn main() {
+    let seed = "captured-owner".to_upper();
+    let captured = || seed;
+    let parameter = |value: string| value;
+    let fresh = || "fresh-owner".to_upper();
+    for _ in 0..50 {
+        println(borrow_len(captured()));
+        println(borrow_len(parameter("parameter-owner".to_upper())));
+        println(borrow_len(fresh()));
+        println(borrow_len(invoke(captured)));
+    }
+}

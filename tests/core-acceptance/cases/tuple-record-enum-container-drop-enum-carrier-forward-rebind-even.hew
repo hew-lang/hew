@@ -1,0 +1,52 @@
+type Payload {
+    values: Vec<string>,
+    label: string,
+}
+
+fn helper(i: i64) -> i64 {
+    let pair: (Option<Payload>, Vec<string>) = (
+        .Some(Payload {
+            values: ["transferred"],
+            label: "tag",
+        }),
+        ["left", "right"],
+    );
+
+    var carrier: Option<Payload> = .None;
+    if i % 2 == 0 {
+        carrier = pair.0;
+    } else {
+        carrier = .None;
+    }
+
+    let rebound = carrier;
+    let payload_score = match rebound {
+        .Some(payload) => {
+            if payload.values[0] != "transferred"
+                || payload.label != "tag"
+                || payload.values.len() != 1 {
+                -100000
+            } else {
+                payload.values[0].len() + payload.label.len() + payload.values.len()
+            }
+        },
+        .None => {
+            7
+        },
+    };
+
+    let sibling_score =
+        if pair.1[0] != "left" || pair.1[1] != "right" || pair.1.len() != 2 {
+            -200000
+        } else {
+            pair.1[0].len() + pair.1[1].len() + pair.1.len()
+        };
+    payload_score + sibling_score + i
+}
+
+
+fn main() -> i64 {
+    let checksum = helper(0);
+    println(f"checksum={checksum}");
+    if checksum == 26 { 0 } else { 91 }
+}

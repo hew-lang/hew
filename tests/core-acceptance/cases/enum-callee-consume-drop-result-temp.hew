@@ -1,0 +1,9 @@
+fn ef(e: Result<string, string>) -> i64 { match e { .Ok(x) => 2, .Err(y) => 3 } }
+fn main() -> i64 {
+    var total: i64 = 0;
+    for i in 0..50 {
+        total = total + ef(.Ok("a" + "b"));
+    }
+    if total != 50 * 2 { return 73; }
+    0
+}

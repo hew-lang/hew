@@ -1,0 +1,15 @@
+type Box { s: string }
+fn mk(i: i64) -> string { f"tok{i}" }
+fn keep(s: string) -> Box { Box { s: s } }
+fn main() -> i64 {
+    var i: i64 = 0;
+    var total: i64 = 0;
+    while i < 200 {
+        let b = keep(mk(i));
+        println(f"v={b.s}");
+        total = total + b.s.len();
+        i = i + 1;
+    }
+    if total != 1090 { return 84; }
+    0
+}

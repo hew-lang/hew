@@ -1,0 +1,21 @@
+type Row {
+    name: string,
+    id: i64,
+}
+
+fn f(n: i64) -> Result<Row, string> {
+    .Ok(Row { name: "g2429-row-payload".to_upper(), id: n })
+}
+
+fn main() -> i64 {
+    var total = 0;
+    var i = 0;
+    while i < 50 {
+        match f(i) {
+            .Ok(r) => { total = total + r.id; }
+            .Err(e) => {}
+        }
+        i = i + 1;
+    }
+    if total >= 0 { 0 } else { 1 }
+}

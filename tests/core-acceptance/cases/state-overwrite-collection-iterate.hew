@@ -1,0 +1,31 @@
+actor Summer { 
+    var items: Vec<i64>,
+
+    receive fn spin() {
+        var s: i64 = 0;
+        for v in items {
+            s = s + v;
+        }
+    }
+
+    receive fn size() -> i64 {
+        items.len()
+    }
+}
+
+fn main() -> i64 {
+    var xs: Vec<i64> = Vec.new();
+    xs.push(1);
+    xs.push(2);
+    xs.push(3);
+    let h = spawn Summer(items: xs);
+    var i: i64 = 0;
+    while i < 50 {
+        let _ = h.spin();
+        i = i + 1;
+    }
+    match h.size() {
+        .Ok(v) => v,
+        .Err(_) => -1,
+    }
+}

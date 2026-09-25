@@ -1,0 +1,12 @@
+fn main() {
+    var xs: Vec<string> = Vec.new();
+    xs.push("alpha");
+    var hits: i64 = 0;
+    if xs[0] == "alpha" { hits = hits + 1; }
+    if xs[0] != "beta" { hits = hits + 1; }
+    println(xs[0]);
+    let ns = [7; 3];
+    hits = hits + ns[0];
+    print(hits);
+    print("OK");
+}

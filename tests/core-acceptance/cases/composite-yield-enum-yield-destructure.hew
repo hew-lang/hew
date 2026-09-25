@@ -1,0 +1,23 @@
+enum Note {
+    Text(string),
+    Number(i64),
+}
+actor Maker {
+    receive gen fn notes() -> Note {
+        for i in 0..200 {
+            yield Note.Text(f"note-{i}");
+        }
+    }
+}
+fn main() -> i64 {
+    var total: i64 = 0;
+    let m = spawn Maker;
+    for n in m.notes() {
+        match n {
+            Note.Text(s) => { total = total + s.len(); },
+            Note.Number(v) => { total = total + v; },
+        }
+    }
+    if total != 1490 { return 94; }
+    0
+}

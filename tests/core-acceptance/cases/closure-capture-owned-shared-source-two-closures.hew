@@ -1,0 +1,15 @@
+type PairFns {
+    a: fn() -> i64,
+    b: fn() -> i64,
+}
+fn make_pair(n: i64) -> PairFns {
+    let label: string = "row-payload-seed".to_upper();
+    let a = || label.len() + n;
+    let b = || label.len() + n;
+    PairFns { a: a, b: b }
+}
+fn main() -> i64 {
+    let p = make_pair(1);
+    if p.a() + p.b() != 34 { return 91; }
+    0
+}

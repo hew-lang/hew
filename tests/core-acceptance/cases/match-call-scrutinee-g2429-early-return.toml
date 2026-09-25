@@ -1,0 +1,10 @@
+[[case]]
+id = "match-call-scrutinee-g2429-early-return"
+intent = "From-call match-scrutinee enum-payload leak oracle (#2429 guard). Shape `g2429_early_return_high` (early return loop leak slope below tolerance) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/match-call-scrutinee-g2429-early-return.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

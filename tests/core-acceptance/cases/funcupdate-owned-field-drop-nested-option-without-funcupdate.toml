@@ -1,0 +1,10 @@
+[[case]]
+id = "funcupdate-owned-field-drop-nested-option-without-funcupdate"
+intent = "Functional-update owned-field drop leak oracle. Shape `nested_option_without_funcupdate` (nested option without funcupdate has exactly zero leaks) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/funcupdate-owned-field-drop-nested-option-without-funcupdate.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

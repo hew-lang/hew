@@ -1,0 +1,18 @@
+import std.string;
+type Pair<A, B> { first: A, second: B, }
+fn emit_pair(print_it: bool) -> i64 {
+    let full = string.repeat("field", 1);
+    let pair = Pair { first: 1, second: full };
+    if print_it { println(pair.second); }
+    pair.first
+}
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 200 {
+        total = total + emit_pair(i == 0);
+        i = i + 1;
+    }
+    if total != 200 { return 91; }
+    0
+}

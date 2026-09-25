@@ -1,0 +1,34 @@
+fn stash(s: string) -> i64 {
+    var v: Vec<string> = Vec.new();
+    v.push(s);
+    v.len()
+}
+fn stash_after(s: string) -> i64 {
+    var v: Vec<string> = Vec.new();
+    v.push(s);
+    v.len() + s.len()
+}
+fn forward_last(e: Result<string, string>) -> i64 {
+    match e { .Ok(x) => stash(x), .Err(y) => y.len() }
+}
+fn forward_live(e: Result<string, string>) -> i64 {
+    match e { .Ok(x) => stash_after(x), .Err(y) => y.len() }
+}
+fn inspect(e: Result<string, string>) -> i64 {
+    match e { .Ok(x) => x.len(), .Err(y) => y.len() }
+}
+fn take(e: Result<string, string>) -> string {
+    match e { .Ok(x) => x, .Err(y) => y }
+}
+fn main() -> i64 {
+    var total: i64 = 0;
+    for i in 0..50 {
+        total = total + forward_last(.Ok("a" + "b"));
+        total = total + forward_live(.Ok("c" + "d"));
+        total = total + inspect(.Ok("e" + "f"));
+        let moved = take(.Ok("g" + "h"));
+        total = total + moved.len();
+    }
+    if total != 50 * 8 { return 78; }
+    0
+}

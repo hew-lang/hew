@@ -1,0 +1,13 @@
+fn main() -> i64 {
+    var v: Vec<i64> = Vec.new();
+    v.push(1);
+    let p = (v, 7);
+    var i: i64 = 0;
+    var total: i64 = 0;
+    while i < 3 {
+        let items = p.0;
+        total = total + items.len();
+        i = i + 1;
+    }
+    total
+}

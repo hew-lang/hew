@@ -1,0 +1,26 @@
+import std.string;
+
+type Inner {
+    label: string,
+    n: i64,
+}
+type Pair {
+    keep: (Inner, i64),
+    churn: string,
+}
+
+fn step() -> Pair {
+    let b = Pair { keep: (Inner { label: string.repeat("k", 32), n: 1 }, 1), churn: string.repeat("a", 32) };
+    Pair { churn: string.repeat("b", 32), ..b }
+}
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 50 {
+        let r = step();
+        total = total + r.churn.len();
+        i = i + 1;
+    }
+    total
+}

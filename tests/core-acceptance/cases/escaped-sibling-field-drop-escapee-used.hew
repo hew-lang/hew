@@ -1,0 +1,25 @@
+type Inner {
+    label: string,
+    n: i64,
+}
+
+type Outer {
+    inner: Inner,
+    tag: string,
+}
+
+fn extract() -> Inner {
+    let b = Outer {
+        inner: Inner { label: "escaped-inner-heap-payload".to_upper(), n: 7 },
+        tag: "sibling-tag-heap-payload".to_upper(),
+    };
+    b.inner
+}
+
+fn main() -> i64 {
+    let inner = extract();
+    if inner.label.len() == 26 && inner.n == 7 {
+        print("k");
+    }
+    0
+}

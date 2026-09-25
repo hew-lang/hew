@@ -1,0 +1,16 @@
+type Item { name: string, tag: string }
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 50 {
+        var v: Vec<Item> = Vec.new();
+        v.push(Item { name: "iter-owned-name", tag: "iter-owned-tag" });
+        v.push(Item { name: "iter-owned-two", tag: "iter-owned-2t" });
+        for it in v.iter() {
+            total = total + it.name.len();
+        }
+        i = i + 1;
+    }
+    total % 7
+}

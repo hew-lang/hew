@@ -1,0 +1,24 @@
+type Inner { name: string }
+type Outer { inner: Inner }
+actor Fan { 
+    var seen: i64,
+    var held: Outer,
+    receive fn route(label: string, count: i64) {
+        var j: i64 = 0;
+        while j < count {
+            held = Outer { inner: Inner { name: label } };
+            j = j + 1;
+        }
+        seen = seen + 1;
+    }
+    receive fn total() -> i64 { seen + held.inner.name.len() }
+}
+fn main() -> i64 {
+    let fan = spawn Fan(seen: 0, held: Outer { inner: Inner { name: "seed" } });
+    var i: i64 = 0;
+    while i < 50 {
+        let _ = fan.route("nested".to_upper(), i % 5);
+        i = i + 1;
+    }
+    match fan.total() { .Ok(n) => if n > 50 { 0 } else { 87 }, .Err(_) => 88 }
+}

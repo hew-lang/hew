@@ -1,0 +1,16 @@
+fn f() -> Result<string, string> {
+    .Ok("g2429-string-payload".to_upper())
+}
+
+fn main() -> i64 {
+    var total = 0;
+    var i = 0;
+    while i < 50 {
+        match f() {
+            .Ok(b) => { total = total + b.len(); }
+            .Err(e) => {}
+        }
+        i = i + 1;
+    }
+    if total > 0 { 0 } else { 1 }
+}

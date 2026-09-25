@@ -1,0 +1,10 @@
+[[case]]
+id = "owned-composite-temp-arg-owned-composite-temp-enum"
+intent = "Leak oracle for the caller-side drop of a fresh owned composite/string argument TEMPORARY (#2743). Shape `owned_composite_temp_enum_high` (enum temp arg does not double free, enum temp arg leak slope below tolerance) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/owned-composite-temp-arg-owned-composite-temp-enum.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

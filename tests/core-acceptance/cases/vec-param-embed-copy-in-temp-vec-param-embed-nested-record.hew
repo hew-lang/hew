@@ -1,0 +1,29 @@
+type Inner { items: Vec<string>, inner_keep: string }
+type Holder { mid: Inner, outer_keep: string }
+type MixedWrap { marker: string, items: Vec<string> }
+
+fn pushNested(h: Holder) -> i64 {
+    var v: Vec<MixedWrap> = [];
+    v.push(MixedWrap {
+        marker: "sink-marker".to_upper(),
+        items: h.mid.items,
+    });
+    v.len()
+}
+
+fn main() -> i64 {
+    for i in 0..50 {
+        let h = Holder {
+            mid: Inner {
+                items: [f"nested-{i}"],
+                inner_keep: f"inner-{i}",
+            },
+            outer_keep: f"outer-{i}",
+        };
+        if pushNested(h) != 1 { return 91; }
+        if h.mid.items.len() != 1 { return 92; }
+        if h.mid.inner_keep.len() < 7 { return 93; }
+        if h.outer_keep.len() < 7 { return 94; }
+    }
+    0
+}

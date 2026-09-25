@@ -1,0 +1,126 @@
+type Capture {
+    label: string,
+    values: Vec<i64>,
+    root: Rc<i64>,
+    edge: Weak<i64>,
+}
+
+fn upgraded(edge: Weak<i64>) -> i64 {
+    match edge.upgrade() {
+        .Some(value) => value.get(),
+        .None => -1,
+    }
+}
+
+gen fn rows(c: Capture) -> i64 {
+    yield c.label.len() + c.values[0] + c.root.get();
+    yield upgraded(c.edge);
+}
+
+fn complete(root: Rc<i64>, i: i64) {
+    let c = Capture {
+        label: "cap-" + f"{i}",
+        values: [3, 4],
+        root: root.clone(),
+        edge: root.downgrade(),
+    };
+    let g = rows(c);
+    if c.root.strong_count() != 3 || c.root.weak_count() != 2 {
+        panic("complete live counts");
+    }
+    var seen: i64 = 0;
+    loop {
+        match g.next() {
+            .Some(value) => { seen = seen + value; },
+            .None => { break; },
+        }
+    }
+    if seen <= 0 { panic("complete values"); }
+}
+
+fn suspend(root: Rc<i64>, i: i64) {
+    let c = Capture {
+        label: "cap-" + f"{i}",
+        values: [3, 4],
+        root: root.clone(),
+        edge: root.downgrade(),
+    };
+    let g = rows(c);
+    if c.root.strong_count() != 3 || c.root.weak_count() != 2 {
+        panic("suspend live counts");
+    }
+    match g.next() {
+        .Some(value) => { if value <= 0 { panic("suspend value"); } },
+        .None => panic("suspend missing value"),
+    }
+}
+
+fn never_resume(root: Rc<i64>, i: i64) {
+    let c = Capture {
+        label: "cap-" + f"{i}",
+        values: [3, 4],
+        root: root.clone(),
+        edge: root.downgrade(),
+    };
+    let _g = rows(c);
+    if c.root.strong_count() != 3 || c.root.weak_count() != 2 {
+        panic("never live counts");
+    }
+}
+
+fn anonymous(root: Rc<i64>, i: i64) {
+    let c = Capture {
+        label: "cap-" + f"{i}",
+        values: [3, 4],
+        root: root.clone(),
+        edge: root.downgrade(),
+    };
+    let g = gen {
+        yield c.label.len() + c.values[1] + c.root.get();
+    };
+    if c.root.strong_count() != 3 || c.root.weak_count() != 2 {
+        panic("anonymous live counts");
+    }
+    loop {
+        match g.next() {
+            .Some(value) => { if value <= 0 { panic("anonymous value"); } },
+            .None => { break; },
+        }
+    }
+}
+
+fn main() {
+    var completed: i64 = 0;
+    var suspended: i64 = 0;
+    var never_resumed: i64 = 0;
+    var anonymous: i64 = 0;
+    var i: i64 = 0;
+    while i < 128 {
+        let root = Rc.new(i + 10);
+        complete(root, i);
+        if root.strong_count() != 1 || root.weak_count() != 0 {
+            panic("complete release counts");
+        }
+        completed = completed + 1;
+
+        suspend(root, i);
+        if root.strong_count() != 1 || root.weak_count() != 0 {
+            panic("suspend release counts");
+        }
+        suspended = suspended + 1;
+
+        never_resume(root, i);
+        if root.strong_count() != 1 || root.weak_count() != 0 {
+            panic("never release counts");
+        }
+        never_resumed = never_resumed + 1;
+
+        anonymous(root, i);
+        if root.strong_count() != 1 || root.weak_count() != 0 {
+            panic("anonymous release counts");
+        }
+        anonymous = anonymous + 1;
+        i = i + 1;
+    }
+    print(f"{completed}:{suspended}:{never_resumed}:{anonymous}:OK");
+}

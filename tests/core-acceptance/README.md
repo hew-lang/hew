@@ -54,6 +54,10 @@ and leak detection. This target requires Linux and a compatible clang toolchain;
 missing tools or instrumentation fail the run. No leak suppressions are used.
 The safety cases include bounds faults and nested-call failure with live owners;
 their expected fault reports do not excuse leaks or post-failure execution.
+A memory-ownership regression is a `run` case in both suites: the acceptance
+run pins its output, and the safety run fails it on any leak, double free or
+use after free. Its outcome never depends on a sleep: a handler that must stay
+parked waits on a pipe that only the program releases.
 
 Use `CORE_ACCEPTANCE_ARGS='--case bytes-copy-mutate --case string-trim-values'` to focus either
 command on one or more cases.

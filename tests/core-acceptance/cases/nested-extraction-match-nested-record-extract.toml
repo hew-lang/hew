@@ -1,0 +1,10 @@
+[[case]]
+id = "nested-extraction-match-nested-record-extract"
+intent = "Nested-extraction partial-destructure oracle — the compiled-binary pins for the alias-scrutinee ownership model. Shape `nested_record_extract_high` (nested record extraction leak slope below tolerance, nested record extraction no double free under malloc scribble) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/nested-extraction-match-nested-record-extract.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

@@ -1,0 +1,25 @@
+fn make_vec() -> Vec<string> {
+    var v: Vec<string> = Vec.new();
+    v.push("early" + "-alpha-padding-padding-padding");
+    v.push("early" + "-beta-padding-padding-padding");
+    v.push("early" + "-gamma-padding-padding-padding");
+    return v;
+}
+
+fn frame() {
+    @outer: for i in 0 .. 2 {
+        for word in make_vec() {
+            print(word.len());
+            continue @outer;
+        }
+    }
+}
+
+fn main() {
+    var i: i64 = 0;
+    while i < 50 {
+        frame();
+        i = i + 1;
+    }
+    print("OK");
+}

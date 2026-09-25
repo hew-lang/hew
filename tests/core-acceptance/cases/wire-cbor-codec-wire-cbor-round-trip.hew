@@ -1,0 +1,20 @@
+#[wire]
+type Inner { name: string @1, }
+#[wire]
+type Packet { label: string @1, tags: Vec<string> @2, inner: Inner @3, seq: i64 @4, }
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 50 {
+        var tags: Vec<string> = Vec.new();
+        tags.push("alpha-element");
+        tags.push("beta-element");
+        let p = Packet { label: "payload-label-value", tags: tags, inner: Inner { name: "inner-owned-name" }, seq: i };
+        let raw = p.encode();
+        let back = Packet.decode(raw);
+        total = total + back.seq;
+        i = i + 1;
+    }
+    total
+}

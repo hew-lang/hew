@@ -1,0 +1,26 @@
+actor Buckets { 
+    var rows: Vec<Vec<i64>>,
+
+    receive fn sum_firsts() -> i64 {
+        var s: i64 = 0;
+        for row in rows {
+            s = s + row[0];
+  }
+        s
+    }
+}
+
+fn main() -> i64 {
+    var rows: Vec<Vec<i64>> = Vec.new();
+    for i in 0..50 {
+        var row: Vec<i64> = Vec.new();
+        row.push(i);
+        row.push(i + 1);
+        rows.push(row);
+    }
+    let buckets = spawn Buckets(rows: rows);
+    match buckets.sum_firsts() {
+        .Ok(_) => 0,
+        .Err(_) => -1,
+    }
+}

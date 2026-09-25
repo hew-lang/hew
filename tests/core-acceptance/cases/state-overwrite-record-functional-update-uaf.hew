@@ -1,0 +1,45 @@
+type Inner {
+    note: string,
+}
+
+type Outer {
+    label: string,
+    payload: bytes,
+    inner: Inner,
+    count: i64,
+}
+
+actor Keeper {
+    var cur: Outer,
+
+    receive fn bump() {
+        cur = Outer {
+            label: cur.label,
+            payload: "outer-payload".to_bytes(),
+            inner: Inner { note: "inner-note".to_upper() },
+            count: cur.count + 1,
+        };
+    }
+
+    receive fn count() -> i64 {
+        cur.count
+    }
+}
+
+fn main() -> i64 {
+    let k = spawn Keeper(cur: Outer {
+        label: "durable-label".to_upper(),
+        payload: bytes.new(),
+        inner: Inner { note: "first" },
+        count: 0,
+    });
+    var i: i64 = 0;
+    while i < 50 {
+        let _ = k.bump();
+        i = i + 1;
+    }
+    match k.count() {
+        .Ok(v) => v,
+        .Err(_) => -1,
+    }
+}

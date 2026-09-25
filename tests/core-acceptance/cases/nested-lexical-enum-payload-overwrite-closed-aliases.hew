@@ -1,0 +1,145 @@
+enum Box {
+    Full(string),
+    Empty,
+}
+
+enum Inner {
+    Text(string),
+    Empty,
+}
+
+enum Outer {
+    Full(Inner),
+    Empty,
+}
+
+enum ScalarBox {
+    Full(i64),
+    Empty,
+}
+
+fn direct(i: i64) -> i64 {
+    var opt = Box.Full(f"direct-{i}");
+    var n = 0;
+    match opt {
+        .Full(s) => {
+            n = s.len();
+        },
+        .Empty => {},
+    }
+    opt = Box.Empty;
+    n
+}
+
+fn nested(i: i64) -> i64 {
+    var opt = Box.Full(f"nested-{i}");
+    var n = 0;
+    {
+        match opt {
+            .Full(s) => {
+                n = s.len();
+            },
+            .Empty => {},
+        }
+    }
+    opt = Box.Empty;
+    n
+}
+
+fn expression_arm(i: i64) -> i64 {
+    var opt = Box.Full(f"expression-{i}");
+    let n = match opt {
+        .Full(s) => s.len(),
+        .Empty => 0,
+    };
+    opt = Box.Empty;
+    n
+}
+
+fn joined(i: i64) -> i64 {
+    var opt = Box.Full(f"joined-{i}");
+    var n = 0;
+    if i % 2 == 0 {
+        match opt {
+            .Full(s) => {
+                n = s.len();
+            },
+            .Empty => {},
+        }
+    } else {
+        {
+            match opt {
+                .Full(s) => {
+                    n = s.len();
+                },
+                .Empty => {},
+            }
+        }
+    }
+    opt = Box.Empty;
+    n
+}
+
+fn fresh_nonempty(i: i64) -> i64 {
+    var opt = Box.Full(f"old-{i}");
+    opt = Box.Full(f"new-{i}");
+    match opt {
+        .Full(s) => s.len(),
+        .Empty => 0,
+    }
+}
+
+fn guarded(i: i64) -> i64 {
+    var opt = Box.Full(f"guard-old-{i}");
+    if i < 0 {
+        let moved = opt;
+        return match moved {
+            .Full(s) => s.len(),
+            .Empty => 0,
+        };
+    }
+    opt = Box.Full(f"guard-new-{i}");
+    match opt {
+        .Full(s) => s.len(),
+        .Empty => 0,
+    }
+}
+
+fn whole_forward(i: i64) -> i64 {
+    var opt = Outer.Full(Inner.Text(f"forward-{i}"));
+    match opt {
+        .Full(inner) => {
+            let owner = inner;
+            opt = Outer.Empty;
+            match owner {
+                .Text(s) => s.len(),
+                .Empty => 0,
+            }
+        },
+        .Empty => 0,
+    }
+}
+
+fn scalar(i: i64) -> i64 {
+    var opt = ScalarBox.Full(i);
+    var n = 0;
+    match opt {
+        .Full(v) => {
+            n = v;
+        },
+        .Empty => {},
+    }
+    opt = ScalarBox.Empty;
+    n
+}
+
+fn main() -> i64 {
+    var total = 0;
+    for i in 0..50 {
+        total = total + direct(i) + nested(i) + expression_arm(i) + joined(i)
+            + fresh_nonempty(i) + guarded(i)
+            + whole_forward(i) + scalar(i);
+        println("frame");
+    }
+    if total > 0 { 0 } else { 91 }
+}

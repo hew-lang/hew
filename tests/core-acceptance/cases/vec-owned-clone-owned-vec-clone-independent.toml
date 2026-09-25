@@ -1,0 +1,10 @@
+[[case]]
+id = "vec-owned-clone-owned-vec-clone-independent"
+intent = "Owned-element `Vec<T>::clone()` receiver-borrow leak oracle. Shape `owned_vec_clone_independent` (owned vec clone independent under malloc scribble) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/vec-owned-clone-owned-vec-clone-independent.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "v1r2c;w2r;OK"
+exit = 0

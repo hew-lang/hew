@@ -1,0 +1,40 @@
+import std.net.{Listener};
+
+actor Reader {
+    let addr: string,
+
+    receive fn go(trigger: i64) -> i64 {
+        let conn = match net.connect(addr) { .Ok(value) => value, .Err(error) => panic("network operation failed"), };
+        let read_once = move |value: string| {
+            if trigger >= 0 {
+                panic("crash before child suspend");
+            }
+            let _ = conn.recv();
+            value
+        };
+        let _ = read_once("crash-owner".to_upper());
+        0
+    }
+}
+
+fn main() {
+    let listener = match net.listen("127.0.0.1:0") { .Ok(value) => value, .Err(error) => panic("network operation failed"), };
+    let port = listener.local_port();
+    let reader = spawn Reader(addr: f"127.0.0.1:{port}");
+    let result = reader.go(0);
+    match result {
+        .Ok(_) => println("unexpected-ok"),
+        .Err(_) => println("crash-fallback"),
+    }
+    let peer = listener.accept();
+    // `recv()` is blocking and traps the calling actor on a transport
+    // failure instead of returning an `Err`, unlike the deleted
+    // `try_read()`; `None` is the orderly-EOF witness this probe needs.
+    match peer.recv() {
+        .None => println("peer-eof"),
+        .Some(_) => println("peer-data"),
+    }
+    peer.close();
+    listener.close();
+    println("main-done");
+}

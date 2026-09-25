@@ -1,0 +1,10 @@
+import std.text.regex;
+fn main() -> i64 {
+    var matched: i64 = 0;
+    for _ in 0..50 {
+        let pattern = regex.new("[a-z]+[0-9]+");
+        if pattern.is_match("abc123") { matched = matched + 1; }
+        pattern.close();
+    }
+    matched
+}

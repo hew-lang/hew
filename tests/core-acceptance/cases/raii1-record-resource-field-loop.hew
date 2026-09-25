@@ -1,0 +1,18 @@
+#[resource]
+#[opaque]
+type Dq {}
+impl Dq {
+fn close(consume self) { unsafe { hew_deque_free(self) }; println("closed"); }
+}
+extern "C" {
+fn hew_deque_new() -> Dq;
+fn hew_deque_free(consume dq: Dq);
+}
+type Holder { dq: Dq }
+fn cycle() { let h = Holder { dq: unsafe { hew_deque_new() } }; let _ = h; }
+fn main() -> i64 {
+var n: i64 = 0;
+for i in 0..200 { cycle(); n = n + 1; }
+if n != 200 { return 70; }
+0
+}

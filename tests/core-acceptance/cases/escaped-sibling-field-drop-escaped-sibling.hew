@@ -1,0 +1,28 @@
+type Inner {
+    label: string,
+    n: i64,
+}
+
+type Outer {
+    inner: Inner,
+    tag: string,
+}
+
+fn extract(k: i64) -> Inner {
+    let b = Outer {
+        inner: Inner { label: "escaped-inner-heap-payload".to_upper(), n: k },
+        tag: "sibling-tag-heap-payload".to_upper(),
+    };
+    b.inner
+}
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 50 {
+        let inner = extract(i);
+        total = total + inner.n;
+        i = i + 1;
+    }
+    if total >= 0 { 0 } else { 1 }
+}

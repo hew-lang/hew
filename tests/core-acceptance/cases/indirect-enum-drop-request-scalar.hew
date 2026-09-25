@@ -1,0 +1,32 @@
+actor Scorer {
+    receive fn score(tag: i64, value: i64) -> i64 { tag + value }
+}
+actor Coordinator {
+    let scorer: Scorer,
+    receive fn ask_score(tag: i64, value: i64) -> i64 {
+        match scorer.score(tag, value) { .Ok(result) => result, .Err(_) => -1, }
+    }
+    receive fn select_score(tag: i64, value: i64) -> i64 {
+        select { reply from scorer.score(tag, value) => reply.expect("ask reply"), after 5s => -2, }
+    }
+}
+fn main() -> i64 {
+    let scorer = spawn Scorer;
+    let coordinator = spawn Coordinator(scorer: scorer);
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 50 {
+        let direct = match scorer.score(i, 3) { .Ok(value) => value, .Err(_) => -3, };
+        let selected = select { reply from scorer.score(i, 7) => reply.expect("ask reply"), after 5s => -4, };
+        let task_a = fork scorer.score(i, 11);
+        let task_b = fork scorer.score(i, 15);
+        let joined_a = match await task_a { .Ok(value) => value, .Err(_) => -7, };
+        let joined_b = match await task_b { .Ok(value) => value, .Err(_) => -8, };
+        let suspended_ask = match coordinator.ask_score(i, 19) { .Ok(value) => value, .Err(_) => -5, };
+        let suspended_select = match coordinator.select_score(i, 23) { .Ok(value) => value, .Err(_) => -6, };
+        total = total + direct + selected + joined_a + joined_b + suspended_ask + suspended_select;
+        i = i + 1;
+    }
+    if total == 11250 { print("ok"); } else { print("BAD"); }
+    0
+}

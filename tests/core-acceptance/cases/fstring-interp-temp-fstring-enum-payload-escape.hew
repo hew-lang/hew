@@ -1,0 +1,17 @@
+fn mkopt(i: i64) -> Option<string> { .Some(f"tok{i}") }
+fn main() -> i64 {
+    var i: i64 = 0;
+    var total: i64 = 0;
+    var last: string = "";
+    while i < 200 {
+        match mkopt(i) {
+            .Some(s) => { println(f"v={s}"); last = s; }
+            .None => {}
+        }
+        total = total + last.len();
+        i = i + 1;
+    }
+    if last != "tok199" { return 86; }
+    if total != 1090 { return 85; }
+    0
+}

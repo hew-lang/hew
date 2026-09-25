@@ -1,0 +1,23 @@
+type Rec {
+    name: string,
+}
+
+fn take(r: Rec) -> i64 {
+    r.name.len()
+}
+
+fn make() -> Rec {
+    Rec { name: "fresh".to_upper() }
+}
+
+fn main() -> i64 {
+    var r: Rec = make();
+    var i: i64 = 0;
+    var t: i64 = 0;
+    while i < 25 {
+        t = t + take(r);
+        r = make();
+        i = i + 1;
+    }
+    r.name.len()
+}

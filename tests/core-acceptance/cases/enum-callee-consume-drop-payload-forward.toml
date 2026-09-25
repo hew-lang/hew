@@ -1,0 +1,10 @@
+[[case]]
+id = "enum-callee-consume-drop-payload-forward"
+intent = "Leak oracle for the callee-side drop of a CONSUMED by-value enum param (#2732). Shape `payload_forward_df` (payload forward does not double free, payload forward leak slope below tolerance) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/enum-callee-consume-drop-payload-forward.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

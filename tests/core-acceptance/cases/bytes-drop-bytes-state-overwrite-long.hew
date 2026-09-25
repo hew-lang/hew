@@ -1,0 +1,25 @@
+actor ByteStore { 
+    var buf: bytes,
+
+    receive fn store(packet: bytes) {
+        buf = packet;
+  }
+
+    receive fn get_len() -> i64 {
+        buf.len()
+    }
+}
+
+fn main() -> i64 {
+    let store = spawn ByteStore(buf: bytes.new());
+    var i: i64 = 0;
+    while i < 100 {
+        let packet = "overwrite-bytes-payload".to_bytes();
+        let _ = store.store(packet);
+        i = i + 1;
+    }
+    match store.get_len() {
+        .Ok(v) => v,
+        .Err(_) => -1,
+    }
+}

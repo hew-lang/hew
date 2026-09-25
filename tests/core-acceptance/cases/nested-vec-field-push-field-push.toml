@@ -1,0 +1,10 @@
+[[case]]
+id = "nested-vec-field-push-field-push"
+intent = "Nested-`Vec` field-push drop oracle (hew-lang/hew#2721). Shape `field_push_exact` (field push exact contents under malloc scribble) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/nested-vec-field-push-field-push.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "60,60\n"
+exit = 0

@@ -1,0 +1,10 @@
+enum Msg { Text(string), Code(i64) }
+fn handle(m: Msg) -> i64 { match m { .Text(s) => 1, .Code(n) => n } }
+fn main() -> i64 {
+    var total: i64 = 0;
+    for i in 0..50 {
+        total = total + handle(Msg.Text("a" + "b"));
+    }
+    if total != 50 * 1 { return 74; }
+    0
+}

@@ -1,0 +1,10 @@
+[[case]]
+id = "divergent-selection-arm-read-after-selection"
+intent = "Ownership oracle for a DIVERGENT-ARM VALUE SELECTION — `let out = match c { true => a, false => b };` and its family. Shape `read_after_selection_high` (source read after selection does not over release, source read after selection does not over release under poisoned allocator) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/divergent-selection-arm-read-after-selection.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "frame\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\n"
+exit = 0

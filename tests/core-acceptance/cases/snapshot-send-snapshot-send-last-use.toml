@@ -1,0 +1,10 @@
+[[case]]
+id = "snapshot-send-snapshot-send-last-use"
+intent = "Compiled leak and poisoned-allocator oracle for actor snapshot sends. Shape `snapshot-send-last-use_high` (snapshot send last use transfer has flat leak slope) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/snapshot-send-snapshot-send-last-use.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

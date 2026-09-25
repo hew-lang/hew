@@ -1,0 +1,23 @@
+type Inner { payload: Vec<i64> }
+type Outer { inner: Inner }
+
+fn make(n: i64) -> Outer {
+    var v: Vec<i64> = Vec.new();
+    v.push(n);
+    v.push(n + 1);
+    Outer { inner: Inner { payload: v } }
+}
+
+fn build(n: i64) -> i64 {
+    let o = make(n);
+    o.inner.payload.len()
+}
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    for i in 0..64 {
+        total = total + build(i);
+    }
+    if total != 128 { return 64; }
+    0
+}

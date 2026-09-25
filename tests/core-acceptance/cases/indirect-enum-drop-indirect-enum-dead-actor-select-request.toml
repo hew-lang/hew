@@ -1,0 +1,10 @@
+[[case]]
+id = "indirect-enum-drop-indirect-enum-dead-actor-select-request"
+intent = "Indirect-enum heap-node drop leak oracle. Shape `indirect_enum_dead_actor_select_request_high` (indirect enum dead actor select request leak slope below tolerance, indirect enum dead actor select request no corruption under malloc scribble) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/indirect-enum-drop-indirect-enum-dead-actor-select-request.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "ok"
+exit = 0

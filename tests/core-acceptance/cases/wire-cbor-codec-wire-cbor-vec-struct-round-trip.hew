@@ -1,0 +1,21 @@
+#[wire]
+type Inner { v: i64 @1, }
+#[wire]
+type Container { items: Vec<Inner> @1, seq: i64 @2, }
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 50 {
+        var xs: Vec<Inner> = Vec.new();
+        xs.push(Inner { v: 10 });
+        xs.push(Inner { v: 20 });
+        xs.push(Inner { v: 12 });
+        let c = Container { items: xs, seq: i };
+        let raw = c.encode();
+        let back = Container.decode(raw);
+        total = total + back.seq;
+        i = i + 1;
+    }
+    total
+}

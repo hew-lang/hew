@@ -1,0 +1,49 @@
+#[resource] type Token { id: i64, }
+impl Token { fn close(consume self) { println(self.id); } }
+type Packet { tag: i64, token: Token, text: string }
+fn record_join(consume p: Packet) -> i64 {
+    match p {
+        Packet { tag: 0, token, text: _ } => token.id,
+        Packet { tag: _, token, text: _ } => token.id,
+    }
+}
+fn tuple_join(consume p: (i64, Token, string)) -> i64 {
+    match p {
+        (0, token, _) => token.id,
+        (_, token, _) => token.id,
+    }
+}
+fn direct_return(consume p: Packet) -> i64 {
+    match p {
+        Packet { tag: 0, token, text: _ } => return token.id,
+        Packet { tag: _, token, text: _ } => token.id,
+    }
+}
+fn whole_fallback(consume p: Packet) -> i64 {
+    match p {
+        Packet { tag: 0, token, text: _ } => token.id,
+        whole => whole.token.id,
+    }
+}
+fn packet(tag: i64, id: i64) -> Packet {
+    Packet { tag: tag, token: Token { id: id }, text: "pay" + "load" }
+}
+fn tuple_value(tag: i64, id: i64) -> (i64, Token, string) {
+    (tag, Token { id: id }, "pay" + "load")
+}
+fn main() -> i64 {
+    var total: i64 = 0;
+    for _ in 0..50 {
+        total = total + record_join(packet(0, 1));
+        total = total + record_join(packet(9, 2));
+        total = total + tuple_join(tuple_value(0, 3));
+        total = total + tuple_join(tuple_value(9, 4));
+        total = total + direct_return(packet(0, 5));
+        total = total + direct_return(packet(9, 6));
+        total = total + whole_fallback(packet(0, 7));
+        total = total + whole_fallback(packet(9, 8));
+    }
+    if total != 50 * 36 { return 80; }
+    println("predicate-consume-ok");
+    0
+}

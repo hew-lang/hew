@@ -1,0 +1,19 @@
+type Node { id: i64, }
+
+fn frame(seed: i64) -> Option<Rc<Node>> {
+    let shared: Rc<Node> = Rc.new(Node { id: seed });
+    .Some(shared)
+}
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    for seed in 0..50 {
+        let held = frame(seed);
+        match held.is_some() {
+            true => { total = total + 1; }
+            false => { }
+        }
+        println("frame");
+    }
+    total - 50
+}

@@ -1,0 +1,10 @@
+[[case]]
+id = "funcupdate-owned-field-drop-callee-scope-string-store"
+intent = "Functional-update owned-field drop leak oracle. Shape `callee_scope_string_store_high` (callee scope resource string sibling is clean under malloc scribble, callee scope string store has flat leak slope) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/funcupdate-owned-field-drop-callee-scope-string-store.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

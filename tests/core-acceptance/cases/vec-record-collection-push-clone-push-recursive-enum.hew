@@ -1,0 +1,14 @@
+enum Reply {
+    Nil,
+    Num(i64),
+    Arr([Reply]),
+}
+
+fn main() {
+    var xs: [Reply] = [];
+    xs.push(Reply.Num(7));
+    xs.push(Reply.Arr([Reply.Nil, Reply.Num(9)]));
+    let n = xs.len();
+    print(f"{n}");
+    print("OK");
+}

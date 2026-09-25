@@ -1,0 +1,13 @@
+type Boxed { payload: Vec<i64> }
+
+fn main() {
+    var inner: Vec<i64> = Vec.new();
+    inner.push(10);
+    inner.push(20);
+    let pair = (Boxed { payload: inner }, 5);
+    var ns: Vec<i64> = Vec.new();
+    ns.push(7);
+    let sum = pair.1 + ns[0];
+    print(sum);
+    print("OK");
+}

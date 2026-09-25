@@ -1,0 +1,11 @@
+import std.string;
+fn main() -> i64 {
+    var failures: i64 = 0;
+    for i in 0..50 {
+        match string.to_int("123456x") {
+            .Ok(_) => { return 93; },
+            .Err(_) => { failures = failures + 1; },
+        }
+    }
+    if failures == 50 { 0 } else { 94 }
+}

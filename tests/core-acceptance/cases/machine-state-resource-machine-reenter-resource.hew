@@ -1,0 +1,26 @@
+#[resource]
+type Handle { id: i64, }
+
+impl Handle {
+    fn close(consume self) {}
+}
+
+machine Session {
+    events { Open, UseIt, }
+    state Idle,
+    state Active { h: Handle, },
+
+    on Open: Idle => Active { h: Handle { id: 1 } }
+    on UseIt: Active => Active reenter { h: state.h }
+
+    default { state }
+}
+
+fn main() {
+    var s: Session = .Idle;
+    let _ = s.step(.Open);
+    for _ in 0..6 {
+        let _ = s.step(.UseIt);
+        print("R");
+    }
+}

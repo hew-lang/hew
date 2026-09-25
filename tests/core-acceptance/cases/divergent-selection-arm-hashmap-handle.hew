@@ -1,0 +1,25 @@
+fn make() -> HashMap<string, i64> {
+    var m: HashMap<string, i64> = HashMap.new();
+    m.insert("alpha-key-one", 1);
+    m.insert("beta-key-two", 2);
+    return m;
+}
+
+fn probe(c: bool) -> i64 {
+    let a = make();
+    let b = make();
+    let out = match c { true => a, false => b };
+    out.len()
+}
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    for seed in 0..50 {
+        total = total + probe(seed % 2 == 0);
+        println("frame");
+    }
+    match total >= 0 {
+        true => 0,
+        false => 1,
+    }
+}

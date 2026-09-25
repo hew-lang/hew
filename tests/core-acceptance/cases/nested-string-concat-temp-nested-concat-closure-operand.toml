@@ -1,0 +1,10 @@
+[[case]]
+id = "nested-string-concat-temp-nested-concat-closure-operand"
+intent = "Leak / double-free oracle for the #2434 root-cause split. Shape `nested_concat_closure_operand_df` (closure returned concat operand freed exactly once under malloc scribble, closure returned concat operand has no per iteration leak slope) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/nested-string-concat-temp-nested-concat-closure-operand.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

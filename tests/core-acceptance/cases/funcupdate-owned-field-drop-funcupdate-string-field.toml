@@ -1,0 +1,10 @@
+[[case]]
+id = "funcupdate-owned-field-drop-funcupdate-string-field"
+intent = "Functional-update owned-field drop leak oracle. Shape `funcupdate_string_field_high` (funcupdate string field no per frame leak slope) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/funcupdate-owned-field-drop-funcupdate-string-field.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

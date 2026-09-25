@@ -1,0 +1,10 @@
+[[case]]
+id = "structural-rendering-ownership"
+intent = "Structural rendering must borrow every aggregate member. Shape `structural_rendering_ownership` (structural rendering has zero ownership effect) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/structural-rendering-ownership.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "rendered\nheld\nclosed\nrendered\nheld\nclosed\nrendered\nheld\nclosed\nrendered\nheld\nclosed\nrendered\nheld\nclosed\nrendered\nheld\nclosed\nrendered\nheld\nclosed\nrendered\nheld\nclosed\nrendered\nheld\nclosed\nrendered\nheld\nclosed\nrendered\nheld\nclosed\nrendered\nheld\nclosed\nrendered\nheld\nclosed\nrendered\nheld\nclosed\nrendered\nheld\nclosed\nrendered\nheld\nclosed\nrendered\nheld\nclosed\nrendered\nheld\nclosed\nrendered\nheld\nclosed\nrendered\nheld\nclosed\nrendered\nheld\nclosed\nrendered\nheld\nclosed\nrendered\nheld\nclosed\nrendered\nheld\nclosed\nrendered\nheld\nclosed\nrendered\nheld\nclosed\nrendered\nheld\nclosed\nrendered\nheld\nclosed\nrendered\nheld\nclosed\nrendered\nheld\nclosed\nrendered\nheld\nclosed\nrendered\nheld\nclosed\ndone\n"
+exit = 0

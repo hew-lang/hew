@@ -1,0 +1,16 @@
+type Wrap { name: string }
+fn main() -> i64 {
+    var current = Wrap { name: "old".to_upper() };
+    var seen: i64 = 0;
+    var i: i64 = 0;
+    while i < 40 {
+        if i % 2 == 0 {
+            let moved: Wrap = current;
+            seen = seen + moved.name.len();
+        }
+        current = Wrap { name: "fresh".to_upper() };
+        seen = seen + current.name.len();
+        i = i + 1;
+    }
+    if seen == 298 { 0 } else { 104 }
+}

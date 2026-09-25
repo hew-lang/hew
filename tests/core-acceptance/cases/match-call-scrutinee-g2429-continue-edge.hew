@@ -1,0 +1,17 @@
+fn f() -> Result<bytes, string> {
+    .Ok("g2429-continue-payload".to_bytes())
+}
+
+fn main() -> i64 {
+    var seen = 0;
+    var i = 0;
+    while i < 50 {
+        i = i + 1;
+        match f() {
+            .Ok(b) => { if b.len() > 3 { continue; } }
+            .Err(e) => {}
+        }
+        seen = seen + 1;
+    }
+    if seen == 0 { 0 } else { 1 }
+}

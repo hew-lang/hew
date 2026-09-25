@@ -1,0 +1,14 @@
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 50 {
+        var pairs: Vec<(string, string)> = Vec.new();
+        pairs.push(("tuple" + "-left", "tuple" + "-right"));
+        pairs.push(("second" + "-left", "second" + "-right"));
+        for pair in pairs.iter() {
+            total = total + pair.0.len() + pair.1.len();
+        }
+        i = i + 1;
+    }
+    total % 7
+}

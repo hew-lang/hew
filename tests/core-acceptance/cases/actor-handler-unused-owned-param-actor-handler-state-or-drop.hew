@@ -1,0 +1,17 @@
+actor Keeper { 
+    var seen: i64,
+    var last: string,
+    receive fn take(label: string, keep: bool) {
+        if keep { last = label; } else { seen = seen + label.len(); }
+    }
+    receive fn total() -> i64 { seen + last.len() }
+}
+fn main() -> i64 {
+    let sink = spawn Keeper(seen: 0, last: "seed");
+    var i: i64 = 0;
+    while i < 50 {
+        let _ = sink.take("state".to_upper(), i % 2 == 0);
+        i = i + 1;
+    }
+    match sink.total() { .Ok(n) => if n > 0 { 0 } else { 79 }, .Err(_) => 80 }
+}

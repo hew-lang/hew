@@ -1,0 +1,16 @@
+fn make(seed: string) -> (Vec<string>, string) {
+    var original: (Vec<string>, string) = (Vec.new(), seed + "-tail");
+    original.0.push(seed + "-item");
+let copy = clone original;
+    copy
+}
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    for _ in 0..48 {
+        let kept = make("seed");
+        total = total + kept.0[0].len() + kept.1.len();
+    }
+    if total != 864 { return 71; }
+    0
+}

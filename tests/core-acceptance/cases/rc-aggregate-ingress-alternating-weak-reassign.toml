@@ -1,0 +1,10 @@
+[[case]]
+id = "rc-aggregate-ingress-alternating-weak-reassign"
+intent = "Ownership oracle for an `Rc` / `Weak` handle moved into a VALUE aggregate. Shape `alternating_weak_reassign_high` (alternating weak reassign does not over release, alternating weak reassign does not under release) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/rc-aggregate-ingress-alternating-weak-reassign.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "frame\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\n"
+exit = 0

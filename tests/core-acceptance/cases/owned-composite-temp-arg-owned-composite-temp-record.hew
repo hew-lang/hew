@@ -1,0 +1,10 @@
+type Rec { s: string }
+fn g(r: Rec) -> i64 { r.s.len() }
+fn main() -> i64 {
+    var total: i64 = 0;
+    for i in 0..50 {
+        total = total + g(Rec { s: "a" + "b" });
+    }
+    if total != 50 * 2 { return 71; }
+    0
+}

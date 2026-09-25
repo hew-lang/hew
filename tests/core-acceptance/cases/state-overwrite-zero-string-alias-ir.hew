@@ -1,0 +1,15 @@
+type Leaf { value: i64 }
+type Wrap { leaf: Leaf }
+
+actor Keeper {
+    var cur: Wrap,
+    receive fn rewrite() {
+        cur = Wrap { leaf: cur.leaf };
+    }
+}
+
+fn main() -> i64 {
+    let k = spawn Keeper(cur: Wrap { leaf: Leaf { value: 1 } });
+    let _ = k.rewrite();
+    0
+}

@@ -1,0 +1,46 @@
+type Inner { name: string }
+type Triple { a: Inner, b: Inner, c: Inner }
+actor Fan { 
+    var seen: i64,
+    var held: Triple,
+    receive fn route(label: string, other: string, count: i64) {
+        var j: i64 = 0;
+        while j < count {
+            let next = if j % 2 == 0 {
+                Triple {
+                    a: Inner { name: other },
+                    b: Inner { name: label },
+                    c: Inner { name: label }
+                }
+            } else {
+                Triple {
+                    a: Inner { name: label },
+                    b: Inner { name: label },
+                    c: Inner { name: other }
+                }
+            };
+            held = next;
+            j = j + 1;
+        }
+        seen = seen + 1;
+    }
+    receive fn total() -> i64 {
+        seen + held.a.name.len() + held.b.name.len() + held.c.name.len()
+    }
+}
+fn main() -> i64 {
+    let fan = spawn Fan(
+        seen: 0,
+        held: Triple {
+            a: Inner { name: "a" },
+            b: Inner { name: "b" },
+            c: Inner { name: "c" }
+        }
+    );
+    var i: i64 = 0;
+    while i < 50 {
+        let _ = fan.route("repeat".to_upper(), "other".to_upper(), i % 5);
+        i = i + 1;
+    }
+    match fan.total() { .Ok(n) => if n > 50 { 0 } else { 93 }, .Err(_) => 94 }
+}

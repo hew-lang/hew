@@ -1,0 +1,10 @@
+[[case]]
+id = "nested-extraction-match-enum-payload-nested"
+intent = "Nested-extraction partial-destructure oracle — the compiled-binary pins for the alias-scrutinee ownership model. Shape `enum_payload_nested_high` (enum payload nested destructure leak slope below tolerance, enum payload nested destructure no double free under malloc scribble) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/nested-extraction-match-enum-payload-nested.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

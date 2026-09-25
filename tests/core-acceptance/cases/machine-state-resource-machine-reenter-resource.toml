@@ -1,0 +1,13 @@
+[[case]]
+id = "machine-state-resource-machine-reenter-resource"
+intent = "Rejection oracle for a `#[resource]` held directly inside a `machine` state. The checker refuses the shape (machine reenter carrying resource is rejected in checker) before it can reach code generation."
+source = "cases/machine-state-resource-machine-reenter-resource.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "MachineExhaustivenessError"
+line = 14
+column = 40
+message = "machine `Session` state `Active` field `h` holds `Handle`"

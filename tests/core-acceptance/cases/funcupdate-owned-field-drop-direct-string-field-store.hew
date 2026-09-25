@@ -1,0 +1,11 @@
+import std.string;
+type Cfg { label: string, count: i64 }
+fn main() -> i64 {
+    var c = Cfg { label: string.repeat("a", 32), count: 0 };
+    var i: i64 = 0;
+    while i < 50 {
+        c.label = string.repeat("b", 32);
+        i = i + 1;
+    }
+    if c.label.len() == 32 { 0 } else { 1 }
+}

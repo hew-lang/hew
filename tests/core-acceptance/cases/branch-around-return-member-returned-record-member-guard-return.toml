@@ -1,0 +1,10 @@
+[[case]]
+id = "branch-around-return-member-returned-record-member-guard-return"
+intent = "Branch-around returned-member leak — slope oracles plus poisoned-allocator exactly-once pins. Shape `returned_record_member_guard_return_high` (returned record member guard return no per call leak slope) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/branch-around-return-member-returned-record-member-guard-return.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

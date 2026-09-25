@@ -1,0 +1,19 @@
+[[case]]
+id = "machine-state-resource-machine-release-paths"
+intent = "Rejection oracle for a `#[resource]` held directly inside a `machine` state. The checker refuses the shape (machine state resource release paths are rejected in checker) before it can reach code generation."
+source = "cases/machine-state-resource-machine-release-paths.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "MachineExhaustivenessError"
+line = 14
+column = 40
+message = "machine `Mixed` state `Active` field `h` holds `Handle`"
+
+[[case.expected.diagnostics]]
+code = "MachineExhaustivenessError"
+line = 25
+column = 22
+message = "machine `Plain` state `Live` field `h` holds `Handle`"

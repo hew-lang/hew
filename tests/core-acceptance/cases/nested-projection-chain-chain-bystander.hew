@@ -1,0 +1,47 @@
+type Mid {
+    a: string,
+    b: string,
+}
+
+type Outer {
+    mid: Mid,
+    c: string,
+}
+
+type Bystander {
+    name: string,
+}
+
+fn make_outer(k: i64) -> Outer {
+    Outer {
+        mid: Mid {
+            a: "by-a-heap-payload".to_upper(),
+            b: "by-b-heap-payload".to_upper(),
+        },
+        c: "by-c-heap-payload".to_upper(),
+    }
+}
+
+fn make_bystander(k: i64) -> Bystander {
+    Bystander { name: "bystander-heap-payload".to_upper() }
+}
+
+fn run_cycle(k: i64) -> i64 {
+    let o = make_outer(k);
+    let mid = o.mid;
+    let extra = make_bystander(k);
+    let n = match mid {
+        Mid { a, b: _ } => a.len(),
+    };
+    n + extra.name.len()
+}
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 50 {
+        total = total + run_cycle(i);
+        i = i + 1;
+    }
+    if total > 0 { 0 } else { 1 }
+}

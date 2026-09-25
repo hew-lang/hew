@@ -1,0 +1,10 @@
+[[case]]
+id = "vec-index-assign-temp-projection-copy-in"
+intent = "Owned-Vec INDEX-ASSIGNMENT (`v[i] = ..`) leak oracles: neither a fresh aggregate RHS nor a consumed bound-local RHS may leak its heap. Shape `projection_copy_in` (vec index assign projection copy in preserves source and siblings) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/vec-index-assign-temp-projection-copy-in.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "pair-item|pair-item|sibling-item|OK"
+exit = 0

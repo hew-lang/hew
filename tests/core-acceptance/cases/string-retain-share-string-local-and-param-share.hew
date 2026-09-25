@@ -1,0 +1,50 @@
+fn share_param(value: string) -> i64 {
+    let alias = value;
+    value.len() + alias.len()
+}
+fn make_escape() -> string {
+    let source = "owned-" + "escape";
+    let alias = source;
+    let _len = alias.len();
+    source
+}
+fn handoff() -> i64 {
+    let source = "last-use-" + "handoff";
+    let alias = source;
+    alias.len()
+}
+fn sequential_shares() -> i64 {
+    let source = "sequential-" + "shares";
+    let first = source;
+    let second = source;
+    first.len() + second.len()
+}
+fn chained_handoff() -> i64 {
+    let source = "chained-" + "handoff";
+    let first = source;
+    let second = first;
+    source.len() + second.len()
+}
+fn conditional_handoff(flag: bool) -> i64 {
+    let source = "conditional-" + "handoff";
+    if flag { let alias = source; alias.len() } else { 0 }
+}
+fn hew_borrow(value: string) -> i64 { value.len() }
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 50 {
+        let source = "local-" + "share";
+        let alias = source;
+        let borrowed = "param-" + "share";
+        let prefixed = "prefixed-" + "user-fn";
+        let escaped = make_escape();
+        total = total + source.len() + alias.len()
+            + share_param(borrowed) + escaped.len() + handoff()
+            + sequential_shares() + chained_handoff()
+            + conditional_handoff(true)
+            + conditional_handoff(false) + hew_borrow(prefixed);
+        i = i + 1;
+    }
+    total
+}

@@ -1,0 +1,15 @@
+fn frame(seed: i64) -> i64 {
+    let rc = Rc.new(seed);
+    let weak: Weak<i64> = rc.downgrade();
+    let pair: (Weak<i64>, string) = (weak, "tag");
+    pair.1.len()
+}
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    for seed in 0..50 {
+        total = total + frame(seed);
+        println("frame");
+    }
+    total - 50 * 3
+}

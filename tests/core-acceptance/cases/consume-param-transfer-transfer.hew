@@ -1,0 +1,27 @@
+import std.encoding.json;
+fn build(n: i64) -> i64 {
+    var arr = json.array();
+    let _ = arr.push(json.from_int(n));
+    let _ = arr.push(json.from_int(n + 1));
+    var obj = json.object();
+    let _ = obj.set("items", arr);
+    let _ = obj.set("tag", json.from_int(n));
+    let field = match obj.get_field("tag") {
+        .Ok(.Some(v)) => v,
+        _ => return 71,
+    };
+    match field.get_int() {
+        .Ok(v) => v,
+        .Err(_) => -1,
+    }
+}
+fn run_loop(frames: i64) -> i64 {
+    var total: i64 = 0;
+    for i in 0..frames { let got = build(i); println(got); total = total + got; }
+    total
+}
+fn main() -> i64 {
+    let total = run_loop(200);
+    if total != 19900 { return 70; }
+    0
+}

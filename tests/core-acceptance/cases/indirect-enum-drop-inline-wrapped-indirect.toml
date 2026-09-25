@@ -1,0 +1,10 @@
+[[case]]
+id = "indirect-enum-drop-inline-wrapped-indirect"
+intent = "Indirect-enum heap-node drop leak oracle. Shape `inline_wrapped_indirect_df` (indirect enum inline wrapped child leak slope below tolerance, indirect enum inline wrapped child no corruption under malloc scribble) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/indirect-enum-drop-inline-wrapped-indirect.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "ok"
+exit = 0

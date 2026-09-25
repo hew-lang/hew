@@ -1,0 +1,8 @@
+indirect enum Tree { Leaf(i64), Node(Tree, Tree), }
+fn sum(t: Tree) -> i64 { match t { .Leaf(n) => n, .Node(l, r) => sum(l) + sum(r), } }
+fn main() {
+    let left = Tree.Node(.Leaf(1), .Leaf(2));
+    let t = Tree.Node(left, .Leaf(3));
+    let s = sum(t);
+    if s == 6 { print("ok"); } else { print("BAD"); }
+}

@@ -1,0 +1,14 @@
+type Wrap { nested: (string, string, string) }
+
+actor Keeper {
+    var cur: Wrap,
+    receive fn rewrite() {
+        cur = Wrap { nested: cur.nested };
+    }
+}
+
+fn main() -> i64 {
+    let k = spawn Keeper(cur: Wrap { nested: ("a", "b", "c") });
+    let _ = k.rewrite();
+    0
+}

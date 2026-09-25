@@ -1,0 +1,12 @@
+fn f() -> Result<bytes, string> { .Ok("g2429-letelse-bytes".to_bytes()) }
+
+fn main() -> i64 {
+    var total = 0;
+    var i = 0;
+    while i < 50 {
+        i = i + 1;
+        let .Ok(b) = f() else { continue; };
+        total = total + b.len();
+    }
+    if total > 0 { 0 } else { 1 }
+}

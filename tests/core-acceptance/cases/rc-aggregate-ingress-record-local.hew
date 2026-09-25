@@ -1,0 +1,17 @@
+type Node { id: i64, }
+type Holder { r: Rc<Node>, tag: string, }
+
+fn frame(seed: i64) -> i64 {
+    let shared: Rc<Node> = Rc.new(Node { id: seed });
+    let holder = Holder { r: shared, tag: "tag" };
+    holder.tag.len()
+}
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    for seed in 0..50 {
+        total = total + frame(seed);
+        println("frame");
+    }
+    total - 50 * 3
+}

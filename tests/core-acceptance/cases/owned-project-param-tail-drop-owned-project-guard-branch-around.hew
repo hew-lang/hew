@@ -1,0 +1,21 @@
+type Packet { tag: string, body: string }
+fn guarded_record(p: Packet, skip: bool) -> i64 {
+    if skip { return 1; }
+    match p { Packet { tag, body } => tag.len() + body.len() }
+}
+fn guarded_tuple(p: (string, string), skip: bool) -> i64 {
+    if skip { return 1; }
+    match p { (left, right) => left.len() + right.len() }
+}
+fn main() -> i64 {
+    var total: i64 = 0;
+    for i in 0..50 {
+        total = total + guarded_record(Packet { tag: "g" + "r", body: "a" + "b" }, true);
+        total = total + guarded_record(Packet { tag: "g" + "r", body: "c" + "d" }, false);
+        total = total + guarded_tuple(("g" + "t", "e" + "f"), true);
+        total = total + guarded_tuple(("g" + "t", "g" + "h"), false);
+    }
+    if total != 50 * 10 { return 72; }
+    println("guard-branch-around-ok");
+    0
+}

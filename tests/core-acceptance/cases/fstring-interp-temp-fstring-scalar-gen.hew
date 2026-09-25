@@ -1,0 +1,18 @@
+gen fn items(n: i64) -> string {
+    var i: i64 = 0;
+    while i < n {
+        yield f"item-{i}";
+        i = i + 1;
+    }
+}
+fn main() -> i64 {
+    var total: i64 = 0;
+    var idx: i64 = 0;
+    for v in items(200) {
+        println(v);
+        total = total + idx;
+        idx = idx + 1;
+    }
+    if total != 19900 { return 96; }
+    0
+}

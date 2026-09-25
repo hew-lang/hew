@@ -1,0 +1,15 @@
+enum Mixed {
+    Text(string),
+    Scalar(i64),
+}
+
+fn inspect(x: Mixed) -> i64 {
+    match x {
+        Mixed.Text(s) => s.len(),
+        Mixed.Scalar(_) => 0,
+    }
+}
+
+fn main() -> i64 {
+    inspect(Mixed.Text("payload".to_upper()))
+}

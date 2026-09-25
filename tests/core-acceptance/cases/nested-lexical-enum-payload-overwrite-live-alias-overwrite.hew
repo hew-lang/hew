@@ -1,0 +1,69 @@
+enum Box {
+    Full(string),
+    Empty,
+}
+
+enum PairBox {
+    Both(string, string),
+    Empty,
+}
+
+fn live_alias(i: i64) -> i64 {
+    var opt = Box.Full(f"live-{i}");
+    match opt {
+        .Full(s) => {
+            opt = Box.Empty;
+            s.len()
+        },
+        .Empty => 0,
+    }
+}
+
+fn live_alias_return(i: i64) -> i64 {
+    var opt = Box.Full(f"return-{i}");
+    match opt {
+        .Full(s) => {
+            opt = Box.Empty;
+            return s.len();
+        },
+        .Empty => 0,
+    }
+}
+
+fn repeated_live_alias(i: i64) -> i64 {
+    var opt = Box.Full(f"repeat-old-{i}");
+    match opt {
+        .Full(s) => {
+            opt = Box.Full(f"repeat-one-{i}");
+            opt = Box.Full(f"repeat-two-{i}");
+            let old_len = s.len();
+            let new_len = match opt {
+                .Full(current) => current.len(),
+                .Empty => 0,
+            };
+            old_len + new_len
+        },
+        .Empty => 0,
+    }
+}
+
+fn multiple_live_aliases(i: i64) -> i64 {
+    var opt = PairBox.Both(f"left-{i}", f"right-{i}");
+    match opt {
+        .Both(left, right) => {
+            opt = PairBox.Empty;
+            left.len() + right.len()
+        },
+        .Empty => 0,
+    }
+}
+
+fn main() -> i64 {
+    var total = 0;
+    for i in 0..50 {
+        total = total + live_alias(i) + live_alias_return(i) + repeated_live_alias(i)
+            + multiple_live_aliases(i);
+        println("frame");
+    }
+    if total > 0 { 0 } else { 91 }
+}

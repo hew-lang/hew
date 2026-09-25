@@ -1,0 +1,32 @@
+import std.arena.{ Arena, Key };
+
+type Holder { items: Vec<string> }
+
+fn runCycle(i: i64) -> i64 {
+    var store: Arena<Holder> = arena.new();
+    let key = store.insert(Holder {
+        items: [f"item-{i}", f"value-{i}"],
+    });
+    let first = match store.remove(key) {
+        .Some(holder) => holder.items[0].len() + holder.items[1].len(),
+        .None => -1000,
+    };
+    let reused = store.insert(Holder {
+        items: [f"again-{i}", f"next-{i}"],
+    });
+    let second = match store.remove(reused) {
+        .Some(holder) => holder.items[0].len() + holder.items[1].len(),
+        .None => -1000,
+    };
+    first + second
+}
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    for i in 0..50 {
+        total = total + runCycle(i);
+    }
+    println(total);
+    if total <= 0 { return 61; }
+    0
+}

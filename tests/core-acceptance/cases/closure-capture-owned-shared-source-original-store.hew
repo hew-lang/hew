@@ -1,0 +1,14 @@
+type ClosureAndLabel {
+    f: fn() -> i64,
+    label: string,
+}
+fn make_pair(n: i64) -> ClosureAndLabel {
+    let label: string = "row-payload-seed".to_upper();
+    let f = || label.len() + n;
+    ClosureAndLabel { f: f, label: label }
+}
+fn main() -> i64 {
+    let p = make_pair(1);
+    if p.f() + p.label.len() != 33 { return 91; }
+    0
+}

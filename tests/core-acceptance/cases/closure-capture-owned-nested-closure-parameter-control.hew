@@ -1,0 +1,20 @@
+fn make_base(n: i64) -> fn() -> i64 {
+    || n
+}
+fn wrap(consume f: fn() -> i64, n: i64) -> fn() -> i64 {
+    move || f() + n
+}
+fn run_loop(frames: i64) -> i64 {
+    var total: i64 = 0;
+    for i in 0..frames {
+        let inner = make_base(i);
+        let outer = wrap(inner, i);
+        total = total + outer();
+    }
+    total
+}
+fn main() -> i64 {
+    let total = run_loop(50);
+    if total != 2450 { return 99; }
+    0
+}

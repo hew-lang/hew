@@ -1,0 +1,15 @@
+import std.net.tls;
+
+fn main() -> i64 {
+    let stream = tls.connect("127.0.0.1", 1);
+    var errs = 0;
+    var i = 0;
+    while i < 50 {
+        match tls.read(stream, 16) {
+            .Ok(data) => { let n = data.len(); }
+            .Err(e) => { errs = errs + 1; }
+        }
+        i = i + 1;
+    }
+    if errs > 0 { 0 } else { 1 }
+}

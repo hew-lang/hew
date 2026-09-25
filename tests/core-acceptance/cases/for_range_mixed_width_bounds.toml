@@ -1,0 +1,10 @@
+[[case]]
+id = "for_range_mixed_width_bounds"
+intent = "Mixed-width range bounds (i32 start, i64 end) give the loop variable the wider type, so passing it to an i64 parameter compiles and sums 2..6 to 14."
+source = "../vertical-slice/accept/for_range_mixed_width_bounds.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 14

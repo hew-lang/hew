@@ -1,0 +1,21 @@
+enum Box { Full(string), Empty, }
+
+fn generate_once() -> i64 {
+    let g = gen {
+        var value: Box = Box.Full(("generator-" + "payload"));
+        yield 1;
+        value = Box.Empty;
+    };
+    var yielded: i64 = 0;
+    for n in g { yielded = yielded + n; }
+    yielded
+}
+
+fn main() {
+    var i: i64 = 0;
+    while i < 50 {
+        if generate_once() != 1 { panic("generator did not resume through overwrite"); }
+        println("tick");
+        i = i + 1;
+    }
+}

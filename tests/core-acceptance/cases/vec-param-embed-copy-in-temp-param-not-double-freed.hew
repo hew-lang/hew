@@ -1,0 +1,31 @@
+type Wrap { f: Option<string> }
+
+fn pushParam(p: string) -> i64 {
+    var v: Vec<Wrap> = [];
+    v.push(Wrap { f: .Some(p) });
+    v.len()
+}
+
+fn setParam(p: string) -> i64 {
+    var v: Vec<Wrap> = [];
+    v.push(Wrap { f: .None });
+    v.set(0, Wrap { f: .Some(p) });
+    v.len()
+}
+
+fn main() -> i64 {
+    let p = "param-pin".to_upper();
+    print(p.len());
+    print("|");
+    print(pushParam(p));
+    print("|");
+    print(p.len());
+    print("|");
+    print(setParam(p));
+    print("|");
+    print(p.len());
+    print("|");
+    print(p);
+    print("|OK");
+    0
+}

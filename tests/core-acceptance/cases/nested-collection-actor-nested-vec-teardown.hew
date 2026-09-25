@@ -1,0 +1,22 @@
+actor Buckets {
+    var rows: Vec<Vec<i64>>,
+
+    receive fn count() -> i64 {
+        rows.len()
+    }
+}
+
+fn main() -> i64 {
+    var rows: Vec<Vec<i64>> = Vec.new();
+    for i in 0..50 {
+        var row: Vec<i64> = Vec.new();
+        row.push(i);
+        row.push(i + 1);
+        rows.push(row);
+    }
+    let buckets = spawn Buckets(rows: rows);
+    match buckets.count() {
+        .Ok(v) => v,
+        .Err(_) => -1,
+    }
+}

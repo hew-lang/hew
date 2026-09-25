@@ -1,0 +1,17 @@
+type Holder { value: string }
+fn choose(holder: Holder, fallback: string, project: bool) -> string {
+    if project { holder.value } else { fallback }
+}
+fn main() -> i64 {
+    var i: i64 = 0;
+    var total: i64 = 0;
+    while i < 200 {
+        let holder = Holder { value: f"a-{i}" };
+        let fallback = f"b-{i}";
+        println(f"value={choose(holder, fallback, i % 2 == 0)}");
+        total = total + i;
+        i = i + 1;
+    }
+    if total != 19900 { return 81; }
+    0
+}

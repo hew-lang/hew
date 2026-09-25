@@ -1,0 +1,19 @@
+type Holder {
+    items: [string],
+}
+
+fn frame() -> i64 {
+    var v: [Holder] = [];
+    v.push(Holder { items: ["left", "right"] });
+    v[0].items.len()
+}
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 50 {
+        total = total + frame();
+        i = i + 1;
+    }
+    if total == 100 { 0 } else { 71 }
+}

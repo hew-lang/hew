@@ -1,0 +1,10 @@
+[[case]]
+id = "rc-weak-cycle-rc-weak-cycle"
+intent = "Compiled memory-safety oracle for `Rc<T>` graphs with `Weak<T>` back-edges. Shape `rc-weak-cycle_high` (weak back edge replacement has flat leak slope, weak back edge replacement is scribble clean with exact output) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/rc-weak-cycle-rc-weak-cycle.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "50OK"
+exit = 0

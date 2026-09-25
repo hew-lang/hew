@@ -1,0 +1,21 @@
+fn frame() -> i64 {
+    var vv: Vec<Vec<string>> = Vec.new();
+    var row: Vec<string> = Vec.new();
+    row.push("alias" + "-alpha");
+    row.push("alias" + "-beta");
+    vv.push(row);
+    var row2: Vec<string> = Vec.new();
+    row2.push("alias" + "-gamma");
+    vv.push(row2);
+    var sink: HashMap<i64, Vec<string>> = HashMap.new();
+    for inner in vv.iter() {
+        sink.insert(0, inner);
+        return sink.len();
+    }
+    return 0;
+}
+
+fn main() {
+    print(frame());
+    print("OK");
+}

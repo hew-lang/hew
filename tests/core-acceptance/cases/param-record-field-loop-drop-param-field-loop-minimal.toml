@@ -1,0 +1,10 @@
+[[case]]
+id = "param-record-field-loop-drop-param-field-loop-minimal"
+intent = "Regression oracle for a `for` loop iterating a field of a BY-VALUE record parameter. Shape `param_field_loop_minimal` (param field loop minimal runs clean and leak free) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/param-record-field-loop-drop-param-field-loop-minimal.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "kept 3 claims\n"
+exit = 0

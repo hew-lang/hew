@@ -1,0 +1,11 @@
+import std.encoding.yaml;
+fn main() -> i32 {
+    for _ in 0..50 {
+        let n = match yaml.parse("[") {
+            .Ok(_) => { return 1; }
+            .Err(_) => 7
+        };
+        println(f"{n}");
+    }
+    0
+}

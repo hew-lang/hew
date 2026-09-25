@@ -1,0 +1,38 @@
+enum Status {
+    Idle,
+    Working(string),
+    Done(string, i64),
+}
+
+actor Tracker {
+    var status: Status,
+
+    receive fn advance(n: i64) {
+        status = match n % 3 {
+            0 => Status.Idle,
+            1 => Status.Working("busy".to_upper()),
+            _ => Status.Done("finished".to_upper(), n),
+        };
+    }
+
+    receive fn code() -> i64 {
+        match status {
+            Status.Idle => 0,
+            Status.Working(_) => 1,
+            Status.Done(_, n) => n,
+        }
+    }
+}
+
+fn main() -> i64 {
+    let t = spawn Tracker(status: Status.Idle);
+    var i: i64 = 0;
+    while i < 50 {
+        let _ = t.advance(i);
+        i = i + 1;
+    }
+    match t.code() {
+        .Ok(v) => v,
+        .Err(_) => -1,
+    }
+}

@@ -1,0 +1,10 @@
+[[case]]
+id = "fstring-interp-temp-fstring-forwarded-return-bound"
+intent = "Per-iteration leak / double-free oracle for f-string interpolation of a non-string value: the `Display::fmt` conversion temp (`hew_i64_to_string`) and — outside a moved/yielded position — the `hew_string_concat` join result must each be… Shape `fstring_forwarded_return_bound_high` (fstring forwarded return bound control leak slope below tolerance) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/fstring-interp-temp-fstring-forwarded-return-bound.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "value=owned-carrier-token-0\nvalue=owned-carrier-token-1\nvalue=owned-carrier-token-2\nvalue=owned-carrier-token-3\nvalue=owned-carrier-token-4\nvalue=owned-carrier-token-5\nvalue=owned-carrier-token-6\nvalue=owned-carrier-token-7\nvalue=owned-carrier-token-8\nvalue=owned-carrier-token-9\nvalue=owned-carrier-token-10\nvalue=owned-carrier-token-11\nvalue=owned-carrier-token-12\nvalue=owned-carrier-token-13\nvalue=owned-carrier-token-14\nvalue=owned-carrier-token-15\nvalue=owned-carrier-token-16\nvalue=owned-carrier-token-17\nvalue=owned-carrier-token-18\nvalue=owned-carrier-token-19\nvalue=owned-carrier-token-20\nvalue=owned-carrier-token-21\nvalue=owned-carrier-token-22\nvalue=owned-carrier-token-23\nvalue=owned-carrier-token-24\nvalue=owned-carrier-token-25\nvalue=owned-carrier-token-26\nvalue=owned-carrier-token-27\nvalue=owned-carrier-token-28\nvalue=owned-carrier-token-29\nvalue=owned-carrier-token-30\nvalue=owned-carrier-token-31\nvalue=owned-carrier-token-32\nvalue=owned-carrier-token-33\nvalue=owned-carrier-token-34\nvalue=owned-carrier-token-35\nvalue=owned-carrier-token-36\nvalue=owned-carrier-token-37\nvalue=owned-carrier-token-38\nvalue=owned-carrier-token-39\nvalue=owned-carrier-token-40\nvalue=owned-carrier-token-41\nvalue=owned-carrier-token-42\nvalue=owned-carrier-token-43\nvalue=owned-carrier-token-44\nvalue=owned-carrier-token-45\nvalue=owned-carrier-token-46\nvalue=owned-carrier-token-47\nvalue=owned-carrier-token-48\nvalue=owned-carrier-token-49\n"
+exit = 0

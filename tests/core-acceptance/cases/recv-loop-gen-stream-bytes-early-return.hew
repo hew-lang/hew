@@ -1,0 +1,19 @@
+actor Maker { 
+    receive gen fn frames() -> bytes {
+        for i in 0..50 {
+            yield "frame-data".to_bytes();
+        }
+    }
+}
+fn main() -> i64 {
+    var seen: i64 = 0;
+    let m = spawn Maker;
+    for b in m.frames() {
+        if b.len() != 10 { return 91; }
+        seen = seen + 1;
+        if seen >= 26 {
+            return 0;
+        }
+    }
+    92
+}

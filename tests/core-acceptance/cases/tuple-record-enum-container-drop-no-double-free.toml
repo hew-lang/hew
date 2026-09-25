@@ -1,0 +1,10 @@
+[[case]]
+id = "tuple-record-enum-container-drop-no-double-free"
+intent = "Regression oracle for an owned record transferred out of a returned tuple. Shape `no_double_free` (transferred record and tuple siblings remain live until single drop) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/tuple-record-enum-container-drop-no-double-free.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "tag-1|first|second|1|102\n"
+exit = 0

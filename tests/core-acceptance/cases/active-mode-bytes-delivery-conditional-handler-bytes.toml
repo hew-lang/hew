@@ -1,0 +1,10 @@
+[[case]]
+id = "active-mode-bytes-delivery-conditional-handler-bytes"
+intent = "Leak oracle for active-mode TCP `on_data(bytes)` delivery. Shape `conditional_handler_bytes` (conditional handler bytes transfer balances both paths) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/active-mode-bytes-delivery-conditional-handler-bytes.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "FORWARDED\n11\nLOCAL\nDONE\n"
+exit = 0

@@ -1,0 +1,34 @@
+actor Worker {
+    var seen: i64,
+    receive fn take(s: string) {
+        if s.is_empty() { seen = seen; } else { seen = seen + 1; }
+    }
+    receive fn count() -> i64 {
+        seen
+    }
+}
+
+supervisor App {
+    strategy: one_for_one,
+    intensity: 3 within 60s,
+
+    child w: Worker(seen: 0),
+}
+
+fn main() -> i64 {
+    let sup = spawn App;
+    let w = sup.w;
+    var i: i64 = 0;
+    while i < 5 {
+        let _ = w.take("delivered-heap-payload".to_upper());
+        i = i + 1;
+    }
+    let n = match w.count() {
+        .Ok(v) => v,
+        .Err(_) => -1,
+    };
+    if n == 5 {
+        print("k");
+    }
+    0
+}

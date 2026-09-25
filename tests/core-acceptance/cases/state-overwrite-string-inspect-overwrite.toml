@@ -1,0 +1,10 @@
+[[case]]
+id = "state-overwrite-string-inspect-overwrite"
+intent = "State-field overwrite leak oracles for collection, record, and enum actor state fields, plus alias-shape use-after-free pins. Shape `string_inspect_overwrite_high` (string state inspect overwrite no per frame leak slope) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/state-overwrite-string-inspect-overwrite.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 54

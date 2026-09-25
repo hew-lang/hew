@@ -1,0 +1,10 @@
+[[case]]
+id = "projected-tuple-owner-active"
+intent = "Ownership oracle for reading a heap leaf out of a still-live tuple owner. Shape `projected_tuple_owner_active_high` (projected owner paths are exactly once under malloc scribble, projected tuple owner active has flat leak slope) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/projected-tuple-owner-active.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

@@ -1,0 +1,22 @@
+actor Maker {
+    receive fn make(n: i64) -> Option<string> {
+        .Some(to_string(n).to_upper())
+    }
+}
+
+fn main() -> i64 {
+    let m = spawn Maker;
+    var i: i64 = 0;
+    var total: i64 = 0;
+    while i < 50 {
+        let x = select {
+            r from m.make(i) => r.expect("ask reply"),
+        };
+        match x {
+            .Some(s) => { total = total + s.len(); }
+            .None => {}
+        }
+        i = i + 1;
+    }
+    if total > 0 { 0 } else { 1 }
+}

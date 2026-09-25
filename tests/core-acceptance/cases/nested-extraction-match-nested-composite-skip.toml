@@ -1,0 +1,10 @@
+[[case]]
+id = "nested-extraction-match-nested-composite-skip"
+intent = "Nested-extraction partial-destructure oracle — the compiled-binary pins for the alias-scrutinee ownership model. Shape `nested_composite_skip_high` (nested composite skip leak slope below tolerance, nested composite skip no double free under malloc scribble) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/nested-extraction-match-nested-composite-skip.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

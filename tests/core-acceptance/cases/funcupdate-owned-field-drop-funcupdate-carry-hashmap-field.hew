@@ -1,0 +1,18 @@
+import std.string;
+
+type Pair {
+    keep: HashMap<string, string>,
+    churn: string,
+}
+
+fn main() -> i64 {
+    var m: HashMap<string, string> = HashMap.new();
+    m.insert(string.repeat("k", 32), string.repeat("v", 32));
+    var p = Pair { keep: m, churn: string.repeat("a", 32) };
+    var i: i64 = 0;
+    while i < 50 {
+        p = Pair { churn: string.repeat("b", 32), ..p };
+        i = i + 1;
+    }
+    p.keep.len()
+}

@@ -1,0 +1,27 @@
+#[resource]
+#[opaque]
+type Dq {}
+impl Dq {
+fn close(consume self) { unsafe { hew_deque_free(self) }; println("closed"); }
+}
+extern "C" {
+fn hew_deque_new() -> Dq;
+fn hew_deque_free(consume dq: Dq);
+}
+type Holder { dq: Dq }
+fn worker() {
+let _h = Holder { dq: unsafe { hew_deque_new() } };
+sleep(10ms);
+println("worker-done");
+}
+actor Driver {
+receive fn drive() {
+scope { let t = fork worker(); };
+}
+}
+fn main() -> i64 {
+let d = spawn Driver;
+let _ = d.drive();
+println("main-done");
+0
+}

@@ -1,0 +1,26 @@
+type Pair<A, B> { a: A, b: B, }
+
+actor Keeper {
+    var held: Pair<i64, string> = Pair { a: 0, b: "none" },
+    receive fn store(n: i64, tag: string) -> i64 {
+        let s2 = tag + "-held";
+        let p = Pair { a: n, b: s2 };
+        held = clone p;
+        return held.a;
+    }
+}
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    for i in 0..64 {
+        let k = spawn Keeper();
+        let base = "row";
+        let tag = base + "-x";
+        match k.store(i, tag) {
+            .Ok(n) => { total = total + n; }
+            .Err(_) => { return 80; }
+        }
+    }
+    if total != 2016 { return 81; }
+    0
+}

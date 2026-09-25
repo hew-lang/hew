@@ -1,0 +1,38 @@
+type Inner {
+    a: string,
+    b: string,
+}
+
+type Outer {
+    inner: Inner,
+    c: string,
+}
+
+fn make_outer(k: i64) -> Outer {
+    Outer {
+        inner: Inner {
+            a: "nested-a-heap-payload".to_upper(),
+            b: "nested-b-heap-payload".to_upper(),
+        },
+        c: "nested-c-heap-payload".to_upper(),
+    }
+}
+
+fn run_cycle(k: i64) -> i64 {
+    let o = make_outer(k);
+    let inner = o.inner;
+    let x = match inner {
+        Inner { a, b: _ } => a.len(),
+    };
+    x
+}
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 50 {
+        total = total + run_cycle(i);
+        i = i + 1;
+    }
+    if total > 0 { 0 } else { 1 }
+}

@@ -1,0 +1,23 @@
+type Boxed { payload: Vec<i64> }
+
+actor ProbeSink { 
+    var seen: i64,
+    receive fn take(b: Boxed) {
+        seen = seen + b.payload.len();
+  }
+    receive fn total() -> i64 { seen }
+}
+
+fn main() -> i64 {
+    let sink = spawn ProbeSink(seen: 0);
+    var i: i64 = 0;
+    while i < 50 {
+        let b = Boxed { payload: [i, i + 1, i + 2] };
+        let _ = sink.take(b);
+        i = i + 1;
+    }
+    match sink.total() {
+        .Ok(v) => { if v < 0 { 74 } else { 0 } },
+        .Err(_e) => 1,
+    }
+}

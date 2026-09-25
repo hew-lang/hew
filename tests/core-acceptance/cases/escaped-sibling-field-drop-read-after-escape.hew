@@ -1,0 +1,33 @@
+type Inner {
+    label: string,
+    n: i64,
+}
+
+type Outer {
+    inner: Inner,
+    tag: string,
+}
+
+type Wrap {
+    inner: Inner,
+}
+
+fn pack() -> Wrap {
+    let b = Outer {
+        inner: Inner { label: "escaped-inner-heap-payload".to_upper(), n: 7 },
+        tag: "sibling-tag-heap-payload".to_upper(),
+    };
+    let w = Wrap { inner: b.inner };
+    if b.tag.len() == 24 {
+        return w;
+    }
+    w
+}
+
+fn main() -> i64 {
+    let w = pack();
+    if w.inner.n == 7 {
+        print("k");
+    }
+    0
+}

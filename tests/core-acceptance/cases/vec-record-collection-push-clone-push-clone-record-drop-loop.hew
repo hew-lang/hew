@@ -1,0 +1,18 @@
+type Boxed {
+    payload: [i64],
+}
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 50 {
+        var xs: [Boxed] = [];
+        let src = Boxed { payload: [10, 20] };
+        xs.push(src);
+        xs.push(src);
+        let a = xs[0];
+        total = total + a.payload[0] + xs.len() + src.payload[1];
+        i = i + 1;
+    }
+    total
+}

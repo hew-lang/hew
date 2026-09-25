@@ -1,0 +1,12 @@
+type Person { name: string }
+impl Person { fn touch(self) -> i64 { 1 } }
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    for i in 0..50 {
+        let p = Person { name: "abc" + "def" };
+        total = total + p.touch();
+    }
+    if total != 50 { return 71; }
+    0
+}

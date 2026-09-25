@@ -1,0 +1,26 @@
+actor Namer { 
+    var name: string,
+
+    receive fn tick() {
+        if name.len() < 1000000 {
+            name = name + "x";
+        }
+    }
+
+    receive fn size() -> i64 {
+        name.len()
+    }
+}
+
+fn main() -> i64 {
+    let h = spawn Namer(name: "seed".to_upper());
+    var i: i64 = 0;
+    while i < 50 {
+        let _ = h.tick();
+        i = i + 1;
+    }
+    match h.size() {
+        .Ok(v) => v,
+        .Err(_) => -1,
+    }
+}

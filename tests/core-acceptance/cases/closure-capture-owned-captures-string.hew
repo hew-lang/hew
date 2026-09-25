@@ -1,0 +1,17 @@
+fn make_label(n: i64) -> fn() -> i64 {
+    let label = "row-payload-seed".to_upper();
+    || label.len() + n
+}
+fn run_loop(frames: i64) -> i64 {
+    var total: i64 = 0;
+    for i in 0..frames {
+        let f = make_label(i);
+        total = total + f();
+    }
+    total
+}
+fn main() -> i64 {
+    let total = run_loop(200);
+    if total != 23100 { return 91; }
+    0
+}

@@ -1,0 +1,10 @@
+[[case]]
+id = "for-in-vec-iter-for-in-nested-hashset-full-drain"
+intent = "`for x in vec` cursor (`VecIter<T>`) scope-exit drop oracles: per-iteration leak slope plus a poisoned-allocator no-use-after-free pin for the place-source reuse shape (issue #1949). Shape `for_in_nested_hashset_full_drain_50_frames` (for in nested hashset full drain no per frame leak slope) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/for-in-vec-iter-for-in-nested-hashset-full-drain.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 1

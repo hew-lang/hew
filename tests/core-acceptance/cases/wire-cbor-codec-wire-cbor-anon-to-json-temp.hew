@@ -1,0 +1,16 @@
+#[wire]
+type Scalar { seq: i64 @1, flag: bool @2, }
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 50 {
+        let p = Scalar { seq: i, flag: true };
+        match Scalar.from_json(p.to_json()) {
+            .Ok(back) => { total = total + back.seq; },
+            .Err(_) => { total = total + 0; },
+        }
+        i = i + 1;
+    }
+    total
+}

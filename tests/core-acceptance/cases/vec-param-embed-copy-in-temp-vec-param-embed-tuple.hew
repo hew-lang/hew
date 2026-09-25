@@ -1,0 +1,14 @@
+fn pushParam(p: string) -> i64 {
+    var v: Vec<(string, i64)> = [];
+    v.push((p, 1));
+    v.len()
+}
+
+fn main() -> i64 {
+    for i in 0..50 {
+        let p = f"item-{i}";
+        if pushParam(p) != 1 { return 45; }
+        if p.len() < 6 { return 46; }
+    }
+    0
+}

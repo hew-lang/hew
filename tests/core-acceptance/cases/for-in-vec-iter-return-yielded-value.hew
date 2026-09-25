@@ -1,0 +1,18 @@
+fn mk() -> Vec<string> {
+    var v: Vec<string> = Vec.new();
+    v.push("yield" + "-returned-value");
+    v.push("yield" + "-second");
+    return v;
+}
+
+fn frame() -> string {
+    for word in mk() {
+        return word;
+    }
+    return "none";
+}
+
+fn main() {
+    print(frame());
+    print("OK");
+}

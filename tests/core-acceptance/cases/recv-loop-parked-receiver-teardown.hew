@@ -1,0 +1,47 @@
+import std.stream;
+
+// Each receiver reports once it holds its first item, so the supervisor stops
+// receivers that are parked on their own pipe.
+actor Ready {
+    var tx: stream.Sink<i64>,
+    receive fn mark() {
+        tx.send(1).expect("ready");
+    }
+}
+
+actor ParkedReceiver {
+    receive fn run(index: i64, ready: Ready) {
+        let (tx, rx): (stream.Sink<string>, stream.Stream<string>) = match stream.pipe(1) { .Ok(pair) => pair, .Err(error) => panic(error), };
+        let payload = f"parked-direct-receiver-{index}";
+        tx.send(payload).expect("send");
+        for item in rx {
+            if item.len() <= 0 { panic("receiver payload"); }
+            println("parked");
+            ready.mark().expect("mark ready");
+        }
+    }
+}
+
+supervisor App {
+    strategy: one_for_one,
+    intensity: 3 within 60s,
+    child receiver0: ParkedReceiver,
+    child receiver1: ParkedReceiver,
+    child receiver2: ParkedReceiver,
+}
+
+fn main() {
+    let (ready_tx, ready_rx) = stream.pipe(3).expect("ready");
+    let ready = spawn Ready(tx: ready_tx);
+    let app = spawn App;
+    let receiver0 = app.receiver0;
+    mailbox(receiver0, on_full: .Wait).run(0, ready).expect("start receiver");
+    let receiver1 = app.receiver1;
+    mailbox(receiver1, on_full: .Wait).run(1, ready).expect("start receiver");
+    let receiver2 = app.receiver2;
+    mailbox(receiver2, on_full: .Wait).run(2, ready).expect("start receiver");
+    for _ in 0..3 {
+        ready_rx.recv();
+    }
+    supervisor_stop(app);
+}

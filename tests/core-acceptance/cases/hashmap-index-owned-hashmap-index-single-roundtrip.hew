@@ -1,0 +1,12 @@
+type Name { label: string, }
+
+fn main() {
+    var m: HashMap<string, Name> = HashMap.new();
+    m.insert("k", Name { label: "owned-ok" });
+    let got: Name = m["k"];
+    let removed = m.remove("k");
+    match removed {
+        .Some(_) => print(got.label),
+        .None => print("removed=none"),
+    }
+}

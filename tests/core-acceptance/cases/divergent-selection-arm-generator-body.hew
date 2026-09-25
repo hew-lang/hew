@@ -1,0 +1,29 @@
+fn make() -> Vec<i64> {
+    var v: Vec<i64> = Vec.new();
+    v.push(40);
+    v.push(2);
+    return v;
+}
+
+gen fn picks(n: i64) -> i64 {
+    var i: i64 = 0;
+    while i < n {
+        let a = make();
+        let b = make();
+        let out = match i % 2 == 0 { true => a, false => b };
+        yield out.len();
+        i = i + 1;
+    }
+}
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    for value in picks(50) {
+        total = total + value;
+        println("frame");
+    }
+    match total >= 0 {
+        true => 0,
+        false => 1,
+    }
+}

@@ -1,0 +1,10 @@
+[[case]]
+id = "structural-aggregate-clone-control"
+intent = "Leak oracles for both structural-clone drop orders. Shape `control` (dropping clone before returned original is balanced, dropping original before returned clone is balanced) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/structural-aggregate-clone-control.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

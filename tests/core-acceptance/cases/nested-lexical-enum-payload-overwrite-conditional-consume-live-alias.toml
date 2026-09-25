@@ -1,0 +1,10 @@
+[[case]]
+id = "nested-lexical-enum-payload-overwrite-conditional-consume-live-alias"
+intent = "Ownership oracle for overwriting a local inline enum after a matched payload alias has left its lexical scope. Shape `conditional_consume_live_alias` (conditional consume after live alias overwrite drops exactly once) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/nested-lexical-enum-payload-overwrite-conditional-consume-live-alias.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "frame\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\nframe\n"
+exit = 0

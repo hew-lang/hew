@@ -1,0 +1,10 @@
+[[case]]
+id = "quic-string-result-retention-quic-observation-strings"
+intent = "Darwin leak and poisoned-allocator proof for shipped QUIC observations. Shape `quic_observation_strings_high` (quic observations complete across actor round trip, shipped quic observation strings are exact under malloc scribble) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/quic-string-result-retention-quic-observation-strings.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "101\n101\n101\n101\n101\n101\n101\n101\n101\n101\n101\n101\n101\n101\n101\n101\n101\n101\n101\n101\n101\n101\n101\n101\n101\n101\n101\n101\n101\n101\n101\n101\n101\n101\n101\n101\n101\n101\n101\n101\n101\n101\n101\n101\n101\n101\n101\n101\n101\n101\n202\n202\n202\n202\n202\n202\n202\n202\n202\n202\n202\n202\n202\n202\n202\n202\n202\n202\n202\n202\n202\n202\n202\n202\n202\n202\n202\n202\n202\n202\n202\n202\n202\n202\n202\n202\n202\n202\n202\n202\n202\n202\n202\n202\n202\n202\n202\n202\n202\n202\n303\n303\n303\n303\n303\n303\n303\n303\n303\n303\n303\n303\n303\n303\n303\n303\n303\n303\n303\n303\n303\n303\n303\n303\n303\n303\n303\n303\n303\n303\n303\n303\n303\n303\n303\n303\n303\n303\n303\n303\n303\n303\n303\n303\n303\n303\n303\n303\n303\n303\n"
+exit = 0

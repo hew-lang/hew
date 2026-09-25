@@ -1,0 +1,10 @@
+[[case]]
+id = "actor-string-reply-enum-actor-enum-reply"
+intent = "Actor string-reply / nested-enum-payload leak oracle (#2717). Shape `actor_enum_reply_high` (actor enum reply leak slope below tolerance, actor enum reply no double free under malloc scribble) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/actor-string-reply-enum-actor-enum-reply.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

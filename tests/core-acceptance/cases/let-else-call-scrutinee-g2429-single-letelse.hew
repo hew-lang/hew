@@ -1,0 +1,8 @@
+fn f() -> Option<string> {
+    .Some("g2429-letelse-single".to_upper())
+}
+
+fn main() {
+    let .Some(b) = f() else { return; };
+    if b.len() == 20 { print("m"); }
+}

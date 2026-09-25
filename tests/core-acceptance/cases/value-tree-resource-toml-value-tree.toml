@@ -1,0 +1,10 @@
+[[case]]
+id = "value-tree-resource-toml-value-tree"
+intent = "Exact ownership oracle for the JSON, TOML, and YAML `Value` resources. Shape `toml_value_tree_50` (high value trees do not double free or read poison, low and high value trees are exactly leak clean) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/value-tree-resource-toml-value-tree.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n7\n"
+exit = 0

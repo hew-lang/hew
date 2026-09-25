@@ -1,0 +1,19 @@
+type Holder { items: Vec<string> }
+type MixedWrap { s: string, items: Vec<string> }
+
+fn pushMixed(p: string, h: Holder) -> i64 {
+    var v: Vec<MixedWrap> = [];
+    v.push(MixedWrap { s: p, items: h.items });
+    v.len()
+}
+
+fn main() -> i64 {
+    for i in 0..50 {
+        let p = f"item-{i}";
+        let h = Holder { items: [f"deep-{i}"] };
+        if pushMixed(p, h) != 1 { return 81; }
+        if p.len() < 6 { return 82; }
+        if h.items.len() != 1 { return 83; }
+    }
+    0
+}

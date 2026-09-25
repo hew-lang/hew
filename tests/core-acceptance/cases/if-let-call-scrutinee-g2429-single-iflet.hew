@@ -1,0 +1,9 @@
+fn f() -> Option<string> {
+    .Some("g2429-iflet-single".to_upper())
+}
+
+fn main() {
+    if let .Some(b) = f() {
+        if b.len() == 18 { print("m"); }
+    }
+}

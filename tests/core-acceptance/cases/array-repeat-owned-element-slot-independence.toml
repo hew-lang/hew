@@ -1,0 +1,10 @@
+[[case]]
+id = "array-repeat-owned-element-slot-independence"
+intent = "Double-free / independent-owner oracle for array-repeat `[x; N]` of an owned (heap-owning) record element. Shape `slot_independence` (array repeat slots are independent owners) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/array-repeat-owned-element-slot-independence.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "42OK"
+exit = 0

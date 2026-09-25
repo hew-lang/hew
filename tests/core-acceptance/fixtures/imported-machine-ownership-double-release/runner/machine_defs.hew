@@ -1,0 +1,15 @@
+pub machine PayloadLifecycle {
+    events { Reset, }
+    state Empty,
+    state Loaded { label: string, },
+    on Reset: Loaded => Empty,
+    default { state }
+}
+
+pub fn make(label: string) -> PayloadLifecycle {
+        PayloadLifecycle.Loaded { label: label }
+}
+
+pub fn bounce(value: PayloadLifecycle) -> PayloadLifecycle {
+    value
+}

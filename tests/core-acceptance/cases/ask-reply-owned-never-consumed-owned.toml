@@ -1,0 +1,10 @@
+[[case]]
+id = "ask-reply-owned-never-consumed-owned"
+intent = "Owned ask-reply ownership leak oracle (#1739 / #1735). Shape `never_consumed_owned` (never consumed owned reply no double free) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/ask-reply-owned-never-consumed-owned.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

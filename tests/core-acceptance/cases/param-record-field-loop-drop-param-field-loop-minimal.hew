@@ -1,0 +1,26 @@
+type Claim {
+    run_id: string,
+    amount: i64,
+}
+
+type ClaimsLedger {
+    claims: Vec<Claim>,
+}
+
+fn count_claims(ledger: ClaimsLedger) -> i64 {
+    var n: i64 = 0;
+    for claim in ledger.claims {
+        n = n + 1;
+    }
+    n
+}
+
+fn main() {
+    var claims: Vec<Claim> = Vec.new();
+    claims.push(Claim { run_id: "r1", amount: 10 });
+    claims.push(Claim { run_id: "r2", amount: 20 });
+    claims.push(Claim { run_id: "r3", amount: 30 });
+    let ledger = ClaimsLedger { claims: claims };
+    let n = count_claims(ledger);
+    println(f"kept {n} claims");
+}

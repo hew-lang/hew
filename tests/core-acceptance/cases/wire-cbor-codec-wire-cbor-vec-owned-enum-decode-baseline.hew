@@ -1,0 +1,32 @@
+#[wire]
+enum Payload {  Empty, Full(string) }
+#[wire]
+type BagGood {  items: Vec<Payload> @1, tail: string @2 }
+#[wire]
+type BagBad {  items: Vec<Payload> @1, tail: i64 @2 }
+
+actor Decoder { 
+    let seq: i64, 
+    receive fn decode_it(raw: bytes) -> i64 {
+        let bad = BagBad.decode(raw);
+        bad.tail
+  }
+}
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 50 {
+        var xs: Vec<Payload> = Vec.new();
+        xs.push(Payload.Full("first-owned-element"));
+        xs.push(Payload.Empty);
+        xs.push(Payload.Full("second-owned-element"));
+        let g = BagBad { items: xs, tail: 7 };
+        let raw = g.encode();
+        let a = spawn Decoder(seq: i);
+        let r = a.decode_it(raw);
+        match r { .Ok(v) => { total = total + v; }, .Err(_) => { total = total + 1; }, }
+        i = i + 1;
+    }
+    total
+}

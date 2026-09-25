@@ -1,0 +1,47 @@
+type Holder { items: Vec<string> }
+type Wrap { inner: Holder }
+fn mkItems(i: i64) -> Vec<string> {
+    var xs: Vec<string> = Vec.new();
+    xs.push("deep-elem-a");
+    xs.push("deep-elem-b");
+    return xs;
+}
+fn setBoundLive() -> i64 {
+    var v: Vec<Holder> = Vec.new();
+    v.push(Holder { items: mkItems(0) });
+    let h = Holder { items: mkItems(1) };
+    v.set(0, h);
+    return h.items.len();
+}
+fn setBoundTwice() -> i64 {
+    var v: Vec<Holder> = Vec.new();
+    v.push(Holder { items: mkItems(0) });
+    let h = Holder { items: mkItems(1) };
+    v.set(0, h);
+    v.set(0, h);
+    return h.items.len();
+}
+fn setClosureCapture() -> i64 {
+    var v: Vec<Holder> = Vec.new();
+    v.push(Holder { items: mkItems(0) });
+    let h = Holder { items: mkItems(1) };
+    let read_h = || h.items.len();
+    v.set(0, h);
+    return read_h();
+}
+fn setParamEmbed(p: Holder) -> i64 {
+    var v: Vec<Wrap> = Vec.new();
+    v.push(Wrap { inner: Holder { items: mkItems(0) } });
+    let before = p.items.len();
+    v.set(0, Wrap { inner: p });
+    return before;
+}
+fn main() {
+    print(setBoundLive());
+    print(setBoundTwice());
+    print(setClosureCapture());
+    let p = Holder { items: mkItems(1) };
+    print(setParamEmbed(p));
+    print(p.items.len());
+    print("OK");
+}

@@ -1,0 +1,10 @@
+[[case]]
+id = "while-let-reassign-edges"
+intent = "Leak and exactly-once guards for reassigned `BindingRef` while-let scrutinees. Shape `while_let_reassign_edges` (while let reassigned break and tag false release exactly once) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/while-let-reassign-edges.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "ok"
+exit = 0

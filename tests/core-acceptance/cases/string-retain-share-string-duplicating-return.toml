@@ -1,0 +1,10 @@
+[[case]]
+id = "string-retain-share-string-duplicating-return"
+intent = "Leak-slope coverage for string retain-on-share mint points. Shape `string_duplicating_return_high` (string duplicating return no per frame leak slope) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/string-retain-share-string-duplicating-return.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 228

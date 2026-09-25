@@ -1,0 +1,15 @@
+type Pair<A, B> { a: A, b: B, }
+
+fn build(seed: string) -> i64 {
+    let p = Pair { a: seed + "-a", b: seed + "-b" };
+    p.a.len() + p.b.len()
+}
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    for i in 0..64 {
+        total = total + build("seed");
+    }
+    if total != 768 { return 70; }
+    0
+}

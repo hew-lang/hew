@@ -1,0 +1,43 @@
+type Ops { marker: i64 }
+type Holder { items: Vec<string>, keep: string }
+type Wrap { items: Vec<string> }
+
+enum Payload {
+    Text(string),
+    Scalar(i64),
+}
+
+impl Ops {
+    fn storeRecord(h: Holder) -> i64 {
+        var v: Vec<Wrap> = [];
+        v.push(Wrap { items: h.items });
+        v.len()
+    }
+
+    fn storeTuple(h: (Vec<string>, string)) -> i64 {
+        var v: Vec<Wrap> = [];
+        v.push(Wrap { items: h.0 });
+        v.len()
+    }
+
+    fn storeEnum(h: Payload) -> i64 {
+        match h {
+            Payload.Text(s) => {
+                var v: Vec<string> = [];
+                v.push(s);
+                v.len()
+            },
+            Payload.Scalar(_) => 0,
+        }
+    }
+}
+
+fn main() -> i64 {
+    let h = Holder { items: ["record"], keep: "keep" };
+    let t = (["tuple"], "keep");
+    let e = Payload.Text("enum");
+    let total = Ops.storeRecord(h) + Ops.storeTuple(t) + Ops.storeEnum(e);
+    if h.items.len() != 1 { return 91; }
+    if t.0.len() != 1 { return 92; }
+    total
+}

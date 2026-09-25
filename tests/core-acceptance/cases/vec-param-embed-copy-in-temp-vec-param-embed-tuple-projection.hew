@@ -1,0 +1,20 @@
+type MixedWrap { marker: string, items: Vec<string> }
+
+fn pushTupleProjection(h: (Vec<string>, string)) -> i64 {
+    var v: Vec<MixedWrap> = [];
+    v.push(MixedWrap {
+        marker: "tuple-marker".to_upper(),
+        items: h.0,
+    });
+    v.len()
+}
+
+fn main() -> i64 {
+    for i in 0..50 {
+        let h = ([f"tuple-{i}"], f"keep-{i}");
+        if pushTupleProjection(h) != 1 { return 101; }
+        if h.0.len() != 1 { return 102; }
+        if h.1.len() < 6 { return 103; }
+    }
+    0
+}

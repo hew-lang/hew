@@ -1,0 +1,31 @@
+enum Status {
+    Loaded(i64),
+    Described(string),
+}
+
+fn describe(name: string, suffix: string, sel: i64) -> Result<Status, i64> {
+    if sel % 2 == 0 {
+        .Ok(.Loaded(sel))
+    } else {
+        .Ok(.Described(name + suffix))
+    }
+}
+
+fn main() -> i64 {
+    var i: i64 = 0;
+    var sink: i64 = 0;
+    while i < 50 {
+        let r = describe("widget", "-suffix", i);
+        match r {
+            .Ok(st) => {
+                match st {
+                    .Described(s) => { sink = sink + s.len(); },
+                    .Loaded(v) => { sink = sink + v; },
+                }
+            },
+            .Err(_) => {},
+        }
+        i = i + 1;
+    }
+    if sink > 0 { 0 } else { 1 }
+}

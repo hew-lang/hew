@@ -1,0 +1,14 @@
+type Box { key: string, n: i64, }
+fn main() {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 8 {
+        let key = "k" + "ey";
+        let b = Box { key: key, n: i };
+        let c = b.key;
+        total = total + c.len() + b.n;
+        i = i + 1;
+    }
+    print(total);
+    print("OK");
+}

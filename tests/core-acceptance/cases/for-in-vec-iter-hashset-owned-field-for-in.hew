@@ -1,0 +1,15 @@
+type SetBox { words: HashSet<string> }
+
+fn main() {
+    var words: HashSet<string> = HashSet.new();
+    words.insert("field" + "-alpha");
+    words.insert("field" + "-beta");
+    words.insert("field" + "-gamma");
+    let holder = SetBox { words: words };
+    var count: i64 = 0;
+    for word in holder.words {
+        if word.len() > 0 { count = count + 1; }
+    }
+    print(count);
+    print("OK");
+}

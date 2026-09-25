@@ -1,0 +1,22 @@
+import std.stream;
+
+actor OwnedSend {
+    receive fn run(unused: i64) {
+        let (tx, rx): (stream.Sink<string>, stream.Stream<string>) = match stream.pipe(1024) { .Ok(pair) => pair, .Err(error) => panic(error), };
+        var i: i64 = 0;
+        while i < 50 {
+            let s = f"item-{i}";
+            tx.send(s).expect("send");
+            i = i + 1;
+        }
+        tx.close();
+        for item in rx {
+            println("got");
+        }
+    }
+}
+
+fn main() {
+    let w = spawn OwnedSend;
+    let _ = w.run(0);
+}

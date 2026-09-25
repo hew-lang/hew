@@ -1,0 +1,32 @@
+fn conditional_frame(take: bool) {
+    var rows: Vec<Vec<string>> = Vec.new();
+    var row: Vec<string> = Vec.new();
+    row.push("branch" + "-payload");
+    rows.push(row);
+    var cursor = rows.iter();
+    if take {
+        var moved = cursor;
+        let _ = moved.next();
+    }
+}
+
+fn reassign_frame() {
+    var rows: Vec<Vec<string>> = Vec.new();
+    var row: Vec<string> = Vec.new();
+    row.push("overwrite" + "-payload");
+    rows.push(row);
+    var cursor = rows.iter();
+    cursor = rows.iter();
+    let _ = cursor.next();
+}
+
+fn main() -> i64 {
+    var i: i64 = 0;
+    while i < 50 {
+        conditional_frame(false);
+        conditional_frame(true);
+        reassign_frame();
+        i = i + 1;
+    }
+    i % 7
+}

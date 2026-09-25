@@ -1,0 +1,13 @@
+type Item { name: string, tag: string }
+fn main() {
+    var v: Vec<Item> = Vec.new();
+    v.push(Item { name: "move-a", tag: "move-a-tag" });
+    v.push(Item { name: "move-b", tag: "move-b-tag" });
+    v.push(Item { name: "move-c", tag: "move-c-tag" });
+    var collected: Vec<Item> = Vec.new();
+    for it in v.iter() {
+        collected.push(it);
+    }
+    print(collected.len());
+    print("OK");
+}

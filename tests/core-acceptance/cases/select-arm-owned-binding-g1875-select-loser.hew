@@ -1,0 +1,29 @@
+import std.stream;
+
+actor FastWorker {
+    receive fn label() -> string {
+        "fast-owned-reply".to_upper()
+    }
+}
+
+// Nothing is sent on the gate, so the slow worker cannot reply and always
+// loses; dropping the gate's sink at exit lets it finish.
+actor SlowWorker {
+    var gate: stream.Stream<i64>,
+    receive fn label() -> string {
+        gate.recv();
+        "slow-owned-reply".to_upper()
+    }
+}
+
+fn main() -> i64 {
+    let (_shut, gate) = stream.pipe(1).expect("gate");
+    let fast = spawn FastWorker;
+    let slow = spawn SlowWorker(gate: gate);
+    let winner = select {
+        reply from fast.label() => reply.expect("ask reply"),
+        reply from slow.label() => reply.expect("ask reply"),
+    };
+    print(winner);
+    0
+}

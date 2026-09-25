@@ -1,0 +1,14 @@
+type Person { name: string }
+fn keep(p: Person) -> Person { p }
+impl Person { fn via(self) -> Person { keep(self) } }
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    for i in 0..50 {
+        let p = Person { name: "abc" + "def" };
+        let q = p.via();
+        total = total + q.name.len();
+    }
+    if total != 50 * 6 { return 74; }
+    0
+}

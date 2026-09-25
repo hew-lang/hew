@@ -1,0 +1,23 @@
+actor Sink {
+    receive fn take_string(payload: string) {
+        println(f"STRING:{payload}");
+    }
+
+    receive fn die() {
+        panic("sink crashed mid-send")
+    }
+}
+
+fn main() {
+    let sink = spawn Sink;
+    for i in 0..400 {
+        if i == 400 / 2 {
+            let _ = sink.die();
+        }
+        let _ = sink.take_string(f"racing-payload-{i}".to_upper());
+    }
+    for i in 0..400 {
+        let _ = sink.take_string(f"post-crash-payload-{i}".to_upper());
+    }
+    println("RACE_DONE");
+}

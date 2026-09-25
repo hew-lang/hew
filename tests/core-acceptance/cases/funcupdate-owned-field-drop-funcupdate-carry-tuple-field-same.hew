@@ -1,0 +1,18 @@
+import std.string;
+
+type Pair {
+    keep: (string, i64),
+    churn: string,
+}
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 50 {
+        let b = Pair { keep: (string.repeat("k", 32), 1), churn: string.repeat("a", 32) };
+        let s = Pair { churn: string.repeat("b", 32), ..b };
+        total = total + s.churn.len();
+        i = i + 1;
+    }
+    total
+}

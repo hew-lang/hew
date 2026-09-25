@@ -1,0 +1,14 @@
+type Point { x: i64, y: i64 }
+
+fn main() {
+    var pts: Vec<Point> = Vec.new();
+    pts.push(Point { x: 10, y: 20 });
+    let p = pts[0];
+    let lit = [Point { x: 3, y: 4 }; 2];
+    var words: Vec<string> = Vec.new();
+    words.push("alpha");
+    let ns = [7; 3];
+    let sum = p.x + p.y + lit.len() + words.len() + ns[0];
+    print(sum);
+    print("OK");
+}

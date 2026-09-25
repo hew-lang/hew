@@ -1,0 +1,10 @@
+#[resource] type Inner { fd: i64, }
+impl Inner { fn close(consume self) { println("inner-closed"); } }
+#[resource] type Outer { inner: Inner, tag: i64, }
+impl Outer { fn close(consume self) { println("outer-closed"); } }
+fn make_inner() -> Inner { Inner { fd: 3 } }
+fn main() {
+    let o = Outer { inner: make_inner(), tag: 7 };
+    o.close();
+    println("after-explicit");
+}

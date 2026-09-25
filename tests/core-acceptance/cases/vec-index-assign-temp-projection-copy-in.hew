@@ -1,0 +1,16 @@
+type Holder { items: Vec<string> }
+fn make() -> (Holder, Vec<string>) {
+    (Holder { items: ["pair-item"] }, ["sibling-item"])
+}
+fn main() {
+    var v: Vec<Holder> = [];
+    v.push(Holder { items: ["seed-item"] });
+    let pair = make();
+    v[0] = pair.0;
+    print(pair.0.items[0]);
+    print("|");
+    print(v[0].items[0]);
+    print("|");
+    print(pair.1[0]);
+    print("|OK");
+}

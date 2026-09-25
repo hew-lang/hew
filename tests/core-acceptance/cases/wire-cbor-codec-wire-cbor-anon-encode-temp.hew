@@ -1,0 +1,14 @@
+#[wire]
+type Packet { label: string @1, seq: i64 @2, }
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 50 {
+        let p = Packet { label: "payload-label-value", seq: i };
+        let back = Packet.decode(p.encode());
+        total = total + back.seq;
+        i = i + 1;
+    }
+    total
+}

@@ -1,0 +1,23 @@
+import std.stream;
+import std.encoding.utf8;
+
+actor CarryStreamBytesEscape {
+    receive fn run(unused: i64) {
+        let (sink, input) = match stream.pipe(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
+        let b = "escaped-bytes-payload".to_bytes();
+        sink.send(b).expect("send");
+        sink.close();
+        var carry = "init".to_bytes();
+        println("before");
+        for frame in input {
+            carry = frame;
+        }
+        println(utf8.decode_lossy(carry));
+        println("after");
+    }
+}
+
+fn main() {
+    let w = spawn CarryStreamBytesEscape;
+    let _ = w.run(0);
+}

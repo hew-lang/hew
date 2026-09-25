@@ -1,0 +1,10 @@
+[[case]]
+id = "ask-reply-owned-cancelled-owned"
+intent = "Owned ask-reply ownership leak oracle (#1739 / #1735). Shape `cancelled_owned_high` (cancelled owned reply no per iter leak slope) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/ask-reply-owned-cancelled-owned.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "1000\n"
+exit = 0

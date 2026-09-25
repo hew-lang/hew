@@ -1,0 +1,9 @@
+fn tf(t: (string, string)) -> i64 { t.0.len() + t.1.len() }
+fn main() -> i64 {
+    var total: i64 = 0;
+    for i in 0..50 {
+        total = total + tf(("a" + "b", "c" + "de"));
+    }
+    if total != 50 * 5 { return 72; }
+    0
+}

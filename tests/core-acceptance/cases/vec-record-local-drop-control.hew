@@ -1,0 +1,15 @@
+fn build(n: i64) -> i64 {
+    var xs: Vec<i64> = Vec.new();
+    xs.push(n);
+    xs.push(n);
+    xs.len()
+}
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    for i in 0..64 {
+        total = total + build(i);
+    }
+    if total != 128 { return 70; }
+    0
+}

@@ -1,0 +1,10 @@
+[[case]]
+id = "vec-generic-get-owned"
+intent = "Generic `Vec<T>.get` owned-element leak oracle (hew-lang/hew#1929 Stage 2). Shape `vec_generic_get_owned_high` (vec generic get owned element emits selected payload drop, vec generic get owned element leak slope below tolerance) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/vec-generic-get-owned.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 144

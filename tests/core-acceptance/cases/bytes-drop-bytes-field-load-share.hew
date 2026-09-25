@@ -1,0 +1,12 @@
+type Holder { payload: bytes, }
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 50 {
+        let holder = Holder { payload: "field-load".to_bytes() };
+        let extracted = holder.payload;
+        total = total + extracted.len() + holder.payload.len();
+        i = i + 1;
+    }
+    total
+}

@@ -1,0 +1,9 @@
+fn h(s: string) -> i64 { s.len() }
+fn main() -> i64 {
+    var total: i64 = 0;
+    for i in 0..50 {
+        total = total + h("a" + "b");
+    }
+    if total != 50 * 2 { return 74; }
+    0
+}

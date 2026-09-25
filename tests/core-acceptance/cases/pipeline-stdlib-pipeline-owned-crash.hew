@@ -1,0 +1,24 @@
+import std.pipeline;
+
+fn main() -> i64 {
+    var i: i64 = 0;
+    while i < 50 {
+        var source = pipeline.run(pipeline.from(1));
+        let item: pipeline.PipelineItemI64 = PipelineItemI64 {
+            value: i,
+            label: f"crash-owned-{i}",
+            crash_stage: true,
+        };
+        match source.push(item) {
+            .Ok(admitted) => { if admitted { return 20; } },
+            .Err(_) => { return 21; },
+        }
+        match source.count() {
+            .Ok(count) => { if count != 0 { return 22; } },
+            .Err(_) => { return 23; },
+        }
+        println("crashed");
+        i = i + 1;
+    }
+    0
+}

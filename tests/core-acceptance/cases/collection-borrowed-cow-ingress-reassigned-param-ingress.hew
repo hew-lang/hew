@@ -1,0 +1,13 @@
+fn put(var counts: HashMap<string, i64>, var key: string, amount: i64) -> i64 {
+    key = ("fresh" + "-key").to_upper();
+    counts.insert(key, amount);
+    return match counts.get("FRESH-KEY") { .Some(n) => n, .None => -1 };
+}
+
+fn main() {
+    let counts: HashMap<string, i64> = HashMap.new();
+    let first = put(counts, "caller" + "-a", 1);
+    let second = put(counts, "caller" + "-b", 2);
+    let caller_slot = match counts.get("FRESH-KEY") { .Some(n) => n, .None => -1 };
+    print(f"{first}|{second}|{caller_slot}");
+}

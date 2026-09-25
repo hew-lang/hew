@@ -1,0 +1,10 @@
+[[case]]
+id = "bytes-drop-bytes-duplicating-return"
+intent = "Bytes ownership leak oracles: sender-local scope-exit drop and actor-state-field overwrite drop. Shape `bytes_duplicating_return_high` (bytes duplicating return no per frame leak slope) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/bytes-drop-bytes-duplicating-return.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 8

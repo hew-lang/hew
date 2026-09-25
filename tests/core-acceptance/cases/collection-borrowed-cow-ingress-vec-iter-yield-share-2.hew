@@ -1,0 +1,35 @@
+fn keep_expensive(totals: HashMap<string, i64>) -> i64 {
+    var kept: HashMap<string, i64> = HashMap.new();
+    for category in totals.keys() {
+        let cents = totals.get(category).unwrap_or(0);
+        if cents > 500 {
+            kept.insert(category, cents);
+        }
+        let probe = totals.len();
+        if probe < 0 { return -1; }
+    }
+    return kept.len();
+}
+
+fn best_category(totals: HashMap<string, i64>) -> string {
+    var best_name = "";
+    var best_cents = -1;
+    for category in totals.keys() {
+        let cents = totals.get(category).unwrap_or(0);
+        if cents > best_cents {
+            best_cents = cents;
+            best_name = category;
+        }
+    }
+    return best_name;
+}
+
+fn main() {
+    var totals: HashMap<string, i64> = HashMap.new();
+    totals.insert("groceries" + "-heap", 1200);
+    totals.insert("transit" + "-heap", 400);
+    totals.insert("rent" + "-heap", 90000);
+    let kept = keep_expensive(totals.clone());
+    let best = best_category(totals.clone());
+    print(f"{kept}|{best}|{totals.len()}");
+}

@@ -1,0 +1,28 @@
+import std.iter;
+pub type Claim {
+    item: string,
+    run_id: string,
+}
+fn probe() -> i64 {
+    let claim = Claim { item: "row-item".to_upper(), run_id: "row-run".to_upper() };
+    var runs = Vec.new();
+    runs.push("ROW-RUN");
+    let hit = iter.any(runs.into_iter(), |terminal: string| terminal == claim.run_id);
+    var out = Vec.new();
+    out.push(claim.item);
+    var score: i64 = 0;
+    if hit { score = score + 1; }
+    score + out.len()
+}
+fn run_loop(frames: i64) -> i64 {
+    var total: i64 = 0;
+    for i in 0..frames {
+        total = total + probe() + i;
+    }
+    total
+}
+fn main() -> i64 {
+    let total = run_loop(200);
+    if total != 20300 { return 88; }
+    0
+}

@@ -1,0 +1,36 @@
+#[resource]
+type Handle { id: i64, }
+
+impl Handle {
+    fn close(consume self) {}
+}
+
+machine Mixed {
+    events { Open, Touch, }
+    state Idle,
+    state Active { h: Handle, label: string, },
+
+    on Open: Idle => Active { h: Handle { id: 1 }, label: "live" }
+    on Touch: Active => Active reenter { h: state.h, label: state.label }
+
+    default { state }
+}
+
+machine Plain {
+    events { Open, Shut, }
+    state Idle,
+    state Live { h: Handle, },
+
+    on Open: Idle => Live { h: Handle { id: 2 } }
+    on Shut: Live => Idle,
+
+    default { state }
+}
+
+fn main() {
+    var s: Mixed = .Idle;
+    let _ = s.step(.Open);
+    var p: Plain = .Idle;
+    let _ = p.step(.Open);
+    let _ = p.step(.Shut);
+}

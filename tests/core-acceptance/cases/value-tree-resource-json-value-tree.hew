@@ -1,0 +1,25 @@
+import std.encoding.json;
+fn main() -> i32 {
+    for _ in 0..50 {
+        var value = json.object();
+        match value.set("child", json.from_int(7)) {
+            .Ok(_) => {}
+            .Err(_) => { return 1; }
+        }
+        match value.get_field("child") {
+            .Ok(.Some(child)) => {
+                match child.get_int() {
+                    .Ok(n) => { println(f"{n}"); }
+                    .Err(_) => { return 1; }
+                }
+            }
+            .Ok(.None) => { return 1; }
+            .Err(_) => { return 1; }
+        }
+        match json.parse("{") {
+            .Ok(_) => { return 1; }
+            .Err(_) => {}
+        }
+    }
+    0
+}

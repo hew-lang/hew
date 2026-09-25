@@ -1,0 +1,16 @@
+type Holder { items: Vec<string> }
+fn mkItems(i: i64) -> Vec<string> {
+    var xs: Vec<string> = Vec.new();
+    xs.push("deep-elem-a");
+    xs.push("deep-elem-b");
+    return xs;
+}
+fn main() -> i64 {
+    var v: Vec<Holder> = Vec.new();
+    var i: i64 = 0;
+    while i < 50 {
+        v.push(Holder { items: mkItems(i) });
+        i = i + 1;
+    }
+    v.len()
+}

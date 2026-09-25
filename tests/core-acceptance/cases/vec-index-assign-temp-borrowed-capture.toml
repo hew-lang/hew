@@ -1,0 +1,10 @@
+[[case]]
+id = "vec-index-assign-temp-borrowed-capture"
+intent = "Owned-Vec INDEX-ASSIGNMENT (`v[i] = ..`) leak oracles: neither a fresh aggregate RHS nor a consumed bound-local RHS may leak its heap. Shape `borrowed_capture` (vec index assign borrowed capture survives its own store) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/vec-index-assign-temp-borrowed-capture.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "44OK"
+exit = 0

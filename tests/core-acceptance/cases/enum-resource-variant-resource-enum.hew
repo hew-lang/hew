@@ -1,0 +1,34 @@
+#[opaque]
+type Dq {}
+#[resource]
+type Handle { raw: Dq, }
+impl Handle {
+fn value(self) -> i64 { 7 }
+fn sink(consume self) { self.close(); }
+fn close(consume self) { unsafe { hew_deque_free(self.raw) }; print("C"); }
+}
+extern "C" {
+fn hew_deque_new() -> Dq;
+fn hew_deque_free(consume dq: Dq);
+}
+enum Outcome { Loaded(Handle), Failed(string), }
+fn make(ok: bool) -> Outcome {
+if ok { Outcome.Loaded(Handle { raw: unsafe { hew_deque_new() } }) }
+else { Outcome.Failed("bad".to_upper()) }
+}
+fn main() {
+for _ in 0..8 {
+match make(true) {
+Outcome.Loaded(handle) => print(handle.value()),
+Outcome.Failed(message) => print(message + "!"),
+}
+match make(false) {
+Outcome.Loaded(handle) => print(handle.value()),
+Outcome.Failed(message) => print(message + "!"),
+}
+match make(true) {
+Outcome.Loaded(handle) => handle.sink(),
+Outcome.Failed(message) => print(message + "!"),
+}
+}
+}

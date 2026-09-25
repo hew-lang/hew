@@ -1,0 +1,10 @@
+[[case]]
+id = "rc-member-clone-keep-original"
+intent = "Ownership oracle for `Rc` members under structural clone. Shape `keep_original` (vec of rc dropping clone before returned original does not over release, vec of rc dropping clone before returned original leaks nothing) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/rc-member-clone-keep-original.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

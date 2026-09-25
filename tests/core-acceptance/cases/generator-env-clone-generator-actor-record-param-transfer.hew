@@ -1,0 +1,74 @@
+type Payload {
+    label: string,
+    data: bytes,
+    pair: (string, i64),
+}
+
+indirect enum Tree {
+    Leaf(i64),
+    Node(Tree, Tree),
+}
+
+actor Streamer {
+    var state: string,
+    receive gen fn emit(payload: Payload, tree: Tree, n: i64) -> i64 {
+        var i: i64 = 0;
+        if n > 0 {
+            yield payload.label.len() + payload.data.len()
+                + payload.pair.0.len() + state.len();
+            i = 1;
+        }
+        let tree_kind = match tree {
+            .Leaf(_) => 1,
+            .Node(_, _) => 2,
+        };
+        while i < n {
+            yield payload.label.len() + payload.data.len()
+                + payload.pair.0.len() + state.len() + i + tree_kind;
+            i = i + 1;
+        }
+    }
+    receive gen fn endless(payload: Payload, tree: Tree) -> i64 {
+        yield payload.label.len() + payload.data.len()
+            + payload.pair.0.len() + state.len();
+        let tree_kind = match tree {
+            .Leaf(_) => 1,
+            .Node(_, _) => 2,
+        };
+        var i: i64 = 1;
+        loop {
+            yield payload.label.len() + payload.data.len()
+                + payload.pair.0.len() + state.len() + i + tree_kind;
+            i = i + 1;
+        }
+    }
+}
+
+fn main() {
+    let streamer = spawn Streamer(state: "actor-state".to_upper());
+    var total: i64 = 0;
+    var frame: i64 = 0;
+    while frame < 50 {
+        let payload = Payload {
+            label: "record-param".to_upper(),
+            data: "bytes-param".to_bytes(),
+            pair: ("tuple-param".to_upper(), frame),
+        };
+        let tree = Tree.Node(Tree.Leaf(frame), Tree.Leaf(frame + 1));
+        for value in streamer.emit(payload, tree, 3) {
+            total = total + value;
+        }
+        let cancelled = Payload {
+            label: "record-param".to_upper(),
+            data: "bytes-param".to_bytes(),
+            pair: ("tuple-param".to_upper(), frame),
+        };
+        let cancelled_tree = Tree.Node(Tree.Leaf(frame), Tree.Leaf(frame + 1));
+        for value in streamer.endless(cancelled, cancelled_tree) {
+            total = total + value;
+            break;
+        }
+        frame = frame + 1;
+    }
+    print(f"{frame}:{total}:OK");
+}

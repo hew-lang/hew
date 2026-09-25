@@ -1,0 +1,14 @@
+fn ef(e: Result<string, string>) -> i64 { 2 }
+fn eg(e: Result<string, string>) -> i64 { 3 }
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    for i in 0..50 {
+        let e: Result<string, string> = .Ok("a" + "b");
+        let a = ef(e);
+        let b = eg(e);
+        total = total + a + b;
+    }
+    if total != 50 * 5 { return 73; }
+    0
+}

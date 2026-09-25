@@ -1,0 +1,14 @@
+indirect enum Tree { Leaf(i64), Node(Tree, Tree), }
+fn val(t: Tree) -> i64 { match t { .Leaf(n) => n, .Node(l, r) => val(l) + val(r), } }
+fn run_loop() -> i64 {
+    var total = 0;
+    for i in 0..50 {
+        let t = Tree.Node(.Node(.Leaf(1), .Leaf(2)), .Node(.Leaf(3), .Leaf(4)));
+        total = total + val(t);
+    }
+    total
+}
+fn main() {
+    let r = run_loop();
+    if r == 500 { print("ok"); } else { print("BAD"); }
+}

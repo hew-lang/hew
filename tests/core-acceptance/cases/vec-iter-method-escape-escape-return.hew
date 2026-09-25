@@ -1,0 +1,15 @@
+fn make_iter() -> VecIter<i64> {
+    var v: Vec<i64> = Vec.new();
+    v.push(40);
+    v.push(2);
+    v.iter()
+}
+
+fn main() {
+    var sum: i64 = 0;
+    for x in make_iter() {
+        sum = sum + x;
+    }
+    print(sum);
+    print("OK");
+}

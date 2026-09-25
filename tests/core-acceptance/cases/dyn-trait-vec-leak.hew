@@ -1,0 +1,56 @@
+import std.string;
+
+trait Labeled {
+    fn label_size(val: Self) -> i64;
+}
+
+type Person { label: string }
+impl Labeled for Person {
+    fn label_size(val: Person) -> i64 { val.label.len() }
+}
+
+type Parcel { label: string }
+impl Labeled for Parcel {
+    fn label_size(val: Parcel) -> i64 { val.label.len() }
+}
+
+fn make_person(seed: string) -> dyn Labeled {
+    let erased: dyn Labeled = Person { label: string.repeat(seed, 64) };
+    erased
+}
+
+fn make_parcel(seed: string) -> dyn Labeled {
+    let erased: dyn Labeled = Parcel { label: string.repeat(seed, 96) };
+    erased
+}
+
+fn inspect(value: dyn Labeled) -> i64 { value.label_size() }
+
+fn run_frame(frame: i64) -> i64 {
+    var values: Vec<dyn Labeled> = Vec.new();
+    values.push(make_person(f"person-{frame}"));
+    values.push(make_parcel(f"parcel-{frame}"));
+    values.push(make_person(f"tail-{frame}"));
+
+    let last = values.pop();
+    if inspect(last) < 64 { return 81; }
+    values.push(make_parcel(f"again-{frame}"));
+    let first = values.remove(0);
+    if inspect(first) < 64 { return 82; }
+
+    let iterator = values.into_iter();
+    var seen: i64 = 0;
+    for _value in iterator {
+        seen = seen + 1;
+        break;
+    }
+    seen
+}
+
+fn main() -> i64 {
+    for frame in 0..50 {
+        if run_frame(frame) != 1 { return 84; }
+    }
+    print("OK");
+    0
+}

@@ -1,0 +1,9 @@
+fn via_match(v: Result<i64, string>) -> string {
+    match v {
+        .Ok(_) => "ok",
+        .Err(message) => message,
+    }
+}
+fn main() {
+    println(via_match(.Err("match")));
+}

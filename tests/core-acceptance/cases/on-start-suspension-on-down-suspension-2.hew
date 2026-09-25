@@ -1,0 +1,369 @@
+import std.link_monitor;
+
+actor Target { receive fn ping() -> i64 { 1 } }
+
+actor Watcher {
+    var downs: i64 = 0,
+    receive fn watch(target: Target) -> link_monitor.MonitorRef {
+        monitor(target).expect("monitor")
+    }
+    receive fn seen() -> i64 { downs }
+    #[on(down)] fn down(_note: link_monitor.DownNotification) {
+        sleep(1ms);
+        downs = downs + 1;
+        println("down");
+    }
+}
+
+fn main() {
+    let t0 = spawn Target;
+    let w0 = spawn Watcher;
+    let m0 = w0.watch(t0).expect("watch");
+    close(t0);
+    while w0.seen().expect("seen") == 0 { sleep(1ms); }
+    m0.close();
+    close(w0);
+    let t1 = spawn Target;
+    let w1 = spawn Watcher;
+    let m1 = w1.watch(t1).expect("watch");
+    close(t1);
+    while w1.seen().expect("seen") == 0 { sleep(1ms); }
+    m1.close();
+    close(w1);
+    let t2 = spawn Target;
+    let w2 = spawn Watcher;
+    let m2 = w2.watch(t2).expect("watch");
+    close(t2);
+    while w2.seen().expect("seen") == 0 { sleep(1ms); }
+    m2.close();
+    close(w2);
+    let t3 = spawn Target;
+    let w3 = spawn Watcher;
+    let m3 = w3.watch(t3).expect("watch");
+    close(t3);
+    while w3.seen().expect("seen") == 0 { sleep(1ms); }
+    m3.close();
+    close(w3);
+    let t4 = spawn Target;
+    let w4 = spawn Watcher;
+    let m4 = w4.watch(t4).expect("watch");
+    close(t4);
+    while w4.seen().expect("seen") == 0 { sleep(1ms); }
+    m4.close();
+    close(w4);
+    let t5 = spawn Target;
+    let w5 = spawn Watcher;
+    let m5 = w5.watch(t5).expect("watch");
+    close(t5);
+    while w5.seen().expect("seen") == 0 { sleep(1ms); }
+    m5.close();
+    close(w5);
+    let t6 = spawn Target;
+    let w6 = spawn Watcher;
+    let m6 = w6.watch(t6).expect("watch");
+    close(t6);
+    while w6.seen().expect("seen") == 0 { sleep(1ms); }
+    m6.close();
+    close(w6);
+    let t7 = spawn Target;
+    let w7 = spawn Watcher;
+    let m7 = w7.watch(t7).expect("watch");
+    close(t7);
+    while w7.seen().expect("seen") == 0 { sleep(1ms); }
+    m7.close();
+    close(w7);
+    let t8 = spawn Target;
+    let w8 = spawn Watcher;
+    let m8 = w8.watch(t8).expect("watch");
+    close(t8);
+    while w8.seen().expect("seen") == 0 { sleep(1ms); }
+    m8.close();
+    close(w8);
+    let t9 = spawn Target;
+    let w9 = spawn Watcher;
+    let m9 = w9.watch(t9).expect("watch");
+    close(t9);
+    while w9.seen().expect("seen") == 0 { sleep(1ms); }
+    m9.close();
+    close(w9);
+    let t10 = spawn Target;
+    let w10 = spawn Watcher;
+    let m10 = w10.watch(t10).expect("watch");
+    close(t10);
+    while w10.seen().expect("seen") == 0 { sleep(1ms); }
+    m10.close();
+    close(w10);
+    let t11 = spawn Target;
+    let w11 = spawn Watcher;
+    let m11 = w11.watch(t11).expect("watch");
+    close(t11);
+    while w11.seen().expect("seen") == 0 { sleep(1ms); }
+    m11.close();
+    close(w11);
+    let t12 = spawn Target;
+    let w12 = spawn Watcher;
+    let m12 = w12.watch(t12).expect("watch");
+    close(t12);
+    while w12.seen().expect("seen") == 0 { sleep(1ms); }
+    m12.close();
+    close(w12);
+    let t13 = spawn Target;
+    let w13 = spawn Watcher;
+    let m13 = w13.watch(t13).expect("watch");
+    close(t13);
+    while w13.seen().expect("seen") == 0 { sleep(1ms); }
+    m13.close();
+    close(w13);
+    let t14 = spawn Target;
+    let w14 = spawn Watcher;
+    let m14 = w14.watch(t14).expect("watch");
+    close(t14);
+    while w14.seen().expect("seen") == 0 { sleep(1ms); }
+    m14.close();
+    close(w14);
+    let t15 = spawn Target;
+    let w15 = spawn Watcher;
+    let m15 = w15.watch(t15).expect("watch");
+    close(t15);
+    while w15.seen().expect("seen") == 0 { sleep(1ms); }
+    m15.close();
+    close(w15);
+    let t16 = spawn Target;
+    let w16 = spawn Watcher;
+    let m16 = w16.watch(t16).expect("watch");
+    close(t16);
+    while w16.seen().expect("seen") == 0 { sleep(1ms); }
+    m16.close();
+    close(w16);
+    let t17 = spawn Target;
+    let w17 = spawn Watcher;
+    let m17 = w17.watch(t17).expect("watch");
+    close(t17);
+    while w17.seen().expect("seen") == 0 { sleep(1ms); }
+    m17.close();
+    close(w17);
+    let t18 = spawn Target;
+    let w18 = spawn Watcher;
+    let m18 = w18.watch(t18).expect("watch");
+    close(t18);
+    while w18.seen().expect("seen") == 0 { sleep(1ms); }
+    m18.close();
+    close(w18);
+    let t19 = spawn Target;
+    let w19 = spawn Watcher;
+    let m19 = w19.watch(t19).expect("watch");
+    close(t19);
+    while w19.seen().expect("seen") == 0 { sleep(1ms); }
+    m19.close();
+    close(w19);
+    let t20 = spawn Target;
+    let w20 = spawn Watcher;
+    let m20 = w20.watch(t20).expect("watch");
+    close(t20);
+    while w20.seen().expect("seen") == 0 { sleep(1ms); }
+    m20.close();
+    close(w20);
+    let t21 = spawn Target;
+    let w21 = spawn Watcher;
+    let m21 = w21.watch(t21).expect("watch");
+    close(t21);
+    while w21.seen().expect("seen") == 0 { sleep(1ms); }
+    m21.close();
+    close(w21);
+    let t22 = spawn Target;
+    let w22 = spawn Watcher;
+    let m22 = w22.watch(t22).expect("watch");
+    close(t22);
+    while w22.seen().expect("seen") == 0 { sleep(1ms); }
+    m22.close();
+    close(w22);
+    let t23 = spawn Target;
+    let w23 = spawn Watcher;
+    let m23 = w23.watch(t23).expect("watch");
+    close(t23);
+    while w23.seen().expect("seen") == 0 { sleep(1ms); }
+    m23.close();
+    close(w23);
+    let t24 = spawn Target;
+    let w24 = spawn Watcher;
+    let m24 = w24.watch(t24).expect("watch");
+    close(t24);
+    while w24.seen().expect("seen") == 0 { sleep(1ms); }
+    m24.close();
+    close(w24);
+    let t25 = spawn Target;
+    let w25 = spawn Watcher;
+    let m25 = w25.watch(t25).expect("watch");
+    close(t25);
+    while w25.seen().expect("seen") == 0 { sleep(1ms); }
+    m25.close();
+    close(w25);
+    let t26 = spawn Target;
+    let w26 = spawn Watcher;
+    let m26 = w26.watch(t26).expect("watch");
+    close(t26);
+    while w26.seen().expect("seen") == 0 { sleep(1ms); }
+    m26.close();
+    close(w26);
+    let t27 = spawn Target;
+    let w27 = spawn Watcher;
+    let m27 = w27.watch(t27).expect("watch");
+    close(t27);
+    while w27.seen().expect("seen") == 0 { sleep(1ms); }
+    m27.close();
+    close(w27);
+    let t28 = spawn Target;
+    let w28 = spawn Watcher;
+    let m28 = w28.watch(t28).expect("watch");
+    close(t28);
+    while w28.seen().expect("seen") == 0 { sleep(1ms); }
+    m28.close();
+    close(w28);
+    let t29 = spawn Target;
+    let w29 = spawn Watcher;
+    let m29 = w29.watch(t29).expect("watch");
+    close(t29);
+    while w29.seen().expect("seen") == 0 { sleep(1ms); }
+    m29.close();
+    close(w29);
+    let t30 = spawn Target;
+    let w30 = spawn Watcher;
+    let m30 = w30.watch(t30).expect("watch");
+    close(t30);
+    while w30.seen().expect("seen") == 0 { sleep(1ms); }
+    m30.close();
+    close(w30);
+    let t31 = spawn Target;
+    let w31 = spawn Watcher;
+    let m31 = w31.watch(t31).expect("watch");
+    close(t31);
+    while w31.seen().expect("seen") == 0 { sleep(1ms); }
+    m31.close();
+    close(w31);
+    let t32 = spawn Target;
+    let w32 = spawn Watcher;
+    let m32 = w32.watch(t32).expect("watch");
+    close(t32);
+    while w32.seen().expect("seen") == 0 { sleep(1ms); }
+    m32.close();
+    close(w32);
+    let t33 = spawn Target;
+    let w33 = spawn Watcher;
+    let m33 = w33.watch(t33).expect("watch");
+    close(t33);
+    while w33.seen().expect("seen") == 0 { sleep(1ms); }
+    m33.close();
+    close(w33);
+    let t34 = spawn Target;
+    let w34 = spawn Watcher;
+    let m34 = w34.watch(t34).expect("watch");
+    close(t34);
+    while w34.seen().expect("seen") == 0 { sleep(1ms); }
+    m34.close();
+    close(w34);
+    let t35 = spawn Target;
+    let w35 = spawn Watcher;
+    let m35 = w35.watch(t35).expect("watch");
+    close(t35);
+    while w35.seen().expect("seen") == 0 { sleep(1ms); }
+    m35.close();
+    close(w35);
+    let t36 = spawn Target;
+    let w36 = spawn Watcher;
+    let m36 = w36.watch(t36).expect("watch");
+    close(t36);
+    while w36.seen().expect("seen") == 0 { sleep(1ms); }
+    m36.close();
+    close(w36);
+    let t37 = spawn Target;
+    let w37 = spawn Watcher;
+    let m37 = w37.watch(t37).expect("watch");
+    close(t37);
+    while w37.seen().expect("seen") == 0 { sleep(1ms); }
+    m37.close();
+    close(w37);
+    let t38 = spawn Target;
+    let w38 = spawn Watcher;
+    let m38 = w38.watch(t38).expect("watch");
+    close(t38);
+    while w38.seen().expect("seen") == 0 { sleep(1ms); }
+    m38.close();
+    close(w38);
+    let t39 = spawn Target;
+    let w39 = spawn Watcher;
+    let m39 = w39.watch(t39).expect("watch");
+    close(t39);
+    while w39.seen().expect("seen") == 0 { sleep(1ms); }
+    m39.close();
+    close(w39);
+    let t40 = spawn Target;
+    let w40 = spawn Watcher;
+    let m40 = w40.watch(t40).expect("watch");
+    close(t40);
+    while w40.seen().expect("seen") == 0 { sleep(1ms); }
+    m40.close();
+    close(w40);
+    let t41 = spawn Target;
+    let w41 = spawn Watcher;
+    let m41 = w41.watch(t41).expect("watch");
+    close(t41);
+    while w41.seen().expect("seen") == 0 { sleep(1ms); }
+    m41.close();
+    close(w41);
+    let t42 = spawn Target;
+    let w42 = spawn Watcher;
+    let m42 = w42.watch(t42).expect("watch");
+    close(t42);
+    while w42.seen().expect("seen") == 0 { sleep(1ms); }
+    m42.close();
+    close(w42);
+    let t43 = spawn Target;
+    let w43 = spawn Watcher;
+    let m43 = w43.watch(t43).expect("watch");
+    close(t43);
+    while w43.seen().expect("seen") == 0 { sleep(1ms); }
+    m43.close();
+    close(w43);
+    let t44 = spawn Target;
+    let w44 = spawn Watcher;
+    let m44 = w44.watch(t44).expect("watch");
+    close(t44);
+    while w44.seen().expect("seen") == 0 { sleep(1ms); }
+    m44.close();
+    close(w44);
+    let t45 = spawn Target;
+    let w45 = spawn Watcher;
+    let m45 = w45.watch(t45).expect("watch");
+    close(t45);
+    while w45.seen().expect("seen") == 0 { sleep(1ms); }
+    m45.close();
+    close(w45);
+    let t46 = spawn Target;
+    let w46 = spawn Watcher;
+    let m46 = w46.watch(t46).expect("watch");
+    close(t46);
+    while w46.seen().expect("seen") == 0 { sleep(1ms); }
+    m46.close();
+    close(w46);
+    let t47 = spawn Target;
+    let w47 = spawn Watcher;
+    let m47 = w47.watch(t47).expect("watch");
+    close(t47);
+    while w47.seen().expect("seen") == 0 { sleep(1ms); }
+    m47.close();
+    close(w47);
+    let t48 = spawn Target;
+    let w48 = spawn Watcher;
+    let m48 = w48.watch(t48).expect("watch");
+    close(t48);
+    while w48.seen().expect("seen") == 0 { sleep(1ms); }
+    m48.close();
+    close(w48);
+    let t49 = spawn Target;
+    let w49 = spawn Watcher;
+    let m49 = w49.watch(t49).expect("watch");
+    close(t49);
+    while w49.seen().expect("seen") == 0 { sleep(1ms); }
+    m49.close();
+    close(w49);
+}

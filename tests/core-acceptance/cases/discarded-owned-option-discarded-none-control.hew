@@ -1,0 +1,7 @@
+fn one() {
+    var m: HashMap<i64, string> = HashMap.new();
+    m.remove(1);
+}
+fn main() {
+    for i in 0..50 { one(); }
+}

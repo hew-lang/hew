@@ -1,0 +1,34 @@
+import std.net.{Listener};
+
+actor Reader {
+    let addr: string,
+
+    receive fn go(trigger: i64) -> i64 {
+        let conn = match net.connect(addr) { .Ok(value) => value, .Err(error) => panic("network operation failed"), };
+        let read_once = move |value: string| {
+            if trigger >= 0 {
+                panic("crash before child suspend");
+            }
+            let _ = conn.recv();
+            value
+        };
+        let _ = read_once("tcp-crash-owner".to_upper());
+        0
+    }
+}
+
+fn main() {
+    for _ in 0..1 {
+        // An ephemeral port keeps concurrent runs from colliding.
+        let listener = match net.listen("127.0.0.1:0") { .Ok(value) => value, .Err(error) => panic("network operation failed"), };
+        let reader = spawn Reader(addr: f"127.0.0.1:{listener.local_port()}");
+        let result = reader.go(0);
+        let peer = listener.accept();
+        peer.close();
+        listener.close();
+        match result {
+            .Ok(_) => panic("reader unexpectedly returned"),
+            .Err(_) => println("crash-fallback"),
+        }
+    }
+}

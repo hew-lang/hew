@@ -1,0 +1,11 @@
+enum Msg { Empty, Batch([i64]) }
+
+fn main() {
+    let m: Msg = Msg.Batch([10, 20, 30]);
+    var sum: i64 = 0;
+    match m {
+        Msg.Batch(items) => { for it in items { sum = sum + it; } },
+        Msg.Empty => {},
+    }
+    println(f"{sum}");
+}

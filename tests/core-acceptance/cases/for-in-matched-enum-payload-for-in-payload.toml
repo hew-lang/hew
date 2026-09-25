@@ -1,0 +1,10 @@
+[[case]]
+id = "for-in-matched-enum-payload-for-in-payload"
+intent = "`for it in <matched enum collection payload>` drop oracle (hew-lang/hew#2725, site b). Shape `for_in_payload_exact` (for in matched payload exact contents under malloc scribble) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/for-in-matched-enum-payload-for-in-payload.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "60\n"
+exit = 0

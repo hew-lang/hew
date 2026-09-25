@@ -1,0 +1,23 @@
+import std.string;
+type Row { category: string, score: i64, }
+fn parse_row(line: string, sc: i64) -> Row {
+    let parts: Vec<string> = line.split(",");
+    Row { category: parts[0], score: sc }
+}
+fn main() {
+    var lines: Vec<string> = Vec.new();
+    lines.push("math,x"); lines.push("science,x"); lines.push("math,x");
+    lines.push("science,x"); lines.push("math,x"); lines.push("science,x");
+    var rows: Vec<Row> = Vec.new();
+    let n = lines.len();
+    for i in 0 .. n { let line = lines[i]; let row = parse_row(line, i); rows.push(row); }
+    var totals: HashMap<string, i64> = HashMap.new();
+    var counts: HashMap<string, i64> = HashMap.new();
+    let m = rows.len();
+    for i in 0 .. m {
+        let row = rows[i];
+        totals.insert(row.category, row.score);
+        counts.insert(row.category, 1);
+    }
+    println("OK");
+}

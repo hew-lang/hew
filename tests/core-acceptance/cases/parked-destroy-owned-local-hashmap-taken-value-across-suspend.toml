@@ -1,0 +1,10 @@
+[[case]]
+id = "parked-destroy-owned-local-hashmap-taken-value-across-suspend"
+intent = "Destroy-while-parked owned-local leak / double-free oracle (#2395). Shape `hashmap_taken_value_across_suspend` (hashmap taken value across suspend dropped exactly once) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/parked-destroy-owned-local-hashmap-taken-value-across-suspend.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "stopped\n"
+exit = 0

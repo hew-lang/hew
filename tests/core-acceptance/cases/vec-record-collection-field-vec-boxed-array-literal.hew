@@ -1,0 +1,11 @@
+type Boxed {
+    payload: [i64],
+}
+
+fn main() {
+    let xs = [Boxed { payload: [10, 20] }, Boxed { payload: [30, 40] }];
+    let a = xs[0];
+    let b = xs[1];
+    print(f"{a.payload[0]}|{a.payload[1]}|{b.payload[0]}|{b.payload[1]}");
+    print("OK");
+}

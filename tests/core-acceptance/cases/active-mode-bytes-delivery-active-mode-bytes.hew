@@ -1,0 +1,48 @@
+import std.net.{Connection, ConnectionHandler};
+import std.stream;
+
+// Each sink reports its connection's close, so `main` knows every payload
+// reached `on_data` before it exits.
+actor Ready {
+    var tx: stream.Sink<i64>,
+    receive fn mark() {
+        tx.send(1).expect("ready");
+    }
+}
+
+actor ProbeSink {
+    let ready: Ready,
+    receive fn on_data(data: bytes) {
+        println("DATA");
+    }
+    receive fn on_close() {
+        ready.mark().expect("mark closed");
+    }
+}
+
+impl ConnectionHandler for ProbeSink {
+    fn on_data(data: bytes) {}
+    fn on_close() {}
+}
+
+fn main() -> i64 {
+    let deliveries = 50;
+    let (ready_tx, ready_rx) = stream.pipe(deliveries).expect("ready");
+    let ready = spawn Ready(tx: ready_tx);
+    let listener = match net.listen("127.0.0.1:0") { .Ok(value) => value, .Err(_) => panic("network setup failed"), };
+    let addr = f"127.0.0.1:{listener.local_port()}";
+    for _ in 0..deliveries {
+        // The kernel completes the handshake before `accept` takes it.
+        let client = match net.connect(addr) { .Ok(value) => value, .Err(_) => panic("connect failed"), };
+        let conn = listener.accept();
+        let sink = spawn ProbeSink(ready: ready);
+        conn.attach(sink).expect("attach");
+        client.send(b"active-mode-delivery").expect("send");
+        client.close();
+    }
+    for _ in 0..deliveries {
+        ready_rx.recv();
+    }
+    println("DONE");
+    0
+}

@@ -1,0 +1,10 @@
+[[case]]
+id = "alias-return-composite-no-double-free-passthrough"
+intent = "ADVERSARIAL double-free pin — the load-bearing guard against a future over-widening of the fresh-composite sole-owner admission. Shape `passthrough` (passthrough alias return does not double free) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/alias-return-composite-no-double-free-passthrough.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

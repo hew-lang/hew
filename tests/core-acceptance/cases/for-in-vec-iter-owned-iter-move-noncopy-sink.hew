@@ -1,0 +1,14 @@
+type Item { name: string, tag: string }
+fn main() {
+    var v: Vec<Item> = Vec.new();
+    v.push(Item { name: "sink" + "-a", tag: "sink" + "-a-tag" });
+    v.push(Item { name: "sink" + "-b", tag: "sink" + "-b-tag" });
+    var sink: HashMap<i64, Item> = HashMap.new();
+    var k: i64 = 0;
+    for it in v.iter() {
+        sink.insert(k, it);
+        k = k + 1;
+    }
+    print(sink.len());
+    print("OK");
+}

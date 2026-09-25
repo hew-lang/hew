@@ -1,0 +1,13 @@
+type Holder { s: string }
+fn borrowLen(h: Holder) -> i64 { h.s.len() }
+fn cond(a: Holder, b: Holder, c: bool) -> Holder { if c { a } else { b } }
+fn main() -> i64 {
+    var total: i64 = 0;
+    for i in 0..50 {
+        let a: Holder = Holder { s: "a" + "b" };
+        let b: Holder = Holder { s: "c" + "d" };
+        total = total + borrowLen(cond(a, b, true));
+    }
+    if total != 50 * 2 { return 62; }
+    0
+}

@@ -1,0 +1,80 @@
+import std.observe;
+
+type RootBundle {
+    text: string,
+    data: bytes,
+}
+
+fn make_root_nested(label: string) -> fn() -> i64 {
+    || label.len()
+}
+
+actor Gate {
+    receive fn tick() -> i64 {
+        sleep(5ms);
+        1
+    }
+}
+
+actor Runner {
+    let gate: Gate,
+
+    receive fn go(trigger: i64) -> i64 {
+        let gate_pid = gate;
+        let root_string = "root-resume-owner".to_upper();
+        let root_bytes = "root-resume-bytes".to_bytes();
+        let root_record = RootBundle {
+            text: "root-record-owner".to_upper(),
+            data: "root-record-bytes".to_bytes(),
+        };
+        let root_nested = make_root_nested("root-nested-owner".to_upper());
+        let resume_then_crash = |value: string| {
+            let _ = match gate_pid.tick() {
+                .Ok(n) => n,
+                .Err(_) => 0,
+            };
+            if trigger >= 0 {
+                panic("crash after child resume");
+            }
+            value
+        };
+        let _ = resume_then_crash("resume-crash-owner");
+        if root_string.len()
+            + root_bytes.len()
+            + root_record.text.len()
+            + root_record.data.len()
+            + root_nested()
+            == -1 {
+            panic("root owner guard");
+        }
+        7
+    }
+}
+
+fn main() {
+    // Enter the root continuation before sampling its live-frame baseline.
+    // A barrier, not a sleep: under load the root continuation is not always
+    // entered within a wall-clock millisecond, and a baseline taken one frame
+    // early reads back as a leak of exactly that frame.
+    let _ = observe.barrier();
+    let frame_baseline = observe.read("coroutines.frame_bytes_live").unwrap_or(0);
+    let gate = spawn Gate;
+    let runner = spawn Runner(gate: gate);
+    let r = runner.go(0);
+    match r {
+        .Ok(_) => println("unexpected-ok"),
+        .Err(_) => println("crash-fallback"),
+    }
+    println("main-done");
+    // `observe.barrier()` orders dispatch attribution, not frame reclamation:
+    // a crashed dispatch is attributed before its frame is freed. Read the
+    // balance until it settles, bounded, so a real leak still prints its
+    // retained bytes and fails the case.
+    var retained = observe.read("coroutines.frame_bytes_live").unwrap_or(0) - frame_baseline;
+    for _ in 0..200 {
+        if retained == 0 { break; }
+        let _ = observe.barrier();
+        retained = observe.read("coroutines.frame_bytes_live").unwrap_or(0) - frame_baseline;
+    }
+    println(retained);
+}

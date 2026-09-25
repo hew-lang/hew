@@ -1,0 +1,26 @@
+fn make_strs() -> Vec<string> {
+    var v: Vec<string> = Vec.new();
+    v.push("per-call-element-one");
+    v.push("per-call-element-two");
+    return v;
+}
+
+fn probe(take: bool) -> i64 {
+    let xs = make_strs();
+    var out: i64 = 1;
+    if take {
+        let ys = xs;
+        out = ys.len();
+    }
+    out
+}
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 50 {
+        total = total + probe(false);
+        i = i + 1;
+    }
+    total
+}

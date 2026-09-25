@@ -1,0 +1,12 @@
+type Holder { payload: bytes, }
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 50 {
+        let source = "aggregate-share".to_bytes();
+        let holder = Holder { payload: source };
+        total = total + holder.payload.len();
+        i = i + 1;
+    }
+    total
+}

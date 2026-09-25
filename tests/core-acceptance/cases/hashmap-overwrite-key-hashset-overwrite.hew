@@ -1,0 +1,10 @@
+fn main() -> i64 {
+    var s: HashSet<string> = HashSet.new();
+    var i: i64 = 0;
+    while i < 50 {
+        let e: string = "fixed-overwrite-elem-" + "z";
+        s.insert(e);
+        i = i + 1;
+    }
+    s.len()
+}

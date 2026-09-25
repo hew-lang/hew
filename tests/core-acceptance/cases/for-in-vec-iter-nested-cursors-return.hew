@@ -1,0 +1,33 @@
+fn make_vec() -> Vec<string> {
+    var v: Vec<string> = Vec.new();
+    v.push("early" + "-alpha-padding-padding-padding");
+    v.push("early" + "-beta-padding-padding-padding");
+    v.push("early" + "-gamma-padding-padding-padding");
+    return v;
+}
+
+fn make_inner() -> Vec<string> {
+    var v: Vec<string> = Vec.new();
+    v.push("inner" + "-alpha-padding-padding-padding");
+    v.push("inner" + "-beta-padding-padding-padding");
+    v.push("inner" + "-gamma-padding-padding-padding");
+    return v;
+}
+
+fn frame() {
+    for outer in make_vec() {
+        for inner in make_inner() {
+            print(outer.len() + inner.len());
+            return;
+        }
+    }
+}
+
+fn main() {
+    var i: i64 = 0;
+    while i < 50 {
+        frame();
+        i = i + 1;
+    }
+    print("OK");
+}

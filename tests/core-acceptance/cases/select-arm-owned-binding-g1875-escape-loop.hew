@@ -1,0 +1,19 @@
+actor Maker {
+    receive fn make(n: i64) -> string {
+        to_string(n)
+    }
+}
+
+fn main() -> i64 {
+    let m = spawn Maker;
+    var i: i64 = 0;
+    var total: i64 = 0;
+    while i < 50 {
+        let x = select {
+            r from m.make(i) => r.expect("ask reply"),
+        };
+        total = total + x.len();
+        i = i + 1;
+    }
+    if total > 0 { 0 } else { 1 }
+}

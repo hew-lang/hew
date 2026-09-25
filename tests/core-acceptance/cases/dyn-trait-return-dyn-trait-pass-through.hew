@@ -1,0 +1,37 @@
+import std.string;
+
+trait Labeled {
+    fn label_size(val: Self) -> i64;
+}
+
+type Person {
+    label: string,
+}
+
+impl Labeled for Person {
+    fn label_size(val: Person) -> i64 {
+        val.label.len()
+    }
+}
+
+fn make_labeled(seed: string) -> dyn Labeled {
+    Person { label: string.repeat(seed, 64) }
+}
+
+fn identity(consume value: dyn Labeled) -> dyn Labeled {
+    value
+}
+
+fn inspect(value: dyn Labeled) -> i64 {
+    value.label_size()
+}
+
+fn main() -> i64 {
+    for frame in 0..50 {
+        let direct = identity(make_labeled(f"direct-{frame}"));
+        let chained = identity(identity(make_labeled(f"chained-{frame}")));
+        if inspect(direct) < 64 || inspect(chained) < 64 { return 92; }
+    }
+    print("OK");
+    0
+}

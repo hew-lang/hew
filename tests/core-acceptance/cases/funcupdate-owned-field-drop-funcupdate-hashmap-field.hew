@@ -1,0 +1,18 @@
+type MapHolder {
+    m: HashMap<string, i64>,
+    tag: i64,
+}
+
+fn main() -> i64 {
+    var init: HashMap<string, i64> = HashMap.new();
+    init.insert("seed", 1);
+    var h = MapHolder { m: init, tag: 0 };
+    var i: i64 = 0;
+    while i < 50 {
+        var next: HashMap<string, i64> = HashMap.new();
+        next.insert("k", i);
+        h = MapHolder { m: next, ..h };
+        i = i + 1;
+    }
+    h.tag
+}

@@ -1,0 +1,21 @@
+type Inner {
+    v: i64,
+}
+
+type Outer {
+    inner: Inner,
+    c: string,
+}
+
+fn take(o: Outer) -> string {
+    match o {
+        Outer { inner: _, c } => c,
+    }
+}
+
+fn main() -> i64 {
+    let o = Outer { inner: Inner { v: 1 }, c: "ESCAPE-HEAP" };
+    let s = take(o);
+    print(s);
+    0
+}

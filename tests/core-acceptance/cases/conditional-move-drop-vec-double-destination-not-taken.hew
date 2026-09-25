@@ -1,0 +1,29 @@
+fn make_vec() -> Vec<i64> {
+    var v: Vec<i64> = Vec.new();
+    v.push(40);
+    v.push(2);
+    return v;
+}
+
+fn probe(a: bool, b: bool) -> i64 {
+    let xs = make_vec();
+    var out: i64 = 1;
+    if a {
+        let y = xs;
+        out = y.len();
+    } else if b {
+        let z = xs;
+        out = z.len() + 100;
+    }
+    out
+}
+
+fn main() -> i64 {
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < 50 {
+        total = total + probe(false, false);
+        i = i + 1;
+    }
+    total
+}

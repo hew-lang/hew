@@ -1,0 +1,10 @@
+[[case]]
+id = "actor-handler-unused-owned-param-mutable-direct-record-transfer-overwrite"
+intent = "Actor-handler owned-parameter disposition oracle. Shape `mutable_direct_record_transfer_overwrite` (mutable direct record transfer then overwrite uses only overwrite flag) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/actor-handler-unused-owned-param-mutable-direct-record-transfer-overwrite.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

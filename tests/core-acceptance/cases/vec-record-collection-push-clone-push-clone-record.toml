@@ -1,0 +1,10 @@
+[[case]]
+id = "vec-record-collection-push-clone-push-clone-record"
+intent = "Owned-element `Vec<record/enum-with-collection-field>` COPY-IN push leak oracle. Shape `push_clone_record` (push clone record collection field exact contents under malloc scribble) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+source = "cases/vec-record-collection-push-clone-push-clone-record.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "10|20|10|20|10|20OK"
+exit = 0

@@ -15,8 +15,6 @@
 //! (close fired at least once on the live path) is checked by
 //! the output assertions in the native core acceptance resource cases.
 
-import std.testing;
-
 #[resource]
 type Buf {
     data: Vec<i64>,
@@ -55,7 +53,7 @@ fn test_close_on_one_branch_releases_exactly_once() {
     if take {
         b.close();
     }
-    testing.assert_true(true);
+    assert(true);
 }
 
 // Same shape, not-consumed path taken at runtime: the implicit scope-exit
@@ -68,7 +66,7 @@ fn test_one_branch_not_taken_still_releases() {
     if take {
         b.close();
     }
-    testing.assert_true(true);
+    assert(true);
 }
 
 // close-on-both-branches — each arm owns and closes its own resource. The
@@ -84,7 +82,7 @@ fn test_close_on_both_branches() {
         let b = make(2);
         b.close();
     }
-    testing.assert_true(true);
+    assert(true);
 }
 
 // close-in-loop-body — a fresh resource per iteration, closed each time. The
@@ -96,7 +94,7 @@ fn test_close_in_loop_body() {
         let b = make(i);
         b.close();
     }
-    testing.assert_true(true);
+    assert(true);
 }
 
 // close-in-loop-body with a conditional consume — exercises flag re-init
@@ -112,7 +110,7 @@ fn test_loop_conditional_close_reinit() {
             b.close();
         }
     }
-    testing.assert_true(true);
+    assert(true);
 }
 
 // conditional-then-move-into-fn — the #1941 sibling joined with the #1933
@@ -127,7 +125,7 @@ fn test_conditional_then_move_into_fn() {
     if cond {
         sink(b);
     }
-    testing.assert_true(true);
+    assert(true);
 }
 
 // Same, not-moved path: the caller's implicit drop is the sole release.
@@ -138,7 +136,7 @@ fn test_conditional_move_not_taken_releases() {
     if cond {
         sink(b);
     }
-    testing.assert_true(true);
+    assert(true);
 }
 
 // Unconditional move into a consumer — the baseline #1941 case: `b` is moved
@@ -147,5 +145,5 @@ fn test_conditional_move_not_taken_releases() {
 fn test_unconditional_move_into_fn() {
     let b = make(4);
     sink(b);
-    testing.assert_true(true);
+    assert(true);
 }

@@ -70,8 +70,8 @@ impl Checker {
     ///
     /// Receiver-keyed (NOT trait-name-keyed): the lookup goes through
     /// `lookup_primitive_trait_method`, which keys on the canonical receiver
-    /// kind first, so the surviving five magic `dyn Display` callers
-    /// (`assert_eq` / `assert_ne` / `to_string` / `len` / `stop`) cannot be
+    /// kind first, so the surviving magic `dyn Display` callers
+    /// (`to_string` / `len` / `stop`) cannot be
     /// hijacked by trait-name string matching.
     ///
     /// Returns `Some(return_ty)` after applying argument checks and recording

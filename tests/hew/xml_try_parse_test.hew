@@ -1,12 +1,10 @@
 import std.encoding.xml;
 
-import std.testing;
-
 #[test]
 fn try_parse_returns_node() {
     match xml.parse("<root><child/></root>") {
-        .Ok(node) => testing.assert_eq_str(node.get_tag(), "root"),
-        .Err(_) => testing.assert_true(false),
+        .Ok(node) => assert(node.get_tag() == "root"),
+        .Err(_) => assert(false),
     }
 }
 
@@ -15,8 +13,8 @@ fn try_parse_returns_parser_error() {
     match xml.parse("<root>") {
         .Ok(node) => {
             node.close();
-            testing.assert_true(false);
+            assert(false);
         },
-        .Err(message) => testing.assert_true(message.starts_with("xml:")),
+        .Err(message) => assert(message.starts_with("xml:")),
     }
 }

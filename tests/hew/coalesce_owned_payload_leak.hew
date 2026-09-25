@@ -2,8 +2,6 @@
 //! skipping a drop leaks under the vertical-slice leak oracle, while dropping
 //! twice trips the poisoned allocator/double-free path.
 
-import std.testing;
-
 actor OwnedCoalescer {
     var processed: i64 = 0,
     var latest_len: i64 = -1,
@@ -37,11 +35,11 @@ fn coalesce_owned_payload_superseded_values_drop_once() {
     let _ = intake.update(9, "latest-payload", 0ns);
     sleep(350ms);
     match worker.count() {
-        .Ok(value) => testing.assert_eq(value, 2),
-        .Err(_) => testing.assert_true(false),
+        .Ok(value) => assert(value == 2),
+        .Err(_) => assert(false),
     }
     match worker.length() {
-        .Ok(value) => testing.assert_eq(value, 14),
-        .Err(_) => testing.assert_true(false),
+        .Ok(value) => assert(value == 14),
+        .Err(_) => assert(false),
     }
 }

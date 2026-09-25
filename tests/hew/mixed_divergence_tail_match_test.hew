@@ -19,8 +19,6 @@
 
 import std.string;
 
-import std.testing;
-
 enum Action {
     Move,
     Left,
@@ -54,11 +52,11 @@ fn action_name(a: Action) -> string {
 #[test]
 fn test_string_return_from_mixed_divergence_tail_match() {
     // The diverging arm returns directly.
-    testing.assert_eq_str(action_name(Action.Move), "MOVE");
+    assert(action_name(Action.Move) == "MOVE");
     // Each value arm round-trips its OWN distinct value.
-    testing.assert_eq_str(action_name(Action.Left), "LEFT");
-    testing.assert_eq_str(action_name(Action.Right), "RIGHT");
-    testing.assert_eq_str(action_name(Action.Wait), "WAIT");
+    assert(action_name(Action.Left) == "LEFT");
+    assert(action_name(Action.Right) == "RIGHT");
+    assert(action_name(Action.Wait) == "WAIT");
 }
 
 // ── record (aggregate/struct) return: one `return`-diverging arm ──────────
@@ -82,12 +80,12 @@ fn action_point(a: Action) -> Pt {
 #[test]
 fn test_record_return_from_mixed_divergence_tail_match() {
     let m = action_point(Action.Move);
-    testing.assert_eq(m.x, -1);
-    testing.assert_eq(m.y, -1);
+    assert(m.x == -1);
+    assert(m.y == -1);
     let l = action_point(Action.Left);
-    testing.assert_eq(l.x, 1);
-    testing.assert_eq(l.y, 0);
+    assert(l.x == 1);
+    assert(l.y == 0);
     let r = action_point(Action.Right);
-    testing.assert_eq(r.x, 0);
-    testing.assert_eq(r.y, 1);
+    assert(r.x == 0);
+    assert(r.y == 1);
 }

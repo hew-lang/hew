@@ -60,6 +60,6 @@ fn main() {
     let gen_seq = render_gen_seq(100, 3);
     println(actor_seq);
     println(gen_seq);
-    assert_eq(actor_seq, gen_seq);
-    assert_eq(actor_seq, "100,101,102");
+    assert(actor_seq == gen_seq);
+    assert(actor_seq == "100,101,102");
 }

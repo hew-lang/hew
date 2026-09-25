@@ -1,7 +1,5 @@
 //! Regression coverage for compiler-derived structural clone.
 
-import std.testing;
-
 type Pair {
     number: i64,
     label: string,
@@ -15,9 +13,9 @@ fn builtin_aggregates_clone_member_wise() {
     let result_copy = clone result;
     let pair = Pair { number: 9, label: "nine" };
     let pair_copy = clone pair;
-    testing.assert_true(option == option_copy);
-    testing.assert_true(result == result_copy);
-    testing.assert_true(pair == pair_copy);
+    assert(option == option_copy);
+    assert(result == result_copy);
+    assert(pair == pair_copy);
 }
 
 #[test]
@@ -26,8 +24,8 @@ fn tuple_clone_owns_nested_collections_independently() {
     original.0.push(1);
     var copy = clone original;
     copy.0.push(2);
-    testing.assert_true(original.0.len() == 1);
-    testing.assert_true(copy.0.len() == 2);
+    assert(original.0.len() == 1);
+    assert(copy.0.len() == 2);
 }
 
 /// A type parameter's clone capability inside a generic template comes from its
@@ -40,5 +38,5 @@ fn clone_option<T: Clone>(value: Option<T>) -> Option<T> {
 fn bounded_generic_clone_is_admitted_and_instantiates() {
     let original: Option<i64> = .Some(3);
     let copied = clone_option(original);
-    testing.assert_true(copied == Option.Some(3));
+    assert(copied == Option.Some(3));
 }

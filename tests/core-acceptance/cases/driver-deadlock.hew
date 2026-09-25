@@ -1,0 +1,8 @@
+// The only waiter parks on a semaphore nothing can release: the driver
+// reports the deadlock at once instead of hanging.
+import std.semaphore;
+fn main() {
+    let sem = semaphore.new(0);
+    sem.acquire();
+    println("never");
+}

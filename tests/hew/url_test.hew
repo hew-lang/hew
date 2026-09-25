@@ -4,79 +4,77 @@ import std.net.url;
 
 import std.string;
 
-import std.testing;
-
 #[test]
 fn test_encode_preserves_existing_ascii_behaviour() {
-    testing.assert_eq_str(url.encode(""), "");
-    testing.assert_eq_str(url.encode("hello world"), "hello%20world");
-    testing.assert_eq_str(url.encode("a=1&b=2"), "a%3D1%26b%3D2");
+    assert(url.encode("") == "");
+    assert(url.encode("hello world") == "hello%20world");
+    assert(url.encode("a=1&b=2") == "a%3D1%26b%3D2");
 }
 
 #[test]
 fn test_encode_utf8_bytes_as_uppercase_hex() {
-    testing.assert_eq_str(url.encode("café"), "caf%C3%A9");
-    testing.assert_eq_str(url.encode("éx🙂z"), "%C3%A9x%F0%9F%99%82z");
+    assert(url.encode("café") == "caf%C3%A9");
+    assert(url.encode("éx🙂z") == "%C3%A9x%F0%9F%99%82z");
 }
 
 #[test]
 fn test_decode_preserves_existing_behaviour() {
-    testing.assert_eq_str(url.decode("hello%20world"), "hello world");
-    testing.assert_eq_str(url.decode("bad%2Zseq"), "bad%2Zseq");
-    testing.assert_eq_str(url.decode("plus+sign"), "plus+sign");
+    assert(url.decode("hello%20world") == "hello world");
+    assert(url.decode("bad%2Zseq") == "bad%2Zseq");
+    assert(url.decode("plus+sign") == "plus+sign");
 }
 
 #[test]
 fn test_decode_invalid_utf8_returns_empty_string() {
-    testing.assert_eq_str(url.decode("%FF%FE"), "");
+    assert(url.decode("%FF%FE") == "");
 }
 
 #[test]
 fn test_decode_preserves_decoded_nul_and_unicode() {
     let nul = string.from_char(0);
-    testing.assert_eq_str(url.decode("%00"), nul);
-    testing.assert_eq_str(url.decode("a%00b"), "a" + nul + "b");
-    testing.assert_eq_str(url.decode("%C3%A9x%F0%9F%99%82z"), "éx🙂z");
-    testing.assert_eq_str(url.decode("%E2%82"), "");
-    testing.assert_eq_str(url.decode("%ED%A0%80"), "");
+    assert(url.decode("%00") == nul);
+    assert(url.decode("a%00b") == "a" + nul + "b");
+    assert(url.decode("%C3%A9x%F0%9F%99%82z") == "éx🙂z");
+    assert(url.decode("%E2%82") == "");
+    assert(url.decode("%ED%A0%80") == "");
 }
 
 #[test]
 fn test_decode_query_empty_returns_empty_vec() {
     let pairs = url.decode_query("");
-    testing.assert_eq(pairs.len(), 0);
+    assert(pairs.len() == 0);
 }
 
 #[test]
 fn test_decode_query_decodes_form_pairs_in_order() {
     let pairs = url.decode_query("name=hello+world&x=a%2Bb&empty=&a=b=c");
-    testing.assert_eq(pairs.len(), 4);
-    testing.assert_eq_str(pairs[0].0, "name");
-    testing.assert_eq_str(pairs[0].1, "hello world");
-    testing.assert_eq_str(pairs[1].0, "x");
-    testing.assert_eq_str(pairs[1].1, "a+b");
-    testing.assert_eq_str(pairs[2].0, "empty");
-    testing.assert_eq_str(pairs[2].1, "");
-    testing.assert_eq_str(pairs[3].0, "a");
-    testing.assert_eq_str(pairs[3].1, "b=c");
+    assert(pairs.len() == 4);
+    assert(pairs[0].0 == "name");
+    assert(pairs[0].1 == "hello world");
+    assert(pairs[1].0 == "x");
+    assert(pairs[1].1 == "a+b");
+    assert(pairs[2].0 == "empty");
+    assert(pairs[2].1 == "");
+    assert(pairs[3].0 == "a");
+    assert(pairs[3].1 == "b=c");
 }
 
 #[test]
 fn test_decode_query_preserves_nul_and_rejects_invalid_utf8() {
     let pairs = url.decode_query("value=a%00b&invalid=%FF&incomplete=%E2%82");
-    testing.assert_eq_str(pairs[0].1, "a" + string.from_char(0) + "b");
-    testing.assert_eq_str(pairs[1].1, "");
-    testing.assert_eq_str(pairs[2].1, "");
+    assert(pairs[0].1 == "a" + string.from_char(0) + "b");
+    assert(pairs[1].1 == "");
+    assert(pairs[2].1 == "");
 }
 
 #[test]
 fn test_decode_query_skips_entries_without_equals() {
     let pairs = url.decode_query("skip-me&ok=yes&&also=no");
-    testing.assert_eq(pairs.len(), 2);
-    testing.assert_eq_str(pairs[0].0, "ok");
-    testing.assert_eq_str(pairs[0].1, "yes");
-    testing.assert_eq_str(pairs[1].0, "also");
-    testing.assert_eq_str(pairs[1].1, "no");
+    assert(pairs.len() == 2);
+    assert(pairs[0].0 == "ok");
+    assert(pairs[0].1 == "yes");
+    assert(pairs[1].0 == "also");
+    assert(pairs[1].1 == "no");
 }
 
 #[test]
@@ -95,17 +93,17 @@ fn test_port_returns_some_when_explicit() {
     let port = parsed.port();
     parsed.close();
     match port {
-        .Some(value) => testing.assert_eq(value, 8080),
+        .Some(value) => assert(value == 8080),
         .None => panic("expected Some(8080), got None"),
     }
 }
 
 #[test]
 fn test_encode_query_skips_invalid_lines_and_uses_first_equals() {
-    testing.assert_eq_str(url.encode_query("name=hello world\nskip-me\na=b=c"), "name=hello%20world&a=b%3Dc");
+    assert(url.encode_query("name=hello world\nskip-me\na=b=c") == "name=hello%20world&a=b%3Dc");
 }
 
 #[test]
 fn test_encode_query_matches_existing_pair_encoding() {
-    testing.assert_eq_str(url.encode_query("name=hello world\r\npage=1&2\nother=a+b"), "name=hello%20world&page=1%262&other=a%2Bb");
+    assert(url.encode_query("name=hello world\r\npage=1&2\nother=a+b") == "name=hello%20world&page=1%262&other=a%2Bb");
 }

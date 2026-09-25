@@ -7,8 +7,6 @@
 //! type and lower cleanly (they were fail-closed before the or-leaf
 //! reclassifier was deleted).
 
-import std.testing;
-
 type Point {
     x: i64,
     y: i64,
@@ -36,7 +34,7 @@ fn match_record_rest_binds_listed_field() {
     let got = match p {
         Point { x, .. } => x,
     };
-    testing.assert_eq(got, 3);
+    assert(got == 3);
 }
 
 /// `let` with `..` projects only the listed field.
@@ -44,7 +42,7 @@ fn match_record_rest_binds_listed_field() {
 fn let_record_rest_projects_listed_field() {
     let p = Point { x: 7, y: 9 };
     let Point { y, .. } = p;
-    testing.assert_eq(y, 9);
+    assert(y == 9);
 }
 
 /// `{ .. }` alone matches and binds nothing.
@@ -54,7 +52,7 @@ fn match_record_all_rest_matches() {
     let got = match p {
         Point { .. } => 42,
     };
-    testing.assert_eq(got, 42);
+    assert(got == 42);
 }
 
 /// Nested rest: the omitted inner field is erased; the outer and listed inner
@@ -63,7 +61,7 @@ fn match_record_all_rest_matches() {
 fn nested_record_rest_binds_correctly() {
     let o = Outer { inner: Inner { a: 5, b: 6 }, tag: 8 };
     let Outer { inner: Inner { a, .. }, tag } = o;
-    testing.assert_eq(a + tag, 13);
+    assert(a + tag == 13);
 }
 
 /// Or-pattern struct leaves with rest lower through the single producer:
@@ -73,9 +71,9 @@ fn or_pattern_struct_leaves_match_either_literal() {
     let first = classify(Shape.Corner { x: 1, y: 9 });
     let second = classify(Shape.Corner { x: 2, y: 8 });
     let other = classify(Shape.Corner { x: 7, y: 7 });
-    testing.assert_eq(first, 100);
-    testing.assert_eq(second, 100);
-    testing.assert_eq(other, 7);
+    assert(first == 100);
+    assert(second == 100);
+    assert(other == 7);
 }
 
 fn classify(s: Shape) -> i64 {

@@ -4432,7 +4432,7 @@ fn add(a: i64, b: i64) -> i64 { a + b }
 
 #[test]
 fn add_two_positive_numbers_returns_sum() {
-    assert_eq(add(2, 3), 5);
+    assert(add(2, 3) == 5);
 }
 ```
 
@@ -4463,25 +4463,68 @@ test` — no warning, no error, it's simply never found. If a suite's pass
 > count looks lower than expected, run `hew test <path> --list` first to see
 > exactly what was discovered before debugging individual tests.
 
-### Assertions: `assert`, `assert_eq`, `assert_ne`
+### Assertions: `assert`
 
-`assert(condition: bool)` panics when `condition` is `false`. `assert_eq(a,
-b)` and `assert_ne(a, b)` compare with the same equality `==` uses and panic
-with both values on failure — prefer them over `assert(a == b)` for the
-readable failure message. Both operands share one type `T: Eq + Display`, so a
-value has to be comparable and able to print itself. `Option` and `Result` gain
-`Display` at v0.7.0, and until then a test compares one by matching on it:
+`assert(condition)` panics when `condition` is `false`, and
+`assert(condition, message)` adds a `string` that is evaluated only when the
+assertion fails. The failure names the condition as written. When the
+condition is a comparison (`==`, `!=`, `<`, `<=`, `>`, `>=`), each operand is
+evaluated exactly once and both are shown, rendered the way `{:?}` renders
+them, so `Option`, `Result`, records, enums and `Vec` values show their
+contents:
+
+```hew
+#[test]
+fn wrong_expectation_fails() {
+    let actual = 2 + 2;
+    assert(actual == 5, "arithmetic still works");
+}
+```
 
 ```
 ---- wrong_expectation_fails ----
-assertion failed: left != right
+hew: failure: UserPanic (212): assertion failed: actual == 5: arithmetic still works
   left: 4
-  right: 5
+ right: 5
 ```
 
-These are the same panic-based builtins used everywhere else in Hew
-(`assert`, `assert_eq`, `assert_ne` — see "Assertions" above); a test
-failure IS a panic, nothing test-framework-specific.
+A value too long or too many lines to compare by eye also gets a line diff
+(`diff (-left +right):`), split field by field for a one-line record or
+collection. Any other condition (`&&`, a method returning `bool`) shows its
+text without operand values. `assert` is the same panic-based builtin used
+everywhere else in Hew; a test failure is a panic, nothing
+test-framework-specific.
+
+### Deterministic execution and `#[real_time]`
+
+Every test runs on a single-thread driver with a virtual clock unless it is
+marked `#[real_time]`. Actors, `fork`ed tasks and the test body take turns on
+one thread in a fixed order, and time moves only when nothing is ready: it
+jumps to the next pending timer, so `sleep(10s)` in a test returns at once and
+a periodic handler ticks an exact number of times. A test that parks with
+nothing runnable and no timer pending fails immediately as a deadlock instead
+of timing out.
+
+```
+hew test ledger_test.hew --schedules 64
+```
+
+The default schedule runs participants in the order they became ready
+(`fifo`). `--schedules N` also runs each test under `N` seeded `random`
+schedules; a failure reports how many schedules failed, the schedule and seed
+of the first, and a command that reproduces it:
+
+```
+failed on 50 of 65 schedules
+schedule random, seed 0x3f9a61c2d4e07b15
+reproduce: hew test ledger_test.hew --filter concurrent_deposits_are_not_lost --schedule random --seed 0x3f9a61c2d4e07b15
+```
+
+`--schedule fifo|random` picks the first run's schedule and `--seed N` (hex or
+decimal) its seed; the default seed is a stable hash of the test's identity.
+Mark a test `#[real_time]` when it needs the host clock and host threads - a
+subprocess, a socket peer or a deadline measured in wall time; it then runs
+on the threaded scheduler and ignores `--schedule` and `--seed`.
 
 ### `#[should_panic]` — tests that must panic
 

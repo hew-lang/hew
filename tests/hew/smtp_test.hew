@@ -11,8 +11,6 @@ import std.net.smtp;
 
 import std.net.websocket;
 
-import std.testing;
-
 /// Claim an ephemeral loopback port and release it.
 ///
 /// The returned port is one nothing is listening on, so a connect to it is
@@ -36,7 +34,7 @@ fn test_module_try_send_bad_port_surfaces_reason() {
     let result = smtp.send("localhost", 999999, "u", "p", "a@example.com", "b@example.com", "s", "b");
     match result {
         .Ok(_) => panic("expected an out-of-range port to fail"),
-        .Err(msg) => testing.assert_true(msg.contains("out of range")),
+        .Err(msg) => assert(msg.contains("out of range")),
     }
 }
 
@@ -52,7 +50,7 @@ fn test_connect_to_a_closed_port_is_a_failure_not_a_live_conn() {
             conn.close();
             panic("expected a connect to a closed port to fail");
         },
-        .Err(msg) => testing.assert_true(msg.contains("cannot reach")),
+        .Err(msg) => assert(msg.contains("cannot reach")),
     }
 }
 
@@ -64,7 +62,7 @@ fn test_connect_tls_to_a_closed_port_is_a_failure_not_a_live_conn() {
             conn.close();
             panic("expected a TLS connect to a closed port to fail");
         },
-        .Err(msg) => testing.assert_true(msg.contains("cannot reach")),
+        .Err(msg) => assert(msg.contains("cannot reach")),
     }
 }
 
@@ -81,7 +79,7 @@ fn test_module_try_send_oversized_i64_port_does_not_wrap() {
     let result = smtp.send("localhost", 4294967883, "u", "p", "a@example.com", "b@example.com", "s", "b");
     match result {
         .Ok(_) => panic("expected an oversized i64 port to fail, not wrap into a valid port"),
-        .Err(msg) => testing.assert_true(msg.contains("out of range")),
+        .Err(msg) => assert(msg.contains("out of range")),
     }
 }
 
@@ -90,7 +88,7 @@ fn test_module_try_send_html_oversized_i64_port_does_not_wrap() {
     let result = smtp.send_html("localhost", 4294967883, "u", "p", "a@example.com", "b@example.com", "s", "<b>b</b>");
     match result {
         .Ok(_) => panic("expected an oversized i64 port to fail, not wrap into a valid port"),
-        .Err(msg) => testing.assert_true(msg.contains("out of range")),
+        .Err(msg) => assert(msg.contains("out of range")),
     }
 }
 
@@ -101,7 +99,7 @@ fn test_conn_connect_oversized_i64_port_rejects_before_relay_init() {
             conn.close();
             panic("expected an oversized port to be rejected, not wrapped");
         },
-        .Err(msg) => testing.assert_true(msg.contains("out of range")),
+        .Err(msg) => assert(msg.contains("out of range")),
     }
 }
 
@@ -112,6 +110,6 @@ fn test_conn_connect_tls_oversized_i64_port_rejects_before_relay_init() {
             conn.close();
             panic("expected an oversized port to be rejected, not wrapped");
         },
-        .Err(msg) => testing.assert_true(msg.contains("out of range")),
+        .Err(msg) => assert(msg.contains("out of range")),
     }
 }

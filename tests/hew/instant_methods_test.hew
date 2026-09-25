@@ -12,14 +12,12 @@
 //! number. The strict `> 0` after `sleep` is the test with teeth: it would
 //! fail if the call lowered to a garbage path returning 0 / uninitialised.
 
-import std.testing;
-
 // ── elapsed since an instant is never negative ───────────────────────
 #[test]
 fn test_instant_elapsed_non_negative() {
     let t = instant.now();
     let e: duration = t.elapsed();
-    testing.assert_true(e.nanos() >= 0);
+    assert(e.nanos() >= 0);
 }
 
 // ── duration_since of the same instant is zero ───────────────────────
@@ -27,8 +25,8 @@ fn test_instant_elapsed_non_negative() {
 fn test_instant_duration_since_self_is_zero() {
     let t = instant.now();
     let d: duration = t.duration_since(t);
-    testing.assert_eq(d.nanos(), 0);
-    testing.assert_true(d.is_zero());
+    assert(d.nanos() == 0);
+    assert(d.is_zero());
 }
 
 // ── a later instant minus an earlier one is strictly positive ────────
@@ -40,8 +38,8 @@ fn test_instant_duration_since_is_positive_after_sleep() {
     sleep(5ms);
     let later = instant.now();
     let span: duration = later.duration_since(earlier);
-    testing.assert_true(span.nanos() > 0);
-    testing.assert_true(span.millis() >= 5);
+    assert(span.nanos() > 0);
+    assert(span.millis() >= 5);
 }
 
 // ── elapsed is at least the sleep we waited ──────────────────────────
@@ -50,7 +48,7 @@ fn test_instant_elapsed_advances_after_sleep() {
     let start = instant.now();
     sleep(5ms);
     let waited: duration = start.elapsed();
-    testing.assert_true(waited.millis() >= 5);
+    assert(waited.millis() >= 5);
 }
 
 // ── the elapsed/duration_since result interoperates with the full
@@ -62,10 +60,10 @@ fn test_instant_result_interops_with_duration_methods() {
     let later = instant.now();
     let span: duration = later.duration_since(earlier);
     // Every `duration` accessor accepts the instant-derived span.
-    testing.assert_true(span.nanos() >= span.micros());
-    testing.assert_true(span.micros() >= span.millis());
-    testing.assert_true(!span.is_zero());
-    testing.assert_true(span.abs().nanos() == span.nanos());
+    assert(span.nanos() >= span.micros());
+    assert(span.micros() >= span.millis());
+    assert(!span.is_zero());
+    assert(span.abs().nanos() == span.nanos());
 }
 
 // ── Display of a TYPED instant renders raw nanos (regression for #2277) ───────
@@ -93,12 +91,12 @@ fn test_typed_instant_to_string_is_consistent_across_surfaces() {
     let alias: instant = a;
     let s1: string = to_string(a);
     // A `let`-aliased typed instant renders identically.
-    testing.assert_eq_str(to_string(alias), s1);
+    assert(to_string(alias) == s1);
     // A param-typed instant (the utility-function shape the defect broke)
     // renders identically.
-    testing.assert_eq_str(render_typed_instant(a), s1);
+    assert(render_typed_instant(a) == s1);
     // f-string interpolation shares the same Display dispatch spine.
-    testing.assert_eq_str(f"{a}", s1);
+    assert(f"{a}" == s1);
     // A garbage/empty-string regression fails here.
-    testing.assert_true(!s1.is_empty());
+    assert(!s1.is_empty());
 }

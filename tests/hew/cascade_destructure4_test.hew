@@ -6,8 +6,6 @@
 //! a four-field destructure computes exact values, proving the suppression
 //! preserves correct behaviour on well-formed destructures.
 
-import std.testing;
-
 type Rect {
     x: i64,
     y: i64,
@@ -20,7 +18,7 @@ type Rect {
 fn destruct_four_field_exact_values() {
     let r = Rect { x: 1, y: 2, w: 10, h: 20 };
     let Rect { x, y, w, h } = r;
-    testing.assert_eq(x + y + w + h, 33);
+    assert(x + y + w + h == 33);
 }
 
 /// Area derived from destructured width and height fields is correct.
@@ -28,7 +26,7 @@ fn destruct_four_field_exact_values() {
 fn destruct_four_field_area_computation() {
     let r = Rect { x: 0, y: 0, w: 6, h: 7 };
     let Rect { x: _x, y: _y, w, h } = r;
-    testing.assert_eq(w * h, 42);
+    assert(w * h == 42);
 }
 
 /// Partial destructure aliases: two fields aliased, two named directly.
@@ -36,5 +34,5 @@ fn destruct_four_field_area_computation() {
 fn destruct_four_field_partial_alias() {
     let r = Rect { x: 3, y: 4, w: 5, h: 6 };
     let Rect { x: left, y: top, w, h } = r;
-    testing.assert_eq(left + top + w + h, 18);
+    assert(left + top + w + h == 18);
 }

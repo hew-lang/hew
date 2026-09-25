@@ -6,8 +6,6 @@
 //! second use panicked on a missing descriptor / freed heap, and teardown
 //! crashed after #[on(stop)]).
 
-import std.testing;
-
 trait Formatter {
     fn format(val: Self, msg: string) -> string;
 }
@@ -79,13 +77,13 @@ fn test_second_dispatch_after_dyn_state_drain_sees_valid_empty_vec() {
     let h = spawn DynHolder;
     let first = h.drain_format("m1");
     match first {
-        .Ok(n) => testing.assert_eq(n, 2),
-        .Err(_) => testing.assert_eq(0, 1),
+        .Ok(n) => assert(n == 2),
+        .Err(_) => assert(0 == 1),
     }
     let second = h.drain_format("m2");
     match second {
-        .Ok(n) => testing.assert_eq(n, 0),
-        .Err(_) => testing.assert_eq(0, 2),
+        .Ok(n) => assert(n == 0),
+        .Err(_) => assert(0 == 2),
     }
 }
 
@@ -94,19 +92,19 @@ fn test_push_into_drained_dyn_state_field_lands_in_valid_vec() {
     let h = spawn DynHolder;
     let first = h.drain_format("m1");
     match first {
-        .Ok(n) => testing.assert_eq(n, 2),
-        .Err(_) => testing.assert_eq(0, 1),
+        .Ok(n) => assert(n == 2),
+        .Err(_) => assert(0 == 1),
     }
     let _ = h.refill();
     let count = h.plugin_count();
     match count {
-        .Ok(n) => testing.assert_eq(n, 1),
-        .Err(_) => testing.assert_eq(0, 2),
+        .Ok(n) => assert(n == 1),
+        .Err(_) => assert(0 == 2),
     }
     let third = h.drain_format("m3");
     match third {
-        .Ok(n) => testing.assert_eq(n, 1),
-        .Err(_) => testing.assert_eq(0, 3),
+        .Ok(n) => assert(n == 1),
+        .Err(_) => assert(0 == 3),
     }
 }
 
@@ -115,12 +113,12 @@ fn test_second_dispatch_after_string_state_drain_terminates() {
     let h = spawn StrHolder;
     let first = h.drain_count();
     match first {
-        .Ok(n) => testing.assert_eq(n, 2),
-        .Err(_) => testing.assert_eq(0, 1),
+        .Ok(n) => assert(n == 2),
+        .Err(_) => assert(0 == 1),
     }
     let second = h.drain_count();
     match second {
-        .Ok(n) => testing.assert_eq(n, 0),
-        .Err(_) => testing.assert_eq(0, 2),
+        .Ok(n) => assert(n == 0),
+        .Err(_) => assert(0 == 2),
     }
 }

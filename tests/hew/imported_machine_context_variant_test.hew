@@ -11,16 +11,14 @@
 
 import tests.hew.machine_context_variant_support.light_defs;
 
-import std.testing;
-
 #[test]
 fn contextual_transition_bodies_run_after_the_module_is_imported() {
     var light = light_defs.initial();
-    testing.assert_eq_str(light.state_name(), "On");
+    assert(light.state_name() == "On");
     light.step(light_defs.LightEvent.Toggle);
-    testing.assert_eq_str(light.state_name(), "Off");
+    assert(light.state_name() == "Off");
     light.step(light_defs.LightEvent.Toggle);
-    testing.assert_eq_str(light.state_name(), "On");
+    assert(light.state_name() == "On");
 }
 
 /// The `.Named { … }` body constructs a struct-payload state, so the expected
@@ -33,5 +31,5 @@ fn contextual_struct_payload_transition_carries_its_field_out() {
         light_defs.Light.Named { label } => label,
         _ => "none",
     };
-    testing.assert_eq_str(label, "LIT");
+    assert(label == "LIT");
 }

@@ -15,6 +15,6 @@ fn main() -> i64 {
     let w64: i64 = 63;
     let expected = one64 << w64;
 
-    assert_eq(s as i64, expected);
+    assert((s as i64) == expected);
     0
 }

@@ -1,5 +1,3 @@
-import std.testing;
-
 import std.text.regex;
 
 type PatternWrapper {
@@ -15,5 +13,5 @@ impl PatternWrapper {
 #[test]
 fn test_owned_handle_wrapper_can_delegate_without_exposing_handle() {
     let wrapper = PatternWrapper { pattern: regex.new("a+") };
-    testing.assert_true(wrapper.matches("aaa"));
+    assert(wrapper.matches("aaa"));
 }

@@ -10,8 +10,6 @@
 //! the binder stayed `Live` at the `Return` exit and its drop fired alongside
 //! the composite's — over-releasing the payload. Sibling shape of issue #2648.
 
-import std.testing;
-
 #[resource]
 type Ticket {
     id: i64,
@@ -39,7 +37,7 @@ fn issue(ok: bool) -> Result<Ticket, string> {
 #[test]
 fn ok_arm_uses_payload_while_err_arm_panics() {
     match issue(true) {
-        .Ok(ticket) => testing.assert_eq(ticket.value(), 7),
+        .Ok(ticket) => assert(ticket.value() == 7),
         .Err(_) => panic("expected a ticket"),
     }
 }
@@ -47,7 +45,7 @@ fn ok_arm_uses_payload_while_err_arm_panics() {
 #[test]
 fn ok_arm_uses_payload_while_err_arm_returns() {
     match issue(true) {
-        .Ok(ticket) => testing.assert_eq(ticket.value(), 7),
+        .Ok(ticket) => assert(ticket.value() == 7),
         .Err(_) => return,
     }
 }
@@ -59,6 +57,6 @@ fn err_arm_taken_with_diverging_ok_arm() {
             let _ = ticket.value();
             panic("expected a decline");
         },
-        .Err(reason) => testing.assert_eq_str(reason, "declined"),
+        .Err(reason) => assert(reason == "declined"),
     }
 }

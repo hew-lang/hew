@@ -7,8 +7,6 @@
 //! result, confirming that the cascade engine does not over-suppress real
 //! successful destructures.
 
-import std.testing;
-
 type Vec2 {
     x: i64,
     y: i64,
@@ -20,7 +18,7 @@ type Vec2 {
 fn destruct_two_field_exact_sum() {
     let v = Vec2 { x: 3, y: 4 };
     let Vec2 { x, y } = v;
-    testing.assert_eq(x + y, 7);
+    assert(x + y == 7);
 }
 
 /// Nested record construction and destructure: both outer and inner fields
@@ -29,7 +27,7 @@ fn destruct_two_field_exact_sum() {
 fn destruct_nested_record_exact_values() {
     let v = Vec2 { x: 10, y: 20 };
     let Vec2 { x, y } = v;
-    testing.assert_eq(x * 2 + y, 40);
+    assert(x * 2 + y == 40);
 }
 
 /// Record field aliasing in a destructure (`x: alias`) binds the alias, not
@@ -38,5 +36,5 @@ fn destruct_nested_record_exact_values() {
 fn destruct_field_alias_correct_value() {
     let v = Vec2 { x: 5, y: 9 };
     let Vec2 { x: a, y: b } = v;
-    testing.assert_eq(a + b, 14);
+    assert(a + b == 14);
 }

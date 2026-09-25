@@ -7,8 +7,6 @@
 //! `ResolvedTy::TypeParam` variant `from_ty_with_type_params` actually
 //! produces for a method's own return type.
 
-import std.testing;
-
 type Repeat<T> {
     value: T,
     remaining: i64,
@@ -32,7 +30,7 @@ fn test_generic_iterator_for_in_accumulates() {
     for x in Repeat { value: 7, remaining: 3 } {
         total = total + x;
     }
-    testing.assert_eq(total, 21);
+    assert(total == 21);
 }
 
 // Exercises Display dispatch on the for-in's resolved element type, the
@@ -45,5 +43,5 @@ fn test_generic_iterator_for_in_display_dispatch() {
     for x in Repeat { value: 5, remaining: 2 } {
         out = out + f"{x}";
     }
-    testing.assert_eq_str(out, "55");
+    assert(out == "55");
 }

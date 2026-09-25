@@ -1,0 +1,11 @@
+[[case]]
+id = "assertion-message"
+intent = "An assertion message is evaluated only when the assertion fails, and the report carries the condition text, the message and both compared operands."
+source = "cases/assertion-message.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "message shown\n"
+stderr = "hew: failure: UserPanic (212): assertion failed: values.len() == 3: shown\n  left: 2\n right: 3\n"
+exit = 1

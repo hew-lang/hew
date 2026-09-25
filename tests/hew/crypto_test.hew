@@ -2,8 +2,6 @@
 
 import std.crypto.crypto;
 
-import std.testing;
-
 fn message() -> bytes {
     "hew".to_bytes()
 }
@@ -11,35 +9,35 @@ fn message() -> bytes {
 #[test]
 fn test_sha256_returns_32_byte_digest() {
     let digest = crypto.sha256(message());
-    testing.assert_eq(digest.len(), 32);
+    assert(digest.len() == 32);
 }
 
 #[test]
 fn test_sha384_returns_48_byte_digest() {
     let digest = crypto.sha384(message());
-    testing.assert_eq(digest.len(), 48);
+    assert(digest.len() == 48);
 }
 
 #[test]
 fn test_sha512_returns_64_byte_digest() {
     let digest = crypto.sha512(message());
-    testing.assert_eq(digest.len(), 64);
+    assert(digest.len() == 64);
 }
 
 #[test]
 fn test_hmac_sha256_returns_32_byte_tag() {
     let tag = crypto.hmac_sha256("key".to_bytes(), message());
-    testing.assert_eq(tag.len(), 32);
+    assert(tag.len() == 32);
 }
 
 #[test]
 fn test_constant_time_eq_accepts_equal_bytes() {
-    testing.assert_true(crypto.constant_time_eq("abc".to_bytes(), "abc".to_bytes()));
+    assert(crypto.constant_time_eq("abc".to_bytes(), "abc".to_bytes()));
 }
 
 #[test]
 fn test_constant_time_eq_rejects_different_bytes() {
-    testing.assert_false(crypto.constant_time_eq("abc".to_bytes(), "abd".to_bytes()));
+    assert(!crypto.constant_time_eq("abc".to_bytes(), "abd".to_bytes()));
 }
 
 #[test]
@@ -48,7 +46,7 @@ fn test_random_bytes_returns_requested_length() {
         .Ok(generated) => generated,
         .Err(reason) => panic(reason),
     };
-    testing.assert_eq(generated.len(), 16);
+    assert(generated.len() == 16);
 }
 
 // ── #38: a random-byte request that cannot be served is reported ──────
@@ -56,7 +54,7 @@ fn test_random_bytes_returns_requested_length() {
 fn test_random_bytes_rejects_a_negative_length() {
     match crypto.random_bytes(-1) {
         .Ok(drawn) => panic(f"expected a negative length to be rejected, got {drawn.len()} bytes"),
-        .Err(err) => testing.assert_eq_str(err, "crypto.random_bytes: invalid length -1 (must be >= 0)"),
+        .Err(err) => assert(err == "crypto.random_bytes: invalid length -1 (must be >= 0)"),
     }
 }
 
@@ -65,22 +63,22 @@ fn test_random_bytes_rejects_a_length_no_bytes_value_can_hold() {
     let too_large = crypto.max_random_bytes_len() + 1;
     match crypto.random_bytes(too_large) {
         .Ok(drawn) => panic(f"expected an oversized length to be rejected, got {drawn.len()} bytes"),
-        .Err(err) => testing.assert_eq_str(err, f"crypto.random_bytes: length {too_large} exceeds the public maximum {crypto.max_random_bytes_len()}"),
+        .Err(err) => assert(err == f"crypto.random_bytes: length {too_large} exceeds the public maximum {crypto.max_random_bytes_len()}"),
     }
 }
 
 #[test]
 fn test_random_bytes_preserves_valid_lengths_including_zero() {
     match crypto.random_bytes(0) {
-        .Ok(drawn) => testing.assert_eq(drawn.len(), 0),
+        .Ok(drawn) => assert(drawn.len() == 0),
         .Err(err) => panic(f"expected a zero-length draw to succeed: {err}"),
     }
     match crypto.random_bytes(1) {
-        .Ok(drawn) => testing.assert_eq(drawn.len(), 1),
+        .Ok(drawn) => assert(drawn.len() == 1),
         .Err(err) => panic(f"expected a 1-byte draw to succeed: {err}"),
     }
     match crypto.random_bytes(32) {
-        .Ok(drawn) => testing.assert_eq(drawn.len(), 32),
+        .Ok(drawn) => assert(drawn.len() == 32),
         .Err(err) => panic(f"expected a 32-byte draw to succeed: {err}"),
     }
 }
@@ -89,7 +87,7 @@ fn test_random_bytes_preserves_valid_lengths_including_zero() {
 fn test_random_bytes_accepts_the_documented_public_maximum() {
     let maximum = crypto.max_random_bytes_len();
     match crypto.random_bytes(maximum) {
-        .Ok(drawn) => testing.assert_eq(drawn.len(), maximum),
+        .Ok(drawn) => assert(drawn.len() == maximum),
         .Err(err) => panic(f"the documented maximum must remain valid: {err}"),
     }
 }
@@ -101,7 +99,7 @@ fn test_random_bytes_status_does_not_leak_into_the_next_draw() {
         .Err(_) => {},
     }
     match crypto.random_bytes(8) {
-        .Ok(drawn) => testing.assert_eq(drawn.len(), 8),
+        .Ok(drawn) => assert(drawn.len() == 8),
         .Err(err) => panic(f"a later valid draw must not inherit the earlier failure: {err}"),
     }
 }
@@ -110,6 +108,6 @@ fn test_random_bytes_status_does_not_leak_into_the_next_draw() {
 fn test_random_bytes_returns_err_for_a_negative_length() {
     match crypto.random_bytes(-1) {
         .Ok(_) => panic("negative length unexpectedly succeeded"),
-        .Err(reason) => testing.assert_true(reason.contains("invalid length")),
+        .Err(reason) => assert(reason.contains("invalid length")),
     }
 }

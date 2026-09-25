@@ -68,7 +68,7 @@ cloneable elements. Iterator adapters consume the iterator they wrap.
 - **Streams and coordination** — [`std.stream`](stream.hew), [`std.semaphore`](semaphore.hew), [`std.concurrency`](concurrency/concurrency.hew)
 - **Data formats and wire protocols** — [`std.encoding.json`](encoding/json/json.hew), [`std.encoding.yaml`](encoding/yaml/yaml.hew), [`std.encoding.toml`](encoding/toml/toml.hew), [`std.encoding.csv`](encoding/csv/csv.hew), [`std.encoding.xml`](encoding/xml/xml.hew)
 - **Networking** — [`std.net`](net/net.hew), [`std.net.http`](net/http/http.hew), [`std.net.dns`](net/dns/dns.hew), [`std.net.tls`](net/tls/tls.hew), [`std.net.quic`](net/quic/quic.hew), [`std.net.url`](net/url/url.hew)
-- **Testing, perf, and observability** — [`std.testing`](testing/testing.hew), [`std.bench`](bench/bench.hew), [`std.observe`](observe.hew)
+- **Perf and observability** — [`std.bench`](bench/bench.hew), [`std.observe`](observe.hew)
 
 ## Shipped module index
 
@@ -176,7 +176,6 @@ Every shipped module under `std/` should appear here.
 
 | Module                           | Import        | Use for                                                              |
 | -------------------------------- | ------------- | -------------------------------------------------------------------- |
-| [`testing`](testing/testing.hew) | `std.testing` | Assertion helpers for Hew tests                                      |
 | [`bench`](bench/bench.hew)       | `std.bench`   | Benchmark harness for measuring function performance                 |
 | [`observe`](observe.hew)         | `std.observe` | Runtime-owned observability reads, series discovery, and scrape text |
 | [`metrics`](metrics/metrics.hew) | `std.metrics` | Application counters, gauges, and histograms                         |

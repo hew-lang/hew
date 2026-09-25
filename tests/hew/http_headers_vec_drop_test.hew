@@ -13,8 +13,6 @@
 
 import std.net.http.http_client;
 
-import std.testing;
-
 /// P0 regression: binding resp.headers() to a local and letting it go out of
 /// scope (without a for-in consume) must not abort.
 #[test]
@@ -28,7 +26,7 @@ fn test_headers_drop_without_consume_does_not_abort() {
     let _h = resp.headers();
     // _h drops here.
     resp.close();
-    testing.assert_true(true);
+    assert(true);
 }
 
 /// Complementary: bind headers and read its length, then let it drop.
@@ -41,5 +39,5 @@ fn test_headers_len_bind_does_not_abort() {
     let _n = h.len();
     // h drops here.
     resp.close();
-    testing.assert_true(true);
+    assert(true);
 }

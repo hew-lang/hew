@@ -945,6 +945,21 @@ impl LowerCtx {
                     span,
                 }));
             }
+            if self.ordinary_call_target(&span)
+                == Some(CallTarget::Builtin {
+                    endpoint: hew_types::stdlib_catalog_identity::ASSERT.to_string(),
+                })
+            {
+                let (kind, ty) = self.lower_assertion(args, &span);
+                return Err(Box::new(HirExpr {
+                    node: self.ids.node(),
+                    site,
+                    ty,
+                    intent,
+                    kind,
+                    span,
+                }));
+            }
             let direct_extern_symbol = match &function.0 {
                 Expr::Ident(name) if self.extern_fn_names.contains(name.name.as_str()) => {
                     Some(name.name.as_str())
@@ -1053,8 +1068,6 @@ impl LowerCtx {
                         &span,
                         site,
                     )
-                } else if matches!(name.name.as_str(), "assert_eq" | "assert_ne") {
-                    self.lower_equality_assertion(name.name.as_str(), args, &span)
                 } else if stdlib_catalog::is_overloaded_builtin(name.name.as_str()) {
                     let arg_tys = args.iter().map(|arg| arg.ty.clone()).collect::<Vec<_>>();
                     if let Some(entry) =

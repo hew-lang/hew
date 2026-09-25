@@ -12,8 +12,6 @@
 //! Was a tracked NYI; promoted to a positive guard when generic record-literal
 //! inference for contained type parameters landed.
 
-import std.testing;
-
 type Bag<T> {
     items: Vec<T>,
 }
@@ -27,8 +25,8 @@ fn test_generic_record_of_vec_clone() {
     // Mutate the source AFTER cloning: a shallow (aliased) clone would observe
     // this push. The clone must keep its own two-element buffer.
     b.items.push(9);
-    testing.assert_eq(c.items.len(), 2);
-    testing.assert_eq(b.items.len(), 3);
+    assert(c.items.len() == 2);
+    assert(b.items.len() == 3);
 }
 
 #[test]
@@ -40,6 +38,6 @@ fn test_generic_record_of_vec_clone_owned_payload() {
     b.items.push("a heap allocated payload string xxxxxxxx");
     let c = clone b;
     b.items.push("second element yyyyyyyyyyyyyyyyyyyy");
-    testing.assert_eq(c.items.len(), 1);
-    testing.assert_eq(b.items.len(), 2);
+    assert(c.items.len() == 1);
+    assert(b.items.len() == 2);
 }

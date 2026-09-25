@@ -3,8 +3,6 @@
 //! and index, and both release their elements when the vector goes out of
 //! scope.
 
-import std.testing;
-
 enum Dir {
     North,
     South,
@@ -37,9 +35,9 @@ fn direct_enum_vec_keeps_the_layout_path() {
     v.push(Dir.North);
     v.push(Dir.East(7));
     v.push(Dir.South);
-    testing.assert_eq_str(dir_name(v[0]), "N");
-    testing.assert_eq_str(dir_name(v[1]), "E7");
-    testing.assert_eq_str(dir_name(v[2]), "S");
+    assert(dir_name(v[0]) == "N");
+    assert(dir_name(v[1]) == "E7");
+    assert(dir_name(v[2]) == "S");
 }
 
 #[test]
@@ -47,7 +45,7 @@ fn indirect_enum_vec_round_trips_its_boxed_elements() {
     var v: Vec<Tree> = Vec.new();
     v.push(Tree.Leaf(4));
     v.push(Tree.Node(Tree.Leaf(1), Tree.Node(Tree.Leaf(2), Tree.Leaf(3))));
-    testing.assert_eq(v.len(), 2);
-    testing.assert_eq(total(v.pop()), 6);
-    testing.assert_eq(total(v.pop()), 4);
+    assert(v.len() == 2);
+    assert(total(v.pop()) == 6);
+    assert(total(v.pop()) == 4);
 }

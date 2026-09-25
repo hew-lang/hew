@@ -1,7 +1,5 @@
 //! Generic Vec<T>::iter is tracked as the Hew-level iterator follow-on.
 
-import std.testing;
-
 fn generic_iter_count<T>(xs: Vec<T>) -> i64 {
     let it = xs.iter();
     var total = 0;
@@ -16,7 +14,7 @@ fn test_generic_vec_iter_i64() {
     var values: Vec<i64> = Vec.new();
     values.push(1);
     values.push(2);
-    testing.assert_eq(generic_iter_count(values), 2);
+    assert(generic_iter_count(values) == 2);
 }
 
 // Regression: `Vec<T>::iter()` pre-records its internal place-receiver
@@ -41,5 +39,5 @@ fn test_generic_vec_iter_owned_record() {
     xs.push(IterOwnedItem { name: "alpha", n: 10 });
     xs.push(IterOwnedItem { name: "beta", n: 20 });
     xs.push(IterOwnedItem { name: "gamma", n: 30 });
-    testing.assert_eq(generic_iter_count(xs), 3);
+    assert(generic_iter_count(xs) == 3);
 }

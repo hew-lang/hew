@@ -25,6 +25,7 @@ use std::sync::OnceLock;
 mod actor_codec;
 mod actor_delivery;
 pub(crate) mod admissibility;
+mod assertion;
 mod branch_join;
 mod callables;
 mod calls;
@@ -2621,6 +2622,7 @@ impl Checker {
             call_argument_slots: std::mem::take(&mut self.call_argument_slots),
             expr_types: resolved_expr_types,
             interpolation_display_types: std::mem::take(&mut self.interpolation_display_types),
+            unrendered_assertion_operands: std::mem::take(&mut self.unrendered_assertion_operands),
             user_comparison_dispatch: std::mem::take(&mut self.user_comparison_dispatch),
             numeric_operand_coercions: std::mem::take(&mut self.numeric_operand_coercions),
             extern_method_signatures: std::mem::take(&mut self.extern_method_signatures),

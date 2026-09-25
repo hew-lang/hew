@@ -4,14 +4,12 @@ import std.encoding.protobuf;
 
 import std.net.websocket;
 
-import std.testing;
-
 // ── set_varint / get_varint / has_field ───────────────────────────────
 #[test]
 fn test_set_get_varint() {
     let msg = protobuf.new();
     msg.set_varint(1, 42);
-    testing.assert_eq(msg.get_varint(1, 0), 42);
+    assert(msg.get_varint(1, 0) == 42);
     msg.close();
 }
 
@@ -19,14 +17,14 @@ fn test_set_get_varint() {
 fn test_has_field_set() {
     let msg = protobuf.new();
     msg.set_varint(2, 100);
-    testing.assert_true(msg.has_field(2));
+    assert(msg.has_field(2));
     msg.close();
 }
 
 #[test]
 fn test_has_field_absent() {
     let msg = protobuf.new();
-    testing.assert_false(msg.has_field(1));
+    assert(!msg.has_field(1));
     msg.close();
 }
 
@@ -35,7 +33,7 @@ fn test_has_field_absent() {
 fn test_set_get_string() {
     let msg = protobuf.new();
     msg.set_string(3, "hello");
-    testing.assert_eq_str(msg.get_string(3), "hello");
+    assert(msg.get_string(3) == "hello");
     msg.close();
 }
 
@@ -43,7 +41,7 @@ fn test_set_get_string() {
 #[test]
 fn test_get_varint_fallback_when_absent() {
     let msg = protobuf.new();
-    testing.assert_eq(msg.get_varint(99, 7), 7);
+    assert(msg.get_varint(99, 7) == 7);
     msg.close();
 }
 

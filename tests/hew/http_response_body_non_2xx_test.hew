@@ -15,8 +15,6 @@ import std.net.http.http_client;
 
 import std.net.http;
 
-import std.testing;
-
 actor Client {
     let url: string,
     var status: i64,
@@ -52,16 +50,16 @@ fn test_non_2xx_response_body_round_trips() {
             req.close();
             server.close();
             match client.status_result() {
-                .Ok(status) => testing.assert_eq(status, 404),
-                .Err(_e) => testing.assert_true(false),
+                .Ok(status) => assert(status == 404),
+                .Err(_e) => assert(false),
             }
             match client.body_result() {
-                .Ok(body) => testing.assert_eq_str(body, "not found: the resource does not exist"),
-                .Err(_e) => testing.assert_true(false),
+                .Ok(body) => assert(body == "not found: the resource does not exist"),
+                .Err(_e) => assert(false),
             }
         },
         .Err(_err) => {
-            testing.assert_true(false);
+            assert(false);
         },
     }
 }

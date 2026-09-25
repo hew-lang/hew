@@ -1,8 +1,6 @@
 //! Default generated wire JSON decoding remains permissive for an unknown
 //! field, as specified for forward-compatible wire payloads.
 
-import std.testing;
-
 #[wire]
 type WireProbe {
     name: string @1,
@@ -11,7 +9,7 @@ type WireProbe {
 #[test]
 fn generated_wire_json_ignores_unknown_field_by_default() {
     match WireProbe.from_json("{\"name\":\"known\",\"future\":true}") {
-        .Ok(probe) => testing.assert_eq_str(probe.name, "known"),
+        .Ok(probe) => assert(probe.name == "known"),
         .Err(reason) => panic("permissive generated decode failed: " + reason),
     }
 }

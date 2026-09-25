@@ -2,28 +2,27 @@
 
 import std.result;
 
-import std.testing;
 
 // ── Predicates ─────────────────────────────────────────────────────────
 #[test]
 fn test_is_ok_int() {
     let x: Result<i64, i64> = .Ok(42);
-    testing.assert_true(result.is_ok_int(x));
-    testing.assert_false(result.is_err_int(x));
+    assert(result.is_ok_int(x));
+    assert(!result.is_err_int(x));
 }
 
 #[test]
 fn test_is_err_int() {
     let x: Result<i64, i64> = .Err(1);
-    testing.assert_true(result.is_err_int(x));
-    testing.assert_false(result.is_ok_int(x));
+    assert(result.is_err_int(x));
+    assert(!result.is_ok_int(x));
 }
 
 // ── Unwrap ─────────────────────────────────────────────────────────────
 #[test]
 fn test_unwrap_int_ok() {
     let x: Result<i64, i64> = .Ok(42);
-    testing.assert_eq(result.unwrap_int(x), 42);
+    assert(result.unwrap_int(x) == 42);
 }
 
 #[test]
@@ -36,7 +35,7 @@ fn test_unwrap_int_err_panics() {
 #[test]
 fn test_unwrap_err_int() {
     let x: Result<i64, i64> = .Err(99);
-    testing.assert_eq(result.unwrap_err_int(x), 99);
+    assert(result.unwrap_err_int(x) == 99);
 }
 
 #[test]
@@ -49,76 +48,76 @@ fn test_unwrap_err_int_ok_panics() {
 #[test]
 fn test_unwrap_or_int_ok() {
     let x: Result<i64, i64> = .Ok(42);
-    testing.assert_eq(result.unwrap_or_int(x, 0), 42);
+    assert(result.unwrap_or_int(x, 0) == 42);
 }
 
 #[test]
 fn test_unwrap_or_int_err() {
     let x: Result<i64, i64> = .Err(1);
-    testing.assert_eq(result.unwrap_or_int(x, -1), -1);
+    assert(result.unwrap_or_int(x, -1) == -1);
 }
 
 // ── Contains ───────────────────────────────────────────────────────────
 #[test]
 fn test_contains_int_match() {
     let x: Result<i64, i64> = .Ok(42);
-    testing.assert_true(result.contains_int(x, 42));
+    assert(result.contains_int(x, 42));
 }
 
 #[test]
 fn test_contains_int_no_match() {
     let x: Result<i64, i64> = .Ok(42);
-    testing.assert_false(result.contains_int(x, 99));
+    assert(!result.contains_int(x, 99));
 }
 
 #[test]
 fn test_contains_int_err() {
     let x: Result<i64, i64> = .Err(1);
-    testing.assert_false(result.contains_int(x, 42));
+    assert(!result.contains_int(x, 42));
 }
 
 // ── string variants ────────────────────────────────────────────────────
 #[test]
 fn test_is_ok_str() {
     let x: Result<string, string> = .Ok("success");
-    testing.assert_true(result.is_ok_str(x));
+    assert(result.is_ok_str(x));
 }
 
 #[test]
 fn test_is_err_str() {
     let x: Result<string, string> = .Err("failure");
-    testing.assert_true(result.is_err_str(x));
+    assert(result.is_err_str(x));
 }
 
 #[test]
 fn test_unwrap_or_str_ok() {
     let x: Result<string, string> = .Ok("value");
-    testing.assert_eq_str(result.unwrap_or_str(x, "default"), "value");
+    assert(result.unwrap_or_str(x, "default") == "value");
 }
 
 #[test]
 fn test_unwrap_or_str_err() {
     let x: Result<string, string> = .Err("oops");
-    testing.assert_eq_str(result.unwrap_or_str(x, "fallback"), "fallback");
+    assert(result.unwrap_or_str(x, "fallback") == "fallback");
 }
 
 #[test]
 fn test_contains_str_match() {
     let x: Result<string, string> = .Ok("hello");
-    testing.assert_true(result.contains_str(x, "hello"));
+    assert(result.contains_str(x, "hello"));
 }
 
 #[test]
 fn test_contains_str_err() {
     let x: Result<string, string> = .Err("oops");
-    testing.assert_false(result.contains_str(x, "hello"));
+    assert(!result.contains_str(x, "hello"));
 }
 
 // ── unwrap_str / unwrap_err_str ────────────────────────────────────────
 #[test]
 fn test_unwrap_str_ok() {
     let x: Result<string, string> = .Ok("value");
-    testing.assert_eq_str(result.unwrap_str(x), "value");
+    assert(result.unwrap_str(x) == "value");
 }
 
 #[test]
@@ -131,7 +130,7 @@ fn test_unwrap_str_err_panics() {
 #[test]
 fn test_unwrap_err_str() {
     let x: Result<string, string> = .Err("oops");
-    testing.assert_eq_str(result.unwrap_err_str(x), "oops");
+    assert(result.unwrap_err_str(x) == "oops");
 }
 
 #[test]
@@ -148,8 +147,8 @@ fn test_unwrap_err_str_ok_panics() {
 fn test_ok_converts_ok_to_some() {
     let x: Result<i64, string> = .Ok(10);
     match x.ok() {
-        .Some(v) => testing.assert_eq(v, 10),
-        .None => testing.assert_true(false),
+        .Some(v) => assert(v == 10),
+        .None => assert(false),
     }
 }
 
@@ -157,21 +156,21 @@ fn test_ok_converts_ok_to_some() {
 fn test_ok_converts_err_to_none() {
     let x: Result<i64, string> = .Err("bad");
     // Negative control: `Err` must discard its payload and become `None`.
-    testing.assert_true(x.ok().is_none());
+    assert(x.ok().is_none());
 }
 
 #[test]
 fn test_err_converts_err_to_some() {
     let x: Result<i64, string> = .Err("bad");
-    testing.assert_eq_str(x.err().expect("error"), "bad");
+    assert(x.err().expect("error") == "bad");
 }
 
 #[test]
 fn test_map_applies_f_on_ok() {
     let x: Result<i64, string> = .Ok(10);
     match x.map(|v: i64| v + 1) {
-        .Ok(v) => testing.assert_eq(v, 11),
-        .Err(_) => testing.assert_true(false),
+        .Ok(v) => assert(v == 11),
+        .Err(_) => assert(false),
     }
 }
 
@@ -180,8 +179,8 @@ fn test_map_leaves_err_unchanged() {
     let x: Result<i64, string> = .Err("bad");
     // Negative control: `f` must not run on the `Err` path.
     match x.map(|v: i64| v + 1) {
-        .Ok(_) => testing.assert_true(false),
-        .Err(e) => testing.assert_eq_str(e, "bad"),
+        .Ok(_) => assert(false),
+        .Err(e) => assert(e == "bad"),
     }
 }
 
@@ -189,8 +188,8 @@ fn test_map_leaves_err_unchanged() {
 fn test_map_err_applies_f_on_err() {
     let x: Result<i64, string> = .Err("bad");
     match x.map_err(|e: string| e + "!") {
-        .Ok(_) => testing.assert_true(false),
-        .Err(e) => testing.assert_eq_str(e, "bad!"),
+        .Ok(_) => assert(false),
+        .Err(e) => assert(e == "bad!"),
     }
 }
 
@@ -199,8 +198,8 @@ fn test_map_err_leaves_ok_unchanged() {
     let x: Result<i64, string> = .Ok(10);
     // Negative control: `f` must not run on the `Ok` path.
     match x.map_err(|e: string| e + "!") {
-        .Ok(v) => testing.assert_eq(v, 10),
-        .Err(_) => testing.assert_true(false),
+        .Ok(v) => assert(v == 10),
+        .Err(_) => assert(false),
     }
 }
 
@@ -208,7 +207,7 @@ fn test_map_err_leaves_ok_unchanged() {
 fn test_and_then_chains_on_ok() {
     let x: Result<i64, string> = .Ok(4);
     let halved = x.and_then(|v: i64| if v % 2 == 0 { .Ok(v / 2) } else { .Err("odd") });
-    testing.assert_eq(halved.unwrap_or(-1), 2);
+    assert(halved.unwrap_or(-1) == 2);
 }
 
 #[test]
@@ -216,18 +215,18 @@ fn test_and_then_stops_at_err() {
     let x: Result<i64, string> = .Ok(3);
     // Negative control: `f` returns `Err`, which must surface unchanged.
     let halved = x.and_then(|v: i64| if v % 2 == 0 { .Ok(v / 2) } else { .Err("odd") });
-    testing.assert_true(halved.is_err());
+    assert(halved.is_err());
 }
 
 #[test]
 fn test_unwrap_or_else_computes_from_err() {
     let x: Result<i64, string> = .Err("four");
-    testing.assert_eq(x.unwrap_or_else(|e: string| e.len()), 4);
+    assert(x.unwrap_or_else(|e: string| e.len()) == 4);
 }
 
 #[test]
 fn test_or_else_recovers_from_err() {
     let x: Result<i64, string> = .Err("bad");
     let recovered: Result<i64, i64> = x.or_else(|e: string| .Ok(e.len()));
-    testing.assert_eq(recovered.unwrap_or(0), 3);
+    assert(recovered.unwrap_or(0) == 3);
 }

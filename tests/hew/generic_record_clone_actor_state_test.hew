@@ -14,8 +14,6 @@
 //! by the differential `generic_record_clone_actor_shutdown_no_drop_leak`
 //! oracle (`hew-cli/tests/record_clone_generic_leak_oracle.rs`) under libgmalloc.
 
-import std.testing;
-
 type Pair<A, B> {
     first: A,
     second: B,
@@ -39,12 +37,12 @@ actor Keeper {
 fn actor_holds_cloned_generic_pair_values() {
     let k = spawn Keeper;
     match k.store(7, "alpha") {
-        .Ok(n) => testing.assert_eq(n, 7),
-        .Err(_) => testing.assert_true(false),
+        .Ok(n) => assert(n == 7),
+        .Err(_) => assert(false),
     }
     match k.label() {
-        .Ok(s) => testing.assert_eq_str(s, "alpha"),
-        .Err(_) => testing.assert_true(false),
+        .Ok(s) => assert(s == "alpha"),
+        .Err(_) => assert(false),
     }
 }
 
@@ -58,11 +56,11 @@ fn actor_reclones_state_field_each_store() {
     let k = spawn Keeper;
     let _ = k.store(7, "alpha");
     match k.store(9, "beta") {
-        .Ok(n) => testing.assert_eq(n, 9),
-        .Err(_) => testing.assert_true(false),
+        .Ok(n) => assert(n == 9),
+        .Err(_) => assert(false),
     }
     match k.label() {
-        .Ok(s) => testing.assert_eq_str(s, "beta"),
-        .Err(_) => testing.assert_true(false),
+        .Ok(s) => assert(s == "beta"),
+        .Err(_) => assert(false),
     }
 }

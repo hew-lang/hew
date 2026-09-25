@@ -162,50 +162,8 @@ impl Checker {
         );
         self.register_builtin_fn("supervisor_stop", vec![Ty::Var(TypeVar::fresh())], Ty::Unit);
 
-        // Assertions (test support)
+        // `assert(condition)`; the message form is admitted in `assertion.rs`.
         self.register_builtin_fn("assert", vec![Ty::Bool], Ty::Unit);
-        self.register_builtin_fn_with_bounds(
-            "assert_eq",
-            vec!["T".to_string()],
-            HashMap::from([(
-                "T".to_string(),
-                vec!["Eq".to_string(), "Display".to_string()],
-            )]),
-            vec![
-                Ty::Named {
-                    builtin: None,
-                    name: "T".to_string(),
-                    args: vec![],
-                },
-                Ty::Named {
-                    builtin: None,
-                    name: "T".to_string(),
-                    args: vec![],
-                },
-            ],
-            Ty::Unit,
-        );
-        self.register_builtin_fn_with_bounds(
-            "assert_ne",
-            vec!["T".to_string()],
-            HashMap::from([(
-                "T".to_string(),
-                vec!["Eq".to_string(), "Display".to_string()],
-            )]),
-            vec![
-                Ty::Named {
-                    builtin: None,
-                    name: "T".to_string(),
-                    args: vec![],
-                },
-                Ty::Named {
-                    builtin: None,
-                    name: "T".to_string(),
-                    args: vec![],
-                },
-            ],
-            Ty::Unit,
-        );
 
         // Option/Result constructors
         // Option/Result constructors are handled specially in check_call

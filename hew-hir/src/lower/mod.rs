@@ -1077,6 +1077,11 @@ struct LowerCtx {
     /// source annotation and `Ty::Named` expression spelling cannot carry.
     type_declarations: std::collections::BTreeMap<String, hew_types::value_class::DeclaredType>,
     interpolation_display_types: HashMap<SpanKey, Ty>,
+    unrendered_assertion_operands: HashSet<SpanKey>,
+    /// Depth of `defer` bodies being lowered. A deferred body runs on every
+    /// exit and may not call anything whose faults propagate, so an assertion
+    /// there reports its condition without rendering operands.
+    defer_body_depth: usize,
     /// `==`/`!=`/`<`/`<=`/`>`/`>=` binary expressions dispatching to a user
     /// trait impl instead of the structural default (D340). Consulted at
     /// `Expr::Binary` lowering; see [`UserComparisonDispatch`].

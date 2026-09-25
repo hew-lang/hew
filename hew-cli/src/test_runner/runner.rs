@@ -635,6 +635,62 @@ fn run_single_test(test: &TestCase, options: &TestRunOptions<'_>) -> TestResult 
     }
 }
 
+/// Operands shorter than this that fit on one line are compared by eye.
+const DIFF_THRESHOLD: usize = 40;
+
+/// Append a line diff to a failed comparison's report when an operand is too
+/// long or spans lines to compare by eye. A one-line value is split after each
+/// `, ` so a record or collection diffs field by field.
+fn with_operand_diff(report: String) -> String {
+    let Some((head, right)) = report.rsplit_once("\n right: ") else {
+        return report;
+    };
+    let Some((_, left)) = head.rsplit_once("\n  left: ") else {
+        return report;
+    };
+    let right = right.trim_end_matches('\n');
+    if left.len().max(right.len()) < DIFF_THRESHOLD && !left.contains('\n') && !right.contains('\n')
+    {
+        return report;
+    }
+    let pieces = |value: &str| -> Vec<String> {
+        if value.contains('\n') {
+            value.lines().map(str::to_string).collect()
+        } else {
+            value.split_inclusive(", ").map(str::to_string).collect()
+        }
+    };
+    let (left, right) = (pieces(left), pieces(right));
+    // Longest common subsequence table, then walk it into -/+ lines.
+    let mut common = vec![vec![0usize; right.len() + 1]; left.len() + 1];
+    for i in (0..left.len()).rev() {
+        for j in (0..right.len()).rev() {
+            common[i][j] = if left[i] == right[j] {
+                common[i + 1][j + 1] + 1
+            } else {
+                common[i + 1][j].max(common[i][j + 1])
+            };
+        }
+    }
+    let mut diff = String::from("\ndiff (-left +right):");
+    let (mut i, mut j) = (0, 0);
+    while i < left.len() || j < right.len() {
+        let line = if i < left.len() && j < right.len() && left[i] == right[j] {
+            i += 1;
+            j += 1;
+            format!("\n    {}", left[i - 1])
+        } else if j < right.len() && (i == left.len() || common[i][j + 1] >= common[i + 1][j]) {
+            j += 1;
+            format!("\n  + {}", right[j - 1])
+        } else {
+            i += 1;
+            format!("\n  - {}", left[i - 1])
+        };
+        diff.push_str(line.trim_end());
+    }
+    format!("{}{diff}\n", report.trim_end_matches('\n'))
+}
+
 /// Decide one execution's outcome, returning it with the captured stdout.
 fn judge_run(
     test: &TestCase,
@@ -662,7 +718,7 @@ fn judge_run(
                 let msg = if stderr.is_empty() {
                     "test exited with non-zero status".to_string()
                 } else {
-                    stderr
+                    with_operand_diff(stderr)
                 };
                 (TestOutcome::failed(TestFailureKind::Runtime, msg), stdout)
             }
@@ -821,6 +877,10 @@ mod tests {
     }
 
     fn run_inline_with_timeout(source: &str, timeout: Duration) -> TestSummary {
+        run_inline_with(source, timeout, FIFO_ONCE)
+    }
+
+    fn run_inline_with(source: &str, timeout: Duration, schedules: ScheduleOptions) -> TestSummary {
         let result = hew_parser::parse(source);
         let tests = discovery::discover_tests(&result.program, "<inline>");
         // Keep each invocation's source isolated from concurrent test processes
@@ -848,7 +908,7 @@ mod tests {
                 compile_paths: cargo_test_compile_paths(),
                 timeout,
                 jobs: 1,
-                schedules: FIFO_ONCE,
+                schedules,
                 root: Path::new("/"),
             },
         );
@@ -1004,7 +1064,7 @@ fn add(a: i64, b: i64) -> i64 { a + b }
 
 #[test]
 fn test_add() {
-    assert_eq(add(1, 2), 3);
+    assert(add(1, 2) == 3);
 }
 ",
         );
@@ -1012,7 +1072,7 @@ fn test_add() {
     }
 
     #[test]
-    fn assert_eq_fail() {
+    fn failed_comparison_reports_expression_and_operands() {
         if !require_codegen() {
             return;
         }
@@ -1020,19 +1080,18 @@ fn test_add() {
             r"
 #[test]
 fn test_bad_eq() {
-    assert_eq(1, 2);
+    assert(1 == 2);
 }
 ",
         );
         assert_eq!(summary.failed, 1, "{}", describe(&summary));
         if let TestOutcome::Failed(failure) = &summary.results[0].outcome {
             assert_eq!(failure.kind, TestFailureKind::Runtime);
-            // The desugar names the relation that was violated, plus both
-            // rendered operands, so a failure report says what went wrong
-            // without the reader re-running the test.
+            // The desugar reports the condition's text and both rendered
+            // operands, so a failure says what went wrong without a rerun.
             assert!(
-                failure.message.contains("assertion failed: left != right")
-                    && failure.message.contains("left: 1"),
+                failure.message.contains("assertion failed: 1 == 2")
+                    && failure.message.contains("  left: 1\n right: 2"),
                 "error message: {}",
                 failure.message
             );
@@ -1049,7 +1108,7 @@ fn test_bad_eq() {
 #[test]
 fn test_compile_failure() {
     let value: i64 = "not an integer";
-    assert_eq(value, 0);
+    assert(value == 0);
 }
 "#,
         );
@@ -1229,5 +1288,137 @@ fn test_timeout() {
             .collect();
 
         assert_eq!(names, vec!["alpha", "beta", "gamma"]);
+    }
+
+    const LEDGER: &str = r"
+actor Account {
+    var balance: i64 = 0,
+    receive fn balance() -> i64 { balance }
+    receive fn set(amount: i64) { balance = amount; }
+    receive fn deposit(amount: i64) { balance = balance + amount; }
+}
+
+fn read_then_write(account: Account, amount: i64) -> () fails ActorError {
+    let current = account.balance()?;
+    account.set(current + amount)?;
+}
+
+fn one_turn(account: Account, amount: i64) -> () fails ActorError {
+    account.deposit(amount)?;
+}
+
+fn read(account: Account) -> i64 {
+    match account.balance() {
+        .Ok(value) => value,
+        .Err(_) => -1,
+    }
+}
+";
+
+    fn ledger_test(deposit: &str) -> String {
+        format!(
+            "{LEDGER}
+#[test]
+fn concurrent_deposits_are_not_lost() {{
+    let account = spawn Account(balance: 0);
+    scope {{
+        let first = fork {deposit}(account, 10);
+        let second = fork {deposit}(account, 20);
+        let _ = await first;
+        let _ = await second;
+    }}
+    assert(read(account) == 30);
+}}
+"
+        )
+    }
+
+    const EXPLORE: ScheduleOptions = ScheduleOptions {
+        schedule: Schedule::Fifo,
+        seed: None,
+        explore: 64,
+    };
+
+    /// A read-then-write race loses an update on some schedules; exploring
+    /// finds one and names a seed that reproduces it.
+    #[test]
+    fn exploration_finds_a_lost_update_and_names_its_seed() {
+        if !require_codegen() {
+            return;
+        }
+        let summary = run_inline_with(
+            &ledger_test("read_then_write"),
+            DEFAULT_TEST_TIMEOUT,
+            EXPLORE,
+        );
+        assert_eq!(summary.failed, 1, "{}", describe(&summary));
+        let TestOutcome::Failed(failure) = &summary.results[0].outcome else {
+            unreachable!("counted as failed");
+        };
+        assert!(
+            failure.message.contains("of 65 schedules")
+                && failure.message.contains("--seed 0x")
+                && failure
+                    .message
+                    .contains("assertion failed: read(account) == 30"),
+            "{}",
+            failure.message
+        );
+    }
+
+    /// The control: one turn per deposit passes every explored schedule.
+    #[test]
+    fn exploration_passes_a_race_free_ledger() {
+        if !require_codegen() {
+            return;
+        }
+        let summary = run_inline_with(&ledger_test("one_turn"), DEFAULT_TEST_TIMEOUT, EXPLORE);
+        assert_eq!(summary.passed, 1, "{}", describe(&summary));
+    }
+
+    /// A deterministic test sleeps on the virtual clock, so a minute-long
+    /// sleep finishes inside a one-second hang guard; the same test on the
+    /// host clock runs into the guard.
+    #[test]
+    fn deterministic_sleep_runs_on_the_virtual_clock() {
+        if !require_codegen() {
+            return;
+        }
+        let source = |attribute: &str| {
+            format!("#[test]\n{attribute}fn waits() {{\n    sleep(60s);\n    assert(true);\n}}\n")
+        };
+        let guard = Duration::from_secs(1);
+        let virtual_run = run_inline_with_timeout(&source(""), guard);
+        assert_eq!(virtual_run.passed, 1, "{}", describe(&virtual_run));
+        let host_run = run_inline_with_timeout(&source("#[real_time]\n"), guard);
+        assert!(
+            matches!(
+                &host_run.results[0].outcome,
+                TestOutcome::Failed(TestFailure {
+                    kind: TestFailureKind::Timeout,
+                    ..
+                })
+            ),
+            "{}",
+            describe(&host_run)
+        );
+    }
+
+    #[test]
+    fn operand_diff_marks_only_the_differing_field() {
+        let report = "hew: failure: UserPanic (212): assertion failed: a == b\n  left: User { name: ada, age: 36, tags: [admin] }\n right: User { name: ada, age: 37, tags: [admin] }\n".to_string();
+        let rendered = with_operand_diff(report);
+        assert!(
+            rendered.ends_with(
+                "diff (-left +right):\n    User { name: ada,\n  - age: 36,\n  + age: 37,\n    tags: [admin] }\n"
+            ),
+            "{rendered}"
+        );
+    }
+
+    #[test]
+    fn short_operands_get_no_diff() {
+        let report = "assertion failed: x == 2\n  left: 1\n right: 2\n".to_string();
+        assert_eq!(with_operand_diff(report.clone()), report);
     }
 }

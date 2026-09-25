@@ -12,8 +12,6 @@
 //! mutates the original after cloning and asserts the clone is unaffected,
 //! proving value-semantics (the clone is a copy, not an alias).
 
-import std.testing;
-
 type Pair<A, B> {
     a: A,
     b: B,
@@ -29,11 +27,11 @@ fn test_generic_record_clone_scalar_independence() {
     p.a = 99;
     p.b = 88;
     // The clone keeps its own values.
-    testing.assert_eq(q.a, 10);
-    testing.assert_eq(q.b, 20);
+    assert(q.a == 10);
+    assert(q.b == 20);
     // The original reflects the mutation.
-    testing.assert_eq(p.a, 99);
-    testing.assert_eq(p.b, 88);
+    assert(p.a == 99);
+    assert(p.b == 88);
 }
 
 // Generic record clone with an owned `string` leaf; the clone must
@@ -42,8 +40,8 @@ fn test_generic_record_clone_scalar_independence() {
 fn test_generic_record_clone_string_field() {
     let p = Pair { a: 7, b: "hello" };
     let q = clone p;
-    testing.assert_eq(q.a, 7);
-    testing.assert_eq_str(q.b, "hello");
+    assert(q.a == 7);
+    assert(q.b == "hello");
 }
 
 // Nested generic record clone (`Pair<Pair<i64, i64>, string>`); assert
@@ -53,9 +51,9 @@ fn test_generic_record_clone_nested() {
     let inner = Pair { a: 1, b: 2 };
     let outer = Pair { a: inner, b: "tag" };
     let c = clone outer;
-    testing.assert_eq(c.a.a, 1);
-    testing.assert_eq(c.a.b, 2);
-    testing.assert_eq_str(c.b, "tag");
+    assert(c.a.a == 1);
+    assert(c.a.b == 2);
+    assert(c.b == "tag");
 }
 
 // Two distinct instantiations of the same generic record in one program
@@ -67,7 +65,7 @@ fn test_generic_record_clone_multi_instantiation() {
     let ps = Pair { a: "x", b: "y" };
     let ci = clone pi;
     let cs = clone ps;
-    testing.assert_eq(ci.a + ci.b, 3);
-    testing.assert_eq_str(cs.a, "x");
-    testing.assert_eq_str(cs.b, "y");
+    assert(ci.a + ci.b == 3);
+    assert(cs.a == "x");
+    assert(cs.b == "y");
 }

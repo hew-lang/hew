@@ -66,6 +66,8 @@ impl LowerCtx {
             type_facts: tc_output.type_facts.clone(),
             type_declarations: tc_output.type_fact_context.declarations().clone(),
             interpolation_display_types: tc_output.interpolation_display_types.clone(),
+            unrendered_assertion_operands: tc_output.unrendered_assertion_operands.clone(),
+            defer_body_depth: 0,
             user_comparison_dispatch: tc_output.user_comparison_dispatch.clone(),
             numeric_operand_coercions: tc_output.numeric_operand_coercions.clone(),
             extern_method_signatures: tc_output.extern_method_signatures.clone(),

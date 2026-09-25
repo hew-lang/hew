@@ -32,8 +32,6 @@
 //! Cluster-1 capture-lowering gap (#1909). Both are substrate-independent and
 //! orthogonal to the thread->coro migration.
 
-import std.testing;
-
 // ── Exact yield sequence + count ──────────────────────────────────────
 // The value channel must surface each yielded value exactly once, in order.
 #[test]
@@ -51,9 +49,9 @@ fn gen_yields_exact_sequence_and_count() {
         count = count + 1;
         last = v;
     }
-    testing.assert_eq(count, 3);
-    testing.assert_eq(sum, 60);
-    testing.assert_eq(last, 30);
+    assert(count == 3);
+    assert(sum == 60);
+    assert(last == 30);
 }
 
 // ── Cross-yield-live local state ──────────────────────────────────────
@@ -75,8 +73,8 @@ fn gen_cross_yield_live_local_survives_suspend() {
         count = count + 1;
     }
     // 1 + 101 + 141 = 243; proves `kept` round-tripped across both resumes.
-    testing.assert_eq(count, 3);
-    testing.assert_eq(collected, 243);
+    assert(count == 3);
+    assert(collected == 243);
 }
 
 // ── Yield-in-a-loop (multi-suspend body) ──────────────────────────────
@@ -99,8 +97,8 @@ fn gen_yield_in_loop_accumulates() {
         count = count + 1;
     }
     // 0 + 1 + 4 + 9 + 16 = 30 across 5 yields.
-    testing.assert_eq(count, 5);
-    testing.assert_eq(sum, 30);
+    assert(count == 5);
+    assert(sum == 30);
 }
 
 // ── Done / terminal-None path ─────────────────────────────────────────
@@ -114,7 +112,7 @@ fn gen_done_sentinel_terminates_loop() {
         seen = seen + 1;
     }
     // Control reached here => the done sentinel ended the loop.
-    testing.assert_eq(seen, 2);
+    assert(seen == 2);
 }
 
 // ── Re-iteration independence ─────────────────────────────────────────
@@ -140,8 +138,8 @@ fn gen_independent_instances_each_full_sequence() {
     for v in g2 {
         second = second + v;
     }
-    testing.assert_eq(first, 6);
-    testing.assert_eq(second, 6);
+    assert(first == 6);
+    assert(second == 6);
 }
 
 // ── Owned-value (heap String) yields exhausted cleanly ────────────────
@@ -163,6 +161,6 @@ fn gen_owned_string_yields_exhaust_cleanly() {
         total_len = total_len + s.len();
     }
     // "alpha-x"(7) + "beta-y"(6) + "gamma-z"(7) = 20.
-    testing.assert_eq(count, 3);
-    testing.assert_eq(total_len, 20);
+    assert(count == 3);
+    assert(total_len == 20);
 }

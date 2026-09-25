@@ -12,8 +12,6 @@
 //! Was a tracked NYI (`no method clone on Maybe<i64>`); promoted to a positive
 //! guard when top-level enum clone landed.
 
-import std.testing;
-
 enum Maybe<T> {
     Some(T),
     None,
@@ -38,7 +36,7 @@ fn test_generic_enum_clone() {
         Maybe.Some(x) => x,
         Maybe.None => 0,
     };
-    testing.assert_eq(v, 42);
+    assert(v == 42);
 }
 
 #[test]
@@ -54,8 +52,8 @@ fn test_generic_enum_clone_source_still_live() {
         Maybe.Some(x) => x,
         Maybe.None => -1,
     };
-    testing.assert_eq(a, 7);
-    testing.assert_eq(b, 7);
+    assert(a == 7);
+    assert(b == 7);
 }
 
 #[test]
@@ -74,8 +72,8 @@ fn test_generic_enum_clone_owned_string_payload() {
         Maybe.Some(s) => s,
         Maybe.None => "",
     };
-    testing.assert_eq_str(sa, "a heap allocated generic payload string");
-    testing.assert_eq_str(sb, "a heap allocated generic payload string");
+    assert(sa == "a heap allocated generic payload string");
+    assert(sb == "a heap allocated generic payload string");
 }
 
 #[test]
@@ -93,8 +91,8 @@ fn test_concrete_enum_clone_owned_payload() {
         Shape.Tagged(s) => 2,
         Shape.Empty => 0,
     };
-    testing.assert_eq(ta, 1);
-    testing.assert_eq(tb, 1);
+    assert(ta == 1);
+    assert(tb == 1);
 }
 
 #[test]
@@ -113,8 +111,8 @@ fn test_enum_clone_mutation_independence() {
         Counter.Value(x) => x,
         Counter.Zero => -1,
     };
-    testing.assert_eq(ov, -1);
-    testing.assert_eq(cv, 10);
+    assert(ov == -1);
+    assert(cv == 10);
 }
 
 #[test]
@@ -130,6 +128,6 @@ fn test_unit_variant_enum_clone() {
         Counter.Value(x) => x,
         Counter.Zero => 0,
     };
-    testing.assert_eq(av, 0);
-    testing.assert_eq(bv, 0);
+    assert(av == 0);
+    assert(bv == 0);
 }

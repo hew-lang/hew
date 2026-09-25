@@ -10,17 +10,15 @@
 
 import tests.hew.imported_wire_support.wire_defs.{Env, Signal, env_to_json};
 
-import std.testing;
-
 #[test]
 fn imported_wire_struct_json_round_trip() {
     let e = Env { name: "svc", port: 8080 };
     let j = e.to_json();
-    testing.assert_eq_str(j, "{\"name\":\"svc\",\"port\":8080}");
+    assert(j == "{\"name\":\"svc\",\"port\":8080}");
     match Env.from_json(j) {
         .Ok(back) => {
-            testing.assert_eq_str(back.name, "svc");
-            testing.assert_eq(back.port, 8080);
+            assert(back.name == "svc");
+            assert(back.port == 8080);
         },
         .Err(msg) => panic(f"from_json failed: {msg}"),
     }
@@ -30,10 +28,10 @@ fn imported_wire_struct_json_round_trip() {
 fn imported_wire_struct_binary_and_yaml_round_trips() {
     let e = Env { name: "bin", port: 9 };
     let back = Env.decode(e.encode());
-    testing.assert_eq_str(back.name, "bin");
-    testing.assert_eq(back.port, 9);
+    assert(back.name == "bin");
+    assert(back.port == 9);
     match Env.from_yaml(back.to_yaml()) {
-        .Ok(again) => testing.assert_eq(again.port, 9),
+        .Ok(again) => assert(again.port == 9),
         .Err(msg) => panic(f"from_yaml failed: {msg}"),
     }
 }
@@ -41,7 +39,7 @@ fn imported_wire_struct_binary_and_yaml_round_trips() {
 #[test]
 fn defining_module_helper_serializes_when_module_is_imported() {
     let e = Env { name: "helper", port: 1 };
-    testing.assert_eq_str(env_to_json(e), "{\"name\":\"helper\",\"port\":1}");
+    assert(env_to_json(e) == "{\"name\":\"helper\",\"port\":1}");
 }
 
 #[test]
@@ -53,7 +51,7 @@ fn imported_wire_enum_json_round_trip() {
                 Signal.Busy(n) => n,
                 Signal.Ready => -1,
             };
-            testing.assert_eq(tag, 4);
+            assert(tag == 4);
         },
         .Err(msg) => panic(f"enum from_json failed: {msg}"),
     }

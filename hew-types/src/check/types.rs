@@ -355,6 +355,9 @@ pub struct TypeCheckOutput {
     /// Interpolation operands whose rendering selected an explicit `Display`
     /// implementation. The value preserves alias identity for HIR dispatch.
     pub interpolation_display_types: HashMap<SpanKey, Ty>,
+    /// Compared operands of an `assert` whose type has no structural
+    /// rendering; the failure report names the type instead of the value.
+    pub unrendered_assertion_operands: HashSet<SpanKey>,
     /// `==`/`!=`/`<`/`<=`/`>`/`>=` binary expressions whose operand type has
     /// a user-provided `impl` overriding the derived comparison (D340). See
     /// [`UserComparisonDispatch`].
@@ -1451,6 +1454,7 @@ impl Default for TypeCheckOutput {
             call_argument_slots: HashMap::new(),
             expr_types: HashMap::new(),
             interpolation_display_types: HashMap::new(),
+            unrendered_assertion_operands: HashSet::new(),
             user_comparison_dispatch: HashMap::new(),
             numeric_operand_coercions: HashMap::new(),
             extern_method_signatures: HashMap::new(),
@@ -2774,6 +2778,7 @@ pub struct Checker {
     pub(super) user_clone_record_seeds: Vec<String>,
     pub(super) expr_types: HashMap<SpanKey, Ty>,
     pub(super) interpolation_display_types: HashMap<SpanKey, Ty>,
+    pub(super) unrendered_assertion_operands: HashSet<SpanKey>,
     /// Checker-side accumulator for
     /// [`TypeCheckOutput::user_comparison_dispatch`].
     pub(super) user_comparison_dispatch: HashMap<SpanKey, UserComparisonDispatch>,
@@ -3990,6 +3995,7 @@ impl Checker {
             user_clone_record_seeds: Vec::new(),
             expr_types: HashMap::new(),
             interpolation_display_types: HashMap::new(),
+            unrendered_assertion_operands: HashSet::new(),
             user_comparison_dispatch: HashMap::new(),
             numeric_operand_coercions: HashMap::new(),
             extern_method_origins: HashMap::new(),

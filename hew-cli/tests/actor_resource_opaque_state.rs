@@ -25,7 +25,6 @@ fn run_teardown_close_oracle(name: &str, actor_decl: &str, spawn_expr: &str) {
     let marker_literal = hew_string_literal(&marker);
     let source = format!(
         r#"import std.fs;
-import std.testing;
 
 #[resource]
 #[opaque]
@@ -56,8 +55,8 @@ type Holder {{
 fn actor_resource_state_closes_once() {{
     let keeper = {spawn_expr};
     match keeper.ping() {{
-        .Ok(n) => testing.assert_eq(n, 1),
-        .Err(_) => testing.assert_true(false),
+        .Ok(n) => assert(n == 1),
+        .Err(_) => assert(false),
     }}
 }}
 "#
@@ -102,7 +101,6 @@ fn run_builtin_name_collision_teardown_oracle(type_name: &str) {
     let marker_literal = hew_string_literal(&marker);
     let source = format!(
         r#"import std.fs;
-import std.testing;
 
 #[resource]
 #[opaque]
@@ -132,8 +130,8 @@ actor Keeper {{
 fn colliding_resource_closes_once() {{
     let keeper = spawn Keeper(handle: unsafe {{ hew_deque_new() }});
     match keeper.ping() {{
-        .Ok(n) => testing.assert_eq(n, 1),
-        .Err(_) => testing.assert_true(false),
+        .Ok(n) => assert(n == 1),
+        .Err(_) => assert(false),
     }}
 }}
 "#

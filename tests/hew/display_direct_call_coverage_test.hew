@@ -8,8 +8,6 @@
 //! the catalog has no concrete `println_*`/`print_*`/`to_string_*` overload for
 //! (#2351), plus a named type carrying a real `impl Display` (#2492).
 
-import std.testing;
-
 type Point {
     x: i64,
     y: i64,
@@ -30,19 +28,19 @@ fn test_direct_to_string_char_and_narrow_primitives() {
     let isizev: isize = -4096;
     let usizev: usize = 4000000000;
     let f32v: f32 = 1.5;
-    testing.assert_eq_str(to_string(cv), "h");
-    testing.assert_eq_str(to_string(i8v), "-7");
-    testing.assert_eq_str(to_string(i16v), "-1234");
-    testing.assert_eq_str(to_string(u16v), "65000");
-    testing.assert_eq_str(to_string(isizev), "-4096");
-    testing.assert_eq_str(to_string(usizev), "4000000000");
-    testing.assert_eq_str(to_string(f32v), "1.5");
+    assert(to_string(cv) == "h");
+    assert(to_string(i8v) == "-7");
+    assert(to_string(i16v) == "-1234");
+    assert(to_string(u16v) == "65000");
+    assert(to_string(isizev) == "-4096");
+    assert(to_string(usizev) == "4000000000");
+    assert(to_string(f32v) == "1.5");
 }
 
 #[test]
 fn test_direct_to_string_named_display_type() {
     let p = Point { x: 3, y: 4 };
-    testing.assert_eq_str(to_string(p), "Point(3, 4)");
+    assert(to_string(p) == "Point(3, 4)");
 }
 
 #[test]
@@ -72,7 +70,7 @@ fn test_concrete_fstring_renders_through_same_shell() {
     let cv: char = 'h';
     let f32v: f32 = 1.5;
     let p = Point { x: 3, y: 4 };
-    testing.assert_eq_str(f"{cv}", "h");
-    testing.assert_eq_str(f"{f32v}", "1.5");
-    testing.assert_eq_str(f"{p}", "Point(3, 4)");
+    assert(f"{cv}" == "h");
+    assert(f"{f32v}" == "1.5");
+    assert(f"{p}" == "Point(3, 4)");
 }

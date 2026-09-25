@@ -22,8 +22,6 @@ import std.net.http.http_client;
 
 import std.net.http;
 
-import std.testing;
-
 /// The `Client` runs the blocking outbound request on its own worker; the test
 /// thread serves the single request. `status`/`body` are read back via asks
 /// that the mailbox necessarily processes AFTER `fetch` completes.
@@ -67,16 +65,16 @@ fn test_server_client_roundtrip_returns_200_and_echoes_path() {
             req.close();
             server.close();
             match client.status_result() {
-                .Ok(status) => testing.assert_eq(status, 200),
-                .Err(_e) => testing.assert_true(false),
+                .Ok(status) => assert(status == 200),
+                .Err(_e) => assert(false),
             }
             match client.body_result() {
-                .Ok(body) => testing.assert_eq_str(body, "pong:/ping"),
-                .Err(_e) => testing.assert_true(false),
+                .Ok(body) => assert(body == "pong:/ping"),
+                .Err(_e) => assert(false),
             }
         },
         .Err(_err) => {
-            testing.assert_true(false);
+            assert(false);
         },
     }
 }

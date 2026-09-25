@@ -9,8 +9,6 @@
 //!    `AskError` kind. The refusal paths previously returned their error code
 //!    without writing the ask-error slot, surfacing an invalid public error.
 
-import std.testing;
-
 actor Worker {
     let id: i64,
     receive fn work(n: i64) -> i64 {
@@ -85,8 +83,8 @@ fn sibling_asks_after_crash_reach_named_children() {
     sleep(30ms);
     let d = spawn Dispatcher(sup: sup);
     match d.siblings_after_crash() {
-        .Ok(code) => testing.assert_eq(code, 123),
-        .Err(_) => testing.assert_true(false),
+        .Ok(code) => assert(code == 123),
+        .Err(_) => assert(false),
     }
 }
 
@@ -98,7 +96,7 @@ fn refused_role_ask_reports_real_error_kind() {
     supervisor_stop(sup);
     sleep(80ms);
     match d.refusal_kind() {
-        .Ok(kind) => testing.assert_eq(kind, 1),
-        .Err(_) => testing.assert_true(false),
+        .Ok(kind) => assert(kind == 1),
+        .Err(_) => assert(false),
     }
 }

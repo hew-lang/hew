@@ -12,7 +12,6 @@
 //! in `hew-mir/tests/lowering_expr/conditional_move_drop.rs` and by the
 //! `conditional_move_drop_leak_oracle` measurements.
 
-import std.testing;
 
 fn make_vec() -> Vec<i64> {
     var v: Vec<i64> = Vec.new();
@@ -39,7 +38,7 @@ fn test_not_moved_path_releases_at_scope_exit() {
         let ys = xs;
         out = ys.len();
     }
-    testing.assert_eq(out, 0);
+    assert(out == 0);
 }
 
 // The issue repro, moved path: `ys` owns the handle and releases it on the
@@ -54,7 +53,7 @@ fn test_moved_path_releases_exactly_once() {
         let ys = xs;
         out = ys.len();
     }
-    testing.assert_eq(out, 2);
+    assert(out == 2);
 }
 
 // Nested conditional — two joins between the consume and the scope exit.
@@ -72,7 +71,7 @@ fn test_nested_conditional_move() {
         }
         total = total + 1;
     }
-    testing.assert_eq(total, 1);
+    assert(total == 1);
 }
 
 // Conditional move inside a loop body with break: at most one consume
@@ -90,7 +89,7 @@ fn test_loop_conditional_move_with_break() {
         }
         hits = hits + 1;
     }
-    testing.assert_eq(hits, 4);
+    assert(hits == 4);
 }
 
 // Loop where the consume never executes: the loop exits normally and the
@@ -107,7 +106,7 @@ fn test_loop_conditional_move_never_taken() {
         }
         hits = hits + 1;
     }
-    testing.assert_eq(hits, 4);
+    assert(hits == 4);
 }
 
 // Array-literal desugar chained into a conditional move: the synthetic temp
@@ -123,7 +122,7 @@ fn test_array_literal_chain_conditional_move() {
         let w = v;
         out = w.len();
     }
-    testing.assert_eq(out, 3);
+    assert(out == 3);
 }
 
 // HashMap handle conditionally moved — the collection-handle class rides the
@@ -138,7 +137,7 @@ fn test_hashmap_conditional_move() {
         let n = m;
         out = n.len();
     }
-    testing.assert_eq(out, 1);
+    assert(out == 1);
 }
 
 #[test]
@@ -151,7 +150,7 @@ fn test_hashmap_conditional_move_not_taken() {
         let n = m;
         out = n.len();
     }
-    testing.assert_eq(out, 0);
+    assert(out == 0);
 }
 
 // Vec<string>: the plain-vec class with per-element releases behind the
@@ -165,7 +164,7 @@ fn test_vec_string_conditional_move() {
         let ys = xs;
         out = ys.len();
     }
-    testing.assert_eq(out, 2);
+    assert(out == 2);
 }
 
 #[test]
@@ -177,7 +176,7 @@ fn test_vec_string_conditional_move_not_taken() {
         let ys = xs;
         out = ys.len();
     }
-    testing.assert_eq(out, 0);
+    assert(out == 0);
 }
 
 // Two destinations on mutually-exclusive branches, one drop-flag: each path
@@ -200,17 +199,17 @@ fn double_dest(a: bool, b: bool) -> i64 {
 
 #[test]
 fn test_double_destination_first_branch() {
-    testing.assert_eq(double_dest(true, false), 2);
+    assert(double_dest(true, false) == 2);
 }
 
 #[test]
 fn test_double_destination_second_branch() {
-    testing.assert_eq(double_dest(false, true), 102);
+    assert(double_dest(false, true) == 102);
 }
 
 #[test]
 fn test_double_destination_neither_branch() {
-    testing.assert_eq(double_dest(false, false), 999);
+    assert(double_dest(false, false) == 999);
 }
 
 // Rebinds on both arms: every path moves the source; each arm's destination
@@ -228,8 +227,8 @@ fn both_arms(c: bool) -> i64 {
 
 #[test]
 fn test_both_arm_moves_release_once_each() {
-    testing.assert_eq(both_arms(true), 2);
-    testing.assert_eq(both_arms(false), 12);
+    assert(both_arms(true) == 2);
+    assert(both_arms(false) == 12);
 }
 
 // Mixed rebind + record-literal ingress on exclusive branches: the ingress
@@ -258,7 +257,7 @@ fn mixed_ingress(a: bool, b: bool) -> i64 {
 
 #[test]
 fn test_mixed_ingress_all_paths_exact() {
-    testing.assert_eq(mixed_ingress(true, false), 2);
-    testing.assert_eq(mixed_ingress(false, true), 102);
-    testing.assert_eq(mixed_ingress(false, false), 999);
+    assert(mixed_ingress(true, false) == 2);
+    assert(mixed_ingress(false, true) == 102);
+    assert(mixed_ingress(false, false) == 999);
 }

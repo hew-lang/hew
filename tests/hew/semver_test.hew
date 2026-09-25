@@ -3,7 +3,6 @@
 
 import std.text.semver;
 
-import std.testing;
 
 // ── parse / accessors ─────────────────────────────────────────────────
 #[test]
@@ -12,9 +11,9 @@ fn test_parse_simple_version_components() {
         .Ok(version) => version,
         .Err(reason) => panic(reason),
     };
-    testing.assert_eq(v.major(), 1);
-    testing.assert_eq(v.minor(), 2);
-    testing.assert_eq(v.patch(), 3);
+    assert(v.major() == 1);
+    assert(v.minor() == 2);
+    assert(v.patch() == 3);
 }
 
 #[test]
@@ -23,9 +22,9 @@ fn test_parse_zero_version() {
         .Ok(version) => version,
         .Err(reason) => panic(reason),
     };
-    testing.assert_eq(v.major(), 0);
-    testing.assert_eq(v.minor(), 0);
-    testing.assert_eq(v.patch(), 0);
+    assert(v.major() == 0);
+    assert(v.minor() == 0);
+    assert(v.patch() == 0);
 }
 
 #[test]
@@ -34,8 +33,8 @@ fn test_parse_pre_release_label() {
         .Ok(version) => version,
         .Err(reason) => panic(reason),
     };
-    testing.assert_eq(v.major(), 2);
-    testing.assert_eq_str(v.pre(), "alpha.1");
+    assert(v.major() == 2);
+    assert(v.pre() == "alpha.1");
 }
 
 #[test]
@@ -44,7 +43,7 @@ fn test_parse_no_pre_release_returns_empty_string() {
         .Ok(version) => version,
         .Err(reason) => panic(reason),
     };
-    testing.assert_eq_str(v.pre(), "");
+    assert(v.pre() == "");
 }
 
 #[test]
@@ -53,9 +52,9 @@ fn test_parse_large_component_values() {
         .Ok(version) => version,
         .Err(reason) => panic(reason),
     };
-    testing.assert_eq(v.major(), 10);
-    testing.assert_eq(v.minor(), 20);
-    testing.assert_eq(v.patch(), 30);
+    assert(v.major() == 10);
+    assert(v.minor() == 20);
+    assert(v.patch() == 30);
 }
 
 #[test]
@@ -68,8 +67,8 @@ fn test_unbounded_core_components_round_trip_and_compare_by_magnitude() {
         .Ok(version) => version,
         .Err(reason) => panic(reason),
     };
-    testing.assert_eq_str(huge.to_string(), "184467440737095516161844674407370955161.2.3");
-    testing.assert_eq(huge.compare(smaller), 1);
+    assert(huge.to_string() == "184467440737095516161844674407370955161.2.3");
+    assert(huge.compare(smaller) == 1);
 }
 
 #[test]
@@ -82,7 +81,7 @@ fn test_unbounded_minor_and_patch_participate_in_precedence() {
         .Ok(version) => version,
         .Err(reason) => panic(reason),
     };
-    testing.assert_eq(minor_hi.compare(minor_lo), 1);
+    assert(minor_hi.compare(minor_lo) == 1);
     let patch_hi = match semver.parse("1.0.100000000000000000000000000000000000000") {
         .Ok(version) => version,
         .Err(reason) => panic(reason),
@@ -91,7 +90,7 @@ fn test_unbounded_minor_and_patch_participate_in_precedence() {
         .Ok(version) => version,
         .Err(reason) => panic(reason),
     };
-    testing.assert_eq(patch_hi.compare(patch_lo), 1);
+    assert(patch_hi.compare(patch_lo) == 1);
 }
 
 // ── to_string ─────────────────────────────────────────────────────────
@@ -101,7 +100,7 @@ fn test_to_string_round_trips_simple_version() {
         .Ok(version) => version,
         .Err(reason) => panic(reason),
     };
-    testing.assert_eq_str(v.to_string(), "1.2.3");
+    assert(v.to_string() == "1.2.3");
 }
 
 #[test]
@@ -110,7 +109,7 @@ fn test_to_string_includes_pre_release() {
         .Ok(version) => version,
         .Err(reason) => panic(reason),
     };
-    testing.assert_eq_str(v.to_string(), "1.0.0-beta");
+    assert(v.to_string() == "1.0.0-beta");
 }
 
 // ── compare ───────────────────────────────────────────────────────────
@@ -124,7 +123,7 @@ fn test_compare_equal_versions_returns_zero() {
         .Ok(version) => version,
         .Err(reason) => panic(reason),
     };
-    testing.assert_eq(a.compare(b), 0);
+    assert(a.compare(b) == 0);
 }
 
 #[test]
@@ -137,7 +136,7 @@ fn test_compare_greater_major_returns_one() {
         .Ok(version) => version,
         .Err(reason) => panic(reason),
     };
-    testing.assert_eq(a.compare(b), 1);
+    assert(a.compare(b) == 1);
 }
 
 #[test]
@@ -150,7 +149,7 @@ fn test_compare_lesser_major_returns_neg_one() {
         .Ok(version) => version,
         .Err(reason) => panic(reason),
     };
-    testing.assert_eq(a.compare(b), -1);
+    assert(a.compare(b) == -1);
 }
 
 #[test]
@@ -163,8 +162,8 @@ fn test_compare_minor_difference() {
         .Ok(version) => version,
         .Err(reason) => panic(reason),
     };
-    testing.assert_eq(a.compare(b), 1);
-    testing.assert_eq(b.compare(a), -1);
+    assert(a.compare(b) == 1);
+    assert(b.compare(a) == -1);
 }
 
 #[test]
@@ -177,7 +176,7 @@ fn test_compare_patch_difference() {
         .Ok(version) => version,
         .Err(reason) => panic(reason),
     };
-    testing.assert_eq(a.compare(b), 1);
+    assert(a.compare(b) == 1);
 }
 
 // ── matches ───────────────────────────────────────────────────────────
@@ -187,7 +186,7 @@ fn test_matches_exact_version() {
         .Ok(version) => version,
         .Err(reason) => panic(reason),
     };
-    testing.assert_true(v.matches("=1.2.3"));
+    assert(v.matches("=1.2.3"));
 }
 
 #[test]
@@ -196,8 +195,8 @@ fn test_matches_gte_satisfied() {
         .Ok(version) => version,
         .Err(reason) => panic(reason),
     };
-    testing.assert_true(v.matches(">=1.0.0"));
-    testing.assert_true(v.matches(">=1.2.3"));
+    assert(v.matches(">=1.0.0"));
+    assert(v.matches(">=1.2.3"));
 }
 
 #[test]
@@ -206,7 +205,7 @@ fn test_matches_gte_not_satisfied() {
         .Ok(version) => version,
         .Err(reason) => panic(reason),
     };
-    testing.assert_false(v.matches(">=2.0.0"));
+    assert(!v.matches(">=2.0.0"));
 }
 
 #[test]
@@ -215,8 +214,8 @@ fn test_matches_gt_strictly_greater() {
         .Ok(version) => version,
         .Err(reason) => panic(reason),
     };
-    testing.assert_true(v.matches(">1.9.9"));
-    testing.assert_false(v.matches(">2.0.0"));
+    assert(v.matches(">1.9.9"));
+    assert(!v.matches(">2.0.0"));
 }
 
 #[test]
@@ -225,8 +224,8 @@ fn test_matches_lt_strictly_less() {
         .Ok(version) => version,
         .Err(reason) => panic(reason),
     };
-    testing.assert_true(v.matches("<2.0.0"));
-    testing.assert_false(v.matches("<1.0.0"));
+    assert(v.matches("<2.0.0"));
+    assert(!v.matches("<1.0.0"));
 }
 
 #[test]
@@ -235,33 +234,33 @@ fn test_matches_lte_satisfied() {
         .Ok(version) => version,
         .Err(reason) => panic(reason),
     };
-    testing.assert_true(v.matches("<=1.0.0"));
-    testing.assert_true(v.matches("<=2.0.0"));
-    testing.assert_false(v.matches("<=0.9.9"));
+    assert(v.matches("<=1.0.0"));
+    assert(v.matches("<=2.0.0"));
+    assert(!v.matches("<=0.9.9"));
 }
 
 #[test]
 fn test_caret_respects_pre_one_compatibility_boundaries() {
     let minor = semver.parse("0.2.9").expect("valid version");
-    testing.assert_true(minor.matches("^0.2.3"));
-    testing.assert_false(semver.parse("0.3.0").expect("valid version").matches("^0.2.3"));
-    testing.assert_false(semver.parse("0.2.2").expect("valid version").matches("^0.2.3"));
+    assert(minor.matches("^0.2.3"));
+    assert(!semver.parse("0.3.0").expect("valid version").matches("^0.2.3"));
+    assert(!semver.parse("0.2.2").expect("valid version").matches("^0.2.3"));
 
     let patch = semver.parse("0.0.3").expect("valid version");
-    testing.assert_true(patch.matches("^0.0.3"));
-    testing.assert_false(semver.parse("0.0.4").expect("valid version").matches("^0.0.3"));
-    testing.assert_false(semver.parse("0.1.0").expect("valid version").matches("^0.0.3"));
-    testing.assert_true(semver.parse("0.0.0").expect("valid version").matches("^0.0.0"));
-    testing.assert_false(semver.parse("0.0.1").expect("valid version").matches("^0.0.0"));
+    assert(patch.matches("^0.0.3"));
+    assert(!semver.parse("0.0.4").expect("valid version").matches("^0.0.3"));
+    assert(!semver.parse("0.1.0").expect("valid version").matches("^0.0.3"));
+    assert(semver.parse("0.0.0").expect("valid version").matches("^0.0.0"));
+    assert(!semver.parse("0.0.1").expect("valid version").matches("^0.0.0"));
 }
 
 #[test]
 fn test_caret_keeps_stable_and_unbounded_components() {
-    testing.assert_true(semver.parse("1.9.0").expect("valid version").matches("^1.2.3"));
-    testing.assert_false(semver.parse("2.0.0").expect("valid version").matches("^1.2.3"));
+    assert(semver.parse("1.9.0").expect("valid version").matches("^1.2.3"));
+    assert(!semver.parse("2.0.0").expect("valid version").matches("^1.2.3"));
     let huge = semver.parse("0.999999999999999999999999999999.8").expect("valid version");
-    testing.assert_true(huge.matches("^0.999999999999999999999999999999.2"));
-    testing.assert_false(huge.matches("^0.999999999999999999999999999998.2"));
+    assert(huge.matches("^0.999999999999999999999999999999.2"));
+    assert(!huge.matches("^0.999999999999999999999999999998.2"));
 }
 
 // ── prerelease precedence (SemVer 2.0 §11) ────────────────────────────
@@ -279,8 +278,8 @@ fn test_compare_prerelease_alpha_less_than_beta() {
         .Ok(version) => version,
         .Err(reason) => panic(reason),
     };
-    testing.assert_eq(a.compare(b), -1);
-    testing.assert_eq(b.compare(a), 1);
+    assert(a.compare(b) == -1);
+    assert(b.compare(a) == 1);
 }
 
 #[test]
@@ -293,7 +292,7 @@ fn test_compare_prerelease_equal_labels() {
         .Ok(version) => version,
         .Err(reason) => panic(reason),
     };
-    testing.assert_eq(a.compare(b), 0);
+    assert(a.compare(b) == 0);
 }
 
 #[test]
@@ -307,8 +306,8 @@ fn test_compare_prerelease_shorter_has_lower_precedence() {
         .Ok(version) => version,
         .Err(reason) => panic(reason),
     };
-    testing.assert_eq(a.compare(b), -1);
-    testing.assert_eq(b.compare(a), 1);
+    assert(a.compare(b) == -1);
+    assert(b.compare(a) == 1);
 }
 
 #[test]
@@ -322,8 +321,8 @@ fn test_compare_prerelease_numeric_ids_compared_numerically() {
         .Ok(version) => version,
         .Err(reason) => panic(reason),
     };
-    testing.assert_eq(a.compare(b), -1);
-    testing.assert_eq(b.compare(a), 1);
+    assert(a.compare(b) == -1);
+    assert(b.compare(a) == 1);
 }
 
 #[test]
@@ -337,8 +336,8 @@ fn test_compare_prerelease_numeric_lower_than_alphanumeric() {
         .Ok(version) => version,
         .Err(reason) => panic(reason),
     };
-    testing.assert_eq(a.compare(b), -1);
-    testing.assert_eq(b.compare(a), 1);
+    assert(a.compare(b) == -1);
+    assert(b.compare(a) == 1);
 }
 
 #[test]
@@ -352,8 +351,8 @@ fn test_compare_prerelease_lower_than_release() {
         .Ok(version) => version,
         .Err(reason) => panic(reason),
     };
-    testing.assert_eq(a.compare(b), -1);
-    testing.assert_eq(b.compare(a), 1);
+    assert(a.compare(b) == -1);
+    assert(b.compare(a) == 1);
 }
 
 #[test]
@@ -379,10 +378,10 @@ fn test_compare_prerelease_full_chain() {
         .Ok(version) => version,
         .Err(reason) => panic(reason),
     };
-    testing.assert_eq(alpha.compare(alpha1), -1);
-    testing.assert_eq(alpha1.compare(beta), -1);
-    testing.assert_eq(beta.compare(rc1), -1);
-    testing.assert_eq(rc1.compare(rel), -1);
+    assert(alpha.compare(alpha1) == -1);
+    assert(alpha1.compare(beta) == -1);
+    assert(beta.compare(rc1) == -1);
+    assert(rc1.compare(rel) == -1);
 }
 
 // ── parse error boundaries ─────────────────────────────────────────────
@@ -494,8 +493,8 @@ fn test_numeric_pre_release_identifiers_compare_beyond_i64() {
         .Ok(version) => version,
         .Err(reason) => panic(reason),
     };
-    testing.assert_eq(lo.compare(hi), 1);
-    testing.assert_eq(hi.compare(lo), -1);
+    assert(lo.compare(hi) == 1);
+    assert(hi.compare(lo) == -1);
 }
 
 #[test]
@@ -508,8 +507,8 @@ fn test_longer_numeric_pre_release_identifiers_have_higher_precedence() {
         .Ok(version) => version,
         .Err(reason) => panic(reason),
     };
-    testing.assert_eq(short.compare(long), -1);
-    testing.assert_eq(long.compare(short), 1);
+    assert(short.compare(long) == -1);
+    assert(long.compare(short) == 1);
 }
 
 #[test]

@@ -6,8 +6,6 @@ import std.process;
 
 import std.string;
 
-import std.testing;
-
 import std.time.datetime;
 
 fn cleanup_file(file_path: string) {
@@ -48,7 +46,7 @@ fn spawn_child_for_implicit_drop(pid_path: string) -> string {
         .Err(error) => panic(to_string(error)),
     };
     let pid = read_pid_with_retry(pid_path);
-    testing.assert_true(kill_zero_exit_code(pid) == 0);
+    assert(kill_zero_exit_code(pid) == 0);
     pid
 }
 
@@ -61,9 +59,9 @@ fn test_run_argv_preserves_spaced_and_empty_arguments() {
     args.push("tail");
     match process.run_argv("printf", args) {
         .Ok(output) => {
-            testing.assert_true(output.exit_code == 0);
-            testing.assert_eq_str(output.stdout, "<hello world>|<>|<tail>");
-            testing.assert_eq_str(output.stderr, "");
+            assert(output.exit_code == 0);
+            assert(output.stdout == "<hello world>|<>|<tail>");
+            assert(output.stderr == "");
         },
         .Err(_) => panic("expected try_run_argv to succeed"),
     }
@@ -75,8 +73,8 @@ fn test_run_args_rejects_mismatched_arg_count_with_guidance() {
         .Ok(_) => panic("expected arg_count mismatch"),
         .Err(err) => match err {
             ProcessError.InvalidArguments(message) => {
-                testing.assert_true(message.contains("arg_count"));
-                testing.assert_true(message.contains("process.run_argv"));
+                assert(message.contains("arg_count"));
+                assert(message.contains("process.run_argv"));
             },
             _ => panic("expected ProcessError::InvalidArguments"),
         },
@@ -93,9 +91,9 @@ fn test_run_argv_replaces_legacy_run_args_usage() {
         .Ok(output) => output,
         .Err(error) => panic(to_string(error)),
     };
-    testing.assert_true(output.exit_code == 0);
-    testing.assert_eq_str(output.stdout, "<alpha>|<beta>");
-    testing.assert_eq_str(output.stderr, "");
+    assert(output.exit_code == 0);
+    assert(output.stdout == "<alpha>|<beta>");
+    assert(output.stderr == "");
 }
 
 #[test]
@@ -135,8 +133,8 @@ fn test_run_argv_missing_command_preserves_real_error() {
         .Ok(_) => panic("expected missing command to fail to launch"),
         .Err(err) => match err {
             ProcessError.LaunchFailed(message) => {
-                testing.assert_true(!message.contains("execution context not installed"));
-                testing.assert_true(message.contains("failed to execute"));
+                assert(!message.contains("execution context not installed"));
+                assert(message.contains("failed to execute"));
             },
             _ => panic("expected ProcessError::LaunchFailed"),
         },
@@ -161,7 +159,7 @@ fn test_child_drop_reaps_running_process() {
         attempts = attempts + 1;
     }
     cleanup_file(pid_path);
-    testing.assert_true(reaped);
+    assert(reaped);
 }
 
 // ── launch failure truth ────────────────────────────────────────────────
@@ -181,8 +179,8 @@ fn test_start_argv_reports_a_missing_executable_as_launch_failed() {
         },
         .Err(err) => match err {
             ProcessError.LaunchFailed(message) => {
-                testing.assert_true(message.contains("failed to execute"));
-                testing.assert_true(message.contains("hew-process-executable-that-does-not-exist"));
+                assert(message.contains("failed to execute"));
+                assert(message.contains("hew-process-executable-that-does-not-exist"));
             },
             _ => panic("expected ProcessError::LaunchFailed"),
         },
@@ -194,7 +192,7 @@ fn test_start_argv_returns_a_live_child_for_a_real_executable() {
     var args: Vec<string> = Vec.new();
     args.push("hew-process-start-argv-live");
     match process.start_argv("echo", args) {
-        .Ok(child) => testing.assert_true(child.wait() == 0),
+        .Ok(child) => assert(child.wait() == 0),
         .Err(_) => panic("expected echo to launch"),
     }
 }
@@ -202,7 +200,7 @@ fn test_start_argv_returns_a_live_child_for_a_real_executable() {
 #[test]
 fn test_start_returns_a_live_child_for_a_shell_command() {
     match process.start("exit 7") {
-        .Ok(child) => testing.assert_true(child.wait() == 7),
+        .Ok(child) => assert(child.wait() == 7),
         .Err(_) => panic("expected the shell command to launch"),
     }
 }
@@ -211,7 +209,7 @@ fn test_start_returns_a_live_child_for_a_shell_command() {
 #[test]
 fn test_process_error_display_prints_the_carried_detail() {
     let invalid_arguments = ProcessError.InvalidArguments("boom");
-    testing.assert_eq_str(to_string(invalid_arguments), "boom");
+    assert(to_string(invalid_arguments) == "boom");
     let launch_failed = ProcessError.LaunchFailed("could not exec");
-    testing.assert_eq_str(to_string(launch_failed), "could not exec");
+    assert(to_string(launch_failed) == "could not exec");
 }

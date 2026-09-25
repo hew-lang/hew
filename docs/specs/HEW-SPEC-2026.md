@@ -3198,7 +3198,7 @@ Normative in edition 2026:
 - Encoding: `std.encoding.json`, `std.encoding.msgpack`.
 - HTTP: `std.net.http.server` and `std.net.http.client`, at the
   request/response level.
-- Utilities: `std.math`, `std.testing`.
+- Utilities: `std.math`.
 
 See HEW-FUTURE.md §3 for modules that exist in `std/` today but are not yet
 normative — `std.net.dns`, `std.net.tls`, `std.net.quic`,
@@ -3485,7 +3485,6 @@ import std.io;
 import std.iter;
 import std.math;
 import std.sort;
-import std.testing;
 
 fn main() {
     let ints: Vec<i64> = Vec.new();
@@ -3495,7 +3494,7 @@ fn main() {
     println(math.abs(-5));
     println(fmt.to_hex(255));
     println(iter.sum(ints.into_iter()));
-    testing.assert_true(set.len() == 0);
+    assert(set.len() == 0);
     println(io.read_all());
 }
 ```
@@ -3524,17 +3523,16 @@ Important current details:
   `reverse<T>` over `Vec<T>` are the intended surface, preserving an
   independent input value. The current std source still contains specialized
   helpers; generic consolidation is pending, not an implemented API claim
-- `std.testing` is a pure-Hew assertion library layered on top of `panic()`.
-  Its whole surface is `assert(cond, msg)`, `assert_eq<T: Eq + Display>`, and
-  `assert_ne<T: Eq + Display>`; the monomorphic per-type assertion family
-  (`assert_true`, `assert_eq_int`, and the rest) is deleted. A generic
-  assertion needs `Display` to report a mismatch, so comparing an `Option` or
-  a `Result` is done by matching on it until `Display` for those two types
-  lands at v0.7.0
+- Assertions are one prelude builtin, `assert(condition)` or
+  `assert(condition, message)`, desugared once in HIR. A failure reports the
+  condition's source text; a comparison condition (`==`, `!=`, `<`, `<=`, `>`,
+  `>=`) binds each operand once and reports both as `{:?}` renders them, and
+  the message is evaluated only on failure. `assert_eq`, `assert_ne` and the
+  `std.testing` assertion family are deleted
 
 **One form per operation (normative).** Where a generic form compiles, the
 monomorphic twins beside it do not exist: `std.vec`, `std.option`,
-`std.result`, `std.sort`, and `std.testing` expose the generic function and
+`std.result`, and `std.sort` expose the generic function and
 nothing per element type. A module exposes an operation once — a method or a
 free function, never both — and a `#[resource]` type's release is its `close`
 method, so there is no `Closable` trait and no per-type `free` function

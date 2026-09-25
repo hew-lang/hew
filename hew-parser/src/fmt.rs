@@ -47,6 +47,15 @@ pub fn format_program(program: &Program) -> String {
     f.output
 }
 
+/// Format one expression as canonical Hew source text: the text a failed
+/// `assert` reports for its condition.
+#[must_use]
+pub fn format_expression(expr: &Spanned<Expr>) -> String {
+    let mut f = Formatter::new("", Vec::new());
+    f.format_expr(expr);
+    f.output
+}
+
 /// Format an AST [`Program`] as canonical Hew source text, preserving comments from `source`.
 #[must_use]
 pub fn format_source(source: &str, program: &Program) -> String {

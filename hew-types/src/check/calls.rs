@@ -1809,6 +1809,9 @@ impl Checker {
         if let Some(view) = self.actor_delivery_view_builtin(&func.0) {
             return self.check_actor_delivery_view(view, args, span);
         }
+        if let Some(ty) = self.check_assertion(&func.0, args, span) {
+            return ty;
+        }
         if let Expr::ContextVariant(context) = &func.0 {
             for arg in args {
                 let (expr, arg_span) = arg.expr();

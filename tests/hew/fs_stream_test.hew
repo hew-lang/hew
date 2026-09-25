@@ -6,7 +6,6 @@ import std.net;
 
 import std.stream;
 
-import std.testing;
 
 // hew_stream_last_error / hew_stream_last_errno are the single shared
 // thread-local error channel declared once in hew-runtime (see
@@ -46,25 +45,25 @@ fn test_read_distinguishes_empty_unicode_and_invalid_utf8() {
     let file_path = "tests/hew/_fs_stream_text_outcomes.txt";
     cleanup_file(file_path);
     fs.write(file_path, "").expect("write succeeds");
-    testing.assert_eq_str(fs.read(file_path).expect("read succeeds"), "");
+    assert(fs.read(file_path).expect("read succeeds") == "");
     fs.write(file_path, "é\0中🙂").expect("write succeeds");
-    testing.assert_eq_str(fs.read(file_path).expect("read succeeds"), "é\0中🙂");
+    assert(fs.read(file_path).expect("read succeeds") == "é\0中🙂");
     fs.write_bytes(file_path, b"A\xffB").expect("write_bytes succeeds");
     match fs.read(file_path) {
         .Ok(_) => panic("invalid UTF-8 must be a read failure"),
         .Err(error) => match error {
-            fs.IoError.Other(raw) => testing.assert_eq(raw, 0),
+            fs.IoError.Other(raw) => assert(raw == 0),
             _ => panic("encoding failure must not invent an OS error"),
         },
     }
     // The checked wrapper consumes all error metadata, including errors without errno.
     unsafe {
-        testing.assert_true(!hew_stream_has_error());
-        testing.assert_eq(hew_stream_last_errno() as i64, 0);
-        testing.assert_eq_str(hew_stream_last_error(), "");
+        assert(!hew_stream_has_error());
+        assert((hew_stream_last_errno() as i64) == 0);
+        assert(hew_stream_last_error() == "");
     }
     fs.write(file_path, "recovered").expect("write succeeds");
-    testing.assert_eq_str(fs.read(file_path).expect("read succeeds"), "recovered");
+    assert(fs.read(file_path).expect("read succeeds") == "recovered");
     cleanup_file(file_path);
 }
 
@@ -73,7 +72,7 @@ fn test_try_read_directory_returns_eisdir() {
     match fs.read("/") {
         .Ok(_) => panic("expected directory read error"),
         .Err(err) => match err {
-            IoError.Other(errno) => testing.assert_eq(errno, 21),
+            IoError.Other(errno) => assert(errno == 21),
             _ => panic("expected IoError::Other(EISDIR)"),
         },
     }
@@ -124,7 +123,7 @@ fn test_try_read_bytes_failure_drains_stale_error_message() {
     let leaked = unsafe {
         hew_stream_last_error()
     };
-    testing.assert_eq(leaked.len(), 0);
+    assert(leaked.len() == 0);
 
     // The errno side is independently drained too (already covered by the
     // io_error_from_errno mapping above succeeding), so a second read
@@ -133,7 +132,7 @@ fn test_try_read_bytes_failure_drains_stale_error_message() {
     let errno_after = unsafe {
         hew_stream_last_errno()
     };
-    testing.assert_eq(errno_after as i64, 0);
+    assert((errno_after as i64) == 0);
 }
 
 #[test]
@@ -146,10 +145,10 @@ fn test_try_write_read_size_and_delete_roundtrip() {
         .Err(_) => panic("expected try_write to succeed"),
     }
     match fs.read(file_path) {
-        .Ok(data) => testing.assert_eq_str(data, "hello"),
+        .Ok(data) => assert(data == "hello"),
         .Err(_) => panic("expected try_read to succeed"),
     }
-    testing.assert_true(fs.size(file_path) == 5);
+    assert(fs.size(file_path) == 5);
     match fs.delete(file_path) {
         .Ok(_) => {},
         .Err(_) => panic("expected try_delete to succeed"),
@@ -187,9 +186,9 @@ fn test_try_rename_success() {
         .Ok(_) => {},
         .Err(_) => panic("expected try_rename to succeed"),
     }
-    testing.assert_true(fs.exists(source_path) == false);
+    assert(fs.exists(source_path) == false);
     match fs.read(target_path) {
-        .Ok(data) => testing.assert_eq_str(data, "renamed"),
+        .Ok(data) => assert(data == "renamed"),
         .Err(_) => panic("expected renamed file to be readable"),
     }
     cleanup_file(target_path);
@@ -226,9 +225,9 @@ fn test_try_copy_success() {
         .Ok(_) => {},
         .Err(_) => panic("expected try_copy to succeed"),
     }
-    testing.assert_true(fs.exists(source_path));
+    assert(fs.exists(source_path));
     match fs.read(target_path) {
-        .Ok(data) => testing.assert_eq_str(data, "copied"),
+        .Ok(data) => assert(data == "copied"),
         .Err(_) => panic("expected copied file to be readable"),
     }
     cleanup_file(source_path);
@@ -249,7 +248,7 @@ fn test_try_append_and_try_read_bytes() {
         .Err(_) => panic("expected try_append to succeed"),
     }
     match fs.read_bytes(file_path) {
-        .Ok(data) => testing.assert_true(data.len() == 11),
+        .Ok(data) => assert(data.len() == 11),
         .Err(_) => panic("expected try_read_bytes to succeed"),
     }
     cleanup_file(file_path);
@@ -279,12 +278,12 @@ fn test_try_write_and_try_read_bytes_binary_roundtrip() {
     }
     match fs.read_bytes(file_path) {
         .Ok(data) => {
-            testing.assert_eq(data.len(), expected_len);
-            testing.assert_eq_u8(data[0], b0);
-            testing.assert_eq_u8(data[1], b1);
-            testing.assert_eq_u8(data[2], b2);
-            testing.assert_eq_u8(data[3], b3);
-            testing.assert_eq_u8(data[4], b4);
+            assert(data.len() == expected_len);
+            assert(data[0] == b0);
+            assert(data[1] == b1);
+            assert(data[2] == b2);
+            assert(data[3] == b3);
+            assert(data[4] == b4);
         },
         .Err(_) => panic("expected try_read_bytes to preserve bytes"),
     }
@@ -294,7 +293,7 @@ fn test_try_write_and_try_read_bytes_binary_roundtrip() {
 #[test]
 fn test_try_list_dir_handles_success_and_missing_paths() {
     match fs.list_dir("tests/hew") {
-        .Ok(entries) => testing.assert_true(!entries.is_empty()),
+        .Ok(entries) => assert(!entries.is_empty()),
         .Err(_) => panic("expected tests/hew listing to succeed"),
     }
     match fs.list_dir("tests/hew/_fs_stream_missing_dir") {
@@ -315,7 +314,7 @@ fn test_try_list_dir_regular_file_returns_enotdir() {
     match fs.list_dir(file_path) {
         .Ok(_) => panic("expected regular-file listing error"),
         .Err(err) => match err {
-            IoError.Other(errno) => testing.assert_eq(errno, 20),
+            IoError.Other(errno) => assert(errno == 20),
             _ => panic("expected IoError::Other(ENOTDIR)"),
         },
     }
@@ -331,7 +330,7 @@ fn test_try_write_reports_enotdir_errno() {
     match fs.write(file_path + "/child", "content") {
         .Ok(_) => panic("expected write through regular file to fail"),
         .Err(err) => match err {
-            IoError.Other(errno) => testing.assert_eq(errno, 20),
+            IoError.Other(errno) => assert(errno == 20),
             _ => panic("expected IoError::Other(ENOTDIR)"),
         },
     }
@@ -347,7 +346,7 @@ fn test_stream_open_missing_path_reports_the_os_error() {
     cleanup_file(missing_path);
     match stream.open(missing_path) {
         .Ok(_) => panic("expected missing stream source"),
-        .Err(detail) => testing.assert_true(detail.len() > 0),
+        .Err(detail) => assert(detail.len() > 0),
     }
 }
 
@@ -363,7 +362,7 @@ fn test_stream_open_reads_back_the_written_file() {
         .Ok(input) => input,
         .Err(detail) => panic(f"expected stream.open to succeed: {detail}"),
     };
-    testing.assert_eq_str(input.lines().collect(), "stream");
+    assert(input.lines().collect() == "stream");
     cleanup_file(file_path);
 }
 
@@ -380,18 +379,18 @@ fn test_io_error_from_kind_is_tag_driven_not_errno_driven() {
     // body triggers a codegen hang at 2e6fac15 (see net_error test above).
     let denied = fs.io_error_from_kind(2, 5);
     match denied {
-        IoError.PermissionDenied(code) => testing.assert_eq(code, 5),
+        IoError.PermissionDenied(code) => assert(code == 5),
         _ => panic("expected PermissionDenied(5) for kind=PermissionDenied, raw 5"),
     }
     let missing = fs.io_error_from_kind(1, 5);
     match missing {
-        IoError.NotFound(code) => testing.assert_eq(code, 5),
+        IoError.NotFound(code) => assert(code == 5),
         _ => panic("expected NotFound(5) for kind=NotFound, raw 5"),
     }
     // Tag 0 (unclassified) falls back to raw-errno mapping: POSIX 5 = EIO -> Other.
     let unclassified = fs.io_error_from_kind(0, 5);
     match unclassified {
-        IoError.Other(code) => testing.assert_eq(code, 5),
+        IoError.Other(code) => assert(code == 5),
         _ => panic("expected Other(5) for an unclassified kind"),
     }
 }
@@ -406,30 +405,30 @@ fn test_net_error_from_errno_network_variants() {
     // ECONNREFUSED: Linux=111, macOS=61
     let err111 = net.net_error_from_errno(111);
     match err111 {
-        NetError.ConnectionRefused(code) => testing.assert_eq(code, 111),
+        NetError.ConnectionRefused(code) => assert(code == 111),
         _ => panic("expected NetError::ConnectionRefused for errno 111"),
     }
     let err61 = net.net_error_from_errno(61);
     match err61 {
-        NetError.ConnectionRefused(code) => testing.assert_eq(code, 61),
+        NetError.ConnectionRefused(code) => assert(code == 61),
         _ => panic("expected NetError::ConnectionRefused for errno 61"),
     }
     // EADDRINUSE: Linux=98, macOS=48
     let err98 = net.net_error_from_errno(98);
     match err98 {
-        NetError.AddressInUse(code) => testing.assert_eq(code, 98),
+        NetError.AddressInUse(code) => assert(code == 98),
         _ => panic("expected NetError::AddressInUse for errno 98"),
     }
     // ETIMEDOUT: Linux=110, macOS=60
     let err110 = net.net_error_from_errno(110);
     match err110 {
-        NetError.TimedOut(code) => testing.assert_eq(code, 110),
+        NetError.TimedOut(code) => assert(code == 110),
         _ => panic("expected NetError::TimedOut for errno 110"),
     }
     // EADDRNOTAVAIL: Linux=99, macOS=49
     let err99 = net.net_error_from_errno(99);
     match err99 {
-        NetError.AddressNotAvailable(code) => testing.assert_eq(code, 99),
+        NetError.AddressNotAvailable(code) => assert(code == 99),
         _ => panic("expected NetError::AddressNotAvailable for errno 99"),
     }
 }
@@ -440,15 +439,15 @@ fn test_io_error_display_formats_fs_variants() {
     // returning calls in one function body triggers a codegen hang at 2e6fac15
     // (tracked v0.5.1 under enum drop multi-call pattern).
     let m1 = to_string(IoError.NotFound(2));
-    testing.assert_eq_str(m1, "NotFound(2)");
+    assert(m1 == "NotFound(2)");
     let m2 = to_string(IoError.PermissionDenied(13));
-    testing.assert_eq_str(m2, "PermissionDenied(13)");
+    assert(m2 == "PermissionDenied(13)");
     let m3 = to_string(IoError.AlreadyExists(17));
-    testing.assert_eq_str(m3, "AlreadyExists(17)");
+    assert(m3 == "AlreadyExists(17)");
     let m4 = to_string(IoError.TimedOut(110));
-    testing.assert_eq_str(m4, "TimedOut(110)");
+    assert(m4 == "TimedOut(110)");
     let m5 = to_string(IoError.Other(0));
-    testing.assert_eq_str(m5, "Other(0)");
+    assert(m5 == "Other(0)");
 }
 
 #[test]
@@ -462,13 +461,13 @@ fn test_io_error_from_errno_maps_windows_already_exists() {
     // payload.
     let mapped = fs.io_error_from_errno(183);
     match mapped {
-        IoError.AlreadyExists(code) => testing.assert_eq(code, 183),
+        IoError.AlreadyExists(code) => assert(code == 183),
         _ => panic("expected IoError::AlreadyExists(183) for Windows ERROR_ALREADY_EXISTS"),
     }
     // POSIX EEXIST=17 still classifies identically, sharing the variant.
     let posix = fs.io_error_from_errno(17);
     match posix {
-        IoError.AlreadyExists(code) => testing.assert_eq(code, 17),
+        IoError.AlreadyExists(code) => assert(code == 17),
         _ => panic("expected IoError::AlreadyExists(17) for POSIX EEXIST"),
     }
 }
@@ -498,13 +497,13 @@ fn test_net_error_display_formats_net_variants() {
     // returning calls in one function body triggers a codegen hang at 2e6fac15
     // (tracked v0.5.1 under enum drop multi-call pattern).
     let m1 = to_string(NetError.ConnectionRefused(111));
-    testing.assert_eq_str(m1, "ConnectionRefused(111)");
+    assert(m1 == "ConnectionRefused(111)");
     let m2 = to_string(NetError.AddressInUse(98));
-    testing.assert_eq_str(m2, "AddressInUse(98)");
+    assert(m2 == "AddressInUse(98)");
     let m3 = to_string(NetError.TimedOut(110));
-    testing.assert_eq_str(m3, "TimedOut(110)");
+    assert(m3 == "TimedOut(110)");
     let m4 = to_string(NetError.AddressNotAvailable(99));
-    testing.assert_eq_str(m4, "AddressNotAvailable(99)");
+    assert(m4 == "AddressNotAvailable(99)");
     let m5 = to_string(NetError.Other(0));
-    testing.assert_eq_str(m5, "Other(0)");
+    assert(m5 == "Other(0)");
 }

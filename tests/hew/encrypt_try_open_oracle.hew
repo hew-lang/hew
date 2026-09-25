@@ -2,8 +2,6 @@
 
 import std.crypto.encrypt;
 
-import std.testing;
-
 fn test_key() -> bytes {
     "0123456789abcdef0123456789abcdef".to_bytes()
 }
@@ -36,7 +34,7 @@ fn main() {
         .Err(error) => panic(to_string(error)),
     };
     match encrypt.open(roundtrip_open_key, roundtrip_ciphertext) {
-        .Ok(plaintext) => testing.assert_eq_str(plaintext, "hew survives"),
+        .Ok(plaintext) => assert(plaintext == "hew survives"),
         .Err(err) => panic(f"open unexpectedly failed: {err}"),
     }
     let tamper_seal_key = test_key();
@@ -58,7 +56,7 @@ fn main() {
             }
         },
     }
-    testing.assert_true(survived);
-    testing.assert_eq(40 + 2, 42);
+    assert(survived);
+    assert(40 + 2 == 42);
     println("encrypt.open oracle survived tamper");
 }

@@ -2,8 +2,6 @@
 
 import std.encoding.toml;
 
-import std.testing;
-
 // ── try_parse ─────────────────────────────────────────────────────────
 #[test]
 fn test_try_parse_valid_returns_ok() {
@@ -32,7 +30,7 @@ fn test_try_parse_invalid_returns_err() {
 #[test]
 fn test_from_int_get_int_round_trip() {
     let val = toml.from_int(99);
-    testing.assert_eq(val.get_int(), 99);
+    assert(val.get_int() == 99);
     val.free();
 }
 
@@ -41,7 +39,7 @@ fn test_from_int_get_int_round_trip() {
 fn test_table_builder_string_field() {
     let tbl = toml.table().with_string("lang", "hew");
     let field = tbl.get_field("lang");
-    testing.assert_eq_str(field.get_string(), "hew");
+    assert(field.get_string() == "hew");
     field.free();
     tbl.free();
 }
@@ -50,7 +48,7 @@ fn test_table_builder_string_field() {
 fn test_table_builder_int_field() {
     let tbl = toml.table().with_int("count", 3);
     let field = tbl.get_field("count");
-    testing.assert_eq(field.get_int(), 3);
+    assert(field.get_int() == 3);
     field.free();
     tbl.free();
 }
@@ -64,7 +62,7 @@ fn test_stringify_produces_valid_toml() {
     match r {
         .Ok(reparsed) => {
             let field = reparsed.get_field("x");
-            testing.assert_eq(field.get_int(), 5);
+            assert(field.get_int() == 5);
             field.free();
             reparsed.free();
         },
@@ -82,7 +80,7 @@ fn test_try_parse_empty_string_is_empty_table() {
     match r {
         .Ok(val) => {
             let missing = val.get_field("x");
-            testing.assert_eq(missing.array_len(), -1);
+            assert(missing.array_len() == -1);
             missing.free(); // null-safe no-op
             val.free();
         },
@@ -97,7 +95,7 @@ fn test_try_parse_simple_key_value() {
     match r {
         .Ok(val) => {
             let f = val.get_field("x");
-            testing.assert_eq(f.get_int(), 1);
+            assert(f.get_int() == 1);
             f.free();
             val.free();
         },
@@ -113,15 +111,15 @@ fn test_parse_array_of_integers() {
     match r {
         .Ok(root) => {
             let a = root.get_field("a");
-            testing.assert_eq(a.array_len(), 3);
+            assert(a.array_len() == 3);
             let v0 = a.array_get(0);
-            testing.assert_eq(v0.get_int(), 1);
+            assert(v0.get_int() == 1);
             v0.free();
             let v1 = a.array_get(1);
-            testing.assert_eq(v1.get_int(), 2);
+            assert(v1.get_int() == 2);
             v1.free();
             let v2 = a.array_get(2);
-            testing.assert_eq(v2.get_int(), 3);
+            assert(v2.get_int() == 3);
             v2.free();
             a.free();
             root.free();
@@ -140,7 +138,7 @@ fn test_nested_table_dotted_key() {
             let outer = root.get_field("outer");
             let inner = outer.get_field("inner");
             let y = inner.get_field("y");
-            testing.assert_eq(y.get_int(), 2);
+            assert(y.get_int() == 2);
             // Free leaf first, root last.
             y.free();
             inner.free();
@@ -159,15 +157,15 @@ fn test_array_of_tables_walk() {
     match r {
         .Ok(root) => {
             let items = root.get_field("items");
-            testing.assert_eq(items.array_len(), 2);
+            assert(items.array_len() == 2);
             let item0 = items.array_get(0);
             let k0 = item0.get_field("k");
-            testing.assert_eq(k0.get_int(), 1);
+            assert(k0.get_int() == 1);
             k0.free();
             item0.free();
             let item1 = items.array_get(1);
             let k1 = item1.get_field("k");
-            testing.assert_eq(k1.get_int(), 2);
+            assert(k1.get_int() == 2);
             k1.free();
             item1.free();
             items.free();
@@ -186,7 +184,7 @@ fn test_missing_field_handle_is_invalid() {
     match r {
         .Ok(root) => {
             let missing = root.get_field("nope");
-            testing.assert_eq(missing.array_len(), -1);
+            assert(missing.array_len() == -1);
             missing.free(); // null-safe no-op; call to document discipline
             root.free();
         },
@@ -201,7 +199,7 @@ fn test_builder_with_consumes_child() {
     let child = toml.from_int(77);
     let tbl = toml.table().with("k", child); // child consumed here
     let v = tbl.get_field("k");
-    testing.assert_eq(v.get_int(), 77);
+    assert(v.get_int() == 77);
     v.free();
     tbl.free();
 }
@@ -213,7 +211,7 @@ fn test_builder_push_consumes_element() {
     let elem = toml.from_string("hi");
     let arr = toml.array().push(elem); // elem consumed here
     let got = arr.array_get(0);
-    testing.assert_eq_str(got.get_string(), "hi");
+    assert(got.get_string() == "hi");
     got.free();
     arr.free();
 }
@@ -230,7 +228,7 @@ fn test_from_float_round_trip_via_table_field() {
         .Ok(reparsed) => {
             let f = reparsed.get_field("ratio");
             // 1.5 is exactly representable in IEEE 754; round-trip equality holds.
-            testing.assert_true(f.get_float() == 1.5);
+            assert(f.get_float() == 1.5);
             f.free();
             reparsed.free();
         },
@@ -247,7 +245,7 @@ fn test_try_stringify_rejects_a_root_toml_cannot_represent() {
     let val = toml.from_float(1.5);
     match toml.stringify(val) {
         .Ok(text) => panic(f"expected a bare float root to be rejected, got {text.len()} bytes"),
-        .Err(reason) => testing.assert_true(reason.contains("unsupported")),
+        .Err(reason) => assert(reason.contains("unsupported")),
     }
     val.free();
 }
@@ -257,7 +255,7 @@ fn test_try_stringify_rejects_a_bare_integer_root() {
     let val = toml.from_int(7);
     match toml.stringify(val) {
         .Ok(text) => panic(f"expected a bare integer root to be rejected, got {text.len()} bytes"),
-        .Err(reason) => testing.assert_gt(reason.len(), 0),
+        .Err(reason) => assert(reason.len() > 0),
     }
     val.free();
 }
@@ -268,7 +266,7 @@ fn test_try_stringify_rejects_a_bare_array_root() {
     val.push_int(1);
     match toml.stringify(val) {
         .Ok(text) => panic(f"expected a bare array root to be rejected, got {text.len()} bytes"),
-        .Err(reason) => testing.assert_gt(reason.len(), 0),
+        .Err(reason) => assert(reason.len() > 0),
     }
     val.free();
 }
@@ -279,7 +277,7 @@ fn test_try_stringify_of_an_empty_table_is_a_valid_empty_document() {
     // real: an empty table is a well-formed, empty TOML document.
     let tbl = toml.table();
     match toml.stringify(tbl) {
-        .Ok(text) => testing.assert_eq(text.len(), 0),
+        .Ok(text) => assert(text.len() == 0),
         .Err(reason) => panic(f"an empty table is a valid TOML document: {reason}"),
     }
     tbl.free();
@@ -290,7 +288,7 @@ fn test_try_stringify_preserves_a_populated_table() {
     let tbl = toml.table();
     tbl.with_int("n", 42);
     match toml.stringify(tbl) {
-        .Ok(text) => testing.assert_eq_str(text, "n = 42\n"),
+        .Ok(text) => assert(text == "n = 42\n"),
         .Err(reason) => panic(f"a populated table must serialize: {reason}"),
     }
     tbl.free();
@@ -306,7 +304,7 @@ fn test_stringify_failure_does_not_leak_into_the_next_call() {
     bad.free();
     let tbl = toml.table();
     match toml.stringify(tbl) {
-        .Ok(text) => testing.assert_eq(text.len(), 0),
+        .Ok(text) => assert(text.len() == 0),
         .Err(reason) => panic(f"a later valid call must not inherit the earlier failure: {reason}"),
     }
     tbl.free();
@@ -322,7 +320,7 @@ fn test_stringify_panics_at_legacy_boundary_on_an_unrepresentable_root() {
 #[test]
 fn test_from_string_get_string_round_trip() {
     let val = toml.from_string("hew");
-    testing.assert_eq_str(val.get_string(), "hew");
+    assert(val.get_string() == "hew");
     val.free();
 }
 
@@ -330,7 +328,7 @@ fn test_from_string_get_string_round_trip() {
 fn test_from_bool_get_bool_round_trip() {
     // from_bool(true) → get_bool() == 1 (INTERNAL-ABI: C ABI returns bool as i32).
     let val = toml.from_bool(true);
-    testing.assert_eq(val.get_bool() as i64, 1);
+    assert((val.get_bool() as i64) == 1);
     val.free();
 }
 
@@ -347,7 +345,7 @@ fn test_nested_builder_stringify_reparse() {
         .Ok(reparsed) => {
             let inner_f = reparsed.get_field("inner");
             let v_f = inner_f.get_field("v");
-            testing.assert_eq(v_f.get_int(), 9);
+            assert(v_f.get_int() == 9);
             v_f.free();
             inner_f.free();
             reparsed.free();
@@ -381,5 +379,5 @@ fn test_array_get_rejects_index_that_would_wrap_to_zero() {
 #[test]
 fn test_parse_error_display_prints_the_carried_detail() {
     let err = ParseError.Invalid("unexpected token");
-    testing.assert_eq_str(to_string(err), "unexpected token");
+    assert(to_string(err) == "unexpected token");
 }

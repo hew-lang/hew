@@ -593,7 +593,7 @@ fn positional_call_target(target: &CallTarget) -> bool {
         }
         | CallTarget::Runtime(hew_types::RuntimeCallFamily::SupervisorStop) => true,
         CallTarget::Builtin { endpoint } => {
-            matches!(endpoint.as_str(), "assert" | "sleep" | "sleep_until")
+            matches!(endpoint.as_str(), "sleep" | "sleep_until")
         }
         _ => false,
     }

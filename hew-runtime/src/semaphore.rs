@@ -50,10 +50,16 @@ pub unsafe extern "C" fn hew_semaphore_acquire(sem: *mut HewSemaphore) {
     let sem = unsafe { &*sem };
     let mut guard = sem.count.lock_or_recover();
     while *guard <= 0 {
-        guard = sem.condvar.wait_or_recover(guard);
+        // The peer that releases may need this thread: on the single-thread
+        // driver the wait steps the driver instead of blocking.
+        guard = crate::wake::wait_for_peer(&sem.count, &sem.condvar, guard, PEER_WAIT);
     }
     *guard -= 1;
 }
+
+/// How long one native wait for a releasing peer lasts before re-checking the
+/// count; `release` notifies, so this only bounds a missed notification.
+const PEER_WAIT: Duration = Duration::from_secs(1);
 
 /// Try to decrement the semaphore count without blocking.
 ///

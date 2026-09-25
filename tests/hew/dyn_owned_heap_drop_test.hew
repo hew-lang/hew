@@ -34,8 +34,6 @@
 
 import std.string;
 
-import std.testing;
-
 trait Named {
     fn name(val: Self) -> string;
 }
@@ -96,7 +94,7 @@ fn test_dyn_string_field_record_drops_clean() {
     let heaped = string.repeat("x", 64);
     let p = Person { tag: heaped };
     let _d: dyn Named = p;
-    testing.assert_true(true);
+    assert(true);
 }
 
 /// A coercion used directly as a BORROWING call argument still owns a fresh
@@ -106,7 +104,7 @@ fn test_dyn_string_field_record_drops_clean() {
 #[test]
 fn test_borrowed_dyn_argument_temporary_drops_clean() {
     let n = inspect_named(Person { tag: string.repeat("b", 64) });
-    testing.assert_eq(n, 64);
+    assert(n == 64);
 }
 
 /// Mode A — record with a populated `Vec<i64>` field coerced to `dyn` and
@@ -120,7 +118,7 @@ fn test_dyn_vec_field_record_drops_clean() {
     let n = items.len();
     let b = Bag { items: items };
     let _d: dyn Counted = b;
-    testing.assert_eq(n, 3);
+    assert(n == 3);
 }
 
 /// Mode B — enum with an owned `string` payload coerced to `dyn` and
@@ -132,7 +130,7 @@ fn test_dyn_enum_owned_payload_drops_clean() {
     let heaped = string.repeat("y", 64);
     let s = Status.Active(heaped);
     let _d: dyn Describe = s;
-    testing.assert_true(true);
+    assert(true);
 }
 
 /// Mode B — enum whose active variant is BitCopy still routes through the
@@ -142,5 +140,5 @@ fn test_dyn_enum_owned_payload_drops_clean() {
 fn test_dyn_enum_bitcopy_payload_drops_clean() {
     let s = Status.Inactive(7);
     let _d: dyn Describe = s;
-    testing.assert_true(true);
+    assert(true);
 }

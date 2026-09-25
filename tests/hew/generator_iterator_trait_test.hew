@@ -13,8 +13,6 @@
 //! and the `check_generator_iter_map_owned_handle_aggregate_fails_closed`
 //! integration test for that fail-closed pin.
 
-import std.testing;
-
 gen fn counter(n: i64) -> i64 {
     var i: i64 = 0;
     while i < n {
@@ -30,5 +28,5 @@ fn test_generator_bare_for_in_accumulates() {
         total = total + x;
     }
     // Yields 0,1,2,3 -> sum 6.
-    testing.assert_eq(total, 6);
+    assert(total == 6);
 }

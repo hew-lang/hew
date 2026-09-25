@@ -4,8 +4,6 @@
 //! parsed `flag { }` as an empty struct literal and the real then-block went
 //! missing ("expected `{`, found `else`").
 
-import std.testing;
-
 // Empty then-block with a bare-identifier condition: the canonical repro.
 fn pick(flag: bool) -> i64 {
     if flag {} else {
@@ -16,12 +14,12 @@ fn pick(flag: bool) -> i64 {
 
 #[test]
 fn test_if_empty_then_block_bare_ident_true() {
-    testing.assert_eq(pick(true), 0);
+    assert(pick(true) == 0);
 }
 
 #[test]
 fn test_if_empty_then_block_bare_ident_false() {
-    testing.assert_eq(pick(false), 1);
+    assert(pick(false) == 1);
 }
 
 // Empty body `while` with a bare-identifier condition runs the loop and exits.
@@ -39,8 +37,8 @@ fn drain(start: bool) -> i64 {
 
 #[test]
 fn test_while_bare_ident_empty_body_parses() {
-    testing.assert_eq(drain(true), 1);
-    testing.assert_eq(drain(false), 0);
+    assert(drain(true) == 1);
+    assert(drain(false) == 0);
 }
 
 // A parenthesised struct literal in the condition must still parse — the
@@ -59,7 +57,7 @@ fn paren_struct_cond() -> i64 {
 
 #[test]
 fn test_paren_struct_literal_in_condition() {
-    testing.assert_eq(paren_struct_cond(), 7);
+    assert(paren_struct_cond() == 7);
 }
 
 // A block expression in condition position is unambiguous: the `{` opens a
@@ -77,8 +75,8 @@ fn block_cond(start: bool) -> i64 {
 
 #[test]
 fn test_block_expression_condition_with_inner_struct_literal() {
-    testing.assert_eq(block_cond(true), 9);
-    testing.assert_eq(block_cond(false), 0);
+    assert(block_cond(true) == 9);
+    assert(block_cond(false) == 0);
 }
 
 // No regression: a normal struct literal in expression (non-condition) position
@@ -95,6 +93,6 @@ fn make_point() -> Point {
 #[test]
 fn test_struct_literal_expression_position_unaffected() {
     let p = make_point();
-    testing.assert_eq(p.x, 3);
-    testing.assert_eq(p.y, 4);
+    assert(p.x == 3);
+    assert(p.y == 4);
 }

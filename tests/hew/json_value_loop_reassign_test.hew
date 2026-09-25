@@ -2,15 +2,13 @@
 
 import std.encoding.json;
 
-import std.testing;
-
 fn rendered_count() -> string {
     var values = json.array();
     for n in 0 .. 3 {
         var next = values;
         next.push(json.from_int(n)).expect("push succeeds");
         // Mutating the copy must preserve the array being replaced.
-        testing.assert_eq(values.array_len().expect("array_len succeeds"), n);
+        assert(values.array_len().expect("array_len succeeds") == n);
         values = next;
     }
     values.stringify().expect("stringify succeeds")
@@ -23,10 +21,10 @@ fn rendered_without_reassignment() -> string {
 
 #[test]
 fn reassigns_json_value_copy_in_loop() {
-    testing.assert_eq_str(rendered_count(), "[0,1,2]");
+    assert(rendered_count() == "[0,1,2]");
 }
 
 #[test]
 fn nonreassigned_json_value_preserves_payload() {
-    testing.assert_eq_str(rendered_without_reassignment(), "[]");
+    assert(rendered_without_reassignment() == "[]");
 }

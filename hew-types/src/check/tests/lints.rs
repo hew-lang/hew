@@ -523,8 +523,8 @@ fn equality_assertions_reject_a_type_without_eq() {
         fn main() {
             let left = Holder { action: || 1 };
             let right = Holder { action: || 2 };
-            assert_eq(left, right);
-            assert_ne(left, right);
+            assert(left == right);
+            assert(left != right, "the message form checks its condition too");
         }
         "#,
     );
@@ -562,8 +562,6 @@ fn display_impl_satisfies_bounded_magic_builtins() {
             print(widget);
             println(widget);
             let text = to_string(widget);
-            assert_eq(widget, widget);
-            assert_ne(widget, widget);
             println(text);
         }
         "#,
@@ -4233,7 +4231,7 @@ fn warn_dead_code_self_recursive_function() {
 fn dead_code_treats_a_test_fn_as_a_root() {
     let src = "fn helper() -> i64 { 7 }\n\
         #[test]\n\
-        fn checks_the_helper() { assert_eq(helper(), 7); }\n\
+        fn checks_the_helper() { assert(helper() == 7); }\n\
         fn stranded() -> i64 { 1 }";
     let out = check_with_lint_defaults(src);
     let dead: Vec<_> = out

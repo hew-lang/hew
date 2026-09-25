@@ -5,6 +5,6 @@ fn subject() -> string {
 fn main() {
     let retained = ["caller owner".to_upper()];
     defer { println(retained[0]); }
-    assert_ne(subject(), subject());
+    assert(subject() != subject());
     println("unreachable");
 }

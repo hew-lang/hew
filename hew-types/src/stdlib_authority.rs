@@ -316,20 +316,11 @@ pub enum OverloadGroup {
     Println,
     Print,
     ToString,
-    AssertEq,
-    AssertNe,
     Len,
 }
 
 impl OverloadGroup {
-    pub const ALL: [Self; 6] = [
-        Self::Println,
-        Self::Print,
-        Self::ToString,
-        Self::AssertEq,
-        Self::AssertNe,
-        Self::Len,
-    ];
+    pub const ALL: [Self; 4] = [Self::Println, Self::Print, Self::ToString, Self::Len];
 
     #[must_use]
     pub const fn key(self) -> &'static str {
@@ -337,8 +328,6 @@ impl OverloadGroup {
             Self::Println => "println",
             Self::Print => "print",
             Self::ToString => "to_string",
-            Self::AssertEq => "assert_eq",
-            Self::AssertNe => "assert_ne",
             Self::Len => "len",
         }
     }

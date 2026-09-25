@@ -1,7 +1,5 @@
 //! Declaration-level generic bounds are enforced without blocking valid uses.
 
-import std.testing;
-
 type Box<T: Display> {
     value: T,
 }
@@ -9,5 +7,5 @@ type Box<T: Display> {
 #[test]
 fn test_decl_bound_satisfied_by_display_type() {
     let b = Box { value: 42 };
-    testing.assert_eq(b.value, 42);
+    assert(b.value == 42);
 }

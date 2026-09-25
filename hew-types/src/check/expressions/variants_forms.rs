@@ -128,36 +128,10 @@ impl Checker {
     /// declared fields; a compiler carrier renders only when its builtin
     /// identity says it has structure.
     pub(super) fn renders_structurally(&mut self, ty: &Ty) -> bool {
-        match self.subst.resolve(ty).materialize_literal_defaults() {
-            Ty::Var(_)
-            | Ty::Error
-            | Ty::I8
-            | Ty::I16
-            | Ty::I32
-            | Ty::I64
-            | Ty::U8
-            | Ty::U16
-            | Ty::U32
-            | Ty::U64
-            | Ty::Isize
-            | Ty::Usize
-            | Ty::F32
-            | Ty::F64
-            | Ty::IntLiteral
-            | Ty::FloatLiteral
-            | Ty::Bool
-            | Ty::Char
-            | Ty::String
-            | Ty::Unit => true,
-            Ty::Tuple(members) => members
-                .iter()
-                .all(|member| self.renders_structurally(member)),
-            Ty::Named { args, builtin, .. } => {
-                builtin.is_none_or(BuiltinType::renders_structurally)
-                    && args.iter().all(|arg| self.renders_structurally(arg))
-            }
-            _ => false,
-        }
+        self.subst
+            .resolve(ty)
+            .materialize_literal_defaults()
+            .renders_structurally()
     }
 
     /// Verify that `ty` renders under `:?`.

@@ -1,7 +1,5 @@
 import std.encoding.utf8;
 
-import std.testing;
-
 extern "C" {
     fn hew_bytes_from_str(s: string) -> bytes;
 }
@@ -19,9 +17,9 @@ fn test_nested_tuple_return_drops_cleanly() {
     let t = make_nested();
     let (inner, flag) = t;
     let (s, n) = inner;
-    testing.assert_eq_str(s, "hi");
-    testing.assert_eq(n, 7);
-    testing.assert_true(flag);
+    assert(s == "hi");
+    assert(n == 7);
+    assert(flag);
 }
 
 #[test]
@@ -43,13 +41,13 @@ fn test_vec_clone_deep_copies_nested_tuple_fields() {
     let (f_s, f_n) = f_inner;
     let (s_inner, s_flag) = second;
     let (s_s, s_n) = s_inner;
-    testing.assert_eq(ys.len(), 2);
-    testing.assert_eq_str(f_s, "a");
-    testing.assert_eq(f_n, 1);
-    testing.assert_true(f_flag);
-    testing.assert_eq_str(s_s, "b");
-    testing.assert_eq(s_n, 2);
-    testing.assert_true(!s_flag);
+    assert(ys.len() == 2);
+    assert(f_s == "a");
+    assert(f_n == 1);
+    assert(f_flag);
+    assert(s_s == "b");
+    assert(s_n == 2);
+    assert(!s_flag);
 }
 
 #[test]
@@ -76,23 +74,23 @@ fn test_vec_clone_drops_nested_bytes_leaf_cleanly() {
     let (f_b, f_n) = f_inner;
     let (s_inner, s_flag) = second;
     let (s_b, s_n) = s_inner;
-    testing.assert_eq(ys.len(), 2);
+    assert(ys.len() == 2);
     let decoded_f_b = utf8.decode(f_b) handle error {
         println(f"invalid UTF-8: {error}");
         assert(false);
         return;
     };
-    testing.assert_eq_str(decoded_f_b, "ab");
-    testing.assert_eq(f_n, 11);
-    testing.assert_true(f_flag);
+    assert(decoded_f_b == "ab");
+    assert(f_n == 11);
+    assert(f_flag);
     let decoded_s_b = utf8.decode(s_b) handle error {
         println(f"invalid UTF-8: {error}");
         assert(false);
         return;
     };
-    testing.assert_eq_str(decoded_s_b, "cd");
-    testing.assert_eq(s_n, 12);
-    testing.assert_true(!s_flag);
+    assert(decoded_s_b == "cd");
+    assert(s_n == 12);
+    assert(!s_flag);
 }
 
 #[test]
@@ -114,11 +112,11 @@ fn test_vec_clone_drops_nested_record_leaf_cleanly() {
     let (f_rec, f_n) = f_inner;
     let (s_inner, s_flag) = second;
     let (s_rec, s_n) = s_inner;
-    testing.assert_eq(ys.len(), 2);
-    testing.assert_eq_str(f_rec.s, "hi");
-    testing.assert_eq(f_n, 21);
-    testing.assert_true(f_flag);
-    testing.assert_eq_str(s_rec.s, "bye");
-    testing.assert_eq(s_n, 22);
-    testing.assert_true(!s_flag);
+    assert(ys.len() == 2);
+    assert(f_rec.s == "hi");
+    assert(f_n == 21);
+    assert(f_flag);
+    assert(s_rec.s == "bye");
+    assert(s_n == 22);
+    assert(!s_flag);
 }

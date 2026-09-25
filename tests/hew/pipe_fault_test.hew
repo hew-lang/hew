@@ -6,7 +6,6 @@
 //! reads `None`.
 
 import std.stream;
-import std.testing;
 
 actor StateProducer {
     out: stream.Sink<i64>,
@@ -43,7 +42,7 @@ fn test_crashing_producer_faults_the_pipe() {
     // The trap is the only panic on this path: a clean end would fall out of
     // the loop and leave `#[should_panic]` unsatisfied.
     for item in rx {
-        testing.assert_eq(item, 1);
+        assert(item == 1);
     }
 }
 
@@ -56,10 +55,10 @@ fn test_handler_local_sink_publishes_eof_on_return() {
     let _ = p.produce(tx);
     var seen = 0;
     for item in rx {
-        testing.assert_eq(item, 41);
+        assert(item == 41);
         seen = seen + 1;
     }
-    testing.assert_eq(seen, 1);
+    assert(seen == 1);
 }
 
 /// A producer that stops itself ended normally, so its state-held sink
@@ -72,8 +71,8 @@ fn test_self_stopping_producer_publishes_eof() {
     let _ = p.quit();
     var seen = 0;
     for item in rx {
-        testing.assert_eq(item, 2);
+        assert(item == 2);
         seen = seen + 1;
     }
-    testing.assert_eq(seen, 1);
+    assert(seen == 1);
 }

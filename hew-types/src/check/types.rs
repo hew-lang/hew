@@ -611,7 +611,7 @@ pub struct TypeCheckOutput {
     /// The signature keys the checker's callers spell, each naming one
     /// declaration of `fn_sigs`.
     ///
-    /// TRANSITION(A1 commit 3): WHY callers still spell `Type::method` and
+    /// TRANSITION(A1 commit 4): WHY callers still spell `Type::method` and
     /// `{module}.{name}` keys. WHEN call resolution goes through `Scope` and
     /// the dispatch table, callers hold the id and this index is deleted.
     /// WHAT: every caller reads `fn_sigs` by the `DefId` it resolved.
@@ -2520,7 +2520,7 @@ impl<'a> FnSigView<'a> {
 
     /// The signature a key spells: a declaration's key, else a builtin name.
     ///
-    /// TRANSITION(A1 commit 3): see [`TypeCheckOutput::fn_sig_keys`].
+    /// TRANSITION(A1 commit 4): see [`TypeCheckOutput::fn_sig_keys`].
     #[must_use]
     pub fn get(self, key: &str) -> Option<&'a FnSig> {
         self.keys
@@ -3185,7 +3185,7 @@ pub struct Checker {
     pub(super) type_defs: HashMap<crate::NominalId, TypeDef>,
     /// Function signatures keyed by declaration identity.
     pub(super) fn_sigs: HashMap<crate::DefId, FnSig>,
-    /// TRANSITION(A1 commit 3): see [`TypeCheckOutput::fn_sig_keys`].
+    /// TRANSITION(A1 commit 4): see [`TypeCheckOutput::fn_sig_keys`].
     pub(super) fn_sig_keys: HashMap<String, crate::DefId>,
     /// TRANSITION(A1 commit 3): see [`TypeCheckOutput::builtin_fn_sigs`].
     pub(super) builtin_fn_sigs: HashMap<Symbol, FnSig>,
@@ -3428,14 +3428,14 @@ pub struct Checker {
     pub(super) trait_defs: HashMap<crate::DefId, TraitInfo>,
     /// The trait spellings callers use, each naming one declaration.
     ///
-    /// TRANSITION(A1 commit 3): WHY bounds and impls still carry trait
+    /// TRANSITION(A1 commit 4): WHY bounds and impls still carry trait
     /// spellings. WHEN they carry `TraitRef`s resolved through `Scope`, this
     /// index is deleted. WHAT: every reader holds the trait's `DefId`.
     pub(super) trait_def_keys: HashMap<String, crate::DefId>,
     /// Maps trait name → list of super-trait names (e.g., `Pet` → [`Animal`])
     ///
     /// Keyed by the trait's declaration; the super-trait spellings stay
-    /// strings until bounds carry `TraitRef`s (TRANSITION(A1 commit 3)).
+    /// strings until bounds carry `TraitRef`s (TRANSITION(A1 commit 4)).
     pub(super) trait_super: HashMap<crate::DefId, Vec<String>>,
     /// A declaring module's trait import bindings:
     /// `(declaring_module_short, name_as_spelled)` → owner-qualified SOURCE

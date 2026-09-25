@@ -48,6 +48,9 @@ pub enum DeclarationKind {
     MachineTransition,
     /// An enum variant, a member of its enum.
     Variant,
+    /// A compiler-provided codec entry point of a wire type (`decode`,
+    /// `from_json`): a sourceless member of the type.
+    CodecMethod,
     /// A sourceless builtin receiver anchor (`i64`, `Vec`).
     BuiltinType,
     /// A trait default body materialized for one concrete receiver.
@@ -798,6 +801,11 @@ impl DefTable {
     /// Mint (or return) a sourceless row at `path`: a module item registered
     /// from a route that reads it before the module's own declarations are
     /// minted, which adopt the row when they are.
+    ///
+    /// TRANSITION(A1 commit 4): WHY registry and module-surface routes
+    /// register a module's items before its declarations are minted. WHEN one
+    /// `Checker` mints every declaration before any registration reads it.
+    /// WHAT: the source `declare` is the only mint.
     pub(crate) fn mint_sourceless(&mut self, path: &str, kind: DeclarationKind) -> DefId {
         if let Some(&established) = self.by_path.get(path) {
             return established;
@@ -816,15 +824,16 @@ impl DefTable {
     }
 
     /// Mint (or return) the compiler-provided codec entry point `name` of a
-    /// wire type (`decode`, `from_json`): a sourceless member of `owner`.
+    /// wire type (`decode`, `from_json`): a sourceless member of `owner`,
+    /// like a materialized trait default, with no source body.
     pub(crate) fn mint_codec_member(&mut self, owner: DefId, name: Symbol) -> DefId {
-        if let Some(member) = self.member_of_kind(owner, name, DeclarationKind::TypeMethod) {
+        if let Some(member) = self.member_of_kind(owner, name, DeclarationKind::CodecMethod) {
             return member;
         }
         let path = format!("{}::<codec {name}>", self.path(owner));
         let id = self.push_row(DefRow {
             name,
-            kind: DeclarationKind::TypeMethod,
+            kind: DeclarationKind::CodecMethod,
             module: self.module(owner),
             owner: Some(owner),
             site: None,

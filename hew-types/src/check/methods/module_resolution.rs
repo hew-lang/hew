@@ -182,7 +182,7 @@ impl Checker {
 
     /// The signature a key spells.
     ///
-    /// TRANSITION(A1 commit 3): see [`crate::check::TypeCheckOutput::fn_sig_keys`].
+    /// TRANSITION(A1 commit 4): see [`crate::check::TypeCheckOutput::fn_sig_keys`].
     pub(in crate::check) fn fn_sig(&self, key: &str) -> Option<&FnSig> {
         self.sigs().get(key)
     }
@@ -233,7 +233,7 @@ impl Checker {
     /// Make `key` spell the signature `source` spells: an import binding or a
     /// module surface for one declaration.
     ///
-    /// TRANSITION(A1 commit 3): a binding is a `Scope` import once callers
+    /// TRANSITION(A1 commit 4): a binding is a `Scope` import once callers
     /// resolve through it.
     pub(in crate::check) fn alias_fn_sig(&mut self, key: &str, source: &str) {
         if let Some(declaration) = self.fn_sig_keys.get(source).copied() {
@@ -247,7 +247,7 @@ impl Checker {
     /// signature key, an impl or trait method key, or a declaration path.
     /// A key that names no declaration is an internal error, never dropped.
     ///
-    /// TRANSITION(A1 commit 3): registration passes the declaration id.
+    /// TRANSITION(A1 commit 4): registration passes the declaration id.
     pub(in crate::check) fn insert_fn_sig_at(&mut self, key: &str, sig: FnSig) {
         let declaration = self
             .fn_sig_keys
@@ -287,7 +287,7 @@ impl Checker {
 
     /// The trait declaration a spelling names.
     ///
-    /// TRANSITION(A1 commit 3): see [`Checker::trait_def_keys`].
+    /// TRANSITION(A1 commit 4): see [`Checker::trait_def_keys`].
     pub(in crate::check) fn trait_key_id(&self, key: &str) -> Option<crate::DefId> {
         self.trait_def_keys.get(key).copied()
     }
@@ -369,7 +369,7 @@ impl Checker {
     /// the current module. A key no declaration answers to is an import
     /// surface spelling of a declaration filed under its own identity.
     ///
-    /// TRANSITION(A1 commit 3): registration passes the declaration id.
+    /// TRANSITION(A1 commit 4): registration passes the declaration id.
     pub(in crate::check) fn insert_type_def(&mut self, key: &str, def: TypeDef) {
         let declared = |path: &str| {
             self.lookup_declaration(path)

@@ -101,6 +101,97 @@ impl Checker {
         })
     }
 
+    /// The receiver declaration a dot call dispatches on and, when the
+    /// receiver's arguments are known, its exact instance.
+    pub(in crate::check) fn dispatch_receiver(
+        &self,
+        receiver: &Ty,
+    ) -> Option<(crate::NominalId, Option<crate::NominalInstance>)> {
+        let resolved = self.subst.resolve(receiver);
+        let head_only = match &resolved {
+            Ty::Named { head, .. } => Ty::named_head(*head, Vec::new()),
+            other => other.clone(),
+        };
+        let head = ResolvedTy::from_ty(&head_only)
+            .ok()?
+            .impl_receiver_instance(&self.defs)?
+            .nominal;
+        let instance = ResolvedTy::from_ty(&resolved)
+            .ok()
+            .and_then(|ty| ty.impl_receiver_instance(&self.defs));
+        Some((head, instance))
+    }
+
+    /// Select the source method a dot call `receiver.method()` reaches (R1).
+    pub(in crate::check) fn select_method(
+        &self,
+        receiver: &Ty,
+        method: &str,
+    ) -> crate::check::dispatch_table::MethodSelection {
+        match self.dispatch_receiver(receiver) {
+            Some((head, instance)) => {
+                self.dispatch
+                    .select(head, instance.as_ref(), Symbol::intern(method))
+            }
+            None => crate::check::dispatch_table::MethodSelection::Missing,
+        }
+    }
+
+    /// The signature of a selected source method, instantiated for the
+    /// receiver's type arguments.
+    pub(in crate::check) fn selected_method_sig(
+        &self,
+        receiver: &Ty,
+        declaration: crate::DefId,
+    ) -> Option<FnSig> {
+        let sig = self.fn_sigs.get(&declaration)?.clone();
+        let Ty::Named { args, .. } = receiver else {
+            return Some(sig);
+        };
+        let type_params = self
+            .type_def_view()
+            .of_ty(receiver)
+            .map(|type_def| type_def.type_params.clone())
+            .unwrap_or_default();
+        Some(crate::method_resolution::instantiate_named_method_sig(
+            sig,
+            &type_params,
+            args,
+        ))
+    }
+
+    /// Report a dot call two traits' methods answer with no inherent method
+    /// to prefer (R1).
+    pub(in crate::check) fn report_ambiguous_method(
+        &mut self,
+        receiver: &Ty,
+        method: &str,
+        traits: &[(crate::DefId, crate::DefId)],
+        span: &Span,
+    ) {
+        let names: Vec<&str> = traits
+            .iter()
+            .map(|(declaring, _)| self.defs.display(*declaring))
+            .collect();
+        self.report_error_with_suggestions(
+            TypeErrorKind::AmbiguousTraitMethod,
+            span,
+            format!(
+                "ambiguous method `{method}` on `{}`: traits {} both provide it",
+                receiver.user_facing(),
+                names
+                    .iter()
+                    .map(|name| format!("`{name}`"))
+                    .collect::<Vec<_>>()
+                    .join(" and ")
+            ),
+            names
+                .iter()
+                .map(|name| format!("call it as `{name}.{method}(value)` or through a bound"))
+                .collect(),
+        );
+    }
+
     /// Try to resolve a method call on a named type via `type_defs` and `fn_sigs`.
     ///
     /// Used as a fallback from hardcoded handle-type dispatch tables so that
@@ -123,7 +214,24 @@ impl Checker {
         let canonical_name = self
             .canonical_nominal_name(name)
             .unwrap_or_else(|| name.to_string());
-        let sig = self.lookup_named_method_sig(&canonical_name, type_args, method)?;
+        let (sig, selected) = match self.select_method(receiver_ty, method) {
+            crate::check::dispatch_table::MethodSelection::Unique(_, declaration) => (
+                self.selected_method_sig(receiver_ty, declaration)?,
+                Some(declaration),
+            ),
+            crate::check::dispatch_table::MethodSelection::Ambiguous(traits) => {
+                for arg in args {
+                    let (expr, arg_span) = arg.expr();
+                    self.synthesize(expr, arg_span);
+                }
+                self.report_ambiguous_method(receiver_ty, method, &traits, span);
+                return Some(Ty::Error);
+            }
+            crate::check::dispatch_table::MethodSelection::Missing => (
+                self.lookup_named_method_sig(&canonical_name, type_args, method)?,
+                None,
+            ),
+        };
         let return_type = self
             .apply_instantiated_call_signature(
                 &sig,
@@ -149,7 +257,12 @@ impl Checker {
         // `self.handle` and reconstructs wrappers where needed.  Resolve the
         // canonical, source-qualified impl key here, at the lookup boundary,
         // rather than making HIR rediscover it from a presentation name.
-        self.record_named_source_method_rewrite(receiver_ty, method, &sig, span);
+        match selected {
+            Some(declaration) => {
+                self.record_selected_method_rewrite(receiver_ty, method, declaration, &sig, span);
+            }
+            None => self.record_named_source_method_rewrite(receiver_ty, method, &sig, span),
+        }
         Some(self.qualify_method_return_to_receiver_owner(&canonical_name, &return_type))
     }
 
@@ -231,6 +344,50 @@ impl Checker {
             MethodCallRewrite::RewriteToFunction {
                 target: CallTarget::impl_method(declaration),
                 c_symbol: dispatch_key,
+                descriptor: None,
+                extern_identity: None,
+                consumes_receiver,
+                requires_mutable_receiver: sig.requires_mutable_receiver,
+                receiver_update: sig.receiver_update,
+                returns_receiver_identity: sig.returns_receiver_identity,
+            },
+        );
+    }
+
+    /// Record a direct call to the source method dispatch selected.
+    pub(super) fn record_selected_method_rewrite(
+        &mut self,
+        receiver_ty: &Ty,
+        method: &str,
+        declaration: crate::DefId,
+        sig: &FnSig,
+        span: &Span,
+    ) {
+        let Ty::Named { head, .. } = receiver_ty else {
+            return;
+        };
+        let name = head.registry_key();
+        let builtin = head.builtin();
+        let canonical_name = self
+            .canonical_nominal_name(name)
+            .unwrap_or_else(|| name.to_string());
+        let consumes_receiver = sig.consumes_receiver
+            || self.named_type_method_consumes_receiver(&canonical_name, method)
+            || self.named_type_inherent_close_consumes_receiver(
+                &canonical_name,
+                builtin,
+                method,
+                sig,
+            );
+        if consumes_receiver {
+            self.method_call_consumes_receiver
+                .insert(SpanKey::in_module(span, self.current_module_idx));
+        }
+        self.record_method_call_rewrite(
+            span,
+            MethodCallRewrite::RewriteToFunction {
+                target: CallTarget::impl_method(declaration),
+                c_symbol: self.defs.path(declaration).to_string(),
                 descriptor: None,
                 extern_identity: None,
                 consumes_receiver,

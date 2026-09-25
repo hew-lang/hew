@@ -608,6 +608,8 @@ pub struct TypeCheckOutput {
     pub extern_contracts: crate::extern_table::ExternTable,
     /// Function signatures keyed by declaration identity.
     pub fn_sigs: HashMap<crate::DefId, FnSig>,
+    /// Source-declared methods by receiver declaration and owner.
+    pub dispatch: super::dispatch_table::DispatchTable,
     /// The signature keys the checker's callers spell, each naming one
     /// declaration of `fn_sigs`.
     ///
@@ -1545,6 +1547,7 @@ impl Default for TypeCheckOutput {
             contexts: super::scope::SyntaxContexts::new(),
             entry_exit_plan: None,
             extern_contracts: crate::extern_table::ExternTable::new(),
+            dispatch: super::dispatch_table::DispatchTable::default(),
             fn_sigs: HashMap::new(),
             fn_sig_keys: HashMap::new(),
             builtin_fn_sigs: HashMap::new(),
@@ -3424,6 +3427,11 @@ pub struct Checker {
     pub(super) modules: HashSet<String>,
     pub(super) known_types: HashSet<String>,
     pub(super) type_aliases: HashMap<String, TypeAliasDef>,
+    /// Source-declared methods by receiver declaration and owner.
+    pub(super) dispatch: super::dispatch_table::DispatchTable,
+    /// The impl method whose body is being checked, so its own signature is
+    /// read rather than the last one filed under its `Type::method` spelling.
+    pub(super) checking_declaration: Option<crate::DefId>,
     /// Trait declarations by declaration identity.
     pub(super) trait_defs: HashMap<crate::DefId, TraitInfo>,
     /// The trait spellings callers use, each naming one declaration.
@@ -4347,6 +4355,8 @@ impl Checker {
             modules: HashSet::new(),
             known_types: HashSet::new(),
             type_aliases: HashMap::new(),
+            dispatch: super::dispatch_table::DispatchTable::default(),
+            checking_declaration: None,
             trait_defs: HashMap::new(),
             trait_def_keys: HashMap::new(),
             trait_super: HashMap::new(),

@@ -10,9 +10,18 @@ impl Checker {
     /// parameter rather than a same-named type or alias from another module.
     /// The declaration's own binders count even when its signature lives
     /// under a module-scoped key.
+    /// The signature of the impl method whose body is being checked.
+    fn checking_sig(&self) -> Option<FnSig> {
+        self.checking_declaration
+            .and_then(|declaration| self.fn_sigs.get(&declaration))
+            .cloned()
+    }
+
     fn registered_fn_type_param_scope(&self, fn_name: &str, fd: &FnDecl) -> TypeParamScope {
         let mut scope = self
-            .fn_sig(fn_name)
+            .checking_declaration
+            .and_then(|declaration| self.fn_sigs.get(&declaration))
+            .or_else(|| self.fn_sig(fn_name))
             .map(|sig| {
                 let mut bounds = sig.type_param_bounds.clone();
                 for param in &sig.type_params {
@@ -982,7 +991,8 @@ impl Checker {
     /// collisions with builtins or inlined functions from other modules.
     pub(super) fn check_function_as(&mut self, fd: &FnDecl, fn_name: &str) {
         let body = self
-            .lookup_declaration(fn_name)
+            .checking_declaration
+            .or_else(|| self.lookup_declaration(fn_name))
             .or_else(|| self.impl_method_declaration_ids.get(fn_name).copied())
             .map(|id| {
                 let creator = super::effects::EffectBody::Declaration(id);
@@ -1067,7 +1077,7 @@ impl Checker {
         let module_local_method = fn_name
             .split_once("::")
             .and_then(|(type_name, method)| self.module_local_method_sig(type_name, method));
-        let declared_ret = if let Some(sig) = module_local_method {
+        let declared_ret = if let Some(sig) = self.checking_sig().or(module_local_method) {
             sig.return_type.clone()
         } else if let Some(sig) = self.fn_sig(fn_name) {
             sig.return_type.clone()
@@ -2855,11 +2865,17 @@ impl Checker {
 
             for method in &id.methods {
                 self.env.push_scope();
-                // Use qualified name (e.g. Connection::close) so the fn_sigs
-                // lookup finds the impl method, not a same-named builtin or
-                // inlined function from another module.
+                // Check the body against its own declaration's signature: an
+                // inherent method and trait methods of one name on one type
+                // are distinct declarations (R1).
+                let declaration = self
+                    .impl_method_declaration_id(type_name, method, id.trait_bound.as_ref())
+                    .filter(|declaration| self.fn_sigs.contains_key(declaration));
+                let previous_declaration =
+                    std::mem::replace(&mut self.checking_declaration, declaration);
                 let qualified = format!("{type_name}::{}", method.name);
                 self.check_function_as(method, &qualified);
+                self.checking_declaration = previous_declaration;
                 self.env.pop_scope();
             }
 

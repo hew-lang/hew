@@ -15,7 +15,11 @@ use crate::BuiltinType;
 use crate::Ty;
 use crate::{DefTable, NominalId};
 
-fn instantiate_named_method_sig(mut sig: FnSig, type_params: &[String], type_args: &[Ty]) -> FnSig {
+pub(crate) fn instantiate_named_method_sig(
+    mut sig: FnSig,
+    type_params: &[String],
+    type_args: &[Ty],
+) -> FnSig {
     // A method's own type parameter (`map<U>`) is a binder distinct from any
     // caller parameter the receiver carries in (`Option<U>` inside `fn f<U>`).
     // Rename a colliding binder first so substituting the impl parameters

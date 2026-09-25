@@ -148,6 +148,29 @@ path`) are deleted; a literal meets its expected type only when its path
 - A module trait registered by a route that reads it before the module's
   declarations are minted gets a sourceless row its declaration adopts.
 
+## Method dispatch by declaration (R1)
+
+- `hew-types/src/check/dispatch_table.rs`: source methods are filed by the
+  receiver's declaration (a primitive or builtin receiver by its anchor row),
+  the method's owner (inherent or a trait `DefId`) and the method name. A
+  concrete impl (`impl Show for Box<i64>`) serves only its instance and wins
+  over the generic impl of the same owner.
+- `hew-types/src/check/methods/dispatch.rs` and
+  `methods/named_method_resolution.rs`: a dot call selects through the table
+  (R1). The inherent method wins; one trait method is selected; two or more
+  trait methods with no inherent one is `AmbiguousTraitMethod` naming the
+  traits. Before, the `Type::method` spelling held whichever impl registered
+  last (w1b_dot now refused).
+- `hew-types/src/check/items.rs` `check_impl`: an impl method's body is
+  checked against its own declaration's signature, so two traits' `size`
+  methods on one type no longer conflate (w1d type-checks).
+- `hew-types/src/check/registration/functions.rs` `impl_method_declaration_id`:
+  the receiver and trait in an impl method's path are their declarations'
+  paths, so a file-import route and the declaring file reach one row.
+- Not yet end to end: HIR still keys impl bodies by `Type::method`, so w1a,
+  w1c, w1d and the f-string Display of a specialised impl need HIR to lower by
+  declaration (lane B1).
+
 ## DefTable contract changes
 
 - `DefTable::module_has_declarations` becomes `module_has_source_declarations`:
@@ -201,6 +224,15 @@ path`) are deleted; a literal meets its expected type only when its path
   fixture identities that matched the checker's only by row order.
 - Tests that fabricated string-keyed signature tables build them through
   `FnSigFixture` or `Checker::test_fn_sig`.
+
+- Rewritten: `overlapping_user_record_impls_rejected` became
+  `concrete_and_generic_user_record_impls_project_per_instance`; it passed
+  only because the two impls' bodies were checked against one conflated
+  signature. Whether a user type may carry a generic and a concrete impl of
+  one trait is an open question (the builtin-constructor overlap stays
+  refused).
+- Rewritten: hew-compile `mixed_file_and_package_impls_keep_declaration_owned_dispatch_in_both_import_orders`
+  pins the file-import impl method's declaration path.
 
 ## Open, identity-rooted
 

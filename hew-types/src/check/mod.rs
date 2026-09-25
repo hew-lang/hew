@@ -33,6 +33,7 @@ mod coerce;
 pub mod const_eval;
 mod diagnostics;
 pub mod dispatch;
+pub mod dispatch_table;
 pub use self::dispatch::{
     Bound, CallAbiHint, CallTarget, HashMapMethod, HashSetMethod, ImplDef, ImplId, ImplRegistry,
     LookupError, MethodTarget, MethodTargetFamily, ResolvedCall, RuntimeAbi, TyPattern, VecMethod,
@@ -2798,6 +2799,7 @@ impl Checker {
             entry_exit_plan,
             extern_contracts: std::mem::take(&mut self.extern_table),
             fn_sigs: resolved_fn_sigs,
+            dispatch: self.dispatch.clone(),
             fn_sig_keys: self.fn_sig_keys.clone(),
             builtin_fn_sigs: resolved_builtin_fn_sigs,
             direct_call_targets: std::mem::take(&mut self.direct_call_targets),

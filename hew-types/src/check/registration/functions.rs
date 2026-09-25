@@ -634,6 +634,25 @@ impl Checker {
                                     None => self.insert_fn_sig_at(&method_key, sig),
                                 }
                                 if let Some(declaration) = default_body {
+                                    if let Some((declaring_trait, _)) = self
+                                        .trait_method_call_target_ids(
+                                            &tb.path.to_string(),
+                                            m.name.name.as_str(),
+                                        )
+                                    // TRANSITION(P1): deleted by A1 commit 2
+                                    {
+                                        self.file_dispatch_method(
+                                            type_name,
+                                            id.type_params
+                                                .as_ref()
+                                                .is_some_and(|params| !params.is_empty()),
+                                            crate::check::dispatch_table::MethodOwner::Trait(
+                                                declaring_trait,
+                                            ),
+                                            m.name.name,
+                                            declaration,
+                                        );
+                                    }
                                     // A materialized default is keyed exactly
                                     // like an explicit impl method: the
                                     // `Box<i64>` specialisation takes its own
@@ -740,6 +759,24 @@ impl Checker {
                         self.exit_primary_sig_scope(method_sig_scope);
                         let method_name = method.name;
                         let type_name = td.name;
+                        if let Some(member) = self
+                            .lookup_declaration(&self.declaration_identity(type_name.name.as_str()))
+                            .and_then(|owner| {
+                                self.defs.member_of_kind(
+                                    owner,
+                                    method_name.name,
+                                    crate::DeclarationKind::TypeMethod,
+                                )
+                            })
+                        {
+                            self.file_dispatch_method(
+                                type_name.name.as_str(),
+                                true,
+                                crate::check::dispatch_table::MethodOwner::Inherent,
+                                method_name.name,
+                                member,
+                            );
+                        }
                         if let Some(type_def) = self.lookup_type_def_mut(type_name.name.as_str()) {
                             type_def.methods.insert(
                                 method_name.to_string(),
@@ -1660,6 +1697,15 @@ impl Checker {
         else {
             return FnSig::default();
         };
+        if let Some(owner) = self.impl_method_owner(trait_bound) {
+            self.file_dispatch_method(
+                type_name,
+                impl_type_params.is_some_and(|params| !params.is_empty()),
+                owner,
+                method.name.name,
+                declaration_id,
+            );
+        }
         if trait_bound.is_none() && method.consumes_self {
             self.consuming_inherent_methods.insert(declaration_id);
         }
@@ -2055,6 +2101,58 @@ impl Checker {
         sig
     }
 
+    /// File a source method in the dispatch table under the receiver its impl
+    /// names: every instance for a generic impl or a plain type, one instance
+    /// for a concrete specialisation (`impl Show for Box<i64>`).
+    pub(super) fn file_dispatch_method(
+        &mut self,
+        type_name: &str,
+        impl_is_generic: bool,
+        owner: crate::check::dispatch_table::MethodOwner,
+        name: Symbol,
+        method: crate::DefId,
+    ) {
+        let args = self
+            .current_self_type
+            .as_ref()
+            .filter(|(self_type, _)| self_type == type_name)
+            .map(|(_, args)| args.clone())
+            .unwrap_or_default();
+        let instance_of = |checker: &Self, args: Vec<Ty>| {
+            ResolvedTy::from_ty(&checker.named_ty_for_key(type_name, args))
+                .ok()
+                .and_then(|ty| ty.impl_receiver_instance(&checker.defs))
+        };
+        let instance = if impl_is_generic || args.is_empty() {
+            instance_of(self, Vec::new())
+        } else {
+            instance_of(self, args)
+        };
+        let Some(instance) = instance else {
+            return;
+        };
+        if impl_is_generic || instance.args.is_empty() {
+            self.dispatch
+                .insert_generic(instance.nominal, owner, name, method);
+        } else {
+            self.dispatch
+                .insert_specialized(instance, owner, name, method);
+        }
+    }
+
+    /// The dispatch owner of an impl's methods.
+    pub(super) fn impl_method_owner(
+        &self,
+        trait_bound: Option<&TraitBound>,
+    ) -> Option<crate::check::dispatch_table::MethodOwner> {
+        match trait_bound {
+            None => Some(crate::check::dispatch_table::MethodOwner::Inherent),
+            Some(bound) => self
+                .trait_key_id(&self.trait_defs_key_for_bound(&bound.path.to_string())) // TRANSITION(P1): deleted by A1 commit 2
+                .map(crate::check::dispatch_table::MethodOwner::Trait),
+        }
+    }
+
     /// Publish one resolved impl-method signature onto the definition of the
     /// declaration `type_name` names in the current module. Explicit impl
     /// methods and materialised trait defaults both route through here.
@@ -2186,13 +2284,20 @@ impl Checker {
     /// impl is in scope. The declared self pattern distinguishes a generic
     /// `impl<T> Trait for Box<T>` from `impl Trait for Box<i64>`; concrete call
     /// arguments deliberately do not participate.
-    pub(super) fn impl_method_declaration_id(
+    pub(in crate::check) fn impl_method_declaration_id(
         &mut self,
         type_name: &str,
         method: &FnDecl,
         trait_bound: Option<&TraitBound>,
     ) -> Option<crate::DefId> {
-        let receiver = if self.registration_is_flat_file_import || type_name.contains('.') {
+        // The receiver and trait are named by their declarations, so every
+        // registration route of one impl method reaches one row.
+        let declared_type = self
+            .type_def_key(type_name)
+            .map(|id| self.defs.path(id.declaration()).to_string());
+        let receiver = if let Some(declared) = declared_type {
+            declared
+        } else if self.registration_is_flat_file_import || type_name.contains('.') {
             type_name.to_string()
         } else {
             self.canonical_nominal_name(type_name).unwrap_or_else(|| {
@@ -2219,7 +2324,12 @@ impl Checker {
         let trait_identity = trait_bound.map_or_else(
             || "inherent".to_string(),
             |bound| {
-                if self.registration_is_flat_file_import {
+                if let Some(declared) =
+                    self.trait_key_id(&self.trait_defs_key_for_bound(&bound.path.to_string()))
+                // TRANSITION(P1): deleted by A1 commit 2
+                {
+                    self.defs.path(declared).to_string()
+                } else if self.registration_is_flat_file_import {
                     bound.path.to_string() // TRANSITION(P1): deleted by A1 commit 2
                 } else {
                     self.trait_defs_key_for_bound(&bound.path.to_string()) // TRANSITION(P1): deleted by A1 commit 2

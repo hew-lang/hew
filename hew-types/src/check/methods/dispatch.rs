@@ -1880,8 +1880,33 @@ impl Checker {
                 // methods; any method absent from the builtin surface yields
                 // `None` and falls through to the `no method on
                 // Result<...>`/`Option<...>` diagnostic below.
-                let sig = match builtin {
-                    Some(b @ (BuiltinType::Result | BuiltinType::Option)) => {
+                // R1: a source method is selected through the dispatch table
+                // by the receiver's declaration and the method's owner.
+                let receiver_named = Ty::Named {
+                    head: *head,
+                    args: type_args.clone(),
+                };
+                let selection = match builtin {
+                    Some(BuiltinType::Result | BuiltinType::Option) => {
+                        crate::check::dispatch_table::MethodSelection::Missing
+                    }
+                    _ => self.select_method(&receiver_named, method),
+                };
+                let mut selected_declaration = None;
+                let sig = match (builtin, selection) {
+                    (_, crate::check::dispatch_table::MethodSelection::Ambiguous(traits)) => {
+                        for arg in args {
+                            let (expr, arg_span) = arg.expr();
+                            self.synthesize(expr, arg_span);
+                        }
+                        self.report_ambiguous_method(&receiver_named, method, &traits, span);
+                        return Ty::Error;
+                    }
+                    (_, crate::check::dispatch_table::MethodSelection::Unique(_, declaration)) => {
+                        selected_declaration = Some(declaration);
+                        self.selected_method_sig(&receiver_named, declaration)
+                    }
+                    (Some(b @ (BuiltinType::Result | BuiltinType::Option)), _) => {
                         self.lookup_builtin_result_option_method_sig(*b, type_args, method)
                     }
                     _ => self.lookup_named_method_sig(&canonical_receiver_name, type_args, method),
@@ -2243,7 +2268,8 @@ impl Checker {
                                     MethodCallRewrite::BuiltinVecIterNext,
                                 );
                             }
-                        } else if self.has_fn_sig(&method_key)
+                        } else if selected_declaration.is_some()
+                            || self.has_fn_sig(&method_key)
                             || self.impl_method_declaration_ids.contains_key(&method_key)
                             || (!type_args.is_empty() && {
                                 // Concrete-specialised-impl check (#2270): the
@@ -2296,6 +2322,7 @@ impl Checker {
                             // declaration; the bare `Result::<method>` key can
                             // name a same-spelled user method instead.
                             let declaration = match *builtin {
+                                _ if selected_declaration.is_some() => selected_declaration,
                                 Some(BuiltinType::Option | BuiltinType::Result) => sig
                                     .impl_method
                                     .as_ref()

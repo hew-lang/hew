@@ -4935,7 +4935,11 @@ mod tests {
                 .expect("type checking was enabled");
             let root_tag = tco
                 .defs
-                .lookup_path("TestResult::<impl TestResultMethods for TestResult>::tag")
+                .lookup_path(
+                    "mixed_import_impl_collision_lib.TestResult::<impl \
+                     mixed_import_impl_collision_lib.TestResultMethods for \
+                     mixed_import_impl_collision_lib.TestResult>::tag",
+                )
                 .expect("declared root impl method");
             let package_rows = tco
                 .defs

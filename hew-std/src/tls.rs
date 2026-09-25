@@ -938,18 +938,27 @@ mod tests {
         unsafe { hew_runtime::bytes::hew_bytes_drop(triple.ptr) };
     }
 
-    fn timed_out_tcp_reader(client_timeout: Duration) -> (TcpStream, thread::JoinHandle<()>) {
+    /// A client whose reads time out: the server holds the accepted socket
+    /// open, sending nothing, until the returned sender is used or dropped.
+    fn timed_out_tcp_reader(
+        client_timeout: Duration,
+    ) -> (
+        TcpStream,
+        std::sync::mpsc::Sender<()>,
+        thread::JoinHandle<()>,
+    ) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
 
         let server = thread::spawn(move || {
             let _accepted = listener.accept().unwrap();
-            thread::sleep(Duration::from_millis(200));
+            let _ = release_rx.recv();
         });
 
         let tcp = TcpStream::connect(addr).unwrap();
         tcp.set_read_timeout(Some(client_timeout)).unwrap();
-        (tcp, server)
+        (tcp, release_tx, server)
     }
 
     #[test]
@@ -1056,9 +1065,10 @@ mod tests {
     #[test]
     fn read_socket_timeout_sets_retryable_status_and_last_error() {
         clear_tls_last_error();
-        let (mut stream, server) = timed_out_tcp_reader(Duration::from_millis(25));
+        let (mut stream, release, server) = timed_out_tcp_reader(Duration::from_millis(25));
 
         let result = read_tls_vec(&mut stream, 32);
+        drop(release);
 
         assert_eq!(result.data.len, 0);
         assert_eq!(result.status, TLS_STATUS_RETRYABLE);

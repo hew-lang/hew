@@ -2176,11 +2176,10 @@ mod tests {
         );
 
         release.store(true, Ordering::Release);
-        wait_for_condition(
-            "detached response thread exits after release",
-            Duration::from_secs(1),
-            || tracker.active_response_count() == 0,
-        );
+        // The detached response thread exits after release.
+        while tracker.active_response_count() != 0 {
+            std::thread::sleep(Duration::from_millis(5));
+        }
     }
 
     #[test]

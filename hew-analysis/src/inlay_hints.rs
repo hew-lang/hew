@@ -46,7 +46,7 @@ fn collect_inlay_hints_from_item(
                 source,
                 &f.fn_span,
                 f.return_type.is_none(),
-                tc.fn_sigs
+                tc.sigs()
                     .get(f.name.name.as_str())
                     .cloned()
                     .or_else(|| find_fallback_fn_sig(f.name.name.as_str(), tc)),
@@ -66,7 +66,7 @@ fn collect_inlay_hints_from_item(
                     source,
                     &method.fn_span,
                     method.return_type.is_none(),
-                    tc.fn_sigs
+                    tc.sigs()
                         .get(format!("{}::{}", a.name, method.name).as_str())
                         .cloned(),
                     hints,
@@ -81,7 +81,7 @@ fn collect_inlay_hints_from_item(
                         source,
                         &method.fn_span,
                         method.return_type.is_none(),
-                        tc.fn_sigs
+                        tc.sigs()
                             .get(format!("{}::{}", td.name, method.name).as_str())
                             .cloned(),
                         hints,
@@ -94,7 +94,7 @@ fn collect_inlay_hints_from_item(
             for method in &i.methods {
                 let sig = match &i.target_type.0 {
                     TypeExpr::Named { path, .. } => tc
-                        .fn_sigs
+                        .sigs()
                         .get(format!("{path}::{}", method.name).as_str())
                         .cloned(),
                     _ => None,
@@ -117,7 +117,7 @@ fn collect_inlay_hints_from_item(
                             source,
                             &method.span,
                             method.return_type.is_none(),
-                            tc.fn_sigs
+                            tc.sigs()
                                 .get(format!("{}::{}", t.name, method.name).as_str())
                                 .cloned(),
                             hints,
@@ -573,14 +573,14 @@ fn find_call_signature(
     tc: &TypeCheckOutput,
 ) -> Option<FnSig> {
     let callee = source.get(function_span.start..function_span.end)?.trim();
-    if let Some(sig) = tc.fn_sigs.get(callee) {
+    if let Some(sig) = tc.sigs().get(callee) {
         return Some(sig.clone());
     }
     if let Some(sig) = find_fallback_fn_sig(callee, tc) {
         return Some(sig);
     }
     if let Expr::Ident(name) = function {
-        return tc.fn_sigs.get(name.name.as_str()).cloned();
+        return tc.sigs().get(name.name.as_str()).cloned();
     }
     None
 }
@@ -610,10 +610,10 @@ fn find_fallback_fn_sig(name: &str, tc: &TypeCheckOutput) -> Option<FnSig> {
     if last == name {
         return None;
     }
-    if let Some(sig) = tc.fn_sigs.get(last) {
+    if let Some(sig) = tc.sigs().get(last) {
         return Some(sig.clone());
     }
-    for (sig_name, sig) in &tc.fn_sigs {
+    for (sig_name, sig) in tc.sigs().entries() {
         if sig_name.ends_with(&format!("::{last}")) {
             return Some(sig.clone());
         }
@@ -1065,7 +1065,7 @@ fn main() {
         let answer_hint_offset = find_named_return_hint_offset(source, &answer_fn.fn_span)
             .expect("answer function body should have an opening brace");
         let answer_hints = return_hint_labels_at_offsets(&hints, &[answer_hint_offset]);
-        let expected = format!("-> {} ", tc.fn_sigs["answer"].return_type.user_facing());
+        let expected = format!("-> {} ", tc.sigs()["answer"].return_type.user_facing());
 
         assert_eq!(
             answer_hints,
@@ -1098,7 +1098,7 @@ fn main() -> i64 { 0 }
         let method_hints = return_hint_labels_at_offsets(&hints, &[method_hint_offset]);
         let expected = format!(
             "-> {} ",
-            tc.fn_sigs["Counter::doubled"].return_type.user_facing()
+            tc.sigs()["Counter::doubled"].return_type.user_facing()
         );
 
         assert_eq!(

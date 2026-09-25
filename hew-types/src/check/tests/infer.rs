@@ -541,7 +541,7 @@ mod non_root_module_inference_scope {
             "trait default `->_` return should resolve cleanly; got errors: {:?}",
             output.errors
         );
-        assert_eq!(output.fn_sigs["Answerer::answer"].return_type, Ty::I64);
+        assert_eq!(output.sigs()["Answerer::answer"].return_type, Ty::I64);
     }
 
     #[test]
@@ -590,7 +590,7 @@ mod non_root_module_inference_scope {
             output.errors
         );
         assert!(
-            !output.fn_sigs.contains_key("Answerer::answer"),
+            !output.sigs().contains("Answerer::answer"),
             "failing trait method signature should be stripped from checker output: {:?}",
             output.fn_sigs
         );
@@ -694,7 +694,7 @@ mod non_root_module_inference_scope {
             "default impl method signature should inherit resolved trait return type; got errors: {:?}",
             output.errors
         );
-        assert_eq!(output.fn_sigs["Greeter::answer"].return_type, Ty::I64);
+        assert_eq!(output.sigs()["Greeter::answer"].return_type, Ty::I64);
     }
 
     #[test]
@@ -728,9 +728,9 @@ mod non_root_module_inference_scope {
             output.errors
         );
         assert!(
-            output.fn_sigs["Greeter::answer"].params.is_empty(),
+            output.sigs()["Greeter::answer"].params.is_empty(),
             "default impl method should not expose the concrete receiver as an explicit argument: {:?}",
-            output.fn_sigs["Greeter::answer"]
+            output.sigs()["Greeter::answer"]
         );
     }
 

@@ -394,7 +394,7 @@ fn shipped_std_candidate_inventory() -> (
     checker.collect_declared_type_param_names(&program);
     checker.type_decls_registered = true;
     checker.collect_functions(&program);
-    let graph = checker.derive_opaque_resource_candidate_graph(&checker.fn_sigs);
+    let graph = checker.derive_opaque_resource_candidate_graph(checker.sigs());
     (resource_types, graph, std::mem::take(&mut checker.defs))
 }
 
@@ -796,7 +796,7 @@ fn synthetic_borrowed_view_without_disposer_is_excluded() {
         },
     )];
     let graph =
-        checker.derive_opaque_resource_candidate_graph_for_contracts(&checker.fn_sigs, &contracts);
+        checker.derive_opaque_resource_candidate_graph_for_contracts(checker.sigs(), &contracts);
     assert!(graph.candidates.is_empty());
     assert!(graph.conflicts.is_empty());
 }
@@ -962,7 +962,7 @@ fn generic_extern_template_joins_only_exact_canonical_contract_expansions() {
 
     let contracts = synthetic_resource_contracts(&[("example_socket_ptr", "example_socket_close")]);
     let graph =
-        checker.derive_opaque_resource_candidate_graph_for_contracts(&checker.fn_sigs, &contracts);
+        checker.derive_opaque_resource_candidate_graph_for_contracts(checker.sigs(), &contracts);
     let candidate = graph
         .candidates
         .get(
@@ -987,7 +987,7 @@ fn generic_extern_template_joins_only_exact_canonical_contract_expansions() {
     let wrong =
         synthetic_resource_contracts(&[("example_socket_not_a_token", "example_socket_close")]);
     let wrong_graph =
-        checker.derive_opaque_resource_candidate_graph_for_contracts(&checker.fn_sigs, &wrong);
+        checker.derive_opaque_resource_candidate_graph_for_contracts(checker.sigs(), &wrong);
     assert!(
         wrong_graph.candidates.is_empty(),
         "template-shaped but non-canonical endpoint must not gain lifecycle authority"
@@ -1011,7 +1011,7 @@ fn foreign_producer_joins_release_declared_only_by_nominal_owner() {
     let contracts =
         synthetic_resource_contracts(&[("example_socket_open", "example_socket_close")]);
     let graph =
-        checker.derive_opaque_resource_candidate_graph_for_contracts(&checker.fn_sigs, &contracts);
+        checker.derive_opaque_resource_candidate_graph_for_contracts(checker.sigs(), &contracts);
     let candidate = graph
         .candidates
         .get(
@@ -1059,7 +1059,7 @@ fn module_and_named_import_aliases_preserve_imported_owner() {
         let contracts =
             synthetic_resource_contracts(&[("example_socket_open", "example_socket_close")]);
         let graph = checker
-            .derive_opaque_resource_candidate_graph_for_contracts(&checker.fn_sigs, &contracts);
+            .derive_opaque_resource_candidate_graph_for_contracts(checker.sigs(), &contracts);
         let candidate = graph
             .candidates
             .get(&checker.defs.lookup_path("example.owner.Socket").expect("declared resource"))
@@ -1111,7 +1111,7 @@ fn unimported_and_wrong_module_lookalikes_have_no_candidate_authority() {
         ("example_socket_open_wrong", "example_socket_close"),
     ]);
     let graph =
-        checker.derive_opaque_resource_candidate_graph_for_contracts(&checker.fn_sigs, &contracts);
+        checker.derive_opaque_resource_candidate_graph_for_contracts(checker.sigs(), &contracts);
     assert!(graph.candidates.is_empty());
     assert!(graph.conflicts.is_empty());
 }
@@ -1140,7 +1140,7 @@ fn release_declared_off_owner_cannot_discharge_imported_result() {
     let contracts =
         synthetic_resource_contracts(&[("example_socket_open", "example_socket_close")]);
     let graph =
-        checker.derive_opaque_resource_candidate_graph_for_contracts(&checker.fn_sigs, &contracts);
+        checker.derive_opaque_resource_candidate_graph_for_contracts(checker.sigs(), &contracts);
     assert!(graph.candidates.is_empty());
     assert!(matches!(
         graph.conflicts.as_slice(),
@@ -1188,7 +1188,7 @@ fn imported_producers_aggregate_only_with_matching_lifecycle() {
         ("example_socket_open_right", "example_socket_close"),
     ]);
     let matching_graph =
-        checker.derive_opaque_resource_candidate_graph_for_contracts(&checker.fn_sigs, &contracts);
+        checker.derive_opaque_resource_candidate_graph_for_contracts(checker.sigs(), &contracts);
     let matching = matching_graph
         .candidates
         .get(
@@ -1217,7 +1217,7 @@ fn imported_producers_aggregate_only_with_matching_lifecycle() {
     right.1.discharge_depth = ReleaseDischargeDepth::Deep;
 
     let graph =
-        checker.derive_opaque_resource_candidate_graph_for_contracts(&checker.fn_sigs, &contracts);
+        checker.derive_opaque_resource_candidate_graph_for_contracts(checker.sigs(), &contracts);
     assert!(!checker
         .defs
         .lookup_path("example.owner.Socket")
@@ -1274,7 +1274,7 @@ fn synthetic_non_net_contract_uses_the_same_candidate_graph() {
         ),
     ];
     let graph =
-        checker.derive_opaque_resource_candidate_graph_for_contracts(&checker.fn_sigs, &contracts);
+        checker.derive_opaque_resource_candidate_graph_for_contracts(checker.sigs(), &contracts);
     let candidate = graph
         .candidates
         .get(
@@ -1345,7 +1345,7 @@ fn disagreeing_producers_record_conflict_instead_of_selecting_a_release() {
         producer("example_socket_clone", "example_socket_drop"),
     ];
     let graph =
-        checker.derive_opaque_resource_candidate_graph_for_contracts(&checker.fn_sigs, &contracts);
+        checker.derive_opaque_resource_candidate_graph_for_contracts(checker.sigs(), &contracts);
     assert!(
         !checker
             .defs

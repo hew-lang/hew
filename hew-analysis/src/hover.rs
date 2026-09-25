@@ -1,7 +1,6 @@
 //! Hover analysis: produce rich hover information for identifiers and expressions.
 
 use hew_parser::ast::Ident;
-use std::collections::HashMap;
 
 use hew_parser::ast::{
     Block, ConditionItem, Expr, FnDecl, Item, Param, Pattern, RecordKind, Span, Stmt, TraitBound,
@@ -33,7 +32,7 @@ pub fn hover(
 
     if let Some((word, word_span)) = &simple_word {
         if let Some(result) =
-            hover_param_at_offset(parse_result, &type_output.fn_sigs, word, *word_span, offset)
+            hover_param_at_offset(parse_result, type_output.sigs(), word, *word_span, offset)
         {
             return Some(result);
         }
@@ -78,7 +77,7 @@ pub fn hover(
     })
     .or_else(|| {
         word.as_ref().and_then(|word| {
-            if let Some(sig) = type_output.fn_sigs.get(word.as_str()) {
+            if let Some(sig) = type_output.sigs().get(word.as_str()) {
                 let hover_text = format_fn_signature(word, sig);
                 return Some(HoverResult {
                     contents: hover_text,
@@ -164,7 +163,7 @@ fn fn_component_display(ty: &Ty) -> HoverTypeDisplay {
 
 fn hover_param_at_offset(
     parse_result: &ParseResult,
-    fn_sigs: &HashMap<String, FnSig>,
+    fn_sigs: hew_types::check::FnSigView<'_>,
     word: &str,
     word_span: OffsetSpan,
     offset: usize,
@@ -1190,7 +1189,7 @@ fn format_trait_bound_hover(bound: &TraitBound) -> String {
 
 fn hover_param_in_item(
     item: &Item,
-    fn_sigs: &HashMap<String, FnSig>,
+    fn_sigs: hew_types::check::FnSigView<'_>,
     word: &str,
     word_span: OffsetSpan,
     offset: usize,
@@ -1482,7 +1481,7 @@ pub fn format_type_def_hover(type_def: &TypeDef) -> String {
 mod tests {
     use super::*;
     use hew_types::module_registry::ModuleRegistry;
-    use std::collections::HashSet;
+    use std::collections::{HashMap, HashSet};
 
     fn make_fn_sig(param_names: Vec<&str>, params: Vec<Ty>, ret: Ty) -> FnSig {
         FnSig {
@@ -1494,8 +1493,8 @@ mod tests {
     }
 
     fn make_tc_with_fn(name: &str, sig: FnSig) -> TypeCheckOutput {
-        let mut fn_sigs = HashMap::new();
-        fn_sigs.insert(name.to_string(), sig);
+        let fn_sig_parts =
+            hew_types::check::FnSigFixture::new([(name.to_string(), sig)]).into_parts();
         TypeCheckOutput {
             expr_types: HashMap::new(),
             resolved_expr_types: HashMap::new(),
@@ -1506,7 +1505,9 @@ mod tests {
             warnings: vec![],
             type_defs: HashMap::new(),
             internal_builtin_enum_names: std::collections::HashSet::new(),
-            fn_sigs,
+            fn_sigs: fn_sig_parts.0,
+            fn_sig_keys: fn_sig_parts.1,
+            builtin_fn_sigs: fn_sig_parts.2,
             root_value_bindings: HashSet::new(),
             handle_bearing_structs: std::collections::HashSet::new(),
             method_call_consumes_receiver: HashSet::new(),

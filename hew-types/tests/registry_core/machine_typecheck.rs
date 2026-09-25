@@ -1093,11 +1093,11 @@ fn imported_machine_unit_state_constructor_resolves() {
     // State constructors must be registered in fn_sigs so that transition bodies
     // that reference bare state names can resolve them.
     assert!(
-        output.fn_sigs.contains_key("Red"),
+        output.sigs().contains("Red"),
         "unit state 'Red' constructor must be registered in fn_sigs for the import path"
     );
     assert!(
-        output.fn_sigs.contains_key("Green"),
+        output.sigs().contains("Green"),
         "unit state 'Green' constructor must be registered in fn_sigs for the import path"
     );
 
@@ -1122,13 +1122,13 @@ fn imported_machine_unit_state_constructor_resolves() {
         "imported event registration must preserve its exact source owner"
     );
     assert_eq!(
-        output.fn_sigs["Red"].return_type,
-        Ty::named_for_test("lights.Traffic", vec![]),
+        output.sigs()["Red"].return_type,
+        Ty::named_in(&output.defs, "lights.Traffic", vec![]),
         "an imported state constructor must return the exact machine identity"
     );
     assert_eq!(
         output.type_def_at_path("lights.Traffic").unwrap().methods["step"].params,
-        vec![Ty::named_for_test("lights.TrafficEvent", vec![])],
+        vec![Ty::named_in(&output.defs, "lights.TrafficEvent", vec![])],
         "an imported step method must accept the exact companion event identity"
     );
 }
@@ -1382,11 +1382,11 @@ fn two_modules_with_different_machines_no_collision() {
         "Beta must be registered"
     );
     assert!(
-        output.fn_sigs.contains_key("Off"),
+        output.sigs().contains("Off"),
         "Alpha::Off constructor must be registered"
     );
     assert!(
-        output.fn_sigs.contains_key("Idle"),
+        output.sigs().contains("Idle"),
         "Beta::Idle constructor must be registered"
     );
 }

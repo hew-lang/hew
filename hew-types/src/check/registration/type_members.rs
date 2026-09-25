@@ -756,7 +756,7 @@ impl Checker {
         // Unit/struct variants carry no member-dependent constructor signature.
         for (variant_name, variant_def) in &type_def.variants {
             if let VariantDef::Tuple(variant_tys) = variant_def {
-                if let Some(sig) = self.fn_sigs.get_mut(variant_name) {
+                if let Some(sig) = self.fn_sig_mut(variant_name) {
                     sig.params.clone_from(variant_tys);
                 }
             }
@@ -847,7 +847,7 @@ impl Checker {
                 // the positional types live only in the constructor `fn_sig`.
                 let canonical = self.authoritative_type_def_key(rd.name.name.as_str());
                 let mut changed = false;
-                if let Some(sig) = self.fn_sigs.get_mut(&canonical) {
+                if let Some(sig) = self.fn_sig_mut(&canonical) {
                     if sig.params != param_tys {
                         sig.params.clone_from(&param_tys);
                         changed = true;
@@ -1078,14 +1078,23 @@ impl Checker {
                         || td.name.to_string(),
                         |module| format!("{module}.{}", td.name),
                     );
+                    let variant_member_kind =
+                        if td.origin == hew_parser::ast::DeclarationOrigin::MachineState {
+                            crate::DeclarationKind::MachineState
+                        } else {
+                            crate::DeclarationKind::Variant
+                        };
                     let return_type =
                         self.variant_nominal_ty(&declaration_name, enum_return_args.clone());
                     match &variant.kind {
                         VariantKind::Unit => {
                             variants.insert(variant.name.to_string(), VariantDef::Unit);
                             // Register variant constructor so body-checking can construct values
-                            self.fn_sigs.insert(
-                                variant.name.to_string(),
+                            self.insert_member_sig(
+                                variant.name.name.as_str(),
+                                &declaration_name,
+                                variant.name.name,
+                                variant_member_kind,
                                 FnSig {
                                     type_params: type_param_names.clone(),
                                     type_param_bounds: type_param_bounds.clone(),
@@ -1106,8 +1115,11 @@ impl Checker {
                                 variant.name.to_string(),
                                 VariantDef::Tuple(variant_tys.clone()),
                             );
-                            self.fn_sigs.insert(
-                                variant.name.to_string(),
+                            self.insert_member_sig(
+                                variant.name.name.as_str(),
+                                &declaration_name,
+                                variant.name.name,
+                                variant_member_kind,
                                 FnSig {
                                     type_params: type_param_names.clone(),
                                     type_param_bounds: type_param_bounds.clone(),
@@ -1396,13 +1408,22 @@ impl Checker {
                         || td.name.to_string(),
                         |module| format!("{module}.{}", td.name),
                     );
+                    let variant_member_kind =
+                        if td.origin == hew_parser::ast::DeclarationOrigin::MachineState {
+                            crate::DeclarationKind::MachineState
+                        } else {
+                            crate::DeclarationKind::Variant
+                        };
                     let return_type =
                         self.variant_nominal_ty(&declaration_name, enum_return_args.clone());
                     match &variant.kind {
                         VariantKind::Unit => {
                             variants.insert(variant.name.to_string(), VariantDef::Unit);
-                            self.fn_sigs.insert(
-                                variant.name.to_string(),
+                            self.insert_member_sig(
+                                variant.name.name.as_str(),
+                                &declaration_name,
+                                variant.name.name,
+                                variant_member_kind,
                                 FnSig {
                                     type_params: type_param_names.clone(),
                                     type_param_bounds: type_param_bounds.clone(),
@@ -1425,8 +1446,11 @@ impl Checker {
                             );
 
                             // Register variant constructor as function
-                            self.fn_sigs.insert(
-                                variant.name.to_string(),
+                            self.insert_member_sig(
+                                variant.name.name.as_str(),
+                                &declaration_name,
+                                variant.name.name,
+                                variant_member_kind,
                                 FnSig {
                                     type_params: type_param_names.clone(),
                                     type_param_bounds: type_param_bounds.clone(),
@@ -1594,7 +1618,7 @@ impl Checker {
                     return_type: return_type.clone(),
                     ..FnSig::default()
                 };
-                self.fn_sigs.insert(declaration_name.clone(), signature);
+                self.insert_fn_sig_at(&declaration_name, signature);
             }
         }
 
@@ -1754,14 +1778,21 @@ impl Checker {
             // ONLY. The call-site arm canonicalizes the receiver's surface
             // spelling (`Env.from_json` inside the defining module, an
             // importer's binding, an `as`-alias) to this key before lookup.
-            self.fn_sigs.insert(
-                format!("{canonical_identity}.{method_name}"),
-                FnSig {
-                    params,
-                    return_type,
-                    ..FnSig::default()
-                },
-            );
+            let sig = FnSig {
+                params,
+                return_type,
+                ..FnSig::default()
+            };
+            let key = format!("{canonical_identity}.{method_name}");
+            match self.lookup_declaration(&canonical_identity) {
+                Some(owner) => {
+                    let member = self
+                        .defs
+                        .mint_codec_member(owner, Symbol::intern(method_name));
+                    self.insert_fn_sig(&key, member, sig);
+                }
+                None => self.insert_fn_sig_at(&key, sig),
+            }
         }
     }
 
@@ -2041,8 +2072,11 @@ impl Checker {
                 // Register unit state constructor as a function. For generic
                 // machines (e.g. `machine Worker<T>`), the constructor returns
                 // `Worker<T>` so callers can instantiate with concrete args.
-                self.fn_sigs.insert(
-                    state.name.to_string(),
+                self.insert_member_sig(
+                    state.name.name.as_str(),
+                    &machine_identity,
+                    state.name.name,
+                    crate::DeclarationKind::MachineState,
                     FnSig {
                         type_params: type_param_names.clone(),
                         type_param_bounds: type_param_bounds.clone(),

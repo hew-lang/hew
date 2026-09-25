@@ -165,7 +165,7 @@ fn find_module_qualified_fn_sig(callee: &str, tc: &TypeCheckOutput) -> Option<Fn
     let owner = tc
         .module_import_bindings
         .get(&(None, 0, binding.to_string()))?;
-    tc.fn_sigs.get(&format!("{owner}.{leaf}")).cloned()
+    tc.sigs().get(&format!("{owner}.{leaf}")).cloned()
 }
 
 /// Find the call the cursor is inside and its arguments up to the cursor.
@@ -258,10 +258,10 @@ fn find_fallback_fn_sig(name: &str, tc: &TypeCheckOutput) -> Option<FnSig> {
         if let Some(sig) = find_root_fn_sig(last, tc) {
             return Some(sig);
         }
-        if let Some(sig) = tc.fn_sigs.get(last) {
+        if let Some(sig) = tc.sigs().get(last) {
             return Some(sig.clone());
         }
-        for (sig_name, sig) in &tc.fn_sigs {
+        for (sig_name, sig) in tc.sigs().entries() {
             if sig_name.ends_with(&format!("::{last}")) {
                 return Some(sig.clone());
             }
@@ -275,7 +275,7 @@ fn find_exact_fn_sig(name: &str, tc: &TypeCheckOutput) -> Option<FnSig> {
     if let Some(sig) = find_root_fn_sig(name, tc) {
         return Some(sig);
     }
-    tc.fn_sigs.get(name).cloned()
+    tc.sigs().get(name).cloned()
 }
 
 /// Signature of a bare free-function spelling declared by the ROOT unit.
@@ -291,7 +291,7 @@ fn find_root_fn_sig(name: &str, tc: &TypeCheckOutput) -> Option<FnSig> {
     }
     let root = tc.defs.root_module_path()?;
     let declaration = tc.defs.lookup_path(&format!("{root}.{name}"))?;
-    tc.fn_sigs.get(tc.defs.path(declaration)).cloned()
+    tc.sigs().get(tc.defs.path(declaration)).cloned()
 }
 
 /// Format signature label like `fn name(param1: Type, param2: Type) -> RetType`.
@@ -317,6 +317,7 @@ mod tests {
     use std::collections::{HashMap, HashSet};
 
     fn make_tc_with_fn_sigs(fn_sigs: HashMap<String, FnSig>) -> TypeCheckOutput {
+        let fn_sig_parts = hew_types::check::FnSigFixture::new(fn_sigs).into_parts();
         TypeCheckOutput {
             expr_types: HashMap::new(),
             resolved_expr_types: HashMap::new(),
@@ -327,7 +328,9 @@ mod tests {
             warnings: vec![],
             type_defs: HashMap::new(),
             internal_builtin_enum_names: std::collections::HashSet::new(),
-            fn_sigs,
+            fn_sigs: fn_sig_parts.0,
+            fn_sig_keys: fn_sig_parts.1,
+            builtin_fn_sigs: fn_sig_parts.2,
             root_value_bindings: HashSet::new(),
             handle_bearing_structs: std::collections::HashSet::new(),
             method_call_consumes_receiver: HashSet::new(),

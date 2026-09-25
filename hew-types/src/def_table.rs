@@ -46,6 +46,8 @@ pub enum DeclarationKind {
     MachineStateEntry,
     MachineStateExit,
     MachineTransition,
+    /// An enum variant, a member of its enum.
+    Variant,
     /// A sourceless builtin receiver anchor (`i64`, `Vec`).
     BuiltinType,
     /// A trait default body materialized for one concrete receiver.
@@ -673,6 +675,9 @@ pub struct DefTable {
     /// is (`CrashInfo` is `std.failure.CrashInfo`), bound when that
     /// declaration is established.
     builtin_declarations: HashMap<crate::BuiltinType, DefId>,
+    /// Each owner's members by declared name; the first declaration of a
+    /// name wins, and a duplicate is reported by the checker.
+    members: HashMap<(DefId, Symbol), Vec<DefId>>,
 }
 
 impl Default for DefTable {
@@ -695,6 +700,7 @@ impl DefTable {
             by_path: HashMap::new(),
             default_bodies: HashMap::new(),
             builtin_declarations: HashMap::new(),
+            members: HashMap::new(),
         };
         for anchor in BuiltinAnchor::ALL {
             table.push_row(DefRow {
@@ -775,8 +781,72 @@ impl DefTable {
         let id = DefId(
             u32::try_from(self.defs.len()).expect("more than u32::MAX declarations in one compile"),
         );
+        if let Some(owner) = row.owner {
+            self.members.entry((owner, row.name)).or_default().push(id);
+        }
         self.defs.push(row);
         id
+    }
+
+    /// The member of `owner` declared as `name`: a method, a receive
+    /// handler, a machine state.
+    #[must_use]
+    pub fn member(&self, owner: DefId, name: Symbol) -> Option<DefId> {
+        self.members.get(&(owner, name))?.first().copied()
+    }
+
+    /// Mint (or return) a sourceless function row at `path`: a module
+    /// function a registry declares before the module's source, which adopts
+    /// the row when it is read.
+    pub(crate) fn mint_sourceless_function(&mut self, path: &str) -> DefId {
+        if let Some(&established) = self.by_path.get(path) {
+            return established;
+        }
+        let name = Symbol::intern(path.rsplit_once('.').map_or(path, |(_, leaf)| leaf));
+        let id = self.push_row(DefRow {
+            name,
+            kind: DeclarationKind::Function,
+            module: None,
+            owner: None,
+            site: None,
+            path: path.to_string(),
+        });
+        self.by_path.insert(path.to_string(), id);
+        id
+    }
+
+    /// Mint (or return) the compiler-provided codec entry point `name` of a
+    /// wire type (`decode`, `from_json`): a sourceless member of `owner`.
+    pub(crate) fn mint_codec_member(&mut self, owner: DefId, name: Symbol) -> DefId {
+        if let Some(member) = self.member_of_kind(owner, name, DeclarationKind::TypeMethod) {
+            return member;
+        }
+        let path = format!("{}::<codec {name}>", self.path(owner));
+        let id = self.push_row(DefRow {
+            name,
+            kind: DeclarationKind::TypeMethod,
+            module: self.module(owner),
+            owner: Some(owner),
+            site: None,
+            path: path.clone(),
+        });
+        self.by_path.insert(path, id);
+        id
+    }
+
+    /// The member of `owner` declared as `name` with `kind`.
+    #[must_use]
+    pub fn member_of_kind(
+        &self,
+        owner: DefId,
+        name: Symbol,
+        kind: DeclarationKind,
+    ) -> Option<DefId> {
+        self.members
+            .get(&(owner, name))?
+            .iter()
+            .copied()
+            .find(|member| self.kind(*member) == kind)
     }
 
     fn row(&self, id: DefId) -> &DefRow {
@@ -1157,6 +1227,12 @@ impl DefTable {
                 row.module = occurrence.module();
                 row.owner = owner;
                 row.site = Some(occurrence);
+                if let Some(owner) = owner {
+                    self.members
+                        .entry((owner, name))
+                        .or_default()
+                        .push(established);
+                }
                 self.by_occurrence.insert(occurrence, established);
                 return Ok(established);
             }

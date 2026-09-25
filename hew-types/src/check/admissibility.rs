@@ -401,7 +401,7 @@ impl Checker {
         &mut self,
         expr_types: &mut HashMap<SpanKey, Ty>,
         type_defs: &mut HashMap<crate::NominalId, TypeDef>,
-        fn_sigs: &mut HashMap<String, FnSig>,
+        fn_sigs: &mut HashMap<crate::DefId, FnSig>,
         call_type_args: &mut HashMap<SpanKey, Vec<Ty>>,
         record_init_type_args: &mut HashMap<SpanKey, Vec<Ty>>,
     ) {
@@ -655,7 +655,7 @@ impl Checker {
     pub(super) fn validate_method_call_receiver_kinds_output_contract(
         &mut self,
         type_defs: &HashMap<crate::NominalId, TypeDef>,
-        fn_sigs: &HashMap<String, FnSig>,
+        fn_sigs: &HashMap<crate::DefId, FnSig>,
     ) {
         let types = TypeDefView::new(&self.defs, type_defs);
         // Collect known trait names before the mutable borrow on
@@ -841,8 +841,7 @@ impl Checker {
         {
             return Vec::new();
         }
-        self.fn_sigs
-            .get(name)
+        self.fn_sig(name)
             .and_then(|sig| {
                 let Ty::Named { head, .. } = &sig.return_type else {
                     return None;
@@ -1806,7 +1805,7 @@ mod tests {
 
         let mut fn_sigs = HashMap::from([
             (
-                "good_fn".to_string(),
+                crate::DefId::for_test("good_fn"),
                 FnSig {
                     params: vec![Ty::I32],
                     return_type: Ty::Bool,
@@ -1814,7 +1813,7 @@ mod tests {
                 },
             ),
             (
-                "error_param_fn".to_string(),
+                crate::DefId::for_test("error_param_fn"),
                 FnSig {
                     params: vec![Ty::Error],
                     return_type: Ty::I32,
@@ -1822,7 +1821,7 @@ mod tests {
                 },
             ),
             (
-                "error_return_fn".to_string(),
+                crate::DefId::for_test("error_return_fn"),
                 FnSig {
                     params: vec![Ty::I32],
                     return_type: Ty::Error,
@@ -1844,15 +1843,15 @@ mod tests {
         );
 
         assert!(
-            fn_sigs.contains_key("good_fn"),
+            fn_sigs.contains_key(&crate::DefId::for_test("good_fn")),
             "clean signature must survive the contract check"
         );
         assert!(
-            !fn_sigs.contains_key("error_param_fn"),
+            !fn_sigs.contains_key(&crate::DefId::for_test("error_param_fn")),
             "signature with Ty::Error in params must be pruned"
         );
         assert!(
-            !fn_sigs.contains_key("error_return_fn"),
+            !fn_sigs.contains_key(&crate::DefId::for_test("error_return_fn")),
             "signature with Ty::Error as return type must be pruned"
         );
     }
@@ -1867,7 +1866,7 @@ mod tests {
 
         let mut fn_sigs = HashMap::from([
             (
-                "good_fn".to_string(),
+                crate::DefId::for_test("good_fn"),
                 FnSig {
                     params: vec![Ty::I32],
                     return_type: Ty::Bool,
@@ -1875,7 +1874,7 @@ mod tests {
                 },
             ),
             (
-                "normalized_param_fn".to_string(),
+                crate::DefId::for_test("normalized_param_fn"),
                 FnSig {
                     params: vec![Ty::named_for_test(
                         "Sender",
@@ -1886,7 +1885,7 @@ mod tests {
                 },
             ),
             (
-                "normalized_return_fn".to_string(),
+                crate::DefId::for_test("normalized_return_fn"),
                 FnSig {
                     params: vec![Ty::I32],
                     return_type: Ty::named_for_test(
@@ -1897,7 +1896,7 @@ mod tests {
                 },
             ),
             (
-                "leaked_param_fn".to_string(),
+                crate::DefId::for_test("leaked_param_fn"),
                 FnSig {
                     params: vec![Ty::Tuple(vec![Ty::Var(leaked_param_var)])],
                     return_type: Ty::Unit,
@@ -1905,7 +1904,7 @@ mod tests {
                 },
             ),
             (
-                "leaked_return_fn".to_string(),
+                crate::DefId::for_test("leaked_return_fn"),
                 FnSig {
                     params: vec![Ty::I32],
                     return_type: Ty::option(Ty::Var(leaked_return_var)),
@@ -1927,17 +1926,17 @@ mod tests {
         );
 
         assert!(
-            fn_sigs.contains_key("good_fn"),
+            fn_sigs.contains_key(&crate::DefId::for_test("good_fn")),
             "clean signature must survive the contract check"
         );
-        assert!(!fn_sigs.contains_key("normalized_param_fn"));
-        assert!(!fn_sigs.contains_key("normalized_return_fn"));
+        assert!(!fn_sigs.contains_key(&crate::DefId::for_test("normalized_param_fn")));
+        assert!(!fn_sigs.contains_key(&crate::DefId::for_test("normalized_return_fn")));
         assert!(
-            !fn_sigs.contains_key("leaked_param_fn"),
+            !fn_sigs.contains_key(&crate::DefId::for_test("leaked_param_fn")),
             "signature with a real untracked Ty::Var in params must be pruned"
         );
         assert!(
-            !fn_sigs.contains_key("leaked_return_fn"),
+            !fn_sigs.contains_key(&crate::DefId::for_test("leaked_return_fn")),
             "signature with a real untracked Ty::Var in return type must be pruned"
         );
     }
@@ -2315,7 +2314,7 @@ mod tests {
         // mod.rs drains self.fn_sigs via std::mem::take into resolved_fn_sigs before
         // calling validate_checker_output_contract).
         let mut fn_sigs = HashMap::from([(
-            "display".to_string(),
+            crate::DefId::for_test("display"),
             FnSig {
                 impl_method: None,
                 type_params: vec!["T".to_string()],
@@ -2949,8 +2948,8 @@ mod tests {
             doc_comment: None,
             is_indirect: false,
         };
-        checker.fn_sigs.insert(
-            "left.Pair".to_string(),
+        checker.test_fn_sig(
+            "left.Pair",
             FnSig {
                 params: vec![Ty::I64],
                 return_type: Ty::named_for_test("left.Pair", Vec::new()),
@@ -2959,8 +2958,8 @@ mod tests {
         );
         // A legacy bare constructor entry is present too. Before exact
         // matching, `right.Pair` could reach it through the short-name path.
-        checker.fn_sigs.insert(
-            "Pair".to_string(),
+        checker.test_fn_sig(
+            "Pair",
             FnSig {
                 params: vec![Ty::Bool],
                 return_type: Ty::named_for_test("left.Pair", Vec::new()),

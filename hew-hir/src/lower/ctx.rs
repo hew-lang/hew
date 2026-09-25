@@ -32,7 +32,7 @@ impl LowerCtx {
             // Resolution spellings remain a checker lookup index. Declaration
             // identity comes only from `tc_output.defs`; HIR must never
             // manufacture a second canonical-string namespace here.
-            fn_sigs: tc_output.fn_sigs.clone(),
+            fn_sigs_by_path: tc_output.fn_sigs_by_path(),
             direct_call_targets: tc_output.direct_call_targets.clone(),
             trait_method_ids: tc_output.trait_method_ids.clone(),
             trait_method_ids_by_binding: tc_output.trait_method_ids_by_binding.clone(),
@@ -673,7 +673,7 @@ impl LowerCtx {
             let declared = format!("{module}.{name}");
             if self.defs.declaration_kind_by_path(&declared)
                 == Some(hew_types::DeclarationKind::Function)
-                && self.fn_sigs.contains_key(&declared)
+                && self.fn_sigs_by_path.contains_key(&declared)
             {
                 return Some(self.published_declaration_symbol(&declared));
             }

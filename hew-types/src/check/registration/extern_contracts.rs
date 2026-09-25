@@ -589,7 +589,7 @@ impl Checker {
                 continue;
             };
             self.record_fn_sig_inference_holes(&key, hole_vars);
-            self.fn_sigs.insert(key.clone(), sig);
+            self.insert_fn_sig(&key, declaration, sig);
             if !self
                 .source_extern_declarations
                 .iter()
@@ -621,7 +621,7 @@ impl Checker {
     /// inherit a lifecycle.
     pub(in crate::check) fn derive_opaque_resource_candidate_graph(
         &self,
-        fn_sigs: &HashMap<String, FnSig>,
+        fn_sigs: crate::check::FnSigView<'_>,
     ) -> OpaqueResourceCandidateGraph {
         derive_opaque_resource_candidate_graph(
             &self.source_extern_declarations,
@@ -637,7 +637,7 @@ impl Checker {
     #[cfg(test)]
     pub(in crate::check) fn derive_opaque_resource_candidate_graph_for_contracts(
         &self,
-        fn_sigs: &HashMap<String, FnSig>,
+        fn_sigs: crate::check::FnSigView<'_>,
         contracts: &[(&str, crate::ffi_contracts::ExternOwnershipContract)],
     ) -> OpaqueResourceCandidateGraph {
         derive_opaque_resource_candidate_graph(

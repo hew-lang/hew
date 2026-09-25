@@ -2103,7 +2103,7 @@ impl Checker {
             }
         }
         if let Some(fn_name) = self.current_function.as_ref() {
-            if let Some(sig) = self.fn_sigs.get(fn_name) {
+            if let Some(sig) = self.fn_sig(fn_name) {
                 if sig.type_params.iter().any(|p| p == param_name) {
                     return Some(
                         sig.type_param_bounds
@@ -2153,7 +2153,7 @@ impl Checker {
             }
         }
         if let Some(fn_name) = self.current_function.as_ref() {
-            if let Some(sig) = self.fn_sigs.get(fn_name) {
+            if let Some(sig) = self.fn_sig(fn_name) {
                 if sig.type_params.iter().any(|p| p == name) {
                     return true;
                 }
@@ -2622,7 +2622,7 @@ impl Checker {
             return true;
         }
         if let Some(fn_name) = &self.current_function {
-            if let Some(sig) = self.fn_sigs.get(fn_name) {
+            if let Some(sig) = self.fn_sig(fn_name) {
                 if sig.type_params.iter().any(|param| param == name) {
                     return true;
                 }

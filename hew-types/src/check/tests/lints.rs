@@ -454,7 +454,7 @@ fn builtin_print_registration_keeps_display_bounds_on_bare_names() {
         ("assert_ne", vec!["Eq".to_string(), "Display".to_string()]),
     ] {
         let sig = checker
-            .fn_sigs
+            .sigs()
             .get(name)
             .unwrap_or_else(|| panic!("missing builtin signature for {name}"));
         assert_eq!(
@@ -469,7 +469,7 @@ fn builtin_print_registration_keeps_display_bounds_on_bare_names() {
         );
     }
 
-    let len_sig = checker.fn_sigs.get("len").expect("missing len builtin");
+    let len_sig = checker.sigs().get("len").expect("missing len builtin");
     assert!(
         len_sig.type_param_bounds.is_empty(),
         "len must stay out of the Display migration"
@@ -4116,7 +4116,7 @@ fn duplicate_stdlib_import_with_same_resolved_source_does_not_reregister_items()
     );
     assert!(output.type_def_at_path("Suite").is_none());
     assert!(
-        output.fn_sigs.contains_key("std.bench.suite"),
+        output.sigs().contains("std.bench.suite"),
         "stdlib Hew items should still register qualified functions"
     );
     assert!(

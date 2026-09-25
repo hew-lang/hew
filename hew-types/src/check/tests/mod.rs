@@ -601,6 +601,13 @@ impl Checker {
         crate::NominalId::from_minted_declaration(self.defs.mint_for_test(path))
     }
 
+    /// File a hand-built signature under a fresh declaration row spelled
+    /// `key`.
+    pub(super) fn test_fn_sig(&mut self, key: &str, sig: FnSig) {
+        let declaration = self.defs.mint_for_test(key);
+        self.insert_fn_sig(key, declaration, sig);
+    }
+
     /// The named type of a hand-registered declaration (see
     /// [`Self::test_declaration`]); a path nothing declared is a fixture
     /// nominal no definition answers to.

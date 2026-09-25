@@ -205,7 +205,7 @@ impl Checker {
                 return result;
             }
             let source_member = format!("{}.{method}", head.canonical_type);
-            if !self.fn_sigs.contains_key(&source_member) {
+            if !self.has_fn_sig(&source_member) {
                 for arg in args {
                     let (expr, arg_span) = arg.expr();
                     self.synthesize(expr, arg_span);
@@ -253,7 +253,7 @@ impl Checker {
                 && !receiver_is_known_type
                 && (self.module_binding_in_current_file(name.name.as_str())
                     || self.module_fn_exports.contains(&key)
-                    || self.fn_sigs.contains_key(&key));
+                    || self.has_fn_sig(&key));
             if looks_like_module_call {
                 self.record_method_call_receiver_kind(
                     span,
@@ -389,7 +389,7 @@ impl Checker {
                 {
                     self.reject_wasm_feature(span, WasmUnsupportedFeature::CryptoRandom);
                 }
-                if let Some(sig) = self.fn_sigs.get(&key).cloned() {
+                if let Some(sig) = self.fn_sig(&key).cloned() {
                     self.record_call_edge(&key);
                     self.record_module_qualified_stdlib_call_rewrite_if_any(
                         name.name.as_str(),
@@ -460,9 +460,9 @@ impl Checker {
                 .canonical_nominal_name(name.name.as_str())
                 .unwrap_or_else(|| name.to_string());
             let static_key = format!("{canonical_static_owner}.{method}");
-            let static_sig = self.fn_sigs.get(&static_key).cloned().or_else(|| {
+            let static_sig = self.fn_sig(&static_key).cloned().or_else(|| {
                 (canonical_static_owner != name.name.as_str())
-                    .then(|| self.fn_sigs.get(&format!("{name}.{method}")).cloned())
+                    .then(|| self.fn_sig(&format!("{name}.{method}")).cloned())
                     .flatten()
             });
             if let Some(sig) = static_sig {
@@ -575,7 +575,7 @@ impl Checker {
             } if crate::method_resolution::lookup_named_method_sig(
                 &self.defs,
                 &self.type_defs,
-                &self.fn_sigs,
+                self.sigs(),
                 head.registry_key(),
                 type_args,
                 method,
@@ -1445,10 +1445,7 @@ impl Checker {
                     // registered actor identity (current module's actor, root actor, or a
                     // unique module export) before keying `fn_sigs`. Spawn-
                     // derived handles already carry the dotted identity.
-                    let actor_identity = if self
-                        .fn_sigs
-                        .contains_key(&format!("{actor_name}::{method}"))
-                    {
+                    let actor_identity = if self.has_fn_sig(&format!("{actor_name}::{method}")) {
                         actor_name.to_string()
                     } else if let BareActorResolution::Resolved(identity) =
                         self.resolve_bare_actor_identity(actor_name)
@@ -1465,7 +1462,7 @@ impl Checker {
                     // the latter names an internal method with no mailbox-handler shape —
                     // MIR has no `ActorHandlerLayout` row for it (#2366). Reject here,
                     // fail-closed, instead of deferring to a MIR NotYetImplemented.
-                    if self.fn_sigs.contains_key(&method_key)
+                    if self.has_fn_sig(&method_key)
                         && !self.actor_receive_methods.contains(&method_key)
                     {
                         for arg in args {
@@ -2246,7 +2243,7 @@ impl Checker {
                                     MethodCallRewrite::BuiltinVecIterNext,
                                 );
                             }
-                        } else if self.fn_sigs.contains_key(&method_key)
+                        } else if self.has_fn_sig(&method_key)
                             || self.impl_method_declaration_ids.contains_key(&method_key)
                             || (!type_args.is_empty() && {
                                 // Concrete-specialised-impl check (#2270): the
@@ -2266,9 +2263,7 @@ impl Checker {
                                             args,
                                         )
                                     })
-                                    .is_some_and(|m| {
-                                        self.fn_sigs.contains_key(&format!("{m}::{method}"))
-                                    })
+                                    .is_some_and(|m| self.has_fn_sig(&format!("{m}::{method}")))
                             })
                         {
                             // For concrete-specialised impls, use the mangled
@@ -2290,9 +2285,7 @@ impl Checker {
                                             args,
                                         )
                                     })
-                                    .filter(|m| {
-                                        self.fn_sigs.contains_key(&format!("{m}::{method}"))
-                                    })
+                                    .filter(|m| self.has_fn_sig(&format!("{m}::{method}")))
                                     .map_or_else(
                                         || method_key.clone(),
                                         |m| format!("{m}::{method}"),
@@ -2365,7 +2358,7 @@ impl Checker {
                 // 3. 0 hits → UndefinedMethod, >1 distinct declaring traits → AmbiguousTraitMethod,
                 //    1 → record StaticTraitDispatch rewrite
                 let bounds_for_type_param = self.current_function.as_ref().and_then(|fn_name| {
-                    self.fn_sigs.get(fn_name).and_then(|sig| {
+                    self.fn_sig(fn_name).and_then(|sig| {
                         if sig.type_params.iter().any(|param| param == name) {
                             sig.type_param_bounds.get(name).cloned()
                         } else {

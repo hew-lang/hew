@@ -955,7 +955,8 @@ struct LowerCtx {
     diagnostics: Vec<HirDiagnostic>,
     /// Checker-owned function and method signatures used for iterator dispatch
     /// and concrete call instantiation.
-    fn_sigs: HashMap<String, hew_types::FnSig>,
+    /// TRANSITION(B1): signatures by the keys the checker published.
+    fn_sigs_by_path: HashMap<String, hew_types::FnSig>,
     /// Checker-selected targets for ordinary calls, keyed by the call span.
     /// Missing facts lower as an explicit unsupported target; HIR never
     /// guesses from the callee spelling.

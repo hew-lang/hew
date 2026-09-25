@@ -31,7 +31,7 @@ fn encoding_values_require_shipped_source_and_have_semantic_copy_facts() {
         let module: Vec<String> = ["std", "encoding", format].map(str::to_string).into();
         let output = check_source_in_canonical_std_module(&source, &module);
         assert!(output.errors.is_empty(), "{:?}", output.errors);
-        let ty = &output.fn_sigs[&format!("std.encoding.{format}.identity")].return_type;
+        let ty = &output.sigs()[&format!("std.encoding.{format}.identity")].return_type;
         assert_eq!(ty, &encoding_ty(kind));
         let declaration = &output.type_fact_context.declarations()[kind.canonical_name()];
         assert_eq!(declaration.builtin, Some(kind));
@@ -66,7 +66,7 @@ fn encoding_values_require_shipped_source_and_have_semantic_copy_facts() {
 
         let lookalike = check_source_in_module(&source, module.clone());
         assert!(lookalike.errors.is_empty(), "{:?}", lookalike.errors);
-        let ty = &lookalike.fn_sigs[&format!("std.encoding.{format}.identity")].return_type;
+        let ty = &lookalike.sigs()[&format!("std.encoding.{format}.identity")].return_type;
         assert!(matches!(
             ty,
             Ty::Named {
@@ -237,7 +237,7 @@ fn encoding_value_names_do_not_grant_catalogue_authority() {
         "#[resource] #[opaque] type Value {}\nfn identity(consume value: Value) -> Value { value }",
     );
     assert!(output.errors.is_empty(), "{:?}", output.errors);
-    let ty = &output.fn_sigs["identity"].return_type;
+    let ty = &output.sigs()["identity"].return_type;
     assert!(matches!(
         ty,
         Ty::Named {
@@ -295,7 +295,7 @@ fn encoding_value_import_aliases_preserve_identity_inside_generics() {
                 "Envelope",
                 vec![Ty::option(encoding_ty(kind))],
             );
-            assert_eq!(output.fn_sigs["identity"].return_type, expected);
+            assert_eq!(output.sigs()["identity"].return_type, expected);
             let resolved = ResolvedTy::from_ty(&expected).unwrap();
             let facts = output.type_facts[&resolved.into()];
             assert_eq!(
@@ -367,7 +367,10 @@ fn encoding_value_reexported_signature_preserves_original_owner() {
     });
     assert!(output.errors.is_empty(), "{:?}", output.errors);
     assert_eq!(
-        output.fn_sigs[&output.import_fn_name_aliases[&(None, 0, "forward".to_string())]]
+        output
+            .sigs()
+            .get(&output.import_fn_name_aliases[&(None, 0, "forward".to_string())])
+            .expect("signature")
             .return_type,
         Ty::Named {
             args: vec![encoding_ty(BuiltinType::JsonValue)],
@@ -388,7 +391,7 @@ fn encoding_value_import_alias_cannot_promote_a_same_named_user_resource() {
     ));
     let output = check_items(items);
     assert!(output.errors.is_empty(), "{:?}", output.errors);
-    let ty = &output.fn_sigs["identity"].return_type;
+    let ty = &output.sigs()["identity"].return_type;
     assert_eq!(ty, &Ty::named_in(&output.defs, "user.format.Value", vec![]));
     let facts = output.type_facts[&ResolvedTy::from_ty(ty).unwrap().into()];
     assert_eq!(
@@ -589,7 +592,7 @@ fn selected_encoding_import_preserves_result_and_option_try_payload_identity() {
                 Ty::option(expected.clone()),
             ),
         ] {
-            assert_eq!(output.fn_sigs[function].return_type, container);
+            assert_eq!(output.sigs()[function].return_type, container);
             let start = source.rfind(call).unwrap();
             let end = start + call.len();
             assert_eq!(output.expr_types[&SpanKey::from(&(start..end))], container);

@@ -1460,7 +1460,8 @@ mod every_attribute {
         ]);
         let mut errors = Vec::new();
 
-        let descriptors = build_actor_protocol_descriptors(&program, &fn_sigs, &mut errors);
+        let fixture = crate::check::FnSigFixture::new(fn_sigs);
+        let descriptors = build_actor_protocol_descriptors(&program, fixture.view(), &mut errors);
 
         assert!(errors.is_empty(), "descriptor build: {errors:#?}");
         let left = descriptors

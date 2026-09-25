@@ -48,7 +48,7 @@ impl Checker {
         let Some(function) = self.current_function.as_ref() else {
             return false;
         };
-        let Some(signature) = self.fn_sigs.get(function) else {
+        let Some(signature) = self.fn_sig(function) else {
             return false;
         };
         if !signature.consumes_receiver
@@ -239,7 +239,7 @@ impl Checker {
                     // the const is not exported, emit a targeted diagnostic rather than
                     // falling through to the generic "undefined variable `module`" error.
                     if self.module_binding_in_current_file(name.name.as_str()) {
-                        if self.fn_sigs.contains_key(&qualified_key) {
+                        if self.has_fn_sig(&qualified_key) {
                             self.used_modules.borrow_mut().insert(ImportKey::in_file(
                                 self.current_module.clone(),
                                 self.current_module_idx,

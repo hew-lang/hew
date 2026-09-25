@@ -648,7 +648,7 @@ fn test_self_with_generics_in_impl() {
     // Verify that Self resolves to Pair<T>, not bare Pair
     // The new method should return Pair<T>
     let new_sig = output
-        .fn_sigs
+        .sigs()
         .get("Pair::new")
         .expect("Pair::new should exist");
     if let Ty::Named {
@@ -2714,7 +2714,7 @@ fn struct_init_coerces_literal_to_expected_type_arg() {
     );
     assert!(tco.errors.is_empty(), "unexpected errors: {:?}", tco.errors);
     assert_eq!(
-        tco.fn_sigs["make"].return_type,
+        tco.sigs()["make"].return_type,
         Ty::named_in(&tco.defs, "Wrapper", vec![Ty::I32])
     );
 }

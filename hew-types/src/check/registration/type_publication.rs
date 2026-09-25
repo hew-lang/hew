@@ -839,7 +839,7 @@ impl Checker {
                     }
                     self.fn_type_param_assoc_bindings
                         .insert(qualified.clone(), assoc_bindings);
-                    self.fn_sigs.insert(qualified.clone(), sig);
+                    self.insert_fn_sig_at(&qualified, sig);
                     // Mirror user-module named/glob import publication. The
                     // parser has already selected `fd.name`; an alias only
                     // changes the importing binding, never the declaration
@@ -886,7 +886,11 @@ impl Checker {
                     ) {
                         continue;
                     }
+                    // The actor's signatures resolve in its declaring module.
+                    let saved_importer_module =
+                        self.current_module.replace(module_full_path.to_string());
                     self.register_actor_base(ad, Some(module_short));
+                    self.current_module = saved_importer_module;
                     if ad.visibility.is_pub() {
                         if let Some(binding) = import_spec.bare_binding(ad.name.name.as_str()) {
                             self.publish_stdlib_hew_type_binding(
@@ -1132,11 +1136,11 @@ impl Checker {
         source_identity: &str,
         publication: StdlibBarePublication<'_>,
     ) {
-        let Some(sig) = self.fn_sigs.get(source_identity).cloned() else {
+        if !self.has_fn_sig(source_identity) {
             // A declaration source that cannot supply its canonical signature
             // must not manufacture an ambient bare function binding.
             return;
-        };
+        }
         if publication.records_import_identity() {
             self.import_fn_name_aliases.insert(
                 (
@@ -1157,7 +1161,7 @@ impl Checker {
                 self.fn_type_param_assoc_bindings
                     .insert(binding.clone(), assoc_bindings);
             }
-            self.fn_sigs.insert(binding.clone(), sig);
+            self.alias_fn_sig(&binding, source_identity);
         }
         self.record_published_bare_function(&binding, source_identity);
         let source_owner = source_identity
@@ -1310,14 +1314,14 @@ impl Checker {
                     }
                     self.fn_type_param_assoc_bindings
                         .insert(qualified.clone(), assoc_bindings.clone());
-                    self.fn_sigs.insert(qualified.clone(), sig.clone());
+                    self.insert_fn_sig_at(&qualified, sig);
                     if spec.is_none() {
                         self.fn_type_param_assoc_bindings
                             .entry(surface_qualified.clone())
                             .or_insert_with(|| assoc_bindings.clone());
-                        self.fn_sigs
-                            .entry(surface_qualified)
-                            .or_insert_with(|| sig.clone());
+                        if !self.has_fn_sig(&surface_qualified) {
+                            self.alias_fn_sig(&surface_qualified, &qualified);
+                        }
                     }
 
                     // Direct resolved-item publication is a second module
@@ -2122,9 +2126,7 @@ impl Checker {
                     // signature keys and bare sibling types in those
                     // signatures carry the declaring owner.
                     let has_unregistered_signature = eb.functions.iter().any(|function| {
-                        !self
-                            .fn_sigs
-                            .contains_key(&format!("{module_full_path}.{}", function.name))
+                        !self.has_fn_sig(&format!("{module_full_path}.{}", function.name))
                     });
                     if has_unregistered_signature {
                         let saved_importer_module =
@@ -2213,16 +2215,12 @@ impl Checker {
         let identity = Self::actor_identity(Some(module_short), ad.name.name.as_str());
         for rf in &ad.receive_fns {
             let method_name = format!("{identity}::{}", rf.name);
-            let Some(current) = self
-                .fn_sigs
-                .get(&method_name)
-                .map(|s| s.return_type.clone())
-            else {
+            let Some(current) = self.fn_sig(&method_name).map(|s| s.return_type.clone()) else {
                 continue;
             };
             let qualified = self.qualify_colliding_reply_ty(&current, module_short);
             if qualified != current {
-                if let Some(sig) = self.fn_sigs.get_mut(&method_name) {
+                if let Some(sig) = self.fn_sig_mut(&method_name) {
                     sig.return_type = qualified;
                 }
             }
@@ -2272,7 +2270,7 @@ impl Checker {
         }
         for method in &ad.methods {
             let method_name = format!("{identity}::{}", method.name);
-            self.register_fn_sig_with_name(&method_name, method);
+            self.register_fn_sig_with_name(&method_name, method, None);
         }
         self.exit_primary_sig_scope(actor_sig_scope);
     }
@@ -2385,8 +2383,7 @@ impl Checker {
         let members = if published.kind == TypeDefKind::Enum {
             Self::structural_member_types_for_type(&published)
         } else if published.kind == TypeDefKind::Record && published.fields.is_empty() {
-            self.fn_sigs
-                .get(&qualified)
+            self.fn_sig(&qualified)
                 .map_or_else(Vec::new, |signature| signature.params.clone())
         } else {
             published.fields.values().cloned().collect()

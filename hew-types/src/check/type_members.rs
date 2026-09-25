@@ -127,8 +127,7 @@ impl Checker {
                             .map(|_| surface.to_string())
                     })
                     .or_else(|| {
-                        self.fn_sigs
-                            .contains_key(&format!("{surface}::{member}"))
+                        self.has_fn_sig(&format!("{surface}::{member}"))
                             .then(|| surface.to_string())
                     })?;
                 let builtin = self.resolved_builtin_type(&canonical);
@@ -373,7 +372,7 @@ impl Checker {
             crate::BuiltinType::Vec,
             "from",
         );
-        let checker_member = if self.fn_sigs.contains_key(&internal_member) || is_vec_from {
+        let checker_member = if self.has_fn_sig(&internal_member) || is_vec_from {
             Some(internal_member.clone())
         } else {
             None

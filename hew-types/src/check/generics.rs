@@ -1042,7 +1042,7 @@ impl Checker {
             let Some(type_sig) = shared_lookup_method_sig(
                 &self.defs,
                 &self.type_defs,
-                &self.fn_sigs,
+                self.sigs(),
                 &concrete_ty,
                 method_name,
             ) else {
@@ -1275,7 +1275,7 @@ impl Checker {
         let Some(fn_name) = self.current_function.as_ref() else {
             return false;
         };
-        let Some(sig) = self.fn_sigs.get(fn_name) else {
+        let Some(sig) = self.fn_sig(fn_name) else {
             return false;
         };
         if !sig.type_params.contains(&param_name.to_string()) {
@@ -1587,7 +1587,7 @@ impl Checker {
             let Some(type_sig) = shared_lookup_method_sig(
                 &self.defs,
                 &self.type_defs,
-                &self.fn_sigs,
+                self.sigs(),
                 &concrete_ty,
                 method_name,
             ) else {

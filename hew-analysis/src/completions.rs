@@ -97,7 +97,7 @@ pub fn complete(
                 sort_text: None,
             });
         }
-        for (name, sig) in &tc.fn_sigs {
+        for (name, sig) in tc.sigs().entries() {
             items.push(fn_sig_completion(name, sig));
         }
     }
@@ -299,7 +299,7 @@ fn module_member_completions(
     };
 
     let mut items = Vec::new();
-    for (key, sig) in &tc.fn_sigs {
+    for (key, sig) in tc.sigs().entries() {
         if let Some(leaf) = direct_leaf(key) {
             items.push(fn_sig_completion(&leaf, sig));
         }

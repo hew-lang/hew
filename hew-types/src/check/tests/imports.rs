@@ -115,7 +115,7 @@ fn prelude_collision_rejects_the_entire_import() {
         .errors
         .iter()
         .any(|error| error.kind == TypeErrorKind::ImportPreludeCollision));
-    assert!(!output.fn_sigs.contains_key("safe_helper"));
+    assert!(!output.sigs().contains("safe_helper"));
 }
 
 #[test]
@@ -441,7 +441,7 @@ fn resolved_module_copy_reenters_declaring_file_import_scope() {
     );
     assert_eq!(
         output
-            .fn_sigs
+            .sigs()
             .get("hew.deepalias.make")
             .map(|sig| &sig.return_type),
         Some(&Ty::named_for_test("hew.aliassrc.Color", vec![]))
@@ -610,7 +610,7 @@ fn qualified_nested_trait_signature_uses_source_owner_and_credits_module_binding
     );
     assert_eq!(
         output
-            .fn_sigs
+            .sigs()
             .get("ClosableHandle::close")
             .map(|sig| &sig.return_type),
         Some(&Ty::result(
@@ -650,7 +650,7 @@ fn selective_trait_import_keeps_module_qualifier_for_exact_sibling_identity() {
     );
     assert_eq!(
         output
-            .fn_sigs
+            .sigs()
             .get("ClosableHandle::close")
             .map(|sig| &sig.return_type),
         Some(&Ty::result(
@@ -722,7 +722,7 @@ fn imported_actor_i32_uses_exact_module_binding_and_owner() {
     );
     assert_eq!(
         output
-            .fn_sigs
+            .sigs()
             .get("hew.testffi.Db::count32")
             .map(|sig| &sig.return_type),
         Some(&Ty::I32)
@@ -946,14 +946,14 @@ fn imported_actor_record_impl_and_extern_share_exact_owner() {
     );
     assert_eq!(
         output
-            .fn_sigs
+            .sigs()
             .get("hew.testffi.Db::query")
             .map(|sig| &sig.return_type),
         Some(&result_ty)
     );
     assert_eq!(
         output
-            .fn_sigs
+            .sigs()
             .get("hew.testffi.hew_testffi_query")
             .map(|sig| &sig.return_type),
         Some(&result_ty)
@@ -1127,7 +1127,7 @@ fn user_channel_lookalike_keeps_its_own_sender_and_receiver_identity() {
         "type errors: {:#?}",
         output.errors
     );
-    let params = &output.fn_sigs["probe"].params;
+    let params = &output.sigs()["probe"].params;
     assert!(matches!(
         &params[0],
         Ty::Named { head: head @ crate::TypeHead::Nominal(_), args }
@@ -1177,11 +1177,11 @@ fn bare_import_registers_qualified_name() {
     let output = check_items(vec![(Item::Import(import), 0..0)]);
 
     assert!(
-        output.fn_sigs.contains_key("utils.helper"),
+        output.sigs().contains("utils.helper"),
         "bare import should register qualified name 'utils.helper'"
     );
     assert!(
-        !output.fn_sigs.contains_key("helper"),
+        !output.sigs().contains("helper"),
         "bare import should NOT register unqualified name 'helper'"
     );
 }
@@ -1627,8 +1627,8 @@ fn canonical_stdlib_source_signature_replaces_registry_surface_signature() {
     // `std::net` source is registered: the surface module name is not a
     // declaration identity. Source publication must replace it regardless of
     // registration order.
-    checker.fn_sigs.insert(
-        "std.net.net_error".to_string(),
+    checker.test_fn_sig(
+        "std.net.net_error",
         FnSig {
             return_type: Ty::named_for_test("net.NetError", vec![]),
             ..FnSig::default()
@@ -1643,7 +1643,7 @@ fn canonical_stdlib_source_signature_replaces_registry_surface_signature() {
     );
 
     let signature = checker
-        .fn_sigs
+        .sigs()
         .get("std.net.net_error")
         .expect("source declaration must publish its canonical signature");
     assert!(matches!(
@@ -1905,7 +1905,7 @@ fn same_leaf_named_imports_publish_one_resolved_ty_spelling_per_owner() {
         ("keep_left", "pkg.left.Shared"),
         ("keep_right", "pkg.right.Shared"),
     ] {
-        let signature = output.fn_sigs.get(function).expect("function signature");
+        let signature = output.sigs().get(function).expect("function signature");
         assert!(matches!(
             signature.params.as_slice(),
             [Ty::Named { head: head @ crate::TypeHead::Nominal(_), .. }] if head.spelling() == expected
@@ -1992,7 +1992,7 @@ fn non_pub_functions_registered_for_enforcement_but_not_bare() {
     let output = check_items(vec![(Item::Import(import), 0..0)]);
 
     assert!(
-        output.fn_sigs.contains_key("myapp.utils.secret"),
+        output.sigs().contains("myapp.utils.secret"),
         "private function must be registered under its exact source-qualified name for enforcement"
     );
     assert!(
@@ -2001,7 +2001,7 @@ fn non_pub_functions_registered_for_enforcement_but_not_bare() {
             .contains_key(&(None, 0, "secret".to_string())),
         "private function must NOT receive an unqualified (bare) binding"
     );
-    assert!(output.fn_sigs.contains_key("myapp.utils.visible"));
+    assert!(output.sigs().contains("myapp.utils.visible"));
     assert!(output
         .import_fn_name_aliases
         .contains_key(&(None, 0, "visible".to_string())));
@@ -2386,7 +2386,7 @@ fn user_module_fn_sig_has_correct_types() {
     let output = check_items(vec![(Item::Import(import), 0..0)]);
 
     let sig = output
-        .fn_sigs
+        .sigs()
         .get("math.add")
         .expect("math.add should be registered");
     assert_eq!(sig.params.len(), 2, "should have 2 params");
@@ -2431,11 +2431,11 @@ fn two_modules_same_fn_name_no_collision() {
         (Item::Import(import_b), 0..0),
     ]);
 
-    assert!(output.fn_sigs.contains_key("alpha.run"));
-    assert!(output.fn_sigs.contains_key("beta.run"));
+    assert!(output.sigs().contains("alpha.run"));
+    assert!(output.sigs().contains("beta.run"));
     // Both should have different return types
-    assert_eq!(output.fn_sigs["alpha.run"].return_type, Ty::I32);
-    assert_eq!(output.fn_sigs["beta.run"].return_type, Ty::String);
+    assert_eq!(output.sigs()["alpha.run"].return_type, Ty::I32);
+    assert_eq!(output.sigs()["beta.run"].return_type, Ty::String);
 }
 
 // -- Import with no resolved items (stdlib) still works --
@@ -2516,11 +2516,11 @@ fn stdlib_import_keeps_stream_open_stream_typed_after_fs_import() {
     let mut checker = Checker::new(test_registry());
     let output = checker.check_program(&program);
     let stream_open = output
-        .fn_sigs
+        .sigs()
         .get("std.stream.open")
         .expect("expected std::stream import to register std.stream.open");
     assert!(
-        !output.fn_sigs.contains_key("stream.open"),
+        !output.sigs().contains("stream.open"),
         "the stdlib function registry must not retain a leaf-qualified declaration identity"
     );
 
@@ -2616,7 +2616,7 @@ fn merged_file_import_duplicate_pub_name_rejects_the_whole_import() {
         "duplicate pub name error should mention the colliding binding: {error:?}"
     );
     assert!(
-        !output.fn_sigs.contains_key("shared"),
+        !output.sigs().contains("shared"),
         "an internally-colliding import must publish none of its declarations"
     );
 }
@@ -2943,7 +2943,7 @@ fn import_alias_in_enum_payload_resolves_to_source_identity() {
         "enum variant payload `Has(Tag)` must resolve to `myapp.mod_a.Payload`"
     );
     assert_eq!(
-        output.fn_sigs.get("Has").map(|sig| sig.params.clone()),
+        output.sigs().get("Has").map(|sig| sig.params.clone()),
         Some(vec![Ty::named_in(
             &output.defs,
             "myapp.mod_a.Payload",
@@ -3678,7 +3678,7 @@ fn test_file_import_private_items_not_visible() {
     let output = checker.check_program(&program);
 
     assert!(
-        !output.fn_sigs.contains_key("private_func"),
+        !output.sigs().contains("private_func"),
         "private function must not be registered from file import"
     );
     assert!(

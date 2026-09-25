@@ -802,7 +802,7 @@ impl Checker {
                             hew_parser::ast::Symbol::intern(&func.name),
                             &func.name,
                         );
-                        self.fn_sigs.insert(func.name, sig);
+                        self.insert_fn_sig_at(&func.name, sig);
                     }
 
                     // Register wrapper pub fn signatures
@@ -833,8 +833,7 @@ impl Checker {
                         // `import m::{ f as alias }` accidentally retain an
                         // ambient `f` binding. Selected bare bindings are
                         // published later from the resolved source surface.
-                        self.fn_sigs
-                            .insert(format!("{canonical_owner}.{}", wfn.name), sig);
+                        self.insert_fn_sig_at(&format!("{canonical_owner}.{}", wfn.name), sig);
                     }
 
                     // Register module and clean names
@@ -863,10 +862,10 @@ impl Checker {
                         // E.g. `log.setup()` should have 0 params (the wrapper's sig),
                         // not 1 param (the extern `hew_log_set_level(level)` sig).
                         let key = format!("{canonical_owner}.{method}");
-                        let wrapper_sig = self.fn_sigs.get(&key).cloned();
+                        let wrapper_sig = self.fn_sig(&key).cloned();
                         let sig = wrapper_sig
                             .clone()
-                            .or_else(|| self.fn_sigs.get(c_symbol.as_str()).cloned());
+                            .or_else(|| self.fn_sig(c_symbol.as_str()).cloned());
                         if let Some(sig) = sig {
                             // Module functions are source declarations, so their
                             // registry authority is the exact full module owner.
@@ -880,7 +879,13 @@ impl Checker {
                             // signature (`net.NetError` versus
                             // `std.net.NetError`). Only fill a genuinely absent
                             // canonical slot from the wrapper/extern registry.
-                            self.fn_sigs.entry(key.clone()).or_insert(sig);
+                            if !self.has_fn_sig(&key) {
+                                if wrapper_sig.is_some() {
+                                    self.insert_fn_sig_at(&key, sig);
+                                } else {
+                                    self.alias_fn_sig(&key, c_symbol);
+                                }
+                            }
                             if wrapper_sig.is_none() {
                                 // The clean name resolved straight to the C
                                 // function: the call is an FFI call and keeps

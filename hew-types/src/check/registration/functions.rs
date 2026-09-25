@@ -389,7 +389,7 @@ impl Checker {
                 }
                 for method in &ad.methods {
                     let method_name = format!("{identity}::{}", method.name);
-                    self.register_fn_sig_with_name(&method_name, method);
+                    self.register_fn_sig_with_name(&method_name, method, None);
                     // An actor-body plain `fn` is a callable declaration, so it
                     // needs the same declaration row every other source-declared
                     // callable has: `call_target_for_signature` reads
@@ -556,7 +556,7 @@ impl Checker {
                                 let concrete_self =
                                     self.named_ty_for_key(type_name, self_type_args.clone());
                                 let (params, return_type) = if let Some(sig) =
-                                    self.fn_sigs.get(&trait_method_key).cloned()
+                                    self.fn_sig(&trait_method_key).cloned()
                                 {
                                     // Qualified trait signatures registered outside an impl
                                     // scope can still include a concrete receiver
@@ -603,7 +603,6 @@ impl Checker {
                                     returns_receiver_identity,
                                     ..FnSig::default()
                                 };
-                                self.fn_sigs.insert(method_key, sig);
                                 // The materialized default belongs to the impl's
                                 // receiver identity: a declaration, a builtin or
                                 // a primitive's anchor row.
@@ -612,18 +611,29 @@ impl Checker {
                                 )
                                 .ok()
                                 .and_then(|ty| ty.impl_receiver_instance(&self.defs));
-                                if let (Some(receiver), Some((declaring_trait, _))) = (
-                                    receiver,
-                                    self.trait_method_call_target_ids(
-                                        &tb.path.to_string(),
-                                        m.name.name.as_str(),
-                                    ), // TRANSITION(P1): deleted by A1 commit 2
-                                ) {
-                                    let declaration = self.defs.mint_default_impl_body(
-                                        declaring_trait,
-                                        &receiver,
-                                        m.name.name,
-                                    );
+                                let default_body =
+                                    if let (Some(receiver), Some((declaring_trait, _))) = (
+                                        receiver,
+                                        self.trait_method_call_target_ids(
+                                            &tb.path.to_string(),
+                                            m.name.name.as_str(),
+                                        ), // TRANSITION(P1): deleted by A1 commit 2
+                                    ) {
+                                        Some(self.defs.mint_default_impl_body(
+                                            declaring_trait,
+                                            &receiver,
+                                            m.name.name,
+                                        ))
+                                    } else {
+                                        None
+                                    };
+                                match default_body {
+                                    Some(declaration) => {
+                                        self.insert_fn_sig(&method_key, declaration, sig);
+                                    }
+                                    None => self.insert_fn_sig_at(&method_key, sig),
+                                }
+                                if let Some(declaration) = default_body {
                                     // A materialized default is keyed exactly
                                     // like an explicit impl method: the
                                     // `Box<i64>` specialisation takes its own
@@ -705,7 +715,7 @@ impl Checker {
                                 );
                             }
                         }
-                        self.register_fn_sig_with_name(&method_key, method);
+                        self.register_fn_sig_with_name(&method_key, method, None);
                         let skip = usize::from(
                             method
                                 .params
@@ -804,7 +814,7 @@ impl Checker {
         // on a *different* item) is reported as unknown rather than silently
         // exempted.
         let guard = self.enter_primary_sig_scope(&[]);
-        self.register_fn_sig_with_name(fd.name.name.as_str(), fd);
+        self.register_fn_sig_with_name(fd.name.name.as_str(), fd, None);
         self.exit_primary_sig_scope(guard);
     }
 
@@ -1161,7 +1171,14 @@ impl Checker {
         }
     }
 
-    pub(in crate::check) fn register_fn_sig_with_name(&mut self, name: &str, fd: &FnDecl) {
+    /// Register a signature under `name`, filed under `declaration` when the
+    /// caller holds it and otherwise under the declaration `name` spells.
+    pub(in crate::check) fn register_fn_sig_with_name(
+        &mut self,
+        name: &str,
+        fd: &FnDecl,
+        declaration: Option<crate::DefId>,
+    ) {
         // Only filter out the receiver for methods (Type::method), not free
         // functions that happen to have a parameter named `self`.
         let is_method = name.contains("::");
@@ -1257,7 +1274,10 @@ impl Checker {
         // `intrinsic_declarations`) are co-minted under this same key.
         let key = scoped_module_item_name(self.canonical_fn_owner(), name)
             .unwrap_or_else(|| name.to_string());
-        self.fn_sigs.insert(key.clone(), sig);
+        match declaration {
+            Some(declaration) => self.insert_fn_sig(&key, declaration, sig),
+            None => self.insert_fn_sig_at(&key, sig),
+        }
         self.fn_type_param_assoc_bindings
             .insert(key.clone(), fn_assoc_bindings);
         self.record_fn_sig_inference_holes(&key, hole_vars);
@@ -1286,7 +1306,7 @@ impl Checker {
         let Some(contract) = family.semantic_contract() else {
             return true;
         };
-        let signature_matches = self.fn_sigs.get(key).is_some_and(|signature| {
+        let signature_matches = self.fn_sig(key).is_some_and(|signature| {
             let resolve = |ty: &Ty| {
                 crate::ResolvedTy::from_ty_with_type_params(
                     ty,
@@ -1754,7 +1774,7 @@ impl Checker {
         // program-wide fallback: out-of-scope names are already rejected here, and
         // the impl/method's legitimate params are in `declared_type_param_names`.
         let impl_method_sig_scope = self.enter_primary_sig_scope(&[]);
-        self.register_fn_sig_with_name(&method_key, method);
+        self.register_fn_sig_with_name(&method_key, method, Some(declaration_id));
         self.exit_primary_sig_scope(impl_method_sig_scope);
         if pushed_impl_bounds {
             self.current_type_param_bounds.pop();
@@ -1775,7 +1795,7 @@ impl Checker {
             let impl_assoc_bindings = impl_scope.assoc_bindings;
             let key = scoped_module_item_name(self.current_module.as_deref(), &method_key)
                 .unwrap_or_else(|| method_key.clone());
-            if let Some(sig) = self.fn_sigs.get_mut(&key) {
+            if let Some(sig) = self.fn_sig_mut(&key) {
                 for tp in impl_tps {
                     if !sig
                         .type_params
@@ -1888,8 +1908,7 @@ impl Checker {
         let registered_key = scoped_module_item_name(self.current_module.as_deref(), &method_key)
             .unwrap_or_else(|| method_key.clone());
         let registered = self
-            .fn_sigs
-            .get(&registered_key)
+            .fn_sig(&registered_key)
             .expect("register_fn_sig_with_name must publish the impl method");
         let params = registered.params.clone();
         let return_type = registered.return_type.clone();
@@ -1943,7 +1962,7 @@ impl Checker {
         // `Ty::Var` with body checking and every method-table mirror. Rebuilding
         // and reinserting the annotation here would create an unrelated hole
         // that can never be resolved by the method body.
-        self.fn_sigs.insert(registered_key.clone(), sig.clone());
+        self.insert_fn_sig(&registered_key, declaration_id, sig.clone());
         if sig.extern_symbol.is_some() {
             let declaring_module = self
                 .registration_origin_module
@@ -1961,8 +1980,8 @@ impl Checker {
         self.publish_impl_method_sig(type_name, method.name.name.as_str(), &sig);
         // Preserve every exact declaration even when a trait method or concrete
         // specialisation shares the ordinary receiver/method lookup spelling.
-        self.fn_sigs
-            .insert(self.defs.path(declaration_id).to_string(), sig.clone());
+        let declaration_path = self.defs.path(declaration_id).to_string();
+        self.insert_fn_sig(&declaration_path, declaration_id, sig.clone());
         // D442: a `#[resource]` / `#[opaque]` type's inherent `close` must
         // consume its receiver. A borrowing `close(self)` runs the implicit
         // scope-exit release a second time when a caller invokes `close()`
@@ -2025,7 +2044,7 @@ impl Checker {
             // concrete-impl registration may already be present; overwriting is
             // correct because each impl block processes its own concrete args
             // in sequence.
-            self.fn_sigs.insert(key.clone(), sig.clone());
+            self.insert_fn_sig(key, declaration_id, sig.clone());
             // Propagate consume-receiver membership to the same key
             // so HIR dispatch does not lose the move contract.
             if method.consumes_self {
@@ -2344,7 +2363,7 @@ impl Checker {
         self.record_fn_sig_inference_holes(&method_name, hole_vars);
         self.fn_type_param_assoc_bindings
             .insert(method_name.clone(), rf_scope.assoc_bindings);
-        self.fn_sigs.insert(method_name, sig);
+        self.insert_fn_sig_at(&method_name, sig);
     }
 
     /// Build a `FnSig` from a function declaration (used for user module registration).

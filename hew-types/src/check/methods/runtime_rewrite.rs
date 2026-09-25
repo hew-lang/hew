@@ -962,9 +962,7 @@ impl Checker {
             let symbol = if c_symbol == method {
                 let source_qualified = format!("{canonical_owner}.{method}");
                 let surface_qualified = format!("{module_name}.{method}");
-                if !self.fn_sigs.contains_key(&source_qualified)
-                    && !self.fn_sigs.contains_key(&surface_qualified)
-                {
+                if !self.has_fn_sig(&source_qualified) && !self.has_fn_sig(&surface_qualified) {
                     return;
                 }
                 // Linker presentation remains the checker-selected registry
@@ -1011,10 +1009,8 @@ impl Checker {
         {
             return;
         }
-        if self.fn_sigs.contains_key(&source_declaration)
-            || self
-                .fn_sigs
-                .contains_key(&format!("{module_name}.{method}"))
+        if self.has_fn_sig(&source_declaration)
+            || self.has_fn_sig(&format!("{module_name}.{method}"))
         {
             self.record_module_qualified_method_call_rewrite(
                 span,

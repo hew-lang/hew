@@ -164,7 +164,7 @@ impl Checker {
                 resolved_args
                     .as_ref()
                     .and_then(|args| crate::resolved_ty::mangle_impl_self_name(&canonical, args))
-                    .filter(|m| self.fn_sigs.contains_key(&format!("{m}::{method}")))
+                    .filter(|m| self.has_fn_sig(&format!("{m}::{method}")))
                     .map_or_else(|| method_key.clone(), |m| format!("{m}::{method}"))
             }
         } else {
@@ -190,7 +190,7 @@ impl Checker {
                 canonical_receiver: canonical,
             },
         );
-        if self.fn_sigs.contains_key(&method_key) || self.fn_sigs.contains_key(&c_symbol) {
+        if self.has_fn_sig(&method_key) || self.has_fn_sig(&c_symbol) {
             self.record_method_call_rewrite(
                 span,
                 MethodCallRewrite::RewriteToFunction {

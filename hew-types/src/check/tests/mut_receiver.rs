@@ -117,7 +117,7 @@ fn q297_user_iterator_impl_records_mut_receiver_flag_in_both_tables() {
         output.errors,
     );
     let sig = output
-        .fn_sigs
+        .sigs()
         .get("Counter::next")
         .expect("Counter::next must be registered in fn_sigs");
     assert!(
@@ -155,7 +155,7 @@ fn q297_immut_self_method_records_no_mut_receiver_flag() {
         output.errors,
     );
     let sig = output
-        .fn_sigs
+        .sigs()
         .get("Counter::peek")
         .expect("Counter::peek must be registered");
     assert!(

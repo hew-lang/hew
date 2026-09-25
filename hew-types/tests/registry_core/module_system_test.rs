@@ -166,11 +166,11 @@ fn test_qualified_name_resolution() {
     let output = checker.check_program(&program);
 
     assert!(
-        output.fn_sigs.contains_key("utils.helper"),
+        output.sigs().contains("utils.helper"),
         "bare import should register qualified name 'utils.helper'"
     );
     assert!(
-        !output.fn_sigs.contains_key("helper"),
+        !output.sigs().contains("helper"),
         "bare import must NOT register unqualified 'helper'"
     );
 }
@@ -252,7 +252,7 @@ fn test_imported_generic_fn_records_inferred_type_args_and_uses_imported_trait_i
         output.errors
     );
     assert!(
-        output.fn_sigs.contains_key("myapp.widgets.describe"),
+        output.sigs().contains("myapp.widgets.describe"),
         "module-qualified imported generic should be registered"
     );
 
@@ -326,7 +326,7 @@ fn test_private_items_not_visible() {
     // reference-site enforcement check can emit E_VISIBILITY instead of a
     // generic "unknown function" error.
     assert!(
-        output.fn_sigs.contains_key("mod_a.private_fn"),
+        output.sigs().contains("mod_a.private_fn"),
         "private fn must be registered under its qualified name for enforcement"
     );
     assert!(
@@ -335,7 +335,7 @@ fn test_private_items_not_visible() {
             .contains_key(&(None, 0, "public_fn".to_string())),
         "public fn should be accessible unqualified via glob"
     );
-    assert!(output.fn_sigs.contains_key("mod_a.public_fn"));
+    assert!(output.sigs().contains("mod_a.public_fn"));
 }
 
 // ── type visibility ───────────────────────────────────────────────────────────
@@ -647,7 +647,7 @@ fn qualified_param_type_carries_module_into_resolved_sig() {
     let output = checker.check_program(&program);
 
     let sig = output
-        .fn_sigs
+        .sigs()
         .get("take_alpha")
         .expect("take_alpha sig must be registered");
     let param = sig.params.first().expect("take_alpha has one param");
@@ -1125,8 +1125,8 @@ fn test_two_modules_same_fn_no_collision() {
     let mut checker = isolated_checker();
     let output = checker.check_program(&program);
 
-    assert!(output.fn_sigs.contains_key("alpha.run"));
-    assert!(output.fn_sigs.contains_key("beta.run"));
+    assert!(output.sigs().contains("alpha.run"));
+    assert!(output.sigs().contains("beta.run"));
     assert!(
         output.errors.is_empty(),
         "no errors expected: {:?}",
@@ -1250,11 +1250,11 @@ fn test_actor_bare_import_registers_type_and_methods() {
 
     // Receive fn should be registered under the dotted actor identity
     assert!(
-        output.fn_sigs.contains_key("app.mymod.MyActor::ping"),
+        output.sigs().contains("app.mymod.MyActor::ping"),
         "receive fn should be registered as 'app.mymod.MyActor::ping'"
     );
     assert!(
-        !output.fn_sigs.contains_key("MyActor::ping"),
+        !output.sigs().contains("MyActor::ping"),
         "bare 'MyActor::ping' must not be registered for a module actor"
     );
 }
@@ -1290,8 +1290,8 @@ fn test_actor_selected_import_registers_unqualified() {
     // resolution at spawn/annotation sites, not a bare registry copy.
     assert!(output.type_def_at_path("app.mymod.Greeter").is_some());
     assert!(output.type_def_at_path("Greeter").is_none());
-    assert!(output.fn_sigs.contains_key("app.mymod.Greeter::greet"));
-    assert!(!output.fn_sigs.contains_key("Greeter::greet"));
+    assert!(output.sigs().contains("app.mymod.Greeter::greet"));
+    assert!(!output.sigs().contains("Greeter::greet"));
 }
 
 #[test]
@@ -1332,8 +1332,8 @@ fn test_actor_named_import_selective() {
     // at reference sites rather than a bare registry copy.
     assert!(output.type_def_at_path("app.mymod.Counter").is_some());
     assert!(output.type_def_at_path("Counter").is_none());
-    assert!(output.fn_sigs.contains_key("app.mymod.Counter::increment"));
-    assert!(!output.fn_sigs.contains_key("Counter::increment"));
+    assert!(output.sigs().contains("app.mymod.Counter::increment"));
+    assert!(!output.sigs().contains("Counter::increment"));
 
     assert!(output.type_def_at_path("app.mymod.Timer").is_some());
     assert!(output.type_def_at_path("Timer").is_none());
@@ -1367,9 +1367,9 @@ fn test_actor_multiple_receive_fns() {
         output.errors
     );
 
-    assert!(output.fn_sigs.contains_key("app.cache.Cache::get"));
-    assert!(output.fn_sigs.contains_key("app.cache.Cache::set"));
-    assert!(output.fn_sigs.contains_key("app.cache.Cache::delete"));
+    assert!(output.sigs().contains("app.cache.Cache::get"));
+    assert!(output.sigs().contains("app.cache.Cache::set"));
+    assert!(output.sigs().contains("app.cache.Cache::delete"));
 }
 
 #[test]
@@ -1401,13 +1401,13 @@ fn test_actor_and_function_coexist_in_module() {
 
     // Actor registered under its dotted identity
     assert!(output.type_def_at_path("app.workers.Worker").is_some());
-    assert!(output.fn_sigs.contains_key("app.workers.Worker::run"));
+    assert!(output.sigs().contains("app.workers.Worker::run"));
 
     // Function registered (functions keep their bare glob-import binding)
     assert!(output
         .import_fn_name_aliases
         .contains_key(&(None, 0, "create_worker".to_string())));
-    assert!(output.fn_sigs.contains_key("app.workers.create_worker"));
+    assert!(output.sigs().contains("app.workers.create_worker"));
 }
 
 #[test]

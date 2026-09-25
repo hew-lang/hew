@@ -556,7 +556,7 @@ fn derive_source_resource_candidate(
     producer_symbol: &str,
     producer_contract: &crate::ffi_contracts::ExternOwnershipContract,
     source_declarations: &[SourceExternDeclaration],
-    fn_sigs: &HashMap<String, FnSig>,
+    fn_sigs: crate::check::FnSigView<'_>,
     module_import_bindings: &HashMap<ImportBindingKey, String>,
     import_type_name_aliases: &HashMap<ImportBindingKey, String>,
     impl_method_declaration_ids: &HashMap<String, crate::DefId>,
@@ -703,7 +703,7 @@ fn source_declaration_matches_endpoint(
 
 fn derive_opaque_resource_candidate_graph(
     source_declarations: &[SourceExternDeclaration],
-    fn_sigs: &HashMap<String, FnSig>,
+    fn_sigs: crate::check::FnSigView<'_>,
     module_import_bindings: &HashMap<ImportBindingKey, String>,
     import_type_name_aliases: &HashMap<ImportBindingKey, String>,
     impl_method_declaration_ids: &HashMap<String, crate::DefId>,

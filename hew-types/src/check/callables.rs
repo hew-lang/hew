@@ -32,7 +32,10 @@ impl Checker {
             );
             return Ty::Error;
         }
-        let sig = self.fn_sigs[signature_key].clone();
+        let sig = self
+            .fn_sig(signature_key)
+            .cloned()
+            .unwrap_or_else(|| panic!("function value `{signature_key}` has a signature"));
         if sig
             .param_ownership
             .contains(&crate::env::ParameterOwnership::Consume)

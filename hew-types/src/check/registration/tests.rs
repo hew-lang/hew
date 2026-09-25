@@ -69,9 +69,9 @@ mod node_builtin_catalog_tests {
         checker.register_builtins();
 
         let mut emitted: Vec<&str> = checker
-            .fn_sigs
-            .keys()
-            .map(String::as_str)
+            .sigs()
+            .entries()
+            .map(|(key, _)| key)
             .filter(|name| name.starts_with("Node::"))
             .collect();
         emitted.sort_unstable();

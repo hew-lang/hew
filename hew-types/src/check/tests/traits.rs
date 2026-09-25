@@ -297,7 +297,7 @@ fn generic_impl_inference_and_receiver_identity_share_one_signature() {
     );
 
     let get_sig = output
-        .fn_sigs
+        .sigs()
         .get("Box::get")
         .expect("generic inherent method must retain its signature");
     assert_eq!(
@@ -307,7 +307,7 @@ fn generic_impl_inference_and_receiver_identity_share_one_signature() {
     );
 
     let with_sig = output
-        .fn_sigs
+        .sigs()
         .get("Box::with")
         .expect("generic trait impl method must retain its signature");
     assert!(
@@ -358,7 +358,7 @@ fn generic_receiver_identity_rejects_changed_type_arguments() {
     );
     assert!(
         output
-            .fn_sigs
+            .sigs()
             .get("Pair::swap_identity")
             .is_some_and(|sig| !sig.returns_receiver_identity),
         "a changed generic instantiation must fail closed in dispatch metadata"
@@ -1649,8 +1649,8 @@ fn named_method_lookup_prefers_type_defs_before_fn_sigs() {
     checker
         .type_defs
         .insert(__id, make_test_type_def("Speaker", vec![], methods));
-    checker.fn_sigs.insert(
-        "Speaker::hello".to_string(),
+    checker.test_fn_sig(
+        "Speaker::hello",
         FnSig {
             return_type: Ty::I64,
             ..FnSig::default()
@@ -1722,8 +1722,8 @@ fn named_type_with_get_method_rejects_bracket_index_via_fn_sig() {
         __id,
         make_test_type_def("Wrapper", vec!["T".to_string()], HashMap::new()),
     );
-    checker.fn_sigs.insert(
-        "Wrapper::get".to_string(),
+    checker.test_fn_sig(
+        "Wrapper::get",
         FnSig {
             param_names: vec!["index".to_string()],
             params: vec![Ty::I64],
@@ -1910,8 +1910,8 @@ fn named_method_lookup_substitutes_type_params_for_fn_sig_fallback() {
         __id,
         make_test_type_def("Wrapper", vec!["T".to_string()], HashMap::new()),
     );
-    checker.fn_sigs.insert(
-        "Wrapper::value".to_string(),
+    checker.test_fn_sig(
+        "Wrapper::value",
         FnSig {
             param_names: vec!["next".to_string()],
             params: vec![Ty::param("T")],
@@ -1934,8 +1934,8 @@ fn module_qualified_named_type_method_rejects_leaf_method_retry() {
     checker
         .type_defs
         .insert(__id, make_test_type_def("Thing", vec![], HashMap::new()));
-    checker.fn_sigs.insert(
-        "Thing::label".to_string(),
+    checker.test_fn_sig(
+        "Thing::label",
         FnSig {
             return_type: Ty::String,
             ..FnSig::default()
@@ -2062,7 +2062,7 @@ fn impl_method_registration_keeps_inline_method_bounds_on_all_surfaces() {
     );
 
     let fn_sig = output
-        .fn_sigs
+        .sigs()
         .get("Wrapper::map")
         .expect("impl method must populate fn_sigs");
     let method_sig = output
@@ -2093,9 +2093,7 @@ fn structural_hardening_uses_fn_sigs_named_method_fallback() {
     checker
         .type_defs
         .insert(__id, make_test_type_def("Speaker", vec![], HashMap::new()));
-    checker
-        .fn_sigs
-        .insert("Speaker::hello".to_string(), FnSig::default());
+    checker.test_fn_sig("Speaker::hello", FnSig::default());
 
     assert!(
         checker.type_structurally_satisfies("Speaker", "Greet"),
@@ -2119,8 +2117,8 @@ fn structural_hardening_prefers_builtin_method_surface_for_imported_handle() {
     checker
         .type_defs
         .insert(__id, make_test_type_def("Sink", vec![], methods));
-    checker.fn_sigs.insert(
-        "Sink::close".to_string(),
+    checker.test_fn_sig(
+        "Sink::close",
         FnSig {
             return_type: Ty::I32,
             ..FnSig::default()
@@ -3114,11 +3112,12 @@ fn local_trait_implemented_for_an_imported_type_dispatches() {
         output.errors
     );
     assert!(
-        output.fn_sigs.contains_key("pkg.thing.Thing::tag"),
+        output.sigs().contains("pkg.thing.Thing::tag"),
         "the impl method must register under the target's identity: {:?}",
         output
-            .fn_sigs
-            .keys()
+            .sigs()
+            .entries()
+            .map(|(key, _)| key)
             .filter(|key| key.ends_with("::tag"))
             .collect::<Vec<_>>()
     );

@@ -175,6 +175,114 @@ impl Checker {
         self.type_defs.get_mut(&id)
     }
 
+    /// This compilation's function signatures.
+    pub(in crate::check) fn sigs(&self) -> crate::check::FnSigView<'_> {
+        crate::check::FnSigView::new(&self.fn_sigs, &self.fn_sig_keys, &self.builtin_fn_sigs)
+    }
+
+    /// The signature a key spells.
+    ///
+    /// TRANSITION(A1 commit 3): see [`crate::check::TypeCheckOutput::fn_sig_keys`].
+    pub(in crate::check) fn fn_sig(&self, key: &str) -> Option<&FnSig> {
+        self.sigs().get(key)
+    }
+
+    /// Whether a key spells a signature.
+    pub(in crate::check) fn has_fn_sig(&self, key: &str) -> bool {
+        self.sigs().contains(key)
+    }
+
+    /// The signature a key spells, mutably.
+    pub(in crate::check) fn fn_sig_mut(&mut self, key: &str) -> Option<&mut FnSig> {
+        match self.fn_sig_keys.get(key) {
+            Some(id) => self.fn_sigs.get_mut(id),
+            None => self.builtin_fn_sigs.get_mut(&Symbol::intern(key)),
+        }
+    }
+
+    /// File `sig` under `declaration`, reachable by `key`.
+    pub(in crate::check) fn insert_fn_sig(
+        &mut self,
+        key: &str,
+        declaration: crate::DefId,
+        sig: FnSig,
+    ) {
+        self.fn_sig_keys.insert(key.to_string(), declaration);
+        self.fn_sigs.insert(declaration, sig);
+    }
+
+    /// File the constructor signature of the member `name` of the declaration
+    /// `owner` spells (a variant, a machine state), reachable by `key`.
+    pub(in crate::check) fn insert_member_sig(
+        &mut self,
+        key: &str,
+        owner: &str,
+        name: Symbol,
+        kind: crate::DeclarationKind,
+        sig: FnSig,
+    ) {
+        match self
+            .lookup_declaration(owner)
+            .and_then(|owner| self.defs.member_of_kind(owner, name, kind))
+        {
+            Some(member) => self.insert_fn_sig(key, member, sig),
+            None => self.insert_fn_sig_at(key, sig),
+        }
+    }
+
+    /// Make `key` spell the signature `source` spells: an import binding or a
+    /// module surface for one declaration.
+    ///
+    /// TRANSITION(A1 commit 3): a binding is a `Scope` import once callers
+    /// resolve through it.
+    pub(in crate::check) fn alias_fn_sig(&mut self, key: &str, source: &str) {
+        if let Some(declaration) = self.fn_sig_keys.get(source).copied() {
+            self.fn_sig_keys.insert(key.to_string(), declaration);
+        } else if let Some(sig) = self.builtin_fn_sigs.get(&Symbol::intern(source)).cloned() {
+            self.builtin_fn_sigs.insert(Symbol::intern(key), sig);
+        }
+    }
+
+    /// File `sig` under the declaration `key` names: an established
+    /// signature key, an impl or trait method key, or a declaration path.
+    /// A key that names no declaration is an internal error, never dropped.
+    ///
+    /// TRANSITION(A1 commit 3): registration passes the declaration id.
+    pub(in crate::check) fn insert_fn_sig_at(&mut self, key: &str, sig: FnSig) {
+        let declaration = self
+            .fn_sig_keys
+            .get(key)
+            .copied()
+            .or_else(|| self.impl_method_declaration_ids.get(key).copied())
+            .or_else(|| self.trait_method_ids.get(key).map(|(_, method)| *method))
+            .or_else(|| self.lookup_declaration(key))
+            .or_else(|| {
+                self.current_module_identity()
+                    .and_then(|owner| self.lookup_declaration(&format!("{owner}.{key}")))
+            })
+            .or_else(|| {
+                let (owner, member) = key.rsplit_once("::")?;
+                let owner = self
+                    .lookup_declaration(owner)
+                    .or_else(|| self.lookup_declaration(&self.canonical_nominal_name(owner)?))?;
+                self.defs.member(owner, Symbol::intern(member))
+            })
+            .or_else(|| {
+                // A module function a registry publishes before its source is
+                // read: the source declaration adopts this row.
+                (key.contains('.') && !key.contains("::"))
+                    .then(|| self.defs.mint_sourceless_function(key))
+            });
+        match declaration {
+            Some(declaration) => self.insert_fn_sig(key, declaration, sig),
+            None => self.errors.push(crate::error::TypeError::new(
+                crate::error::TypeErrorKind::InvalidOperation,
+                0..0,
+                format!("internal: signature `{key}` names no declaration"),
+            )),
+        }
+    }
+
     /// Look up a type definition by registry key.
     pub(in crate::check) fn lookup_type_def(&self, name: &str) -> Option<TypeDef> {
         self.type_def_at(name).cloned()

@@ -260,7 +260,7 @@ impl Checker {
             return Some(name.to_string());
         }
         let fn_name = self.current_function.as_ref()?;
-        self.fn_sigs.get(fn_name).and_then(|sig| {
+        self.fn_sig(fn_name).and_then(|sig| {
             sig.type_params
                 .iter()
                 .any(|param_name| param_name == name)
@@ -274,7 +274,7 @@ impl Checker {
             names.extend(frame.bounds.keys().cloned());
         }
         if let Some(fn_name) = &self.current_function {
-            if let Some(sig) = self.fn_sigs.get(fn_name) {
+            if let Some(sig) = self.fn_sig(fn_name) {
                 names.extend(sig.type_params.iter().cloned());
             }
         }
@@ -297,7 +297,7 @@ impl Checker {
             }
         }
         if let Some(fn_name) = &self.current_function {
-            if let Some(sig) = self.fn_sigs.get(fn_name) {
+            if let Some(sig) = self.fn_sig(fn_name) {
                 for param_name in &sig.type_params {
                     bounds.entry(param_name.clone()).or_insert_with(|| {
                         sig.type_param_bounds
@@ -458,7 +458,7 @@ impl Checker {
         let owner = self.current_function.clone();
         let params = owner
             .as_ref()
-            .and_then(|key| self.fn_sigs.get(key))
+            .and_then(|key| self.fn_sig(key))
             .map_or_else(Vec::new, |sig| sig.type_params.clone());
         let requirements = self.eq_requirements.entry(owner).or_default();
         if requirements.iter().any(|existing| {
@@ -509,8 +509,7 @@ impl Checker {
             ),
         };
         let Some(declared_params) = self
-            .fn_sigs
-            .get(&callee_key)
+            .fn_sig(&callee_key)
             .map(|sig| sig.type_params.clone())
             .filter(|params| !params.is_empty())
         else {
@@ -547,7 +546,7 @@ impl Checker {
         let enclosing = self.current_function.clone();
         let enclosing_params = enclosing
             .as_ref()
-            .and_then(|name| self.fn_sigs.get(name))
+            .and_then(|name| self.fn_sig(name))
             .map_or_else(Vec::new, |sig| sig.type_params.clone());
         self.generic_fn_instantiation_sites
             .push(GenericFnInstantiationSite {

@@ -1339,7 +1339,10 @@ impl Checker {
                 }
             }
             self.record_call_edge(&fn_sig_key);
-            let sig = self.fn_sigs[&fn_sig_key].clone();
+            let sig = self
+                .fn_sig(&fn_sig_key)
+                .cloned()
+                .unwrap_or_else(|| panic!("visible function `{fn_sig_key}` has a signature"));
             // A bare enum variant used as a value (`let c = Red;`,
             // `xs.map(Wrap)`) is refused like its call form; nothing here
             // selects the enum, so the fix-it qualifies it.

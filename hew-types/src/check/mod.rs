@@ -68,6 +68,8 @@ mod util;
 mod var_self;
 mod visibility;
 
+#[cfg(any(test, feature = "test"))]
+pub use self::types::FnSigFixture;
 use self::types::{
     ActorFieldInfo, ActorInitParamInfo, ConstValue, DeferredBoundCheck, DeferredCastCheck,
     DeferredHashMapAdmission, DeferredHashSetAdmission, DeferredInferenceHole,
@@ -81,8 +83,8 @@ pub use self::types::{
     ClosureEscapeFact, ClosureEscapeKind, ClosureEscapeRule, DynAssocBinding, DynCoercion,
     DynMethodCall, DynVtableEntry, DynVtableKey, EntryCallableInstance, EntryDisplayTarget,
     EntryExitAction, EntryExitPlan, EntryIntegerType, ExecutionContextReader,
-    ExternMethodCallIdentity, ExternMethodSignature, FnSig, MachineMethodKind, MathGenericOp,
-    MethodCallReceiverKind, MethodCallRewrite, OpaqueResourceCandidateGraph,
+    ExternMethodCallIdentity, ExternMethodSignature, FnSig, FnSigView, MachineMethodKind,
+    MathGenericOp, MethodCallReceiverKind, MethodCallRewrite, OpaqueResourceCandidateGraph,
     OpaqueResourceLifecycleCandidate, OpaqueResourceLifecycleConflict,
     OpaqueResourceLifecycleConflictKind, PatternKind, PatternPlan, PayloadBinding,
     PayloadLiteralPattern, PayloadVariantPattern, PlanField, PlanSub, PoolAccessor,
@@ -147,10 +149,11 @@ pub fn builtin_function_names() -> &'static HashSet<String> {
         let mut checker = Checker::default();
         checker.register_builtins();
         let mut names: HashSet<String> = checker
-            .fn_sigs
+            .builtin_fn_sigs
             .keys()
+            .map(|name| name.as_str())
             .filter(|name| !name.contains('.') && !name.contains("::"))
-            .cloned()
+            .map(str::to_string)
             .collect();
         for builtin in builtin_named_types() {
             for method in builtin.methods {
@@ -240,7 +243,7 @@ impl crate::value_class::ClassDeclarations for CheckerClassDeclarations<'_> {
         };
         let mut member_tys: Vec<Ty> = Vec::new();
         if definition.kind == TypeDefKind::Record && definition.fields.is_empty() {
-            if let Some(signature) = self.checker.fn_sigs.get(name) {
+            if let Some(signature) = self.checker.fn_sig(name) {
                 member_tys.extend(signature.params.iter().cloned());
             }
         }
@@ -779,7 +782,7 @@ impl Checker {
     pub(super) fn visible_fn_signature_key(&self, name: &str) -> Option<String> {
         let canonical = Self::declared_fn_identity(self.canonical_fn_owner(), name);
         for key in [&canonical, name] {
-            if self.fn_def_spans.contains_key(key) && self.fn_sigs.contains_key(key) {
+            if self.fn_def_spans.contains_key(key) && self.has_fn_sig(key) {
                 return Some(key.to_string());
             }
         }
@@ -789,11 +792,11 @@ impl Checker {
                 self.current_module_idx,
                 binding.to_string(),
             )) {
-                return self.fn_sigs.contains_key(source).then(|| source.clone());
+                return self.has_fn_sig(source).then(|| source.clone());
             }
         }
         for key in [&canonical, name] {
-            if self.fn_sigs.contains_key(key) {
+            if self.has_fn_sig(key) {
                 return Some(key.to_string());
             }
         }
@@ -1217,7 +1220,7 @@ impl Checker {
         &mut self,
         return_type: Ty,
         span: &std::ops::Range<usize>,
-        resolved_fn_sigs: &HashMap<String, FnSig>,
+        resolved_fn_sigs: crate::check::FnSigView<'_>,
     ) -> Option<EntryExitAction> {
         let resolved_return_type = ResolvedTy::from_ty(&return_type).ok();
         match return_type {
@@ -1316,7 +1319,7 @@ impl Checker {
     /// handler's `Err(e)` into the actor's own fault, and the fault carries
     /// the error's text; a handler whose error the checker cannot render is
     /// refused at the submission rather than faulting with nothing to say.
-    fn attach_receive_failure_displays(&mut self, resolved_fn_sigs: &HashMap<String, FnSig>) {
+    fn attach_receive_failure_displays(&mut self, resolved_fn_sigs: crate::check::FnSigView<'_>) {
         let mut targets: HashMap<String, crate::actor_protocol::ReceiveFailureDisplay> =
             HashMap::new();
         for method_id in self.receive_fails_methods.clone() {
@@ -1360,7 +1363,7 @@ impl Checker {
     fn receive_failure_display(
         &mut self,
         error_ty: &Ty,
-        resolved_fn_sigs: &HashMap<String, FnSig>,
+        resolved_fn_sigs: crate::check::FnSigView<'_>,
     ) -> Option<crate::actor_protocol::ReceiveFailureDisplay> {
         if matches!(error_ty, Ty::String) {
             return Some(crate::actor_protocol::ReceiveFailureDisplay::Identity);
@@ -1385,7 +1388,7 @@ impl Checker {
     fn classify_entry_exit_plan(
         &mut self,
         program: &Program,
-        resolved_fn_sigs: &HashMap<String, FnSig>,
+        resolved_fn_sigs: crate::check::FnSigView<'_>,
     ) -> Option<EntryExitPlan> {
         let (occurrence, span) =
             if self.entry_selection.is_some() {
@@ -1670,6 +1673,32 @@ impl Checker {
                 let owner = declare(kind, 0, name, None, path.clone(), false);
                 if let Some(alias) = nominal_alias(name.as_str()) {
                     declare(kind, 0, name, None, alias, true);
+                }
+                // An enum's variants and a desugared machine's states are
+                // members of their declaration.
+                let (member_kind, member_path) = if kind == Kind::Machine {
+                    (Kind::MachineState, "state")
+                } else {
+                    (Kind::Variant, "variant")
+                };
+                for (index, variant) in decl
+                    .body
+                    .iter()
+                    .filter_map(|item| match item {
+                        hew_parser::ast::TypeBodyItem::Variant(variant) => Some(variant),
+                        hew_parser::ast::TypeBodyItem::Field { .. }
+                        | hew_parser::ast::TypeBodyItem::Method(_) => None,
+                    })
+                    .enumerate()
+                {
+                    declare(
+                        member_kind,
+                        index,
+                        variant.name.name,
+                        owner,
+                        format!("{path}::{member_path} {}", variant.name),
+                        false,
+                    );
                 }
                 for (index, method) in decl
                     .body
@@ -2069,8 +2098,15 @@ impl Checker {
         // both are `self` fields, so swap `fn_sigs` out across the build to
         // keep the borrow checker happy without cloning the whole signature map.
         let fn_sigs_for_descriptors = std::mem::take(&mut self.fn_sigs);
-        self.actor_protocol_descriptors =
-            build_actor_protocol_descriptors(program, &fn_sigs_for_descriptors, &mut self.errors);
+        self.actor_protocol_descriptors = build_actor_protocol_descriptors(
+            program,
+            FnSigView::new(
+                &fn_sigs_for_descriptors,
+                &self.fn_sig_keys,
+                &self.builtin_fn_sigs,
+            ),
+            &mut self.errors,
+        );
         self.fn_sigs = fn_sigs_for_descriptors;
 
         // Check non-root module_graph bodies first (dependencies before dependents).
@@ -2440,13 +2476,22 @@ impl Checker {
         let resolved_type_aliases = self.resolved_type_aliases();
         let trait_defaults = self.resolved_trait_defaults();
 
-        let mut resolved_fn_sigs: HashMap<String, FnSig> = std::mem::take(&mut self.fn_sigs)
+        let mut resolved_fn_sigs: HashMap<crate::DefId, FnSig> = std::mem::take(&mut self.fn_sigs)
             .into_iter()
-            .map(|(name, sig)| {
+            .map(|(id, sig)| {
                 let resolved = self.resolve_fn_sig(&sig);
-                (name, resolved)
+                (id, resolved)
             })
             .collect();
+        let resolved_builtin_fn_sigs: HashMap<Symbol, FnSig> =
+            std::mem::take(&mut self.builtin_fn_sigs)
+                .into_iter()
+                .map(|(name, sig)| {
+                    let resolved = self.resolve_fn_sig(&sig);
+                    (name, resolved)
+                })
+                .collect();
+        self.builtin_fn_sigs.clone_from(&resolved_builtin_fn_sigs);
 
         self.validate_checker_output_contract(
             &mut resolved_expr_types,
@@ -2471,13 +2516,15 @@ impl Checker {
         for sig in resolved_fn_sigs.values_mut() {
             *sig = self.resolve_fn_sig(sig);
         }
-        let entry_exit_plan = self.classify_entry_exit_plan(program, &resolved_fn_sigs);
-        self.attach_receive_failure_displays(&resolved_fn_sigs);
+        let fn_sig_keys = self.fn_sig_keys.clone();
+        let resolved_sigs =
+            FnSigView::new(&resolved_fn_sigs, &fn_sig_keys, &resolved_builtin_fn_sigs);
+        let entry_exit_plan = self.classify_entry_exit_plan(program, resolved_sigs);
+        self.attach_receive_failure_displays(resolved_sigs);
         for type_def in resolved_type_defs.values_mut() {
             *type_def = self.resolve_type_def(type_def);
         }
-        let opaque_resource_candidates =
-            self.derive_opaque_resource_candidate_graph(&resolved_fn_sigs);
+        let opaque_resource_candidates = self.derive_opaque_resource_candidate_graph(resolved_sigs);
         for cycle in crate::cycle::detect_recursive_value_type_cycles(
             crate::check::TypeDefView::new(&self.defs, &resolved_type_defs),
         ) {
@@ -2751,6 +2798,8 @@ impl Checker {
             entry_exit_plan,
             extern_contracts: std::mem::take(&mut self.extern_table),
             fn_sigs: resolved_fn_sigs,
+            fn_sig_keys: self.fn_sig_keys.clone(),
+            builtin_fn_sigs: resolved_builtin_fn_sigs,
             direct_call_targets: std::mem::take(&mut self.direct_call_targets),
             trait_method_ids: std::mem::take(&mut self.trait_method_ids),
             trait_bindings: std::mem::take(&mut self.trait_bindings),
@@ -4304,7 +4353,7 @@ fn collect_program_actors(program: &Program) -> Vec<(String, &ActorDecl)> {
 /// derivative error here would be noise.
 fn build_actor_protocol_descriptors(
     program: &Program,
-    fn_sigs: &HashMap<String, crate::check::types::FnSig>,
+    fn_sigs: crate::check::types::FnSigView<'_>,
     errors: &mut Vec<TypeError>,
 ) -> HashMap<String, crate::actor_protocol::ActorProtocolDescriptor> {
     let mut descriptors: HashMap<String, crate::actor_protocol::ActorProtocolDescriptor> =

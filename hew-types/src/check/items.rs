@@ -12,8 +12,7 @@ impl Checker {
     /// under a module-scoped key.
     fn registered_fn_type_param_scope(&self, fn_name: &str, fd: &FnDecl) -> TypeParamScope {
         let mut scope = self
-            .fn_sigs
-            .get(fn_name)
+            .fn_sig(fn_name)
             .map(|sig| {
                 let mut bounds = sig.type_param_bounds.clone();
                 for param in &sig.type_params {
@@ -1070,7 +1069,7 @@ impl Checker {
             .and_then(|(type_name, method)| self.module_local_method_sig(type_name, method));
         let declared_ret = if let Some(sig) = module_local_method {
             sig.return_type.clone()
-        } else if let Some(sig) = self.fn_sigs.get(fn_name) {
+        } else if let Some(sig) = self.fn_sig(fn_name) {
             sig.return_type.clone()
         } else {
             fd.return_type.as_ref().map_or(Ty::Unit, |annotation| {
@@ -1227,8 +1226,8 @@ impl Checker {
                     // in those traits.  We inject `Self → [TraitName]` into the
                     // registered sig for `Trait::method` so the same path
                     // resolves sibling trait-method calls on the `Self` receiver.
-                    let prev_sig = self.fn_sigs.get(&qualified).cloned();
-                    if let Some(sig) = self.fn_sigs.get_mut(&qualified) {
+                    let prev_sig = self.fn_sig(&qualified).cloned();
+                    if let Some(sig) = self.fn_sig_mut(&qualified) {
                         if !sig.type_params.contains(&"Self".to_string()) {
                             sig.type_params.push("Self".to_string());
                         }
@@ -1243,8 +1242,8 @@ impl Checker {
                     // Restore the original sig — the `Self` type-param is an
                     // internal default-body-check artefact and must not persist
                     // into the signature visible to call sites.
-                    if let Some(original) = prev_sig {
-                        self.fn_sigs.insert(qualified, original);
+                    if let (Some(original), Some(sig)) = (prev_sig, self.fn_sig_mut(&qualified)) {
+                        *sig = original;
                     }
                 }
             }
@@ -2511,7 +2510,7 @@ impl Checker {
             self.env.set_parameter_consume(p.name.name.as_str(), true);
         }
 
-        let declared_ret = if let Some(sig) = self.fn_sigs.get(&qualified_name) {
+        let declared_ret = if let Some(sig) = self.fn_sig(&qualified_name) {
             if rf.is_generator {
                 sig.return_type
                     .as_stream()

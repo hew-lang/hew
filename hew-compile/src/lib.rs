@@ -5281,7 +5281,7 @@ fn main() {
         let expected = "hew.selfqualtype.Meter";
         assert!(
             matches!(
-                tco.fn_sigs
+                tco.sigs()
                     .get("hew.selfqualtype.read")
                     .expect("checker must retain imported read signature")
                     .params
@@ -5289,7 +5289,7 @@ fn main() {
                 [hew_types::Ty::Named { head, .. }] if head.spelling() == expected
             ),
             "checker parameter type must be the complete module owner: {:#?}",
-            tco.fn_sigs.get("hew.selfqualtype.read")
+            tco.sigs().get("hew.selfqualtype.read")
         );
 
         let hir = hew_hir::lower_program(

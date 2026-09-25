@@ -110,6 +110,32 @@ path`) are deleted; a literal meets its expected type only when its path
   reaches its std declaration only in method lookup (TRANSITION until the
   catalog move), never in type facts.
 
+## Function signatures keyed by declaration
+
+- `fn_sigs` is `HashMap<DefId, FnSig>` in the checker and in
+  `TypeCheckOutput`; every spelling a caller still uses (`Type::method`,
+  `{module}.{name}`, a mangled specialisation, an import binding) is a key of
+  `fn_sig_keys` naming one declaration (TRANSITION until callers resolve
+  through `Scope` and the dispatch table). Compiler builtin signatures live in
+  `builtin_fn_sigs` by name until the catalog move. Several spellings of one
+  declaration now share one signature row instead of holding copies that could
+  drift apart.
+- An enum variant is a `DeclarationKind::Variant` row owned by its enum, and a
+  desugared machine's states are `MachineState` rows owned by the machine
+  (`DefTable::member_of_kind`); variant and state constructor signatures are
+  filed under those rows. A wire type's compiler codec entry points
+  (`decode`, `from_json`) are sourceless member rows of the type.
+- A module function a registry publishes before the module's source is read
+  gets a sourceless row that the source declaration adopts.
+- `hew-types/src/check/registration/type_publication.rs`: an actor imported
+  through a module surface registers its signatures in its declaring module,
+  so a receive handler's parameter types resolve there instead of in the
+  importer (`pipeline.StageI64::push` resolved `PipelineItemI64` as an
+  unresolved spelling).
+- Downstream (mechanical): hew-hir reads `fn_sigs_by_path()` into a field
+  renamed `fn_sigs_by_path`; hew-analysis reads signatures through
+  `TypeCheckOutput::sigs()`.
+
 ## DefTable contract changes
 
 - `DefTable::module_has_declarations` becomes `module_has_source_declarations`:
@@ -157,6 +183,12 @@ path`) are deleted; a literal meets its expected type only when its path
 - Deleted `validate_handle_types_no_field_overlap_prunes_bare_alias_twin` and
   `validate_handle_types_no_field_overlap_qualified_alias_span_is_propagated`:
   a bare alias twin of a definition no longer exists.
+
+- Rewritten: `machine_typecheck::imported_machine_unit_state_constructor_resolves`
+  compares with the checker's own identities (`Ty::named_in`) rather than
+  fixture identities that matched the checker's only by row order.
+- Tests that fabricated string-keyed signature tables build them through
+  `FnSigFixture` or `Checker::test_fn_sig`.
 
 ## Open, identity-rooted
 

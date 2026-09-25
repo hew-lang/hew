@@ -655,7 +655,7 @@ mod wasm_rejects {
             );
             if binding == "read_handle" {
                 assert!(
-                    !output.fn_sigs.contains_key("try_read"),
+                    !output.sigs().contains("try_read"),
                     "a renamed import must not publish the original bare name"
                 );
             }

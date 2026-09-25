@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 use crate::builtin_names::{builtin_named_type, builtin_type_def as builtin_named_type_def};
 #[cfg(test)]
 use crate::check::TypeDefKind;
-use crate::check::{FnSig, TypeDef};
+use crate::check::{FnSig, FnSigView, TypeDef};
 use crate::resolved_ty::{mangle_impl_self_name, ResolvedTy};
 use crate::BuiltinType;
 use crate::Ty;
@@ -84,7 +84,7 @@ fn lookup_user_type_def<'a>(
     })
 }
 
-fn lookup_user_fn_sig<'a>(fn_sigs: &'a HashMap<String, FnSig>, key: &str) -> Option<&'a FnSig> {
+fn lookup_user_fn_sig<'a>(fn_sigs: FnSigView<'a>, key: &str) -> Option<&'a FnSig> {
     fn_sigs.get(key)
 }
 
@@ -168,7 +168,7 @@ fn lookup_collection_clone_method_sig(receiver_ty: &Ty, method: &str) -> Option<
 pub fn lookup_named_method_sig(
     defs: &DefTable,
     type_defs: &HashMap<NominalId, TypeDef>,
-    fn_sigs: &HashMap<String, FnSig>,
+    fn_sigs: FnSigView<'_>,
     type_name: &str,
     type_args: &[Ty],
     method: &str,
@@ -184,7 +184,7 @@ pub fn lookup_named_method_sig(
 
 fn named_method_sig(
     user: Option<&TypeDef>,
-    fn_sigs: &HashMap<String, FnSig>,
+    fn_sigs: FnSigView<'_>,
     type_name: &str,
     type_args: &[Ty],
     method: &str,
@@ -275,7 +275,7 @@ pub fn lookup_builtin_method_sig(receiver_ty: &Ty, method: &str) -> Option<FnSig
 pub fn lookup_method_sig(
     defs: &DefTable,
     type_defs: &HashMap<NominalId, TypeDef>,
-    fn_sigs: &HashMap<String, FnSig>,
+    fn_sigs: FnSigView<'_>,
     receiver_ty: &Ty,
     method: &str,
 ) -> Option<FnSig> {
@@ -344,7 +344,7 @@ pub fn lookup_type_def_for_receiver(
 pub fn collect_method_sigs_for_named_type(
     defs: &DefTable,
     type_defs: &HashMap<NominalId, TypeDef>,
-    fn_sigs: &HashMap<String, FnSig>,
+    fn_sigs: FnSigView<'_>,
     type_name: &str,
     type_args: &[Ty],
 ) -> Vec<(String, FnSig)> {
@@ -358,7 +358,7 @@ pub fn collect_method_sigs_for_named_type(
 
 fn collect_named_method_sigs(
     user: Option<&TypeDef>,
-    fn_sigs: &HashMap<String, FnSig>,
+    fn_sigs: FnSigView<'_>,
     type_name: &str,
     type_args: &[Ty],
 ) -> Vec<(String, FnSig)> {
@@ -386,7 +386,7 @@ fn collect_named_method_sigs(
     }
 
     let exact_prefix = format!("{type_name}::");
-    for (sig_name, sig) in fn_sigs {
+    for (sig_name, sig) in fn_sigs.entries() {
         let method_name = sig_name.strip_prefix(&exact_prefix);
         if let Some(method_name) = method_name {
             let method_name = method_name.to_string();
@@ -416,7 +416,7 @@ fn collect_named_method_sigs(
 pub fn collect_method_sigs_for_receiver(
     defs: &DefTable,
     type_defs: &HashMap<NominalId, TypeDef>,
-    fn_sigs: &HashMap<String, FnSig>,
+    fn_sigs: FnSigView<'_>,
     receiver_ty: &Ty,
 ) -> Vec<(String, FnSig)> {
     let Some((type_name, type_args)) = named_receiver_parts(receiver_ty) else {
@@ -517,7 +517,7 @@ mod tests {
         let methods = collect_method_sigs_for_named_type(
             &defs,
             &type_defs,
-            &fn_sigs,
+            crate::check::FnSigFixture::new(fn_sigs.clone()).view(),
             "Wrapper",
             &[Ty::String],
         );
@@ -574,7 +574,7 @@ mod tests {
         let sig = lookup_method_sig(
             &crate::DefTable::new(),
             &type_defs,
-            &fn_sigs,
+            crate::check::FnSigFixture::new(fn_sigs.clone()).view(),
             &Ty::sink(Ty::I64),
             "send",
         )
@@ -623,7 +623,7 @@ mod tests {
     #[test]
     fn lookup_method_sig_collection_clone_returns_receiver_type() {
         let type_defs = HashMap::new();
-        let fn_sigs = HashMap::new();
+        let fn_sigs: HashMap<String, FnSig> = HashMap::new();
         for receiver_ty in [
             Ty::Named {
                 head: crate::TypeHead::Builtin(BuiltinType::Vec),
@@ -641,7 +641,7 @@ mod tests {
             let sig = lookup_method_sig(
                 &crate::DefTable::new(),
                 &type_defs,
-                &fn_sigs,
+                crate::check::FnSigFixture::new(fn_sigs.clone()).view(),
                 &receiver_ty,
                 "clone",
             )
@@ -656,7 +656,7 @@ mod tests {
         let methods = collect_method_sigs_for_named_type(
             &crate::DefTable::new(),
             &HashMap::new(),
-            &HashMap::new(),
+            crate::check::FnSigFixture::default().view(),
             "HashSet",
             &[Ty::String],
         );

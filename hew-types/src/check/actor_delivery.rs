@@ -559,7 +559,7 @@ impl Checker {
     /// Specialize the declaration's protocol, never the argument expression's
     /// pre-coercion type, before sealing the runtime wrapper.
     fn request_signature(&self, method: &str, target: &Ty) -> Option<(Vec<Ty>, Ty)> {
-        let signature = self.fn_sigs.get(method)?;
+        let signature = self.fn_sig(method)?;
         let Ty::Named { head, args } = target.as_local_actor_ref()? else {
             return None;
         };

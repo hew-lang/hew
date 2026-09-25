@@ -884,13 +884,13 @@ impl Checker {
         // whether the bare key is already taken by another module's same-named
         // trait, so the authoritative lookup never misses for a known owner.
         if let Some(qualified_key) = owner_qualified_key.as_ref() {
-            if !self.fn_sigs.contains_key(qualified_key) {
-                self.register_fn_sig_with_name(qualified_key, &decl);
+            if !self.has_fn_sig(qualified_key) {
+                self.register_fn_sig_with_name(qualified_key, &decl, None);
             }
         }
         // The bare key keeps first-write-wins for the local/non-aliased path.
-        if !self.fn_sigs.contains_key(&method_key) {
-            self.register_fn_sig_with_name(&method_key, &decl);
+        if !self.has_fn_sig(&method_key) {
+            self.register_fn_sig_with_name(&method_key, &decl, None);
         }
         self.current_trait_for_self_projection = prev_trait_self;
     }
@@ -1756,7 +1756,7 @@ impl Checker {
         //     genuinely-unambiguous case, where no collision is possible).
         let trait_sig = if let Some(owner) = identity.owner.as_ref() {
             let owner_key = format!("{owner}.{}::{}", identity.source_trait_name, method.name);
-            match self.fn_sigs.get(&owner_key).cloned() {
+            match self.fn_sig(&owner_key).cloned() {
                 Some(sig) => sig,
                 None => return,
             }
@@ -1779,9 +1779,8 @@ impl Checker {
                 scoped_module_item_name(self.current_module.as_deref(), &trait_method_key)
                     .unwrap_or_else(|| trait_method_key.clone());
             match self
-                .fn_sigs
-                .get(&scoped_trait_key)
-                .or_else(|| self.fn_sigs.get(&trait_method_key))
+                .fn_sig(&scoped_trait_key)
+                .or_else(|| self.fn_sig(&trait_method_key))
                 .cloned()
             {
                 Some(sig) => sig,

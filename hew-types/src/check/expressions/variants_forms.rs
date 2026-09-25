@@ -612,7 +612,7 @@ else needs `impl Display for {rendered}`)"
                 }
                 // Also check fn_sigs for qualified constructors
                 if found.is_none() {
-                    if let Some(sig) = self.fn_sigs.get(variant_name) {
+                    if let Some(sig) = self.fn_sig(variant_name) {
                         if sig.params.is_empty() {
                             let ret = &sig.return_type;
                             let matches_type =
@@ -704,7 +704,7 @@ else needs `impl Display for {rendered}`)"
                     local_names
                         .iter()
                         .copied()
-                        .chain(self.fn_sigs.keys().map(String::as_str)),
+                        .chain(self.sigs().entries().map(|(key, _)| key)),
                 );
                 self.report_error_with_suggestions(
                     TypeErrorKind::UndefinedVariable,

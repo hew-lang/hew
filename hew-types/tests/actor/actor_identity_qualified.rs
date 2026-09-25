@@ -125,11 +125,11 @@ fn main() {
         &[(&["hew", "bank"], BANK_SRC), (&["hew", "store"], STORE_SRC)],
     );
     let bank_sig = output
-        .fn_sigs
+        .sigs()
         .get("hew.bank.Account::deposit")
         .expect("hew.bank.Account::deposit must be registered under the canonical key");
     let store_sig = output
-        .fn_sigs
+        .sigs()
         .get("hew.store.Account::deposit")
         .expect("hew.store.Account::deposit must be registered under the canonical key");
     assert!(
@@ -144,7 +144,7 @@ fn main() {
         store_sig.return_type
     );
     assert!(
-        !output.fn_sigs.contains_key("Account::deposit"),
+        !output.sigs().contains("Account::deposit"),
         "no bare receive-fn key may be written for module actors"
     );
 }

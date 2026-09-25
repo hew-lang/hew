@@ -193,7 +193,11 @@ impl LowerCtx {
                 Vec::new(),
             ),
             RecordKind::Tuple(_) => {
-                let Some(signature) = self.fn_sigs.get(self.defs.path(declaration)).cloned() else {
+                let Some(signature) = self
+                    .fn_sigs_by_path
+                    .get(self.defs.path(declaration))
+                    .cloned()
+                else {
                     self.diagnostics.push(HirDiagnostic::new(
                         HirDiagnosticKind::CheckerBoundaryViolation {
                             name: self.defs.path(declaration).to_string(),

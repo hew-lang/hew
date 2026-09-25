@@ -724,7 +724,7 @@ impl Checker {
         if name.contains('.') {
             self.module_fn_exports.insert(name.to_string());
         }
-        self.fn_sigs.insert(name.to_string(), sig);
+        self.builtin_fn_sigs.insert(Symbol::intern(name), sig);
         // Record executable runtime authority at builtin-registration time.
         // `fn_sigs` itself intentionally remains an open-set lookup index: it
         // can contain user and imported-source functions.  No call-site may

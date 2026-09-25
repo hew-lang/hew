@@ -56,7 +56,7 @@ impl Checker {
         shared_lookup_named_method_sig(
             &self.defs,
             &self.type_defs,
-            &self.fn_sigs,
+            self.sigs(),
             type_name,
             type_args,
             method,
@@ -66,7 +66,7 @@ impl Checker {
             crate::method_resolution::lookup_method_sig(
                 &self.defs,
                 &self.type_defs,
-                &self.fn_sigs,
+                self.sigs(),
                 &target,
                 method,
             )
@@ -647,14 +647,9 @@ impl Checker {
     pub(super) fn similar_methods(&self, receiver_ty: &Ty, method_name: &str) -> Vec<String> {
         crate::error::find_similar(
             method_name,
-            collect_method_sigs_for_receiver(
-                &self.defs,
-                &self.type_defs,
-                &self.fn_sigs,
-                receiver_ty,
-            )
-            .iter()
-            .map(|(name, _)| name.as_str()),
+            collect_method_sigs_for_receiver(&self.defs, &self.type_defs, self.sigs(), receiver_ty)
+                .iter()
+                .map(|(name, _)| name.as_str()),
         )
     }
 
@@ -858,7 +853,7 @@ impl Checker {
             }
         }
         if let Some(fn_name) = self.current_function.as_ref() {
-            if let Some(sig) = self.fn_sigs.get(fn_name) {
+            if let Some(sig) = self.fn_sig(fn_name) {
                 if sig.type_params.iter().any(|param| param == param_name) {
                     return sig
                         .type_param_bounds

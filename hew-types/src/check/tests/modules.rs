@@ -434,8 +434,8 @@ fn module_graph_body_local_binding_named_like_module_still_resolves_methods() {
 fn module_qualified_call_rejects_private_body_only_signature() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     checker.modules.insert("mymod".to_string());
-    checker.fn_sigs.insert(
-        "mymod.secret".to_string(),
+    checker.test_fn_sig(
+        "mymod.secret",
         FnSig {
             return_type: Ty::I64,
             ..FnSig::default()
@@ -463,8 +463,8 @@ fn module_qualified_call_accepts_exported_signature() {
     checker
         .module_fn_exports
         .insert("mymod.visible".to_string());
-    checker.fn_sigs.insert(
-        "mymod.visible".to_string(),
+    checker.test_fn_sig(
+        "mymod.visible",
         FnSig {
             return_type: Ty::I64,
             ..FnSig::default()
@@ -2807,7 +2807,7 @@ fn root_and_imported_compiles_mint_one_fn_sig_identity() {
     let mut import_checker = Checker::new(ModuleRegistry::new(vec![]));
     let import_out = import_checker.check_program(&import_program);
     assert!(
-        import_out.fn_sigs.contains_key("oracle_mod.shared_helper"),
+        import_out.sigs().contains("oracle_mod.shared_helper"),
         "import axis registers the canonical module-qualified identity"
     );
 
@@ -2859,11 +2859,11 @@ fn root_and_imported_compiles_mint_one_fn_sig_identity() {
     // root alias would be a second declaration authority and must not survive
     // the hard cutover.
     assert!(
-        root_out.fn_sigs.contains_key("oracle_mod.shared_helper"),
+        root_out.sigs().contains("oracle_mod.shared_helper"),
         "the canonical source identity is the sole published function key"
     );
     assert!(
-        !root_out.fn_sigs.contains_key("shared_helper"),
+        !root_out.sigs().contains("shared_helper"),
         "no inert bare compatibility alias may survive publication"
     );
 }

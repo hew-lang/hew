@@ -32,7 +32,7 @@ pub(crate) fn collect_method_sigs_for_receiver(
     method_resolution::collect_method_sigs_for_receiver(
         &tc.defs,
         &tc.type_defs,
-        &tc.fn_sigs,
+        tc.sigs(),
         receiver_ty,
     )
 }
@@ -42,7 +42,7 @@ pub(crate) fn lookup_method_sig(
     receiver_ty: &Ty,
     method: &str,
 ) -> Option<FnSig> {
-    method_resolution::lookup_method_sig(&tc.defs, &tc.type_defs, &tc.fn_sigs, receiver_ty, method)
+    method_resolution::lookup_method_sig(&tc.defs, &tc.type_defs, tc.sigs(), receiver_ty, method)
 }
 
 pub(crate) fn lookup_type_def_for_receiver(

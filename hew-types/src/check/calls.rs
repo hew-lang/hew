@@ -1283,7 +1283,7 @@ impl Checker {
         // nested modules and aliases retain their exact source identity.
         let canonical_owner = self.canonical_module_import_owner(module_name);
         let key = self.canonical_fn_identity(Some(&canonical_owner), method);
-        if !self.fn_sigs.contains_key(&key) {
+        if !self.has_fn_sig(&key) {
             return None;
         }
         if self.module_binding_in_current_file(module_name) {
@@ -1337,7 +1337,7 @@ impl Checker {
         if self.is_shipped_crypto_module(module_name) && method == "random_bytes" {
             self.reject_wasm_feature(span, WasmUnsupportedFeature::CryptoRandom);
         }
-        let sig = self.fn_sigs.get(&key).cloned()?;
+        let sig = self.fn_sig(&key).cloned()?;
         self.record_call_edge(&key);
         self.record_module_qualified_stdlib_call_rewrite_if_any(module_name, method, span);
         self.record_module_qualified_user_call_rewrite_if_any(module_name, method, span);
@@ -1749,7 +1749,7 @@ impl Checker {
         if contract.is_variadic {
             return None;
         }
-        let signature = self.fn_sigs.get(self.defs.path(declaration))?;
+        let signature = self.fn_sig(self.defs.path(declaration))?;
         if !signature.type_params.is_empty() {
             return None;
         }
@@ -2358,8 +2358,7 @@ impl Checker {
             }
         }
         if let Some(sig) = self
-            .fn_sigs
-            .get(&resolved_fn_name)
+            .fn_sig(&resolved_fn_name)
             .cloned()
             .filter(|_| has_visible_fn_signature)
         {
@@ -2719,9 +2718,9 @@ impl Checker {
         let local_names: Vec<&str> = self.env.all_names().map(Symbol::as_str).collect();
         let mut similar = crate::error::find_similar(
             &func_name,
-            self.fn_sigs
-                .keys()
-                .map(String::as_str)
+            self.sigs()
+                .entries()
+                .map(|(key, _)| key)
                 .filter(|key| !foreign_bindings.contains(key))
                 .chain(local_names.iter().copied()),
         );

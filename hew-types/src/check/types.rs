@@ -7,6 +7,7 @@ use crate::traits::TraitRegistry;
 use crate::ty::{Substitution, Ty, TypeVar};
 use crate::type_facts::{TypeFactContext, TypeFacts, TypeInstanceKey};
 use crate::{BuiltinType, WasmUnsupportedFeature};
+use hew_parser::ast::Symbol;
 use hew_parser::ast::{
     ImportSpec, Literal, NamingCase, Span, Spanned, TraitBound, TraitMethod, TypeExpr, Visibility,
 };
@@ -605,19 +606,21 @@ pub struct TypeCheckOutput {
     /// adopt the established contract. Also the `unsafe`-gating declaration
     /// index (replaces the former `unsafe_functions` side registry).
     pub extern_contracts: crate::extern_table::ExternTable,
-    /// Function signatures keyed by declaration identity. Impl methods retain
-    /// their exact `DefId` path as well as their receiver/method lookup spelling,
-    /// so trait and inherent declarations sharing a name remain distinct.
+    /// Function signatures keyed by declaration identity.
+    pub fn_sigs: HashMap<crate::DefId, FnSig>,
+    /// The signature keys the checker's callers spell, each naming one
+    /// declaration of `fn_sigs`.
     ///
-    /// Key shapes: `{module}.{name}` for source free functions — the module
-    /// being the identity table's render, so a module reached under two import
-    /// spellings keys one namespace — `Type::method` for methods, and bare
-    /// names for compiler builtins and `extern "C"` symbols, whose namespace is
-    /// the linker's rather than a module's. No source declaration is reachable
-    /// under a bare name: explicit imports publish only exact per-file bindings
-    /// in `import_fn_name_aliases`, leaving the canonical declaration signature
-    /// and ambient builtin signatures unchanged.
-    pub fn_sigs: HashMap<String, FnSig>,
+    /// TRANSITION(A1 commit 3): WHY callers still spell `Type::method` and
+    /// `{module}.{name}` keys. WHEN call resolution goes through `Scope` and
+    /// the dispatch table, callers hold the id and this index is deleted.
+    /// WHAT: every caller reads `fn_sigs` by the `DefId` it resolved.
+    pub fn_sig_keys: HashMap<String, crate::DefId>,
+    /// Compiler builtin function signatures by name.
+    ///
+    /// TRANSITION(A1 commit 3): the catalog move keys these by
+    /// `CatalogEntryId`.
+    pub builtin_fn_sigs: HashMap<Symbol, FnSig>,
     /// Checker-selected target for every ordinary direct or indirect call
     /// expression. HIR carries this fact on `HirExprKind::Call` verbatim.
     pub suspension_effects: super::effects::SuspensionEffects,
@@ -1455,6 +1458,21 @@ impl TypeCheckOutput {
             .collect()
     }
 
+    /// The function signatures, read by the keys callers spell.
+    #[must_use]
+    pub fn sigs(&self) -> FnSigView<'_> {
+        FnSigView::new(&self.fn_sigs, &self.fn_sig_keys, &self.builtin_fn_sigs)
+    }
+
+    /// The function signatures keyed by every spelling the checker published.
+    ///
+    /// TRANSITION(B1, B3): deleted when HIR and tooling read signatures by
+    /// declaration.
+    #[must_use]
+    pub fn fn_sigs_by_path(&self) -> HashMap<String, FnSig> {
+        self.sigs().by_key()
+    }
+
     /// Record an expression's checker type, keeping the `Ty`-typed
     /// `expr_types` side-table and the typed `resolved_expr_types` handoff
     /// map (W4.047) in sync.
@@ -1528,6 +1546,8 @@ impl Default for TypeCheckOutput {
             entry_exit_plan: None,
             extern_contracts: crate::extern_table::ExternTable::new(),
             fn_sigs: HashMap::new(),
+            fn_sig_keys: HashMap::new(),
+            builtin_fn_sigs: HashMap::new(),
             suspension_effects: super::effects::SuspensionEffects::default(),
             direct_call_targets: HashMap::new(),
             trait_method_ids: HashMap::new(),
@@ -2469,6 +2489,126 @@ impl<'a> TypeDefView<'a> {
     }
 }
 
+/// The function signatures of one compilation, read by declaration or, until
+/// callers hold ids, by the keys they spell.
+#[derive(Debug, Clone, Copy)]
+pub struct FnSigView<'a> {
+    pub sigs: &'a HashMap<crate::DefId, FnSig>,
+    pub keys: &'a HashMap<String, crate::DefId>,
+    pub builtins: &'a HashMap<Symbol, FnSig>,
+}
+
+impl<'a> FnSigView<'a> {
+    #[must_use]
+    pub fn new(
+        sigs: &'a HashMap<crate::DefId, FnSig>,
+        keys: &'a HashMap<String, crate::DefId>,
+        builtins: &'a HashMap<Symbol, FnSig>,
+    ) -> Self {
+        Self {
+            sigs,
+            keys,
+            builtins,
+        }
+    }
+
+    /// The signature of a declaration.
+    #[must_use]
+    pub fn of(self, declaration: crate::DefId) -> Option<&'a FnSig> {
+        self.sigs.get(&declaration)
+    }
+
+    /// The signature a key spells: a declaration's key, else a builtin name.
+    ///
+    /// TRANSITION(A1 commit 3): see [`TypeCheckOutput::fn_sig_keys`].
+    #[must_use]
+    pub fn get(self, key: &str) -> Option<&'a FnSig> {
+        self.keys
+            .get(key)
+            .and_then(|id| self.sigs.get(id))
+            .or_else(|| self.builtins.get(&Symbol::intern(key)))
+    }
+
+    #[must_use]
+    pub fn contains(self, key: &str) -> bool {
+        self.get(key).is_some()
+    }
+
+    /// Every spelled key with its signature.
+    pub fn entries(self) -> impl Iterator<Item = (&'a str, &'a FnSig)> + 'a {
+        self.keys
+            .iter()
+            .filter_map(move |(key, id)| Some((key.as_str(), self.sigs.get(id)?)))
+            .chain(self.builtins.iter().map(|(name, sig)| (name.as_str(), sig)))
+    }
+
+    /// TRANSITION(B1, B3): see [`TypeCheckOutput::fn_sigs_by_path`].
+    #[must_use]
+    pub fn by_key(self) -> HashMap<String, FnSig> {
+        self.entries()
+            .map(|(key, sig)| (key.to_string(), sig.clone()))
+            .collect()
+    }
+}
+
+impl<Q: AsRef<str> + ?Sized> std::ops::Index<&Q> for FnSigView<'_> {
+    type Output = FnSig;
+
+    /// The signature a key spells.
+    ///
+    /// # Panics
+    ///
+    /// When no signature answers to the key.
+    fn index(&self, key: &Q) -> &FnSig {
+        let key = key.as_ref();
+        self.get(key)
+            .unwrap_or_else(|| panic!("no signature answers to `{key}`"))
+    }
+}
+
+/// Hand-built signatures keyed by fixture declarations, for tests of the
+/// functions that read a [`FnSigView`].
+#[cfg(any(test, feature = "test"))]
+#[doc(hidden)]
+#[derive(Debug, Default)]
+pub struct FnSigFixture {
+    sigs: HashMap<crate::DefId, FnSig>,
+    keys: HashMap<String, crate::DefId>,
+    builtins: HashMap<Symbol, FnSig>,
+}
+
+#[cfg(any(test, feature = "test"))]
+impl FnSigFixture {
+    #[must_use]
+    pub fn new(sigs: impl IntoIterator<Item = (String, FnSig)>) -> Self {
+        let mut fixture = Self::default();
+        for (key, sig) in sigs {
+            let declaration = crate::DefId::for_test(&key);
+            fixture.keys.insert(key, declaration);
+            fixture.sigs.insert(declaration, sig);
+        }
+        fixture
+    }
+
+    #[must_use]
+    pub fn view(&self) -> FnSigView<'_> {
+        FnSigView::new(&self.sigs, &self.keys, &self.builtins)
+    }
+
+    /// The `fn_sigs`, `fn_sig_keys` and `builtin_fn_sigs` of a hand-built
+    /// [`TypeCheckOutput`].
+    #[must_use]
+    pub fn into_parts(
+        self,
+    ) -> (
+        HashMap<crate::DefId, FnSig>,
+        HashMap<String, crate::DefId>,
+        HashMap<Symbol, FnSig>,
+    ) {
+        (self.sigs, self.keys, self.builtins)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct TypeDef {
     pub kind: TypeDefKind,
@@ -3043,7 +3183,12 @@ pub struct Checker {
     /// `--show-stack-hints` printer. See [`StackHint`].
     pub(super) stack_hints: Vec<StackHint>,
     pub(super) type_defs: HashMap<crate::NominalId, TypeDef>,
-    pub(super) fn_sigs: HashMap<String, FnSig>,
+    /// Function signatures keyed by declaration identity.
+    pub(super) fn_sigs: HashMap<crate::DefId, FnSig>,
+    /// TRANSITION(A1 commit 3): see [`TypeCheckOutput::fn_sig_keys`].
+    pub(super) fn_sig_keys: HashMap<String, crate::DefId>,
+    /// TRANSITION(A1 commit 3): see [`TypeCheckOutput::builtin_fn_sigs`].
+    pub(super) builtin_fn_sigs: HashMap<Symbol, FnSig>,
     /// Closed runtime call families published by compiler builtin
     /// registration.  This is deliberately distinct from `fn_sigs`: a
     /// signature name is an open-set source lookup key, whereas this table is
@@ -4127,6 +4272,8 @@ impl Checker {
             stack_hints: Vec::new(),
             type_defs: HashMap::new(),
             fn_sigs: HashMap::new(),
+            fn_sig_keys: HashMap::new(),
+            builtin_fn_sigs: HashMap::new(),
             builtin_call_targets: HashMap::new(),
             import_fn_name_aliases: HashMap::new(),
             published_bare_function_owners: HashMap::new(),

@@ -1658,7 +1658,7 @@ fn typecheck_return_type_mismatch() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let output = checker.check_program(&result.program);
     // The function signature should still reflect i32 return type
-    assert_eq!(output.fn_sigs["foo"].return_type, Ty::I32);
+    assert_eq!(output.sigs()["foo"].return_type, Ty::I32);
 }
 
 #[test]
@@ -1893,7 +1893,7 @@ fn typecheck_actor_receive_fn_registered() {
     };
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let output = checker.check_program(&program);
-    assert!(output.fn_sigs.contains_key("Greeter::greet"));
+    assert!(output.sigs().contains("Greeter::greet"));
 }
 
 fn span_key_for(source: &str, needle: &str) -> SpanKey {
@@ -2111,7 +2111,7 @@ fn typecheck_local_result_enum_not_qualified_to_sqlite() {
         "unexpected errors: {non_import_errors:?}"
     );
     let sig = output
-        .fn_sigs
+        .sigs()
         .get("unwrap_or")
         .expect("unwrap_or signature should be registered");
     assert_eq!(sig.params[0], Ty::named_in(&output.defs, "Result", vec![]));

@@ -3131,6 +3131,7 @@ pub(crate) unsafe fn hew_actor_trap_from_activation(actor: *mut HewActor, error_
 /// for before the crash is observable at all.
 fn publish_crash_fault_record(
     terminal: i32,
+    error_code: i32,
     supervisor: *mut c_void,
     supervisor_child_index: i32,
 ) -> crate::exit_status::FaultRecord {
@@ -3138,7 +3139,18 @@ fn publish_crash_fault_record(
         return crate::exit_status::FaultRecord::NONE;
     }
     if supervisor.is_null() {
-        crate::exit_status::record_unrecovered_actor_fault();
+        // A cancellation reaching this unsupervised actor while a requested
+        // shutdown (SIGTERM/SIGINT or a program-exit drain) is in flight is
+        // expected termination, not a fault: nothing supervises it to rule
+        // on the crash, but shutdown itself is the authority that asked for
+        // it, so it must not fail the process the way a genuine unrecovered
+        // crash does. Any other error_code, including a cancellation outside
+        // shutdown, is still unrecovered.
+        let cancelled_by_shutdown = error_code == crate::fault::HEW_FAULT_CANCELLED
+            && crate::shutdown::hew_is_shutting_down() != 0;
+        if !cancelled_by_shutdown {
+            crate::exit_status::record_unrecovered_actor_fault();
+        }
         return crate::exit_status::FaultRecord::NONE;
     }
     let record = crate::exit_status::open_supervised_fault();
@@ -3295,6 +3307,16 @@ pub(crate) unsafe fn hew_actor_trap_inner(
     };
 
     // Choose terminal state: Crashed if error_code != 0, Stopped otherwise.
+    //
+    // `Stopped` here means "reached its own clean termination sequence"
+    // (`finish_native_terminal` additionally requires `terminate_finished`
+    // for it), which an abandoned/unwound frame never runs — so a
+    // shutdown-cancelled `accept()` still takes the mechanical `Crashed`
+    // path below. What changes is only whether that terminal counts as an
+    // UNRECOVERED FAULT for the exit-status authority: `publish_crash_fault_record`
+    // exempts a cancellation reaching here while a requested shutdown
+    // (SIGTERM/SIGINT or a program-exit drain) is in flight, since that is
+    // expected termination, not a fault the caller failed to handle.
     let terminal = if error_code != 0 {
         HewActorState::Crashed as i32
     } else {
@@ -3393,7 +3415,8 @@ pub(crate) unsafe fn hew_actor_trap_inner(
         crate::fault::note_actor_crash(actor_id);
     }
 
-    let fault_record = publish_crash_fault_record(terminal, supervisor, supervisor_child_index);
+    let fault_record =
+        publish_crash_fault_record(terminal, error_code, supervisor, supervisor_child_index);
     let notice = TerminalNotification {
         actor_id,
         terminal,

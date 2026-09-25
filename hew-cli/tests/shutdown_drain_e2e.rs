@@ -329,3 +329,99 @@ fn tcp_handler_exceeding_budget_is_observable_as_nonzero_exit() {
         "abandoned handler must not fabricate a response: {response:?}"
     );
 }
+
+/// An unsupervised root actor blocked in `accept()` is not a fault when
+/// SIGTERM cancels it: a task cancelled by a requested shutdown is expected
+/// termination, and the process must exit success.
+#[test]
+fn unsupervised_root_actor_blocked_in_accept_exits_zero_on_sigterm() {
+    require_codegen();
+    let port = allocate_loopback_port();
+    let source = format!(
+        r#"
+import std.net;
+
+actor Acceptor {{
+    let addr: string,
+    receive fn start() {{
+        let listener = match net.listen(addr) {{ .Ok(value) => value, .Err(_) => panic("listen failed") }};
+        println("READY");
+        let _conn = listener.accept();
+        println("UNREACHABLE");
+    }}
+}}
+
+fn main() {{
+    let acceptor = spawn Acceptor(addr: "127.0.0.1:{port}");
+    // The accept loop never returns on its own; this call keeps main blocked
+    // (and the process alive) until shutdown cancels it.
+    let _ = acceptor.start();
+}}
+"#
+    );
+    for opt_level in [0, 2] {
+        let dir = tempfile::tempdir().expect("create accept-cancel fixture directory");
+        let binary = compile_fixture(&source, dir.path(), opt_level);
+        let mut fixture = spawn_fixture(&binary);
+        wait_for_line(&fixture.lines, "READY");
+        let pid = i32::try_from(fixture.child.0.id()).expect("child PID fits pid_t");
+        // SAFETY: this live child belongs to the test; SIGTERM invokes its
+        // runtime shutdown handler while `accept()` is parked with no peer.
+        assert_eq!(unsafe { libc::kill(pid, libc::SIGTERM) }, 0);
+        let status = wait_for_exit(&mut fixture.child);
+        let stdout = fixture
+            .stdout_thread
+            .join()
+            .expect("join fixture stdout reader");
+        let stderr = fixture
+            .stderr_thread
+            .join()
+            .expect("join fixture stderr reader");
+        assert!(
+            status.success(),
+            "a shutdown-cancelled accept() must exit success: {status}\nstdout={stdout:?}\nstderr={stderr}"
+        );
+        assert!(
+            !stdout.iter().any(|line| line == "UNREACHABLE"),
+            "accept() must not fabricate a connection: {stdout:?}"
+        );
+        assert!(
+            !stderr.contains("actor crash"),
+            "a requested-shutdown cancellation is not a crash: {stderr}"
+        );
+    }
+}
+
+/// Negative control for the above: an actor panic unrelated to shutdown is
+/// still a real fault and must still fail the process.
+#[test]
+fn unsupervised_root_actor_panic_is_nonzero_exit() {
+    require_codegen();
+    let source = r#"
+actor Boom {
+    receive fn detonate() -> i64 {
+        panic("boom");
+    }
+}
+
+fn main() {
+    let b = spawn Boom;
+    let _ = b.detonate();
+}
+"#;
+    for opt_level in [0, 2] {
+        let dir = tempfile::tempdir().expect("create panic fixture directory");
+        let binary = compile_fixture(source, dir.path(), opt_level);
+        let fixture = spawn_fixture(&binary);
+        let (status, stdout, stderr) = finish_fixture(fixture);
+        assert_eq!(
+            status.code(),
+            Some(1),
+            "a real actor panic must still fail the process: stdout={stdout:?} stderr={stderr}"
+        );
+        assert!(
+            stderr.contains("actor crash in Boom.detonate"),
+            "a real fault must still be reported: {stderr}"
+        );
+    }
+}

@@ -426,10 +426,8 @@ fn qualified_associated_item_rejects_multiple_trait_owners() {
     let info = Checker::trait_info_from_decl(trait_decl, None, 0);
 
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    checker
-        .trait_defs
-        .insert("left.Shared".to_string(), info.clone());
-    checker.trait_defs.insert("right.Shared".to_string(), info);
+    checker.test_trait_def("left.Shared", info.clone());
+    checker.test_trait_def("right.Shared", info);
     checker.published_bare_trait_owners.insert(
         (None, 0, "Shared".to_string()),
         ["left.Shared".to_string(), "right.Shared".to_string()]

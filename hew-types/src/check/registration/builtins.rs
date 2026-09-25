@@ -489,15 +489,12 @@ impl Checker {
             Some("std.builtins".to_string()),
             self.current_module_idx,
         );
-        self.trait_defs
-            .entry(tr.name.to_string())
-            .or_insert_with(|| info.clone());
-        let qualified = format!("builtins.{}", tr.name);
-        self.trait_defs
-            .entry(qualified)
-            .or_insert_with(|| info.clone());
         let canonical = format!("std.builtins.{}", tr.name);
-        self.trait_defs.entry(canonical.clone()).or_insert(info);
+        if !self.trait_def_keys.contains_key(&canonical) {
+            self.insert_trait_def(&canonical, &canonical, info);
+        }
+        self.alias_trait_def(tr.name.name.as_str(), &canonical);
+        self.alias_trait_def(&format!("builtins.{}", tr.name), &canonical);
         // A builtin trait's supertraits are part of its obligation
         // (`trait Error: Display`), so record the same owner-qualified edges
         // the ordinary registration path records. All three trait_defs
@@ -508,12 +505,8 @@ impl Checker {
                 .iter()
                 .map(|s| format!("std.builtins.{}", s.path)) // TRANSITION(P1): deleted by A1 commit 2
                 .collect();
-            for key in [
-                tr.name.to_string(),
-                format!("builtins.{}", tr.name),
-                canonical.clone(),
-            ] {
-                self.trait_super.entry(key).or_insert(super_keys.clone());
+            if self.trait_supers(&canonical).is_none() {
+                self.set_trait_supers(&canonical, super_keys);
             }
         }
         self.published_bare_trait_owners

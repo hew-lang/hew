@@ -220,13 +220,14 @@ impl Checker {
                             // identity only.
                             Item::Trait(td) => {
                                 let qualified = format!("{module_name}.{}", td.name);
-                                self.trait_defs.entry(qualified).or_insert_with(|| {
-                                    Self::trait_info_from_decl(
+                                if !self.trait_def_keys.contains_key(&qualified) {
+                                    let info = Self::trait_info_from_decl(
                                         td,
                                         Some(module_name.clone()),
                                         self.current_module_idx,
-                                    )
-                                });
+                                    );
+                                    self.insert_trait_def(&qualified, &qualified, info);
+                                }
                             }
                             // Register machine state/event binding tables for the
                             // non-root module path, mirroring the root-loop arm at
@@ -309,7 +310,8 @@ impl Checker {
                         &mut trait_errors,
                     );
                     self.errors.extend(trait_errors);
-                    self.trait_defs.insert(td.name.to_string(), info);
+                    let declaration = self.declaration_identity(td.name.name.as_str());
+                    self.insert_trait_def(td.name.name.as_str(), &declaration, info);
                     self.local_trait_defs.insert(td.name.to_string());
                     // Record super-trait relationships
                     if let Some(supers) = &td.super_traits {
@@ -320,12 +322,7 @@ impl Checker {
                                 s.path.to_string() // TRANSITION(P1): deleted by A1 commit 2
                             })
                             .collect();
-                        self.trait_super
-                            .insert(td.name.to_string(), super_names.clone());
-                        if let Some(module) = self.current_module.as_deref() {
-                            self.trait_super
-                                .insert(format!("{module}.{}", td.name), super_names);
-                        }
+                        self.set_trait_supers(td.name.name.as_str(), super_names);
                     }
                     // Harvest `#[lang_item("…")]` attributes into the
                     // lang-item registry so downstream passes (HIR f-string

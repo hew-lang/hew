@@ -795,17 +795,17 @@ impl DefTable {
         self.members.get(&(owner, name))?.first().copied()
     }
 
-    /// Mint (or return) a sourceless function row at `path`: a module
-    /// function a registry declares before the module's source, which adopts
-    /// the row when it is read.
-    pub(crate) fn mint_sourceless_function(&mut self, path: &str) -> DefId {
+    /// Mint (or return) a sourceless row at `path`: a module item registered
+    /// from a route that reads it before the module's own declarations are
+    /// minted, which adopt the row when they are.
+    pub(crate) fn mint_sourceless(&mut self, path: &str, kind: DeclarationKind) -> DefId {
         if let Some(&established) = self.by_path.get(path) {
             return established;
         }
         let name = Symbol::intern(path.rsplit_once('.').map_or(path, |(_, leaf)| leaf));
         let id = self.push_row(DefRow {
             name,
-            kind: DeclarationKind::Function,
+            kind,
             module: None,
             owner: None,
             site: None,

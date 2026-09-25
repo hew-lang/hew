@@ -1195,7 +1195,7 @@ impl Checker {
                                                                                    // `dyn X` names a trait; an unknown name has no vtable to build and no
                                                                                    // methods to dispatch, so refuse it here rather than letting it reach a
                                                                                    // coercion site as an unexplained type mismatch.
-        if !self.trait_defs.contains_key(&trait_lookup_key) {
+        if !self.has_trait_def(&trait_lookup_key) {
             // A type annotation is resolved once per registration pass and
             // again at use, so report the span once.
             let dedup_key = (
@@ -1211,7 +1211,7 @@ impl Checker {
             }
         }
         if let Some(associated_type_names) =
-            self.trait_defs.get(&trait_lookup_key).map(|trait_info| {
+            self.trait_def_at(&trait_lookup_key).map(|trait_info| {
                 trait_info
                     .associated_types
                     .iter()
@@ -2040,7 +2040,7 @@ impl Checker {
         // Super-trait projections are deferred per the precursor plan.
         let mut matches: Vec<String> = Vec::new();
         for trait_name in &bounds {
-            if let Some(info) = self.trait_defs.get(trait_name) {
+            if let Some(info) = self.trait_def_at(trait_name) {
                 if info
                     .associated_types
                     .iter()
@@ -2548,7 +2548,7 @@ impl Checker {
             return true;
         }
         if self.known_types.contains(name)
-            || self.trait_defs.contains_key(name)
+            || self.has_trait_def(name)
             || self.type_aliases.contains_key(name)
         {
             return true;
@@ -2632,7 +2632,7 @@ impl Checker {
         // whose tables key on the unqualified short name.
         if let Some(unqualified) = self.strip_module_prefix(name) {
             if self.known_types.contains(unqualified)
-                || self.trait_defs.contains_key(unqualified)
+                || self.has_trait_def(unqualified)
                 || self.type_aliases.contains_key(unqualified)
                 || self.supervisor_children.contains_key(unqualified)
             {
@@ -2930,7 +2930,7 @@ impl Checker {
                 }
                 let trait_name = path.trait_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
                 let mut candidates = Vec::new();
-                if self.trait_defs.contains_key(&trait_name) {
+                if self.has_trait_def(&trait_name) {
                     candidates.push(trait_name.clone());
                 } else if !trait_name.contains('.') && !trait_name.contains("::") {
                     if let Some(owners) = self.published_bare_trait_owners.get(&(
@@ -2941,7 +2941,7 @@ impl Checker {
                         candidates.extend(
                             owners
                                 .iter()
-                                .filter(|owner| self.trait_defs.contains_key(*owner))
+                                .filter(|owner| self.has_trait_def(owner))
                                 .cloned(),
                         );
                     }
@@ -2962,7 +2962,7 @@ impl Checker {
                     .first()
                     .cloned()
                     .unwrap_or_else(|| self.trait_ref_lookup_key(&trait_name));
-                if let Some(info) = self.trait_defs.get(&trait_key) {
+                if let Some(info) = self.trait_def_at(&trait_key) {
                     if !info
                         .associated_types
                         .iter()

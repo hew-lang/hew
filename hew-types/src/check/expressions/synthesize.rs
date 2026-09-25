@@ -1426,7 +1426,7 @@ impl Checker {
 
         let trait_name = path.trait_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
         let mut candidates = Vec::new();
-        if self.trait_defs.contains_key(&trait_name) {
+        if self.has_trait_def(&trait_name) {
             candidates.push(trait_name.clone());
         } else if !trait_name.contains('.') && !trait_name.contains("::") {
             if let Some(owners) = self.published_bare_trait_owners.get(&(
@@ -1437,7 +1437,7 @@ impl Checker {
                 candidates.extend(
                     owners
                         .iter()
-                        .filter(|owner| self.trait_defs.contains_key(*owner))
+                        .filter(|owner| self.has_trait_def(owner))
                         .cloned(),
                 );
             }
@@ -1467,7 +1467,9 @@ impl Checker {
             );
             return Ty::Error;
         };
-        let info = &self.trait_defs[trait_key];
+        let info = self
+            .trait_def_at(trait_key)
+            .unwrap_or_else(|| panic!("trait `{trait_key}` is registered"));
         if info
             .associated_types
             .iter()

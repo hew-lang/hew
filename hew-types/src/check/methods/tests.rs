@@ -19,7 +19,11 @@ mod tests {
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&hew_parser::parse("fn main() {}").program);
         let mut builtin_methods = 0;
-        for (key, info) in &checker.trait_defs {
+        for (key, info) in checker
+            .trait_def_keys
+            .iter()
+            .map(|(key, id)| (key, &checker.trait_defs[id]))
+        {
             if !key.starts_with("std.builtins.") {
                 continue;
             }
@@ -59,9 +63,9 @@ mod tests {
             ("Named", "std.builtins.Iterator"),
             ("Failure", "std.builtins.Error"),
         ] {
-            let edges = &checker.trait_super[subtrait];
+            let edges = checker.trait_supers(subtrait).expect("supers");
             assert_eq!(edges, &vec![expected.to_string()], "`{subtrait}` edges");
-            for method in &checker.trait_defs[expected].methods {
+            for method in &checker.trait_def_at(expected).expect("trait").methods {
                 assert!(
                     output
                         .trait_method_ids
@@ -79,8 +83,8 @@ mod tests {
             current_module: Some("app".to_string()),
             ..Checker::default()
         };
-        checker.trait_defs.insert(
-            "left.Render".to_string(),
+        checker.test_trait_def(
+            "left.Render",
             TraitInfo {
                 source_module: None,
                 file_index: 0,

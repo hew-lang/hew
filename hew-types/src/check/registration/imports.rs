@@ -57,7 +57,7 @@ impl Checker {
                 continue;
             }
             let qualified = format!("{}.{}", key.short_name, trait_name);
-            if self.trait_defs.contains_key(&qualified) {
+            if self.has_trait_def(&qualified) {
                 used.insert(key.clone());
             }
         }
@@ -1184,9 +1184,7 @@ impl Checker {
                             ))
                             .or_default()
                             .insert(canonical.clone());
-                        if let Some(info) = self.trait_defs.get(&canonical).cloned() {
-                            self.trait_defs.insert(binding.clone(), info);
-                        }
+                        self.rebind_trait_def(&binding, &canonical);
                         self.unqualified_to_module.insert(
                             (
                                 self.current_module.clone(),
@@ -1455,7 +1453,14 @@ impl Checker {
                     {
                         continue;
                     }
-                    self.trait_defs.insert(tr.name.to_string(), info);
+                    // The declaring file's registration owns the trait's
+                    // definition; the importer only binds its spelling.
+                    let declaration = format!("{owner}.{}", tr.name);
+                    if self.has_trait_def(&declaration) {
+                        self.rebind_trait_def(tr.name.name.as_str(), &declaration);
+                    } else {
+                        self.insert_trait_def(tr.name.name.as_str(), &declaration, info);
+                    }
                     if tr.visibility.is_pub() {
                         self.published_bare_trait_owners
                             .entry((
@@ -1745,7 +1750,7 @@ impl Checker {
                         None => {
                             let prefix = format!("{imported_owner}.");
                             let loaded_traits: Vec<String> = self
-                                .trait_defs
+                                .trait_def_keys
                                 .keys()
                                 .filter_map(|key| key.strip_prefix(&prefix))
                                 .filter(|name| !name.contains('.'))

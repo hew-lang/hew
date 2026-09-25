@@ -3424,9 +3424,19 @@ pub struct Checker {
     pub(super) modules: HashSet<String>,
     pub(super) known_types: HashSet<String>,
     pub(super) type_aliases: HashMap<String, TypeAliasDef>,
-    pub(super) trait_defs: HashMap<String, TraitInfo>,
+    /// Trait declarations by declaration identity.
+    pub(super) trait_defs: HashMap<crate::DefId, TraitInfo>,
+    /// The trait spellings callers use, each naming one declaration.
+    ///
+    /// TRANSITION(A1 commit 3): WHY bounds and impls still carry trait
+    /// spellings. WHEN they carry `TraitRef`s resolved through `Scope`, this
+    /// index is deleted. WHAT: every reader holds the trait's `DefId`.
+    pub(super) trait_def_keys: HashMap<String, crate::DefId>,
     /// Maps trait name → list of super-trait names (e.g., `Pet` → [`Animal`])
-    pub(super) trait_super: HashMap<String, Vec<String>>,
+    ///
+    /// Keyed by the trait's declaration; the super-trait spellings stay
+    /// strings until bounds carry `TraitRef`s (TRANSITION(A1 commit 3)).
+    pub(super) trait_super: HashMap<crate::DefId, Vec<String>>,
     /// A declaring module's trait import bindings:
     /// `(declaring_module_short, name_as_spelled)` → owner-qualified SOURCE
     /// identity (`{owner_short}.{Source}`), always a registered `trait_defs` key.
@@ -4338,6 +4348,7 @@ impl Checker {
             known_types: HashSet::new(),
             type_aliases: HashMap::new(),
             trait_defs: HashMap::new(),
+            trait_def_keys: HashMap::new(),
             trait_super: HashMap::new(),
             trait_import_bindings: HashMap::new(),
             trait_impls_set: HashSet::new(),

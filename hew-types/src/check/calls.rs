@@ -1269,7 +1269,7 @@ impl Checker {
         let (module_name, method) = func_name.split_once("::")?;
         // A trait-qualified call (`Trait::method`) is handled by the dedicated
         // paths above and must not be re-interpreted as a module call.
-        if self.trait_defs.contains_key(module_name) {
+        if self.has_trait_def(module_name) {
             return None;
         }
         if method.contains("::") {
@@ -2309,7 +2309,7 @@ impl Checker {
         // receiver param on the resolved sig so arity matches and the
         // first arg is type-checked against the canonical receiver.
         if let Some((trait_name, method_name)) = func_name.split_once("::") {
-            if self.trait_defs.contains_key(trait_name) {
+            if self.has_trait_def(trait_name) {
                 if let Some(ret_ty) = self.try_dispatch_ufcs_primitive_trait_method(
                     trait_name,
                     method_name,
@@ -2640,7 +2640,7 @@ impl Checker {
         // If the function name has the form `TraitName::method` and TraitName
         // is a known trait, resolve the method from the trait definition.
         if let Some((trait_name, method_name)) = func_name.split_once("::") {
-            if self.trait_defs.contains_key(trait_name) {
+            if self.has_trait_def(trait_name) {
                 // Use the full signature (receiver included) for qualified calls.
                 if let Some(sig) = self.lookup_trait_method_inner(trait_name, method_name, false) {
                     // The trait sig includes all non-receiver params.

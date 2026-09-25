@@ -136,6 +136,18 @@ path`) are deleted; a literal meets its expected type only when its path
   renamed `fn_sigs_by_path`; hew-analysis reads signatures through
   `TypeCheckOutput::sigs()`.
 
+## Traits keyed by declaration
+
+- `trait_defs` and `trait_super` are keyed by the trait's `DefId`; the bare,
+  `builtins.`, module-short, qualified and import-binding spellings are keys
+  of `trait_def_keys` naming one declaration (TRANSITION until bounds carry
+  `TraitRef`s). A super-trait list is recorded once per trait.
+- `hew-types/src/check/registration/imports.rs` file-import traits: the
+  importer binds the trait's spelling and never replaces the definition the
+  declaring file registered (whose default bodies check in that file).
+- A module trait registered by a route that reads it before the module's
+  declarations are minted gets a sourceless row its declaration adopts.
+
 ## DefTable contract changes
 
 - `DefTable::module_has_declarations` becomes `module_has_source_declarations`:

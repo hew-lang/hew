@@ -344,7 +344,7 @@ pub(super) fn make_checker_with_trait(
     };
 
     let info = Checker::trait_info_from_decl(&td, None, 0);
-    checker.trait_defs.insert(trait_name.to_string(), info);
+    checker.test_trait_def(trait_name, info);
     checker
 }
 
@@ -606,6 +606,13 @@ impl Checker {
     pub(super) fn test_fn_sig(&mut self, key: &str, sig: FnSig) {
         let declaration = self.defs.mint_for_test(key);
         self.insert_fn_sig(key, declaration, sig);
+    }
+
+    /// File a hand-built trait under a fresh declaration row spelled `key`.
+    pub(super) fn test_trait_def(&mut self, key: &str, info: TraitInfo) {
+        let declaration = self.defs.mint_for_test(key);
+        self.trait_def_keys.insert(key.to_string(), declaration);
+        self.trait_defs.insert(declaration, info);
     }
 
     /// The named type of a hand-registered declaration (see

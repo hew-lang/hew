@@ -660,7 +660,7 @@ impl Checker {
         let types = TypeDefView::new(&self.defs, type_defs);
         // Collect known trait names before the mutable borrow on
         // `method_call_receiver_kinds` to avoid a split-borrow conflict.
-        let known_trait_names: HashSet<String> = self.trait_defs.keys().cloned().collect();
+        let known_trait_names: HashSet<String> = self.trait_def_keys.keys().cloned().collect();
 
         // Collect all type parameter names from the resolved function signatures
         // so we can retain `NamedTypeInstance` entries produced by trait-bounded
@@ -2248,8 +2248,8 @@ mod tests {
         );
 
         // Seed trait_defs with only the known trait.
-        checker.trait_defs.insert(
-            "Greeter".to_string(),
+        checker.test_trait_def(
+            "Greeter",
             TraitInfo {
                 source_module: None,
                 file_index: 0,

@@ -528,7 +528,7 @@ impl Checker {
                         // Owner-qualified key so a same-name trait in another
                         // module cannot inject the wrong default-method bodies.
                         let trait_key = self.trait_defs_key_for_bound(&tb.path.to_string()); // TRANSITION(P1): deleted by A1 commit 2
-                        if let Some(trait_methods) = self.trait_defs.get(&trait_key) {
+                        if let Some(trait_methods) = self.trait_def_at(&trait_key) {
                             let defaults: Vec<_> = trait_methods
                                 .methods
                                 .iter()

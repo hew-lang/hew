@@ -24,11 +24,11 @@ impl Checker {
         if MarkerTrait::from_name(name).is_some() {
             return true;
         }
-        if self.trait_defs.contains_key(name) {
+        if self.has_trait_def(name) {
             return true;
         }
         if let Some(uq) = self.strip_module_qualifier(name) {
-            if self.trait_defs.contains_key(uq) {
+            if self.has_trait_def(uq) {
                 return true;
             }
         }
@@ -484,8 +484,7 @@ impl Checker {
             // the trait through its canonical module owner.
             let tb_key = self.trait_ref_lookup_key(&tb.path.to_string()); // TRANSITION(P1): deleted by A1 commit 2
             let assoc_names: Vec<String> = self
-                .trait_defs
-                .get(&tb_key)
+                .trait_def_at(&tb_key)
                 .map(|info| {
                     info.associated_types
                         .iter()
@@ -528,8 +527,7 @@ impl Checker {
                 // other's required `type` and accept an incomplete impl.
                 let trait_key = self.trait_defs_key_for_bound(&tb.path.to_string()); // TRANSITION(P1): deleted by A1 commit 2
                 let trait_snapshot = self
-                    .trait_defs
-                    .get(&trait_key)
+                    .trait_def_at(&trait_key)
                     .map(|info| info.associated_types.clone());
                 if let Some(associated_types) = trait_snapshot {
                     let missing: Vec<TraitAssociatedTypeInfo> = associated_types
@@ -758,8 +756,8 @@ impl Checker {
                 .iter()
                 .map(|bound| self.trait_ref_lookup_key(&bound.path.to_string())) // TRANSITION(P1): deleted by A1 commit 2
                 .collect();
-            if self.trait_super.contains_key(td.name.name.as_str()) {
-                self.trait_super.insert(td.name.to_string(), keys);
+            if self.trait_supers(td.name.name.as_str()).is_some() {
+                self.set_trait_supers(td.name.name.as_str(), keys);
             }
         }
     }
@@ -768,9 +766,8 @@ impl Checker {
     /// is not (yet) registered.
     pub(super) fn trait_type_param_names(&self, trait_name: &str) -> Vec<String> {
         let key = self.trait_ref_lookup_key(trait_name);
-        self.trait_defs
-            .get(&key)
-            .or_else(|| self.trait_defs.get(trait_name))
+        self.trait_def_at(&key)
+            .or_else(|| self.trait_def_at(trait_name))
             .map(|info| info.type_params.clone())
             .unwrap_or_default()
     }
@@ -793,10 +790,7 @@ impl Checker {
         let declaration_key = self
             .current_module
             .as_ref()
-            .filter(|module| {
-                self.trait_defs
-                    .contains_key(&format!("{module}.{trait_name}"))
-            })
+            .filter(|module| self.has_trait_def(&format!("{module}.{trait_name}")))
             .map_or_else(
                 || self.trait_ref_lookup_key(trait_name),
                 |module| format!("{module}.{trait_name}"),
@@ -1081,9 +1075,7 @@ impl Checker {
             return None;
         }
         let qualified = identities.iter().next()?;
-        self.trait_defs
-            .contains_key(qualified)
-            .then(|| qualified.clone())
+        self.has_trait_def(qualified).then(|| qualified.clone())
     }
 
     /// THE canonical trait-reference resolver. Resolves a trait name spelled in a
@@ -1113,7 +1105,7 @@ impl Checker {
         if matches!(scope, TraitRefScope::Current) && self.local_trait_defs.contains(name) {
             if let Some(module) = self.current_module.as_deref() {
                 let qualified = format!("{module}.{name}");
-                if self.trait_defs.contains_key(&qualified) {
+                if self.has_trait_def(&qualified) {
                     return self.identity_from_trait_defs_key(&qualified);
                 }
             }
@@ -1132,7 +1124,7 @@ impl Checker {
         if matches!(scope, TraitRefScope::Current) {
             if let Some(module) = self.current_module.as_deref() {
                 let qualified = format!("{module}.{name}");
-                if self.trait_defs.contains_key(&qualified) {
+                if self.has_trait_def(&qualified) {
                     return self.identity_from_trait_defs_key(&qualified);
                 }
             }
@@ -1175,7 +1167,7 @@ impl Checker {
         //     check fires honestly against an absent/empty set — fail-closed).
         let suffix = format!(".{name}");
         let mut owners: Vec<String> = self
-            .trait_defs
+            .trait_def_keys
             .keys()
             .filter_map(|k| k.strip_suffix(&suffix))
             .filter(|module| {
@@ -1227,9 +1219,10 @@ impl Checker {
         let saved_module = self.current_module.clone();
         let saved_file = self.current_module_idx;
         let mut declarations: Vec<_> = self
-            .trait_defs
+            .trait_def_keys
             .iter()
-            .filter_map(|(key, info)| {
+            .filter_map(|(key, id)| {
+                let info = self.trait_defs.get(id)?;
                 self.lookup_declaration(key)
                     .map(|id| (key.clone(), id, info.clone()))
             })
@@ -1330,7 +1323,7 @@ impl Checker {
         // name (authoritative for a local trait, best-effort for an unresolved
         // reference) — derived by the single `trait_defs_key_for_identity` home.
         let lookup_key = self.trait_defs_key_for_identity(identity);
-        let info = self.trait_defs.get(&lookup_key)?;
+        let info = self.trait_def_at(&lookup_key)?;
 
         let mut required = HashSet::new();
         let mut known = HashSet::new();
@@ -1389,11 +1382,11 @@ impl Checker {
         if !visited.insert(trait_key.to_string()) {
             return;
         }
-        let Some(supers) = self.trait_super.get(trait_key) else {
+        let Some(supers) = self.trait_supers(trait_key) else {
             return;
         };
         for super_name in supers.clone() {
-            let resolved_super = if self.trait_defs.contains_key(&super_name) {
+            let resolved_super = if self.has_trait_def(&super_name) {
                 super_name
             } else if let Some((declaring_module, _)) = trait_key.rsplit_once('.') {
                 // Early module registration can retain a super edge's source
@@ -1404,7 +1397,7 @@ impl Checker {
             } else {
                 super_name
             };
-            if let Some(super_info) = self.trait_defs.get(&resolved_super) {
+            if let Some(super_info) = self.trait_def_at(&resolved_super) {
                 for m in &super_info.methods {
                     known.insert(m.name.to_string());
                 }
@@ -1436,7 +1429,7 @@ impl Checker {
                     .map_or(owner.as_str(), String::as_str);
                 format!("{canonical_owner}.{}", identity.source_trait_name)
             })
-            .filter(|q| self.trait_defs.contains_key(q))
+            .filter(|q| self.has_trait_def(q))
             .unwrap_or_else(|| identity.source_trait_name.clone())
     }
 
@@ -1474,7 +1467,7 @@ impl Checker {
         primary_key: &str,
         method_name: &str,
     ) -> Option<ResolvedTraitIdentity> {
-        if self.trait_defs.get(primary_key).is_some_and(|info| {
+        if self.trait_def_at(primary_key).is_some_and(|info| {
             info.methods
                 .iter()
                 .any(|m| m.name == Ident::new(method_name))
@@ -1486,16 +1479,12 @@ impl Checker {
             });
         }
         let mut visited: HashSet<String> = HashSet::new();
-        let mut stack: Vec<String> = self
-            .trait_super
-            .get(primary_key)
-            .cloned()
-            .unwrap_or_default();
+        let mut stack: Vec<String> = self.trait_supers(primary_key).cloned().unwrap_or_default();
         while let Some(super_key) = stack.pop() {
             if !visited.insert(super_key.clone()) {
                 continue;
             }
-            let declares = self.trait_defs.get(&super_key).is_some_and(|info| {
+            let declares = self.trait_def_at(&super_key).is_some_and(|info| {
                 info.methods
                     .iter()
                     .any(|m| m.name == Ident::new(method_name))
@@ -1503,7 +1492,7 @@ impl Checker {
             if declares {
                 return Some(self.identity_from_trait_defs_key(&super_key));
             }
-            if let Some(supers) = self.trait_super.get(&super_key) {
+            if let Some(supers) = self.trait_supers(&super_key) {
                 stack.extend(supers.iter().cloned());
             }
         }
@@ -1517,7 +1506,7 @@ impl Checker {
     /// lookup on a declaring SUPERTRAIT reached through the super chain.
     pub(super) fn identity_from_trait_defs_key(&self, key: &str) -> ResolvedTraitIdentity {
         match key.rsplit_once('.') {
-            Some((module, source)) if self.trait_defs.contains_key(key) => ResolvedTraitIdentity {
+            Some((module, source)) if self.has_trait_def(key) => ResolvedTraitIdentity {
                 owner: Some(module.to_string()),
                 source_trait_name: source.to_string(),
                 is_local: false,
@@ -1732,7 +1721,7 @@ impl Checker {
         // The declaring trait's `trait_defs` entry supplies the trait method AST
         // (its type params, span, and receiver shape) for the comparison below.
         let declaring_key = self.trait_defs_key_for_identity(&identity);
-        let Some(trait_info) = self.trait_defs.get(&declaring_key).cloned() else {
+        let Some(trait_info) = self.trait_def_at(&declaring_key).cloned() else {
             return;
         };
         let Some(trait_method) = trait_info

@@ -366,7 +366,7 @@ impl Checker {
         }
         if let Some(tb) = &id.trait_bound {
             let trait_key = self.trait_defs_key_for_bound(&tb.path.to_string()); // TRANSITION(P1): deleted by A1 commit 2
-            if let Some(trait_info) = self.trait_defs.get(&trait_key) {
+            if let Some(trait_info) = self.trait_def_at(&trait_key) {
                 for assoc in &trait_info.associated_types {
                     if entries.contains_key(&assoc.name) {
                         continue;
@@ -783,14 +783,12 @@ impl Checker {
                         Some(module_full_path.to_string()),
                         self.current_module_idx,
                     );
-                    self.trait_defs.insert(tr.name.to_string(), info.clone());
                     let qualified = format!("{module_full_path}.{}", tr.name);
-                    self.trait_defs.insert(qualified, info.clone());
+                    self.insert_trait_def(tr.name.name.as_str(), &qualified, info.clone());
+                    self.insert_trait_def(&qualified, &qualified, info.clone());
                     // Retain the lexical import surface as a lookup index only;
                     // trait resolution and impl facts select the exact full owner.
-                    self.trait_defs
-                        .entry(format!("{module_short}.{}", tr.name))
-                        .or_insert(info);
+                    self.alias_trait_def(&format!("{module_short}.{}", tr.name), &qualified);
                 }
                 Item::Function(fd) => {
                     let qualified =
@@ -1748,11 +1746,9 @@ impl Checker {
 
                     // Register under qualified name (e.g. "mymod.Drawable")
                     let qualified = format!("{module_full_path}.{}", tr.name);
-                    self.trait_defs.insert(qualified.clone(), info.clone());
+                    self.insert_trait_def(&qualified, &qualified, info.clone());
                     if spec.is_none() {
-                        self.trait_defs
-                            .entry(format!("{module_short}.{}", tr.name))
-                            .or_insert_with(|| info.clone());
+                        self.alias_trait_def(&format!("{module_short}.{}", tr.name), &qualified);
                     }
                     // A whole-module import exposes the trait through the exact
                     // qualified source binding (`alias.Trait`) rather than a
@@ -1814,16 +1810,12 @@ impl Checker {
                             .collect();
                         self.current_module = saved_importer_module;
                         self.current_module_idx = importer_file_idx;
-                        self.trait_super
-                            .insert(qualified.clone(), super_keys.clone());
-                        if let Some(binding_name) = import_binding.as_ref() {
-                            self.trait_super.insert(binding_name.clone(), super_keys);
-                        }
+                        self.set_trait_supers(&qualified, super_keys);
                     }
 
                     // If glob or named import, also register unqualified (using alias if present)
                     if let Some(binding_name) = import_binding {
-                        self.trait_defs.insert(binding_name.clone(), info.clone());
+                        self.rebind_trait_def(&binding_name, &qualified);
                         // Record the SOURCE identity (`module_short.tr.name`) under
                         // the binding so trait-conformance can recover the owner +
                         // original trait name for an aliased import. `qualified` is

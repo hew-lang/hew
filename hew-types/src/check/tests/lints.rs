@@ -3952,9 +3952,9 @@ fn primitive_trait_dispatch_builtins_blanket_does_not_shadow_user_redeclare() {
     // trait_defs (i.e. our builtins-blanket loader did NOT register
     // Display first and force the user declaration to be skipped).
     assert!(
-        checker.trait_defs.contains_key("Display"),
+        checker.has_trait_def("Display"),
         "user trait Display must remain registered; trait_defs keys: {:?}",
-        checker.trait_defs.keys().collect::<Vec<_>>()
+        checker.trait_def_keys.keys().collect::<Vec<_>>()
     );
 }
 

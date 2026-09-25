@@ -43,7 +43,7 @@ impl Checker {
         // associated-type carriers are declaration-owned, so resolve the bound
         // once and use its canonical trait key for both metadata and projection.
         let trait_key = self.trait_ref_lookup_key(&bound.trait_name);
-        if let Some(trait_info) = self.trait_defs.get(&trait_key) {
+        if let Some(trait_info) = self.trait_def_at(&trait_key) {
             let type_params = &trait_info.type_params;
             if type_params.len() == bound.args.len() {
                 // Build the substitution map once and apply in parallel so
@@ -580,8 +580,10 @@ impl Checker {
     ) {
         for bound in bounds {
             if !self.is_known_trait(bound) {
-                let similar =
-                    crate::error::find_similar(bound, self.trait_defs.keys().map(String::as_str));
+                let similar = crate::error::find_similar(
+                    bound,
+                    self.trait_def_keys.keys().map(String::as_str),
+                );
                 self.report_error_with_suggestions(
                     TypeErrorKind::UndefinedType,
                     span,
@@ -662,8 +664,7 @@ impl Checker {
         }
         let declared_key = self.trait_defs_key_for_bound(declared_bound);
         let mut stack = self
-            .trait_super
-            .get(&declared_key)
+            .trait_supers(&declared_key)
             .cloned()
             .unwrap_or_default();
         let mut visited = HashSet::new();
@@ -672,7 +673,7 @@ impl Checker {
             if !visited.insert(super_trait.clone()) {
                 continue;
             }
-            if let Some(nested) = self.trait_super.get(&super_trait) {
+            if let Some(nested) = self.trait_supers(&super_trait) {
                 stack.extend(nested.iter().cloned());
             }
 
@@ -734,8 +735,7 @@ impl Checker {
 
     fn abstract_method_names_declared_by_trait(&self, trait_name: &str) -> Vec<String> {
         let mut methods: Vec<String> = self
-            .trait_defs
-            .get(trait_name)
+            .trait_def_at(trait_name)
             .map(|info| {
                 info.methods
                     .iter()
@@ -804,7 +804,7 @@ impl Checker {
                 continue;
             }
             out.extend(self.trait_lookup_candidates(&current));
-            if let Some(supers) = self.trait_super.get(&current) {
+            if let Some(supers) = self.trait_supers(&current) {
                 stack.extend(supers.iter().cloned());
             }
         }
@@ -820,31 +820,25 @@ impl Checker {
     ) -> Option<String> {
         let trait_key = self.trait_defs_key_for_bound(trait_name);
         if self
-            .trait_defs
-            .get(&trait_key)
+            .trait_def_at(&trait_key)
             .is_some_and(|info| info.methods.iter().any(|m| m.name == Ident::new(method)))
         {
             return Some(trait_key);
         }
 
-        let mut stack = self
-            .trait_super
-            .get(&trait_key)
-            .cloned()
-            .unwrap_or_default();
+        let mut stack = self.trait_supers(&trait_key).cloned().unwrap_or_default();
         let mut visited = HashSet::new();
         while let Some(current) = stack.pop() {
             if !visited.insert(current.clone()) {
                 continue;
             }
             if self
-                .trait_defs
-                .get(&current)
+                .trait_def_at(&current)
                 .is_some_and(|info| info.methods.iter().any(|m| m.name == Ident::new(method)))
             {
                 return Some(current);
             }
-            if let Some(supers) = self.trait_super.get(&current) {
+            if let Some(supers) = self.trait_supers(&current) {
                 stack.extend(supers.iter().cloned());
             }
         }
@@ -985,12 +979,12 @@ impl Checker {
         let trait_name: String = {
             let uq = self.strip_module_qualifier(bound);
             match uq {
-                Some(uq) if self.trait_defs.contains_key(uq) => uq.to_string(),
+                Some(uq) if self.has_trait_def(uq) => uq.to_string(),
                 _ => bound.to_string(),
             }
         };
 
-        let Some(trait_info) = self.trait_defs.get(&trait_name).cloned() else {
+        let Some(trait_info) = self.trait_def_at(&trait_name).cloned() else {
             return vec![];
         };
         let trait_display = crate::short_name(&trait_name);
@@ -1370,7 +1364,7 @@ impl Checker {
         if !visited.insert(child_trait.to_string()) {
             return false;
         }
-        if let Some(supers) = self.trait_super.get(child_trait) {
+        if let Some(supers) = self.trait_supers(child_trait) {
             for s in supers {
                 if s == parent_trait || self.trait_extends_inner(s, parent_trait, visited) {
                     return true;
@@ -1430,7 +1424,7 @@ impl Checker {
         }
         visited.push(trait_name.to_string());
 
-        let trait_info = self.trait_defs.get(trait_name)?.clone();
+        let trait_info = self.trait_def_at(trait_name)?.clone();
 
         // E1 guard: associated types require an explicit impl alias scope.
         if !trait_info.associated_types.is_empty() {
@@ -1461,11 +1455,7 @@ impl Checker {
         // visited path so sibling super-traits can still observe the same
         // ancestor. Their effective surfaces are merged back together here so
         // sibling shadowing/default coverage is preserved at the parent trait.
-        let supers: Vec<String> = self
-            .trait_super
-            .get(trait_name)
-            .cloned()
-            .unwrap_or_default();
+        let supers: Vec<String> = self.trait_supers(trait_name).cloned().unwrap_or_default();
         for super_trait in &supers {
             let mut super_visited = visited.clone();
             let super_surface =
@@ -1533,7 +1523,7 @@ impl Checker {
         let trait_name: String = {
             let uq = self.strip_module_qualifier(trait_name);
             match uq {
-                Some(uq) if self.trait_defs.contains_key(uq) => uq.to_string(),
+                Some(uq) if self.has_trait_def(uq) => uq.to_string(),
                 _ => trait_name.to_string(),
             }
         };
@@ -1551,8 +1541,7 @@ impl Checker {
         // The empty-surface guard below sees the whole chain and would not
         // catch this.
         if self
-            .trait_defs
-            .get(&trait_name)
+            .trait_def_at(&trait_name)
             .is_some_and(|info| info.methods.is_empty())
         {
             return false;
@@ -1628,8 +1617,7 @@ impl Checker {
         f: impl FnOnce(&mut Self) -> R,
     ) -> R {
         let Some((module, file)) = self
-            .trait_defs
-            .get(trait_name)
+            .trait_def_at(trait_name)
             .map(|info| (info.source_module.clone(), info.file_index))
         else {
             return f(self);
@@ -1656,7 +1644,7 @@ impl Checker {
         skip_receiver: bool,
     ) -> Option<FnSig> {
         // Check the trait's own methods — clone data to release borrow before resolve_type_expr
-        let found_method = self.trait_defs.get(trait_name).and_then(|info| {
+        let found_method = self.trait_def_at(trait_name).and_then(|info| {
             info.methods
                 .iter()
                 .find(|m| m.name == Ident::new(method))
@@ -1727,7 +1715,7 @@ impl Checker {
             });
         }
         // Walk super-traits — clone to release borrow
-        let supers = self.trait_super.get(trait_name).cloned();
+        let supers = self.trait_supers(trait_name).cloned();
         if let Some(supers) = supers {
             for super_trait in &supers {
                 if let Some(sig) =
@@ -1819,11 +1807,11 @@ impl Checker {
         if !visited.insert(key.to_string()) {
             return Ok(());
         }
-        for super_key in self.trait_super.get(key).cloned().unwrap_or_default() {
+        for super_key in self.trait_supers(key).cloned().unwrap_or_default() {
             let super_spelling = super_key.rsplit('.').next().unwrap_or(super_key.as_str());
             self.push_dyn_layout_trait(&super_key, super_spelling, bound, visited, layout)?;
         }
-        let Some(info) = self.trait_defs.get(key) else {
+        let Some(info) = self.trait_def_at(key) else {
             return Ok(());
         };
         for method in &info.methods {
@@ -1907,13 +1895,12 @@ impl Checker {
                 continue;
             }
             let declares_directly = self
-                .trait_defs
-                .get(&current)
+                .trait_def_at(&current)
                 .is_some_and(|info| info.methods.iter().any(|m| m.name == Ident::new(method)));
             if declares_directly {
                 out.push(current.clone());
             }
-            if let Some(supers) = self.trait_super.get(&current) {
+            if let Some(supers) = self.trait_supers(&current) {
                 for s in supers {
                     stack.push(s.clone());
                 }
@@ -1931,7 +1918,7 @@ impl Checker {
         skip_receiver: bool,
     ) -> Option<(String, FnSig)> {
         // Check the trait's own methods first (direct declaration).
-        let found_method = self.trait_defs.get(trait_name).and_then(|info| {
+        let found_method = self.trait_def_at(trait_name).and_then(|info| {
             info.methods
                 .iter()
                 .find(|m| m.name == Ident::new(method))
@@ -2003,7 +1990,7 @@ impl Checker {
             ));
         }
         // Walk super-traits — propagate origin unchanged from the recursion.
-        let supers = self.trait_super.get(trait_name).cloned();
+        let supers = self.trait_supers(trait_name).cloned();
         if let Some(supers) = supers {
             for super_trait in &supers {
                 if let Some(result) =

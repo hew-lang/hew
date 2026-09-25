@@ -232,7 +232,7 @@ impl Checker {
         actor_name: &str,
         trait_name: &str,
     ) -> bool {
-        let Some(trait_info) = self.trait_defs.get(trait_name).cloned() else {
+        let Some(trait_info) = self.trait_def_at(trait_name).cloned() else {
             return false;
         };
         // A trait with no methods is never "satisfied" implicitly (mirrors the
@@ -286,7 +286,7 @@ impl Checker {
     /// satisfaction is lowerable, so an explicit `impl` must not admit the
     /// coercion.
     pub(super) fn trait_is_handler_style(&self, trait_name: &str) -> bool {
-        let Some(trait_info) = self.trait_defs.get(trait_name) else {
+        let Some(trait_info) = self.trait_def_at(trait_name) else {
             return false;
         };
         if trait_info.methods.is_empty() {
@@ -519,7 +519,7 @@ impl Checker {
                     //    `E_CODEGEN`. Reject it here with an honest type error.
                     //  - Ordinary (receiver-method) trait: an explicit or
                     //    structural impl is the satisfaction authority.
-                    if trait_name != concrete_name && self.trait_defs.contains_key(trait_name) {
+                    if trait_name != concrete_name && self.has_trait_def(trait_name) {
                         let satisfied = if self.trait_is_handler_style(trait_name) {
                             self.actor_satisfies_handler_trait(concrete_name, trait_name)
                         } else {
@@ -601,7 +601,7 @@ impl Checker {
         // Resolve the trait declaration; an unregistered trait can never be
         // object-safe (and the caller's type-implements check would already
         // have rejected it).
-        let trait_info = self.trait_defs.get(&trait_lookup_key).cloned()?;
+        let trait_info = self.trait_def_at(&trait_lookup_key).cloned()?;
         if !Self::dyn_assoc_bindings_complete(&trait_info, bound) {
             return None;
         }
@@ -621,7 +621,7 @@ impl Checker {
                 .collect()
         };
         for key in declaring_keys {
-            let Some(info) = self.trait_defs.get(&key).cloned() else {
+            let Some(info) = self.trait_def_at(&key).cloned() else {
                 continue;
             };
             if !self.validate_dyn_object_safety(&key, &info, span) {

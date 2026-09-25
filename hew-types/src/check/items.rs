@@ -2713,8 +2713,7 @@ impl Checker {
     fn require_supertrait_impls(&mut self, type_name: &str, trait_name: &str, span: &Span) {
         let declared_key = self.trait_defs_key_for_bound(trait_name);
         let mut stack = self
-            .trait_super
-            .get(&declared_key)
+            .trait_supers(&declared_key)
             .cloned()
             .unwrap_or_default();
         let mut visited = std::collections::HashSet::new();
@@ -2724,7 +2723,7 @@ impl Checker {
             if !visited.insert(super_key.clone()) {
                 continue;
             }
-            if let Some(nested) = self.trait_super.get(&super_key) {
+            if let Some(nested) = self.trait_supers(&super_key) {
                 stack.extend(nested.iter().cloned());
             }
             if self

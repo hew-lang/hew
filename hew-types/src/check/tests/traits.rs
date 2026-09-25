@@ -2481,9 +2481,7 @@ fn structural_hardening_super_trait_e1_guard_propagates() {
         lang_item: None,
     };
     let info_super = Checker::trait_info_from_decl(&assoc_super, None, 0);
-    checker
-        .trait_defs
-        .insert("AssocSuper".to_string(), info_super);
+    checker.test_trait_def("AssocSuper", info_super);
 
     // Child trait with no assoc types of its own.
     let child = TraitDecl {
@@ -2526,12 +2524,8 @@ fn structural_hardening_super_trait_e1_guard_propagates() {
         lang_item: None,
     };
     let info_child = Checker::trait_info_from_decl(&child, None, 0);
-    checker
-        .trait_defs
-        .insert("ChildTrait".to_string(), info_child);
-    checker
-        .trait_super
-        .insert("ChildTrait".to_string(), vec!["AssocSuper".to_string()]);
+    checker.test_trait_def("ChildTrait", info_child);
+    checker.set_trait_supers("ChildTrait", vec!["AssocSuper".to_string()]);
 
     assert!(
         !checker.type_structurally_satisfies("AnyType", "ChildTrait"),
@@ -2585,9 +2579,7 @@ fn structural_hardening_super_trait_generic_method_guard_propagates() {
         lang_item: None,
     };
     let info_super = Checker::trait_info_from_decl(&generic_super, None, 0);
-    checker
-        .trait_defs
-        .insert("GenericSuper".to_string(), info_super);
+    checker.test_trait_def("GenericSuper", info_super);
 
     let child = TraitDecl {
         visibility: hew_parser::ast::Visibility::Private,
@@ -2629,12 +2621,8 @@ fn structural_hardening_super_trait_generic_method_guard_propagates() {
         lang_item: None,
     };
     let info_child = Checker::trait_info_from_decl(&child, None, 0);
-    checker
-        .trait_defs
-        .insert("ChildTrait".to_string(), info_child);
-    checker
-        .trait_super
-        .insert("ChildTrait".to_string(), vec!["GenericSuper".to_string()]);
+    checker.test_trait_def("ChildTrait", info_child);
+    checker.set_trait_supers("ChildTrait", vec!["GenericSuper".to_string()]);
 
     assert!(
         !checker.type_structurally_satisfies("AnyType", "ChildTrait"),
@@ -2645,12 +2633,20 @@ fn structural_hardening_super_trait_generic_method_guard_propagates() {
 #[test]
 fn cyclic_trait_hierarchy_bound_check_surfaces_diagnostic() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    checker
-        .trait_super
-        .insert("TraitA".to_string(), vec!["TraitB".to_string()]);
-    checker
-        .trait_super
-        .insert("TraitB".to_string(), vec!["TraitA".to_string()]);
+    for name in ["TraitA", "TraitB"] {
+        checker.test_trait_def(
+            name,
+            TraitInfo {
+                source_module: None,
+                file_index: 0,
+                methods: Vec::new(),
+                associated_types: Vec::new(),
+                type_params: Vec::new(),
+            },
+        );
+    }
+    checker.set_trait_supers("TraitA", vec!["TraitB".to_string()]);
+    checker.set_trait_supers("TraitB", vec!["TraitA".to_string()]);
     checker
         .trait_impls_set
         .insert(("Thing".to_string(), "TraitA".to_string()));

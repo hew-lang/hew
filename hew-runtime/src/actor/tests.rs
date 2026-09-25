@@ -1315,7 +1315,7 @@ fn wait_until(mut condition: impl FnMut() -> bool) {
 /// deadline no passing run reaches; the test runner's timeout is the hang
 /// guard.
 fn unbounded_drain_deadline() -> std::time::Instant {
-    std::time::Instant::now() + std::time::Duration::from_secs(24 * 60 * 60)
+    std::time::Instant::now() + std::time::Duration::from_hours(24)
 }
 
 fn wait_for_actor_quiescent(actor: *mut HewActor) {
@@ -1323,7 +1323,7 @@ fn wait_for_actor_quiescent(actor: *mut HewActor) {
         // SAFETY: tests only call this while the actor allocation is still live.
         let state = unsafe { (*actor).actor_state.load(Ordering::Acquire) };
         actor_free_state_is_quiescent(state)
-    })
+    });
 }
 
 unsafe extern "C-unwind" fn native_self_stop_without_reply_dispatch(

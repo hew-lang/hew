@@ -106,8 +106,6 @@ pub fn reset_sigpipe_to_default() -> bool {
 mod tests {
     use super::*;
     use std::process::{Child, Command, ExitStatus};
-    use std::thread;
-    use std::time::Duration;
 
     /// Wait for the child to exit after its forwarded signal; the test
     /// runner's timeout is the hang guard.

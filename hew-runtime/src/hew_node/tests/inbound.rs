@@ -257,9 +257,9 @@ fn inbound_ask_active_counter_returns_to_baseline_after_round_trip() {
     };
     assert!(status == AskError::None as i32, "remote ask must succeed");
 
-    // After the ask completes the handler thread exits, dropping InboundAskGuard.
-    // Give it a brief moment to drain.
-    let settled = (0..).any(|_| {
+    // After the ask completes the handler thread exits, dropping
+    // InboundAskGuard; wait for the count to return to baseline.
+    poll_until(|_| {
         let v = INBOUND_ASK_ACTIVE.load(Ordering::Acquire);
         if v == baseline {
             true
@@ -268,12 +268,6 @@ fn inbound_ask_active_counter_returns_to_baseline_after_round_trip() {
             false
         }
     });
-    assert!(
-        settled,
-        "INBOUND_ASK_ACTIVE did not return to baseline after ask completed (got {}; expected {})",
-        INBOUND_ASK_ACTIVE.load(Ordering::Acquire),
-        baseline,
-    );
     assert!(
         INBOUND_ASK_ACTIVE.load(Ordering::Acquire) <= INBOUND_ASK_WORKER_LIMIT,
         "active worker count must never exceed INBOUND_ASK_WORKER_LIMIT"

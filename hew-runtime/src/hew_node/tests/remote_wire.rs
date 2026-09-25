@@ -54,7 +54,7 @@ fn two_node_remote_send_delivery() {
     };
     assert_eq!(rc, 0, "hew_node_send should succeed");
 
-    let delivered = (0..).any(|_| {
+    poll_until(|_| {
         #[expect(
             clippy::cast_sign_loss,
             reason = "msg_type_sent is a non-negative tag value"
@@ -65,10 +65,6 @@ fn two_node_remote_send_delivery() {
         }
         got
     });
-    assert!(
-        delivered,
-        "actor on node2 did not receive the remote message"
-    );
 
     // SAFETY: actor and nodes were allocated in this test and are valid.
     unsafe {
@@ -133,7 +129,7 @@ fn two_node_remote_send_delivery_quic_mesh() {
     };
     assert_eq!(rc, 0, "hew_node_send should succeed");
 
-    let delivered = (0..).any(|_| {
+    poll_until(|_| {
         #[expect(
             clippy::cast_sign_loss,
             reason = "msg_type_sent is a non-negative tag value"
@@ -144,10 +140,6 @@ fn two_node_remote_send_delivery_quic_mesh() {
         }
         got
     });
-    assert!(
-        delivered,
-        "actor on node2 did not receive the remote message over quic_mesh"
-    );
 
     // SAFETY: actor and nodes were allocated in this test and are valid.
     unsafe {
@@ -1245,7 +1237,7 @@ fn node_stop_wakes_pending_remote_ask() {
         (usize::from(err == AskError::None as i32), err)
     });
 
-    let pending_seen = (0..).any(|_| {
+    poll_until(|_| {
         let guard = reply_table()
             .pending
             .lock()
@@ -1257,10 +1249,6 @@ fn node_stop_wakes_pending_remote_ask() {
         }
         seen
     });
-    assert!(
-        pending_seen,
-        "remote ask never reached the pending reply table"
-    );
 
     // SAFETY: node1 remains valid here and stopping it is the behavior under test.
     unsafe {
@@ -1344,7 +1332,7 @@ fn connection_drop_wakes_pending_remote_ask() {
         (usize::from(err == AskError::None as i32), err)
     });
 
-    let pending_seen = (0..).any(|_| {
+    poll_until(|_| {
         let guard = reply_table()
             .pending
             .lock()
@@ -1358,10 +1346,6 @@ fn connection_drop_wakes_pending_remote_ask() {
         }
         seen
     });
-    assert!(
-        pending_seen,
-        "remote ask never registered against the outbound connection"
-    );
 
     // SAFETY: node2 remains valid here and removing its accepted connection simulates a peer drop.
     unsafe {
@@ -1452,7 +1436,7 @@ fn swim_dead_wakes_pending_remote_ask_with_partition() {
         (usize::from(err == AskError::None as i32), err)
     });
 
-    let pending_seen = (0..).any(|_| {
+    poll_until(|_| {
         let guard = reply_table()
             .pending
             .lock()
@@ -1466,10 +1450,6 @@ fn swim_dead_wakes_pending_remote_ask_with_partition() {
         }
         seen
     });
-    assert!(
-        pending_seen,
-        "remote ask never registered against the outbound connection"
-    );
 
     // Declare node 331 DEAD via the node-side partition fan-out WITHOUT
     // touching the socket — the SWIM/phi-accrual verdict, not a TCP drop.

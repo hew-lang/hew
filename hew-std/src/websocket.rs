@@ -1946,7 +1946,7 @@ mod tests {
                 .expect("reader mutex poisoned")
                 .as_ref()
                 .is_some_and(|reader| reader.exited.load(Ordering::Acquire))
-        })
+        });
     }
 
     fn attached_delivery(inner: &Arc<HewWsConnInner>) -> Arc<ActorDelivery> {
@@ -1964,7 +1964,7 @@ mod tests {
     fn wait_for_actor_dead(actor: *mut actor::HewActor) {
         // SAFETY: tests call this only for actors they spawned and still own.
         let actor_ref = unsafe { transport::hew_actor_ref_local(actor) };
-        wait_until(|| unsafe { transport::hew_actor_ref_is_alive(&raw const actor_ref) == 0 })
+        wait_until(|| unsafe { transport::hew_actor_ref_is_alive(&raw const actor_ref) == 0 });
     }
 
     fn recv_event(rx: &Receiver<ActorEvent>) -> ActorEvent {
@@ -3447,7 +3447,6 @@ mod tests {
                 let (actor1, test_id1, _rx1) = spawn_attached_actor(conn1);
                 let (actor2, test_id2, rx2) = spawn_attached_actor(conn2);
                 let inner1 = unsafe { &*conn1 }.inner.clone();
-                let inner2 = unsafe { &*conn2 }.inner.clone();
 
                 unsafe { actor::hew_actor_send(actor1, TEST_STOP_TYPE, std::ptr::null_mut(), 0) };
                 // first actor should stop

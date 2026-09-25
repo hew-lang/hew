@@ -649,7 +649,6 @@ pub(crate) fn has_links_for_actor(actor_id: u64, _actor_addr: *mut HewActor) -> 
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU64};
-    use std::time::Duration;
 
     unsafe extern "C-unwind" fn noop_dispatch(
         _ctx: *mut crate::execution_context::HewExecutionContext,

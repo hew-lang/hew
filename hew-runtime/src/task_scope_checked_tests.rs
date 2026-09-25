@@ -4,7 +4,6 @@ use crate::coro_state::{hew_coro_state_finish, hew_coro_state_is_cancelled};
 use crate::wake::blocking::Readiness;
 use hew_cabi::value::HewTypeOwnershipKind;
 use std::sync::{mpsc, Condvar};
-use std::time::Duration;
 
 struct TaskRuntime {
     _guard: crate::RuntimeTestGuard,

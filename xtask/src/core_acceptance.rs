@@ -102,8 +102,22 @@ struct ExpectedOutcome {
     /// program must produce. `Option` (not a default-empty `String`) so a
     /// run case that forgets it is a validation error, not a silent pass
     /// against an empty expectation.
+    ///
+    /// A `run` case declares exactly one of `stdout` or `stdout_file`; both
+    /// or neither is a validation error. `resolve_stdout_files` reads
+    /// `stdout_file` into this field before `validate_manifest` runs, so
+    /// every later reader (including `run_expectation`) sees one exact
+    /// stdout string regardless of which form the case used.
     #[serde(default)]
     stdout: Option<String>,
+    /// `kind = "run"` only: the exact stdout as a file, resolved against
+    /// `tests/core-acceptance/` like `source`. Lets a case share its
+    /// expectation with a published example's `.expected` file — one
+    /// authority for what the example prints — instead of duplicating the
+    /// text inline. Cleared once `resolve_stdout_files` folds its content
+    /// into `stdout`.
+    #[serde(default)]
+    stdout_file: Option<PathBuf>,
     #[serde(default)]
     stderr: String,
     /// `kind = "run"` only, and required there: see `stdout` for why this is
@@ -225,6 +239,7 @@ pub(crate) fn run(args: &[String]) -> Result<()> {
         .map_err(|err| format!("create core acceptance temporary directory: {err}"))?;
     let mut manifest = load_manifest(&root)?;
     expand_doc_cases(&mut manifest, &root, run_dir.path())?;
+    resolve_stdout_files(&mut manifest, &root)?;
     validate_manifest(&manifest, &root)?;
     let ratchet = load_expected_failures(&root, &manifest, current_platform())?;
     let mut selected = select_cases(&manifest, &options.suite, &options.cases, &options.kinds)?;
@@ -739,6 +754,30 @@ fn validate_case(case: &Case, root: &Path) -> Result<()> {
 /// absolute path into the run directory — `Path::join` honours both.
 fn case_source(root: &Path, case: &Case) -> PathBuf {
     root.join("tests/core-acceptance").join(&case.source)
+}
+
+/// Fold every case's `expected.stdout_file` into `expected.stdout` before
+/// validation, so the rest of the runner only ever sees one exact stdout
+/// string. Exclusivity (`stdout` xor `stdout_file`) is enforced here rather
+/// than in `validate_case`, because `validate_case` runs after this pass and
+/// would otherwise only ever see the resolved `stdout`.
+fn resolve_stdout_files(manifest: &mut Manifest, root: &Path) -> Result<()> {
+    for case in &mut manifest.cases {
+        let Some(path) = case.expected.stdout_file.take() else {
+            continue;
+        };
+        if case.expected.stdout.is_some() {
+            return Err(format!(
+                "{} declares both expected stdout and stdout_file",
+                case.id
+            ));
+        }
+        let resolved = root.join("tests/core-acceptance").join(&path);
+        let contents = fs::read_to_string(&resolved)
+            .map_err(|err| format!("{} stdout_file {}: {err}", case.id, resolved.display()))?;
+        case.expected.stdout = Some(contents);
+    }
+    Ok(())
 }
 
 fn select_cases<'a>(
@@ -2307,6 +2346,7 @@ mod tests {
             fences: None,
             expected: ExpectedOutcome {
                 stdout: None,
+                stdout_file: None,
                 stderr: String::new(),
                 exit: None,
                 diagnostics,
@@ -2365,6 +2405,67 @@ mod tests {
         let error = validate_manifest(&manifest, directory.path())
             .expect_err("a run case missing stdout/exit must fail validation");
         assert!(error.contains("must declare both expected stdout and exit"));
+    }
+
+    #[test]
+    fn stdout_file_is_folded_into_stdout() {
+        let directory = manifest_root_with_source("cases/case.hew");
+        let expected_path = directory
+            .path()
+            .join("tests/core-acceptance/expected/case.expected");
+        fs::create_dir_all(expected_path.parent().expect("has a parent")).unwrap();
+        fs::write(&expected_path, "hello\n").unwrap();
+
+        let mut case = make_case(CaseKind::Run, Vec::new(), &["acceptance"], "cases/case.hew");
+        case.expected.stdout_file = Some(PathBuf::from("expected/case.expected"));
+        case.expected.exit = Some(0);
+        let mut manifest = Manifest { cases: vec![case] };
+
+        resolve_stdout_files(&mut manifest, directory.path())
+            .expect("stdout_file must resolve against tests/core-acceptance/");
+        assert_eq!(
+            manifest.cases[0].expected.stdout.as_deref(),
+            Some("hello\n")
+        );
+        assert!(manifest.cases[0].expected.stdout_file.is_none());
+        validate_manifest(&manifest, directory.path())
+            .expect("a case with a resolved stdout_file validates like inline stdout");
+    }
+
+    #[test]
+    fn stdout_file_and_stdout_together_is_rejected() {
+        // Negative control: exactly one of `stdout`/`stdout_file` is valid;
+        // declaring both must fail before either is compared, not silently
+        // prefer one.
+        let directory = manifest_root_with_source("cases/case.hew");
+        let expected_path = directory
+            .path()
+            .join("tests/core-acceptance/expected/case.expected");
+        fs::create_dir_all(expected_path.parent().expect("has a parent")).unwrap();
+        fs::write(&expected_path, "hello\n").unwrap();
+
+        let mut case = make_case(CaseKind::Run, Vec::new(), &["acceptance"], "cases/case.hew");
+        case.expected.stdout = Some("hello\n".to_string());
+        case.expected.stdout_file = Some(PathBuf::from("expected/case.expected"));
+        case.expected.exit = Some(0);
+        let mut manifest = Manifest { cases: vec![case] };
+
+        let error = resolve_stdout_files(&mut manifest, directory.path())
+            .expect_err("declaring both stdout and stdout_file must fail");
+        assert!(error.contains("declares both expected stdout and stdout_file"));
+    }
+
+    #[test]
+    fn stdout_file_missing_is_a_load_error() {
+        let directory = manifest_root_with_source("cases/case.hew");
+        let mut case = make_case(CaseKind::Run, Vec::new(), &["acceptance"], "cases/case.hew");
+        case.expected.stdout_file = Some(PathBuf::from("expected/missing.expected"));
+        case.expected.exit = Some(0);
+        let mut manifest = Manifest { cases: vec![case] };
+
+        let error = resolve_stdout_files(&mut manifest, directory.path())
+            .expect_err("a stdout_file that does not exist must fail before validation");
+        assert!(error.contains("missing.expected"));
     }
 
     #[test]

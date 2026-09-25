@@ -1,0 +1,13 @@
+[[case]]
+id = "example-surface-try_recv_stream_string"
+intent = "The published example compiles, runs and prints exactly what it advertises."
+source = "../../examples/v05/surfaces/try_recv_stream_string.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout_file = "../../examples/v05/surfaces/try_recv_stream_string.expected"
+exit = 0

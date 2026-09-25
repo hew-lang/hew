@@ -1677,12 +1677,23 @@ unsafe fn finish_failed_resume(
             code
         }
     };
-    crate::crash::record_logical_crash(
-        a.id,
-        code,
-        message_type,
-        a.dispatch.map_or(0, |f| f as usize),
-    );
+    // A cancellation reaching here while a requested shutdown is in flight
+    // (SIGTERM/SIGINT or a program-exit drain) is expected termination, not a
+    // fault: `hew_actor_trap_inner` below resolves it to `Stopped`, not
+    // `Crashed`. Reporting it on the crash log/diagnostic line first would
+    // call an expected stop a crash before that resolution ever runs. A
+    // cancellation for any OTHER reason (a deadline, a lost select race, an
+    // actor's own unrelated `.stop()`) still reports normally.
+    let cancelled_by_shutdown =
+        code == crate::fault::HEW_FAULT_CANCELLED && crate::shutdown::hew_is_shutting_down() != 0;
+    if !cancelled_by_shutdown {
+        crate::crash::record_logical_crash(
+            a.id,
+            code,
+            message_type,
+            a.dispatch.map_or(0, |f| f as usize),
+        );
+    }
 
     // Generated dispatch wrappers acquire the actor-state lock before the
     // handler body; the unwind may bypass their explicit release edge, so release any

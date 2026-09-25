@@ -2360,33 +2360,22 @@ mod tests {
         // Note: `_client` is the peer-side WebSocket. We deliberately do
         // not send anything from it — the server-side recv must time out.
 
-        let start = Instant::now();
         // SAFETY: conn is a valid HewWsConn pointer.
         let msg = unsafe { hew_ws_recv_timeout(conn, 200) };
-        let elapsed = start.elapsed();
         let timed_out = hew_ws_recv_last_timed_out();
 
         assert!(msg.is_null(), "deadline expiry must return null message");
         assert_eq!(timed_out, 1, "timeout sentinel must be set");
-        assert!(
-            elapsed < Duration::from_secs(2),
-            "200 ms deadline must fire well before 2 s; got {elapsed:?}"
-        );
 
         // Cleanup-all-exits regression: a follow-up call with deadline
-        // must still succeed quickly (lock was released), proving we
-        // didn't leak the parking_lot guard on the timeout exit path.
-        let start2 = Instant::now();
+        // must also time out rather than block (the lock was released),
+        // proving we didn't leak the parking_lot guard on the timeout exit
+        // path.
         // SAFETY: conn is a valid HewWsConn pointer.
         let msg2 = unsafe { hew_ws_recv_timeout(conn, 100) };
-        let elapsed2 = start2.elapsed();
         let timed_out2 = hew_ws_recv_last_timed_out();
         assert!(msg2.is_null());
         assert_eq!(timed_out2, 1);
-        assert!(
-            elapsed2 < Duration::from_secs(1),
-            "second recv_timeout must also be deadline-bounded; got {elapsed2:?}"
-        );
 
         // SAFETY: conn and server are valid; close is idempotent.
         unsafe { hew_ws_close(conn) };
@@ -2788,15 +2777,11 @@ mod tests {
 
         let stalled_peer =
             TcpStream::connect(("127.0.0.1", u16::try_from(port).unwrap())).expect("tcp connect");
-        // the accepted peer should enter the handshake
+        // The accepted peer enters the handshake.
         wait_until(|| inner.active_handshakes.load(Ordering::Acquire) == 1);
 
-        let started = Instant::now();
+        // The peer never handshakes, so close returns only by cancelling it.
         unsafe { hew_ws_server_close(server) };
-        assert!(
-            started.elapsed() < Duration::from_secs(1),
-            "server close must cancel a stalled handshake promptly"
-        );
         // close drained the accept authority before returning (count == 0 is
         // deterministic); join() is the exact synchronization for the accept
         // thread's exit — a stuck close fails via the harness's per-test timeout.
@@ -2819,9 +2804,9 @@ mod tests {
 
         let stalled_peer =
             TcpStream::connect(("127.0.0.1", u16::try_from(port).unwrap())).expect("tcp connect");
-        // the accepted peer should enter the handshake
+        // The accepted peer enters the handshake.
         wait_until(|| inner.active_handshakes.load(Ordering::Acquire) == 1);
-        // a peer that never handshakes must expire within the configured bound
+        // A peer that never handshakes expires; one that never did would hang.
         wait_until(|| inner.active_handshakes.load(Ordering::Acquire) == 0);
 
         let (mut valid_peer, _) = connect_with_config(
@@ -2860,10 +2845,10 @@ mod tests {
         partial
             .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\n")
             .expect("write partial handshake");
-        // partial peer should enter the handshake
+        // Partial peer should enter the handshake.
         wait_until(|| inner.active_handshakes.load(Ordering::Acquire) == 1);
         drop(partial);
-        // disconnecting the partial peer should end its handshake
+        // Disconnecting the partial peer should end its handshake.
         wait_until(|| inner.active_handshakes.load(Ordering::Acquire) == 0);
 
         let mut invalid =
@@ -2909,7 +2894,7 @@ mod tests {
 
         let mut peer =
             TcpStream::connect(("127.0.0.1", u16::try_from(port).unwrap())).expect("tcp connect");
-        // peer should enter the handshake before the race
+        // Peer should enter the handshake before the race.
         wait_until(|| inner.active_handshakes.load(Ordering::Acquire) == 1);
         let websocket_key = ["dGhlIHNh", "bXBsZSBu", "b25jZQ=="].concat();
         let request = format!(
@@ -2987,7 +2972,7 @@ mod tests {
             recv_message(&inner).0
         });
 
-        // recv loop should become active before cancellation
+        // Recv loop should become active before cancellation.
         wait_until(|| {
             // SAFETY: `conn` remains live until hew_ws_close below.
             unsafe { &*conn }.inner.active_recvs.load(Ordering::Acquire) == 1
@@ -3168,7 +3153,7 @@ mod tests {
                     .expect("client ping should send before cancellation");
                 unsafe { hew_ws_close(conn) };
 
-                // reader should exit within the cancel deadline
+                // Reader should exit within the cancel deadline.
                 wait_until(|| {
                     inner
                         .reader

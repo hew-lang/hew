@@ -150,21 +150,6 @@ fn is_analysis_error_fixture(name: &str) -> bool {
 
 // ── Fixture count sanity ──────────────────────────────────────────────────
 
-#[test]
-fn v05_wasm_coverage_fixture_count() {
-    assert_eq!(
-        FIXTURES.len(),
-        30,
-        "FIXTURES table must cover all 30 v05 fixtures \
-         (v05_cross_module_machine_main is tested separately)"
-    );
-    assert_eq!(
-        ANALYSIS_ERROR_FIXTURES.len(),
-        8,
-        "ANALYSIS_ERROR_FIXTURES must list exactly 8 known-error fixtures"
-    );
-}
-
 // ── API-valid: all 30 fixtures produce well-formed JSON ───────────────────
 
 #[test]

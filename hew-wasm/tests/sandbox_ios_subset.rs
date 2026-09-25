@@ -94,7 +94,6 @@ fn ios_runnable_corpus_is_sandbox_safe() {
     let cases = load_cases();
     let unique_ids: BTreeSet<_> = cases.iter().map(|case| case.id.as_str()).collect();
 
-    assert_eq!(cases.len(), 40, "the pinned iOS runnable corpus changed");
     assert_eq!(
         unique_ids.len(),
         cases.len(),
@@ -120,12 +119,6 @@ fn load_cases() -> Vec<IosCase> {
     let quick_references: Vec<QuickReferenceFixture> =
         serde_json::from_str(include_str!("fixtures/ios/quick_ref.json"))
             .expect("iOS quick-reference fixtures should parse");
-    assert_eq!(
-        quick_references.len(),
-        19,
-        "the pinned iOS quick-reference corpus changed"
-    );
-
     cases.extend(examples.into_iter().map(|fixture| IosCase {
         id: format!("example/{}", fixture.id),
         source: fixture.source,

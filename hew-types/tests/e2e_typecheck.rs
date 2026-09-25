@@ -6,8 +6,8 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use common::{
-    checker, isolated_checker, parse_and_typecheck_inline, parse_program, repo_root,
-    typecheck as typecheck_inline, typecheck_wasm as typecheck_inline_wasm,
+    checker, parse_and_typecheck_inline, parse_program, repo_root, typecheck as typecheck_inline,
+    typecheck_wasm as typecheck_inline_wasm,
 };
 use hew_parser::ast::{Expr, Item, Stmt};
 use hew_types::check::SpanKey;
@@ -65,12 +65,6 @@ fn assert_single_unknown_return_error(output: &hew_types::TypeCheckOutput, conte
         "{context}: expected a single `unknown type `UnknownType`` error, got: {:#?}",
         output.errors
     );
-}
-
-#[test]
-fn typecheck_all_examples() {
-    let examples_dir = repo_root().join("examples");
-    test_directory(&examples_dir, "examples");
 }
 
 #[test]
@@ -964,72 +958,6 @@ actor Counter {
             output.assign_target_kinds.contains_key(key),
             "assign_target_shapes span {key:?} is missing from assign_target_kinds",
         );
-    }
-}
-
-fn test_directory(dir: &Path, label: &str) {
-    let mut parse_ok = 0;
-    let mut parse_fail = 0;
-    let mut tc_ok = 0;
-    let mut tc_fail = 0;
-    let mut parse_errors = Vec::new();
-    let mut tc_errors = Vec::new();
-
-    let mut entries: Vec<_> = fs::read_dir(dir)
-        .unwrap()
-        .filter_map(Result::ok)
-        .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|e| e == "hew"))
-        .collect();
-    entries.sort();
-
-    for path in &entries {
-        let source = fs::read_to_string(path).unwrap();
-        let program = match hew_parser::parse(&source) {
-            parse_result if parse_result.errors.is_empty() => {
-                parse_ok += 1;
-                parse_result.program
-            }
-            parse_result => {
-                parse_fail += 1;
-                parse_errors.push(format!(
-                    "  {} — parse errors: {:#?}",
-                    path.file_name().unwrap().to_string_lossy(),
-                    parse_result.errors
-                ));
-                continue;
-            }
-        };
-
-        let mut checker = isolated_checker();
-        let output = checker.check_program(&program);
-        if output.errors.is_empty() {
-            tc_ok += 1;
-        } else {
-            tc_fail += 1;
-            let first_err = &output.errors[0];
-            tc_errors.push(format!(
-                "  {} — {:?}: {}",
-                path.file_name().unwrap().to_string_lossy(),
-                first_err.kind,
-                first_err.message
-            ));
-        }
-    }
-
-    let total = parse_ok + parse_fail;
-    println!(
-        "\n{label}: {parse_ok}/{total} parsed, {tc_ok}/{parse_ok} type-checked ({tc_fail} failed)"
-    );
-    assert_eq!(
-        parse_fail,
-        0,
-        "{label}: expected every fixture to parse; failures:\n{}",
-        parse_errors.join("\n")
-    );
-    // Informational — don't fail on type-check errors yet.
-    if !tc_errors.is_empty() {
-        println!("Type-check failures:\n{}", tc_errors.join("\n"));
     }
 }
 

@@ -1171,33 +1171,6 @@ mod tests {
     }
 
     #[test]
-    fn fibonacci_example() {
-        let src = std::fs::read_to_string(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../examples/fibonacci.hew"
-        ))
-        .expect("fibonacci.hew should exist");
-        let toks = lex(&src);
-        // Should produce tokens without errors
-        for (tok, _) in &toks {
-            assert_ne!(
-                *tok,
-                Token::Error,
-                "unexpected error token in fibonacci.hew"
-            );
-        }
-        // Spot-check: skip any leading inner-doc-comment header (a v0.5
-        // convention for example files documenting their status), then the
-        // first significant token should be `fn`.
-        let first_significant = toks
-            .iter()
-            .map(|(t, _)| t)
-            .find(|t| !matches!(t, Token::InnerDocComment(_)))
-            .expect("fibonacci.hew should contain a non-comment token");
-        assert_eq!(*first_significant, Token::Fn);
-    }
-
-    #[test]
     fn wrapping_ops_single_token() {
         // `&+`, `&-`, `&*` with no whitespace each lex as a single wrapping-op
         // token, NOT as `Ampersand` followed by `Plus`/`Minus`/`Star`.

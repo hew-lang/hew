@@ -40,13 +40,29 @@ for (const dir of m3FixtureDirs) {
     });
 
     assert.ok(validateTrace(actual), ajv.errorsText(validateTrace.errors));
+    // Compare observable behaviour only: event sequence, stdout, exit and
+    // diagnostics. Internal VM bookkeeping (budget_remaining, step_count,
+    // virtual_clock, ids, globals) is not part of the sandbox's observable
+    // contract, so it is deliberately excluded here rather than pinned via
+    // a whole-trace deepEqual.
     assert.deepEqual(
       actual.events.map((event) => event.type),
       expected.events.map((event) => event.type),
       `${dir} trace event sequence changed`
     );
-    assert.deepEqual(actual.final_state, expected.final_state, `${dir} final state changed`);
-    assert.deepEqual(actual, expected, `${dir} golden trace changed`);
+    assert.deepEqual(actual.final_state.stdout, expected.final_state.stdout, `${dir} stdout changed`);
+    assert.deepEqual(actual.final_state.exit_code, expected.final_state.exit_code, `${dir} exit code changed`);
+    assert.deepEqual(actual.final_state.diagnostics, expected.final_state.diagnostics, `${dir} diagnostics changed`);
+    assert.deepEqual(
+      actual.final_state.runtime_failures,
+      expected.final_state.runtime_failures,
+      `${dir} runtime failures changed`
+    );
+    assert.deepEqual(
+      actual.final_state.sandbox_rejections,
+      expected.final_state.sandbox_rejections,
+      `${dir} sandbox rejections changed`
+    );
 
     const rerun = runBytecode(bytecode, {
       fixtureId: expected.fixture_id,
@@ -57,6 +73,23 @@ for (const dir of m3FixtureDirs) {
     assert.equal(JSON.stringify(actual), JSON.stringify(rerun), `${dir} trace is not byte-stable across reruns`);
   });
 }
+
+test("the observable-fields comparison still fails when stdout diverges (negative control)", () => {
+  const bytecode = readJson("fixtures/06-vector-basics/bytecode.json");
+  const expected = readJson("fixtures/06-vector-basics/expected.trace.json");
+  const actual = runBytecode(bytecode, {
+    fixtureId: expected.fixture_id,
+    traceId: expected.trace_id,
+    replay: expected.replay,
+    sandboxVersion: expected.sandbox_version
+  });
+  const corrupted = { ...expected.final_state, stdout: [...expected.final_state.stdout, "unexpected\n"] };
+  assert.throws(
+    () => assert.deepEqual(actual.final_state.stdout, corrupted.stdout),
+    /AssertionError/,
+    "a real stdout divergence must still fail the restated comparison"
+  );
+});
 
 test("Vec::get returns None rather than trapping when the index is past the end", () => {
   const bytecode = readJson("fixtures/06-vector-basics/bytecode.json");

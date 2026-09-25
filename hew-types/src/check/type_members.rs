@@ -199,7 +199,7 @@ impl Checker {
         member: &str,
         usage: &DottedTypeMemberUse<'_>,
     ) -> Option<Ty> {
-        let type_def = self.type_defs.get(&head.canonical_type)?;
+        let type_def = self.type_def_at(&head.canonical_type)?;
         if !matches!(
             type_def.kind,
             TypeDefKind::Enum | TypeDefKind::Struct | TypeDefKind::Machine
@@ -397,7 +397,7 @@ impl Checker {
             return Some(result);
         }
 
-        let type_def = self.type_defs.get(&head.canonical_type).cloned()?;
+        let type_def = self.type_def_at(&head.canonical_type).cloned()?;
         let raw_sig = type_def.methods.get(method).cloned()?;
         let (sig, explicit_owner_args) = if let Some(type_args) = head.type_args.as_deref() {
             if type_args.len() != type_def.type_params.len() {

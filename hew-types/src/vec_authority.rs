@@ -6,13 +6,12 @@
 //! rules needed to choose one concrete runtime export. Both the checker and MIR
 //! call [`resolve_runtime_symbol`]; neither keeps a parallel method/symbol table.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::OnceLock;
 
 use hew_parser::ast::{Item, TypeExpr};
 
 use crate::check::dispatch::{RuntimeAbi, VecMethod};
-use crate::check::TypeDef;
 use crate::extern_symbol::{ExternSymbolTemplate, TemplateSegment};
 use crate::ty::Ty;
 
@@ -148,17 +147,8 @@ impl VecMethod {
 /// Classify a concrete Vec element using the same typed verdict for
 /// constructor selection, checker method resolution, and MIR monomorphisation.
 #[must_use]
-#[allow(
-    clippy::implicit_hasher,
-    reason = "uses the checker's concrete TypeDef table shape"
-)]
-pub fn classify_element<S: std::hash::BuildHasher>(
-    ty: &Ty,
-    type_defs: &HashMap<String, TypeDef, S>,
-) -> Option<VecElementToken> {
-    classify_element_with(ty, &|name, _args| {
-        type_defs.get(name).map(|td| td.is_indirect)
-    })
+pub fn classify_element(ty: &Ty, types: crate::check::TypeDefView<'_>) -> Option<VecElementToken> {
+    classify_element_with(ty, &|head, _args| types.of(head).map(|td| td.is_indirect))
 }
 
 /// Classify a concrete Vec element token over an abstract nominal-indirection
@@ -179,7 +169,7 @@ pub fn classify_element<S: std::hash::BuildHasher>(
 )]
 pub fn classify_element_with(
     ty: &Ty,
-    nominal_indirect: &dyn Fn(&str, &[Ty]) -> Option<bool>,
+    nominal_indirect: &dyn Fn(crate::TypeHead, &[Ty]) -> Option<bool>,
 ) -> Option<VecElementToken> {
     Some(match ty {
         Ty::Bool => VecElementToken::Bool,
@@ -253,7 +243,7 @@ pub fn classify_element_with(
             ..
         } => VecElementToken::Layout,
         Ty::Function { .. } | Ty::Closure { .. } => VecElementToken::Ptr,
-        Ty::Named { head, args } => match nominal_indirect(head.registry_key(), args) {
+        Ty::Named { head, args } => match nominal_indirect(*head, args) {
             Some(true) => VecElementToken::Ptr,
             Some(false) => VecElementToken::Layout,
             None => return None,

@@ -372,8 +372,7 @@ impl Checker {
                 let identity =
                     Self::actor_identity(module_identity.as_deref(), ad.name.name.as_str());
                 let local_actor_needs_restore = self
-                    .type_defs
-                    .get(&identity)
+                    .type_def_at(&identity)
                     .is_none_or(|definition| definition.kind != TypeDefKind::Actor);
                 if module_identity.is_some() || local_actor_needs_restore {
                     self.register_actor_decl_as(ad, &identity);
@@ -2066,7 +2065,7 @@ impl Checker {
         if !type_name.contains('.') {
             if let Some(module) = self.current_module.clone() {
                 let qualified_type = format!("{module}.{type_name}");
-                if let Some(td) = self.type_defs.get_mut(&qualified_type) {
+                if let Some(td) = self.type_def_at_mut(&qualified_type) {
                     td.methods.insert(method_name.to_string(), sig.clone());
                 }
             }

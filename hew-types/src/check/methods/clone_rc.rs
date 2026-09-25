@@ -119,7 +119,7 @@ impl Checker {
                 member: "value".to_string(),
             };
         }
-        let Some(type_def) = self.type_defs.get(name) else {
+        let Some(type_def) = self.type_def_at(name) else {
             // A bare type parameter (`x: T`) has no `type_defs` entry. When it
             // carries a `Clone` bound in scope (`fn f<T: Clone>(x: T)`), admit
             // the clone and defer the concrete copy path to monomorphization
@@ -503,7 +503,7 @@ impl Checker {
             return None; // cycle protection
         }
         let mut found = None;
-        if let Some(type_def) = self.type_defs.get(name) {
+        if let Some(type_def) = self.type_def_at(name) {
             for field_ty in type_def.fields.values() {
                 let field_ty =
                     Self::instantiate_type_def_member(field_ty, &type_def.type_params, type_args);
@@ -540,7 +540,7 @@ impl Checker {
             return None; // cycle protection
         }
         let mut found = None;
-        if let Some(type_def) = self.type_defs.get(name) {
+        if let Some(type_def) = self.type_def_at(name) {
             'variants: for variant in type_def.variants.values() {
                 let payload_tys: Vec<Ty> = match variant {
                     VariantDef::Unit => Vec::new(),

@@ -643,7 +643,10 @@ impl Checker {
             return false;
         };
         let resolved_type_arg = self.subst.resolve(type_arg).materialize_literal_defaults();
-        let expanded = match spec.template.expand(&resolved_type_arg, &self.type_defs) {
+        let expanded = match spec
+            .template
+            .expand(&resolved_type_arg, self.type_def_view())
+        {
             Ok(symbol) => symbol,
             Err(crate::extern_symbol::TemplateExpansionError::UnsupportedCallingConvention {
                 expected_symbol,

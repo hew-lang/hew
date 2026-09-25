@@ -49,9 +49,7 @@
 //! re-discrimination; this revision moves that obligation into the
 //! type signature.
 
-use crate::check::TypeDef;
 use crate::ty::Ty;
-use std::collections::HashMap;
 
 /// The C-ABI calling-convention class Hew uses for a given [`Ty`].
 ///
@@ -308,10 +306,10 @@ impl RuntimeCallingConvention {
     /// [`Ty::Named`] is the one that consulted
     /// [`TypeDef::is_indirect`].
     #[must_use]
-    pub fn for_ty_with_layout(ty: &Ty, type_defs: &HashMap<String, TypeDef>) -> Self {
+    pub fn for_ty_with_layout(ty: &Ty, types: crate::check::TypeDefView<'_>) -> Self {
         match ty {
             Ty::Named { head, .. } => {
-                if let Some(td) = type_defs.get(head.registry_key()) {
+                if let Some(td) = types.of(*head) {
                     if td.is_indirect {
                         Self::Pointer
                     } else {
@@ -337,6 +335,7 @@ impl RuntimeCallingConvention {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::check::TypeDef;
     use crate::ty::TypeVar;
 
     // ── canonical_token: one stable spelling per variant ────────────
@@ -474,7 +473,7 @@ mod tests {
         // because it has no access to `TypeDef.is_indirect`. Both
         // route to `LayoutDescriptor`; callers that need the
         // `Pointer` upgrade must use `for_ty_with_layout`.
-        let vec_i32 = Ty::named_for_test("Vec", vec![Ty::I32]);
+        let vec_i32 = Ty::user_for_test("Vec", vec![Ty::I32]);
         let user_record = Ty::named_for_test("Connection", vec![]);
         assert_eq!(
             RuntimeCallingConvention::for_ty(&vec_i32),
@@ -490,10 +489,10 @@ mod tests {
 
     // ── for_ty_with_layout: handle-ness upgrade is explicit ────────
 
-    fn make_type_def(name: &str, is_indirect: bool) -> (String, TypeDef) {
+    fn make_type_def(name: &str, is_indirect: bool) -> (crate::NominalId, TypeDef) {
         use crate::check::TypeDefKind;
         (
-            name.to_string(),
+            crate::NominalId::for_test(name),
             TypeDef {
                 kind: TypeDefKind::Struct,
                 name: name.to_string(),
@@ -515,9 +514,12 @@ mod tests {
         let (name, td) = make_type_def("Vec", true);
         type_defs.insert(name, td);
 
-        let vec_i32 = Ty::named_for_test("Vec", vec![Ty::I32]);
+        let vec_i32 = Ty::user_for_test("Vec", vec![Ty::I32]);
         assert_eq!(
-            RuntimeCallingConvention::for_ty_with_layout(&vec_i32, &type_defs),
+            RuntimeCallingConvention::for_ty_with_layout(
+                &vec_i32,
+                crate::check::TypeDefView::for_test(&type_defs)
+            ),
             RuntimeCallingConvention::Pointer,
             "is_indirect = true → proven handle → Pointer",
         );
@@ -535,7 +537,10 @@ mod tests {
 
         let connection = Ty::named_for_test("Connection", vec![]);
         assert_eq!(
-            RuntimeCallingConvention::for_ty_with_layout(&connection, &type_defs),
+            RuntimeCallingConvention::for_ty_with_layout(
+                &connection,
+                crate::check::TypeDefView::for_test(&type_defs)
+            ),
             RuntimeCallingConvention::LayoutDescriptor,
             "value record (is_indirect = false) must NOT be lowered as Pointer",
         );
@@ -548,7 +553,10 @@ mod tests {
         let type_defs = std::collections::HashMap::new();
         let unknown = Ty::named_for_test("UnknownType", vec![]);
         assert_eq!(
-            RuntimeCallingConvention::for_ty_with_layout(&unknown, &type_defs),
+            RuntimeCallingConvention::for_ty_with_layout(
+                &unknown,
+                crate::check::TypeDefView::for_test(&type_defs)
+            ),
             RuntimeCallingConvention::LayoutDescriptor,
         );
     }
@@ -573,7 +581,10 @@ mod tests {
             Ty::Tuple(vec![Ty::I32]),
         ] {
             assert_eq!(
-                RuntimeCallingConvention::for_ty_with_layout(&ty, &type_defs),
+                RuntimeCallingConvention::for_ty_with_layout(
+                    &ty,
+                    crate::check::TypeDefView::for_test(&type_defs)
+                ),
                 RuntimeCallingConvention::for_ty(&ty),
                 "with-layout must agree with context-free for {ty:?}",
             );
@@ -624,7 +635,10 @@ mod tests {
         );
         let type_defs = std::collections::HashMap::new();
         assert_eq!(
-            RuntimeCallingConvention::for_ty_with_layout(&ptr, &type_defs),
+            RuntimeCallingConvention::for_ty_with_layout(
+                &ptr,
+                crate::check::TypeDefView::for_test(&type_defs)
+            ),
             RuntimeCallingConvention::Pointer,
         );
     }

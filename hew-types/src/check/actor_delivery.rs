@@ -563,7 +563,7 @@ impl Checker {
         let Ty::Named { head, args } = target.as_local_actor_ref()? else {
             return None;
         };
-        let declaration = self.type_defs.get(head.registry_key())?;
+        let declaration = self.type_def_at(head.registry_key())?;
         let substitutions = declaration
             .type_params
             .iter()
@@ -587,7 +587,7 @@ impl Checker {
     fn register_request_protocol(&mut self, method_id: &str) -> crate::NominalHead {
         let id = self.defs.request_protocol(method_id);
         self.type_defs
-            .entry(method_id.to_string())
+            .entry(crate::NominalId::from_minted_declaration(id))
             .or_insert_with(|| super::TypeDef {
                 kind: super::TypeDefKind::Struct,
                 name: method_id.to_string(),

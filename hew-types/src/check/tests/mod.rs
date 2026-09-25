@@ -593,3 +593,25 @@ fn cancellation_token_has_no_cancel_method() {
         output.errors
     );
 }
+
+impl Checker {
+    /// A declaration row in this checker's own table, for tests that register
+    /// definitions by hand.
+    pub(super) fn test_declaration(&mut self, path: &str) -> crate::NominalId {
+        crate::NominalId::from_minted_declaration(self.defs.mint_for_test(path))
+    }
+
+    /// The named type of a hand-registered declaration (see
+    /// [`Self::test_declaration`]); a path nothing declared is a fixture
+    /// nominal no definition answers to.
+    pub(super) fn test_named(&self, path: &str, args: Vec<Ty>) -> Ty {
+        let id = self
+            .defs
+            .lookup_nominal(path)
+            .unwrap_or_else(|| crate::NominalId::for_test(path));
+        Ty::named_head(
+            crate::TypeHead::Nominal(crate::NominalHead::new(id, path)),
+            args,
+        )
+    }
+}

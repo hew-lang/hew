@@ -1696,13 +1696,15 @@ mod reserved_names {
             output.errors
         );
         assert!(
-            output.type_defs.contains_key("std.builtins.LookupError"),
+            output
+                .type_def_at_path("std.builtins.LookupError")
+                .is_some(),
             "LookupError must retain its std/builtins.hew declaration owner"
         );
         assert!(
-            !output
-                .type_defs
-                .contains_key("std.lookup_error.LookupError"),
+            output
+                .type_def_at_path("std.lookup_error.LookupError")
+                .is_none(),
             "the bare prelude binding must not mint a synthetic LookupError owner"
         );
     }

@@ -204,13 +204,23 @@ impl TypeHead {
             return known.head();
         }
         let declaration = nominal.declaration();
-        let path = defs.path(declaration);
-        if defs.module(declaration) != defs.root_module() {
-            if let Some(builtin) = BuiltinType::from_source_declaration(path) {
-                return Self::Builtin(builtin);
-            }
+        if let Some(builtin) = defs.declared_builtin(declaration) {
+            return Self::Builtin(builtin);
         }
-        Self::Nominal(NominalHead::new(nominal, path))
+        Self::Nominal(NominalHead::new(nominal, defs.path(declaration)))
+    }
+
+    /// The declaration this head names: a nominal's or actor's own, a
+    /// builtin's std declaration when it has one.
+    #[must_use]
+    pub fn declaration(self, defs: &crate::DefTable) -> Option<crate::NominalId> {
+        match self {
+            Self::Nominal(head) | Self::Actor(head) => Some(head.id),
+            Self::Builtin(builtin) => crate::KnownDecl::of_builtin(builtin)
+                .map(crate::KnownDecl::nominal)
+                .or_else(|| defs.builtin_declaration(builtin)),
+            Self::Param(_) | Self::Unresolved(_) => None,
+        }
     }
 
     /// A generic binder spelled `spelling`.

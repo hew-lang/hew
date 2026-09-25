@@ -66,14 +66,14 @@ impl Checker {
                 .flatten();
             let direct_key = canonical_owner_key
                 .as_deref()
-                .filter(|key| self.type_defs.contains_key(*key))
+                .filter(|key| self.type_def_at(key).is_some())
                 .or_else(|| {
                     local_owner_key
                         .as_deref()
-                        .filter(|key| self.type_defs.contains_key(*key))
+                        .filter(|key| self.type_def_at(key).is_some())
                 })
                 .unwrap_or(type_prefix);
-            let direct = self.type_defs.get(direct_key).and_then(|td| {
+            let direct = self.type_def_at(direct_key).and_then(|td| {
                 if !matches!(
                     td.kind,
                     TypeDefKind::Enum | TypeDefKind::Struct | TypeDefKind::Machine
@@ -100,7 +100,7 @@ impl Checker {
                 self.current_module_idx,
                 type_prefix.to_string(),
             ))?;
-            self.type_defs.get(canonical.as_str()).and_then(|td| {
+            self.type_def_at(canonical.as_str()).and_then(|td| {
                 if !matches!(
                     td.kind,
                     TypeDefKind::Enum | TypeDefKind::Struct | TypeDefKind::Machine
@@ -128,22 +128,27 @@ impl Checker {
             let find_in = |name: &str, check_local: bool| {
                 self.type_defs
                     .iter()
-                    .filter(|(type_name, td)| {
-                        let is_local = self.local_type_defs.contains(type_name.as_str())
-                            || self.source_type_defs.contains(type_name.as_str())
+                    .filter(|(id, td)| {
+                        let type_name = self.defs.path(id.declaration());
+                        let is_local = self.local_type_defs.contains(td.name.as_str())
+                            || self.source_type_defs.contains(td.name.as_str())
                             || self.is_current_module_type_def(type_name);
                         let kind_ok =
                             td.kind == TypeDefKind::Enum || td.kind == TypeDefKind::Struct;
                         kind_ok && (is_local == check_local)
                     })
-                    .find_map(|(type_name, td)| {
+                    .find_map(|(id, td)| {
                         td.variants.get(name).and_then(|variant| {
                             let params = match variant {
                                 VariantDef::Unit => Vec::new(),
                                 VariantDef::Tuple(p) => p.clone(),
                                 VariantDef::Struct(_) => return None,
                             };
-                            Some((type_name.clone(), params, td.type_params.clone()))
+                            Some((
+                                self.defs.path(id.declaration()).to_string(),
+                                params,
+                                td.type_params.clone(),
+                            ))
                         })
                     })
             };
@@ -896,7 +901,7 @@ impl Checker {
                 self.record_type(span, &Ty::Error);
                 return Some(Ty::Error);
             }
-            if crate::vec_authority::classify_element(&elem_ty, &self.type_defs)
+            if crate::vec_authority::classify_element(&elem_ty, self.type_def_view())
                 == Some(crate::vec_authority::VecElementToken::Layout)
                 && matches!(elem_ty, Ty::Named { .. })
                 // An element that still carries an unresolved type parameter
@@ -2007,7 +2012,7 @@ impl Checker {
                 let elem_ty = lowered.remove(0);
                 let resolved_elem = self.subst.resolve(&elem_ty);
                 // Inherit the layout+Copy guard from check_call_against_expected_constructor.
-                if crate::vec_authority::classify_element(&resolved_elem, &self.type_defs)
+                if crate::vec_authority::classify_element(&resolved_elem, self.type_def_view())
                     == Some(crate::vec_authority::VecElementToken::Layout)
                     && matches!(resolved_elem, Ty::Named { .. })
                 {
@@ -2271,8 +2276,7 @@ impl Checker {
                             {
                                 let child_type = &statics[i].1;
                                 let parameters = self
-                                    .type_defs
-                                    .get(sup_name)
+                                    .type_def_at(sup_name)
                                     .map_or_else(Vec::new, |definition| {
                                         definition.type_params.clone()
                                     });

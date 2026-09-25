@@ -620,7 +620,9 @@ fn qualified_nested_trait_signature_uses_source_owner_and_credits_module_binding
         "the nested impl return must retain the exact source owner"
     );
     assert!(
-        checker.type_defs.contains_key("hew.closableerr.CloseError"),
+        crate::check::TypeDefView::new(&output.defs, &checker.type_defs)
+            .at_path("hew.closableerr.CloseError")
+            .is_some(),
         "source declaration must be registered under its canonical owner"
     );
 }
@@ -700,7 +702,11 @@ fn imported_actor_i32_uses_exact_module_binding_and_owner() {
         "imported i32 actor ask must typecheck: {:#?}",
         output.errors
     );
-    assert!(checker.type_defs.contains_key("hew.testffi.Db"));
+    assert!(
+        crate::check::TypeDefView::new(&output.defs, &checker.type_defs)
+            .at_path("hew.testffi.Db")
+            .is_some()
+    );
     assert!(checker
         .module_type_exports
         .get("hew.testffi")
@@ -952,10 +958,11 @@ fn imported_actor_record_impl_and_extern_share_exact_owner() {
             .map(|sig| &sig.return_type),
         Some(&result_ty)
     );
-    assert!(checker
-        .type_defs
-        .get("hew.testffi.TestResult")
-        .is_some_and(|result| result.methods.contains_key("echo_len")));
+    assert!(
+        crate::check::TypeDefView::new(&output.defs, &checker.type_defs)
+            .at_path("hew.testffi.TestResult")
+            .is_some_and(|result| result.methods.contains_key("echo_len"))
+    );
     let echo_id = output
         .impl_method_declaration_ids
         .get("hew.testffi.TestResult::echo_len")
@@ -1240,11 +1247,11 @@ fn bare_import_type_registers_qualified_only() {
     // Full-owner authority is always published; the lexical module spelling
     // remains a resolver binding, not a second TypeDef identity.
     assert!(
-        output.type_defs.contains_key("myapp.mod_a.Reply"),
+        output.type_def_at_path("myapp.mod_a.Reply").is_some(),
         "bare import should register the canonical type `myapp.mod_a.Reply`"
     );
-    assert!(!output.type_defs.contains_key("mod_a.Reply"));
-    assert!(!output.type_defs.contains_key("Reply"));
+    assert!(output.type_def_at_path("mod_a.Reply").is_none());
+    assert!(output.type_def_at_path("Reply").is_none());
     // The importer-scope binding is not published.
     assert!(
         !checker
@@ -1278,7 +1285,7 @@ fn named_import_type_publishes_bare_binding() {
     });
 
     assert!(
-        output.type_defs.contains_key("myapp.mod_a.Reply"),
+        output.type_def_at_path("myapp.mod_a.Reply").is_some(),
         "named import should still register the exact source-qualified type"
     );
     assert!(
@@ -1343,7 +1350,7 @@ fn alias_import_resolves_bare_binding_to_source_identity() {
         vec![(Item::TypeDecl(reply), 0..0)],
     );
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    checker.check_program(&Program {
+    let output = checker.check_program(&Program {
         module_graph: None,
         items: vec![(Item::Import(import), 0..0)],
         module_doc: None,
@@ -1357,7 +1364,9 @@ fn alias_import_resolves_bare_binding_to_source_identity() {
     // The reconstructed `myapp.mod_a.R` must never exist as a registered def — the bug
     // was binding it (or failing closed) instead of the real source type.
     assert!(
-        !checker.type_defs.contains_key("myapp.mod_a.R"),
+        crate::check::TypeDefView::new(&output.defs, &checker.type_defs)
+            .at_path("myapp.mod_a.R")
+            .is_none(),
         "no `myapp.mod_a.R` def should exist; the alias binds the source `Reply`"
     );
 }
@@ -1388,11 +1397,11 @@ fn alias_import_does_not_conflate_with_same_named_export() {
 
     // Both distinct source types keep their own qualified identity.
     assert!(
-        output.type_defs.contains_key("myapp.mod_a.Reply"),
+        output.type_def_at_path("myapp.mod_a.Reply").is_some(),
         "source `Reply` must register its qualified identity"
     );
     assert!(
-        output.type_defs.contains_key("myapp.mod_a.Other"),
+        output.type_def_at_path("myapp.mod_a.Other").is_some(),
         "the distinct source `Other` must register its own qualified identity"
     );
     // The bare binding `Other` denotes the ALIASED source
@@ -1429,7 +1438,7 @@ fn glob_import_type_publishes_bare_binding() {
     });
 
     assert!(
-        output.type_defs.contains_key("myapp.mod_a.Reply"),
+        output.type_def_at_path("myapp.mod_a.Reply").is_some(),
         "glob import should still register the qualified type"
     );
     assert!(
@@ -1467,11 +1476,17 @@ fn stdlib_plain_import_does_not_publish_bare_type() {
     );
 
     assert!(
-        checker.type_defs.contains_key("std.net.websocket.Server"),
+        checker
+            .type_def_view()
+            .at_path("std.net.websocket.Server")
+            .is_some(),
         "plain stdlib import must register the canonical type `std.net.websocket.Server`"
     );
-    assert!(!checker.type_defs.contains_key("websocket.Server"));
-    assert!(!checker.type_defs.contains_key("Server"));
+    assert!(checker
+        .type_def_view()
+        .at_path("websocket.Server")
+        .is_none());
+    assert!(checker.type_def_view().at_path("Server").is_none());
     assert!(
         checker
             .module_type_exports
@@ -1713,8 +1728,8 @@ fn stdlib_nested_private_local_bare_type_uses_full_module_identity() {
         checker.errors
     );
     let holder = checker
-        .type_defs
-        .get("std.net.tls.Holder")
+        .type_def_view()
+        .at_path("std.net.tls.Holder")
         .expect("canonical Holder definition must be registered");
     match holder.fields.get("wrap") {
         Some(Ty::Named { head, .. }) => assert_eq!(
@@ -1739,8 +1754,7 @@ fn bare_import_type_qualified_alias_has_fields() {
     let output = check_items(vec![(Item::Import(import), 0..0)]);
 
     let qualified = output
-        .type_defs
-        .get("myapp.mod_a.Reply")
+        .type_def_at_path("myapp.mod_a.Reply")
         .expect("canonical type `myapp.mod_a.Reply` must be registered");
     assert!(
         qualified.fields.contains_key("code"),
@@ -1769,15 +1783,16 @@ fn assert_same_leaf_canonical_type_defs_keep_distinct_shapes(left_first: bool) {
     };
     let output = check_items(imports);
 
-    let left_def = output.type_defs.get("pkg.left.Shared").unwrap_or_else(|| {
-        panic!(
-            "left module must retain its canonical Shared definition; keys: {:?}",
-            output.type_defs.keys().collect::<Vec<_>>()
-        )
-    });
+    let left_def = output
+        .type_def_at_path("pkg.left.Shared")
+        .unwrap_or_else(|| {
+            panic!(
+                "left module must retain its canonical Shared definition; keys: {:?}",
+                output.type_defs.keys().collect::<Vec<_>>()
+            )
+        });
     let right_def = output
-        .type_defs
-        .get("pkg.right.Shared")
+        .type_def_at_path("pkg.right.Shared")
         .expect("right module must retain its canonical Shared definition");
     assert!(left_def.fields.contains_key("left_only"));
     assert!(!left_def.fields.contains_key("right_only"));
@@ -1926,7 +1941,7 @@ fn same_leaf_named_imports_publish_one_resolved_ty_spelling_per_owner() {
         "right.Shared",
     ] {
         assert!(
-            !output.type_defs.contains_key(alias),
+            output.type_def_at_path(alias).is_none(),
             "TypeDef alias survived: {alias}"
         );
         assert!(
@@ -1939,7 +1954,7 @@ fn same_leaf_named_imports_publish_one_resolved_ty_spelling_per_owner() {
         );
     }
     for canonical in ["pkg.left.Shared", "pkg.right.Shared"] {
-        assert!(output.type_defs.contains_key(canonical));
+        assert!(output.type_def_at_path(canonical).is_some());
         assert!(checker.type_def_spans.contains_key(canonical));
         assert!(checker.registry.has_type_markers(canonical));
     }
@@ -2267,11 +2282,11 @@ fn user_module_registers_types() {
     let output = check_items(vec![(Item::Import(import), 0..0)]);
 
     assert!(
-        output.type_defs.contains_key("myapp.config.Config"),
+        output.type_def_at_path("myapp.config.Config").is_some(),
         "user module type should be registered under its full owner"
     );
-    assert!(!output.type_defs.contains_key("Config"));
-    assert!(!output.type_defs.contains_key("config.Config"));
+    assert!(output.type_def_at_path("Config").is_none());
+    assert!(output.type_def_at_path("config.Config").is_none());
 }
 
 // -- user_modules set --
@@ -2776,10 +2791,10 @@ fn repeated_stdlib_import_does_not_duplicate_hew_items() {
         output.errors
     );
     assert!(
-        output.type_defs.contains_key("std.fs.IoError"),
+        output.type_def_at_path("std.fs.IoError").is_some(),
         "expected std::fs Hew items to remain registered"
     );
-    assert!(!output.type_defs.contains_key("IoError"));
+    assert!(output.type_def_at_path("IoError").is_none());
 }
 
 // -- Empty module import --
@@ -2860,8 +2875,7 @@ fn import_alias_in_record_field_resolves_to_source_identity() {
     ]);
 
     let boxed_def = output
-        .type_defs
-        .get("Boxed")
+        .type_def_at_path("Boxed")
         .expect("`Boxed` must be registered");
     assert_eq!(
         boxed_def.fields.get("item"),
@@ -2917,8 +2931,7 @@ fn import_alias_in_enum_payload_resolves_to_source_identity() {
     ]);
 
     let wrap_def = output
-        .type_defs
-        .get("Wrap")
+        .type_def_at_path("Wrap")
         .expect("`Wrap` must be registered");
     assert_eq!(
         wrap_def.variants.get("Has"),
@@ -2995,9 +3008,7 @@ fn imported_enum_payload_keeps_its_defining_module_identity() {
     ]);
 
     assert_eq!(
-        output
-            .type_defs
-            .get("pkg.Receive")
+        output.type_def_at_path("pkg.Receive")
             .and_then(|receive| receive.variants.get("Message")),
         Some(&VariantDef::Tuple(vec![Ty::named_in(&output.defs, "pkg.Delivery", vec![])])),
         "an imported enum payload must retain its defining-module identity, not a same-leaf neighbour or the prelude"
@@ -3027,8 +3038,7 @@ fn local_type_shadows_import_alias_in_member_position() {
     ]);
 
     let boxed_def = output
-        .type_defs
-        .get("Boxed")
+        .type_def_at_path("Boxed")
         .expect("`Boxed` must be registered");
     assert_eq!(
         boxed_def.fields.get("item"),
@@ -3062,12 +3072,10 @@ fn aliased_member_matches_qualified_member_type() {
     ]);
 
     let aliased_field = output
-        .type_defs
-        .get("AliasedBox")
+        .type_def_at_path("AliasedBox")
         .and_then(|d| d.fields.get("item"));
     let qualified_field = output
-        .type_defs
-        .get("QualifiedBox")
+        .type_def_at_path("QualifiedBox")
         .and_then(|d| d.fields.get("item"));
     assert_eq!(
         aliased_field,

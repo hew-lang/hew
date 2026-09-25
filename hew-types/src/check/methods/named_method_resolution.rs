@@ -43,7 +43,7 @@ impl Checker {
     ) -> Option<FnSig> {
         let owner = self.current_module_identity()?;
         let qualified = format!("{owner}.{type_name}");
-        let td = self.type_defs.get(&qualified)?;
+        let td = self.type_def_at(&qualified)?;
         td.methods.get(method).cloned()
     }
 
@@ -53,44 +53,52 @@ impl Checker {
         type_args: &[Ty],
         method: &str,
     ) -> Option<FnSig> {
-        shared_lookup_named_method_sig(&self.type_defs, &self.fn_sigs, type_name, type_args, method)
-            .or_else(|| {
-                let target = self.alias_target_for_instance(type_name, type_args)?;
-                crate::method_resolution::lookup_method_sig(
-                    &self.type_defs,
-                    &self.fn_sigs,
-                    &target,
-                    method,
-                )
-            })
-            .or_else(|| {
-                self.module_registry
-                    .resolve_handle_method_sig(type_name, method)
-                    .map(|(_c_symbol, params, return_type, canonical_owner)| {
-                        // The registry's own projection sees only the loaded
-                        // module and its imports, so a nominal that module
-                        // neither declares nor imports (`stream.Sink` reached
-                        // from `std.net.http`) comes back at the legacy short
-                        // owner while source resolution mints the complete one.
-                        // Re-resolve through the shared ladder so a method
-                        // signature and the source around it name one owner
-                        // (rc1-F1 stage D, registry producer).
-                        FnSig {
-                            params: params
-                                .iter()
-                                .map(|ty| {
-                                    self.canonicalize_registry_signature(ty, &canonical_owner, &[])
-                                })
-                                .collect(),
-                            return_type: self.canonicalize_registry_signature(
-                                &return_type,
-                                &canonical_owner,
-                                &[],
-                            ),
-                            ..FnSig::default()
-                        }
-                    })
-            })
+        shared_lookup_named_method_sig(
+            &self.defs,
+            &self.type_defs,
+            &self.fn_sigs,
+            type_name,
+            type_args,
+            method,
+        )
+        .or_else(|| {
+            let target = self.alias_target_for_instance(type_name, type_args)?;
+            crate::method_resolution::lookup_method_sig(
+                &self.defs,
+                &self.type_defs,
+                &self.fn_sigs,
+                &target,
+                method,
+            )
+        })
+        .or_else(|| {
+            self.module_registry
+                .resolve_handle_method_sig(type_name, method)
+                .map(|(_c_symbol, params, return_type, canonical_owner)| {
+                    // The registry's own projection sees only the loaded
+                    // module and its imports, so a nominal that module
+                    // neither declares nor imports (`stream.Sink` reached
+                    // from `std.net.http`) comes back at the legacy short
+                    // owner while source resolution mints the complete one.
+                    // Re-resolve through the shared ladder so a method
+                    // signature and the source around it name one owner
+                    // (rc1-F1 stage D, registry producer).
+                    FnSig {
+                        params: params
+                            .iter()
+                            .map(|ty| {
+                                self.canonicalize_registry_signature(ty, &canonical_owner, &[])
+                            })
+                            .collect(),
+                        return_type: self.canonicalize_registry_signature(
+                            &return_type,
+                            &canonical_owner,
+                            &[],
+                        ),
+                        ..FnSig::default()
+                    }
+                })
+        })
     }
 
     /// Try to resolve a method call on a named type via `type_defs` and `fn_sigs`.
@@ -256,7 +264,7 @@ impl Checker {
             .canonical_method_receiver_identity(receiver_name);
         let exact_receiver = if let Some(canonical) = canonical_registry_receiver.as_deref() {
             canonical
-        } else if self.type_defs.contains_key(receiver_name) {
+        } else if self.type_def_at(receiver_name).is_some() {
             receiver_name
         } else {
             return ty.clone();
@@ -289,7 +297,7 @@ impl Checker {
         }
         let qualified = format!("{owner}.{name}");
         self.named_ty_for_key(
-            &if self.type_defs.contains_key(&qualified)
+            &if self.type_def_at(&qualified).is_some()
                 || self.module_registry.is_method_receiver_type(&qualified)
             {
                 qualified
@@ -336,8 +344,7 @@ impl Checker {
                 // method-call path.
                 let method_key = format!("{name}::{method_name}");
                 let is_actor_receive_dispatch = self
-                    .type_defs
-                    .get(name)
+                    .type_def_at(name)
                     .is_some_and(|td| td.kind == TypeDefKind::Actor)
                     && self.actor_receive_methods.contains(&method_key);
                 if is_actor_receive_dispatch {
@@ -640,9 +647,14 @@ impl Checker {
     pub(super) fn similar_methods(&self, receiver_ty: &Ty, method_name: &str) -> Vec<String> {
         crate::error::find_similar(
             method_name,
-            collect_method_sigs_for_receiver(&self.type_defs, &self.fn_sigs, receiver_ty)
-                .iter()
-                .map(|(name, _)| name.as_str()),
+            collect_method_sigs_for_receiver(
+                &self.defs,
+                &self.type_defs,
+                &self.fn_sigs,
+                receiver_ty,
+            )
+            .iter()
+            .map(|(name, _)| name.as_str()),
         )
     }
 

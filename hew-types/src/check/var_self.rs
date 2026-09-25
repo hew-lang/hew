@@ -269,7 +269,7 @@ impl Checker {
                     }
                     // A name with no registered members and no declaration is
                     // an abstract type parameter.
-                    None => !self.type_defs.contains_key(name) && !self.known_types.contains(name),
+                    None => self.type_def_at(name).is_none() && !self.known_types.contains(name),
                 }
             }
             Ty::Tuple(elements) => elements

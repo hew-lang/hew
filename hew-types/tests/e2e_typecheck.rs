@@ -5237,7 +5237,7 @@ fn type_def_with_error_field_is_pruned_from_output() {
         output.errors
     );
     assert!(
-        !output.type_defs.contains_key("Broken"),
+        output.type_def_at_path("Broken").is_none(),
         "type_defs must prune type shapes containing Ty::Error fields: {:#?}",
         output.type_defs
     );
@@ -5266,7 +5266,7 @@ fn enum_with_error_variant_payload_is_pruned_from_output() {
         output.errors
     );
     assert!(
-        !output.type_defs.contains_key("Broken"),
+        output.type_def_at_path("Broken").is_none(),
         "type_defs must prune enum variants containing Ty::Error payloads: {:#?}",
         output.type_defs
     );
@@ -5304,8 +5304,7 @@ fn type_def_method_with_error_param_is_pruned_from_output() {
         output.errors
     );
     let widget = output
-        .type_defs
-        .get("Widget")
+        .type_def_at_path("Widget")
         .expect("type_defs should retain Widget when only a method signature is errored");
     assert!(
         widget.methods.contains_key("good"),
@@ -5351,8 +5350,7 @@ fn type_def_method_with_error_return_is_pruned_from_output() {
         output.errors
     );
     let widget = output
-        .type_defs
-        .get("Widget")
+        .type_def_at_path("Widget")
         .expect("type_defs should retain Widget when only a method signature is errored");
     assert!(
         widget.methods.contains_key("good"),

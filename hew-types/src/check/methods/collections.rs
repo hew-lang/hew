@@ -737,7 +737,7 @@ impl Checker {
         let is_abstract = self.vec_element_contains_abstract_type_param(&elem_ty);
         let is_copy_layout = self.vec_element_has_copy_layout(&elem_ty);
         let profile = crate::vec_authority::VecElementProfile {
-            abi: crate::vec_authority::classify_element(&elem_ty, &self.type_defs),
+            abi: crate::vec_authority::classify_element(&elem_ty, self.type_def_view()),
             is_owned: self.element_owns_heap(&elem_ty),
             is_copy_layout,
             is_function_like: matches!(elem_ty, Ty::Function { .. } | Ty::Closure { .. }),
@@ -864,7 +864,7 @@ impl Checker {
         &self,
         call_type_args: &HashMap<SpanKey, Vec<Ty>>,
         record_init_type_args: &HashMap<SpanKey, Vec<Ty>>,
-        type_defs: &HashMap<String, TypeDef>,
+        types: crate::check::TypeDefView<'_>,
     ) -> HashMap<Ty, crate::vec_authority::VecElementToken> {
         let mut out = HashMap::new();
         for args in call_type_args
@@ -875,7 +875,7 @@ impl Checker {
                 if out.contains_key(ty) {
                     continue;
                 }
-                if let Some(token) = self.classify_vec_generic_element(ty, type_defs) {
+                if let Some(token) = self.classify_vec_generic_element(ty, types) {
                     out.insert(ty.clone(), token);
                 }
             }
@@ -901,10 +901,10 @@ impl Checker {
     pub(super) fn classify_vec_generic_element(
         &self,
         ty: &Ty,
-        type_defs: &HashMap<String, TypeDef>,
+        types: crate::check::TypeDefView<'_>,
     ) -> Option<crate::vec_authority::VecElementToken> {
         use crate::vec_authority::VecElementToken;
-        let token = crate::vec_authority::classify_element(ty, type_defs)?;
+        let token = crate::vec_authority::classify_element(ty, types)?;
         let admissible = match token {
             // Bit-copy scalars and the CoW `string` representation carry no
             // owner-aliasing hazard across the shared-buffer element ops. Every
@@ -1511,7 +1511,7 @@ impl Checker {
             // per-instantiation witness exists).
             Ty::Named { head, args } if head.builtin().is_none() => {
                 let name = head.registry_key();
-                if let Some(type_def) = self.type_defs.get(name) {
+                if let Some(type_def) = self.type_def_at(name) {
                     if matches!(type_def.kind, TypeDefKind::Machine) {
                         // Generic instantiation: no per-instantiation layout.
                         if !args.is_empty() {
@@ -1641,7 +1641,7 @@ impl Checker {
                     // recurses once per name). It carries no bare container.
                     return false;
                 }
-                let result = self.type_defs.get(name).is_some_and(|td| {
+                let result = self.type_def_at(name).is_some_and(|td| {
                     td.fields
                         .values()
                         .any(|fty| self.queue_element_holds_collection(fty, roots, visiting))
@@ -1891,7 +1891,7 @@ impl Checker {
                     self.check_against(expr, sp, &elem_ty);
                 }
                 let resolved_elem = self.subst.resolve(&elem_ty);
-                if crate::vec_authority::classify_element(&resolved_elem, &self.type_defs)
+                if crate::vec_authority::classify_element(&resolved_elem, self.type_def_view())
                     == Some(crate::vec_authority::VecElementToken::Layout)
                 {
                     // W3.032 Slice 3e: lift the layout gate for equality-
@@ -1901,8 +1901,10 @@ impl Checker {
                     // opaque eligibility certificate and do NOT re-derive
                     // eligibility (see W3.032 plan §"Checker authority
                     // carry").
-                    let eligibility =
-                        crate::eq_eligibility::ty_is_eq_eligible(&resolved_elem, &self.type_defs);
+                    let eligibility = crate::eq_eligibility::ty_is_eq_eligible(
+                        &resolved_elem,
+                        self.type_def_view(),
+                    );
                     let is_copy = self.vec_element_has_copy_layout(&resolved_elem);
                     let is_owned_admissible = self.element_owns_heap(&resolved_elem);
                     if matches!(eligibility, crate::eq_eligibility::EqEligibility::Eligible)

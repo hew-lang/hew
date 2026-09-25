@@ -2371,8 +2371,9 @@ fn typecheck_output_materializes_literal_kinds_for_unannotated_lets() {
 #[test]
 fn bind_pattern_struct_fields_substitute_generic_type_args() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let __id = checker.test_declaration("Pair");
     checker.type_defs.insert(
-        "Pair".to_string(),
+        __id,
         TypeDef {
             kind: TypeDefKind::Struct,
             name: "Pair".to_string(),
@@ -2407,7 +2408,7 @@ fn bind_pattern_struct_fields_substitute_generic_type_args() {
                 rest: None,
             }),
         },
-        &Ty::named_for_test("Pair", vec![Ty::I64, Ty::Bool]),
+        &checker.test_named("Pair", vec![Ty::I64, Ty::Bool]),
         false,
         &(0..10),
     );
@@ -2685,8 +2686,9 @@ fn main() -> i64 { 0 }
 fn register_generic_wrapper(checker: &mut Checker) {
     let mut fields = HashMap::new();
     fields.insert("value".to_string(), Ty::param("T"));
+    let __id = checker.test_declaration("Wrapper");
     checker.type_defs.insert(
-        "Wrapper".to_string(),
+        __id,
         TypeDef {
             kind: TypeDefKind::Struct,
             name: "Wrapper".to_string(),
@@ -2901,8 +2903,9 @@ fn struct_init_explicit_type_arg_on_enum_variant_in_check_against_errors() {
         "Holding".to_string(),
         VariantDef::Struct(vec![("value".to_string(), Ty::param("T"))]),
     );
+    let __id = checker.test_declaration("Keeper");
     checker.type_defs.insert(
-        "Keeper".to_string(),
+        __id,
         TypeDef {
             kind: TypeDefKind::Enum,
             name: "Keeper".to_string(),
@@ -2932,7 +2935,7 @@ fn struct_init_explicit_type_arg_on_enum_variant_in_check_against_errors() {
         type_args,
         base: None,
     };
-    let expected = Ty::named_for_test("Keeper", vec![Ty::I64]);
+    let expected = checker.test_named("Keeper", vec![Ty::I64]);
     checker.check_against(&init, &span, &expected);
     assert!(
         !checker.errors.is_empty(),
@@ -2952,8 +2955,9 @@ fn struct_init_explicit_type_arg_on_enum_variant_synthesize_seeds_correctly() {
         "Keeper::Holding".to_string(),
         VariantDef::Struct(vec![("value".to_string(), Ty::param("T"))]),
     );
+    let __id = checker.test_declaration("Keeper");
     checker.type_defs.insert(
-        "Keeper".to_string(),
+        __id,
         TypeDef {
             kind: TypeDefKind::Enum,
             name: "Keeper".to_string(),
@@ -3267,8 +3271,7 @@ fn generic_decl_bounds_are_stored_on_type_defs() {
         output.errors
     );
     let bounds = output
-        .type_defs
-        .get("Box")
+        .type_def_at_path("Box")
         .and_then(|type_def| type_def.bounds.get("T"))
         .expect("Box<T: Display> should retain the T bound on TypeDef");
     assert_eq!(bounds, &vec!["std.builtins.Display".to_string()]);

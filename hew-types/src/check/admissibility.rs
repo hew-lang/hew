@@ -91,11 +91,8 @@ fn align_up(offset: usize, align: usize) -> usize {
 /// Returns `None` for types that are not hash-eligible primitives or Copy records.
 /// Only types that `ty_is_hash_eligible` would return `Eligible` for are expected
 /// here; the function is conservative and returns `None` for everything else.
-pub(crate) fn primitive_copy_layout(
-    ty: &Ty,
-    type_defs: &HashMap<String, TypeDef>,
-) -> Option<(usize, usize)> {
-    primitive_copy_layout_on_path(ty, type_defs, &mut HashSet::new())
+pub(crate) fn primitive_copy_layout(ty: &Ty, types: TypeDefView<'_>) -> Option<(usize, usize)> {
+    primitive_copy_layout_on_path(ty, types, &mut HashSet::new())
 }
 
 /// `primitive_copy_layout` with the currently-expanded record declarations.
@@ -107,7 +104,7 @@ pub(crate) fn primitive_copy_layout(
 /// finite Copy size.
 fn primitive_copy_layout_on_path(
     ty: &Ty,
-    type_defs: &HashMap<String, TypeDef>,
+    types: TypeDefView<'_>,
     visiting: &mut HashSet<String>,
 ) -> Option<(usize, usize)> {
     if let Some(layout) = identity_aggregate_layout(ty) {
@@ -122,25 +119,24 @@ fn primitive_copy_layout_on_path(
         // f64 is hash-ineligible but included for the same reason.
         Ty::I64 | Ty::U64 | Ty::Duration | Ty::F64 => Some((8, 8)),
         Ty::Array(elem, count) => {
-            let (elem_size, elem_align) = primitive_copy_layout_on_path(elem, type_defs, visiting)?;
+            let (elem_size, elem_align) = primitive_copy_layout_on_path(elem, types, visiting)?;
             let count = usize::try_from(*count).ok()?;
             Some((elem_size.checked_mul(count)?, elem_align))
         }
         Ty::Named { head, args } => {
-            let type_def =
-                crate::check::types::type_def_for_spelling(type_defs, head.registry_key())?;
+            let type_def = types.of(*head)?;
             let visit_key = type_def.name.clone();
             if !visiting.insert(visit_key.clone()) {
                 return None;
             }
             let layout = if args.is_empty() {
-                compute_copy_record_layout_on_path(type_def, type_defs, visiting)
+                compute_copy_record_layout_on_path(type_def, types, visiting)
             } else {
                 if type_def.type_params.len() != args.len() {
                     visiting.remove(&visit_key);
                     return None;
                 }
-                compute_copy_record_layout_with_args_on_path(type_def, args, type_defs, visiting)
+                compute_copy_record_layout_with_args_on_path(type_def, args, types, visiting)
             };
             visiting.remove(&visit_key);
             layout
@@ -158,7 +154,7 @@ fn primitive_copy_layout_member_on_path(
     ty: &Ty,
     type_def: &TypeDef,
     type_args: &[Ty],
-    type_defs: &HashMap<String, TypeDef>,
+    types: TypeDefView<'_>,
     visiting: &mut HashSet<String>,
 ) -> Option<(usize, usize)> {
     match ty {
@@ -176,15 +172,14 @@ fn primitive_copy_layout_member_on_path(
             // Reuse the checker termination proof before restarting the walk;
             // it also refuses cycles with growing generic arguments.
             let resolved_arg = ResolvedTy::from_ty(type_arg).ok()?;
-            if !declaration_walk_terminates(&resolved_arg, type_defs) {
+            if !declaration_walk_terminates(&resolved_arg, types) {
                 return None;
             }
-            primitive_copy_layout(type_arg, type_defs)
+            primitive_copy_layout(type_arg, types)
         }
         Ty::Array(elem, count) => {
-            let (elem_size, elem_align) = primitive_copy_layout_member_on_path(
-                elem, type_def, type_args, type_defs, visiting,
-            )?;
+            let (elem_size, elem_align) =
+                primitive_copy_layout_member_on_path(elem, type_def, type_args, types, visiting)?;
             let count = usize::try_from(*count).ok()?;
             Some((elem_size.checked_mul(count)?, elem_align))
         }
@@ -196,23 +191,23 @@ fn primitive_copy_layout_member_on_path(
                 .map(|(param, arg)| (param.clone(), arg.clone()))
                 .collect();
             let instantiated = ty.substitute_named_params_parallel(&subst);
-            primitive_copy_layout_on_path(&instantiated, type_defs, visiting)
+            primitive_copy_layout_on_path(&instantiated, types, visiting)
         }
     }
 }
 
 fn compute_copy_record_layout_on_path(
     type_def: &TypeDef,
-    type_defs: &HashMap<String, TypeDef>,
+    types: TypeDefView<'_>,
     visiting: &mut HashSet<String>,
 ) -> Option<(usize, usize)> {
-    compute_copy_record_layout_with_args_on_path(type_def, &[], type_defs, visiting)
+    compute_copy_record_layout_with_args_on_path(type_def, &[], types, visiting)
 }
 
 fn compute_copy_record_layout_with_args_on_path(
     type_def: &TypeDef,
     type_args: &[Ty],
-    type_defs: &HashMap<String, TypeDef>,
+    types: TypeDefView<'_>,
     visiting: &mut HashSet<String>,
 ) -> Option<(usize, usize)> {
     if type_def.fields.is_empty() {
@@ -240,9 +235,8 @@ fn compute_copy_record_layout_with_args_on_path(
 
     for name in field_names {
         let field_ty = type_def.fields.get(*name)?;
-        let (field_size, field_align) = primitive_copy_layout_member_on_path(
-            field_ty, type_def, type_args, type_defs, visiting,
-        )?;
+        let (field_size, field_align) =
+            primitive_copy_layout_member_on_path(field_ty, type_def, type_args, types, visiting)?;
 
         // Align the field start offset to the field's natural alignment.
         offset = align_up(offset, field_align);
@@ -406,7 +400,7 @@ impl Checker {
     pub(super) fn validate_checker_output_contract(
         &mut self,
         expr_types: &mut HashMap<SpanKey, Ty>,
-        type_defs: &mut HashMap<String, TypeDef>,
+        type_defs: &mut HashMap<crate::NominalId, TypeDef>,
         fn_sigs: &mut HashMap<String, FnSig>,
         call_type_args: &mut HashMap<SpanKey, Vec<Ty>>,
         record_init_type_args: &mut HashMap<SpanKey, Vec<Ty>>,
@@ -457,17 +451,18 @@ impl Checker {
     /// catch.
     pub(super) fn validate_handle_types_no_field_overlap(
         &mut self,
-        type_defs: &mut HashMap<String, TypeDef>,
+        type_defs: &mut HashMap<crate::NominalId, TypeDef>,
     ) {
-        let conflicts: HashSet<String> = type_defs
+        let conflicts: Vec<(crate::NominalId, String)> = type_defs
             .iter()
-            .filter(|(name, type_def)| {
-                !type_def.fields.is_empty() && self.module_registry.is_handle_type(name)
+            .filter_map(|(id, type_def)| {
+                let name = self.defs.path(id.declaration());
+                (!type_def.fields.is_empty() && self.module_registry.is_handle_type(name))
+                    .then(|| (*id, name.to_string()))
             })
-            .map(|(name, _)| name.clone())
             .collect();
 
-        for name in &conflicts {
+        for (id, name) in &conflicts {
             let span = self
                 .type_def_spans
                 .get(name.as_str())
@@ -481,18 +476,7 @@ impl Checker {
                      fields; remove the fields or remove the handle registration"
                 ),
             );
-        }
-
-        type_defs.retain(|k, _| !conflicts.contains(k));
-
-        // Defensive: also prune the bare-alias twin (short form) if a qualified key
-        // is removed. If `fake.Handle` conflicts and is removed, also remove `Handle`
-        // so `lookup_user_type_def`'s fallback cannot resolve to a field-bearing entry.
-        for name in &conflicts {
-            if let Some((_, short)) = name.split_once('.') {
-                // Current register_qualified_type_alias format is "{module_short}.{name}"; split_once is safe here. If multi-dot module paths are ever added, switch to rsplit_once or a dedicated helper.
-                type_defs.remove(short);
-            }
+            type_defs.remove(id);
         }
     }
 
@@ -670,9 +654,10 @@ impl Checker {
     ///   is still present in the checker's trait registry.
     pub(super) fn validate_method_call_receiver_kinds_output_contract(
         &mut self,
-        type_defs: &HashMap<String, TypeDef>,
+        type_defs: &HashMap<crate::NominalId, TypeDef>,
         fn_sigs: &HashMap<String, FnSig>,
     ) {
+        let types = TypeDefView::new(&self.defs, type_defs);
         // Collect known trait names before the mutable borrow on
         // `method_call_receiver_kinds` to avoid a split-borrow conflict.
         let known_trait_names: HashSet<String> = self.trait_defs.keys().cloned().collect();
@@ -687,44 +672,45 @@ impl Checker {
             .flat_map(|sig| sig.type_params.iter().map(String::as_str))
             .collect();
 
-        self.method_call_receiver_kinds
-            .retain(|_, kind| match kind {
-                MethodCallReceiverKind::LexicalBinding { binding_name } => !binding_name.is_empty(),
-                MethodCallReceiverKind::ModuleBinding { module_name } => !module_name.is_empty(),
-                MethodCallReceiverKind::EnumConstructorPath { type_name } => type_defs
-                    .get(type_name)
-                    .is_some_and(|type_def| type_def.kind == TypeDefKind::Enum),
-                MethodCallReceiverKind::NamedTypeInstance { type_name } => {
-                    type_defs.contains_key(type_name)
-                        || type_name.contains('.')
-                        || known_type_params.contains(type_name.as_str())
-                }
-                MethodCallReceiverKind::ActorInstance { actor_name } => type_defs
-                    .get(actor_name)
-                    .is_some_and(|type_def| type_def.kind == TypeDefKind::Actor),
-                MethodCallReceiverKind::HandleInstance { type_name } => !type_name.is_empty(),
-                MethodCallReceiverKind::TraitObject { trait_name } => {
-                    known_trait_names.contains(trait_name)
-                }
-                MethodCallReceiverKind::StreamInstance { element_kind } => {
-                    matches!(element_kind.as_str(), "" | "string" | "bytes")
-                }
-                MethodCallReceiverKind::PrimitiveTraitImpl {
-                    trait_name,
-                    canonical_receiver,
-                } => {
-                    // Retain only when the trait still exists and the canonical
-                    // receiver key still matches one we'd produce today (i.e.
-                    // the registration helper would still accept it).  This
-                    // mirrors the producer discipline added in Stage A1 and
-                    // prevents stale entries from leaking past the checker
-                    // output boundary.
-                    let trait_known = known_trait_names.contains(trait_name);
-                    let receiver_known =
-                        Self::is_known_primitive_or_builtin_canonical_key(canonical_receiver);
-                    trait_known && receiver_known
-                }
-            });
+        let mut receiver_kinds = std::mem::take(&mut self.method_call_receiver_kinds);
+        receiver_kinds.retain(|_, kind| match kind {
+            MethodCallReceiverKind::LexicalBinding { binding_name } => !binding_name.is_empty(),
+            MethodCallReceiverKind::ModuleBinding { module_name } => !module_name.is_empty(),
+            MethodCallReceiverKind::EnumConstructorPath { type_name } => types
+                .at_path(type_name)
+                .is_some_and(|type_def| type_def.kind == TypeDefKind::Enum),
+            MethodCallReceiverKind::NamedTypeInstance { type_name } => {
+                types.at_path(type_name).is_some()
+                    || type_name.contains('.')
+                    || known_type_params.contains(type_name.as_str())
+            }
+            MethodCallReceiverKind::ActorInstance { actor_name } => types
+                .at_path(actor_name)
+                .is_some_and(|type_def| type_def.kind == TypeDefKind::Actor),
+            MethodCallReceiverKind::HandleInstance { type_name } => !type_name.is_empty(),
+            MethodCallReceiverKind::TraitObject { trait_name } => {
+                known_trait_names.contains(trait_name)
+            }
+            MethodCallReceiverKind::StreamInstance { element_kind } => {
+                matches!(element_kind.as_str(), "" | "string" | "bytes")
+            }
+            MethodCallReceiverKind::PrimitiveTraitImpl {
+                trait_name,
+                canonical_receiver,
+            } => {
+                // Retain only when the trait still exists and the canonical
+                // receiver key still matches one we'd produce today (i.e.
+                // the registration helper would still accept it).  This
+                // mirrors the producer discipline added in Stage A1 and
+                // prevents stale entries from leaking past the checker
+                // output boundary.
+                let trait_known = known_trait_names.contains(trait_name);
+                let receiver_known =
+                    Self::is_known_primitive_or_builtin_canonical_key(canonical_receiver);
+                trait_known && receiver_known
+            }
+        });
+        self.method_call_receiver_kinds = receiver_kinds;
     }
 
     /// Whether `key` is a canonical receiver key the registration helper
@@ -1397,7 +1383,7 @@ impl Checker {
             return false;
         }
         self.registry.implements_marker(elem_ty, MarkerTrait::Copy)
-            || primitive_copy_layout(elem_ty, &self.type_defs).is_some()
+            || primitive_copy_layout(elem_ty, self.type_def_view()).is_some()
     }
 
     /// True when a Vec element type transitively carries a function/closure
@@ -1771,6 +1757,10 @@ impl Checker {
 
 #[cfg(test)]
 mod tests {
+    fn checker_nominal(checker: &mut Checker, path: &str) -> crate::NominalId {
+        crate::NominalId::from_minted_declaration(checker.defs.mint_for_test(path))
+    }
+
     use super::*;
     use crate::module_registry::ModuleRegistry;
 
@@ -1967,7 +1957,7 @@ mod tests {
 
         let mut type_defs = HashMap::from([
             (
-                "Good".to_string(),
+                checker_nominal(&mut checker, "Good"),
                 TypeDef {
                     kind: TypeDefKind::Struct,
                     name: "Good".to_string(),
@@ -1982,7 +1972,7 @@ mod tests {
                 },
             ),
             (
-                "NormalizedHandles".to_string(),
+                checker_nominal(&mut checker, "NormalizedHandles"),
                 TypeDef {
                     kind: TypeDefKind::Struct,
                     name: "NormalizedHandles".to_string(),
@@ -2016,7 +2006,7 @@ mod tests {
                 },
             ),
             (
-                "LeakedField".to_string(),
+                checker_nominal(&mut checker, "LeakedField"),
                 TypeDef {
                     kind: TypeDefKind::Struct,
                     name: "LeakedField".to_string(),
@@ -2034,7 +2024,7 @@ mod tests {
                 },
             ),
             (
-                "LeakedVariant".to_string(),
+                checker_nominal(&mut checker, "LeakedVariant"),
                 TypeDef {
                     kind: TypeDefKind::Enum,
                     name: "LeakedVariant".to_string(),
@@ -2066,19 +2056,19 @@ mod tests {
         );
 
         assert!(
-            type_defs.contains_key("Good"),
+            type_defs.contains_key(&checker_nominal(&mut checker, "Good")),
             "concrete type definitions must survive the contract check"
         );
         assert!(
-            !type_defs.contains_key("NormalizedHandles"),
+            !type_defs.contains_key(&checker_nominal(&mut checker, "NormalizedHandles")),
             "a channel endpoint with an unresolved element must be pruned, not erased"
         );
         assert!(
-            !type_defs.contains_key("LeakedField"),
+            !type_defs.contains_key(&checker_nominal(&mut checker, "LeakedField")),
             "type definitions with real untracked Ty::Var fields must be pruned"
         );
         assert!(
-            !type_defs.contains_key("LeakedVariant"),
+            !type_defs.contains_key(&checker_nominal(&mut checker, "LeakedVariant")),
             "type definitions with real untracked Ty::Var variants must be pruned"
         );
     }
@@ -2147,7 +2137,7 @@ mod tests {
         );
 
         let mut type_defs = HashMap::from([(
-            "Widget".to_string(),
+            checker_nominal(&mut checker, "Widget"),
             TypeDef {
                 kind: TypeDefKind::Struct,
                 name: "Widget".to_string(),
@@ -2494,7 +2484,7 @@ mod tests {
         // "fake.Handle" is the qualified key in type_defs — exactly as
         // register_qualified_type_alias would produce — and has non-empty fields.
         let mut type_defs = HashMap::from([(
-            "fake.Handle".to_string(),
+            checker_nominal(&mut checker, "fake.Handle"),
             TypeDef {
                 kind: TypeDefKind::Struct,
                 name: "fake.Handle".to_string(),
@@ -2550,7 +2540,7 @@ mod tests {
         let mut type_defs = HashMap::from([
             // User type whose unqualified name matches the handle short name — must survive.
             (
-                "TlsStream".to_string(),
+                checker_nominal(&mut checker, "TlsStream"),
                 TypeDef {
                     kind: TypeDefKind::Struct,
                     name: "TlsStream".to_string(),
@@ -2566,7 +2556,7 @@ mod tests {
             ),
             // Fieldless qualified alias for the actual handle type — also must survive.
             (
-                "tls.TlsStream".to_string(),
+                checker_nominal(&mut checker, "tls.TlsStream"),
                 TypeDef {
                     kind: TypeDefKind::Struct,
                     name: "tls.TlsStream".to_string(),
@@ -2595,154 +2585,6 @@ mod tests {
             checker.errors
         );
     }
-
-    /// Diagnostic emitted for a qualified alias that has fields must carry the
-    /// bare-name span, not the zero span that results when
-    /// `register_qualified_type_alias` omits the span propagation.
-    ///
-    /// Regression guard for the `0..0` fallback in
-    /// `validate_handle_types_no_field_overlap`.
-    #[test]
-    fn validate_handle_types_no_field_overlap_qualified_alias_span_is_propagated() {
-        let mut module_registry = ModuleRegistry::new(vec![]);
-        module_registry.insert_handle_type_for_test("fake.Handle".to_string());
-        let mut checker = Checker::new(module_registry);
-
-        // Seed the bare name entry in type_defs and type_def_spans, simulating
-        // what register_type_namespace_name + register_type_decl would do.
-        checker.type_def_spans.insert("Handle".to_string(), 10..25);
-        checker.type_defs.insert(
-            "Handle".to_string(),
-            TypeDef {
-                kind: TypeDefKind::Struct,
-                name: "Handle".to_string(),
-                type_params: vec![],
-                bounds: HashMap::new(),
-                fields: HashMap::new(),
-                variants: HashMap::new(),
-                methods: HashMap::new(),
-                doc_comment: None,
-                field_order: vec![],
-                is_indirect: false,
-            },
-        );
-
-        // register_qualified_type_alias must propagate the span to the qualified key.
-        checker.register_qualified_type_alias("fake", "Handle");
-
-        // Build the local type_defs map as the checker would pass to the validator:
-        // the qualified alias has fields — triggering the overlap check.
-        let mut type_defs = HashMap::from([(
-            "fake.Handle".to_string(),
-            TypeDef {
-                kind: TypeDefKind::Struct,
-                name: "fake.Handle".to_string(),
-                type_params: vec![],
-                bounds: HashMap::new(),
-                fields: HashMap::from([("fd".to_string(), Ty::I32)]),
-                variants: HashMap::new(),
-                methods: HashMap::new(),
-                doc_comment: None,
-                field_order: vec![],
-                is_indirect: false,
-            },
-        )]);
-
-        checker.validate_handle_types_no_field_overlap(&mut type_defs);
-
-        let overlap_errors: Vec<_> = checker
-            .errors
-            .iter()
-            .filter(|e| e.kind == TypeErrorKind::InvalidOperation)
-            .collect();
-        assert_eq!(
-            overlap_errors.len(),
-            1,
-            "expected exactly one overlap error"
-        );
-        assert_eq!(
-            overlap_errors[0].span,
-            10..25,
-            "diagnostic span must be the bare-name declaration span, not 0..0"
-        );
-    }
-
-    /// When a qualified key (e.g. `fake.Handle`) is identified as conflicting,
-    /// the validator must defensively prune the bare-name twin (e.g. `Handle`) from
-    /// `type_defs` so that `lookup_user_type_def`'s fallback cannot resolve to a
-    /// field-bearing entry.
-    #[test]
-    fn validate_handle_types_no_field_overlap_prunes_bare_alias_twin() {
-        let mut module_registry = ModuleRegistry::new(vec![]);
-        module_registry.insert_handle_type_for_test("fake.Handle".to_string());
-        let mut checker = Checker::new(module_registry);
-
-        let mut type_defs = HashMap::from([(
-            "Handle".to_string(),
-            TypeDef {
-                kind: TypeDefKind::Struct,
-                name: "Handle".to_string(),
-                type_params: vec![],
-                bounds: HashMap::new(),
-                fields: HashMap::from([("fd".to_string(), Ty::I32)]),
-                variants: HashMap::new(),
-                methods: HashMap::new(),
-                doc_comment: None,
-                field_order: vec![],
-                is_indirect: false,
-            },
-        )]);
-
-        // Also seed the qualified key that will trigger the conflict.
-        type_defs.insert(
-            "fake.Handle".to_string(),
-            TypeDef {
-                kind: TypeDefKind::Struct,
-                name: "fake.Handle".to_string(),
-                type_params: vec![],
-                bounds: HashMap::new(),
-                fields: HashMap::from([("fd".to_string(), Ty::I32)]),
-                variants: HashMap::new(),
-                methods: HashMap::new(),
-                doc_comment: None,
-                field_order: vec![],
-                is_indirect: false,
-            },
-        );
-
-        checker.validate_handle_types_no_field_overlap(&mut type_defs);
-
-        // Both the qualified key and its bare-name twin must be removed.
-        assert!(
-            !type_defs.contains_key("fake.Handle"),
-            "conflicting qualified key must be removed"
-        );
-        assert!(
-            !type_defs.contains_key("Handle"),
-            "bare-alias twin must also be pruned defensively"
-        );
-
-        // Verify an error was reported for the conflict.
-        let overlap_errors: Vec<_> = checker
-            .errors
-            .iter()
-            .filter(|e| e.kind == TypeErrorKind::InvalidOperation)
-            .collect();
-        assert_eq!(
-            overlap_errors.len(),
-            1,
-            "expected exactly one overlap error for the qualified key"
-        );
-    }
-
-    /// Integration test: handle-type field overlap is detected and pruned via the
-    /// public entry point `validate_checker_output_contract`, not just the internal
-    /// `validate_handle_types_no_field_overlap` validator.
-    ///
-    /// This test seeded an overlap via qualified-alias registration, verifies:
-    /// 1. The overlap is rejected with an `InvalidOperation` diagnostic
-    /// 2. Both the qualified key and bare-name twin are removed from `type_defs`
-    /// 3. The error is reportable through the full contract validation pipeline
     #[test]
     fn validate_checker_output_contract_prunes_handle_type_field_overlap_via_public_entry() {
         let mut module_registry = ModuleRegistry::new(vec![]);
@@ -2755,7 +2597,7 @@ mod tests {
         // - "fake.Handle" from register_qualified_type_alias with fields
         let mut type_defs = HashMap::from([
             (
-                "Handle".to_string(),
+                checker_nominal(&mut checker, "Handle"),
                 TypeDef {
                     kind: TypeDefKind::Struct,
                     name: "Handle".to_string(),
@@ -2770,7 +2612,7 @@ mod tests {
                 },
             ),
             (
-                "fake.Handle".to_string(),
+                checker_nominal(&mut checker, "fake.Handle"),
                 TypeDef {
                     kind: TypeDefKind::Struct,
                     name: "fake.Handle".to_string(),
@@ -2799,15 +2641,10 @@ mod tests {
             &mut record_init_type_args,
         );
 
-        // Both qualified key and bare-name twin must be pruned from type_defs
-        // after validate_checker_output_contract processes the overlap.
+        // The field-bearing handle declaration is pruned from type_defs.
         assert!(
-            !type_defs.contains_key("fake.Handle"),
+            !type_defs.contains_key(&checker_nominal(&mut checker, "fake.Handle")),
             "qualified handle-type key with fields must be pruned from type_defs"
-        );
-        assert!(
-            !type_defs.contains_key("Handle"),
-            "bare-alias twin must also be pruned defensively from type_defs"
         );
 
         // Exactly one InvalidOperation diagnostic must be reported.
@@ -2951,7 +2788,7 @@ mod tests {
     #[test]
     fn primitive_copy_layout_bool_is_1_1() {
         assert_eq!(
-            primitive_copy_layout(&Ty::Bool, &HashMap::new()),
+            primitive_copy_layout(&Ty::Bool, TypeDefView::for_test(&HashMap::new())),
             Some((1, 1))
         );
     }
@@ -2959,11 +2796,11 @@ mod tests {
     #[test]
     fn primitive_copy_layout_i8_u8_is_1_1() {
         assert_eq!(
-            primitive_copy_layout(&Ty::I8, &HashMap::new()),
+            primitive_copy_layout(&Ty::I8, TypeDefView::for_test(&HashMap::new())),
             Some((1, 1))
         );
         assert_eq!(
-            primitive_copy_layout(&Ty::U8, &HashMap::new()),
+            primitive_copy_layout(&Ty::U8, TypeDefView::for_test(&HashMap::new())),
             Some((1, 1))
         );
     }
@@ -2971,11 +2808,11 @@ mod tests {
     #[test]
     fn primitive_copy_layout_i16_u16_is_2_2() {
         assert_eq!(
-            primitive_copy_layout(&Ty::I16, &HashMap::new()),
+            primitive_copy_layout(&Ty::I16, TypeDefView::for_test(&HashMap::new())),
             Some((2, 2))
         );
         assert_eq!(
-            primitive_copy_layout(&Ty::U16, &HashMap::new()),
+            primitive_copy_layout(&Ty::U16, TypeDefView::for_test(&HashMap::new())),
             Some((2, 2))
         );
     }
@@ -2983,15 +2820,15 @@ mod tests {
     #[test]
     fn primitive_copy_layout_i32_u32_char_is_4_4() {
         assert_eq!(
-            primitive_copy_layout(&Ty::I32, &HashMap::new()),
+            primitive_copy_layout(&Ty::I32, TypeDefView::for_test(&HashMap::new())),
             Some((4, 4))
         );
         assert_eq!(
-            primitive_copy_layout(&Ty::U32, &HashMap::new()),
+            primitive_copy_layout(&Ty::U32, TypeDefView::for_test(&HashMap::new())),
             Some((4, 4))
         );
         assert_eq!(
-            primitive_copy_layout(&Ty::Char, &HashMap::new()),
+            primitive_copy_layout(&Ty::Char, TypeDefView::for_test(&HashMap::new())),
             Some((4, 4))
         );
     }
@@ -2999,15 +2836,15 @@ mod tests {
     #[test]
     fn primitive_copy_layout_i64_u64_duration_is_8_8() {
         assert_eq!(
-            primitive_copy_layout(&Ty::I64, &HashMap::new()),
+            primitive_copy_layout(&Ty::I64, TypeDefView::for_test(&HashMap::new())),
             Some((8, 8))
         );
         assert_eq!(
-            primitive_copy_layout(&Ty::U64, &HashMap::new()),
+            primitive_copy_layout(&Ty::U64, TypeDefView::for_test(&HashMap::new())),
             Some((8, 8))
         );
         assert_eq!(
-            primitive_copy_layout(&Ty::Duration, &HashMap::new()),
+            primitive_copy_layout(&Ty::Duration, TypeDefView::for_test(&HashMap::new())),
             Some((8, 8))
         );
     }
@@ -3020,13 +2857,22 @@ mod tests {
         let child_ref = Ty::child_ref(Ty::I64);
         let type_defs = HashMap::new();
 
-        assert_eq!(primitive_copy_layout(&node_id, &type_defs), Some((16, 8)));
-        assert_eq!(primitive_copy_layout(&location, &type_defs), Some((32, 8)));
         assert_eq!(
-            primitive_copy_layout(&remote_pid, &type_defs),
+            primitive_copy_layout(&node_id, TypeDefView::for_test(&type_defs)),
+            Some((16, 8))
+        );
+        assert_eq!(
+            primitive_copy_layout(&location, TypeDefView::for_test(&type_defs)),
             Some((32, 8))
         );
-        assert_eq!(primitive_copy_layout(&child_ref, &type_defs), Some((16, 8)));
+        assert_eq!(
+            primitive_copy_layout(&remote_pid, TypeDefView::for_test(&type_defs)),
+            Some((32, 8))
+        );
+        assert_eq!(
+            primitive_copy_layout(&child_ref, TypeDefView::for_test(&type_defs)),
+            Some((16, 8))
+        );
     }
 
     #[test]
@@ -3034,18 +2880,21 @@ mod tests {
         // String is heap-managed; not a fixed-layout Copy type. The hash-key
         // Its payload requires a clone rather than a bit copy.
         // blob — `primitive_copy_layout` stays the Copy authority.
-        assert_eq!(primitive_copy_layout(&Ty::String, &HashMap::new()), None);
+        assert_eq!(
+            primitive_copy_layout(&Ty::String, TypeDefView::for_test(&HashMap::new())),
+            None
+        );
     }
 
     #[test]
     fn primitive_copy_layout_substitutes_generic_record_args() {
         let type_defs = HashMap::from([
             (
-                "Wrap".to_string(),
+                crate::NominalId::for_test("Wrap"),
                 make_generic_record("Wrap", vec!["T"], vec![("v", Ty::param("T"))]),
             ),
             (
-                "Pair".to_string(),
+                crate::NominalId::for_test("Pair"),
                 make_generic_record(
                     "Pair",
                     vec!["A", "B"],
@@ -3053,11 +2902,11 @@ mod tests {
                 ),
             ),
             (
-                "Point".to_string(),
+                crate::NominalId::for_test("Point"),
                 make_record("Point", vec![("x", Ty::I64), ("y", Ty::I64)]),
             ),
             (
-                "Holder".to_string(),
+                crate::NominalId::for_test("Holder"),
                 make_generic_record("Holder", vec!["T"], vec![("value", Ty::param("T"))]),
             ),
         ]);
@@ -3067,14 +2916,20 @@ mod tests {
         let holder_point = Ty::named_for_test("Holder", vec![Ty::named_for_test("Point", vec![])]);
         let nested_wrap = Ty::named_for_test("Wrap", vec![wrap_i64.clone()]);
 
-        assert_eq!(primitive_copy_layout(&wrap_i64, &type_defs), Some((8, 8)));
-        assert_eq!(primitive_copy_layout(&pair_i64, &type_defs), Some((16, 8)));
         assert_eq!(
-            primitive_copy_layout(&holder_point, &type_defs),
+            primitive_copy_layout(&wrap_i64, TypeDefView::for_test(&type_defs)),
+            Some((8, 8))
+        );
+        assert_eq!(
+            primitive_copy_layout(&pair_i64, TypeDefView::for_test(&type_defs)),
             Some((16, 8))
         );
         assert_eq!(
-            primitive_copy_layout(&nested_wrap, &type_defs),
+            primitive_copy_layout(&holder_point, TypeDefView::for_test(&type_defs)),
+            Some((16, 8))
+        );
+        assert_eq!(
+            primitive_copy_layout(&nested_wrap, TypeDefView::for_test(&type_defs)),
             Some((8, 8))
         );
     }

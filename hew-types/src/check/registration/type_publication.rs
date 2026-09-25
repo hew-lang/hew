@@ -29,7 +29,7 @@ impl Checker {
         if !visiting.insert(lookup_name.clone()) {
             return false;
         }
-        let contains_owned_handle = self.type_defs.get(&lookup_name).is_some_and(|type_def| {
+        let contains_owned_handle = self.type_def_at(&lookup_name).is_some_and(|type_def| {
             type_def.kind == TypeDefKind::Struct
                 && type_def
                     .fields
@@ -304,7 +304,7 @@ impl Checker {
         };
 
         let type_def_key = self.authoritative_type_def_key(type_decl.name.name.as_str());
-        let Some(type_def) = self.type_defs.get(&type_def_key).cloned() else {
+        let Some(type_def) = self.type_def_at(&type_def_key).cloned() else {
             return;
         };
         let fields = type_def.fields.clone();
@@ -609,7 +609,7 @@ impl Checker {
                         // this private type (e.g. `std.net.tls.Holder` containing
                         // `Wrap`).
                         let canonical = format!("{module_full_path}.{}", td.name);
-                        let source_def = self.type_defs.get(&canonical).cloned().or_else(|| {
+                        let source_def = self.type_def_at(&canonical).cloned().or_else(|| {
                             // Direct resolved-item imports have no module-graph
                             // pre-registration. Resolve this declaration in its
                             // own scope and capture its just-written bare def.
@@ -618,7 +618,7 @@ impl Checker {
                             self.in_stdlib_registration = true;
                             self.register_type_decl(td);
                             self.in_stdlib_registration = false;
-                            let source_def = self.type_defs.get(td.name.name.as_str()).cloned();
+                            let source_def = self.type_def_at(td.name.name.as_str()).cloned();
                             self.current_module = saved_importer_module;
                             source_def
                         });
@@ -643,7 +643,7 @@ impl Checker {
                     self.in_stdlib_registration = true;
                     self.register_type_decl(td);
                     self.in_stdlib_registration = false;
-                    let source_def = self.type_defs.get(td.name.name.as_str()).cloned();
+                    let source_def = self.type_def_at(td.name.name.as_str()).cloned();
                     self.current_module = saved_importer_module;
                     self.known_types.insert(td.name.to_string());
                     // Qualified authority is always published, mirroring the
@@ -703,8 +703,8 @@ impl Checker {
                     let saved_importer_module =
                         self.current_module.replace(module_full_path.to_string());
                     self.register_machine_decl(md, span);
-                    let machine_def = self.type_defs.get(md.name.name.as_str()).cloned();
-                    let event_def = self.type_defs.get(&event_name).cloned();
+                    let machine_def = self.type_def_at(md.name.name.as_str()).cloned();
+                    let event_def = self.type_def_at(&event_name).cloned();
                     self.current_module = saved_importer_module;
                     self.known_types.insert(md.name.to_string());
                     self.known_types.insert(event_name.clone());
@@ -1045,7 +1045,10 @@ impl Checker {
         for (item, _span) in items {
             match item {
                 Item::TypeDecl(td) => {
-                    if let Some(source_def) = self.type_defs.get(td.name.name.as_str()).cloned() {
+                    if let Some(source_def) = self
+                        .type_def_exact(&format!("{module_full_path}.{}", td.name.name.as_str()))
+                        .cloned()
+                    {
                         self.register_canonical_type_def(
                             module_full_path,
                             td.name.name.as_str(),
@@ -1067,14 +1070,20 @@ impl Checker {
                         continue;
                     }
                     let event_name = format!("{}Event", md.name);
-                    if let Some(source_def) = self.type_defs.get(md.name.name.as_str()).cloned() {
+                    if let Some(source_def) = self
+                        .type_def_exact(&format!("{module_full_path}.{}", md.name.name.as_str()))
+                        .cloned()
+                    {
                         self.register_canonical_type_def(
                             module_full_path,
                             md.name.name.as_str(),
                             &source_def,
                         );
                     }
-                    if let Some(source_def) = self.type_defs.get(&event_name).cloned() {
+                    if let Some(source_def) = self
+                        .type_def_exact(&format!("{module_full_path}.{event_name}"))
+                        .cloned()
+                    {
                         self.register_canonical_type_def(
                             module_full_path,
                             &event_name,
@@ -1369,7 +1378,7 @@ impl Checker {
                     let saved_module = self.current_module.replace(module_full_path.to_string());
                     self.current_module_idx = declaring_file_idx;
                     self.register_record_decl(decl);
-                    if let Some(definition) = self.type_defs.get(&canonical).cloned() {
+                    if let Some(definition) = self.type_def_at(&canonical).cloned() {
                         self.register_canonical_type_def(
                             module_full_path,
                             decl.name.name.as_str(),
@@ -1477,17 +1486,16 @@ impl Checker {
                         // appear in a public actor's reply or extern signature.
                         // Publish their exact owner metadata without exposing
                         // them as module exports or importer bindings.
-                        let source_def =
-                            self.type_defs.get(&qualified_type).cloned().or_else(|| {
-                                let saved_importer_module =
-                                    self.current_module.replace(module_full_path.to_string());
-                                self.current_module_idx = declaring_file_idx;
-                                self.register_type_decl(td);
-                                let source_def = self.type_defs.get(td.name.name.as_str()).cloned();
-                                self.current_module = saved_importer_module;
-                                self.current_module_idx = importer_file_idx;
-                                source_def
-                            });
+                        let source_def = self.type_def_at(&qualified_type).cloned().or_else(|| {
+                            let saved_importer_module =
+                                self.current_module.replace(module_full_path.to_string());
+                            self.current_module_idx = declaring_file_idx;
+                            self.register_type_decl(td);
+                            let source_def = self.type_def_at(td.name.name.as_str()).cloned();
+                            self.current_module = saved_importer_module;
+                            self.current_module_idx = importer_file_idx;
+                            source_def
+                        });
                         if let Some(source_def) = source_def.as_ref() {
                             self.register_canonical_type_def(
                                 module_full_path,
@@ -1512,7 +1520,7 @@ impl Checker {
                         self.current_module.replace(module_full_path.to_string());
                     self.current_module_idx = declaring_file_idx;
                     self.register_type_decl(td);
-                    let source_def = self.type_defs.get(td.name.name.as_str()).cloned();
+                    let source_def = self.type_def_at(td.name.name.as_str()).cloned();
                     self.current_module = saved_importer_module;
                     self.current_module_idx = importer_file_idx;
                     if spec.is_none() {
@@ -1598,8 +1606,8 @@ impl Checker {
                         self.current_module.replace(module_full_path.to_string());
                     self.current_module_idx = declaring_file_idx;
                     self.register_machine_decl(md, span);
-                    let machine_def = self.type_defs.get(md.name.name.as_str()).cloned();
-                    let event_def = self.type_defs.get(&event_name).cloned();
+                    let machine_def = self.type_def_at(md.name.name.as_str()).cloned();
+                    let event_def = self.type_def_at(&event_name).cloned();
                     self.current_module = saved_importer_module;
                     self.current_module_idx = importer_file_idx;
                     self.register_qualified_type_alias(module_short, md.name.name.as_str());
@@ -1976,8 +1984,8 @@ impl Checker {
                     if !ad.visibility.is_pub() {
                         continue;
                     }
-                    let actor_already_registered = self.type_defs.contains_key(&qualified_actor);
-                    if !actor_already_registered
+                    let actor_already_registered = self.type_def_at(&qualified_actor);
+                    if actor_already_registered.is_none()
                         && !self.register_type_namespace_name(
                             Some(module_full_path),
                             ad.name.name.as_str(),
@@ -2069,7 +2077,7 @@ impl Checker {
                     if !sd.visibility.is_pub() {
                         continue;
                     }
-                    if !self.type_defs.contains_key(&qualified)
+                    if self.type_def_at(&qualified).is_none()
                         && !self.register_type_namespace_name(
                             Some(module_full_path),
                             sd.name.name.as_str(),
@@ -2139,7 +2147,10 @@ impl Checker {
         for (item, _) in items {
             match item {
                 Item::TypeDecl(td) => {
-                    if let Some(source_def) = self.type_defs.get(td.name.name.as_str()).cloned() {
+                    if let Some(source_def) = self
+                        .type_def_exact(&format!("{module_full_path}.{}", td.name.name.as_str()))
+                        .cloned()
+                    {
                         self.register_canonical_type_def(
                             module_full_path,
                             td.name.name.as_str(),
@@ -2154,14 +2165,20 @@ impl Checker {
                 }
                 Item::Machine(md) if md.visibility.is_pub() => {
                     let event_name = format!("{}Event", md.name);
-                    if let Some(source_def) = self.type_defs.get(md.name.name.as_str()).cloned() {
+                    if let Some(source_def) = self
+                        .type_def_exact(&format!("{module_full_path}.{}", md.name.name.as_str()))
+                        .cloned()
+                    {
                         self.register_canonical_type_def(
                             module_full_path,
                             md.name.name.as_str(),
                             &source_def,
                         );
                     }
-                    if let Some(source_def) = self.type_defs.get(&event_name).cloned() {
+                    if let Some(source_def) = self
+                        .type_def_exact(&format!("{module_full_path}.{event_name}"))
+                        .cloned()
+                    {
                         self.register_canonical_type_def(
                             module_full_path,
                             &event_name,
@@ -2296,19 +2313,12 @@ impl Checker {
         name: &str,
     ) {
         let qualified = format!("{module_short}.{name}");
-        if let Some(def) = self.type_defs.get(name).cloned() {
-            // The bare entry is last-write-wins across modules, while an existing
-            // qualified entry is that module's authority. Cross-module import
-            // registration must not overwrite it with another module's bare
-            // winner. The owning module may overwrite its own qualified entry
-            // during Pass 1.5 member re-resolution, when the bare definition has
-            // just been upgraded after import aliases became available.
-            let owns_qualified = self.current_module_identity() == Some(module_short);
-            let write_alias = owns_qualified || !self.type_defs.contains_key(&qualified);
-            if !write_alias {
-                return;
-            }
-            self.type_defs.insert(qualified.clone(), def);
+        // A definition is filed under its declaration, so the qualified
+        // spelling already reaches it; only the string-keyed span and marker
+        // tables need the alias, and only when both spellings name one
+        // declaration (TRANSITION(A2): those tables take the id).
+        let declaration = self.type_def_key(name);
+        if declaration.is_some() && declaration == self.type_def_key(&qualified) {
             if let Some(span) = self.type_def_spans.get(name).cloned() {
                 self.type_def_spans.insert(qualified.clone(), span);
             }
@@ -2361,7 +2371,7 @@ impl Checker {
                 )
             })
             .collect();
-        if let Some(existing) = self.type_defs.get(&qualified) {
+        if let Some(existing) = self.type_def_at(&qualified) {
             for (method_name, method_sig) in &existing.methods {
                 published
                     .methods
@@ -2369,7 +2379,7 @@ impl Checker {
                     .or_insert_with(|| method_sig.clone());
             }
         }
-        self.type_defs.insert(qualified.clone(), published.clone());
+        self.insert_type_def(&qualified, published.clone());
         if !self.type_def_spans.contains_key(&qualified) {
             if let Some(span) = self.type_def_spans.get(name).cloned() {
                 self.type_def_spans.insert(qualified.clone(), span);
@@ -2423,7 +2433,7 @@ impl Checker {
             return self.named_ty_for_key(name, args);
         }
         let canonical = format!("{module_full_path}.{name}");
-        if self.type_defs.contains_key(&canonical) {
+        if self.type_def_at(&canonical).is_some() {
             self.named_ty_for_key(&canonical, args)
         } else {
             self.named_ty_for_key(name, args)

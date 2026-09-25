@@ -436,7 +436,7 @@ impl Checker {
             // type-param-order source is the registered TypeDef. Fall
             // back to scanning bounds map keys against positional
             // arity by querying the matching TypeDef entry.
-            if let Some(td) = self.type_defs.get(machine_name) {
+            if let Some(td) = self.type_def_at(machine_name) {
                 if let Some(name) = td.type_params.get(idx) {
                     type_params.push(name.clone());
                     continue;
@@ -978,7 +978,7 @@ impl Checker {
         let type_name: String = {
             let uq = self.strip_module_qualifier(name);
             match uq {
-                Some(uq) if self.type_defs.contains_key(uq) => uq.to_string(),
+                Some(uq) if self.type_def_at(uq).is_some() => uq.to_string(),
                 _ => name.to_string(),
             }
         };
@@ -1039,9 +1039,13 @@ impl Checker {
                 continue;
             };
 
-            let Some(type_sig) =
-                shared_lookup_method_sig(&self.type_defs, &self.fn_sigs, &concrete_ty, method_name)
-            else {
+            let Some(type_sig) = shared_lookup_method_sig(
+                &self.defs,
+                &self.type_defs,
+                &self.fn_sigs,
+                &concrete_ty,
+                method_name,
+            ) else {
                 missing.push(format!("`{method_name}`"));
                 continue;
             };
@@ -1536,7 +1540,7 @@ impl Checker {
         let type_name: String = {
             let uq = self.strip_module_qualifier(type_name);
             match uq {
-                Some(uq) if self.type_defs.contains_key(uq) => uq.to_string(),
+                Some(uq) if self.type_def_at(uq).is_some() => uq.to_string(),
                 _ => type_name.to_string(),
             }
         };
@@ -1580,9 +1584,13 @@ impl Checker {
 
             // Look up the concrete type's method using the shared builtin-aware
             // resolver so imported stdlib stubs cannot shadow intrinsic surfaces.
-            let Some(type_sig) =
-                shared_lookup_method_sig(&self.type_defs, &self.fn_sigs, &concrete_ty, method_name)
-            else {
+            let Some(type_sig) = shared_lookup_method_sig(
+                &self.defs,
+                &self.type_defs,
+                &self.fn_sigs,
+                &concrete_ty,
+                method_name,
+            ) else {
                 return false;
             };
 

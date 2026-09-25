@@ -116,7 +116,7 @@ fn checker_output_contract_retains_valid_method_call_metadata() {
     // type_defs must include "Foo" so validate_method_call_receiver_kinds_output_contract
     // retains the NamedTypeInstance entry after validate_method_call_output_contract passes it.
     let mut type_defs = HashMap::from([(
-        "Foo".to_string(),
+        crate::NominalId::from_minted_declaration(checker.defs.mint_for_test("Foo")),
         TypeDef {
             kind: TypeDefKind::Struct,
             name: "Foo".to_string(),
@@ -264,7 +264,7 @@ fn checker_output_contract_prunes_method_call_metadata_for_leaked_inference_var_
     // type_defs must include "Good" so validate_method_call_receiver_kinds_output_contract
     // retains the NamedTypeInstance entry for the good span after the span-based pruner passes it.
     let mut type_defs = HashMap::from([(
-        "Good".to_string(),
+        crate::NominalId::from_minted_declaration(checker.defs.mint_for_test("Good")),
         TypeDef {
             kind: TypeDefKind::Struct,
             name: "Good".to_string(),

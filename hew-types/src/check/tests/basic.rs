@@ -2279,8 +2279,7 @@ fn checker_reuse_does_not_leak_loaded_handle_methods_into_user_module() {
         second_output.errors
     );
     let listener = second_output
-        .type_defs
-        .get("net.Listener")
+        .type_def_at_path("net.Listener")
         .expect("second compile should publish its own net.Listener declaration");
     assert!(
         listener.fields.contains_key("value"),

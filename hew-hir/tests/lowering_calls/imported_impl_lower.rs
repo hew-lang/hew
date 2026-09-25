@@ -128,8 +128,10 @@ impl Foo {
 /// that constructs `Foo { n: 42 }` so the imported `Foo` type is exercised.
 fn build_imported_impl_program_src(imported_src: &str) -> Program {
     let root_src = r"
+import shapes;
+
 fn main() -> i64 {
-    var f = Foo { n: 42 };
+    var f = shapes.Foo { n: 42 };
     f.n
 }
 ";
@@ -143,7 +145,7 @@ fn build_imported_module_program_src(imported_src: &str, root_src: &str) -> Prog
         "imported parse errors: {:?}",
         imported.errors
     );
-    let root = hew_parser::parse(root_src);
+    let mut root = hew_parser::parse(root_src);
     assert!(
         root.errors.is_empty(),
         "root parse errors: {:?}",
@@ -160,6 +162,11 @@ fn build_imported_module_program_src(imported_src: &str, root_src: &str) -> Prog
         .filter(|(item, _)| !matches!(item, Item::Import(_)))
         .cloned()
         .collect();
+    for (item, _) in &mut root.program.items {
+        if let Item::Import(import) = item {
+            import.resolved_items = Some(imported_items.clone().into());
+        }
+    }
 
     let imported_module = Module {
         id: imported_id.clone(),
@@ -729,8 +736,10 @@ impl Foo {
 }
 ";
     let root_src = r"
+import shapes;
+
 fn main() -> i64 {
-    let f = Foo { n: 42 };
+    let f = shapes.Foo { n: 42 };
     f.bar()
 }
 ";

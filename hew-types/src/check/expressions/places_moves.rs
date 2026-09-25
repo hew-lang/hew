@@ -272,7 +272,7 @@ impl Checker {
             return None;
         };
         let name = head.registry_key();
-        let definition = self.type_defs.get(name)?;
+        let definition = self.type_def_at(name)?;
         if definition.type_params.len() != args.len() {
             return None;
         }
@@ -302,7 +302,7 @@ impl Checker {
                 {
                     return None;
                 }
-                let definition = self.type_defs.get(name)?;
+                let definition = self.type_def_at(name)?;
                 if !matches!(definition.kind, TypeDefKind::Struct | TypeDefKind::Record)
                     || definition.type_params.len() != args.len()
                 {

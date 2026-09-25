@@ -36,10 +36,8 @@
 
 use hew_parser::ast::Span;
 
-use crate::check::TypeDef;
 use crate::runtime_calling_convention::RuntimeCallingConvention;
 use crate::ty::Ty;
-use std::collections::HashMap;
 
 /// The closed set of placeholders the W3.001 template grammar accepts.
 ///
@@ -355,12 +353,12 @@ impl ExternSymbolTemplate {
     pub fn expand(
         &self,
         type_arg: &Ty,
-        type_defs: &HashMap<String, TypeDef>,
+        types: crate::check::TypeDefView<'_>,
     ) -> Result<String, TemplateExpansionError> {
         if self.is_monomorphic() {
             return Ok(self.raw.clone());
         }
-        let cc = RuntimeCallingConvention::for_ty_with_layout(type_arg, type_defs);
+        let cc = RuntimeCallingConvention::for_ty_with_layout(type_arg, types);
         if cc == RuntimeCallingConvention::LayoutDescriptor {
             // W3.003 Stage 3a fail-closed: BitCopy runtime entry points
             // exist, but codegen does not yet synthesize the layout
@@ -438,6 +436,8 @@ pub struct ExternSymbolSpec {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::check::TypeDef;
+    use std::collections::HashMap;
 
     // ── happy paths ─────────────────────────────────────────────────
 
@@ -592,7 +592,7 @@ mod tests {
 
     // ── expand: substitution semantics ──────────────────────────────
 
-    fn type_defs_with_vec_handle() -> HashMap<String, TypeDef> {
+    fn type_defs_with_vec_handle() -> HashMap<crate::NominalId, TypeDef> {
         // W3.001 differential cutover: stand-in for the checker's
         // resolved TypeDef table, populated with the heap-handle
         // nominals the differential matrix exercises (Vec). Pointer
@@ -601,7 +601,7 @@ mod tests {
         use crate::check::TypeDefKind;
         let mut m = HashMap::new();
         m.insert(
-            "Vec".to_string(),
+            crate::NominalId::for_test("Vec"),
             TypeDef {
                 kind: TypeDefKind::Struct,
                 name: "Vec".to_string(),
@@ -621,7 +621,12 @@ mod tests {
     #[test]
     fn expand_monomorphic_returns_raw_unchanged() {
         let t = ExternSymbolTemplate::parse("hew_vec_len").unwrap();
-        let out = t.expand(&Ty::I32, &HashMap::new()).unwrap();
+        let out = t
+            .expand(
+                &Ty::I32,
+                crate::check::TypeDefView::for_test(&HashMap::new()),
+            )
+            .unwrap();
         assert_eq!(out, "hew_vec_len");
     }
 
@@ -642,7 +647,9 @@ mod tests {
             (Ty::String, "hew_vec_push_str"),
         ];
         for (ty, expected) in cases {
-            let out = t.expand(&ty, &HashMap::new()).unwrap();
+            let out = t
+                .expand(&ty, crate::check::TypeDefView::for_test(&HashMap::new()))
+                .unwrap();
             assert_eq!(out, expected, "expand mismatch for {ty:?}");
         }
     }
@@ -651,8 +658,10 @@ mod tests {
     fn expand_routes_proven_heap_handle_named_to_ptr_token() {
         let t = ExternSymbolTemplate::parse("hew_vec_push_{T}").unwrap();
         let type_defs = type_defs_with_vec_handle();
-        let nested = Ty::named_for_test("Vec", vec![Ty::I32]);
-        let out = t.expand(&nested, &type_defs).unwrap();
+        let nested = Ty::user_for_test("Vec", vec![Ty::I32]);
+        let out = t
+            .expand(&nested, crate::check::TypeDefView::for_test(&type_defs))
+            .unwrap();
         assert_eq!(out, "hew_vec_push_ptr");
     }
 
@@ -663,7 +672,9 @@ mod tests {
         // `for_ty_with_layout` returns `LayoutDescriptor`, expansion
         // reports the would-be `_layout`-suffixed symbol.
         let user = Ty::named_for_test("Connection", vec![]);
-        let err = t.expand(&user, &HashMap::new()).unwrap_err();
+        let err = t
+            .expand(&user, crate::check::TypeDefView::for_test(&HashMap::new()))
+            .unwrap_err();
         match err {
             TemplateExpansionError::UnsupportedCallingConvention {
                 expected_symbol,
@@ -679,11 +690,19 @@ mod tests {
     fn expand_routes_bool_and_char_to_stage2_vec_symbols() {
         let t = ExternSymbolTemplate::parse("hew_vec_push_{T}").unwrap();
         assert_eq!(
-            t.expand(&Ty::Bool, &HashMap::new()).unwrap(),
+            t.expand(
+                &Ty::Bool,
+                crate::check::TypeDefView::for_test(&HashMap::new())
+            )
+            .unwrap(),
             "hew_vec_push_bool"
         );
         assert_eq!(
-            t.expand(&Ty::Char, &HashMap::new()).unwrap(),
+            t.expand(
+                &Ty::Char,
+                crate::check::TypeDefView::for_test(&HashMap::new())
+            )
+            .unwrap(),
             "hew_vec_push_i32"
         );
     }

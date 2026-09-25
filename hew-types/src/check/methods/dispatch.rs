@@ -573,6 +573,7 @@ impl Checker {
                 head,
                 args: type_args,
             } if crate::method_resolution::lookup_named_method_sig(
+                &self.defs,
                 &self.type_defs,
                 &self.fn_sigs,
                 head.registry_key(),
@@ -1897,8 +1898,7 @@ impl Checker {
                         );
                     }
                     let is_actor_receive_dispatch = self
-                        .type_defs
-                        .get(name)
+                        .type_def_at(name)
                         .is_some_and(|td| td.kind == TypeDefKind::Actor)
                         && self
                             .actor_receive_methods
@@ -1977,8 +1977,7 @@ impl Checker {
                     // R-value and immutable-binding receivers are rejected here
                     // with a typed diagnostic.
                     if self
-                        .type_defs
-                        .get(name)
+                        .type_def_at(name)
                         .is_some_and(|td| td.kind == TypeDefKind::Machine)
                     {
                         match method {

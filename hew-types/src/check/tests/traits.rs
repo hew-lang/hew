@@ -1645,10 +1645,10 @@ fn named_method_lookup_prefers_type_defs_before_fn_sigs() {
             ..FnSig::default()
         },
     );
-    checker.type_defs.insert(
-        "Speaker".to_string(),
-        make_test_type_def("Speaker", vec![], methods),
-    );
+    let __id = checker.test_declaration("Speaker");
+    checker
+        .type_defs
+        .insert(__id, make_test_type_def("Speaker", vec![], methods));
     checker.fn_sigs.insert(
         "Speaker::hello".to_string(),
         FnSig {
@@ -1679,13 +1679,14 @@ fn named_type_with_get_method_rejects_bracket_index_via_type_def() {
             ..FnSig::default()
         },
     );
+    let __id = checker.test_declaration("Boxy");
     checker.type_defs.insert(
-        "Boxy".to_string(),
+        __id,
         make_test_type_def("Boxy", vec!["T".to_string()], methods),
     );
     checker.env.define(
         "boxy".to_string(),
-        Ty::named_for_test("Boxy", vec![Ty::String]),
+        checker.test_named("Boxy", vec![Ty::String]),
         false,
     );
 
@@ -1716,8 +1717,9 @@ fn named_type_with_get_method_rejects_bracket_index_via_fn_sig() {
     // Same as above but the `get` method is registered via fn_sigs rather than
     // inline on the type_def (the fn_sig-fallback path in lookup_named_method_sig).
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let __id = checker.test_declaration("Wrapper");
     checker.type_defs.insert(
-        "Wrapper".to_string(),
+        __id,
         make_test_type_def("Wrapper", vec!["T".to_string()], HashMap::new()),
     );
     checker.fn_sigs.insert(
@@ -1731,7 +1733,7 @@ fn named_type_with_get_method_rejects_bracket_index_via_fn_sig() {
     );
     checker.env.define(
         "wrapper".to_string(),
-        Ty::named_for_test("Wrapper", vec![Ty::String]),
+        checker.test_named("Wrapper", vec![Ty::String]),
         false,
     );
 
@@ -1780,13 +1782,14 @@ fn hashmap_bracket_index_is_a_compile_error() {
             ..FnSig::default()
         },
     );
+    let __id = checker.test_declaration("HashMap");
     checker.type_defs.insert(
-        "HashMap".to_string(),
+        __id,
         make_test_type_def("HashMap", vec!["K".to_string(), "V".to_string()], methods),
     );
     checker.env.define(
         "m".to_string(),
-        Ty::user_for_test("HashMap", vec![Ty::String, Ty::I64]),
+        checker.test_named("HashMap", vec![Ty::String, Ty::I64]),
         false,
     );
 
@@ -1902,8 +1905,9 @@ fn dyn_index_with_output_binding() {
 #[test]
 fn named_method_lookup_substitutes_type_params_for_fn_sig_fallback() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let __id = checker.test_declaration("Wrapper");
     checker.type_defs.insert(
-        "Wrapper".to_string(),
+        __id,
         make_test_type_def("Wrapper", vec!["T".to_string()], HashMap::new()),
     );
     checker.fn_sigs.insert(
@@ -1926,10 +1930,10 @@ fn named_method_lookup_substitutes_type_params_for_fn_sig_fallback() {
 #[test]
 fn module_qualified_named_type_method_rejects_leaf_method_retry() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    checker.type_defs.insert(
-        "Thing".to_string(),
-        make_test_type_def("Thing", vec![], HashMap::new()),
-    );
+    let __id = checker.test_declaration("Thing");
+    checker
+        .type_defs
+        .insert(__id, make_test_type_def("Thing", vec![], HashMap::new()));
     checker.fn_sigs.insert(
         "Thing::label".to_string(),
         FnSig {
@@ -1939,7 +1943,7 @@ fn module_qualified_named_type_method_rejects_leaf_method_retry() {
     );
     checker.env.define(
         "thing".to_string(),
-        Ty::named_for_test("widgets.Thing", vec![]),
+        checker.test_named("widgets.Thing", vec![]),
         false,
     );
 
@@ -2062,8 +2066,7 @@ fn impl_method_registration_keeps_inline_method_bounds_on_all_surfaces() {
         .get("Wrapper::map")
         .expect("impl method must populate fn_sigs");
     let method_sig = output
-        .type_defs
-        .get("Wrapper")
+        .type_def_at_path("Wrapper")
         .and_then(|type_def| type_def.methods.get("map"))
         .expect("impl method must populate type_def.methods");
 
@@ -2086,10 +2089,10 @@ fn impl_method_registration_keeps_inline_method_bounds_on_all_surfaces() {
 #[test]
 fn structural_hardening_uses_fn_sigs_named_method_fallback() {
     let mut checker = make_checker_with_trait("Greet", &["hello"], false, false);
-    checker.type_defs.insert(
-        "Speaker".to_string(),
-        make_test_type_def("Speaker", vec![], HashMap::new()),
-    );
+    let __id = checker.test_declaration("Speaker");
+    checker
+        .type_defs
+        .insert(__id, make_test_type_def("Speaker", vec![], HashMap::new()));
     checker
         .fn_sigs
         .insert("Speaker::hello".to_string(), FnSig::default());
@@ -2112,10 +2115,10 @@ fn structural_hardening_prefers_builtin_method_surface_for_imported_handle() {
             ..FnSig::default()
         },
     );
-    checker.type_defs.insert(
-        "Sink".to_string(),
-        make_test_type_def("Sink", vec![], methods),
-    );
+    let __id = checker.test_declaration("Sink");
+    checker
+        .type_defs
+        .insert(__id, make_test_type_def("Sink", vec![], methods));
     checker.fn_sigs.insert(
         "Sink::close".to_string(),
         FnSig {
@@ -2158,7 +2161,8 @@ fn structural_hardening_qualified_trait_name_matches() {
         field_order: vec![],
         is_indirect: false,
     };
-    checker.type_defs.insert("Speaker".to_string(), type_def);
+    let __id = checker.test_declaration("Speaker");
+    checker.type_defs.insert(__id, type_def);
 
     assert!(
         checker.type_structurally_satisfies("Speaker", "greet.Greet"),
@@ -2194,7 +2198,8 @@ fn structural_hardening_qualified_type_name_matches() {
         field_order: vec![],
         is_indirect: false,
     };
-    checker.type_defs.insert("Speaker".to_string(), type_def);
+    let __id = checker.test_declaration("Speaker");
+    checker.type_defs.insert(__id, type_def);
 
     assert!(
         checker.type_structurally_satisfies("mymod.Speaker", "Greet"),
@@ -2230,7 +2235,8 @@ fn structural_hardening_unknown_module_qualifier_is_rejected() {
         field_order: vec![],
         is_indirect: false,
     };
-    checker.type_defs.insert("Speaker".to_string(), type_def);
+    let __id = checker.test_declaration("Speaker");
+    checker.type_defs.insert(__id, type_def);
 
     // Trait "unknown.Greet" should not resolve to "Greet" because "unknown" is
     // not a registered module.

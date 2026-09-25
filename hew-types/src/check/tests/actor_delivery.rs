@@ -260,7 +260,10 @@ fn actor_delivery_failure_reason_matches_annotated_error_values() {
     let output = check_source("actor Worker { receive fn process() {} } fn reason(error: SendError) -> SendError { error } fn main() { let worker = mailbox(spawn Worker(), on_full: .Reject); match worker.process() { .Ok(_) => {}, .Err(failure) => { let same = reason(failure.reason); } } }");
     assert!(output.errors.is_empty(), "{:?}", output.errors);
     assert_eq!(
-        output.type_defs["std.builtins.SendFailure"].fields["reason"],
+        output
+            .type_def_at_path("std.builtins.SendFailure")
+            .unwrap()
+            .fields["reason"],
         crate::Ty::send_error()
     );
 }

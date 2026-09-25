@@ -68,12 +68,19 @@ mod util;
 mod var_self;
 mod visibility;
 
+use self::types::{
+    ActorFieldInfo, ActorInitParamInfo, ConstValue, DeferredBoundCheck, DeferredCastCheck,
+    DeferredHashMapAdmission, DeferredHashSetAdmission, DeferredInferenceHole,
+    DeferredMonomorphicSite, DeferredVecAdmission, ImplAliasEntry, ImplAliasScope, ImportKey,
+    IndexContext, IntegerTypeInfo, PendingLoweringFact, SourceExternDeclaration,
+    TraitAssociatedTypeInfo, TraitInfo, TypeParamScope,
+};
 pub use self::types::{
-    type_def_for_spelling, ActorMethodKind, ActorStateGuard, AllocationClass, ArmResolution,
-    AssignTargetKind, AssignTargetShape, CheckedSelectSource, Checker, ChildKind, ChildSlot,
-    ClosureCaptureFact, ClosureEscapeFact, ClosureEscapeKind, ClosureEscapeRule, DynAssocBinding,
-    DynCoercion, DynMethodCall, DynVtableEntry, DynVtableKey, EntryCallableInstance,
-    EntryDisplayTarget, EntryExitAction, EntryExitPlan, EntryIntegerType, ExecutionContextReader,
+    ActorMethodKind, ActorStateGuard, AllocationClass, ArmResolution, AssignTargetKind,
+    AssignTargetShape, CheckedSelectSource, Checker, ChildKind, ChildSlot, ClosureCaptureFact,
+    ClosureEscapeFact, ClosureEscapeKind, ClosureEscapeRule, DynAssocBinding, DynCoercion,
+    DynMethodCall, DynVtableEntry, DynVtableKey, EntryCallableInstance, EntryDisplayTarget,
+    EntryExitAction, EntryExitPlan, EntryIntegerType, ExecutionContextReader,
     ExternMethodCallIdentity, ExternMethodSignature, FnSig, MachineMethodKind, MathGenericOp,
     MethodCallReceiverKind, MethodCallRewrite, OpaqueResourceCandidateGraph,
     OpaqueResourceLifecycleCandidate, OpaqueResourceLifecycleConflict,
@@ -81,16 +88,9 @@ pub use self::types::{
     PayloadLiteralPattern, PayloadVariantPattern, PlanField, PlanSub, PoolAccessor,
     PoolAccessorKind, RcIntrinsicOp, ReceiverUpdate, RecoveryKind, ResolvedTraitDefault,
     ResultReturnKind, SpanKey, StackHint, TryConversionKind, TryWidthCastLowering, TypeAliasDef,
-    TypeCheckOutput, TypeDef, TypeDefKind, UserComparisonDispatch, VariantDef, VariantMatch,
-    VecHigherOrderOp, WidthCastKind, WidthCastLowering, WireCodecDirection, WireFieldLayout,
-    WireFieldPresence, WireLayoutEntry, WireLayoutTable, WireTextFormat,
-};
-use self::types::{
-    ActorFieldInfo, ActorInitParamInfo, ConstValue, DeferredBoundCheck, DeferredCastCheck,
-    DeferredHashMapAdmission, DeferredHashSetAdmission, DeferredInferenceHole,
-    DeferredMonomorphicSite, DeferredVecAdmission, ImplAliasEntry, ImplAliasScope, ImportKey,
-    IndexContext, IntegerTypeInfo, PendingLoweringFact, SourceExternDeclaration,
-    TraitAssociatedTypeInfo, TraitInfo, TypeParamScope,
+    TypeCheckOutput, TypeDef, TypeDefKind, TypeDefView, UserComparisonDispatch, VariantDef,
+    VariantMatch, VecHigherOrderOp, WidthCastKind, WidthCastLowering, WireCodecDirection,
+    WireFieldLayout, WireFieldPresence, WireLayoutEntry, WireLayoutTable, WireTextFormat,
 };
 use self::util::{
     collect_unresolved_inference_vars, extract_float_literal_value, extract_integer_literal_value,
@@ -224,7 +224,7 @@ impl crate::value_class::ClassDeclarations for CheckerClassDeclarations<'_> {
         } else {
             DeclarationMarker::None
         };
-        let definition = crate::check::types::type_def_for_spelling(&self.checker.type_defs, name);
+        let definition = self.checker.type_def_view().at_path(name);
         let Some(definition) = definition else {
             if self.checker.supervisor_children.contains_key(name) {
                 return Some(DeclaredType::default());
@@ -451,51 +451,42 @@ pub(crate) fn class_is_non_owning(
 )]
 pub(crate) fn declaration_walk_terminates(
     ty: &ResolvedTy,
-    type_defs: &HashMap<String, crate::check::types::TypeDef>,
+    types: crate::check::types::TypeDefView<'_>,
 ) -> bool {
-    fn definition<'a>(
-        name: &str,
-        type_defs: &'a HashMap<String, crate::check::types::TypeDef>,
-    ) -> Option<&'a crate::check::types::TypeDef> {
-        crate::check::types::type_def_for_spelling(type_defs, name)
-    }
-
-    fn nominal_names(ty: &ResolvedTy, out: &mut Vec<String>) {
+    fn nominal_heads(ty: &ResolvedTy, out: &mut Vec<crate::TypeHead>) {
         if let ResolvedTy::Named { head, .. } = ty {
-            let name = head.registry_key();
-            out.push(name.to_string());
+            out.push(*head);
         }
         let mut components = Vec::new();
         crate::type_facts::push_type_components(ty, &mut components);
         for component in &components {
-            nominal_names(component, out);
+            nominal_heads(component, out);
         }
     }
 
-    fn member_names(ty: &Ty, out: &mut Vec<String>) {
+    fn member_heads(ty: &Ty, out: &mut Vec<crate::TypeHead>) {
         match ty {
             Ty::Named { head, args } => {
-                let name = head.registry_key();
-                out.push(name.to_string());
+                out.push(*head);
                 for arg in args {
-                    member_names(arg, out);
+                    member_heads(arg, out);
                 }
             }
             Ty::Tuple(elements) => {
                 for element in elements {
-                    member_names(element, out);
+                    member_heads(element, out);
                 }
             }
             Ty::Array(inner, _)
             | Ty::Slice(inner)
             | Ty::Task(inner)
             | Ty::Pointer { pointee: inner, .. }
-            | Ty::Borrow { pointee: inner } => member_names(inner, out),
+            | Ty::Borrow { pointee: inner } => member_heads(inner, out),
             Ty::Function { params, ret, .. } => {
                 for param in params {
-                    member_names(param, out);
+                    member_heads(param, out);
                 }
-                member_names(ret, out);
+                member_heads(ret, out);
             }
             Ty::Closure {
                 params,
@@ -504,68 +495,71 @@ pub(crate) fn declaration_walk_terminates(
                 ..
             } => {
                 for param in params.iter().chain(captures) {
-                    member_names(param, out);
+                    member_heads(param, out);
                 }
-                member_names(ret, out);
+                member_heads(ret, out);
             }
-            Ty::AssocType { base, .. } => member_names(base, out),
+            Ty::AssocType { base, .. } => member_heads(base, out),
             _ => {}
         }
     }
 
     fn visit(
-        name: &str,
-        type_defs: &HashMap<String, crate::check::types::TypeDef>,
-        stack: &mut Vec<String>,
-        done: &mut HashSet<String>,
+        head: crate::TypeHead,
+        types: crate::check::types::TypeDefView<'_>,
+        stack: &mut Vec<crate::NominalId>,
+        done: &mut HashSet<crate::NominalId>,
     ) -> bool {
-        if stack.iter().any(|entry| entry == name) {
-            return false;
-        }
-        if done.contains(name) {
-            return true;
-        }
-        let Some(definition) = definition(name, type_defs) else {
-            done.insert(name.to_string());
+        let Some(id) = head.declaration(types.defs) else {
             return true;
         };
-        stack.push(name.to_string());
-        let mut members: Vec<String> = Vec::new();
+        if stack.contains(&id) {
+            return false;
+        }
+        if done.contains(&id) {
+            return true;
+        }
+        let Some(definition) = types.type_defs.get(&id) else {
+            done.insert(id);
+            return true;
+        };
+        stack.push(id);
+        let mut members = Vec::new();
         for field in definition.fields.values() {
-            member_names(field, &mut members);
+            member_heads(field, &mut members);
         }
         for variant in definition.variants.values() {
             match variant {
                 crate::check::types::VariantDef::Unit => {}
                 crate::check::types::VariantDef::Tuple(payload) => {
                     for ty in payload {
-                        member_names(ty, &mut members);
+                        member_heads(ty, &mut members);
                     }
                 }
                 crate::check::types::VariantDef::Struct(fields) => {
                     for (_, ty) in fields {
-                        member_names(ty, &mut members);
+                        member_heads(ty, &mut members);
                     }
                 }
             }
         }
         let terminates = members
             .iter()
-            .all(|member| visit(member, type_defs, stack, done));
+            .all(|member| visit(*member, types, stack, done));
         stack.pop();
         if terminates {
-            done.insert(name.to_string());
+            done.insert(id);
         }
         terminates
     }
 
     let mut roots = Vec::new();
-    nominal_names(ty, &mut roots);
+    nominal_heads(ty, &mut roots);
     let mut stack = Vec::new();
     let mut done = HashSet::new();
     roots
         .iter()
-        .all(|root| visit(root, type_defs, &mut stack, &mut done))
+        .all(|root| visit(*root, types, &mut stack, &mut done))
 }
 
 impl Checker {
@@ -642,10 +636,7 @@ impl Checker {
                 // it fires loudly in debug/test/CI and is compiled out of
                 // release, mirroring the W4.047 totality net above.
                 Err(crate::value_class::ClassError::UnknownDeclaration { name })
-                    if self.type_defs.contains_key(&name)
-                        || name
-                            .split_once('.')
-                            .is_some_and(|(_, leaf)| self.type_defs.contains_key(leaf)) =>
+                    if self.type_def_exact(&name).is_some() =>
                 {
                     debug_assert!(
                         false,
@@ -680,8 +671,11 @@ impl Checker {
     /// Snapshot the declaration authority used to classify accepted types.
     fn type_fact_context(&self) -> TypeFactContext {
         let declarations = self.class_declarations();
-        let mut names: std::collections::BTreeSet<String> =
-            self.type_defs.keys().cloned().collect();
+        let mut names: std::collections::BTreeSet<String> = self
+            .type_defs
+            .keys()
+            .map(|id| self.defs.path(id.declaration()).to_string())
+            .collect();
         names.extend(self.registry.resource_type_names().iter().cloned());
         names.extend(self.user_opaque_type_names.iter().cloned());
         names.extend(self.module_registry.all_handle_types());
@@ -1512,6 +1506,7 @@ impl Checker {
         // second spelling of the declaration's identity.
         // Declares one row and answers its identity, which a member row takes
         // as its owner.
+        let mut minted_types: Vec<crate::DefId> = Vec::new();
         let mut declare = |kind: Kind,
                            ordinal: usize,
                            name: Symbol,
@@ -1540,6 +1535,9 @@ impl Checker {
                 match self.defs.declare(occurrence, name, owner, path.clone()) {
                     Ok(id) => {
                         minted = Some(id);
+                        if matches!(kind, Kind::Type | Kind::Record) {
+                            minted_types.push(id);
+                        }
                         match owner {
                             Some(owner) => self.scopes.declare_member(owner, name, id),
                             None => {
@@ -1863,6 +1861,25 @@ impl Checker {
                 }
             }
         }
+        for id in minted_types {
+            if let Some(builtin) = self.declaration_builtin(id) {
+                self.defs.bind_builtin_declaration(builtin, id);
+            }
+        }
+    }
+
+    /// The compiler builtin a std declaration is: its shipped source row in
+    /// the builtin spelling table, or a shipped encoding value. A root or user
+    /// module declaration with the same spelling stays its own nominal.
+    fn declaration_builtin(&self, id: crate::DefId) -> Option<crate::BuiltinType> {
+        if self.defs.module(id) == self.defs.root_module() {
+            return None;
+        }
+        let path = self.defs.path(id);
+        crate::BuiltinType::from_source_declaration(path).or_else(|| {
+            self.resolved_builtin_type(path)
+                .filter(|builtin| builtin.is_encoding_value())
+        })
     }
 
     /// Check the compiler-embedded builtin source under its declaration
@@ -2405,19 +2422,19 @@ impl Checker {
         let rendering_members = self
             .type_defs
             .iter()
-            .map(|(name, definition)| {
+            .map(|(id, definition)| {
                 (
-                    name.clone(),
+                    self.defs.path(id.declaration()).to_string(),
                     crate::type_facts::RenderingMembers::new(definition, |ty| {
                         self.subst.resolve(ty).materialize_literal_defaults()
                     }),
                 )
             })
             .collect();
-        let mut resolved_type_defs: HashMap<String, TypeDef> = self
+        let mut resolved_type_defs: HashMap<crate::NominalId, TypeDef> = self
             .type_defs
             .iter()
-            .map(|(name, type_def)| (name.clone(), self.resolve_type_def(type_def)))
+            .map(|(id, type_def)| (*id, self.resolve_type_def(type_def)))
             .collect();
 
         let resolved_type_aliases = self.resolved_type_aliases();
@@ -2461,14 +2478,16 @@ impl Checker {
         }
         let opaque_resource_candidates =
             self.derive_opaque_resource_candidate_graph(&resolved_fn_sigs);
-        for cycle in crate::cycle::detect_recursive_value_type_cycles(&resolved_type_defs) {
+        for cycle in crate::cycle::detect_recursive_value_type_cycles(
+            crate::check::TypeDefView::new(&self.defs, &resolved_type_defs),
+        ) {
             let span = self
                 .type_def_spans
                 .get(&cycle.edge.from)
                 .cloned()
                 .unwrap_or(0..0);
             let type_kind = resolved_type_defs
-                .get(&cycle.edge.from)
+                .get(&cycle.edge.from_id)
                 .map_or("type", |type_def| value_type_kind_label(type_def.kind));
             self.errors.push(TypeError::recursive_value_type(
                 span,
@@ -2521,7 +2540,9 @@ impl Checker {
                 .iter()
                 .filter(|spec| {
                     spec.suppress_from_sandbox_emit
-                        && resolved_type_defs.contains_key(spec.name)
+                        && TypeDefView::new(&self.defs, &resolved_type_defs)
+                            .at_path(spec.name)
+                            .is_some()
                         && !self.source_type_defs.contains(spec.name)
                 })
                 .map(|spec| spec.name.to_string())
@@ -2621,7 +2642,7 @@ impl Checker {
         let vec_generic_element_abi = self.build_vec_generic_element_abi(
             &resolved_call_type_args,
             &resolved_record_init_type_args,
-            &resolved_type_defs,
+            TypeDefView::new(&self.defs, &resolved_type_defs),
         );
 
         // The §6.3 fact table describes an accepted program. A rejected one
@@ -2653,7 +2674,12 @@ impl Checker {
         } else {
             HashMap::new()
         };
-        let defs = std::sync::Arc::new(std::mem::take(&mut self.defs));
+        // Flush any pending dirty registration before the handle-bearing set is
+        // moved out: the output layer uses it for codegen decisions, and it
+        // reads the declaration table the output takes next.
+        self.ensure_handle_bearing_fresh();
+        // The checker keeps its table: post-check queries resolve through it.
+        let defs = std::sync::Arc::new(self.defs.clone());
         let resolutions = self.scopes.take_resolutions();
         let contexts = self.scopes.contexts().clone();
         let mut output = TypeCheckOutput {
@@ -2733,12 +2759,7 @@ impl Checker {
             impl_method_declaration_ids: std::mem::take(&mut self.impl_method_declaration_ids),
             consuming_inherent_methods: std::mem::take(&mut self.consuming_inherent_methods),
             root_value_bindings: std::mem::take(&mut self.root_value_bindings),
-            handle_bearing_structs: {
-                // Flush any pending dirty registration before the set is moved
-                // out — the output layer uses this set for codegen decisions.
-                self.ensure_handle_bearing_fresh();
-                std::mem::take(&mut self.handle_bearing_structs)
-            },
+            handle_bearing_structs: std::mem::take(&mut self.handle_bearing_structs),
             cycle_capable_actors: HashSet::new(),
             user_modules: std::mem::take(&mut self.user_modules),
             call_type_args: resolved_call_type_args,
@@ -2778,7 +2799,7 @@ impl Checker {
         };
 
         // Detect actor reference cycles and emit warnings.
-        let (cycle_capable, cycles) = crate::cycle::detect_actor_ref_cycles(&output.type_defs);
+        let (cycle_capable, cycles) = crate::cycle::detect_actor_ref_cycles(output.types());
         for cycle_actors in &cycles {
             let desc = cycle_actors.join(" -> ");
             let span = cycle_actors

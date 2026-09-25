@@ -18,3 +18,6 @@ hew-parser = { path = "../hew-parser" }
 hew-types = { path = "../hew-types" }
 serde.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+hew-types = { path = "../hew-types", features = ["test"] }

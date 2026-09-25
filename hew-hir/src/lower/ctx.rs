@@ -108,7 +108,7 @@ impl LowerCtx {
                             | hew_types::check::TypeDefKind::Supervisor
                     )
                 })
-                .map(|(name, _)| name.clone())
+                .map(|(id, _)| tc_output.defs.path(id.declaration()).to_string())
                 .collect(),
             mono_registry: MonoRegistry::with_cap(mono_cap),
             mono_cap_diag_emitted: false,
@@ -163,7 +163,7 @@ impl LowerCtx {
                     })
                 })
                 .collect(),
-            checked_type_defs: tc_output.type_defs.clone(),
+            checked_type_defs: tc_output.type_defs_by_path(),
             current_module_idx: 0,
             current_item_ordinal: 0,
             root_item_ids: HashSet::new(),

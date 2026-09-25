@@ -37,13 +37,13 @@ fn encoding_values_require_shipped_source_and_have_semantic_copy_facts() {
         assert_eq!(declaration.builtin, Some(kind));
         assert!(declaration.is_opaque);
         assert_ne!(
-            ty_is_eq_eligible(ty, &output.type_defs),
+            ty_is_eq_eligible(ty, output.types()),
             EqEligibility::Eligible
         );
         assert_ne!(
             crate::hash_eligibility::ty_is_hash_eligible_with_resources(
                 ty,
-                &output.type_defs,
+                output.types(),
                 &HashSet::new()
             ),
             crate::hash_eligibility::HashEligibility::Eligible

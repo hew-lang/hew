@@ -365,7 +365,7 @@ impl Checker {
                     self.pre_register_type_decl(td);
                     self.current_module = saved_module;
                     let canonical = format!("std.builtins.{}", td.name);
-                    if let Some(source_def) = self.type_defs.get(&canonical).cloned() {
+                    if let Some(source_def) = self.type_def_at(&canonical).cloned() {
                         self.register_canonical_type_def(
                             "std.builtins",
                             td.name.name.as_str(),
@@ -668,7 +668,7 @@ impl Checker {
         {
             let canonical = format!("std.builtins.{name}");
             debug_assert!(
-                self.type_defs.contains_key(&canonical),
+                self.type_def_at(&canonical).is_some(),
                 "builtins prelude binding requires its source declaration: {canonical}"
             );
             self.known_types.insert(name.to_string());

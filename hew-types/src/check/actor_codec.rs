@@ -72,7 +72,7 @@ impl Checker {
             // A record or enum can declare its schema; any other value has
             // no wire representation at all.
             let declarable = matches!(ty, ResolvedTy::Named { head, .. }
-                if head.is_user() && self.type_defs.contains_key(head.registry_key())
+                if head.is_user() && self.type_def_at(head.registry_key()).is_some()
                     && !self.actor_protocol_descriptors.contains_key(head.registry_key()));
             let message = format!(
                 "remote actor `{canonical}` cannot carry `{}`: a value sent to a remote \

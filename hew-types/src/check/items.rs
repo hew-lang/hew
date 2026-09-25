@@ -270,8 +270,7 @@ impl Checker {
     pub(super) fn check_supervisor(&mut self, sd: &SupervisorDecl, span: &Span) {
         let scope = self.enter_primary_sig_scope(&[(Some(&sd.type_params), None)]);
         let bounds = self
-            .type_defs
-            .get(sd.name.name.as_str())
+            .type_def_at(sd.name.name.as_str())
             .map_or_else(HashMap::new, |definition| definition.bounds.clone());
         self.current_type_param_bounds
             .push(TypeParamScope::new(bounds, HashMap::new()));
@@ -327,7 +326,7 @@ impl Checker {
             child.span.clone()
         };
         let identity = self.resolve_supervisor_child_type(&child.actor_type.to_string()); // TRANSITION(P1): deleted by A1 commit 2
-        let definition = identity.as_ref().and_then(|name| self.type_defs.get(name));
+        let definition = identity.as_ref().and_then(|name| self.type_def_at(name));
         if definition.is_some_and(|definition| {
             matches!(
                 definition.kind,
@@ -1282,8 +1281,7 @@ impl Checker {
         if has_parameters {
             self.generic_ctx.push(generic_bindings);
             let bounds = self
-                .type_defs
-                .get(&identity)
+                .type_def_at(&identity)
                 .map_or_else(HashMap::new, |definition| definition.bounds.clone());
             self.current_type_param_bounds
                 .push(TypeParamScope::new(bounds, HashMap::new()));

@@ -288,7 +288,7 @@ pub(crate) fn selected_impl_method(
 pub struct TypeFactContext {
     declarations: BTreeMap<String, DeclaredType>,
     registry: TraitRegistry,
-    type_defs: HashMap<String, TypeDef>,
+    type_defs: HashMap<crate::NominalId, TypeDef>,
     method_ids: HashMap<(String, String, String), crate::DefId>,
     method_binders: HashMap<crate::DefId, ImplMethodBinders>,
     /// The declaration table every `DefId` above indexes.
@@ -343,11 +343,17 @@ impl RenderingMembers {
 }
 
 impl TypeFactContext {
+    /// The type definitions, read by declaration.
+    #[must_use]
+    pub fn types(&self) -> crate::check::TypeDefView<'_> {
+        crate::check::TypeDefView::new(&self.defs, &self.type_defs)
+    }
+
     #[must_use]
     pub fn new(
         declarations: BTreeMap<String, DeclaredType>,
         registry: TraitRegistry,
-        type_defs: HashMap<String, TypeDef>,
+        type_defs: HashMap<crate::NominalId, TypeDef>,
     ) -> Self {
         Self {
             declarations,
@@ -470,7 +476,7 @@ impl TypeFactService {
             )
         })?;
         let name = self.context.defs.path(instance.nominal.declaration());
-        let definition = self.context.type_defs.get(name).ok_or_else(|| {
+        let definition = self.context.types().at_path(name).ok_or_else(|| {
             format!(
                 "aggregate `{}` has no exact checker declaration",
                 ty.user_facing()
@@ -771,18 +777,16 @@ impl TypeFactService {
                             | crate::BuiltinType::Location
                             | crate::BuiltinType::RemotePid
                     ),
-                    ResolvedTy::Named { head, .. } => self
-                        .context
-                        .type_defs
-                        .get(head.registry_key())
-                        .is_some_and(|definition| {
+                    ResolvedTy::Named { head, .. } => {
+                        self.context.types().of(*head).is_some_and(|definition| {
                             !definition.is_indirect
                                 && matches!(
                                     definition.kind,
                                     crate::check::TypeDefKind::Struct
                                         | crate::check::TypeDefKind::Record
                                 )
-                        }),
+                        })
+                    }
                     _ => true,
                 };
                 if !admitted_shape {
@@ -806,7 +810,7 @@ impl TypeFactService {
             )?;
             return Ok(Some(ValueMethodPlan::User { method, type_args }));
         }
-        if !crate::check::declaration_walk_terminates(ty, &self.context.type_defs) {
+        if !crate::check::declaration_walk_terminates(ty, self.context.types()) {
             return Ok(None);
         }
         let key = (ty.clone(), capability);
@@ -883,7 +887,7 @@ impl TypeFactService {
                             .to_string()
                     },
                 );
-                let Some(definition) = self.context.type_defs.get(&owner) else {
+                let Some(definition) = self.context.types().at_path(&owner) else {
                     // A builtin, or a memberless declaration such as a
                     // supervisor, derives nothing.
                     if builtin.is_some() || self.context.declarations.contains_key(&owner) {
@@ -1099,8 +1103,8 @@ impl TypeFactService {
         // Equality and hashing still inspect the declaration's own fields.
         let definition =
             self.context
-                .type_defs
-                .get(name)
+                .types()
+                .at_path(name)
                 .ok_or_else(|| ClassError::UnknownDeclaration {
                     name: name.to_string(),
                 })?;
@@ -1158,7 +1162,7 @@ impl TypeFactService {
             )),
             ResolvedTy::Named { head, args, .. } => {
                 let name = head.registry_key();
-                let Some(definition) = self.context.type_defs.get(name) else {
+                let Some(definition) = self.context.types().at_path(name) else {
                     // A memberless declaration such as a supervisor derives nothing.
                     if self.context.declarations.contains_key(name) {
                         return Ok(false);
@@ -1195,7 +1199,7 @@ impl TypeFactService {
             _ => Ok(matches!(
                 crate::hash_eligibility::ty_is_hash_eligible_with_resources(
                     &ty.to_ty(),
-                    &self.context.type_defs,
+                    self.context.types(),
                     self.context.registry.resource_type_names(),
                 ),
                 crate::hash_eligibility::HashEligibility::Eligible

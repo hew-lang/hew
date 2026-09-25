@@ -450,8 +450,7 @@ impl Checker {
         };
         let name = head.registry_key();
         let actor_name = self
-            .type_defs
-            .get(name)
+            .type_def_at(name)
             .filter(|def| def.kind == TypeDefKind::Actor)
             .map_or_else(|| name.to_string(), |def| def.name.clone());
         Some(format!("{actor_name}::{}", method.0))

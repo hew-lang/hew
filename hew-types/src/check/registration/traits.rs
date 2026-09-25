@@ -62,8 +62,8 @@ impl Checker {
                 bounds.push("Send".into());
             }
         }
-        self.type_defs.insert(
-            identity.to_string(),
+        self.insert_type_def(
+            identity,
             TypeDef {
                 kind: TypeDefKind::Supervisor,
                 name: identity.to_string(),
@@ -191,7 +191,7 @@ impl Checker {
         // Actors are always Send
         self.registry.register_actor(identity.to_string());
 
-        self.type_defs.insert(identity.to_string(), type_def);
+        self.insert_type_def(identity, type_def);
         // A new handle-bearing candidate entered `type_defs`; invalidate the
         // cached handle-bearing classification the same way the qualified
         // type-alias path does.
@@ -1833,7 +1833,7 @@ impl Checker {
             .as_deref()
             .filter(|_| !type_name.contains('.'))
             .map(|module| format!("{module}.{type_name}"))
-            .filter(|qualified| self.type_defs.contains_key(qualified))
+            .filter(|qualified| self.type_def_at(qualified).is_some())
             .unwrap_or_else(|| type_name.to_string());
         let impl_self = if self_type_args.is_empty() {
             Ty::from_name(&impl_self_name)

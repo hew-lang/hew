@@ -497,6 +497,16 @@ impl KnownDecl {
             .find(|known| Symbol::intern(known.leaf()) == leaf)
     }
 
+    /// The known declaration a builtin cursor is declared as.
+    #[must_use]
+    pub fn of_builtin(builtin: crate::BuiltinType) -> Option<Self> {
+        match builtin {
+            crate::BuiltinType::VecIter => Some(Self::VecIter),
+            crate::BuiltinType::HashMapIter => Some(Self::HashMapIter),
+            _ => None,
+        }
+    }
+
     /// The known declaration a nominal identity is, when it is one.
     #[must_use]
     pub fn of(nominal: NominalId) -> Option<Self> {
@@ -659,6 +669,10 @@ pub struct DefTable {
     /// id `Scope::resolve` returned instead of a rendered path.
     by_path: HashMap<String, DefId>,
     default_bodies: HashMap<DefaultBodyKey, DefId>,
+    /// The std declaration each compiler builtin with a source declaration
+    /// is (`CrashInfo` is `std.failure.CrashInfo`), bound when that
+    /// declaration is established.
+    builtin_declarations: HashMap<crate::BuiltinType, DefId>,
 }
 
 impl Default for DefTable {
@@ -680,6 +694,7 @@ impl DefTable {
             by_occurrence: HashMap::new(),
             by_path: HashMap::new(),
             default_bodies: HashMap::new(),
+            builtin_declarations: HashMap::new(),
         };
         for anchor in BuiltinAnchor::ALL {
             table.push_row(DefRow {
@@ -1164,6 +1179,33 @@ impl DefTable {
         self.by_occurrence.insert(occurrence, id);
         self.by_path.insert(path, id);
         Ok(id)
+    }
+
+    /// Record that `declaration` is the source declaration of `builtin`.
+    pub(crate) fn bind_builtin_declaration(
+        &mut self,
+        builtin: crate::BuiltinType,
+        declaration: DefId,
+    ) {
+        self.builtin_declarations.insert(builtin, declaration);
+    }
+
+    /// The source declaration of a compiler builtin, when its std module
+    /// declares it.
+    #[must_use]
+    pub fn builtin_declaration(&self, builtin: crate::BuiltinType) -> Option<NominalId> {
+        self.builtin_declarations
+            .get(&builtin)
+            .copied()
+            .map(NominalId::from_minted_declaration)
+    }
+
+    /// The builtin a declaration is, when it is one.
+    #[must_use]
+    pub fn declared_builtin(&self, declaration: DefId) -> Option<crate::BuiltinType> {
+        self.builtin_declarations
+            .iter()
+            .find_map(|(builtin, id)| (*id == declaration).then_some(*builtin))
     }
 
     /// Bind a FURTHER occurrence to the declaration already established under

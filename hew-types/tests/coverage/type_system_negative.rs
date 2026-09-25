@@ -1449,8 +1449,7 @@ fn checker_output_success_path_contains_no_unresolved_ty_var() {
         "signature id leaked unresolved Ty::Var: {sig:?}"
     );
     let ty_def = output
-        .type_defs
-        .get("Box")
+        .type_def_at_path("Box")
         .unwrap_or_else(|| panic!("expected type def for Box"));
     assert!(
         ty_def
@@ -1554,7 +1553,7 @@ fn inference_hole_type_field_is_rejected() {
         output.errors
     );
     assert!(
-        !output.type_defs.contains_key("Box"),
+        output.type_def_at_path("Box").is_none(),
         "failing type definition should be stripped from checker output: {:?}",
         output.type_defs
     );
@@ -1578,7 +1577,7 @@ fn inference_hole_enum_variant_constructor_is_stripped_from_output() {
         output.errors
     );
     assert!(
-        !output.type_defs.contains_key("Maybe"),
+        output.type_def_at_path("Maybe").is_none(),
         "failing enum definition should be stripped from checker output: {:?}",
         output.type_defs
     );

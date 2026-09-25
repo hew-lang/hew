@@ -86,9 +86,9 @@ pub fn complete(
 
     // Add type definitions and function signatures from the type checker.
     if let Some(tc) = type_output {
-        for name in tc.type_defs.keys() {
+        for id in tc.type_defs.keys() {
             items.push(CompletionItem {
-                label: name.clone(),
+                label: tc.defs.path(id.declaration()).to_string(),
                 kind: CompletionKind::Type,
                 detail: None,
                 documentation: None,
@@ -133,8 +133,8 @@ fn try_is_type_pattern_completions(
     let mut items: Vec<_> = tc
         .type_defs
         .keys()
-        .map(|name| CompletionItem {
-            label: name.clone(),
+        .map(|id| CompletionItem {
+            label: tc.defs.path(id.declaration()).to_string(),
             kind: CompletionKind::Type,
             detail: None,
             documentation: None,
@@ -304,8 +304,8 @@ fn module_member_completions(
             items.push(fn_sig_completion(&leaf, sig));
         }
     }
-    for (key, definition) in &tc.type_defs {
-        let Some(leaf) = direct_leaf(key) else {
+    for (id, definition) in &tc.type_defs {
+        let Some(leaf) = direct_leaf(tc.defs.path(id.declaration())) else {
             continue;
         };
         items.push(CompletionItem {
@@ -378,7 +378,7 @@ fn try_struct_init_completions(
     let type_name = extract_type_name_before(source, brace_pos)?;
 
     let tc = type_output?;
-    let type_def = method_resolution::lookup_type_def(&tc.type_defs, type_name)?;
+    let type_def = method_resolution::lookup_type_def(&tc.defs, &tc.type_defs, type_name)?;
     if type_def.fields.is_empty() {
         return None;
     }
@@ -417,7 +417,7 @@ fn try_enum_variant_completions(
 
     let type_name = extract_type_name_before(source, dot_pos - 1)?;
     let tc = type_output?;
-    let type_def = method_resolution::lookup_type_def(&tc.type_defs, type_name)?;
+    let type_def = method_resolution::lookup_type_def(&tc.defs, &tc.type_defs, type_name)?;
     if type_def.kind != TypeDefKind::Enum {
         return None;
     }
@@ -577,10 +577,11 @@ fn try_spawn_completions(
 /// candidate or produce an unspellable fully canonical label.
 fn imported_actor_spawn_labels(output: &TypeCheckOutput) -> Vec<String> {
     let mut labels = BTreeSet::new();
-    for (identity, definition) in &output.type_defs {
+    for (id, definition) in &output.type_defs {
         if definition.kind != TypeDefKind::Actor {
             continue;
         }
+        let identity = output.defs.path(id.declaration());
         let Some((owner, actor_name)) = identity.rsplit_once('.') else {
             continue;
         };

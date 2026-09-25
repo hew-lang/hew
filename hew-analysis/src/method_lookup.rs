@@ -29,7 +29,12 @@ pub(crate) fn collect_method_sigs_for_receiver(
     tc: &TypeCheckOutput,
     receiver_ty: &Ty,
 ) -> Vec<(String, FnSig)> {
-    method_resolution::collect_method_sigs_for_receiver(&tc.type_defs, &tc.fn_sigs, receiver_ty)
+    method_resolution::collect_method_sigs_for_receiver(
+        &tc.defs,
+        &tc.type_defs,
+        &tc.fn_sigs,
+        receiver_ty,
+    )
 }
 
 pub(crate) fn lookup_method_sig(
@@ -37,12 +42,12 @@ pub(crate) fn lookup_method_sig(
     receiver_ty: &Ty,
     method: &str,
 ) -> Option<FnSig> {
-    method_resolution::lookup_method_sig(&tc.type_defs, &tc.fn_sigs, receiver_ty, method)
+    method_resolution::lookup_method_sig(&tc.defs, &tc.type_defs, &tc.fn_sigs, receiver_ty, method)
 }
 
 pub(crate) fn lookup_type_def_for_receiver(
     tc: &TypeCheckOutput,
     receiver_ty: &Ty,
 ) -> Option<TypeDef> {
-    method_resolution::lookup_type_def_for_receiver(&tc.type_defs, receiver_ty)
+    method_resolution::lookup_type_def_for_receiver(&tc.defs, &tc.type_defs, receiver_ty)
 }

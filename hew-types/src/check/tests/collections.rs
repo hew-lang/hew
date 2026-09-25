@@ -587,8 +587,9 @@ fn vec_record_clear_has_semantic_contract() {
 #[test]
 fn vec_contains_eq_eligibility_classifies_layout_elements() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let __id = checker.test_declaration("Point");
     checker.type_defs.insert(
-        "Point".to_string(),
+        __id,
         TypeDef {
             kind: TypeDefKind::Struct,
             name: "Point".to_string(),
@@ -602,8 +603,9 @@ fn vec_contains_eq_eligibility_classifies_layout_elements() {
             is_indirect: false,
         },
     );
+    let __id = checker.test_declaration("WithFloat");
     checker.type_defs.insert(
-        "WithFloat".to_string(),
+        __id,
         TypeDef {
             kind: TypeDefKind::Struct,
             name: "WithFloat".to_string(),
@@ -617,8 +619,9 @@ fn vec_contains_eq_eligibility_classifies_layout_elements() {
             is_indirect: false,
         },
     );
+    let __id = checker.test_declaration("Handle");
     checker.type_defs.insert(
-        "Handle".to_string(),
+        __id,
         TypeDef {
             kind: TypeDefKind::Struct,
             name: "Handle".to_string(),
@@ -639,25 +642,31 @@ fn vec_contains_eq_eligibility_classifies_layout_elements() {
     let unknown = Ty::named_for_test("Unknown", vec![]);
 
     assert_eq!(
-        ty_is_eq_eligible(&point, &checker.type_defs),
+        ty_is_eq_eligible(&point, checker.type_def_view()),
         EqEligibility::Eligible
     );
     // Floats are equality-eligible: structural equality bit-casts the float
     // and compares the bit pattern (bitwise/total semantics).
     assert_eq!(
-        ty_is_eq_eligible(&Ty::Tuple(vec![Ty::I32, Ty::F64]), &checker.type_defs),
+        ty_is_eq_eligible(&Ty::Tuple(vec![Ty::I32, Ty::F64]), checker.type_def_view()),
         EqEligibility::Eligible
     );
     assert_eq!(
-        ty_is_eq_eligible(&with_float, &checker.type_defs),
+        ty_is_eq_eligible(&with_float, checker.type_def_view()),
         EqEligibility::Eligible
     );
     assert_eq!(
-        ty_is_eq_eligible(&Ty::Tuple(vec![Ty::I32, Ty::String]), &checker.type_defs),
+        ty_is_eq_eligible(
+            &Ty::Tuple(vec![Ty::I32, Ty::String]),
+            checker.type_def_view()
+        ),
         EqEligibility::Eligible
     );
     assert_eq!(
-        ty_is_eq_eligible(&Ty::Tuple(vec![Ty::I32, Ty::Bytes]), &checker.type_defs),
+        ty_is_eq_eligible(
+            &Ty::Tuple(vec![Ty::I32, Ty::Bytes]),
+            checker.type_def_view()
+        ),
         EqEligibility::IneligibleManaged(Ty::Bytes)
     );
     let nested_failure = crate::eq_eligibility::ty_eq_ineligibility(
@@ -665,7 +674,7 @@ fn vec_contains_eq_eligibility_classifies_layout_elements() {
             args: vec![Ty::Tuple(vec![Ty::I32, Ty::Bytes])],
             head: crate::TypeHead::Builtin(BuiltinType::Option),
         },
-        &checker.type_defs,
+        checker.type_def_view(),
     )
     .expect("bytes member must reject structural equality");
     assert_eq!(nested_failure.member, "Some.1");
@@ -674,11 +683,11 @@ fn vec_contains_eq_eligibility_classifies_layout_elements() {
         EqEligibility::IneligibleManaged(Ty::Bytes)
     );
     assert_eq!(
-        ty_is_eq_eligible(&handle, &checker.type_defs),
+        ty_is_eq_eligible(&handle, checker.type_def_view()),
         EqEligibility::IneligibleOwned(handle)
     );
     assert_eq!(
-        ty_is_eq_eligible(&unknown, &checker.type_defs),
+        ty_is_eq_eligible(&unknown, checker.type_def_view()),
         EqEligibility::IneligibleUnknown
     );
 }
@@ -689,8 +698,9 @@ fn generic_record_clone_concrete_instantiation_is_admissible() {
     // clonable types is admissible — the per-mono clone thunk is synthesised
     // per instantiation.
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let __id = checker.test_declaration("Pair");
     checker.type_defs.insert(
-        "Pair".to_string(),
+        __id,
         TypeDef {
             kind: TypeDefKind::Record,
             name: "Pair".to_string(),
@@ -1005,28 +1015,31 @@ fn record_clone_affine_veto_is_transitive_but_stops_at_rc() {
     checker
         .registry
         .register_linear_type("owner.LinearTicket".to_string());
+    let __id = checker.test_declaration("ResourceWrapper");
     checker.type_defs.insert(
-        "ResourceWrapper".to_string(),
+        __id,
         record_type_def_with_field(
             "ResourceWrapper",
             "resource",
-            Ty::named_for_test("owner.ResourceToken", vec![]),
+            checker.test_named("owner.ResourceToken", vec![]),
         ),
     );
+    let __id = checker.test_declaration("LinearWrapper");
     checker.type_defs.insert(
-        "LinearWrapper".to_string(),
+        __id,
         record_type_def_with_field(
             "LinearWrapper",
             "linear",
-            Ty::named_for_test("owner.LinearTicket", vec![]),
+            checker.test_named("owner.LinearTicket", vec![]),
         ),
     );
+    let __id = checker.test_declaration("SharedWrapper");
     checker.type_defs.insert(
-        "SharedWrapper".to_string(),
+        __id,
         record_type_def_with_field(
             "SharedWrapper",
             "shared",
-            Ty::rc(Ty::named_for_test("owner.ResourceToken", vec![])),
+            Ty::rc(checker.test_named("owner.ResourceToken", vec![])),
         ),
     );
 
@@ -1064,8 +1077,9 @@ fn record_clone_affine_veto_descends_enum_tuple_and_array_storage() {
     checker
         .registry
         .register_linear_type("LinearTicket".to_string());
+    let __id = checker.test_declaration("Envelope");
     checker.type_defs.insert(
-        "Envelope".to_string(),
+        __id,
         TypeDef {
             kind: TypeDefKind::Enum,
             name: "Envelope".to_string(),
@@ -1074,7 +1088,7 @@ fn record_clone_affine_veto_descends_enum_tuple_and_array_storage() {
             fields: HashMap::new(),
             variants: HashMap::from([(
                 "Full".to_string(),
-                VariantDef::Tuple(vec![Ty::named_for_test("ResourceToken", vec![])]),
+                VariantDef::Tuple(vec![checker.test_named("ResourceToken", vec![])]),
             )]),
             methods: HashMap::new(),
             doc_comment: None,
@@ -1082,20 +1096,22 @@ fn record_clone_affine_veto_descends_enum_tuple_and_array_storage() {
             is_indirect: false,
         },
     );
+    let __id = checker.test_declaration("TupleWrapper");
     checker.type_defs.insert(
-        "TupleWrapper".to_string(),
+        __id,
         record_type_def_with_field(
             "TupleWrapper",
             "value",
-            Ty::Tuple(vec![Ty::I64, Ty::named_for_test("Envelope", vec![])]),
+            Ty::Tuple(vec![Ty::I64, checker.test_named("Envelope", vec![])]),
         ),
     );
+    let __id = checker.test_declaration("ArrayWrapper");
     checker.type_defs.insert(
-        "ArrayWrapper".to_string(),
+        __id,
         record_type_def_with_field(
             "ArrayWrapper",
             "values",
-            Ty::Array(Box::new(Ty::named_for_test("LinearTicket", vec![])), 2),
+            Ty::Array(Box::new(checker.test_named("LinearTicket", vec![])), 2),
         ),
     );
 
@@ -1117,9 +1133,10 @@ fn record_clone_affine_veto_preserves_semantic_handle_clones_and_phantom_tags() 
     checker
         .registry
         .register_resource_type("ResourceToken".to_string());
-    let resource = Ty::named_for_test("ResourceToken", vec![]);
+    let resource = checker.test_named("ResourceToken", vec![]);
+    let __id = checker.test_declaration("HandleWrapper");
     checker.type_defs.insert(
-        "HandleWrapper".to_string(),
+        __id,
         TypeDef {
             kind: TypeDefKind::Record,
             name: "HandleWrapper".to_string(),
@@ -1156,8 +1173,9 @@ fn record_clone_affine_veto_preserves_semantic_handle_clones_and_phantom_tags() 
             is_indirect: false,
         },
     );
+    let __id = checker.test_declaration("PhantomKey");
     checker.type_defs.insert(
-        "PhantomKey".to_string(),
+        __id,
         TypeDef {
             kind: TypeDefKind::Record,
             name: "PhantomKey".to_string(),
@@ -1195,13 +1213,14 @@ fn record_clone_refuses_either_pipe_half_by_the_endpoint() {
     checker
         .registry
         .register_resource_type("ResourceToken".to_string());
-    let resource = Ty::named_for_test("ResourceToken", vec![]);
+    let resource = checker.test_named("ResourceToken", vec![]);
     for (name, builtin) in [
         ("SinkWrapper", BuiltinType::Sink),
         ("StreamWrapper", BuiltinType::Stream),
     ] {
+        let __id = checker.test_declaration(name);
         checker.type_defs.insert(
-            name.to_string(),
+            __id,
             record_type_def_with_field(
                 name,
                 "half",
@@ -1226,8 +1245,9 @@ fn generic_record_clone_opaque_instantiation_fails_closed() {
     // is the abstract param `T`.
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     checker.user_opaque_type_names.insert("Handle".to_string());
+    let __id = checker.test_declaration("Handle");
     checker.type_defs.insert(
-        "Handle".to_string(),
+        __id,
         TypeDef {
             kind: TypeDefKind::Struct,
             name: "Handle".to_string(),
@@ -1241,8 +1261,9 @@ fn generic_record_clone_opaque_instantiation_fails_closed() {
             is_indirect: true,
         },
     );
+    let __id = checker.test_declaration("Box");
     checker.type_defs.insert(
-        "Box".to_string(),
+        __id,
         TypeDef {
             kind: TypeDefKind::Record,
             name: "Box".to_string(),
@@ -1257,7 +1278,7 @@ fn generic_record_clone_opaque_instantiation_fails_closed() {
         },
     );
     let span = Span::from(0..0);
-    let handle = Ty::named_for_test("Handle", vec![]);
+    let handle = checker.test_named("Handle", vec![]);
     assert!(matches!(
         checker.record_clone_admissibility("Box", std::slice::from_ref(&handle), &span),
         RecordCloneAdmissibility::OpaqueField { .. }
@@ -1270,8 +1291,9 @@ fn generic_record_clone_unresolved_var_is_nyi() {
     // inference vars) keeps the `GenericRecord` NYI diagnostic; the
     // substitution-aware opaque walk must not regress this clean reject.
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let __id = checker.test_declaration("Pair");
     checker.type_defs.insert(
-        "Pair".to_string(),
+        __id,
         TypeDef {
             kind: TypeDefKind::Record,
             name: "Pair".to_string(),
@@ -1722,8 +1744,9 @@ fn vec_iter_rejects_qualified_diverging_generic_value_cycle() {
     // evade the cycle guard.
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     checker.modules.insert("pkg".to_string());
+    let __id = checker.test_declaration("Wrap");
     checker.type_defs.insert(
-        "Wrap".to_string(),
+        __id,
         TypeDef {
             kind: TypeDefKind::Record,
             name: "Wrap".to_string(),
@@ -1743,11 +1766,12 @@ fn vec_iter_rejects_qualified_diverging_generic_value_cycle() {
             is_indirect: false,
         },
     );
+    let __id = checker.test_declaration("pkg.Wrap");
     checker.type_defs.insert(
-        "pkg.Wrap".to_string(),
+        __id,
         checker
-            .type_defs
-            .get("Wrap")
+            .type_def_view()
+            .at_path("Wrap")
             .expect("local fixture definition")
             .clone(),
     );
@@ -1856,8 +1880,9 @@ fn channel_admission_fails_closed_for_collection_bearing_record() {
         head: crate::TypeHead::Builtin(BuiltinType::Vec),
         args: vec![Ty::I64],
     };
+    let __id = checker.test_declaration("Boxed");
     checker.type_defs.insert(
-        "Boxed".to_string(),
+        __id,
         TypeDef {
             kind: TypeDefKind::Record,
             name: "Boxed".to_string(),
@@ -1871,8 +1896,9 @@ fn channel_admission_fails_closed_for_collection_bearing_record() {
             is_indirect: false,
         },
     );
+    let __id = checker.test_declaration("Person");
     checker.type_defs.insert(
-        "Person".to_string(),
+        __id,
         TypeDef {
             kind: TypeDefKind::Record,
             name: "Person".to_string(),
@@ -3012,7 +3038,7 @@ fn machine_state_user_machine_stays_nominal_not_builtin_marker() {
 
     assert!(output.errors.is_empty(), "type errors: {:?}", output.errors);
     assert!(
-        output.type_defs.contains_key("MachineState"),
+        output.type_def_at_path("MachineState").is_some(),
         "user machine named MachineState must still register as a nominal type: {:?}",
         output.type_defs.keys().collect::<Vec<_>>()
     );
@@ -3120,17 +3146,18 @@ fn register_type_decl_marks_transitive_handle_bearing_structs() {
         lang_item: None,
     };
 
+    for name in ["Inner", "Outer", "Plain"] {
+        checker.test_declaration(name);
+    }
     checker.register_type_decl(&inner);
     checker.register_type_decl(&outer);
     checker.register_type_decl(&plain);
-    checker.register_qualified_type_alias("regexwrap", "Outer");
 
     // Registrations set handle_bearing_dirty; flush before reading the set.
     checker.ensure_handle_bearing_fresh();
 
     assert!(checker.handle_bearing_structs.contains("Inner"));
     assert!(checker.handle_bearing_structs.contains("Outer"));
-    assert!(checker.handle_bearing_structs.contains("regexwrap.Outer"));
     assert!(!checker.handle_bearing_structs.contains("Plain"));
 }
 

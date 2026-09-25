@@ -16,7 +16,9 @@ fn user_defined_option_box_does_not_get_builtin_discriminator() {
         "user-defined nominal should typecheck without builtin identity: {:?}",
         output.errors
     );
-    let holder = output.type_defs.get("Holder").expect("Holder type exists");
+    let holder = output
+        .type_def_at_path("Holder")
+        .expect("Holder type exists");
     assert!(matches!(
         holder.fields.get("value"),
         Some(Ty::Named { args, head: name_head @ (hew_types::TypeHead::Nominal(_) | hew_types::TypeHead::Param(_) | hew_types::TypeHead::Unresolved(_)) }) if name_head.spelling() == "OptionBox" && args.is_empty()

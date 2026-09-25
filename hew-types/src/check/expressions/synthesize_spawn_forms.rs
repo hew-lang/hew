@@ -186,8 +186,8 @@ impl Checker {
         if let Expr::Ident(name) = &object.0 {
             if let Some(pos) = field.find("::") {
                 let receiver_is_binding = self.env.lookup_ref(name.name.as_str()).is_some();
-                let receiver_is_known_type = self.type_defs.contains_key(name.name.as_str());
-                if !receiver_is_binding && !receiver_is_known_type {
+                let receiver_is_known_type = self.type_def_at(name.name.as_str());
+                if !receiver_is_binding && receiver_is_known_type.is_none() {
                     let type_name = &field[..pos];
                     let variant_name = &field[pos + 2..];
                     return self.check_module_qualified_variant_ref(
@@ -213,8 +213,8 @@ impl Checker {
         if let Expr::Ident(name) = &object.0 {
             if !field.contains("::") {
                 let receiver_is_binding = self.env.lookup_ref(name.name.as_str()).is_some();
-                let receiver_is_known_type = self.type_defs.contains_key(name.name.as_str());
-                if !receiver_is_binding && !receiver_is_known_type {
+                let receiver_is_known_type = self.type_def_at(name.name.as_str());
+                if !receiver_is_binding && receiver_is_known_type.is_none() {
                     let lexical_key = format!("{name}.{field}");
                     let qualified_key = self
                         .module_import_bindings
@@ -353,8 +353,7 @@ impl Checker {
                             .find(|(_, _, (name, _))| name == field);
                         if let Some((kind, index, (child_name, template))) = selected {
                             let parameters = self
-                                .type_defs
-                                .get(sup_head.registry_key())
+                                .type_def_at(sup_head.registry_key())
                                 .map_or_else(Vec::new, |definition| definition.type_params.clone());
                             let substitution = parameters
                                 .into_iter()
@@ -1231,7 +1230,7 @@ impl Checker {
         let module_local_name = if is_bare_constructor {
             self.current_module_identity().and_then(|owner| {
                 let qualified = format!("{owner}.{unqualified}");
-                self.type_defs.contains_key(&qualified).then_some(qualified)
+                self.type_def_at(&qualified).map(|_| qualified)
             })
         } else {
             None
@@ -1488,7 +1487,7 @@ impl Checker {
                 name,
                 self.type_defs
                     .keys()
-                    .map(String::as_str)
+                    .map(|id| self.defs.path(id.declaration()))
                     .chain(self.type_aliases.keys().map(String::as_str))
                     .chain(self.known_types.iter().map(String::as_str)),
             );
@@ -1635,8 +1634,7 @@ impl Checker {
             let ty_raw = match declared {
                 Some(declared_ty) => {
                     let is_bare_actor = if let Ty::Named { head, .. } = declared_ty {
-                        self.type_defs
-                            .get(head.registry_key())
+                        self.type_def_at(head.registry_key())
                             .is_some_and(|td| td.kind == TypeDefKind::Actor)
                     } else {
                         false
@@ -1778,8 +1776,7 @@ impl Checker {
                 "actor"
             };
             let type_params = self
-                .type_defs
-                .get(&name)
+                .type_def_at(&name)
                 .map_or_else(Vec::new, |definition| definition.type_params.clone());
             let declared_arity = type_params.len();
             let mut resolved_type_args: Vec<Ty> = if type_args.is_empty() {

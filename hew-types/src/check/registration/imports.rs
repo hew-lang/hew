@@ -1852,7 +1852,7 @@ impl Checker {
         let qualified = format!("{module_short}.{name}");
         if !name.contains('.')
             && self.cross_module_colliding_record_names.contains(name)
-            && self.type_defs.contains_key(&qualified)
+            && self.type_def_at(&qualified).is_some()
         {
             self.named_ty_for_key(&qualified, args)
         } else {
@@ -1885,7 +1885,6 @@ impl Checker {
             {
                 continue;
             }
-            self.type_defs.remove(key);
             self.type_def_spans.remove(key);
             self.registry.remove_type_marker_key(key);
         }

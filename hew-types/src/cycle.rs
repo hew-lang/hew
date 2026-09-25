@@ -7,41 +7,34 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::check::{TypeDef, TypeDefKind, VariantDef};
+use crate::check::{TypeDef, TypeDefKind, TypeDefView, VariantDef};
 use crate::ty::Ty;
+use crate::NominalId;
 
 /// Result of cycle detection: the set of cycle-capable actor names and a list
 /// of cycles (each cycle is a vec of actor names plus a representative span).
 #[must_use]
-#[expect(
-    clippy::implicit_hasher,
-    reason = "only called with std HashMap internally"
-)]
-pub fn detect_actor_ref_cycles(
-    type_defs: &HashMap<String, TypeDef>,
-) -> (HashSet<String>, Vec<Vec<String>>) {
-    // Build adjacency list: actor name -> set of actor names it references
-    let mut adj: HashMap<&str, HashSet<&str>> = HashMap::new();
+pub fn detect_actor_ref_cycles(types: TypeDefView<'_>) -> (HashSet<String>, Vec<Vec<String>>) {
+    let path = |id: NominalId| types.defs.path(id.declaration()).to_string();
+    // Build adjacency list: actor -> set of actors it references
+    let mut adj: HashMap<NominalId, HashSet<NominalId>> = HashMap::new();
 
-    for (name, td) in type_defs {
+    for (&id, td) in types.type_defs {
         if td.kind != crate::check::TypeDefKind::Actor {
             continue;
         }
         let mut refs = HashSet::new();
         for field_ty in td.fields.values() {
-            collect_actor_refs(
-                field_ty,
-                type_defs,
-                &mut refs,
-                &mut HashSet::<(String, Vec<Ty>)>::new(),
-            );
+            collect_actor_refs(field_ty, types, &mut refs, &mut HashSet::new());
         }
-        adj.insert(name.as_str(), refs);
+        adj.insert(id, refs);
     }
 
-    // Run Tarjan's SCC
-    let actor_names: Vec<&str> = adj.keys().copied().collect();
-    let sccs = tarjan_scc(&actor_names, &adj);
+    // Run Tarjan's SCC over a path-ordered node list so diagnostics are
+    // deterministic.
+    let mut actors: Vec<NominalId> = adj.keys().copied().collect();
+    actors.sort_by_cached_key(|id| path(*id));
+    let sccs = tarjan_scc(&actors, &adj);
 
     let mut cycle_capable = HashSet::new();
     let mut cycles = Vec::new();
@@ -51,17 +44,16 @@ pub fn detect_actor_ref_cycles(
             true
         } else if scc.len() == 1 {
             // Self-loop: actor references itself
-            let name = scc[0];
-            adj.get(name).is_some_and(|refs| refs.contains(name))
+            let id = scc[0];
+            adj.get(&id).is_some_and(|refs| refs.contains(&id))
         } else {
             false
         };
 
         if is_cycle {
-            for &name in scc {
-                cycle_capable.insert(name.to_string());
-            }
-            cycles.push(scc.iter().map(|s| (*s).to_string()).collect());
+            let names: Vec<String> = scc.iter().map(|id| path(*id)).collect();
+            cycle_capable.extend(names.iter().cloned());
+            cycles.push(names);
         }
     }
 
@@ -72,7 +64,9 @@ pub fn detect_actor_ref_cycles(
 /// cycle.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValueTypeCycleEdge {
-    /// Type whose field/variant payload contains `to` by value.
+    /// Declaration whose field/variant payload contains `to` by value.
+    pub from_id: NominalId,
+    /// Path of `from_id`.
     pub from: String,
     /// Type reached by value from `from`.
     pub to: String,
@@ -97,59 +91,38 @@ pub struct ValueTypeCycle {
 /// tuples, arrays, and generic value-type wrappers are walked because they
 /// store payloads inline.
 #[must_use]
-#[expect(
-    clippy::implicit_hasher,
-    reason = "only called with std HashMap internally"
-)]
-pub fn detect_recursive_value_type_cycles(
-    type_defs: &HashMap<String, TypeDef>,
-) -> Vec<ValueTypeCycle> {
-    let mut adj: HashMap<&str, HashSet<&str>> = HashMap::new();
-    let mut edges: HashMap<(String, String), ValueTypeCycleEdge> = HashMap::new();
-    let mut direct_edges: HashSet<(String, String)> = HashSet::new();
+pub fn detect_recursive_value_type_cycles(types: TypeDefView<'_>) -> Vec<ValueTypeCycle> {
+    let path = |id: NominalId| types.defs.path(id.declaration()).to_string();
+    let mut adj: HashMap<NominalId, HashSet<NominalId>> = HashMap::new();
+    let mut edges: HashMap<(NominalId, NominalId), ValueTypeCycleEdge> = HashMap::new();
+    let mut direct_edges: HashSet<(NominalId, NominalId)> = HashSet::new();
 
-    // Graph identity is the TypeDef TABLE KEY, not `TypeDef::name`.
-    // Imported definitions are deliberately stored under collision-free
-    // qualified keys while retaining their source-local name in the value
-    // (`"link_monitor.DownReason"` -> `TypeDef { name: "DownReason", ... }`).
-    // Indexing the table by the value name therefore panics for real imported
-    // enum payloads. Keeping keys end-to-end also distinguishes same-leaf-name
-    // types from different modules.
-    let mut value_type_names: Vec<&str> = type_defs
+    // Graph identity is the declaration; `TypeDef::name` is only the source
+    // leaf, and same-leaf types from different modules stay distinct.
+    let mut value_types: Vec<NominalId> = types
+        .type_defs
         .iter()
         .filter(|(_, td)| is_value_type_node(td))
-        .map(|(key, _)| key.as_str())
+        .map(|(id, _)| *id)
         .collect();
-    value_type_names.sort_unstable();
+    value_types.sort_by_cached_key(|id| path(*id));
 
-    for name in &value_type_names {
-        let Some(td) = type_defs.get(*name) else {
-            // `name` was harvested from this exact table above. Stay robust if
-            // this routine is ever adapted to a mutating map without turning a
-            // diagnostic pass into a compiler panic.
-            continue;
-        };
+    for &id in &value_types {
+        let td = &types.type_defs[&id];
         let mut refs = HashSet::new();
-        collect_value_type_edges_for_def(
-            td,
-            type_defs,
-            &mut refs,
-            &mut edges,
-            &mut direct_edges,
-            name,
-        );
-        adj.insert(name, refs);
+        collect_value_type_edges_for_def(td, types, &mut refs, &mut edges, &mut direct_edges, id);
+        adj.insert(id, refs);
     }
 
-    let sccs = tarjan_scc(&value_type_names, &adj);
+    let sccs = tarjan_scc(&value_types, &adj);
     let mut cycles = Vec::new();
 
     for scc in &sccs {
         let is_cycle = if scc.len() >= 2 {
             true
         } else if scc.len() == 1 {
-            let name = scc[0];
-            adj.get(name).is_some_and(|refs| refs.contains(name))
+            let id = scc[0];
+            adj.get(&id).is_some_and(|refs| refs.contains(&id))
         } else {
             false
         };
@@ -157,14 +130,20 @@ pub fn detect_recursive_value_type_cycles(
             continue;
         }
 
-        let mut type_names: Vec<String> = scc.iter().map(|name| (*name).to_string()).collect();
-        type_names.sort();
-        let scc_members: HashSet<&str> = scc.iter().copied().collect();
+        let mut members: Vec<NominalId> = scc.clone();
+        members.sort_by_cached_key(|id| path(*id));
+        let type_names: Vec<String> = members.iter().map(|id| path(*id)).collect();
+        let scc_members: HashSet<NominalId> = scc.iter().copied().collect();
 
-        for from in &type_names {
-            if let Some(edge) =
-                representative_value_cycle_edge(from, &scc_members, &adj, &edges, &direct_edges)
-            {
+        for &from in &members {
+            if let Some(edge) = representative_value_cycle_edge(
+                types,
+                from,
+                &scc_members,
+                &adj,
+                &edges,
+                &direct_edges,
+            ) {
                 cycles.push(ValueTypeCycle {
                     type_names: type_names.clone(),
                     edge,
@@ -183,40 +162,40 @@ pub fn detect_recursive_value_type_cycles(
 }
 
 fn representative_value_cycle_edge(
-    from: &str,
-    scc_members: &HashSet<&str>,
-    adj: &HashMap<&str, HashSet<&str>>,
-    edges: &HashMap<(String, String), ValueTypeCycleEdge>,
-    direct_edges: &HashSet<(String, String)>,
+    types: TypeDefView<'_>,
+    from: NominalId,
+    scc_members: &HashSet<NominalId>,
+    adj: &HashMap<NominalId, HashSet<NominalId>>,
+    edges: &HashMap<(NominalId, NominalId), ValueTypeCycleEdge>,
+    direct_edges: &HashSet<(NominalId, NominalId)>,
 ) -> Option<ValueTypeCycleEdge> {
-    let mut targets: Vec<&str> = adj
-        .get(from)?
+    let mut targets: Vec<NominalId> = adj
+        .get(&from)?
         .iter()
         .copied()
         .filter(|to| scc_members.contains(to))
         .collect();
-    targets.sort_unstable();
-    if let Some(edge) = targets.iter().find_map(|to| {
-        let key = (from.to_string(), (*to).to_string());
+    targets.sort_by_cached_key(|id| types.defs.path(id.declaration()).to_string());
+    if let Some(edge) = targets.iter().find_map(|&to| {
         direct_edges
-            .contains(&key)
-            .then(|| edges.get(&key).cloned())
+            .contains(&(from, to))
+            .then(|| edges.get(&(from, to)).cloned())
             .flatten()
     }) {
         return Some(edge);
     }
     targets
         .into_iter()
-        .find_map(|to| edges.get(&(from.to_string(), to.to_string())).cloned())
+        .find_map(|to| edges.get(&(from, to)).cloned())
 }
 
-fn collect_value_type_edges_for_def<'a>(
-    td: &'a TypeDef,
-    type_defs: &'a HashMap<String, TypeDef>,
-    refs: &mut HashSet<&'a str>,
-    edges: &mut HashMap<(String, String), ValueTypeCycleEdge>,
-    direct_edges: &mut HashSet<(String, String)>,
-    def_key: &str,
+fn collect_value_type_edges_for_def(
+    td: &TypeDef,
+    types: TypeDefView<'_>,
+    refs: &mut HashSet<NominalId>,
+    edges: &mut HashMap<(NominalId, NominalId), ValueTypeCycleEdge>,
+    direct_edges: &mut HashSet<(NominalId, NominalId)>,
+    def_key: NominalId,
 ) {
     match td.kind {
         TypeDefKind::Enum => {
@@ -230,7 +209,7 @@ fn collect_value_type_edges_for_def<'a>(
                         for field_ty in fields {
                             collect_value_type_refs(
                                 field_ty,
-                                type_defs,
+                                types,
                                 refs,
                                 edges,
                                 direct_edges,
@@ -250,7 +229,7 @@ fn collect_value_type_edges_for_def<'a>(
                                 format!("variant `{variant_name}` field `{field_name}`");
                             collect_value_type_refs(
                                 field_ty,
-                                type_defs,
+                                types,
                                 refs,
                                 edges,
                                 direct_edges,
@@ -270,7 +249,7 @@ fn collect_value_type_edges_for_def<'a>(
                 let member_desc = format!("field `{field_name}`");
                 collect_value_type_refs(
                     field_ty,
-                    type_defs,
+                    types,
                     refs,
                     edges,
                     direct_edges,
@@ -307,24 +286,24 @@ fn ordered_type_fields(td: &TypeDef) -> Vec<(&str, &Ty)> {
     clippy::too_many_arguments,
     reason = "recursive graph walk carries shared edge collection state"
 )]
-fn collect_value_type_refs<'a>(
+fn collect_value_type_refs(
     ty: &Ty,
-    type_defs: &'a HashMap<String, TypeDef>,
-    out: &mut HashSet<&'a str>,
-    edges: &mut HashMap<(String, String), ValueTypeCycleEdge>,
-    direct_edges: &mut HashSet<(String, String)>,
-    from: &str,
+    types: TypeDefView<'_>,
+    out: &mut HashSet<NominalId>,
+    edges: &mut HashMap<(NominalId, NominalId), ValueTypeCycleEdge>,
+    direct_edges: &mut HashSet<(NominalId, NominalId)>,
+    from: NominalId,
     member_desc: &str,
     is_direct_edge: bool,
-    visited_value_types: &mut HashSet<(String, Vec<Ty>)>,
-    active: &mut HashSet<String>,
+    visited_value_types: &mut HashSet<(NominalId, Vec<Ty>)>,
+    active: &mut HashSet<NominalId>,
 ) {
     match ty {
         Ty::Tuple(elems) => {
             for elem in elems {
                 collect_value_type_refs(
                     elem,
-                    type_defs,
+                    types,
                     out,
                     edges,
                     direct_edges,
@@ -339,7 +318,7 @@ fn collect_value_type_refs<'a>(
         Ty::Array(inner, len) if *len != 0 => {
             collect_value_type_refs(
                 inner,
-                type_defs,
+                types,
                 out,
                 edges,
                 direct_edges,
@@ -355,7 +334,7 @@ fn collect_value_type_refs<'a>(
                 for arg in args {
                     collect_value_type_refs(
                         arg,
-                        type_defs,
+                        types,
                         out,
                         edges,
                         direct_edges,
@@ -369,26 +348,29 @@ fn collect_value_type_refs<'a>(
             }
             Some(_) => {}
             None => {
-                let Some((target_key, target_def)) = type_defs.get_key_value(head.registry_key())
-                else {
+                let Some(target) = head.nominal() else {
+                    return;
+                };
+                let Some(target_def) = types.type_defs.get(&target) else {
                     return;
                 };
                 if !is_value_type_node(target_def) {
                     return;
                 }
 
-                out.insert(target_key.as_str());
-                let edge_key = (from.to_string(), target_key.clone());
+                out.insert(target);
+                let edge_key = (from, target);
                 if is_direct_edge {
-                    direct_edges.insert(edge_key.clone());
+                    direct_edges.insert(edge_key);
                 }
                 edges.entry(edge_key).or_insert_with(|| ValueTypeCycleEdge {
-                    from: from.to_string(),
-                    to: target_key.clone(),
+                    from_id: from,
+                    from: types.defs.path(from.declaration()).to_string(),
+                    to: types.defs.path(target.declaration()).to_string(),
                     member_desc: member_desc.to_string(),
                 });
 
-                let key = (target_key.clone(), args.clone());
+                let key = (target, args.clone());
                 if !visited_value_types.insert(key) {
                     return;
                 }
@@ -403,13 +385,13 @@ fn collect_value_type_refs<'a>(
                 // into its fields again only re-derives edges the outer frame
                 // already owns. Skipping that descent keeps the SCC graph
                 // complete while making the walk terminate.
-                if !active.insert(target_key.clone()) {
+                if !active.insert(target) {
                     return;
                 }
                 collect_instantiated_value_type_fields(
                     target_def,
                     args,
-                    type_defs,
+                    types,
                     out,
                     edges,
                     direct_edges,
@@ -418,7 +400,7 @@ fn collect_value_type_refs<'a>(
                     visited_value_types,
                     active,
                 );
-                active.remove(target_key.as_str());
+                active.remove(&target);
             }
         },
         _ => {}
@@ -429,17 +411,17 @@ fn collect_value_type_refs<'a>(
     clippy::too_many_arguments,
     reason = "recursive graph walk carries shared edge collection state"
 )]
-fn collect_instantiated_value_type_fields<'a>(
+fn collect_instantiated_value_type_fields(
     td: &TypeDef,
     args: &[Ty],
-    type_defs: &'a HashMap<String, TypeDef>,
-    out: &mut HashSet<&'a str>,
-    edges: &mut HashMap<(String, String), ValueTypeCycleEdge>,
-    direct_edges: &mut HashSet<(String, String)>,
-    from: &str,
+    types: TypeDefView<'_>,
+    out: &mut HashSet<NominalId>,
+    edges: &mut HashMap<(NominalId, NominalId), ValueTypeCycleEdge>,
+    direct_edges: &mut HashSet<(NominalId, NominalId)>,
+    from: NominalId,
     member_desc: &str,
-    visited_value_types: &mut HashSet<(String, Vec<Ty>)>,
-    active: &mut HashSet<String>,
+    visited_value_types: &mut HashSet<(NominalId, Vec<Ty>)>,
+    active: &mut HashSet<NominalId>,
 ) {
     match td.kind {
         TypeDefKind::Enum => {
@@ -451,7 +433,7 @@ fn collect_instantiated_value_type_fields<'a>(
                             let instantiated = instantiate_value_field_ty(field_ty, td, args);
                             collect_value_type_refs(
                                 &instantiated,
-                                type_defs,
+                                types,
                                 out,
                                 edges,
                                 direct_edges,
@@ -468,7 +450,7 @@ fn collect_instantiated_value_type_fields<'a>(
                             let instantiated = instantiate_value_field_ty(field_ty, td, args);
                             collect_value_type_refs(
                                 &instantiated,
-                                type_defs,
+                                types,
                                 out,
                                 edges,
                                 direct_edges,
@@ -488,7 +470,7 @@ fn collect_instantiated_value_type_fields<'a>(
                 let instantiated = instantiate_value_field_ty(field_ty, td, args);
                 collect_value_type_refs(
                     &instantiated,
-                    type_defs,
+                    types,
                     out,
                     edges,
                     direct_edges,
@@ -525,34 +507,35 @@ fn is_value_type_node(td: &TypeDef) -> bool {
 /// Recursively collect actor names referenced via an actor-handle type,
 /// looking through containers (`Vec`, `Array`, `Slice`, `Tuple`, `Option`,
 /// `Result`, `HashMap`) and transitively through struct fields.
-fn collect_actor_refs<'a>(
+fn collect_actor_refs(
     ty: &Ty,
-    type_defs: &'a HashMap<String, TypeDef>,
-    out: &mut HashSet<&'a str>,
-    visited_structs: &mut HashSet<(String, Vec<Ty>)>,
+    types: TypeDefView<'_>,
+    out: &mut HashSet<NominalId>,
+    visited_structs: &mut HashSet<(NominalId, Vec<Ty>)>,
 ) {
     match ty {
         Ty::Slice(inner) | Ty::Array(inner, _) => {
-            collect_actor_refs(inner, type_defs, out, visited_structs);
+            collect_actor_refs(inner, types, out, visited_structs);
         }
         Ty::Tuple(elems) => {
             for elem in elems {
-                collect_actor_refs(elem, type_defs, out, visited_structs);
+                collect_actor_refs(elem, types, out, visited_structs);
             }
         }
         Ty::Named { head, args } => {
-            let name = head.registry_key();
+            let target = head.nominal();
             if head.is_actor() {
                 // An actor is the type of its handle, so the handle names the
                 // actor this reference reaches.
-                if let Some((actor_key, _)) = type_defs.get_key_value(name) {
-                    out.insert(actor_key.as_str());
+                if let Some(actor) = target.filter(|id| types.type_defs.contains_key(id)) {
+                    out.insert(actor);
                 }
             } else {
                 // Transitively follow struct fields
-                if let Some((type_key, td)) = type_defs.get_key_value(name) {
-                    let struct_name = type_key.as_str();
-                    let key = (struct_name.to_string(), args.clone());
+                if let Some((id, td)) =
+                    target.and_then(|id| types.type_defs.get(&id).map(|td| (id, td)))
+                {
+                    let key = (id, args.clone());
                     if (td.kind == crate::check::TypeDefKind::Struct
                         || td.kind == crate::check::TypeDefKind::Record)
                         && !visited_structs.contains(&key)
@@ -567,18 +550,13 @@ fn collect_actor_refs<'a>(
                         for field_ty in td.fields.values() {
                             let instantiated_field =
                                 field_ty.substitute_named_params_parallel(&param_map);
-                            collect_actor_refs(
-                                &instantiated_field,
-                                type_defs,
-                                out,
-                                visited_structs,
-                            );
+                            collect_actor_refs(&instantiated_field, types, out, visited_structs);
                         }
                     }
                 }
                 // Also check type arguments (e.g. Vec<B> where B is an actor)
                 for arg in args {
-                    collect_actor_refs(arg, type_defs, out, visited_structs);
+                    collect_actor_refs(arg, types, out, visited_structs);
                 }
             }
         }
@@ -589,23 +567,23 @@ fn collect_actor_refs<'a>(
 /// Tarjan's strongly connected components algorithm.
 ///
 /// Returns SCCs in reverse topological order (leaf SCCs first).
-fn tarjan_scc<'a>(
-    nodes: &[&'a str],
-    adj: &HashMap<&'a str, HashSet<&'a str>>,
-) -> Vec<Vec<&'a str>> {
-    struct State<'a> {
+fn tarjan_scc(
+    nodes: &[NominalId],
+    adj: &HashMap<NominalId, HashSet<NominalId>>,
+) -> Vec<Vec<NominalId>> {
+    struct State {
         index_counter: usize,
-        stack: Vec<&'a str>,
-        on_stack: HashSet<&'a str>,
-        index: HashMap<&'a str, usize>,
-        lowlink: HashMap<&'a str, usize>,
-        result: Vec<Vec<&'a str>>,
+        stack: Vec<NominalId>,
+        on_stack: HashSet<NominalId>,
+        index: HashMap<NominalId, usize>,
+        lowlink: HashMap<NominalId, usize>,
+        result: Vec<Vec<NominalId>>,
     }
 
-    fn strongconnect<'a>(
-        v: &'a str,
-        adj: &HashMap<&'a str, HashSet<&'a str>>,
-        state: &mut State<'a>,
+    fn strongconnect(
+        v: NominalId,
+        adj: &HashMap<NominalId, HashSet<NominalId>>,
+        state: &mut State,
     ) {
         state.index.insert(v, state.index_counter);
         state.lowlink.insert(v, state.index_counter);
@@ -613,18 +591,18 @@ fn tarjan_scc<'a>(
         state.stack.push(v);
         state.on_stack.insert(v);
 
-        if let Some(neighbours) = adj.get(v) {
+        if let Some(neighbours) = adj.get(&v) {
             for &w in neighbours {
-                if !state.index.contains_key(w) {
+                if !state.index.contains_key(&w) {
                     strongconnect(w, adj, state);
-                    let w_low = state.lowlink[w];
-                    let v_low = state.lowlink[v];
+                    let w_low = state.lowlink[&w];
+                    let v_low = state.lowlink[&v];
                     if w_low < v_low {
                         state.lowlink.insert(v, w_low);
                     }
-                } else if state.on_stack.contains(w) {
-                    let w_idx = state.index[w];
-                    let v_low = state.lowlink[v];
+                } else if state.on_stack.contains(&w) {
+                    let w_idx = state.index[&w];
+                    let v_low = state.lowlink[&v];
                     if w_idx < v_low {
                         state.lowlink.insert(v, w_idx);
                     }
@@ -632,11 +610,11 @@ fn tarjan_scc<'a>(
             }
         }
 
-        if state.lowlink[v] == state.index[v] {
+        if state.lowlink[&v] == state.index[&v] {
             let mut scc = Vec::new();
             loop {
                 let w = state.stack.pop().expect("stack should not be empty");
-                state.on_stack.remove(w);
+                state.on_stack.remove(&w);
                 scc.push(w);
                 if w == v {
                     break;
@@ -656,7 +634,7 @@ fn tarjan_scc<'a>(
     };
 
     for &node in nodes {
-        if !state.index.contains_key(node) {
+        if !state.index.contains_key(&node) {
             strongconnect(node, adj, &mut state);
         }
     }
@@ -667,10 +645,23 @@ fn tarjan_scc<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::DefTable;
 
-    fn make_actor(name: &str, fields: HashMap<String, Ty>) -> (String, TypeDef) {
+    fn actor_cycles(
+        type_defs: &HashMap<NominalId, TypeDef>,
+    ) -> (HashSet<String>, Vec<Vec<String>>) {
+        let defs = DefTable::fixture();
+        detect_actor_ref_cycles(TypeDefView::new(&defs, type_defs))
+    }
+
+    fn value_cycles(type_defs: &HashMap<NominalId, TypeDef>) -> Vec<ValueTypeCycle> {
+        let defs = DefTable::fixture();
+        detect_recursive_value_type_cycles(TypeDefView::new(&defs, type_defs))
+    }
+
+    fn make_actor(name: &str, fields: HashMap<String, Ty>) -> (NominalId, TypeDef) {
         (
-            name.to_string(),
+            NominalId::for_test(name),
             TypeDef {
                 kind: TypeDefKind::Actor,
                 name: name.to_string(),
@@ -686,9 +677,9 @@ mod tests {
         )
     }
 
-    fn make_struct(name: &str, fields: HashMap<String, Ty>) -> (String, TypeDef) {
+    fn make_struct(name: &str, fields: HashMap<String, Ty>) -> (NominalId, TypeDef) {
         (
-            name.to_string(),
+            NominalId::for_test(name),
             TypeDef {
                 kind: TypeDefKind::Struct,
                 name: name.to_string(),
@@ -712,9 +703,9 @@ mod tests {
         Ty::named_for_test(name, vec![])
     }
 
-    fn make_enum(name: &str, variants: HashMap<String, VariantDef>) -> (String, TypeDef) {
+    fn make_enum(name: &str, variants: HashMap<String, VariantDef>) -> (NominalId, TypeDef) {
         (
-            name.to_string(),
+            NominalId::for_test(name),
             TypeDef {
                 kind: TypeDefKind::Enum,
                 name: name.to_string(),
@@ -734,9 +725,9 @@ mod tests {
         name: &str,
         type_params: Vec<String>,
         fields: HashMap<String, Ty>,
-    ) -> (String, TypeDef) {
+    ) -> (NominalId, TypeDef) {
         (
-            name.to_string(),
+            NominalId::for_test(name),
             TypeDef {
                 kind: TypeDefKind::Record,
                 name: name.to_string(),
@@ -755,7 +746,7 @@ mod tests {
     #[test]
     fn no_actors() {
         let type_defs = HashMap::new();
-        let (capable, cycles) = detect_actor_ref_cycles(&type_defs);
+        let (capable, cycles) = actor_cycles(&type_defs);
         assert!(capable.is_empty());
         assert!(cycles.is_empty());
     }
@@ -763,7 +754,7 @@ mod tests {
     #[test]
     fn no_cycles_linear() {
         // A -> B -> C (no cycle)
-        let type_defs: HashMap<String, TypeDef> = [
+        let type_defs: HashMap<NominalId, TypeDef> = [
             make_actor("A", HashMap::from([("b".to_string(), actor_handle("B"))])),
             make_actor("B", HashMap::from([("c".to_string(), actor_handle("C"))])),
             make_actor("C", HashMap::from([("x".to_string(), Ty::I32)])),
@@ -771,14 +762,14 @@ mod tests {
         .into_iter()
         .collect();
 
-        let (capable, cycles) = detect_actor_ref_cycles(&type_defs);
+        let (capable, cycles) = actor_cycles(&type_defs);
         assert!(capable.is_empty());
         assert!(cycles.is_empty());
     }
 
     #[test]
     fn recursive_value_type_detects_self_recursive_enum() {
-        let type_defs: HashMap<String, TypeDef> = [make_enum(
+        let type_defs: HashMap<NominalId, TypeDef> = [make_enum(
             "Tree",
             HashMap::from([
                 ("Leaf".to_string(), VariantDef::Unit),
@@ -791,7 +782,7 @@ mod tests {
         .into_iter()
         .collect();
 
-        let cycles = detect_recursive_value_type_cycles(&type_defs);
+        let cycles = value_cycles(&type_defs);
 
         assert_eq!(cycles.len(), 1);
         assert_eq!(cycles[0].edge.from, "Tree");
@@ -813,11 +804,11 @@ mod tests {
             )]),
         );
         let type_defs = HashMap::from([
-            ("failure.CrashKind".to_string(), crash_kind),
-            ("link_monitor.DownReason".to_string(), down_reason),
+            (NominalId::for_test("failure.CrashKind"), crash_kind),
+            (NominalId::for_test("link_monitor.DownReason"), down_reason),
         ]);
 
-        let cycles = detect_recursive_value_type_cycles(&type_defs);
+        let cycles = value_cycles(&type_defs);
         assert!(
             cycles.is_empty(),
             "an imported enum carrying a canonical lifecycle enum is acyclic: {cycles:?}"
@@ -826,7 +817,7 @@ mod tests {
 
     #[test]
     fn recursive_value_type_detects_mutual_enum_cycle() {
-        let type_defs: HashMap<String, TypeDef> = [
+        let type_defs: HashMap<NominalId, TypeDef> = [
             make_enum(
                 "A",
                 HashMap::from([("A1".to_string(), VariantDef::Tuple(vec![named_type("B")]))]),
@@ -839,7 +830,7 @@ mod tests {
         .into_iter()
         .collect();
 
-        let cycles = detect_recursive_value_type_cycles(&type_defs);
+        let cycles = value_cycles(&type_defs);
         let cycle_froms: HashSet<_> = cycles
             .iter()
             .map(|cycle| cycle.edge.from.as_str())
@@ -852,7 +843,7 @@ mod tests {
 
     #[test]
     fn recursive_value_type_allows_nested_non_recursive_enum() {
-        let type_defs: HashMap<String, TypeDef> = [
+        let type_defs: HashMap<NominalId, TypeDef> = [
             make_enum(
                 "Inner",
                 HashMap::from([
@@ -871,14 +862,14 @@ mod tests {
         .into_iter()
         .collect();
 
-        let cycles = detect_recursive_value_type_cycles(&type_defs);
+        let cycles = value_cycles(&type_defs);
 
         assert!(cycles.is_empty());
     }
 
     #[test]
     fn recursive_value_type_detects_generic_value_wrapper_cycle() {
-        let type_defs: HashMap<String, TypeDef> = [
+        let type_defs: HashMap<NominalId, TypeDef> = [
             make_record(
                 "Wrapper",
                 vec!["T".to_string()],
@@ -898,7 +889,7 @@ mod tests {
         .into_iter()
         .collect();
 
-        let cycles = detect_recursive_value_type_cycles(&type_defs);
+        let cycles = value_cycles(&type_defs);
 
         assert_eq!(cycles.len(), 1);
         assert_eq!(cycles[0].edge.from, "Tree");
@@ -907,7 +898,7 @@ mod tests {
 
     #[test]
     fn recursive_value_type_allows_heap_and_pointer_indirection() {
-        let type_defs: HashMap<String, TypeDef> = [make_enum(
+        let type_defs: HashMap<NominalId, TypeDef> = [make_enum(
             "Tree",
             HashMap::from([
                 (
@@ -949,7 +940,7 @@ mod tests {
         .into_iter()
         .collect();
 
-        let cycles = detect_recursive_value_type_cycles(&type_defs);
+        let cycles = value_cycles(&type_defs);
 
         assert!(cycles.is_empty());
     }
@@ -957,14 +948,14 @@ mod tests {
     #[test]
     fn simple_two_actor_cycle() {
         // A holds B's actor handle, B holds A's
-        let type_defs: HashMap<String, TypeDef> = [
+        let type_defs: HashMap<NominalId, TypeDef> = [
             make_actor("A", HashMap::from([("b".to_string(), actor_handle("B"))])),
             make_actor("B", HashMap::from([("a".to_string(), actor_handle("A"))])),
         ]
         .into_iter()
         .collect();
 
-        let (capable, cycles) = detect_actor_ref_cycles(&type_defs);
+        let (capable, cycles) = actor_cycles(&type_defs);
         assert!(capable.contains("A"));
         assert!(capable.contains("B"));
         assert_eq!(cycles.len(), 1);
@@ -973,14 +964,14 @@ mod tests {
     #[test]
     fn self_referential() {
         // A holds its own actor handle
-        let type_defs: HashMap<String, TypeDef> = [make_actor(
+        let type_defs: HashMap<NominalId, TypeDef> = [make_actor(
             "A",
             HashMap::from([("me".to_string(), actor_handle("A"))]),
         )]
         .into_iter()
         .collect();
 
-        let (capable, cycles) = detect_actor_ref_cycles(&type_defs);
+        let (capable, cycles) = actor_cycles(&type_defs);
         assert!(capable.contains("A"));
         assert_eq!(cycles.len(), 1);
     }
@@ -988,15 +979,15 @@ mod tests {
     #[test]
     fn transitive_through_struct() {
         // A has field of struct S, S holds B's actor handle, B holds A's
-        let type_defs: HashMap<String, TypeDef> = [
-            make_actor("A", HashMap::from([("s".to_string(), Ty::param("S"))])),
+        let type_defs: HashMap<NominalId, TypeDef> = [
+            make_actor("A", HashMap::from([("s".to_string(), named_type("S"))])),
             make_struct("S", HashMap::from([("b".to_string(), actor_handle("B"))])),
             make_actor("B", HashMap::from([("a".to_string(), actor_handle("A"))])),
         ]
         .into_iter()
         .collect();
 
-        let (capable, cycles) = detect_actor_ref_cycles(&type_defs);
+        let (capable, cycles) = actor_cycles(&type_defs);
         assert!(capable.contains("A"));
         assert!(capable.contains("B"));
         assert_eq!(cycles.len(), 1);
@@ -1005,7 +996,7 @@ mod tests {
     #[test]
     fn through_option() {
         // A has Option<B> (B's actor handle), B holds A's actor handle
-        let type_defs: HashMap<String, TypeDef> = [
+        let type_defs: HashMap<NominalId, TypeDef> = [
             make_actor(
                 "A",
                 HashMap::from([("b".to_string(), Ty::option(actor_handle("B")))]),
@@ -1015,7 +1006,7 @@ mod tests {
         .into_iter()
         .collect();
 
-        let (capable, _cycles) = detect_actor_ref_cycles(&type_defs);
+        let (capable, _cycles) = actor_cycles(&type_defs);
         assert!(capable.contains("A"));
         assert!(capable.contains("B"));
     }
@@ -1024,7 +1015,7 @@ mod tests {
     fn through_vec_named_type() {
         // A has Vec<B> (as Named { name: "Vec", args: [B's actor handle] })
         // B holds A's actor handle
-        let type_defs: HashMap<String, TypeDef> = [
+        let type_defs: HashMap<NominalId, TypeDef> = [
             make_actor(
                 "A",
                 HashMap::from([(
@@ -1037,7 +1028,7 @@ mod tests {
         .into_iter()
         .collect();
 
-        let (capable, _cycles) = detect_actor_ref_cycles(&type_defs);
+        let (capable, _cycles) = actor_cycles(&type_defs);
         assert!(capable.contains("A"));
         assert!(capable.contains("B"));
     }
@@ -1045,7 +1036,7 @@ mod tests {
     #[test]
     fn through_array() {
         // A has [B; 3] (B's actor handle), B holds A's actor handle
-        let type_defs: HashMap<String, TypeDef> = [
+        let type_defs: HashMap<NominalId, TypeDef> = [
             make_actor(
                 "A",
                 HashMap::from([("bs".to_string(), Ty::Array(Box::new(actor_handle("B")), 3))]),
@@ -1055,7 +1046,7 @@ mod tests {
         .into_iter()
         .collect();
 
-        let (capable, _cycles) = detect_actor_ref_cycles(&type_defs);
+        let (capable, _cycles) = actor_cycles(&type_defs);
         assert!(capable.contains("A"));
         assert!(capable.contains("B"));
     }
@@ -1063,7 +1054,7 @@ mod tests {
     #[test]
     fn three_actor_cycle() {
         // A -> B -> C -> A
-        let type_defs: HashMap<String, TypeDef> = [
+        let type_defs: HashMap<NominalId, TypeDef> = [
             make_actor("A", HashMap::from([("b".to_string(), actor_handle("B"))])),
             make_actor("B", HashMap::from([("c".to_string(), actor_handle("C"))])),
             make_actor("C", HashMap::from([("a".to_string(), actor_handle("A"))])),
@@ -1071,7 +1062,7 @@ mod tests {
         .into_iter()
         .collect();
 
-        let (capable, cycles) = detect_actor_ref_cycles(&type_defs);
+        let (capable, cycles) = actor_cycles(&type_defs);
         assert!(capable.contains("A"));
         assert!(capable.contains("B"));
         assert!(capable.contains("C"));
@@ -1081,7 +1072,7 @@ mod tests {
     #[test]
     fn mixed_cycle_and_no_cycle() {
         // A <-> B cycle, C -> D no cycle
-        let type_defs: HashMap<String, TypeDef> = [
+        let type_defs: HashMap<NominalId, TypeDef> = [
             make_actor("A", HashMap::from([("b".to_string(), actor_handle("B"))])),
             make_actor("B", HashMap::from([("a".to_string(), actor_handle("A"))])),
             make_actor("C", HashMap::from([("d".to_string(), actor_handle("D"))])),
@@ -1090,7 +1081,7 @@ mod tests {
         .into_iter()
         .collect();
 
-        let (capable, cycles) = detect_actor_ref_cycles(&type_defs);
+        let (capable, cycles) = actor_cycles(&type_defs);
         assert!(capable.contains("A"));
         assert!(capable.contains("B"));
         assert!(!capable.contains("C"));
@@ -1101,14 +1092,14 @@ mod tests {
     #[test]
     fn struct_without_actor_ref_no_false_positive() {
         // A has struct S with only i32 fields, no actor handle
-        let type_defs: HashMap<String, TypeDef> = [
-            make_actor("A", HashMap::from([("s".to_string(), Ty::param("S"))])),
+        let type_defs: HashMap<NominalId, TypeDef> = [
+            make_actor("A", HashMap::from([("s".to_string(), named_type("S"))])),
             make_struct("S", HashMap::from([("x".to_string(), Ty::I32)])),
         ]
         .into_iter()
         .collect();
 
-        let (capable, cycles) = detect_actor_ref_cycles(&type_defs);
+        let (capable, cycles) = actor_cycles(&type_defs);
         assert!(capable.is_empty());
         assert!(cycles.is_empty());
     }
@@ -1116,13 +1107,13 @@ mod tests {
     #[test]
     fn generic_struct_fields_participate_in_actor_cycle_detection() {
         let generic_wrapper = (
-            "Wrapper".to_string(),
+            NominalId::for_test("Wrapper"),
             TypeDef {
                 kind: TypeDefKind::Struct,
                 name: "Wrapper".to_string(),
                 type_params: vec!["T".to_string()],
                 bounds: HashMap::new(),
-                fields: HashMap::from([("target".to_string(), named_type("T"))]),
+                fields: HashMap::from([("target".to_string(), Ty::param("T"))]),
                 variants: HashMap::new(),
                 methods: HashMap::new(),
                 doc_comment: None,
@@ -1130,7 +1121,7 @@ mod tests {
                 is_indirect: false,
             },
         );
-        let type_defs: HashMap<String, TypeDef> = [
+        let type_defs: HashMap<NominalId, TypeDef> = [
             generic_wrapper,
             make_actor(
                 "A",
@@ -1144,7 +1135,7 @@ mod tests {
         .into_iter()
         .collect();
 
-        let (capable, cycles) = detect_actor_ref_cycles(&type_defs);
+        let (capable, cycles) = actor_cycles(&type_defs);
 
         assert!(capable.contains("A"));
         assert!(capable.contains("B"));
@@ -1163,13 +1154,13 @@ mod tests {
         // `visited_structs` traversal, so we nest them in one tuple field —
         // separate fields would get fresh visited sets (see line 32).
         let generic_wrapper = (
-            "Wrapper".to_string(),
+            NominalId::for_test("Wrapper"),
             TypeDef {
                 kind: TypeDefKind::Struct,
                 name: "Wrapper".to_string(),
                 type_params: vec!["T".to_string()],
                 bounds: HashMap::new(),
-                fields: HashMap::from([("target".to_string(), named_type("T"))]),
+                fields: HashMap::from([("target".to_string(), Ty::param("T"))]),
                 variants: HashMap::new(),
                 methods: HashMap::new(),
                 doc_comment: None,
@@ -1177,7 +1168,7 @@ mod tests {
                 is_indirect: false,
             },
         );
-        let type_defs: HashMap<String, TypeDef> = [
+        let type_defs: HashMap<NominalId, TypeDef> = [
             generic_wrapper,
             make_actor(
                 "A",
@@ -1195,7 +1186,7 @@ mod tests {
         .into_iter()
         .collect();
 
-        let (capable, cycles) = detect_actor_ref_cycles(&type_defs);
+        let (capable, cycles) = actor_cycles(&type_defs);
 
         // A→Wrapper<C>→C→A cycle must be detected. Before the fix, the
         // Tuple traversal visited Wrapper<B> first, poisoning the bare-name

@@ -338,7 +338,7 @@ impl Checker {
         if !name.contains('.') && self.local_type_defs.contains(name) {
             if let Some(module) = self.current_module_identity() {
                 let local = format!("{module}.{name}");
-                if self.type_defs.contains_key(&local) || self.known_types.contains(&local) {
+                if self.type_def_exact(&local).is_some() || self.known_types.contains(&local) {
                     return Some(local);
                 }
             }
@@ -364,7 +364,7 @@ impl Checker {
         if !name.contains('.') && self.local_type_defs.contains(name) {
             if let Some(module) = self.current_module_identity() {
                 let local = format!("{module}.{name}");
-                if self.type_defs.contains_key(&local) || self.known_types.contains(&local) {
+                if self.type_def_exact(&local).is_some() || self.known_types.contains(&local) {
                     return Some(local);
                 }
             }
@@ -406,9 +406,7 @@ impl Checker {
         // the binding `U` records `m.T`, so a bare `U` binds to `m.T` — never a
         // reconstructed `m.U` that would name the wrong (or a non-existent) type.
         let qualified = identities.iter().next()?;
-        self.type_defs
-            .contains_key(qualified)
-            .then(|| qualified.clone())
+        self.type_def_exact(qualified).map(|_| qualified.clone())
     }
 
     pub(super) fn flat_file_import_type_owner(&self, name: &str) -> Option<String> {
@@ -421,7 +419,7 @@ impl Checker {
                 .filter(|owner| {
                     owner.rsplit_once('.').is_some_and(|(module, _)| {
                         self.flat_file_import_module_names.contains(module)
-                    }) && self.type_defs.contains_key(owner)
+                    }) && self.type_def_exact(owner).is_some()
                         && self.resolved_builtin_type(owner).is_none()
                 })
                 .collect();
@@ -474,7 +472,7 @@ impl Checker {
                 surface_owner.to_string(),
             )) {
                 let canonical = format!("{canonical_owner}.{short}");
-                if self.type_defs.contains_key(&canonical)
+                if self.type_def_exact(&canonical).is_some()
                     || self.known_types.contains(&canonical)
                     || self.canonical_std_module_sources.contains(canonical_owner)
                 {
@@ -509,7 +507,7 @@ impl Checker {
         if self.local_type_defs.contains(name) {
             let module = self.current_module.as_deref()?;
             let qualified = format!("{module}.{name}");
-            if self.type_defs.contains_key(&qualified) || self.known_types.contains(&qualified) {
+            if self.type_def_exact(&qualified).is_some() || self.known_types.contains(&qualified) {
                 return Some(qualified);
             }
             // Lexical declaration authority blocks every foreign owner, but
@@ -522,7 +520,8 @@ impl Checker {
         if self.source_type_defs.contains(name) {
             if let Some(module) = self.current_module.as_deref() {
                 let qualified = format!("{module}.{name}");
-                if self.type_defs.contains_key(&qualified) || self.known_types.contains(&qualified)
+                if self.type_def_exact(&qualified).is_some()
+                    || self.known_types.contains(&qualified)
                 {
                     return Some(qualified);
                 }
@@ -583,10 +582,11 @@ impl Checker {
     /// leaf `name`, collapsed through proven owner bindings so compatibility
     /// and canonical registrations of one declaration count once.
     fn registered_type_owners(&self, name: &str) -> Vec<String> {
-        let mut owners: Vec<&String> = self
+        let mut owners: Vec<&str> = self
             .type_defs
             .keys()
-            .chain(self.known_types.iter())
+            .map(|id| self.defs.path(id.declaration()))
+            .chain(self.known_types.iter().map(String::as_str))
             .filter(|qualified| {
                 qualified
                     .rsplit_once('.')
@@ -611,7 +611,7 @@ impl Checker {
             .into_iter()
             .map(|owner| {
                 self.canonical_nominal_name(owner)
-                    .unwrap_or_else(|| owner.clone())
+                    .unwrap_or_else(|| owner.to_string())
             })
             .collect();
         canonical_owners.sort_unstable();
@@ -638,7 +638,7 @@ impl Checker {
                 if let Some(owner) = self.current_module_identity() {
                     let local = format!("{owner}.{dotted}");
                     if local == expected
-                        && (self.type_defs.contains_key(&local)
+                        && (self.type_def_exact(&local).is_some()
                             || self.known_types.contains(&local))
                     {
                         return local;
@@ -667,7 +667,7 @@ impl Checker {
             return canonical;
         }
 
-        if self.type_defs.contains_key(&dotted) || self.known_types.contains(&dotted) {
+        if self.type_def_exact(&dotted).is_some() || self.known_types.contains(&dotted) {
             return dotted;
         }
 
@@ -834,7 +834,7 @@ impl Checker {
     fn canonical_current_module_qualified_type_name(&self, name: &str) -> Option<String> {
         let canonical =
             crate::current_module_qualified_type_candidate(self.current_module.as_deref(), name)?;
-        (self.type_defs.contains_key(&canonical)
+        (self.type_def_exact(&canonical).is_some()
             || self.known_types.contains(&canonical)
             || self.type_aliases.contains_key(&canonical)
             || self.type_visibility.contains_key(&canonical))
@@ -2282,7 +2282,7 @@ impl Checker {
                         // `type_params` is absent is to return the binding
                         // unchanged — sound when the impl is non-generic.
                         let args = named_base.map_or(&[][..], |(_, args)| args.as_slice());
-                        let bound = if let Some(td) = self.type_defs.get(&nominal_identity) {
+                        let bound = if let Some(td) = self.type_def_exact(&nominal_identity) {
                             let map: HashMap<String, Ty> = td
                                 .type_params
                                 .iter()
@@ -2791,7 +2791,7 @@ impl Checker {
                 || name.to_string(),
                 |module| {
                     let qualified = format!("{module}.{name}");
-                    if self.type_defs.contains_key(&qualified) {
+                    if self.type_def_exact(&qualified).is_some() {
                         qualified
                     } else {
                         name.to_string()
@@ -3411,7 +3411,7 @@ impl Checker {
                     // another module may export the same name.
                     || (!name.contains('.')
                         && self.current_module.as_ref().is_some_and(|module| {
-                            self.type_defs.contains_key(&format!("{module}.{name}"))
+                            self.type_def_exact(&format!("{module}.{name}")).is_some()
                         }));
                 // Fail closed under qualified-by-default: a bare reference
                 // published by more than one module is ambiguous, and one
@@ -3496,7 +3496,7 @@ impl Checker {
                     // declaring file's minted identity together.
                     if let Some(module) = self.current_module.as_deref() {
                         let qualified = format!("{module}.{name}");
-                        if self.type_defs.contains_key(&qualified) {
+                        if self.type_def_exact(&qualified).is_some() {
                             qualified
                         } else {
                             name.clone()

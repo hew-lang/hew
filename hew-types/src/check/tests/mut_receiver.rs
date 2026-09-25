@@ -125,8 +125,7 @@ fn q297_user_iterator_impl_records_mut_receiver_flag_in_both_tables() {
         "fn_sigs[Counter::next].requires_mutable_receiver must be true for `var self`",
     );
     let td = output
-        .type_defs
-        .get("Counter")
+        .type_def_at_path("Counter")
         .expect("Counter type must be registered");
     let method_sig = td
         .methods
@@ -488,8 +487,7 @@ fn q297_stdlib_iterator_next_and_vec_iter_carry_mut_receiver_flag() {
     // load-bearing impl side rather than the trait side.)
     let output = check_source("");
     let td = output
-        .type_defs
-        .get("VecIter")
+        .type_def_at_path("std.builtins.VecIter")
         .expect("VecIter must be pre-registered from std/builtins.hew");
     let next_sig = td
         .methods

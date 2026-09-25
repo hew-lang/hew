@@ -465,7 +465,7 @@ else needs `impl Display for {rendered}`)"
             .iter()
             .chain(self.source_type_defs.iter())
         {
-            let Some(td) = self.type_defs.get(type_name.as_str()) else {
+            let Some(td) = self.type_def_at(type_name.as_str()) else {
                 continue;
             };
             if td.kind != TypeDefKind::Enum {
@@ -533,9 +533,10 @@ else needs `impl Display for {rendered}`)"
         // `local_type_defs` or `source_type_defs`; pass 2 considers the rest.
         let mut found = None;
         // Pass 1: user-declared types.
-        for (type_name, td) in &self.type_defs {
-            if !self.local_type_defs.contains(type_name.as_str())
-                && !self.source_type_defs.contains(type_name.as_str())
+        for (id, td) in &self.type_defs {
+            let type_name = self.defs.path(id.declaration());
+            if !self.local_type_defs.contains(td.name.as_str())
+                && !self.source_type_defs.contains(td.name.as_str())
                 && !self.is_current_module_type_def(type_name)
             {
                 continue;
@@ -550,9 +551,10 @@ else needs `impl Display for {rendered}`)"
         }
         // Pass 2: builtin/imported types (only when no user type matched).
         if found.is_none() {
-            for (type_name, td) in &self.type_defs {
-                if self.local_type_defs.contains(type_name.as_str())
-                    || self.source_type_defs.contains(type_name.as_str())
+            for (id, td) in &self.type_defs {
+                let type_name = self.defs.path(id.declaration());
+                if self.local_type_defs.contains(td.name.as_str())
+                    || self.source_type_defs.contains(td.name.as_str())
                     || self.is_current_module_type_def(type_name)
                 {
                     continue; // already scanned in pass 1
@@ -581,7 +583,7 @@ else needs `impl Display for {rendered}`)"
                 } else {
                     self.current_module_identity()
                         .map(|owner| format!("{owner}.{type_prefix}"))
-                        .filter(|candidate| self.type_defs.contains_key(candidate))
+                        .filter(|candidate| self.type_def_at(candidate).is_some())
                         .or_else(|| {
                             (!self.local_type_defs.contains(type_prefix)
                                 && !self.source_type_defs.contains(type_prefix))
@@ -590,7 +592,7 @@ else needs `impl Display for {rendered}`)"
                         })
                         .unwrap_or_else(|| type_prefix.to_string())
                 };
-                if let Some(td) = self.type_defs.get(&canonical_type_prefix) {
+                if let Some(td) = self.type_def_at(&canonical_type_prefix) {
                     if let Some(variant) = td.variants.get(variant_name) {
                         if matches!(variant, VariantDef::Unit) {
                             // Instantiate type params with fresh inference variables
@@ -634,7 +636,7 @@ else needs `impl Display for {rendered}`)"
                         ))
                         .cloned()
                     {
-                        if let Some(td) = self.type_defs.get(canonical.as_str()) {
+                        if let Some(td) = self.type_def_at(canonical.as_str()) {
                             if let Some(variant) = td.variants.get(variant_name) {
                                 if matches!(variant, VariantDef::Unit) {
                                     let ty = self.instantiated_unit_variant_ty(&canonical, td);
@@ -828,7 +830,7 @@ else needs `impl Display for {rendered}`)"
         if matches!(builtin, Some(BuiltinType::Option | BuiltinType::Result)) {
             return Some(name.to_string());
         }
-        let Some(definition) = self.type_defs.get(name) else {
+        let Some(definition) = self.type_def_at(name) else {
             self.report_error(
                 TypeErrorKind::ContextVariantNoType,
                 span,
@@ -856,8 +858,7 @@ else needs `impl Display for {rendered}`)"
         owner: &str,
         variant: &str,
     ) -> Option<VariantDef> {
-        self.type_defs
-            .get(owner)
+        self.type_def_at(owner)
             .and_then(|definition| definition.variants.get(variant))
             .cloned()
     }
@@ -1034,9 +1035,10 @@ else needs `impl Display for {rendered}`)"
             .type_defs
             .iter()
             .filter_map(|(type_name, td)| {
+                let type_name = self.defs.path(type_name.declaration());
                 let canonical_type_name = self
                     .canonical_nominal_name(type_name)
-                    .unwrap_or_else(|| type_name.clone());
+                    .unwrap_or_else(|| type_name.to_string());
                 let expected = self.named_ty_for_key(&canonical_type_name, vec![]);
                 if !self.variant_surface_owner_matches(surface_name, &expected) {
                     return None;
@@ -1280,7 +1282,7 @@ else needs `impl Display for {rendered}`)"
                 // the codegen front, which is the other half of the answer:
                 // the set here is the set codegen can lower, so its legality
                 // check stays an unreachable backstop (#3108, #3134).
-                if let Some(td) = self.type_defs.get(name) {
+                if let Some(td) = self.type_def_at(name) {
                     return matches!(td.kind, TypeDefKind::Actor);
                 }
                 false

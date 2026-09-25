@@ -281,8 +281,7 @@ impl Checker {
         let type_name = ty.type_name()?;
         let machine_name = type_name.strip_suffix("Event")?;
         if !self
-            .type_defs
-            .get(machine_name)
+            .type_def_at(machine_name)
             .is_some_and(|td| td.kind == TypeDefKind::Machine)
         {
             return None;

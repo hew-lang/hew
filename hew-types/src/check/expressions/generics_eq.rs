@@ -380,8 +380,7 @@ impl Checker {
                     ..
                 } => true,
                 Ty::Named { head, .. } => {
-                    self.type_defs
-                        .get(head.registry_key())
+                    self.type_def_at(head.registry_key())
                         .is_some_and(|definition| {
                             matches!(
                                 definition.kind,
@@ -525,8 +524,7 @@ impl Checker {
         }
         if let Some((owner_name, owner_args)) = owner {
             let owner_params = self
-                .type_defs
-                .get(owner_name)
+                .type_def_at(owner_name)
                 .map(|type_def| type_def.type_params.clone())
                 .unwrap_or_default();
             if owner_params.len() == owner_args.len() {

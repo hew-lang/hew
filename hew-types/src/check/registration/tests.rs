@@ -30,8 +30,9 @@ mod canonical_type_publication_tests {
     #[test]
     fn canonical_refresh_preserves_accumulated_methods() {
         let mut checker = Checker::default();
+        let __id = checker.test_declaration("greeting.Dog");
         checker.type_defs.insert(
-            "greeting.Dog".to_string(),
+            __id,
             dog_type(HashMap::from([
                 ("greet".to_string(), FnSig::default()),
                 ("name".to_string(), FnSig::default()),
@@ -47,7 +48,11 @@ mod canonical_type_publication_tests {
 
         checker.register_canonical_type_def("greeting", "Dog", &source);
 
-        let methods = &checker.type_defs["greeting.Dog"].methods;
+        let methods = &checker
+            .type_def_view()
+            .at_path("greeting.Dog")
+            .unwrap()
+            .methods;
         assert!(methods.contains_key("greet"));
         assert_eq!(methods["name"].return_type, Ty::String);
     }

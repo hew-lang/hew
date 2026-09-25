@@ -305,7 +305,7 @@ fn injected_ordinary_field_and_alias_borrows_fail_closed() {
     inject_borrow(ty, field_span.clone());
     let field_output = Checker::new(ModuleRegistry::new(vec![])).check_program(&field_program);
     assert_one_borrow_outside_extern(&field_output.errors, field_span);
-    assert!(field_output.type_defs.get("Holder").is_none_or(|def| {
+    assert!(field_output.type_def_at_path("Holder").is_none_or(|def| {
         def.fields
             .get("value")
             .is_none_or(|ty| !matches!(ty, Ty::Borrow { .. }))
@@ -578,8 +578,7 @@ fn extern_symbol_on_impl_method_populates_both_fn_sigs_and_type_def_methods() {
     );
 
     let td = output
-        .type_defs
-        .get("Holder")
+        .type_def_at_path("Holder")
         .expect("Holder type must be registered");
     let method_sig = td
         .methods

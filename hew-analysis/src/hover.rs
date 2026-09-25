@@ -86,12 +86,15 @@ pub fn hover(
                 });
             }
 
-            method_resolution::lookup_type_def(&type_output.type_defs, word.as_str()).map(
-                |type_def| HoverResult {
-                    contents: format_type_def_hover(&type_def),
-                    span: None,
-                },
+            method_resolution::lookup_type_def(
+                &type_output.defs,
+                &type_output.type_defs,
+                word.as_str(),
             )
+            .map(|type_def| HoverResult {
+                contents: format_type_def_hover(&type_def),
+                span: None,
+            })
         })
     })
 }
@@ -219,6 +222,7 @@ fn hover_field_declaration_at_offset(
                             );
                             if span.start <= offset && offset < span.end {
                                 let ty_text = method_resolution::lookup_type_def(
+                                    &type_output.defs,
                                     &type_output.type_defs,
                                     type_decl.name.name.as_str(),
                                 )
@@ -265,6 +269,7 @@ fn hover_field_declaration_at_offset(
                         );
                         if span.start <= offset && offset < span.end {
                             let ty_text = method_resolution::lookup_type_def(
+                                &type_output.defs,
                                 &type_output.type_defs,
                                 record_decl.name.name.as_str(),
                             )
@@ -300,8 +305,9 @@ fn hover_field_access_at_offset(
     let receiver_end = crate::definition::find_field_receiver_end(source, field_span.start)?;
     let receiver_ty = crate::method_lookup::find_receiver_type(type_output, receiver_end)?;
     let receiver_type_name = receiver_ty.type_name()?;
-    let type_def = type_output.type_defs.iter().find_map(|(name, type_def)| {
-        Ty::names_match_qualified(name, receiver_type_name).then_some(type_def)
+    let type_def = type_output.type_defs.iter().find_map(|(id, type_def)| {
+        Ty::names_match_qualified(type_output.defs.path(id.declaration()), receiver_type_name)
+            .then_some(type_def)
     })?;
     let field_ty = type_def.fields.get(&field_name)?;
     Some(field_hover_result(
@@ -536,7 +542,7 @@ fn hover_binding_in_expr(
                 if let Some(result) = hover_pattern_binding(
                     pattern,
                     source_ty,
-                    &type_output.type_defs,
+                    type_output.types(),
                     word,
                     word_span,
                     offset,
@@ -560,7 +566,7 @@ fn hover_binding_in_expr(
                     hover_pattern_binding(
                         &arm.pattern,
                         scrutinee_ty,
-                        &type_output.type_defs,
+                        type_output.types(),
                         word,
                         word_span,
                         offset,
@@ -684,7 +690,7 @@ fn hover_binding_in_stmt(
                 if let Some(result) = hover_pattern_binding(
                     pattern,
                     source_ty,
-                    &type_output.type_defs,
+                    type_output.types(),
                     word,
                     word_span,
                     offset,
@@ -714,7 +720,7 @@ fn hover_binding_in_stmt(
                     hover_pattern_binding(
                         pattern,
                         &elem_ty,
-                        &type_output.type_defs,
+                        type_output.types(),
                         word,
                         word_span,
                         offset,
@@ -741,7 +747,7 @@ fn hover_binding_in_stmt(
                 if let Some(result) = hover_pattern_binding(
                     pattern,
                     source_ty,
-                    &type_output.type_defs,
+                    type_output.types(),
                     word,
                     word_span,
                     offset,
@@ -759,7 +765,7 @@ fn hover_binding_in_stmt(
                     hover_pattern_binding(
                         &arm.pattern,
                         scrutinee_ty,
-                        &type_output.type_defs,
+                        type_output.types(),
                         word,
                         word_span,
                         offset,
@@ -773,12 +779,12 @@ fn hover_binding_in_stmt(
 fn hover_pattern_binding(
     pattern: &(Pattern, Span),
     source_ty: &Ty,
-    type_defs: &HashMap<String, TypeDef>,
+    types: hew_types::check::TypeDefView<'_>,
     word: &str,
     word_span: OffsetSpan,
     offset: usize,
 ) -> Option<HoverResult> {
-    let binding_ty = find_pattern_binding_type(pattern, source_ty, type_defs, word, offset)?;
+    let binding_ty = find_pattern_binding_type(pattern, source_ty, types, word, offset)?;
     Some(HoverResult {
         contents: format!("```hew\n{word}: {}\n```", binding_ty.user_facing()),
         span: Some(word_span),
@@ -796,7 +802,7 @@ fn nominal_path_leaf(path: &hew_parser::ast::Path) -> Option<&str> {
 fn find_pattern_binding_type(
     pattern: &(Pattern, Span),
     source_ty: &Ty,
-    type_defs: &HashMap<String, TypeDef>,
+    types: hew_types::check::TypeDefView<'_>,
     word: &str,
     offset: usize,
 ) -> Option<Ty> {
@@ -811,12 +817,12 @@ fn find_pattern_binding_type(
             payload: Some(hew_parser::ast::NominalPatternPayload::Tuple(patterns)),
         } if one_path.segments.len() == 1 => {
             let name = &one_path.to_string();
-            constructor_payload_tys(source_ty, name, type_defs).and_then(|payload_tys| {
+            constructor_payload_tys(source_ty, name, types).and_then(|payload_tys| {
                 patterns
                     .iter()
                     .zip(payload_tys.iter())
                     .find_map(|(pattern, payload_ty)| {
-                        find_pattern_binding_type(pattern, payload_ty, type_defs, word, offset)
+                        find_pattern_binding_type(pattern, payload_ty, types, word, offset)
                     })
             })
         }
@@ -827,9 +833,9 @@ fn find_pattern_binding_type(
         } if one_path.segments.len() == 1 => fields.iter().find_map(|field| {
             let name = &one_path.to_string();
             let field_ty =
-                struct_pattern_field_ty(source_ty, name, field.name.name.as_str(), type_defs)?;
+                struct_pattern_field_ty(source_ty, name, field.name.name.as_str(), types)?;
             field.pattern.as_ref().and_then(|pattern| {
-                find_pattern_binding_type(pattern, &field_ty, type_defs, word, offset)
+                find_pattern_binding_type(pattern, &field_ty, types, word, offset)
             })
         }),
         // For shorthand, look up field type from the scrutinee type directly.
@@ -837,9 +843,9 @@ fn find_pattern_binding_type(
             // Derive field type from source_ty by name, same as bind_pattern does.
             let type_name = source_ty.type_name()?;
             let field_ty =
-                struct_pattern_field_ty(source_ty, type_name, field.name.name.as_str(), type_defs)?;
+                struct_pattern_field_ty(source_ty, type_name, field.name.name.as_str(), types)?;
             field.pattern.as_ref().and_then(|pattern| {
-                find_pattern_binding_type(pattern, &field_ty, type_defs, word, offset)
+                find_pattern_binding_type(pattern, &field_ty, types, word, offset)
             })
         }),
         Pattern::Tuple(patterns) => {
@@ -850,13 +856,11 @@ fn find_pattern_binding_type(
                 .iter()
                 .zip(elem_tys.iter())
                 .find_map(|(pattern, elem_ty)| {
-                    find_pattern_binding_type(pattern, elem_ty, type_defs, word, offset)
+                    find_pattern_binding_type(pattern, elem_ty, types, word, offset)
                 })
         }
-        Pattern::Or(left, right) => {
-            find_pattern_binding_type(left, source_ty, type_defs, word, offset)
-                .or_else(|| find_pattern_binding_type(right, source_ty, type_defs, word, offset))
-        }
+        Pattern::Or(left, right) => find_pattern_binding_type(left, source_ty, types, word, offset)
+            .or_else(|| find_pattern_binding_type(right, source_ty, types, word, offset)),
         Pattern::Regex { captures, .. } => {
             // Named captures are bound as `string` in the arm body.
             captures
@@ -868,60 +872,54 @@ fn find_pattern_binding_type(
             None => None,
             Some(hew_parser::ast::NominalPatternPayload::Tuple(patterns)) => {
                 let name = nominal_path_leaf(path)?;
-                constructor_payload_tys(source_ty, name, type_defs).and_then(|payload_tys| {
+                constructor_payload_tys(source_ty, name, types).and_then(|payload_tys| {
                     patterns
                         .iter()
                         .zip(payload_tys.iter())
                         .find_map(|(pattern, payload_ty)| {
-                            find_pattern_binding_type(pattern, payload_ty, type_defs, word, offset)
+                            find_pattern_binding_type(pattern, payload_ty, types, word, offset)
                         })
                 })
             }
             Some(hew_parser::ast::NominalPatternPayload::Record { fields, .. }) => {
                 let name = nominal_path_leaf(path)?;
                 fields.iter().find_map(|field| {
-                    let field_ty = struct_pattern_field_ty(
-                        source_ty,
-                        name,
-                        field.name.name.as_str(),
-                        type_defs,
-                    )?;
+                    let field_ty =
+                        struct_pattern_field_ty(source_ty, name, field.name.name.as_str(), types)?;
                     field.pattern.as_ref().and_then(|pattern| {
-                        find_pattern_binding_type(pattern, &field_ty, type_defs, word, offset)
+                        find_pattern_binding_type(pattern, &field_ty, types, word, offset)
                     })
                 })
             }
         },
-        Pattern::ContextVariant(context) => {
-            match context.payload.as_ref() {
-                None => None,
-                Some(hew_parser::ast::NominalPatternPayload::Tuple(patterns)) => {
-                    constructor_payload_tys(source_ty, context.name.name.as_str(), type_defs)
-                        .and_then(|payload_tys| {
-                            patterns.iter().zip(payload_tys.iter()).find_map(
-                                |(pattern, payload_ty)| {
-                                    find_pattern_binding_type(
-                                        pattern, payload_ty, type_defs, word, offset,
-                                    )
-                                },
-                            )
-                        })
-                }
-                Some(hew_parser::ast::NominalPatternPayload::Record { fields, .. }) => {
-                    fields.iter().find_map(|field| {
-                        let field_ty = struct_pattern_field_ty(
-                            source_ty,
-                            context.name.name.as_str(),
-                            field.name.name.as_str(),
-                            type_defs,
-                        )?;
-                        field.pattern.as_ref().and_then(|pattern| {
-                            find_pattern_binding_type(pattern, &field_ty, type_defs, word, offset)
-                        })
-                    })
-                }
+        Pattern::ContextVariant(context) => match context.payload.as_ref() {
+            None => None,
+            Some(hew_parser::ast::NominalPatternPayload::Tuple(patterns)) => {
+                constructor_payload_tys(source_ty, context.name.name.as_str(), types).and_then(
+                    |payload_tys| {
+                        patterns
+                            .iter()
+                            .zip(payload_tys.iter())
+                            .find_map(|(pattern, payload_ty)| {
+                                find_pattern_binding_type(pattern, payload_ty, types, word, offset)
+                            })
+                    },
+                )
             }
-        }
+            Some(hew_parser::ast::NominalPatternPayload::Record { fields, .. }) => {
+                fields.iter().find_map(|field| {
+                    let field_ty = struct_pattern_field_ty(
+                        source_ty,
+                        context.name.name.as_str(),
+                        field.name.name.as_str(),
+                        types,
+                    )?;
+                    field.pattern.as_ref().and_then(|pattern| {
+                        find_pattern_binding_type(pattern, &field_ty, types, word, offset)
+                    })
+                })
+            }
+        },
         Pattern::Wildcard | Pattern::Literal(_) => None,
     }
 }
@@ -980,13 +978,12 @@ fn find_binding_name(pattern: &(Pattern, Span), word: &str, offset: usize) -> Op
 fn constructor_payload_tys(
     source_ty: &Ty,
     pattern_name: &str,
-    type_defs: &HashMap<String, TypeDef>,
+    types: hew_types::check::TypeDefView<'_>,
 ) -> Option<Vec<Ty>> {
     let Ty::Named { head, args, .. } = source_ty else {
         return None;
     };
-    let name = head.registry_key();
-    let type_def = method_resolution::lookup_type_def(type_defs, name)?;
+    let type_def = types.of(*head)?;
     let short_name = pattern_name.rsplit("::").next().unwrap_or(pattern_name);
     let VariantDef::Tuple(payload_tys) = type_def.variants.get(short_name)? else {
         return None;
@@ -998,13 +995,12 @@ fn struct_pattern_field_ty(
     source_ty: &Ty,
     pattern_name: &str,
     field_name: &str,
-    type_defs: &HashMap<String, TypeDef>,
+    types: hew_types::check::TypeDefView<'_>,
 ) -> Option<Ty> {
     let Ty::Named { head, args, .. } = source_ty else {
         return None;
     };
-    let name = head.registry_key();
-    let type_def = method_resolution::lookup_type_def(type_defs, name)?;
+    let type_def = types.of(*head)?;
     let short_name = pattern_name.rsplit("::").next().unwrap_or(pattern_name);
     if let Some(VariantDef::Struct(fields)) = type_def.variants.get(short_name) {
         let field_ty = fields
@@ -1771,76 +1767,7 @@ mod tests {
     fn hover_finds_type_def() {
         let source = "type Point {\n    x: f64,\n    y: f64,\n}";
         let pr = hew_parser::parse(source);
-        let mut type_defs = HashMap::new();
-        type_defs.insert(
-            "Point".to_string(),
-            TypeDef {
-                kind: TypeDefKind::Struct,
-                name: "Point".to_string(),
-                type_params: vec![],
-                bounds: HashMap::new(),
-                fields: {
-                    let mut f = HashMap::new();
-                    f.insert("x".to_string(), Ty::F64);
-                    f.insert("y".to_string(), Ty::F64);
-                    f
-                },
-                field_order: vec![],
-                variants: HashMap::new(),
-                methods: HashMap::new(),
-                doc_comment: None,
-                is_indirect: false,
-            },
-        );
-        let tc = TypeCheckOutput {
-            expr_types: HashMap::new(),
-            resolved_expr_types: HashMap::new(),
-            is_type_patterns: HashMap::new(),
-            assign_target_kinds: HashMap::new(),
-            assign_target_shapes: HashMap::new(),
-            errors: vec![],
-            warnings: vec![],
-            type_defs,
-            internal_builtin_enum_names: std::collections::HashSet::new(),
-            fn_sigs: HashMap::new(),
-            root_value_bindings: HashSet::new(),
-            handle_bearing_structs: std::collections::HashSet::new(),
-            method_call_consumes_receiver: HashSet::new(),
-            method_call_preserves_receiver_identity: HashSet::new(),
-            opaque_resource_candidates: hew_types::check::OpaqueResourceCandidateGraph::default(),
-            cycle_capable_actors: HashSet::new(),
-            user_modules: HashSet::new(),
-            call_type_args: HashMap::new(),
-            record_init_type_args: HashMap::new(),
-            intrinsic_declarations: HashMap::new(),
-            stack_hints: Vec::new(),
-            actor_handler_state_guards: HashMap::new(),
-            actor_max_heap: HashMap::new(),
-            supervisor_child_slots: HashMap::new(),
-            pool_accessor_sites: HashMap::new(),
-            dyn_trait_coercions: HashMap::new(),
-            dyn_trait_method_calls: HashMap::new(),
-            closure_capture_facts: std::collections::HashMap::new(),
-            closure_escape_facts: std::collections::HashMap::new(),
-            method_call_receiver_kinds: HashMap::new(),
-            lowering_facts: HashMap::new(),
-            method_call_rewrites: HashMap::new(),
-            wire_layouts: HashMap::new(),
-            width_cast_lowerings: HashMap::new(),
-            try_width_cast_lowerings: HashMap::new(),
-            actor_method_dispatch: HashMap::new(),
-            actor_protocol_descriptors: HashMap::new(),
-            machine_method_dispatch: HashMap::new(),
-            tail_ok_coercions: std::collections::HashSet::new(),
-            pattern_resolutions: HashMap::new(),
-            pattern_plans: HashMap::new(),
-            lang_items: hew_types::LangItemRegistry::new(),
-            resolved_calls: HashMap::new(),
-            vec_generic_element_abi: HashMap::new(),
-            user_clone_record_seeds: vec![],
-            import_type_name_aliases: HashMap::new(),
-            ..TypeCheckOutput::default()
-        };
+        let tc = type_check(&pr);
         let offset = source.find("Point").unwrap();
         let result = hover(source, &pr, Some(&tc), offset);
         assert!(result.is_some(), "should find hover for Point");
@@ -2400,7 +2327,7 @@ mod tests {
     fn hover_machine_declaration_name_shows_type_def() {
         // Hovering over the machine name at its declaration site surfaces the
         // machine's type-def hover through the lookup_type_def fallback path.
-        // The machine desugars to an enum before it reaches `type_defs`, so the
+        // The machine desugars to an enum before it reaches `types`, so the
         // hover renders the enum form with the machine's states and its
         // synthesized `step`/`state_name`; the assertion names the states rather
         // than the declaration keyword.

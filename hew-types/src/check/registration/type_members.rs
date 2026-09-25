@@ -26,9 +26,8 @@ impl Checker {
         let struct_names: Vec<String> = self
             .type_defs
             .iter()
-            .filter_map(|(name, type_def)| {
-                (type_def.kind == TypeDefKind::Struct).then_some(name.clone())
-            })
+            .filter(|&(_id, type_def)| type_def.kind == TypeDefKind::Struct)
+            .map(|(id, _type_def)| self.defs.path(id.declaration()).to_string())
             .collect();
 
         self.handle_bearing_structs = struct_names
@@ -56,11 +55,11 @@ impl Checker {
     }
 
     pub(in crate::check) fn registered_type_def_name(&self, name: &str) -> Option<String> {
-        if self.type_defs.contains_key(name) {
+        if self.type_def_at(name).is_some() {
             return Some(name.to_string());
         }
         self.strip_module_prefix(name)
-            .filter(|unqualified| self.type_defs.contains_key(*unqualified))
+            .filter(|unqualified| self.type_def_at(unqualified).is_some())
             .map(str::to_string)
     }
 
@@ -630,7 +629,7 @@ impl Checker {
 
         let identity = self.authoritative_type_def_key(ad.name.name.as_str());
         let mut changed = false;
-        if let Some(stored) = self.type_defs.get_mut(&identity) {
+        if let Some(stored) = self.type_def_at_mut(&identity) {
             if stored.kind == TypeDefKind::Actor && stored.fields != fields {
                 stored.fields = fields;
                 changed = true;
@@ -653,7 +652,7 @@ impl Checker {
     pub(super) fn authoritative_type_def_key(&self, bare_name: &str) -> String {
         if let Some(module_owner) = self.current_module_identity() {
             let qualified = format!("{module_owner}.{bare_name}");
-            if self.type_defs.contains_key(&qualified) {
+            if self.type_def_at(&qualified).is_some() {
                 return qualified;
             }
         }
@@ -667,7 +666,7 @@ impl Checker {
         if let Some(module_owner) = self.current_module_identity().map(str::to_string) {
             self.register_canonical_type_def(&module_owner, name, &type_def);
         } else {
-            self.type_defs.insert(name.to_string(), type_def);
+            self.insert_type_def(name, type_def);
         }
         self.handle_bearing_dirty = true;
     }
@@ -733,7 +732,7 @@ impl Checker {
         }
 
         let stored_key = self.authoritative_type_def_key(td.name.name.as_str());
-        let Some(stored) = self.type_defs.get(&stored_key) else {
+        let Some(stored) = self.type_def_at(&stored_key) else {
             return;
         };
         if stored.fields == fields && stored.variants == variants {
@@ -815,7 +814,7 @@ impl Checker {
                 }
 
                 let stored_key = self.authoritative_type_def_key(rd.name.name.as_str());
-                let Some(stored) = self.type_defs.get(&stored_key) else {
+                let Some(stored) = self.type_def_at(&stored_key) else {
                     return;
                 };
                 if stored.fields == fields {
@@ -900,7 +899,7 @@ impl Checker {
         }
 
         let machine_key = self.authoritative_type_def_key(md.name.name.as_str());
-        if let Some(stored) = self.type_defs.get(&machine_key) {
+        if let Some(stored) = self.type_def_at(&machine_key) {
             if stored.variants != variants {
                 let type_def = TypeDef {
                     kind: TypeDefKind::Machine,
@@ -951,7 +950,7 @@ impl Checker {
             }
         }
         let event_key = self.authoritative_type_def_key(&event_type_name);
-        if let Some(stored) = self.type_defs.get(&event_key) {
+        if let Some(stored) = self.type_def_at(&event_key) {
             if stored.variants != event_variants {
                 let event_type_def = TypeDef {
                     kind: TypeDefKind::Enum,
@@ -1016,7 +1015,7 @@ impl Checker {
         let guard_key = self
             .current_module_identity()
             .map_or_else(|| td.name.to_string(), |m| format!("{m}.{}", td.name));
-        if self.type_defs.contains_key(guard_key.as_str()) {
+        if self.type_def_at(guard_key.as_str()).is_some() {
             return;
         }
         // #1295: record `#[resource]` types from pre-registered (imported)
@@ -1190,7 +1189,7 @@ impl Checker {
         if let Some(module_owner) = self.current_module_identity().map(str::to_string) {
             self.register_canonical_type_def(&module_owner, td.name.name.as_str(), &type_def);
         }
-        self.type_defs.insert(td.name.to_string(), type_def);
+        self.insert_type_def(td.name.name.as_str(), type_def);
         self.record_type_def_inference_holes(td.name.name.as_str(), hole_vars);
         self.handle_bearing_dirty = true;
     }
@@ -1508,7 +1507,7 @@ impl Checker {
         // surface; this covers the registration call itself.
         self.seed_qualified_type_markers_for_current_module(td.name.name.as_str());
 
-        self.type_defs.insert(td.name.to_string(), type_def);
+        self.insert_type_def(td.name.name.as_str(), type_def);
         self.record_type_def_inference_holes(td.name.name.as_str(), hole_vars);
         self.handle_bearing_dirty = true;
 
@@ -1630,7 +1629,7 @@ impl Checker {
         // value-type semantics (Resource always false; all other markers field-driven).
         self.registry.register_record_type(declaration_name.clone());
 
-        self.type_defs.insert(declaration_name.clone(), type_def);
+        self.insert_type_def(&declaration_name, type_def);
         self.record_type_def_inference_holes(declaration_name.as_str(), hole_vars);
         self.handle_bearing_dirty = true;
     }
@@ -1661,7 +1660,7 @@ impl Checker {
         let bytes_ty = Ty::Bytes;
 
         let Some((is_wire_struct, is_serial_wire_enum, layout_entry)) =
-            self.type_defs.get(type_name).map(|type_def| {
+            self.type_def_at(type_name).map(|type_def| {
                 let is_wire_struct = type_def.kind == TypeDefKind::Struct;
                 let is_unit_wire_enum = type_def.kind == TypeDefKind::Enum
                     && type_def
@@ -1719,7 +1718,7 @@ impl Checker {
         // `commit_reresolved_type_def` pattern. Pre-registration mints the
         // qualified skeleton before this runs; the later canonical refresh is
         // what carries the codec methods onto the durable definition.
-        if let Some(type_def) = self.type_defs.get_mut(type_name) {
+        if let Some(type_def) = self.type_def_at_mut(type_name) {
             for (method_name, params, return_type) in &instance_methods {
                 type_def.methods.insert(
                     (*method_name).to_string(),
@@ -2152,7 +2151,7 @@ impl Checker {
         self.known_types.insert(event_identity);
 
         // Register the step() method on the machine type
-        if let Some(td) = self.type_defs.get_mut(&machine_identity) {
+        if let Some(td) = self.type_def_at_mut(&machine_identity) {
             td.methods.insert(
                 "step".to_string(),
                 FnSig {
@@ -2185,8 +2184,8 @@ impl Checker {
             );
         }
         if machine_identity != md.name.name.as_str() {
-            if let Some(type_def) = self.type_defs.get(&machine_identity).cloned() {
-                self.type_defs.insert(md.name.to_string(), type_def);
+            if let Some(type_def) = self.type_def_at(&machine_identity).cloned() {
+                self.insert_type_def(md.name.name.as_str(), type_def);
             }
         }
     }

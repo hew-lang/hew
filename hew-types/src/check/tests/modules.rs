@@ -8,8 +8,9 @@ pub(super) use super::*;
 fn root_enum_shadows_generated_delivery_type_member() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     checker.local_type_defs.insert("Delivery".to_string());
+    let __id = checker.test_declaration("Delivery");
     checker.type_defs.insert(
-        "Delivery".to_string(),
+        __id,
         TypeDef {
             kind: TypeDefKind::Enum,
             name: "Delivery".to_string(),
@@ -63,8 +64,9 @@ fn source_owned_bare_impl_target_matches_its_full_return_owner_only() {
 fn source_owned_bare_variant_surface_matches_full_scrutinee_owner_only() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     checker.current_module = Some("std.encoding.yaml".to_string());
+    let __id = checker.test_declaration("std.encoding.yaml.ParseError");
     checker.type_defs.insert(
-        "std.encoding.yaml.ParseError".to_string(),
+        __id,
         TypeDef {
             kind: TypeDefKind::Enum,
             name: "ParseError".to_string(),
@@ -94,8 +96,9 @@ fn source_owned_bare_variant_surface_matches_full_scrutinee_owner_only() {
 fn private_imported_result_cannot_rename_the_builtin_in_another_module() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     checker.current_module = Some("std.string".to_string());
+    let __id = checker.test_declaration("hew.testffi.Result");
     checker.type_defs.insert(
-        "hew.testffi.Result".to_string(),
+        __id,
         TypeDef {
             kind: TypeDefKind::Struct,
             name: "Result".to_string(),

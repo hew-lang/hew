@@ -358,8 +358,7 @@ fn unstageable_field(
     let ResolvedTy::Named { head, args, .. } = machine else {
         return None;
     };
-    let name = head.registry_key();
-    let definition = output.type_defs.get(name)?;
+    let definition = super::TypeDefView::new(&output.defs, &output.type_defs).of(*head)?;
     let mut states: Vec<_> = definition.variants.iter().collect();
     states.sort_by(|left, right| left.0.cmp(right.0));
     for (state, variant) in states {
@@ -430,7 +429,9 @@ fn is_abstract(ty: &ResolvedTy, output: &TypeCheckOutput) -> bool {
                 .type_fact_context
                 .declarations()
                 .contains_key(head.registry_key())
-                && !output.type_defs.contains_key(head.registry_key())
+                && super::TypeDefView::new(&output.defs, &output.type_defs)
+                    .of(*head)
+                    .is_none()
         }
         ResolvedTy::Named { args, .. } => args.iter().any(|arg| is_abstract(arg, output)),
         ResolvedTy::Tuple(elements) => elements.iter().any(|element| is_abstract(element, output)),

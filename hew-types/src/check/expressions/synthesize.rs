@@ -493,7 +493,7 @@ impl Checker {
                         || matches!(r, Ty::Var(_) | Ty::Error)
                         || matches!(&r, Ty::Named { head, .. }
                                 if head.builtin().is_none()
-                                    && !self.type_defs.contains_key(head.registry_key())
+                                    && self.type_def_at(head.registry_key()).is_none()
                                     && !self.type_aliases.contains_key(head.registry_key()))
                     {
                         None
@@ -1198,10 +1198,10 @@ impl Checker {
                 let type_name = &rest[..colon_pos];
                 let variant_name = &rest[colon_pos + 2..];
                 let is_binding = self.env.lookup_ref(candidate_module).is_some();
-                let is_known_type = self.type_defs.contains_key(candidate_module);
+                let is_known_type = self.type_def_at(candidate_module);
                 let qualified_key = format!("{candidate_module}.{type_name}");
-                let qualified_in_type_defs = self.type_defs.contains_key(&qualified_key);
-                if !is_binding && !is_known_type && !qualified_in_type_defs {
+                let qualified_in_type_defs = self.type_def_at(&qualified_key);
+                if !is_binding && is_known_type.is_none() && qualified_in_type_defs.is_none() {
                     return self.check_module_qualified_variant_ref(
                         candidate_module,
                         type_name,
@@ -1349,8 +1349,7 @@ impl Checker {
                 if let Some((owner, _, _)) =
                     self.lookup_variant_constructor(name)
                         .filter(|(owner, _, _)| {
-                            self.type_defs
-                                .get(owner)
+                            self.type_def_at(owner)
                                 .is_some_and(|td| td.kind == TypeDefKind::Enum)
                                 && !self.machine_state_is_bare_here(owner)
                         })
@@ -1381,7 +1380,7 @@ impl Checker {
                 format!("module `{surface_name}` cannot be used as a value"),
             );
             Ty::Error
-        } else if self.type_defs.contains_key(surface_name)
+        } else if self.type_def_at(surface_name).is_some()
             || self.known_types.contains(surface_name)
             || self.type_aliases.contains_key(surface_name)
             || crate::lookup_builtin_type(surface_name).is_some()

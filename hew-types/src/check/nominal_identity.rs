@@ -157,7 +157,7 @@ impl Checker {
             self.current_module_idx,
             name.to_string(),
         )) {
-            if self.type_defs.contains_key(identity)
+            if self.type_def_at(identity).is_some()
                 || self.known_types.contains(identity)
                 || crate::lookup_source_owned_lifecycle_type(identity).is_some()
             {
@@ -277,14 +277,6 @@ impl Checker {
     pub(super) fn head_of_declaration(&self, nominal: crate::NominalId) -> crate::TypeHead {
         if let Some(known) = self.known_declaration(nominal) {
             return known.head();
-        }
-        // A shipped encoding value is its builtin only in the exact shipped
-        // source; a user module spelled the same keeps its own nominal.
-        if let Some(builtin) = self
-            .resolved_builtin_type(self.defs.path(nominal.declaration()))
-            .filter(|builtin| builtin.is_encoding_value())
-        {
-            return crate::TypeHead::Builtin(builtin);
         }
         crate::TypeHead::of_declaration(&self.defs, nominal)
     }

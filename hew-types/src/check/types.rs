@@ -565,7 +565,7 @@ pub struct TypeCheckOutput {
     ///
     /// Duplicates are harmless (the seed collector deduplicates).
     pub user_clone_record_seeds: Vec<String>,
-    pub type_defs: HashMap<String, TypeDef>,
+    pub type_defs: HashMap<crate::NominalId, TypeDef>,
     /// Fully expanded alias targets keyed by their source declaration.
     pub resolved_type_aliases: HashMap<crate::DefId, TypeAliasDef>,
     /// Names of monomorphic builtin enums (e.g. `LookupError`) that were
@@ -1424,6 +1424,37 @@ pub struct ArmResolution {
 }
 
 impl TypeCheckOutput {
+    /// The type definitions, read by declaration.
+    #[must_use]
+    pub fn types(&self) -> TypeDefView<'_> {
+        TypeDefView::new(&self.defs, &self.type_defs)
+    }
+
+    /// The type definition filed under a declaration path.
+    ///
+    /// TRANSITION(B1, B3): see [`Self::type_defs_by_path`].
+    #[must_use]
+    pub fn type_def_at_path(&self, path: &str) -> Option<&TypeDef> {
+        self.types().at_path(path)
+    }
+
+    /// The type definitions keyed by their rendered declaration path.
+    ///
+    /// TRANSITION(B1, B3): deleted when HIR and tooling read definitions by
+    /// declaration.
+    #[must_use]
+    pub fn type_defs_by_path(&self) -> HashMap<String, TypeDef> {
+        self.type_defs
+            .iter()
+            .map(|(id, type_def)| {
+                (
+                    self.defs.path(id.declaration()).to_string(),
+                    type_def.clone(),
+                )
+            })
+            .collect()
+    }
+
     /// Record an expression's checker type, keeping the `Ty`-typed
     /// `expr_types` side-table and the typed `resolved_expr_types` handoff
     /// map (W4.047) in sync.
@@ -2386,25 +2417,56 @@ impl PendingLoweringFact {
     }
 }
 
-/// Look up a type definition under either spelling `type_defs` is keyed by.
-///
-/// A qualified declaration is registered under its full path and under the
-/// twin one segment shorter, so a resolved type may carry either. Splitting on
-/// the first dot maps `std.stream.Sink` to `stream.Sink` and
-/// `stream.Sink` to `Sink`, which is the twin in both cases.
-#[must_use]
-#[expect(
-    clippy::implicit_hasher,
-    reason = "mirrors the concrete HashMap the checker and TypeCheckOutput store"
-)]
-pub fn type_def_for_spelling<'a>(
-    type_defs: &'a HashMap<String, TypeDef>,
-    name: &str,
-) -> Option<&'a TypeDef> {
-    type_defs.get(name).or_else(|| {
-        name.split_once('.')
-            .and_then(|(_, twin)| type_defs.get(twin))
-    })
+/// The type definitions of one compilation, read by the declaration a type
+/// head names.
+#[derive(Debug, Clone, Copy)]
+pub struct TypeDefView<'a> {
+    pub defs: &'a crate::DefTable,
+    pub type_defs: &'a HashMap<crate::NominalId, TypeDef>,
+}
+
+impl<'a> TypeDefView<'a> {
+    #[must_use]
+    pub fn new(
+        defs: &'a crate::DefTable,
+        type_defs: &'a HashMap<crate::NominalId, TypeDef>,
+    ) -> Self {
+        Self { defs, type_defs }
+    }
+
+    /// The definition of the declaration `head` names.
+    #[must_use]
+    pub fn of(self, head: crate::TypeHead) -> Option<&'a TypeDef> {
+        self.type_defs.get(&head.declaration(self.defs)?)
+    }
+
+    /// The definition of the named type `ty`.
+    #[must_use]
+    pub fn of_ty(self, ty: &Ty) -> Option<&'a TypeDef> {
+        self.of(ty.head()?)
+    }
+
+    /// A view over hand-built fixture definitions, keyed by
+    /// [`crate::NominalId::for_test`] identities.
+    #[cfg(any(test, feature = "test"))]
+    #[doc(hidden)]
+    #[must_use]
+    pub fn for_test(type_defs: &'a HashMap<crate::NominalId, TypeDef>) -> Self {
+        static TABLE: std::sync::OnceLock<crate::DefTable> = std::sync::OnceLock::new();
+        Self {
+            defs: TABLE.get_or_init(crate::DefTable::new),
+            type_defs,
+        }
+    }
+
+    /// The definition filed under a declaration path.
+    ///
+    /// TRANSITION(A2): deleted when the class and fact tables are keyed by
+    /// declaration instead of by rendered path.
+    #[must_use]
+    pub fn at_path(self, path: &str) -> Option<&'a TypeDef> {
+        self.type_defs.get(&self.defs.lookup_nominal(path)?)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -2980,7 +3042,7 @@ pub struct Checker {
     /// Surfaced through `TypeCheckOutput::stack_hints` and consumed by the CLI's
     /// `--show-stack-hints` printer. See [`StackHint`].
     pub(super) stack_hints: Vec<StackHint>,
-    pub(super) type_defs: HashMap<String, TypeDef>,
+    pub(super) type_defs: HashMap<crate::NominalId, TypeDef>,
     pub(super) fn_sigs: HashMap<String, FnSig>,
     /// Closed runtime call families published by compiler builtin
     /// registration.  This is deliberately distinct from `fn_sigs`: a

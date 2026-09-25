@@ -389,7 +389,7 @@ mod tests {
     /// `expr_types`; all other fields are defaulted via `make_tc_with_fn_sigs`.
     fn make_tc_with_fields(
         fn_sigs: HashMap<String, FnSig>,
-        type_defs: HashMap<String, hew_types::check::TypeDef>,
+        type_defs: HashMap<hew_types::NominalId, hew_types::check::TypeDef>,
         expr_types: HashMap<hew_types::check::SpanKey, Ty>,
     ) -> TypeCheckOutput {
         let mut tc = make_tc_with_fn_sigs(fn_sigs);
@@ -585,7 +585,7 @@ fn probe(mat: Matcher, s: string) {
 
         let mut type_defs = HashMap::new();
         type_defs.insert(
-            "StreamModule".to_string(),
+            hew_types::NominalId::for_test("StreamModule"),
             TypeDef {
                 kind: TypeDefKind::Struct,
                 name: "StreamModule".to_string(),
@@ -647,7 +647,7 @@ fn probe(mat: Matcher, s: string) {
 
         let mut type_defs = HashMap::new();
         type_defs.insert(
-            "Widget".to_string(),
+            hew_types::NominalId::for_test("Widget"),
             TypeDef {
                 kind: TypeDefKind::Struct,
                 name: "Widget".to_string(),

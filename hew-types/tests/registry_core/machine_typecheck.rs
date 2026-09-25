@@ -258,10 +258,10 @@ fn machine_registers_type_def() {
 
     // Machine should be registered as a type
     assert!(
-        output.type_defs.contains_key("TcpState"),
+        output.type_def_at_path("TcpState").is_some(),
         "machine type not registered"
     );
-    let td = &output.type_defs["TcpState"];
+    let td = output.type_def_at_path("TcpState").unwrap();
     assert!(td.variants.contains_key("Closed"));
     assert!(td.variants.contains_key("Established"));
 
@@ -291,10 +291,10 @@ fn companion_event_enum_generated() {
     );
     let output = check_items(vec![(Item::Machine(md), 0..0)]);
     assert!(
-        output.type_defs.contains_key("LightEvent"),
+        output.type_def_at_path("LightEvent").is_some(),
         "companion event type not generated"
     );
-    let event_td = &output.type_defs["LightEvent"];
+    let event_td = output.type_def_at_path("LightEvent").unwrap();
     assert!(event_td.variants.contains_key("Toggle"));
 }
 
@@ -323,7 +323,7 @@ fn state_fields_registered() {
         output.errors
     );
 
-    let td = &output.type_defs["Counter"];
+    let td = output.type_def_at_path("Counter").unwrap();
     match &td.variants["Counting"] {
         hew_types::VariantDef::Struct(fields) => {
             assert_eq!(fields.len(), 1);
@@ -712,8 +712,7 @@ fn generic_machine_type_params_survive_registration() {
         output.errors
     );
     let td = output
-        .type_defs
-        .get("Worker")
+        .type_def_at_path("Worker")
         .expect("Worker should be registered as a type");
     assert_eq!(
         td.type_params,
@@ -732,8 +731,7 @@ fn generic_machine_multi_params_survive_registration() {
         output.errors
     );
     let td = output
-        .type_defs
-        .get("Pipeline")
+        .type_def_at_path("Pipeline")
         .expect("Pipeline should be registered as a type");
     assert_eq!(
         td.type_params,
@@ -753,8 +751,7 @@ fn non_generic_machine_type_params_empty() {
         output.errors
     );
     let td = output
-        .type_defs
-        .get("Light")
+        .type_def_at_path("Light")
         .expect("Light should be registered as a type");
     assert!(
         td.type_params.is_empty(),
@@ -945,7 +942,7 @@ fn generic_machine_threads_type_params_into_state_event_and_step() {
         output.errors
     );
 
-    let machine_td = &output.type_defs["Lifecycle"];
+    let machine_td = output.type_def_at_path("Lifecycle").unwrap();
     assert_eq!(machine_td.type_params, vec!["T".to_string()]);
     match &machine_td.variants["Loaded"] {
         hew_types::VariantDef::Struct(fields) => {
@@ -954,7 +951,7 @@ fn generic_machine_threads_type_params_into_state_event_and_step() {
         other => panic!("expected Loaded to be a struct variant, got: {other:?}"),
     }
 
-    let event_td = &output.type_defs["LifecycleEvent"];
+    let event_td = output.type_def_at_path("LifecycleEvent").unwrap();
     assert_eq!(event_td.type_params, vec!["T".to_string()]);
     match &event_td.variants["Load"] {
         hew_types::VariantDef::Struct(fields) => {
@@ -1106,10 +1103,10 @@ fn imported_machine_unit_state_constructor_resolves() {
 
     // Machine TypeDef must be populated with state variants
     assert!(
-        output.type_defs.contains_key("lights.Traffic"),
+        output.type_def_at_path("lights.Traffic").is_some(),
         "imported machine registration must preserve its exact source owner"
     );
-    let td = &output.type_defs["lights.Traffic"];
+    let td = output.type_def_at_path("lights.Traffic").unwrap();
     assert!(
         td.variants.contains_key("Red"),
         "state variant 'Red' must appear in Traffic TypeDef"
@@ -1121,7 +1118,7 @@ fn imported_machine_unit_state_constructor_resolves() {
 
     // Companion event enum must also be registered
     assert!(
-        output.type_defs.contains_key("lights.TrafficEvent"),
+        output.type_def_at_path("lights.TrafficEvent").is_some(),
         "imported event registration must preserve its exact source owner"
     );
     assert_eq!(
@@ -1130,7 +1127,7 @@ fn imported_machine_unit_state_constructor_resolves() {
         "an imported state constructor must return the exact machine identity"
     );
     assert_eq!(
-        output.type_defs["lights.Traffic"].methods["step"].params,
+        output.type_def_at_path("lights.Traffic").unwrap().methods["step"].params,
         vec![Ty::named_for_test("lights.TrafficEvent", vec![])],
         "an imported step method must accept the exact companion event identity"
     );
@@ -1186,8 +1183,7 @@ fn imported_machine_payload_state_struct_literal_resolves() {
     );
 
     let td = output
-        .type_defs
-        .get("Counter")
+        .type_def_at_path("counters.Counter")
         .expect("Counter type must be registered in the non-root module path");
     match &td.variants["Counting"] {
         hew_types::VariantDef::Struct(fields) => {
@@ -1302,8 +1298,7 @@ fn imported_generic_machine_type_params_survive_registration() {
     );
 
     let td = output
-        .type_defs
-        .get("workers.Worker")
+        .type_def_at_path("workers.Worker")
         .expect("generic machine 'Worker' must be registered via the non-root module path");
     assert_eq!(
         td.type_params,
@@ -1311,8 +1306,7 @@ fn imported_generic_machine_type_params_survive_registration() {
         "generic type param T must survive into TypeDef when registered via module graph"
     );
     let event_td = output
-        .type_defs
-        .get("workers.WorkerEvent")
+        .type_def_at_path("workers.WorkerEvent")
         .expect("companion event enum 'WorkerEvent' must be registered");
     assert_eq!(
         event_td.type_params,
@@ -1380,11 +1374,11 @@ fn two_modules_with_different_machines_no_collision() {
     );
 
     assert!(
-        output.type_defs.contains_key("Alpha"),
+        output.type_def_at_path("mod_a.Alpha").is_some(),
         "Alpha must be registered"
     );
     assert!(
-        output.type_defs.contains_key("Beta"),
+        output.type_def_at_path("mod_b.Beta").is_some(),
         "Beta must be registered"
     );
     assert!(
@@ -1431,8 +1425,7 @@ machine Lifecycle<T: Resource> {
         output.errors
     );
     let td = output
-        .type_defs
-        .get("Lifecycle")
+        .type_def_at_path("Lifecycle")
         .expect("Lifecycle should be registered as a type");
     assert_eq!(td.type_params, vec!["T".to_string()]);
 }
